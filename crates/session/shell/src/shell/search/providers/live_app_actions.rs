@@ -95,6 +95,18 @@ type DirectoryCacheKey = (u64, String, String, Vec<u8>);
 /// palette owns one level at a time, an enumeration opens several.
 type NestedCacheKey = (u64, String, String, String);
 
+/// A directory action's address within one publisher's revision:
+/// (publisher, revision, resource, action).
+type SemanticKey = (u64, String, String, String);
+
+/// What every cached descriptor of one address says its resource is.
+enum SemanticAgreement {
+    Agree(tilo_actions::ResourceSemanticIdentity),
+    Disagree,
+}
+
+type SemanticIndex = HashMap<SemanticKey, SemanticAgreement>;
+
 struct PendingDirectoryPage {
     receiver: Pending<Result<CataloguePage, ActionHostError>>,
     deadline: Instant,
@@ -320,6 +332,14 @@ pub struct LiveAppActionsProvider {
     /// Pages of resources below a root, fetched only while enumerating.
     nested_pages: RefCell<HashMap<NestedCacheKey, CataloguePage>>,
     nested_pending: RefCell<HashMap<NestedCacheKey, PendingDirectoryPage>>,
+    /// Moves on every change to `directory_pages` or `nested_pages`, so
+    /// `semantic_index` knows when it was built from pages that are gone.
+    pages_epoch: Cell<u64>,
+    /// Each directory action's semantic identity, by (publisher, revision,
+    /// resource, action), built from the cached pages at `pages_epoch`.
+    semantic_index: RefCell<Option<(u64, SemanticIndex)>>,
+    #[cfg(test)]
+    semantic_index_builds: Cell<usize>,
     enumerating: Cell<bool>,
     /// Directory contracts are valid only for the publication they describe.
     directory_source_generation: Cell<(u64, u64)>,
@@ -510,6 +530,27 @@ fn deadline_after(duration: std::time::Duration) -> std::time::Instant {
 }
 
 impl LiveAppActionsProvider {
+    fn directory_pages_mut(
+        &self,
+    ) -> std::cell::RefMut<'_, HashMap<DirectoryCacheKey, CataloguePage>> {
+        self.pages_epoch.set(self.pages_epoch.get().wrapping_add(1));
+        self.directory_pages.borrow_mut()
+    }
+
+    fn nested_pages_mut(&self) -> std::cell::RefMut<'_, HashMap<NestedCacheKey, CataloguePage>> {
+        self.pages_epoch.set(self.pages_epoch.get().wrapping_add(1));
+        self.nested_pages.borrow_mut()
+    }
+
+    /// The semantic identity every cached descriptor of this directory
+    /// action agrees on, if they all agree on a valid one of the
+    /// descriptors' resource kind.
+    ///
+    /// Looked up in an index of the cached pages, built once per change to
+    /// them. A listing asks this for every directory row, and scanning
+    /// every cached row of the publisher for each one was quadratic: after
+    /// a few dozen windows a listing of ten thousand rows took over a
+    /// minute on the compositor loop.
     fn directory_semantic_identity(
         &self,
         peer: u64,
@@ -517,38 +558,64 @@ impl LiveAppActionsProvider {
         resource: &str,
         operation: &str,
     ) -> Option<tilo_actions::ResourceSemanticIdentity> {
+        let epoch = self.pages_epoch.get();
+        let mut index = self.semantic_index.borrow_mut();
+        if index.as_ref().is_none_or(|(built, _)| *built != epoch) {
+            *index = Some((epoch, self.build_semantic_index()));
+        }
+        let key = (
+            peer,
+            revision.to_string(),
+            resource.to_string(),
+            operation.to_string(),
+        );
+        match index.as_ref().and_then(|(_, index)| index.get(&key))? {
+            SemanticAgreement::Agree(identity) => Some(identity.clone()),
+            SemanticAgreement::Disagree => None,
+        }
+    }
+
+    fn build_semantic_index(&self) -> SemanticIndex {
+        #[cfg(test)]
+        self.semantic_index_builds
+            .set(self.semantic_index_builds.get().saturating_add(1));
         let pages = self.directory_pages.borrow();
         let nested = self.nested_pages.borrow();
-        let publisher = peer.to_string();
-        let mut descriptors = pages
+        let mut index = SemanticIndex::new();
+        let cached = pages
             .iter()
-            .filter(|((cached_peer, _, _, _), page)| {
-                *cached_peer == peer && page.revision == revision
-            })
-            .map(|(_, page)| page)
-            .chain(
-                nested
-                    .iter()
-                    .filter(|((cached_peer, _, _, _), page)| {
-                        *cached_peer == peer && page.revision == revision
-                    })
-                    .map(|(_, page)| page),
-            )
-            .flat_map(|page| &page.rows)
-            .filter(|row| row.provider == publisher)
-            .filter_map(|row| row.action.as_ref())
-            .filter(|descriptor| {
-                descriptor.address.resource == resource && descriptor.address.action == operation
-            });
-        let first = descriptors.next()?;
-        let identity = first.semantic_identity.clone()?;
-        (identity.is_valid()
-            && identity.kind == first.resource_kind
-            && descriptors.all(|descriptor| {
-                descriptor.semantic_identity.as_ref() == Some(&identity)
-                    && descriptor.resource_kind == identity.kind
-            }))
-        .then_some(identity)
+            .map(|((peer, _, _, _), page)| (*peer, page))
+            .chain(nested.iter().map(|((peer, _, _, _), page)| (*peer, page)));
+        for (peer, page) in cached {
+            let publisher = peer.to_string();
+            for descriptor in page
+                .rows
+                .iter()
+                .filter(|row| row.provider == publisher)
+                .filter_map(|row| row.action.as_ref())
+            {
+                let key = (
+                    peer,
+                    page.revision.clone(),
+                    descriptor.address.resource.clone(),
+                    descriptor.address.action.clone(),
+                );
+                let said = descriptor.semantic_identity.as_ref().filter(|identity| {
+                    identity.is_valid() && identity.kind == descriptor.resource_kind
+                });
+                let agreement = match (index.remove(&key), said) {
+                    (None, Some(identity)) => SemanticAgreement::Agree(identity.clone()),
+                    (Some(SemanticAgreement::Agree(agreed)), Some(identity))
+                        if agreed == *identity =>
+                    {
+                        SemanticAgreement::Agree(agreed)
+                    }
+                    _ => SemanticAgreement::Disagree,
+                };
+                index.insert(key, agreement);
+            }
+        }
+        index
     }
 
     fn wants_resource_rows(wanted: &[ResourceKind]) -> bool {
@@ -570,6 +637,10 @@ impl LiveAppActionsProvider {
             directory_pending: RefCell::new(HashMap::new()),
             nested_pages: RefCell::new(HashMap::new()),
             nested_pending: RefCell::new(HashMap::new()),
+            pages_epoch: Cell::new(0),
+            semantic_index: RefCell::new(None),
+            #[cfg(test)]
+            semantic_index_builds: Cell::new(0),
             enumerating: Cell::new(false),
             directory_source_generation,
             directory_query: RefCell::new(None),
@@ -1006,7 +1077,7 @@ impl LiveAppActionsProvider {
             // A native edit can change Undo availability without changing the
             // query, publisher or action address. Retire both old pages and
             // outstanding replies before observing their previous contracts.
-            self.directory_pages.borrow_mut().clear();
+            self.directory_pages_mut().clear();
             self.directory_pending.borrow_mut().clear();
             self.directory_failures.borrow_mut().clear();
             self.auxiliary_snapshot.borrow_mut().take();
@@ -1083,7 +1154,7 @@ impl LiveAppActionsProvider {
             self.directory_epoch.fetch_add(1, Ordering::Relaxed);
         }
         if !spent.is_empty() {
-            self.directory_pages.borrow_mut().retain(|existing, _| {
+            self.directory_pages_mut().retain(|existing, _| {
                 !spent
                     .iter()
                     .any(|key| existing.0 == key.0 && existing.1 == key.1 && existing.2 == key.2)
@@ -1097,7 +1168,7 @@ impl LiveAppActionsProvider {
             self.directory_epoch.fetch_add(1, Ordering::Relaxed);
         }
         if !ready.is_empty() {
-            let mut pages = self.directory_pages.borrow_mut();
+            let mut pages = self.directory_pages_mut();
             for (key, page, initial_page) in ready {
                 self.directory_failures.borrow_mut().remove(&key);
                 // A first page starts a new chain: the pages of an earlier
@@ -1160,7 +1231,7 @@ impl LiveAppActionsProvider {
             }
         });
         if !landed.is_empty() {
-            let mut pages = self.nested_pages.borrow_mut();
+            let mut pages = self.nested_pages_mut();
             for (key, page) in landed {
                 if !pages.contains_key(&key)
                     && pages.len() >= MAX_RETAINED_NESTED_PAGES
@@ -1260,7 +1331,7 @@ impl LiveAppActionsProvider {
                 .get(&key)
                 .is_some_and(|page| page.revision != root_revision)
             {
-                self.nested_pages.borrow_mut().remove(&key);
+                self.nested_pages_mut().remove(&key);
             }
             self.request_nested_page(root.peer_id, &root.cluster_id, actor, needle, &resource);
             let Some(page) = self.nested_pages.borrow().get(&key).cloned() else {
@@ -1304,14 +1375,12 @@ impl LiveAppActionsProvider {
         // Dropping stale receivers explicitly cancels their shell-side
         // tickets. The LocalSet may still finish its bounded work, but cannot
         // grow this UI cache or revive an old query's results.
-        self.directory_pages
-            .borrow_mut()
+        self.directory_pages_mut()
             .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
         self.directory_pending
             .borrow_mut()
             .retain(|(_, _, cached_needle, _), _| cached_needle == &next);
-        self.nested_pages
-            .borrow_mut()
+        self.nested_pages_mut()
             .retain(|(_, _, _, cached_needle), _| cached_needle == &next);
         self.nested_pending
             .borrow_mut()
@@ -1338,9 +1407,9 @@ impl LiveAppActionsProvider {
         }
         // A refused row may sit on a nested page: drop them all, they are
         // cheap to ask for again.
-        self.nested_pages.borrow_mut().clear();
+        self.nested_pages_mut().clear();
         self.nested_pending.borrow_mut().clear();
-        let mut pages = self.directory_pages.borrow_mut();
+        let mut pages = self.directory_pages_mut();
         let mut pending = self.directory_pending.borrow_mut();
         for key in invalidated {
             pages.remove(&key);
@@ -3309,8 +3378,7 @@ pub(crate) fn fixture_with_directory_page(
 ) -> Rc<dyn SearchProvider> {
     let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(broker));
     provider
-        .directory_pages
-        .borrow_mut()
+        .directory_pages_mut()
         .insert((peer, actor, String::new(), Vec::new()), page);
     provider
 }
@@ -3746,7 +3814,7 @@ mod tests {
             has_children: false,
             visibility: None,
         };
-        provider.directory_pages.borrow_mut().insert(
+        provider.directory_pages_mut().insert(
             (9, "actor".into(), String::new(), Vec::new()),
             page(vec![row.clone()], Vec::new()),
         );
@@ -3765,7 +3833,7 @@ mod tests {
         let mut conflicting = row;
         conflicting.action.as_mut().unwrap().semantic_identity =
             tilo_actions::ResourceSemanticIdentity::new("store.app", "other");
-        provider.directory_pages.borrow_mut().insert(
+        provider.directory_pages_mut().insert(
             (9, "actor".into(), "another-query".into(), Vec::new()),
             page(vec![conflicting], Vec::new()),
         );
@@ -3776,13 +3844,101 @@ mod tests {
                 .semantic_identity
                 .is_none()
         );
-        provider.directory_pages.borrow_mut().clear();
+        provider.directory_pages_mut().clear();
         assert!(
             provider
                 .action_hierarchy(&id)
                 .unwrap()
                 .semantic_identity
                 .is_none()
+        );
+    }
+
+    /// A listing resolves every directory row's hierarchy. With thousands
+    /// of rows from one publisher the identity lookup must not rescan its
+    /// cached pages for each row: that made a listing take over a minute.
+    /// The pages are indexed once, and again only after they change.
+    #[test]
+    fn directory_identities_are_indexed_once_per_change_to_the_pages() {
+        const PAGES: usize = 40;
+        const PER_PAGE: usize = 100;
+        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: "so.tilo.store".into(),
+            cluster_id: "room".into(),
+            record_id: "record".into(),
+        }]);
+        let provider = LiveAppActionsProvider::new(broker);
+        let row = |n: usize| {
+            let mut descriptor = exported(&format!("Action {n}"), &format!("act{n}"));
+            descriptor.resource_kind = "store.app".into();
+            descriptor.semantic_identity =
+                tilo_actions::ResourceSemanticIdentity::new("store.app", format!("app:{n}"));
+            CatalogueRow {
+                provider: "9".into(),
+                app_id: "so.tilo.store".into(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: descriptor.address.resource.clone(),
+                    kind: "fixture".into(),
+                    label: format!("Resource {n}"),
+                    presentation: None,
+                },
+                action: Some(descriptor),
+                has_children: false,
+                visibility: None,
+            }
+        };
+        for p in 0..PAGES {
+            provider.directory_pages_mut().insert(
+                (9, "actor".into(), String::new(), p.to_be_bytes().to_vec()),
+                page(
+                    (0..PER_PAGE).map(|i| row(p * PER_PAGE + i)).collect(),
+                    Vec::new(),
+                ),
+            );
+        }
+        let ids: Vec<String> = (0..PAGES * PER_PAGE)
+            .map(|n| {
+                let action = format!("act{n}");
+                let descriptor = exported("x", &action);
+                [
+                    "directory",
+                    "9",
+                    "r1",
+                    &descriptor.address.resource,
+                    &action,
+                ]
+                .join(&ID_SEPARATOR.to_string())
+            })
+            .collect();
+        for (n, id) in ids.iter().enumerate() {
+            assert_eq!(
+                provider.action_hierarchy(id).unwrap().semantic_identity,
+                tilo_actions::ResourceSemanticIdentity::new("store.app", format!("app:{n}")),
+                "row {n} keeps its own identity"
+            );
+        }
+        assert_eq!(
+            provider.semantic_index_builds.get(),
+            1,
+            "every row was answered from one index"
+        );
+
+        provider.directory_pages_mut().clear();
+        assert!(
+            provider
+                .action_hierarchy(&ids[0])
+                .unwrap()
+                .semantic_identity
+                .is_none(),
+            "a cleared cache answers no identity"
+        );
+        assert_eq!(
+            provider.semantic_index_builds.get(),
+            2,
+            "a change rebuilds it"
         );
     }
 
@@ -3925,8 +4081,7 @@ mod tests {
         };
         let key = (7, actor, "inspect playback".into(), Vec::new());
         provider
-            .directory_pages
-            .borrow_mut()
+            .directory_pages_mut()
             .insert(key.clone(), page(vec![row], Vec::new()));
         provider
             .directory_epoch
@@ -3948,7 +4103,7 @@ mod tests {
         assert!(cached.results.iter().any(|row| {
             row.id == LiveAppActionsProvider::result_id(&surface, &surface.actions[1])
         }));
-        provider.directory_pages.borrow_mut().remove(&key);
+        provider.directory_pages_mut().remove(&key);
         provider
             .directory_epoch
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -4004,7 +4159,7 @@ mod tests {
             has_children: false,
             visibility: None,
         };
-        provider.directory_pages.borrow_mut().insert(
+        provider.directory_pages_mut().insert(
             (7, actor, String::new(), Vec::new()),
             page(vec![row], Vec::new()),
         );
@@ -4032,8 +4187,7 @@ mod tests {
             let key: DirectoryCacheKey = (7, "actor".into(), "read".into(), Vec::new());
             let retained: DirectoryCacheKey = (8, "actor".into(), "read".into(), Vec::new());
             provider
-                .directory_pages
-                .borrow_mut()
+                .directory_pages_mut()
                 .insert(retained.clone(), page(Vec::new(), Vec::new()));
             let (sender, receiver) = pending();
             let deadline = Instant::now() + Duration::from_secs(3);
@@ -4202,8 +4356,7 @@ mod tests {
                 }
                 let key: DirectoryCacheKey = (7, "actor-a".into(), needle, Vec::new());
                 provider
-                    .directory_pages
-                    .borrow_mut()
+                    .directory_pages_mut()
                     .insert(key.clone(), page(Vec::new(), Vec::new()));
                 let (sender, receiver) = pending();
                 provider.directory_pending.borrow_mut().insert(
@@ -4271,7 +4424,7 @@ mod tests {
             );
             provider.set_directory_query("open");
             for actor in ["room-a-user", "room-b-user"] {
-                provider.directory_pages.borrow_mut().insert(
+                provider.directory_pages_mut().insert(
                     (7, actor.into(), "open".into(), Vec::new()),
                     page(Vec::new(), Vec::new()),
                 );
@@ -4468,11 +4621,11 @@ mod tests {
                 has_children: false,
                 visibility: None,
             };
-            provider.directory_pages.borrow_mut().insert(
+            provider.directory_pages_mut().insert(
                 (9, actor.clone(), "open".into(), Vec::new()),
                 page(vec![row("Open first", "first")], vec![1]),
             );
-            provider.directory_pages.borrow_mut().insert(
+            provider.directory_pages_mut().insert(
                 (9, actor, "open".into(), vec![1]),
                 page(vec![row("Open second", "second")], Vec::new()),
             );
@@ -4580,7 +4733,7 @@ mod tests {
             visibility: None,
         };
         provider.set_directory_query("read");
-        provider.directory_pages.borrow_mut().insert(
+        provider.directory_pages_mut().insert(
             (9, actor, "read".into(), Vec::new()),
             page(vec![row], Vec::new()),
         );
@@ -5593,7 +5746,7 @@ mod tests {
             };
             broker.replace_action_directory_roots_for_test(vec![root]);
             let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
-            provider.directory_pages.borrow_mut().insert(
+            provider.directory_pages_mut().insert(
                 (9, actor, "book".into(), Vec::new()),
                 page(
                     vec![CatalogueRow {
@@ -5742,7 +5895,7 @@ mod tests {
         // page when the directory's generation moves, as publishing a root
         // does, so pages seeded before that would be dropped unread.
         let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
-        provider.directory_pages.borrow_mut().insert(
+        provider.directory_pages_mut().insert(
             (9, actor.clone(), String::new(), Vec::new()),
             page(
                 vec![
@@ -5752,7 +5905,7 @@ mod tests {
                 Vec::new(),
             ),
         );
-        provider.nested_pages.borrow_mut().insert(
+        provider.nested_pages_mut().insert(
             (9, actor.clone(), "notes.page:a".into(), String::new()),
             page(
                 vec![
@@ -5763,7 +5916,7 @@ mod tests {
                 Vec::new(),
             ),
         );
-        provider.nested_pages.borrow_mut().insert(
+        provider.nested_pages_mut().insert(
             (9, actor, "notes.block:a1".into(), String::new()),
             page(vec![action_row("notes.block:a1", "set-style")], Vec::new()),
         );
