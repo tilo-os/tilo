@@ -97,7 +97,12 @@ What the launcher composes instead:
 - `--tmpfs /tmp`, `--proc /proc`, `--dev /dev` always.
 - Anything else is a **capability** the user grants at runtime
   (`collab_types::caps`), bound with `--ro-bind-try` / `--bind-try` when
-  and only when the grant is live.
+  and only when the grant is live. A grant never reaches Tilo's private
+  configuration (`$XDG_CONFIG_HOME/tilo`: identity secrets, vault keys,
+  trust and revocation lists): a grant inside it is refused, and one
+  containing it shows it as an empty read-only directory
+  (`launcher::capabilities`, "Tilo's private stores are never inside a
+  grant").
 
 ### Your directory
 
