@@ -259,6 +259,11 @@ head -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* p
 grep -Fqx "desktop-output --backend drm trace=$flight_dir/frame-trace.csv" "$flight_dir/latest.log"
 tail -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=7 logout_request=no restart_request=no$'
 [ "$(stat -c %a "$flight_dir")" = 700 ]
+# The log events, kept apart from the measurement stream, are bracketed by
+# the same start and end records.
+head -n 1 "$flight_dir/events.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
+tail -n 1 "$flight_dir/events.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=7 logout_request=no restart_request=no$'
+[ "$(stat -c %a "$flight_dir/events.log")" = 600 ]
 # A dev image's compositor gets the control socket tilo-vm drives it through.
 grep -Fqx "control=$runtime_dir/tilo-session/test-control.sock" "$log.control"
 # It is still the person's login: a first login keeps identity setup.
@@ -364,6 +369,8 @@ EOF
 cmp "$tmp/expected" "$log"
 # The next login keeps the previous record, which tilo-session-report reads.
 grep -Fq 'status=7' "$flight_dir/previous.log"
+grep -Fq 'status=7' "$flight_dir/previous-events.log"
+tail -n 1 "$flight_dir/events.log" | grep -Eq 'status=0 logout_request=yes restart_request=no$'
 tail -n 1 "$flight_dir/latest.log" | grep -Eq 'status=0 logout_request=yes restart_request=no$'
 python3 "$repo/dist/session/tilo-session-report.py" --root "$flight_dir" --previous >"$tmp/report"
 python3 - "$tmp/report" <<'PY'
