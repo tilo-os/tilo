@@ -1074,7 +1074,79 @@ def boot(ctx, res):
         ctx.record(f"boot.{phase}_s", "s", [gate.get(f"{phase}_s")])
     problems = [] if gate["exit"] == 0 else [f"the boot gate failed: {said}"]
     problems += boot_attribution(ctx, res)
+    boot_kernel_log(ctx, res)
     expect(not problems, "; ".join(problems))
+
+
+# The kernel's own log of this boot, written whole, and the boots the persistent journal
+# holds. dmesg's ring buffer can have wrapped by the time R06 runs; journald keeps each
+# kernel message with the kernel's own timestamp, so it stands in when the early boot is gone.
+BOOT_KERNEL_LOG = r"""
+exec 2>&1
+[ -d /var/log/journal ] && echo "journal=persistent" || echo "journal=volatile"
+echo "== boots"; journalctl --list-boots --no-pager 2>/dev/null
+log="$(dmesg --color=never 2>/dev/null)"
+if ! printf '%s\n' "$log" | grep -q 'SLUB: HWalign'; then
+  log="$(journalctl -k -b -o json --no-pager 2>/dev/null | python3 -c '
+import json, sys
+for line in sys.stdin:
+    entry = json.loads(line)
+    stamp, message = entry.get("_SOURCE_MONOTONIC_TIMESTAMP"), entry.get("MESSAGE")
+    if stamp and isinstance(message, str):
+        print(f"[{int(stamp) / 1e6:12.6f}] {message}")
+')"
+fi
+echo "== dmesg"; printf '%s\n' "$log"
+echo "== end"
+"""
+KERNEL_LINE = re.compile(r"^\[\s*(\d+\.\d+)\]\s?(.*)$")
+BOOT_ID = re.compile(r"\b[0-9a-f]{32}\b")
+
+
+def parse_kernel_log(text: str) -> dict:
+    """From BOOT_KERNEL_LOG's output: the kernel's memory init (the silence that ends at
+    SLUB's first line, where the boot CPU hands all free RAM to the page allocator and,
+    with init_on_free, zeroes it first), the mem auto-init policy it reported, and whether
+    this was the first boot the persistent journal knows of."""
+    out: dict = {}
+    section = None
+    boots = 0
+    previous = None
+    for line in text.splitlines():
+        if line.startswith("== "):
+            section = line[3:].strip()
+            continue
+        if section == "boots":
+            boots += bool(BOOT_ID.search(line))
+        elif section == "dmesg" and (m := KERNEL_LINE.match(line)):
+            # A continuation line carries no stamp of its own and is no point in time.
+            stamp, message = float(m.group(1)), m.group(2)
+            if message.startswith("mem auto-init: stack:") and "mem_auto_init" not in out:
+                out["mem_auto_init"] = message.removeprefix("mem auto-init: ")
+            if message.startswith("SLUB: HWalign") and previous is not None and "kernel_meminit_s" not in out:
+                out["kernel_meminit_s"] = round(stamp - previous, 3)
+            previous = stamp
+    if "journal=persistent" in text.splitlines() and boots:
+        out["first_boot"] = boots == 1
+    return out
+
+
+def boot_kernel_log(ctx, res) -> None:
+    """Write this boot's kernel log as evidence and record the kernel's memory init and
+    whether the run measured a first boot (fresh host pages, first-boot units), which the
+    whole boot's numbers depend on."""
+    text = ctx.vm.root_exec(BOOT_KERNEL_LOG, timeout=120)
+    ctx.write("R06-dmesg.txt", text)
+    kernel = parse_kernel_log(text)
+    res.metrics.update(kernel)
+    # A log that lost its early boot records nothing; the KPI's budget entry then reports
+    # it missing rather than comparing a guess.
+    if "kernel_meminit_s" in kernel:
+        ctx.record("boot.kernel_meminit_s", "s", [kernel["kernel_meminit_s"]],
+                   what="kernel log silence ending at SLUB's first line: the boot CPU freeing all RAM")
+    if "first_boot" in kernel:
+        ctx.record("boot.first_boot", "count", [int(kernel["first_boot"])],
+                   what="1 when this boot is the only one in the persistent journal")
 
 
 # Where a passing boot's time went, written on every run (the gate names it only on a

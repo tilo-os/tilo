@@ -548,6 +548,7 @@ inputs = ["crates/browser/tilo-browser-runtime/", "scripts/moq-browser/", "crate
 suites = [
   "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/here.test.mjs",
   "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
   "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
@@ -573,6 +574,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/router.test.mjs",
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/arrival.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs",
   "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",

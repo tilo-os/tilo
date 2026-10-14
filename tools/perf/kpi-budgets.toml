@@ -1317,6 +1317,18 @@ max = 20.0
 min_delta = 1.0
 source = "os/tests/boot_performance_gate.sh budget under KVM (KPI target: 10 s on the reference laptop)"
 
+# The kernel's memory init: the silence in the kernel log that ends at SLUB's first line,
+# while the boot CPU alone hands every free page to the page allocator. With the
+# init_on_free=1 karg it also zeroed all of RAM there (6.0 s of a 7.8 s kernel phase in a
+# 4.5 GiB guest), which is why that karg is not in 01-hardening.toml. Without it the pass
+# only links pages into the free lists; the ceiling is reported, not enforced, and the
+# regression rule flags zeroing coming back while min_delta keeps scheduler noise out.
+[kpi."boot.kernel_meminit_s"]
+unit = "s"
+max = 1.0
+min_delta = 0.5
+source = "vm-acceptance R06 R06-dmesg.txt, KVM guest; scales with guest RAM"
+
 # Userspace start to greetd active, and the greeter's sign-in request to a desktop that
 # has presented its first frame and answers its control socket. Boot to a usable
 # session is boot.to_greeter_s plus the person's typing plus session.sign_in_again.usable_s.
