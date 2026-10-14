@@ -293,5 +293,11 @@ test = true
 name = "relay_load"
 test = true
 
+# The original timed median-one-write assertion, run only in Perf / scheduled.
+# Examples with test = false are compiled, not executed, by normal test jobs.
+[[example]]
+name = "keystroke_writes"
+test = false
+
 [lints]
 workspace = true
