@@ -186,4 +186,6 @@ export interface HostAction {
   id: string;
   title: string;
   subtitle?: string;
+  /** What the action is about, shown as the source of a banner offering it. */
+  source?: 'identity' | 'devices';
 }

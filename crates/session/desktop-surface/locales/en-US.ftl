@@ -531,9 +531,12 @@ notification-center-at-oldest = At oldest
 history-severity-info = Information
 history-severity-warning = Warning
 history-severity-error = Error
-history-source-system = System
-history-notification-description = { $severity }. From { $source }. { $time }
-history-notification-description-body = { $severity }. From { $source }. { $time }. { $body }
+history-notification-description = { $severity }. { $time }
+history-notification-description-body = { $severity }. { $time }. { $body }
+history-notification-description-sourced = { $severity }. From { $source }. { $time }
+history-notification-description-sourced-body = { $severity }. From { $source }. { $time }. { $body }
+host-action-source-identity = Identity
+host-action-source-devices = Devices
 notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
         [yes] collapse
        *[no] expand
@@ -1004,7 +1007,6 @@ overview-panel-go-to = Go to
 overview-panel-new-workspace = New workspace
 browser-new-workspace-name = Workspace { $number }
 
-notification-center-read-description = Read complete notification
 notification-preview-hidden = Notification preview hidden
 activity-catch-up-goals = Workspace tasks · { $done } completed · { $unfinished } unfinished · updated { $when }
 activity-catch-up-review-description = Review this workspace's waiting tasks, goals and agent work. Reading activity does not resolve a task.

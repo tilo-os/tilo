@@ -2010,7 +2010,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
         );
         assert_eq!(
             tilo_desktop::notifications::accessible_description(&notification, now),
-            "Warning. From System. 3 min ago. Failed"
+            "Warning. 3 min ago. Failed"
         );
     }
 
@@ -2103,7 +2103,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
                 .as_deref()
                 .expect("every retained card exposes its hierarchy");
             assert!(
-                description.starts_with("Error. From System. ")
+                description.starts_with("Error. ")
                     && description.contains("Detailed recovery guidance")
                     && description.contains(&notification.body),
                 "retained cards must expose the same severity, age, source, and body hierarchy as the visual rows; got {description:?}"
@@ -2725,7 +2725,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
         .iter()
         .map(|n| n.id)
         .collect();
-    for key in [NamedKey::ArrowDown, NamedKey::ArrowRight, NamedKey::Enter] {
+    for key in [NamedKey::ArrowDown, NamedKey::Enter] {
         assert!(pump(&mut h, &key_pressed(Key::Named(key))));
     }
     assert!(h.host.notification_center.is_reading());
@@ -2756,8 +2756,8 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
         .host
         .quick_settings_semantic_rects()
         .into_iter()
-        .find(|(name, _)| name == "quick_settings_notification_read[0]")
-        .expect("read button remains after returning")
+        .find(|(name, _)| name == "quick_settings_notification_row[0]")
+        .expect("the row stays the way into the reader after returning")
         .1;
     assert!(pump(
         &mut h,
@@ -2827,7 +2827,7 @@ fn notification_reader_native_capture_and_resize_keep_the_last_line_reachable() 
         );
         h.chrome.borrow_mut().dismiss_notification(id);
         settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
-        for key in [NamedKey::Tab, NamedKey::Tab, NamedKey::Enter] {
+        for key in [NamedKey::Tab, NamedKey::Enter] {
             assert!(pump(&mut h, &key_pressed(Key::Named(key))));
         }
         assert!(h.host.notification_center.is_reading());

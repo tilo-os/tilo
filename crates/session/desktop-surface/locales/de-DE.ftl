@@ -549,9 +549,12 @@ notification-center-at-oldest = Älteste erreicht
 history-severity-info = Information
 history-severity-warning = Warnung
 history-severity-error = Fehler
-history-source-system = System
-history-notification-description = { $severity }. Von { $source }. { $time }
-history-notification-description-body = { $severity }. Von { $source }. { $time }. { $body }
+history-notification-description = { $severity }. { $time }
+history-notification-description-body = { $severity }. { $time }. { $body }
+history-notification-description-sourced = { $severity }. Von { $source }. { $time }
+history-notification-description-sourced-body = { $severity }. Von { $source }. { $time }. { $body }
+host-action-source-identity = Identität
+host-action-source-devices = Geräte
 notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
         [yes] Einklappen
        *[no] Ausklappen
@@ -1022,7 +1025,6 @@ overview-panel-go-to = Wechseln zu
 overview-panel-new-workspace = Neuer Arbeitsbereich
 browser-new-workspace-name = Arbeitsbereich { $number }
 
-notification-center-read-description = Vollständige Benachrichtigung lesen
 notification-preview-hidden = Benachrichtigungsvorschau verborgen
 
 activity-catch-up-goals = Aufgaben im Arbeitsbereich · { $done } abgeschlossen · { $unfinished } offen · aktualisiert { $when }

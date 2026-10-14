@@ -42,6 +42,26 @@ impl NotificationHost for Fixture {
     }
 }
 
+/// A background failure with a full explanation: the reader is
+/// where a notification too long for its row is read.
+const REPORT: &str = concat!(
+    "Last night's backup to “Backup Disk” stopped at 02:14, 62 % of the way through, ",
+    "when the disk disconnected.\n\n",
+    "Error: the disk went away while it was being written to (input/output error on ",
+    "Backup Disk, sdb1).\n\n",
+    "Nothing on this computer changed, and the earlier backups on the disk are intact. ",
+    "Saved: Documents, Pictures and Notes up to 02:14. Not yet saved: Music, Videos and ",
+    "anything changed since.\n\n",
+    "What to do\n",
+    "• Reconnect the disk. The next backup starts on its own and picks up where this one ",
+    "stopped, so nothing is copied twice.\n",
+    "• If it disconnects again, try another cable or port: a disk that loses power during ",
+    "a backup can take a minute to come back.\n",
+    "• Backups checks every file it copies, so an interrupted backup never leaves a ",
+    "damaged copy behind.\n\n",
+    "Last complete backup: yesterday at 02:00."
+);
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::i18n::I18nManager::init("en-US");
     let out = std::env::args().nth(1).map_or_else(
@@ -64,22 +84,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     for (name, theme, width, height) in variants {
         let host = Fixture::default();
-        // A background failure with a full explanation: the reader is
-        // where a notification too long for its row is read.
-        let body = concat!(
-            "Last night's backup stopped at 62 % because the backup disk was disconnected. ",
-            "Nothing on this computer was changed, and the earlier backups on the disk are intact.\n\n",
-            "What was saved: Documents, Pictures and the Notes library up to 02:14. ",
-            "What was not: Music, Videos and anything changed after 02:14.\n\n",
-            "To finish it, reconnect the disk. The next backup starts on its own and picks up ",
-            "where this one stopped, so nothing is copied twice. You can also start it now from Backups.\n\n",
-            "If the disk keeps disconnecting, try another cable or port: a disk that loses power during ",
-            "a backup can be slow to come back. Backups checks every file it copied, so an interrupted ",
-            "backup never leaves a damaged copy behind.\n\n",
-            "This reading page scrolls with the pointer, Page Down, End or accessible scrolling."
-        );
         host.0.borrow_mut().retain(
-            Notification::new("Backup couldn't finish", body)
+            Notification::new("Backup couldn't finish", REPORT)
                 .with_app_name("Backups")
                 .with_severity(NotificationSeverity::Error),
         );
@@ -87,11 +93,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut text = TextRenderer::new();
         let renderer = &mut OffscreenRenderer::new(width, height);
         for state in [
-            "read-focused",
+            "row-focused",
             "reading-start",
             "reading-end",
             "back-focused",
             "resized",
+            "pointer-opened",
         ] {
             let inset = 16.0;
             let panel_width = if state == "resized" {
@@ -102,8 +109,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let panel = Rect::new(inset, inset, inset + panel_width, f64::from(height) - inset);
             let layout = CenterLayout::new(panel, CenterLayout::metrics(&theme, &mut text));
             match state {
-                "read-focused" => {
-                    center.focus_accessibility_path(&host, &[0, 0, 1]);
+                "row-focused" => {
+                    center.focus_accessibility_path(&host, &[0, 0]);
                 }
                 "reading-start" => {
                     center.key(&host, &layout, &Key::Named(NamedKey::Enter));
@@ -113,6 +120,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "back-focused" => {
                     center.focus_accessibility_path(&host, &[0]);
+                }
+                "pointer-opened" => {
+                    // Opened by the pointer: no focus ring until the
+                    // keyboard moves focus.
+                    center = NotificationCenter::new();
+                    center.click(&host, &layout, layout.row(0).center());
                 }
                 _ => {}
             }
