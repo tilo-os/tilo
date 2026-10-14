@@ -387,6 +387,9 @@ jobs:
       - name: Build tilo-app
         run: bash tools/ci/measure.sh "SDK release web tool build" -- cargo build --locked -p tilo-app-cli --bin tilo-app
       - name: Release desktop bundle within its size budget
+        env:
+          # Match the general runner CPU quota; module optimization stays serial.
+          BINARYEN_CORES: "6"
         run: |
           bash tools/ci/measure.sh "SDK release desktop bundle build" -- \
             target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
