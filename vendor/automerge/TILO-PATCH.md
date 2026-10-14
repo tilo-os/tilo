@@ -276,3 +276,15 @@ documents, heads and patches with crates.io `automerge` 0.12.0 over
 three-actor histories typed at scattered places and checks that what a
 remote letter costs does not grow with such a history. Upstream `main`
 looks ops up the same way; the patch is upstreamable.
+
+# Tilo change: the fork's own tests run in CI
+
+The workspace builds this crate as a path dependency and never runs its
+tests, so `tools/ci/test-vendored-crates.sh` runs them: check.yml's
+`vendored` job whenever this directory or `vendor/automerge-test` changes,
+and the nightly. The manifest therefore declares its own `[workspace]` (so
+its tests run from this directory however the checkout is nested) and
+restores upstream's `automerge-test` dev-dependency, which crates.io
+publication drops and `tests/test.rs` needs, from `vendor/automerge-test`
+(see its `PROVENANCE.md`). The test run starts from a copy of the workspace
+lock, so the fork is tested at the dependency versions Tilo ships.

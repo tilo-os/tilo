@@ -38,6 +38,10 @@
 # whose read CI never runs, with the reason.
 
 [[covered]]
+suite = "os/tests/image_size_budget.py"
+by = "os/tests/test_image_size_budget.py"
+
+[[covered]]
 suite = "tools/test-assets.py"
 by = "tools/tests/test_test_assets.py"
 
@@ -74,16 +78,20 @@ suites = ["tools/ci/test_runtime_dylib_lazy_link.py"]
 [[group]]
 name = "os"
 # os/scripts/oci-rechunk.py reads OCI images through tools/perf/image_size.py.
-inputs = ["os/", "tools/perf/image_size.py"]
+# test_boot_unit_ordering.py holds the extension activation unit's conditions
+# to the helper's own early return.
+inputs = ["os/", "tools/perf/image_size.py", "crates/system/extension-helper/src/machine.rs"]
 suites = [
   "os/dev/test-assemble-app-runtime.py",
   "os/dev/test-export-sdk-compiler.py",
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
   "os/kernel/tests/test-cc-wrapper.sh",
+  "os/kernel/tests/test_preprocessing_wrapper.py",
   "os/kernel/tests/test-signing-identity.py",
   "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
+  "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",
   "os/tests/board_release_promotion.py",
   "os/tests/test_board_successor.py",
@@ -181,6 +189,9 @@ suites = [
   "os/tests/test_oci_image_diff.py",
   "os/tests/test_oci_rechunk.py",
   "os/tests/test_pack_apps_cleanup.py",
+  "os/tests/test_shipped_runtimes.py",
+  "os/tests/test_dev_tools_sysext.py",
+  "os/tests/test_image_build_script_copies.py",
   "os/tests/test_prepare_windows_direct_source.py",
   "os/tests/test_read_fat32_efi.py",
   "os/tests/test_private_disk_image.py",
@@ -336,15 +347,26 @@ inputs = ["os/", "crates/session/shell/src/shell/remote_capture/"]
 suites = ["os/tests/remote_capture_image_contract.sh"]
 
 [[group]]
+name = "image-size"
+inputs = [
+  "os/image-size-budget.toml", "os/tests/image_size_budget.py", "tools/perf/image_size.py",
+  ".forgejo/workflows/build-image.yml",
+]
+suites = ["os/tests/test_image_size_budget.py"]
+
+[[group]]
 name = "windows"
 inputs = [
   "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/windows/",
   "crates/session/shell/src/shell/windows_compat.rs",
+  # test_windows_compat_sysext.py: the helper that installs the image.
+  "crates/system/extension-helper/src/",
 ]
 suites = [
   "os/tests/windows_compat_stack.sh",
   "os/tests/windows_presentation_capabilities.sh",
   "os/tests/windows_vm_isolation.sh",
+  "os/tests/test_windows_compat_sysext.py",
 ]
 
 [[group]]
@@ -424,6 +446,7 @@ suites = [
   "scripts/vm-acceptance/test_component_replacement.py",
   "scripts/vm-acceptance/test_lock_guard.py",
   "scripts/vm-acceptance/test_dialog_guard.py",
+  "scripts/vm-acceptance/test_device_fidelity.py",
   "scripts/vm-acceptance/test_session_restart.py",
   "scripts/vm-acceptance/test_ui.py",
   "scripts/vm-acceptance/test_vm_actions.py",
@@ -444,6 +467,8 @@ inputs = [
   "crates/session/shell/src/shell/search/providers/files.rs",
   # ... and the hosting-load KPI ids equal to the relay load bench's.
   "crates/hosting/tilo-relay/examples/relay_load/main.rs",
+  # ... and the room-load report fields equal to the room load bench's.
+  "crates/dev/room-load/src/",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   "crates/session/shell/examples/redraw_bench.rs",
@@ -486,6 +511,7 @@ suites = [
   "tools/perf/test_compare.py",
   "tools/perf/test_image_size.py",
   "tools/perf/test_record.py",
+  "tools/perf/test_room_capacity.py",
   "tools/perf/test_runtime_size_ratchet.py",
   "tools/perf/test_store.py",
   "tools/perf/test_tapp_size_ratchet.py",
@@ -556,6 +582,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/workspace-actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs",
@@ -577,6 +604,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/router.test.mjs",
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",
   "crates/browser/tilo-browser-runtime/web/arrival.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs",
@@ -681,6 +709,27 @@ inputs = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
 readers = ["crates/system/esp-write/tests/esp_write.rs"]
 
 [[cargo]]
+package = "tilo-extension"
+# The extension helper's tests copy the shipped catalogue into their fixture
+# root and check the units, polkit rule, NetworkManager hook, installer seed,
+# keys and image wiring that start it or that it trusts.
+inputs = [
+  "os/usr/share/tilo/system-extensions/sysext.d/*.json",
+  "os/etc/polkit-1/rules.d/49-tilo-extension.rules",
+  "os/usr/lib/systemd/system/tilo-extension@.service",
+  "os/usr/lib/systemd/system/tilo-extension-activate.service",
+  "os/usr/lib/systemd/system/tilo-extension-refresh.timer",
+  "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf",
+  "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension",
+  "os/usr/libexec/tilo-install",
+  "keys/extensions.pub",
+  "keys/cosign.pub",
+  "os/Containerfile",
+  "os/components.toml",
+]
+readers = ["crates/system/extension-helper/tests/support/mod.rs"]
+
+[[cargo]]
 package = "greeter"
 # The greeter offers exactly the sessions the image ships.
 inputs = ["os/usr/share/wayland-sessions/*.desktop"]
@@ -698,8 +747,11 @@ inputs = [
   "scripts/headless-examples/_control.py",
   # The NetHost grant vectors apps must answer like environments do.
   "crates/collab/collab-types/tests/net_host_vectors.txt",
+  # The session script that starts the compositor without huge pages.
+  "os/usr/libexec/tilo-session",
 ]
 readers = [
+  "crates/packaging/launcher/src/hardening.rs",
   "crates/packaging/launcher/src/manifest.rs",
   "crates/packaging/launcher/src/netgate.rs",
   "crates/packaging/launcher/src/seccomp.rs",
@@ -720,8 +772,8 @@ readers = ["crates/dev/tilo-vm/src/build.rs"]
 
 [[cargo]]
 package = "tilo-vm-protocol"
-inputs = ["os/components.toml"]
-readers = ["crates/dev/tilo-vm-protocol/src/manifest.rs"]
+inputs = ["os/components.toml", "os/hardware/profiles/lenovo-83ed/input/*.json"]
+readers = ["crates/dev/tilo-vm-protocol/src/manifest.rs", "crates/dev/tilo-vm-protocol/src/profile.rs"]
 
 [[cargo]]
 package = "tilo-vmd"
@@ -735,6 +787,12 @@ readers = [
   "crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs",
   "crates/dev/tilo-vmd/src/daemon/userspace.rs",
 ]
+
+[[cargo]]
+package = "app-cli"
+# The canonical downloader proves its staging path against the installed host unit.
+inputs = ["crates/packaging/app-host/systemd/tilo-app-host.service"]
+readers = ["crates/packaging/app-cli/src/install.rs"]
 
 [[cargo]]
 package = "tilo-app-cli"
@@ -862,8 +920,16 @@ readers = ["crates/system/system-extension/src/bin/tilo-system-extension-manager
 
 [[cargo]]
 package = "compat-service"
-inputs = ["os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json"]
+inputs = [
+  "os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json",
+  "os/Containerfile",
+]
 readers = ["crates/windows/compat-service/src/plan.rs"]
+
+[[cargo]]
+package = "os-actions"
+inputs = ["os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json"]
+readers = ["crates/system/os-actions/src/windows_compat.rs"]
 
 [[cargo]]
 package = "legacy-vm"
@@ -1613,3 +1679,9 @@ by = "tools/tests/test_android_fixture_resources.py"
 [[unrequired]]
 suite = "os/tests/flatpak_default_initialization_test.py"
 reason = "requires native Flatpak, GPG and bubblewrap user namespaces; the digest-pinned ci-fast image has no Flatpak; run explicitly with python3 os/tests/flatpak_default_initialization_test.py, failing when prerequisites are absent"
+
+[[cargo]]
+package = "install"
+# Real signed runtime installation is checked against its broker service grants.
+inputs = ["crates/packaging/app-host/systemd/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-app-host.service"]
+readers = ["crates/packaging/install/tests/runtime_package.rs"]

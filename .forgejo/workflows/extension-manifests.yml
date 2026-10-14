@@ -209,6 +209,34 @@ jobs:
             [[ -z $EXPECTED_CONTENT_SHA256 ]] || qualification=(--expected-content-sha256 "$EXPECTED_CONTENT_SHA256")
             python3 tools/extensions/resolve.py check "$OUT/$id.json" "${qualification[@]}"
           done
+      # Prebuilt, Tilo-built sysext images are not resolved from upstream
+      # repositories: build-image.yml publishes the image and a descriptor per
+      # commit (publish-windows-compat); this pins them for this image's base.
+      - name: Pin the Windows compatibility system extension for this image
+        if: ${{ env.EXPECTED_CONTENT_SHA256 == '' }}
+        env:
+          PACKAGE_BASE: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
+        run: |
+          set -euo pipefail
+          base=${PACKAGE_BASE%/}
+          revision=$(podman image inspect "$IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+          [[ $revision =~ ^[0-9a-f]{40}$ ]] || { echo "::notice::$IMAGE names no source revision; no Windows compatibility system extension"; exit 0; }
+          descriptor=$(mktemp)
+          status=$(curl --silent --show-error --retry 3 --output "$descriptor" --write-out '%{http_code}' \
+            "$base/tilo-windows-compat-image/$ARCH-$revision/descriptor.json")
+          if [[ $status == 404 ]]; then
+            echo "::notice::no Windows compatibility system extension was published for $revision"
+            exit 0
+          fi
+          [[ $status == 200 ]] || { echo "::error::reading the descriptor answered HTTP $status"; exit 1; }
+          fingerprint=$(podman run --rm --security-opt label=disable \
+            --volume "$PWD/tools/extensions:/extensions:ro" \
+            --entrypoint python3 "$IMAGE" /extensions/resolve.py fingerprint)
+          sha256=$(jq -er .sha256 "$descriptor")
+          python3 tools/extensions/sysext_image.py manifest --id windows-compat --descriptor "$descriptor" \
+            --url "$base/tilo-windows-compat-image/$ARCH-$sha256/tilo-windows-compat.raw" \
+            --fingerprint "$fingerprint" --image "$IMAGE" --arch "$ARCH" --out "$OUT/windows-compat.json"
+          python3 tools/extensions/resolve.py check "$OUT/windows-compat.json"
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: extension-manifests-${{ matrix.key }}

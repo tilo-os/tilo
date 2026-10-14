@@ -408,6 +408,12 @@ the page.
      before reconnects. A link naming another room on that host than the one
      the person was admitted to reads as no access. This is an admission policy of the host, not a
      separate page: a web host offers such a workspace as its home (§8).
+   - A host this browser set up for its person (§6.3), or joined as them
+     through an invitation, is reconnected to with the root the page holds
+     (`reconnect`, `hostToReconnect` in `web/workspaces.mjs`): on a machine
+     of their own the host first admits this device as the owner of the
+     room the link names (`workspaces.enter`), then the page connects to
+     it. The host decides; a refusal reads as no access, like the rest.
    - Otherwise the page says the person has no access and that the person
      who shared the link can invite them. It never says whether the record or
      resource exists: as the action door does with `Unknown`, "not there" and
@@ -481,6 +487,30 @@ open to correct and try again. A machine that took the certificate is
 remembered as a host the person owns (`keepOwnedHost` in
 `web/workspaces.mjs`): like a host they joined, it keeps their envelope and
 profile.
+
+### 6.4 Workspaces and invitations from the desktop
+
+`web/workspace-actions.mjs` adds the desktop's host actions for workspaces
+on the person's machines, each the host's decision:
+
+- **"New workspace"** (`new-workspace`), on a desktop whose host serves the
+  person it is (its certificate is their root's), or on their own desktop
+  once this browser set up a machine for them (also offered right after
+  setting one up). The host creates the room and admits this device as its
+  owner (`workspaces.create`, `enter`), and the page opens the room's link
+  (another room is another admission, so the page loads again).
+- **"Invite someone"** (`invite-someone`), in a room, and the desktop's own
+  Invite: `createInvitation` as Editor, presented as the room's link with
+  its `invite` secret, to select or copy (inside the person's click, as
+  Safari's clipboard requires) and send. Opening it is §6.1's `invite`.
+- **"Waiting to join"** (`waiting-to-join`), for the room's owner: the
+  people who asked, each let in or turned away (`membership.requests`,
+  `admit`, `decline`). While the owner's page is in the room it asks every
+  few seconds, and offers each new request once on a banner that lets the
+  person in.
+
+A person let in through an invitation is remembered for that host
+(`keepJoinedHost`), so their next visit reconnects (§6.1).
 
 ## 7. Native handling
 
@@ -576,7 +606,10 @@ workspace the home; without them a bare visit opens the person's own
 desktop. `TILO_WEB_ABOUT_NOTIFY`, `TILO_WEB_ABOUT_SOURCE` and
 `TILO_WEB_ABOUT_COMMUNITY` (https URLs) become `about`, the links the
 About sheet behind the top bar's Tilo mark offers; an unset one is not
-offered. The bundle lives under `v/<content hash>/` and is cached as
+offered. `TILO_WEB_EMBEDDER` (an https origin, optional) names the one
+site that may frame the page as a live preview: the page sends
+`frame-ancestors 'self'` plus that origin, and an embed reports its state
+to it alone; unset, only the page itself frames it. The bundle lives under `v/<content hash>/` and is cached as
 immutable; only the entry pages, `entry.json` and `version.json`
 revalidate. An image serves one version, so a page opened before a deploy
 finds its version's app modules gone the first time it opens an app it had
@@ -591,7 +624,8 @@ homepage's live preview): a workspace whose host has an admission door is
 watched read-only as the host's spectator person
 (`POST <admission>spectate`, a device key in page memory only), so
 scrolling past mints no member; the first click, tap or key press reloads
-the page to join as the person. The embedding page hears
+the page to join as the person. The embedding page, when it is the web
+host's `embedder`, hears
 `{type: 'tilo-embed', state}` (`watching`, `joined`, `full`, `unavailable`, or `unsupported` for a browser without WebGPU, which is told which browsers draw Tilo before any seat is taken).
 
 The web app's entry serves generic static Open Graph tags; unfurlers never

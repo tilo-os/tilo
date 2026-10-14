@@ -313,6 +313,18 @@ files = [
   { from = "tilo-model-gateway", to = "/usr/bin/tilo-model-gateway", mode = "0755" },
 ]
 
+[[component]]
+name = "secret-service"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-secret-service"]
+bins = ["tilo-secret-service"]
+user_units = ["tilo-secret-service.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-secret-service", to = "/usr/bin/tilo-secret-service", mode = "0755" },
+]
+
 # The shared runtime and every packaged thin app. One component because Rust
 # dylib symbols carry crate hashes: a thin app only runs against the
 # libruntime_dylib.so built in the same Cargo graph (os/scripts/build-thin-apps.sh).
@@ -486,6 +498,20 @@ bins = ["tilo-esp-write"]
 layer = "recovery-files"
 files = [
   { from = "tilo-esp-write", to = "/usr/libexec/tilo-esp-write", mode = "0755" },
+]
+
+# Downloaded, Tilo-signed system extensions: tilo-extension-activate.service at
+# boot, tilo-extension@VERB:ID.service on demand, the refresh timer and the
+# NetworkManager hook all start it; a swap takes effect at its next start.
+[[component]]
+name = "extension"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-extension"]
+bins = ["tilo-extension"]
+layer = "extension-files"
+files = [
+  { from = "tilo-extension", to = "/usr/libexec/tilo-extension", mode = "0755" },
 ]
 
 [[component]]

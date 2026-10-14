@@ -260,6 +260,9 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     if let Some(contract) = dedicated_contract(id) {
         return contract;
     }
+    if let Some(contract) = super::system_settings::contract_for(id) {
+        return contract;
+    }
     let mut contract = ActionContract::default();
     match id {
         "shortcut-help.toggle" | "overview.toggle" => {
@@ -1141,7 +1144,7 @@ fn persist_appearance(
 
 /// Dark or light mode, keeping whichever theme the person chose for it.
 /// Choosing a mode leaves high contrast.
-fn set_mode(st: &mut ChromeState, action: &str, mode: &str) -> Result<(), ActionError> {
+pub(super) fn set_mode(st: &mut ChromeState, action: &str, mode: &str) -> Result<(), ActionError> {
     use settings_store::appearance::{HIGH_CONTRAST, MODE};
     let write = settings_store::SectionWrite::new()
         .set(&MODE, &Some(mode.to_string()))
@@ -1935,11 +1938,11 @@ impl Action {
             "search-action-tab-new-terminal-here",
             "search-action-tab-new-terminal-here-subtitle",
             |st, _| {
-                crate::shell::window_actions::open_terminal(
+                crate::shell::window_actions::new_terminal(
                     st,
                     crate::shell::window_actions::Destination::Here,
-                );
-                Ok(())
+                )
+                .map_err(|error| ActionError::Refused(error.to_string()))
             },
         ),
         chrome(
@@ -1947,11 +1950,11 @@ impl Action {
             "search-action-window-new-terminal",
             "search-action-window-new-terminal-subtitle",
             |st, _| {
-                crate::shell::window_actions::open_terminal(
+                crate::shell::window_actions::new_terminal(
                     st,
                     crate::shell::window_actions::Destination::Beside,
-                );
-                Ok(())
+                )
+                .map_err(|error| ActionError::Refused(error.to_string()))
             },
         ),
         chrome(

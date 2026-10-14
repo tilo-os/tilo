@@ -268,7 +268,7 @@ impl Compositor {
         // short — `/run/user/$UID` also keeps a stray socket out of the repo.
         let runtime_dir = PathBuf::from(format!(
             "/run/user/{}/tilo-clip-{}-{}",
-            unsafe { libc::getuid() },
+            rustix::process::getuid().as_raw(),
             std::process::id(),
             next_id(),
         ));
@@ -1929,6 +1929,17 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         );
         assert_eq!(clipboard.publication_progress()["acknowledged"], 2);
         assert_eq!(clipboard.publication_progress()["unfocused"], 0);
+        // Publication is queued to the app clipboard worker. Keep its seat
+        // focused until the actual protocol selection advertises the image;
+        // opening the sink first can revoke its copy serial before publication.
+        app.wait_until(
+            |s| {
+                s.clipboard_offer_mimes
+                    .iter()
+                    .any(|mime| mime == "image/png")
+            },
+            "the app clipboard worker never published its PNG selection",
+        );
 
         let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.app-sink");
         sink.assert_is_tilo_compositor();
@@ -5664,7 +5675,7 @@ fn group_for_tab_title(
 fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
     let home = PathBuf::from(format!(
         "/run/user/{}/tilo-dnd-home-{}-{}",
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         std::process::id(),
         next_id(),
     ));
@@ -5891,7 +5902,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
 
     let home = PathBuf::from(format!(
         "/run/user/{}/tilo-dnd-wp-{}-{}",
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         std::process::id(),
         next_id(),
     ));
@@ -6773,7 +6784,6 @@ fn a_copy_with_an_empty_internal_format_survives_the_client_disconnecting() {
 /// Closing the focused window gives keyboard focus back to the window that
 /// had it before: the next keystrokes must go somewhere.
 #[test]
-#[ignore = "known gap: DesktopTree::remove_tab (desktop-model/src/topology.rs) activates the tab now at the closed tab's index, not the one that was active before it opened, so a window that opened beside a shell tab hands focus to that tab"]
 fn closing_a_wayland_window_returns_keyboard_focus_to_the_previous_one() {
     let compositor = Compositor::start();
     let mut a = TestClient::new(compositor.connect(), "org.tilo.test.focus-return-a");
@@ -6790,7 +6800,6 @@ fn closing_a_wayland_window_returns_keyboard_focus_to_the_previous_one() {
 
 /// Same, with an X11 window (through satellite) as the one that closes.
 #[test]
-#[ignore = "known gap: DesktopTree::remove_tab (desktop-model/src/topology.rs) activates the tab now at the closed tab's index, not the one that was active before it opened, so a window that opened beside a shell tab hands focus to that tab"]
 fn closing_an_x11_window_returns_keyboard_focus_to_the_previous_wayland_window() {
     assert!(
         Path::new("/usr/bin/xwayland-satellite").is_file(),

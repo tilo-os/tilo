@@ -132,8 +132,7 @@ fn check_private(file: &File, path: &Path) -> Result<(), SecretError> {
     let meta = file
         .metadata()
         .map_err(|error| failed("reading the secret store", error))?;
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     if !meta.is_file()
         || meta.uid() != uid
         || meta.mode() & 0o077 != 0

@@ -28,15 +28,25 @@ pub(crate) struct PlatformSpecificEventLoopAttributes {}
 impl<T> EventLoop<T> {
     pub(crate) fn new(_: &PlatformSpecificEventLoopAttributes) -> Result<Self, EventLoopError> {
         let (user_event_sender, user_event_receiver) = mpsc::channel();
-        let elw = RootActiveEventLoop { p: ActiveEventLoop::new(), _marker: PhantomData };
-        Ok(EventLoop { elw, user_event_sender, user_event_receiver })
+        let elw = RootActiveEventLoop {
+            p: ActiveEventLoop::new(),
+            _marker: PhantomData,
+        };
+        Ok(EventLoop {
+            elw,
+            user_event_sender,
+            user_event_receiver,
+        })
     }
 
     pub fn run<F>(self, mut event_handler: F) -> !
     where
         F: FnMut(Event<T>, &RootActiveEventLoop),
     {
-        let target = RootActiveEventLoop { p: self.elw.p.clone(), _marker: PhantomData };
+        let target = RootActiveEventLoop {
+            p: self.elw.p.clone(),
+            _marker: PhantomData,
+        };
 
         // SAFETY: Don't use `move` to make sure we leak the `event_handler` and `target`.
         let handler: Box<dyn FnMut(Event<()>)> = Box::new(|event| {
@@ -74,7 +84,10 @@ impl<T> EventLoop<T> {
     where
         F: 'static + FnMut(Event<T>, &RootActiveEventLoop),
     {
-        let target = RootActiveEventLoop { p: self.elw.p.clone(), _marker: PhantomData };
+        let target = RootActiveEventLoop {
+            p: self.elw.p.clone(),
+            _marker: PhantomData,
+        };
 
         self.elw.p.run(
             Box::new(move |event| {

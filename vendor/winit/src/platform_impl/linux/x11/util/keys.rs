@@ -15,7 +15,11 @@ pub struct KeymapIter<'a> {
 
 impl Keymap {
     pub fn iter(&self) -> KeymapIter<'_> {
-        KeymapIter { iter: self.keys.iter().enumerate(), index: 0, item: None }
+        KeymapIter {
+            iter: self.keys.iter().enumerate(),
+            index: 0,
+            item: None,
+        }
     }
 }
 

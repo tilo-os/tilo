@@ -19,8 +19,8 @@ use tilo_peer_state::join::{
     verify_membership_proof,
 };
 use tilo_relay_session::rooms::{
-    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
-    RemoveMemberRequest, SetMemberRoleRequest,
+    CancelInvitationRequest, GrantAppAuthorshipRequest, IssueInvitationRequest, IssuedInvitation,
+    PendingInvitation, RemoveMemberRequest, SetMemberRoleRequest,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -57,15 +57,6 @@ const MAX_PENDING_CHALLENGES: usize = 4096;
 const CHALLENGE_LIFETIME_NS: u64 = 60_000_000_000;
 /// The longest an invitation may stay redeemable.
 const MAX_INVITATION_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
-
-/// Delegate one application's workspace authorship, with an idempotency key.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GrantAppAuthorshipRequest {
-    /// Caller-chosen request identifier.
-    pub request_id: [u8; 32],
-    /// The exact registered application identifier.
-    pub app: String,
-}
 
 /// A committed governance change.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

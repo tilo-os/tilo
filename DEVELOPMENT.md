@@ -1071,8 +1071,8 @@ installer registers to open the installed executable. This route launches a
 normal Clocks window; it does not yet focus an already-running instance. The
 registered command ignores URI contents rather than forwarding them as arguments.
 
-For device verification, build `cargo build --locked -p ui-examples --example windows-host
---features notifications`. The helper accepts `history so.tilo.clocks` to inspect
+For device verification, build `cargo build --locked -p ui-examples --example windows-host`.
+The helper accepts `history so.tilo.clocks` to inspect
 only Clocks' notifications and `remove so.tilo.clocks TAG` to dismiss one test
 notification. `show ID TAG TITLE BODY` exercises the production SDK API; Windows
 may reject a settings query before the app's first notification is submitted.
@@ -1340,6 +1340,13 @@ golden='(package(tilo-ui) and test(typography_visual_regression::)) or (package(
 tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "not ($golden)"
 tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "$golden"
 ```
+
+The fixtures it caches live in `~/.cache/tilo/test-env` (`TILO_TEST_CACHE_DIR`),
+one set per generator revision. On Tilo OS your `tilo-cache-gc.timer` removes a
+set nothing has read for 14 days, never one a running test holds the lock of;
+`tilo os clean` does it now, `tilo os status` says what went, and
+`~/.config/tilo/cache-gc.toml` changes the policy (see
+`/etc/tilo/cache-gc.toml`).
 
 ### Tests and the process environment
 

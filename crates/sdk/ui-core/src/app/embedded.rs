@@ -207,6 +207,8 @@ impl EmbeddedApp {
     /// The root widget of the app's component: what an app's own tests
     /// reach into, as they would in the app's window.
     pub fn component_root_mut(&mut self) -> Option<&mut dyn Widget> {
+        // Whatever the caller does to it is no change the tracking sees.
+        self.app.mark_semantic_tree_stale();
         let root = self
             .app
             .root_widget
@@ -248,6 +250,7 @@ impl EmbeddedApp {
     }
 
     fn app_widget_mut(&mut self) -> Option<&mut dyn AppWidget> {
+        self.app.mark_semantic_tree_stale();
         self.app
             .root_widget
             .as_any_mut()?
@@ -451,7 +454,14 @@ impl Widget for EmbeddedApp {
             .root_widget
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= crate::time::now());
-        if !due {
+        // A wake the app raised from another thread (a question put to its
+        // action directory, an invocation, a collaborator's edit) is serviced
+        // here too, not only by the next frame: the host may park without
+        // painting it, and an answer owed to a waiting caller would then wait
+        // for something unrelated. The wake stays set, so a frame the host
+        // does paint still draws what this pass changed.
+        let woken = self.woken.load(std::sync::atomic::Ordering::Acquire);
+        if !due && !woken {
             return false;
         }
         self.app.pump_hosted_model();

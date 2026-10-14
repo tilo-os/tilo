@@ -324,6 +324,9 @@ pub struct TileHost {
     /// further right instead.
     content_shift: f64,
     pub focused: bool,
+    /// Last pointer position, so a button press (which carries none) can be
+    /// attributed to this tile or to a neighbour.
+    pointer: Option<Point>,
     /// Adjacent canvas windows own exactly their layout rectangle, including
     /// their border; neither outlines nor shadows may spill into a sibling.
     flush_edges: bool,
@@ -555,6 +558,7 @@ impl TileHost {
             rect: Rect::ZERO,
             content_shift: 0.0,
             focused: false,
+            pointer: None,
             flush_edges: false,
             spawned_at: None,
             opening_name: String::new(),
@@ -956,6 +960,22 @@ impl TileHost {
         let previous = self.history_lifetime.control_domain.clone();
         self.history_lifetime = crate::history_mode::owner::LegacyHistoryLifetime::new();
         self.custody_renewal = Some(self.history_lifetime.control_domain.renewal_from(&previous));
+    }
+
+    /// Whether `event` is addressed to this tile: keys and IME go to the
+    /// focused tile, pointer events to the tile under the pointer.
+    fn event_is_for_this_tile(&self, event: &WindowEvent, scale_factor: f64) -> bool {
+        match event {
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => self.focused,
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. } => self.pointer.is_some_and(|p| self.rect.contains(p)),
+            WindowEvent::Touch(touch) => self.rect.contains(Point::new(
+                touch.location.x / scale_factor,
+                touch.location.y / scale_factor,
+            )),
+            _ => false,
+        }
     }
 
     /// Typing may reach a live app that has no tab record yet. It must not
@@ -2303,6 +2323,12 @@ impl Widget for TileHost {
         if *ctx.handled {
             return;
         }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Some(Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            ));
+        }
         let typing = matches!(
             event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
@@ -2316,13 +2342,15 @@ impl Widget for TileHost {
             // record was never bound. A renewed or closed owner must not.
             None
         } else {
-            *ctx.handled = true;
+            // Refuse what is meant for this tile; leave the rest for its
+            // neighbours (a loading window must not freeze the ones beside it).
+            *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
         };
         self.install_declared_history();
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         if self.record_error.is_some() && !(typing && self.typing_may_bypass_missing_record()) {
-            *ctx.handled = true;
+            *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
         }
         let TileContent::App(app) = &mut self.content else {
@@ -2750,7 +2778,10 @@ impl TileHost {
         rect: Rect,
     ) {
         let (edge_width, edge_color) = if self.focused {
-            (FOCUS_EDGE_STROKE_WIDTH, theme.tokens.colors.border_focus)
+            (
+                FOCUS_EDGE_STROKE_WIDTH,
+                theme.tokens.colors.window_edge_focused(),
+            )
         } else {
             (EDGE_STROKE_WIDTH, theme.window_edge())
         };
@@ -3226,7 +3257,12 @@ mod tests {
 
             for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
                 let name = theme.name.clone();
-                let focus = theme.tokens.colors.border_focus;
+                let focus = theme.tokens.colors.window_edge_focused();
+                assert_ne!(
+                    focus.to_rgba8().to_u32(),
+                    theme.tokens.colors.intent.you.to_rgba8().to_u32(),
+                    "{name}: window focus is neutral, not your colour"
+                );
                 let (fr, fg, fb) = {
                     let rgba = focus.to_rgba8();
                     (rgba.r, rgba.g, rgba.b)
@@ -3492,6 +3528,52 @@ mod tests {
                 .send(&mut host, &WindowEvent::Focused(true));
             assert_eq!(calls.get(), 0);
         }
+    }
+
+    #[test]
+    fn an_unresolved_tile_only_refuses_events_meant_for_it() {
+        use winit::event::ElementState;
+        use winit::keyboard::Key;
+        // A tile with no record (still restoring, or starting) refuses its
+        // own input, but must not swallow the pointer over a neighbour or keys
+        // for the focused window beside it.
+        let mut host = TileHost::new(TileContent::Stub {
+            kind: AppKind::Editor,
+            label: String::new(),
+        });
+        host.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        // A closed document owner leaves the record unresolvable.
+        host.history_lifetime.active.set(false);
+        let mut taffy = TaffyTree::new();
+        let mut node_map = std::collections::HashMap::new();
+        let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
+        let send = |host: &mut TileHost, event: &WindowEvent| {
+            crate::testing::Dispatch::new()
+                .layout(&taffy, node)
+                .send(host, event)
+                .handled
+        };
+        let key = crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            Key::Character("a".into()),
+            None,
+            ElementState::Pressed,
+        ));
+        // Pointer outside: passes through, and so does the press after it.
+        assert!(!send(
+            &mut host,
+            &crate::synthetic_input::cursor_moved(250.0, 50.0)
+        ));
+        assert!(!send(&mut host, &crate::synthetic_input::mouse_press()));
+        // Pointer inside: refused.
+        assert!(send(
+            &mut host,
+            &crate::synthetic_input::cursor_moved(50.0, 50.0)
+        ));
+        assert!(send(&mut host, &crate::synthetic_input::mouse_press()));
+        // Keys: refused only while this tile is the focused one.
+        assert!(!send(&mut host, &key));
+        host.set_focused(true);
+        assert!(send(&mut host, &key));
     }
 
     fn tab_checkout(id: u64) -> RecordCheckout {

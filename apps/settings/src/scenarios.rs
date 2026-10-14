@@ -221,7 +221,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         None => Staged::Pane(Category::Appearance),
         Some(DEVICE_DISPLAYS) => Staged::Pane(Category::Displays),
         Some("keyboard-single" | "keyboard-many" | "keyboard-touch" | "keyboard-osk") => {
-            Staged::Pane(Category::MouseKeyboard)
+            Staged::Pane(Category::Keyboard)
         }
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),

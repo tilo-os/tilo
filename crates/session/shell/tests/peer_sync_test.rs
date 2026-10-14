@@ -513,6 +513,7 @@ fn room_push_tree(room: RoomId, salt: u16) -> WorkspaceTree {
             active_tab: id(100),
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     });
     a.desktop.active = workspace.id;
@@ -522,12 +523,22 @@ fn room_push_tree(room: RoomId, salt: u16) -> WorkspaceTree {
     a
 }
 
+fn report_tab_push_work(samples: usize, work: Vec<(usize, usize)>) {
+    let (batches, changes) = work.into_iter().fold((0_usize, 0_usize), |sum, counts| {
+        (
+            sum.0.checked_add(counts.0).expect("batch total fits"),
+            sum.1.checked_add(counts.1).expect("change total fits"),
+        )
+    });
+    eprintln!("pushed-tab-work samples={samples} batches={batches} changes={changes}");
+}
+
 /// Two devices share one room over real Iroh. Device A opens, moves and
 /// closes tabs; each change is pushed the way the shell pushes it (the room
-/// document's changes since what A last announced, as one `SyncResp`) and is
-/// timed from A's mutation to B's tree holding the same tab order.
+/// document's changes since what A last announced, as one `SyncResp`). Each
+/// mutation must converge with one incremental change in one received batch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget() {
+async fn a_pushed_tab_change_reaches_the_other_device_in_one_incremental_batch() {
     const SALT_A: u16 = 0xA0A0;
     const SALT_B: u16 = 0xB0B0;
     const SAMPLES: usize = 100;
@@ -558,18 +569,28 @@ async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_bud
         },
     };
     let mut receive = async |b: &mut WorkspaceTree, want: &[u64]| {
+        let mut batches = 0;
+        let mut applied_changes = 0;
         while group_tabs(b, room) != want {
             let event = events_b.recv().await.expect("B's events");
             if let NetEvent::Msg {
                 peer,
-                msg: NeighbourMsg::SyncResp { changes, .. },
+                msg:
+                    NeighbourMsg::SyncResp {
+                        changes,
+                        room: received_room,
+                    },
                 ..
             } = event
             {
+                assert_eq!(received_room, room.to_string());
+                batches += 1;
+                applied_changes += changes.len();
                 b.apply_room_changes(room, &changes, &PeerOrigin::peer(&peer))
                     .expect("B applies A's push");
             }
         }
+        (batches, applied_changes)
     };
 
     // Warm-up: B joins with A's whole room, as its first pull would bring.
@@ -583,9 +604,10 @@ async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_bud
     tilo_test_env::within("B joined A's room", receive(&mut b, &want)).await;
 
     let mut next = 101;
-    let mut latencies = Vec::with_capacity(SAMPLES);
+    // The companion ShellNetwork next-tick test checks the scheduling boundary;
+    // this real transport test checks the work required to converge each edit.
+    let mut work = Vec::with_capacity(SAMPLES);
     for sample in 0..SAMPLES {
-        let started = Instant::now();
         {
             let workspace = &mut a.desktop.workspaces[0];
             let tabs = &mut workspace.strips[0].window_groups[0].tabs;
@@ -612,20 +634,22 @@ async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_bud
             .export_room_changes_since(room, &announced)
             .expect("A's room");
         announced = a.room_heads(room);
-        assert!(!changes.is_empty(), "sample {sample} changed the room");
+        assert_eq!(
+            changes.len(),
+            1,
+            "sample {sample} exports one incremental change"
+        );
         cmd_a.send(publish(changes)).await.expect("push queued");
         let want = group_tabs(&a, room);
-        tilo_test_env::within("B shows A's change", receive(&mut b, &want)).await;
-        latencies.push(started.elapsed());
+        let counts = tilo_test_env::within("B shows A's change", receive(&mut b, &want)).await;
+        assert_eq!(
+            counts,
+            (1, 1),
+            "sample {sample} converges in one batch and one change"
+        );
+        work.push(counts);
     }
-    let p95 = report(
-        "pushed tab change, A mutation -> B tree (loopback Iroh)",
-        latencies,
-    );
-    assert!(
-        p95 < Duration::from_millis(50),
-        "a pushed tab change must reach the other device in under 50 ms at p95, got {p95:?}"
-    );
+    report_tab_push_work(SAMPLES, work);
 }
 
 /// A document edit travels as one signed `AppDocument` on the room topic;

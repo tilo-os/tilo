@@ -30,6 +30,7 @@ the pull request that needs it, with the reason written next to the entry:
 | A Clippy lint | `#[allow(clippy::…, reason = "…")]` on the narrowest item. `too_many_arguments` has no exception. |
 | A non-text or non-LF file | `tools/policy/source_content_exceptions.json`, admitted only unchanged after it lands |
 | A ratcheted count (UI tokens, app portability, resource/action contract, widget writes, document engine) | the baseline beside the check; counts only fall |
+| A shell layer edge or shell dependency | `tools/policy/shell_layers_baseline.toml`, with its reason; the lists only shrink |
 | A size budget | one raise file per change under `tools/perf/*-size-budget/raises/` |
 | A licence, advisory or dependency source | `deny.toml`, with a comment saying why |
 | An interpreter script in the OS image | a reasoned line in `tools/policy/image_interpreter_baseline.txt`; the list only shrinks |
@@ -104,6 +105,7 @@ can change without editing its callers.
 | Apps keep record content in the store their host lends them. | Check: [`check_app_content_store.py`](../tools/policy/check_app_content_store.py) |
 | Apps compose `ui` text widgets; shaping and glyph emission stay private to `ui`. | Check: [`check_app_text_contract.py`](../tools/policy/check_app_text_contract.py) |
 | The shared desktop crates reach no compositor, transport or host stack. | Check: [`check_desktop_model_dependencies.py`](../tools/policy/check_desktop_model_dependencies.py) |
+| Shell layers: the shell's service modules (workspace model, persistence, collaboration broker, network bridge, identity broker, runtime host) reach no compositor, chrome, launcher, overlay or renderer code; crates carved out of the shell depend on neither the shell nor the toolkit or a renderer; no new crate depends on the shell, and the shell gains no dependency unnoticed. Rendering and state stay decoupled, and each extraction from the shell has no new edge to undo first. | Check: [`check_shell_layers.py`](../tools/policy/check_shell_layers.py) (ratchet), reading `use` trees and `Cargo.toml` only. The [baseline](../tools/policy/shell_layers_baseline.toml) only shrinks: a removed edge or dependency fails until its line goes (`--write-baseline` drops it). A new shell dependency is a reasoned `[shell_dependencies.added]` entry; a new extracted crate is a line in `[extracted]` |
 | The shared app runtime carries no OS internals and no unused crates. | Check: [`check_runtime_dylib_surface.py`](../tools/policy/check_runtime_dylib_surface.py) |
 | Crates the browser builds for wasm32 name `workspace-hack` only for native targets. | Check: [`check_wasm_workspace_hack.py`](../tools/policy/check_wasm_workspace_hack.py) |
 | `os/components.toml` is the single list of binaries in the image; image builders copy exactly what they compile. | Check: [`check_component_manifest.py`](../tools/policy/check_component_manifest.py), [`check_image_builder_inputs.py`](../tools/policy/check_image_builder_inputs.py) |
@@ -119,6 +121,7 @@ can change without editing its callers.
 | A new dependency is justified in its pull request: licence, provenance, maintenance, size and the platforms it builds for. | A dependency is code we ship and must keep patched. | Review (licence and source are checked above) |
 | Tilo's own crates use the RustCrypto generation iroh uses (`ed25519-dalek`/`x25519-dalek` 3, `rand`/`rand_core`/`rand_chacha` 0.10, `sha2` 0.11, `hmac` 0.13, `chacha20poly1305` 0.11); the previous one arrives only through third-party crates. OS randomness comes from `getrandom::SysRng`. | One generation to audit; the old one leaves the lock when its last upstream moves. | Check: [`check_crypto_generation.py`](../tools/policy/check_crypto_generation.py) (direct edges in `Cargo.lock`; `SysRng` is review) |
 | TLS is rustls. No OpenSSL or `native-tls` anywhere in the graph. | One certificate-verification path to review, and no C library to patch in every image. | Check: [`check_tls_stack.py`](../tools/policy/check_tls_stack.py) |
+| No telemetry, analytics or crash-upload client (Sentry, PostHog, OTLP exporters, minidump capture) anywhere in the graph. | `docs/architecture/security.md` says Tilo's own components report nothing home; panics stay local and feedback is a report the person approves. | Check: [`check_no_telemetry.py`](../tools/policy/check_no_telemetry.py) |
 | GStreamer is the only media stack: no in-tree codec crates (`openh264` from source, `ffmpeg-next`). | Hardware codecs first, and H.264 in software only through Cisco's licensed binary. | Check: [`check_media_stack.py`](../tools/policy/check_media_stack.py) |
 | No interpreted language (Python, JavaScript) on the runtime path of the OS or an app where a compiled alternative exists. Build and CI tooling may use Python. | Startup time, footprint and one fewer runtime to secure. | Check (image overlay only): [`check_image_interpreters.py`](../tools/policy/check_image_interpreters.py) refuses a new Python, Node, Deno, Bun or Perl script under `os/usr` or `os/etc`; the [baseline](../tools/policy/image_interpreter_baseline.txt) of older ones only shrinks. Apps and the image's package list are review |
 | Inputs are pinned: the Rust toolchain in `rust-toolchain.toml`, crates in `Cargo.lock`, actions by SHA, and image packages by snapshot. Builds of apps and images are reproducible from a commit. | A build that cannot be reproduced cannot be verified. | Partly: `--locked`, the action and image checks above, [`check_dev_image_contract.py`](../tools/policy/check_dev_image_contract.py); reproducibility itself is review |
@@ -195,7 +198,7 @@ weaken it for convenience ([security.md](architecture/security.md)).
 | Rule | Enforced by |
 |---|---|
 | Interoperability with proprietary formats and protocols is clean-room: public specifications and black-box observation only. Nobody decompiles or disassembles proprietary binaries for Tilo. | Review |
-| Ported or vendored code keeps its licence and notices and records its upstream version or commit (`vendor/PATCHES.md`, a `PROVENANCE.md` beside the code). | Review |
+| Ported or vendored code keeps its licence and notices and records its upstream version or commit (`vendor/PATCHES.md`, a `PROVENANCE.md` beside the code). | Partly: [`check_vendor_provenance.py`](../tools/policy/check_vendor_provenance.py) requires a licence file and a `PROVENANCE.md` naming the `Cargo.toml` version in every `vendor/*` directory; that the licence is the upstream text, and code ported outside `vendor/`, are review |
 | No proprietary assets, trademarks or trade dress. | Review |
 | No in-house H.264, HEVC or ProRes codec without a patent decision. | Partly: [`check_media_stack.py`](../tools/policy/check_media_stack.py) bans the codec crates; a hand-written codec is review |
 
@@ -203,7 +206,5 @@ weaken it for convenience ([security.md](architecture/security.md)).
 
 Review-only rules above that look cheap to check, not yet done:
 
-- Vendored crates: require a licence file and a `PROVENANCE.md` with the upstream
-  version in every `vendor/*` directory.
 - Motion: a ratchet for literal animation durations, once the motion section is
   decided.
