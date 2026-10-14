@@ -1718,7 +1718,8 @@ impl ShellOverlayHost {
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.transition_started.is_some(),
                 workspace_switch: self.workspace_switch_holding_at(now),
-                quick_settings: self.qs_transition.is_animating(now),
+                quick_settings: self.qs_transition.is_animating(now)
+                    || self.qs_root_scroll_fading(),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_animating(now),
                 power_menu: self.layers.power_menu.is_animating(now),
@@ -10514,6 +10515,55 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Scrolling for a Quick Settings root page taller than its popover:
+    /// wheel, touchpad, a finger's drag (which the compositor emulates as a
+    /// wheel) and the page's scrollbar, through the toolkit's
+    /// [`ui::widget::ScrollRegion`]. Anything the region does not take
+    /// continues to the ordinary click and hover routing.
+    fn route_qs_root_scroll(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let on_root = {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+        };
+        if !on_root && !self.qs_root.scroll_dragging() {
+            return false;
+        }
+        let mut taken = false;
+        let changed = self.qs_root.handle_scroll_event(
+            event,
+            scale_factor,
+            modifiers.state(),
+            &mut taken,
+            &self.overview_layout_theme,
+        );
+        if changed {
+            chrome.borrow_mut().bump();
+        }
+        if taken {
+            *handled = true;
+        }
+        taken
+    }
+
+    /// The root page's scrollbar is fading on an open popover.
+    fn qs_root_scroll_fading(&self) -> bool {
+        self.overlay_flags().quick_settings
+            && self.qs_root.scroll_needs_frame(&self.overview_layout_theme)
+    }
+
     /// Scroll the bounded Wi-Fi, Bluetooth, and VPN lists without allowing a
     /// compact popover's wheel gesture to move the workspace underneath it.
     fn handle_qs_drill_in_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64) -> bool {
@@ -18957,10 +19007,10 @@ impl Widget for ShellOverlayHost {
                 self.projection_overlay.controller().status,
                 crate::shell::projection::ProjectionStatus::Connected { .. }
             ));
+            // The root keeps its natural size; a popover shorter than the
+            // page scrolls it (`QuickSettingsRoot::draw`).
             let state = chrome.borrow();
-            let available_height = (self.tray_area().height() - 64.0).max(1.0);
-            self.qs_root
-                .fit_root_layout_to_height(&state.quick_settings, available_height);
+            self.qs_root.sync_displays(&state.quick_settings);
         }
         // Split into four layer passes — was one 372-line function; see
         // each helper (in the other `impl ShellOverlayHost` block) for
@@ -19373,6 +19423,9 @@ impl Widget for ShellOverlayHost {
             return;
         }
         if self.route_room_activity_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
+            return;
+        }
+        if self.route_qs_root_scroll(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
             return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
@@ -20425,7 +20478,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 14] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 15] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20484,6 +20537,17 @@ impl ShellOverlayHost {
                 }),
             ),
             ("now-playing", self.now_playing_wake_deadline(now)),
+            (
+                "quick-settings-scroll",
+                self.chrome
+                    .as_ref()
+                    .is_some_and(|chrome| chrome.borrow().overlays.quick_settings)
+                    .then(|| {
+                        self.qs_root
+                            .scroll_wake_deadline(&self.overview_layout_theme)
+                    })
+                    .flatten(),
+            ),
             ("window-previews", self.window_previews_wake_deadline(now)),
             (
                 "strip-indicators",
@@ -20616,7 +20680,7 @@ impl ShellOverlayHost {
         // widget's animation is in flight. `tick_*` clear their own flags once
         // the duration has elapsed, so at rest this returns false and the
         // event loop can go idle.
-        let qs_in_flight = self.qs_transition.is_animating(now);
+        let qs_in_flight = self.qs_transition.is_animating(now) || self.qs_root_scroll_fading();
         let ws_settings_in_flight = self.workspace_settings_overlay.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
         let layers_in_flight = self.layers.is_animating(now);
