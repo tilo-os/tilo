@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
 import {
-  GOALS, Invalid, appModules, chromeFlags, classifyAdapter, intervals, judgeGoals, parseArgs, percentile, stats, summarize, unlistedResources,
+  GOALS, Invalid, appModules, chromeFlags, classifyAdapter, parseViewport, within, intervals, judgeGoals, parseArgs, percentile, stats, summarize, unlistedResources,
   verifyBundle,
 } from './browser_qualification.mjs';
 
@@ -130,6 +130,20 @@ test('goals report the value, the verdict and the remaining gap', () => {
   assert.equal(interval.gap, Math.round((24 - GOALS.demoGoalIntervalMs) * 1000) / 1000);
   assert.equal(missed.find(g => g.name === 'activation (p99, ms)').met, false);
   assert.ok(missed.find(g => g.name.startsWith('demo minimum')).met);
+});
+
+test('a viewport is WIDTHxHEIGHT at DPR 1, FHD unless given', () => {
+  assert.deepEqual(parseViewport('960x540'), {width: 960, height: 540, deviceScaleFactor: 1});
+  assert.throws(() => parseViewport('960'), /WIDTHxHEIGHT/);
+  assert.deepEqual(parseArgs(['bundle', '--out', 'r.json', '--renderer', 'gpu']).viewport,
+    {width: 1920, height: 1080, deviceScaleFactor: 1});
+  assert.equal(parseArgs(['bundle', '--out', 'r.json', '--renderer', 'gpu', '--viewport', '1280x720']).viewport.width, 1280);
+});
+
+test('a step that never answers fails the run instead of hanging it', async () => {
+  assert.equal(await within(Promise.resolve(7), 1000, 'quick'), 7);
+  await assert.rejects(within(new Promise(() => {}), 20, 'the page'),
+    error => error instanceof Invalid && /the page did not answer/.test(error.message));
 });
 
 test('a run without the demo judges no demo goal', () => {
