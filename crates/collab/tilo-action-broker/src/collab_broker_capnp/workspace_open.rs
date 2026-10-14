@@ -258,7 +258,7 @@ mod tests {
             _: &LaunchPlace,
         ) -> Result<Launched, String> {
             let mut next = self.0.lock().unwrap();
-            *next += 1;
+            *next = next.wrapping_add(1);
             Ok(Launched::Started { ticket: *next })
         }
         fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
@@ -314,15 +314,19 @@ mod tests {
         }
     }
 
-    fn opened_peer(state: &CapnpBrokerState, job: u64) -> Option<Option<u64>> {
+    /// What a succeeded open answered: the value of its output, null when
+    /// it named nothing; `None` while it has not succeeded.
+    fn answered(state: &CapnpBrokerState, job: u64) -> Option<serde_json::Value> {
         match state.invocation_status(job)? {
-            InvocationUpdate::Succeeded { output, .. } => Some(
-                output
-                    .value
-                    .and_then(|value| value[super::OPENED_PEER_FIELD].as_u64()),
-            ),
+            InvocationUpdate::Succeeded { output, .. } => {
+                Some(output.value.unwrap_or(serde_json::Value::Null))
+            }
             _ => None,
         }
+    }
+
+    fn naming(peer: u64) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ super::OPENED_PEER_FIELD: peer }))
     }
 
     fn accepted(state: &CapnpBrokerState, job: u64) -> bool {
@@ -345,7 +349,7 @@ mod tests {
         state.launch_published(4);
         assert!(accepted(&state, first) && accepted(&state, second));
         state.launch_published(5);
-        assert_eq!(opened_peer(&state, second), Some(Some(5)));
+        assert_eq!(answered(&state, second), naming(5));
         assert!(accepted(&state, first), "peer 5 is not the first's");
 
         // A connection naming the first's ticket for another app or room
@@ -362,7 +366,7 @@ mod tests {
         assert!(accepted(&state, first));
         state.launch_connected(7, &connected(1, &room));
         state.launch_published(7);
-        assert_eq!(opened_peer(&state, first), Some(Some(7)));
+        assert_eq!(answered(&state, first), naming(7));
     }
 
     #[test]
@@ -386,15 +390,15 @@ mod tests {
         assert!(accepted(&state, silent) && accepted(&state, quiet));
         state.expire_workspace_opens(now.checked_add(PUBLISH_WAIT).unwrap());
         assert_eq!(
-            opened_peer(&state, quiet),
-            Some(Some(8)),
+            answered(&state, quiet),
+            naming(8),
             "an instance that publishes nothing is still the one started"
         );
         assert!(accepted(&state, silent));
         state.expire_workspace_opens(now.checked_add(CONNECT_WAIT).unwrap());
         assert_eq!(
-            opened_peer(&state, silent),
-            Some(None),
+            answered(&state, silent),
+            Some(serde_json::Value::Null),
             "a launch whose instance never connected names none"
         );
         assert!(state.workspace_opens.next_deadline().is_none());

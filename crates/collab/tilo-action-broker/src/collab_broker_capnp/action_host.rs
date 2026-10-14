@@ -3008,11 +3008,11 @@ impl CapnpBrokerState {
         match launcher.launch_content(app_id, workspace, content, place) {
             // Answered with the instance it started, once that instance
             // connects with the launch's ticket and publishes.
-            Ok(launched) => self.record_launch(
+            Ok(started) => self.record_launch(
                 (id, invocation),
                 &actor.id,
                 (app_id, &workspace.room.to_string()),
-                launched,
+                started,
             ),
             Err(error) => self.record_completion(
                 id,
