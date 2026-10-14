@@ -159,8 +159,7 @@ fn fetch(url: &str, to: &Path) -> io::Result<PathBuf> {
 /// Restart the agent so the daemon runs the new bundle. Not loaded is fine:
 /// the next app launch starts the new daemon on demand.
 fn restart_agent() -> io::Result<()> {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = rustix::process::getuid().as_raw();
     let status = Command::new("/bin/launchctl")
         .args(["kickstart", "-k", &format!("gui/{uid}/{RUNTIME_AGENT}")])
         .stderr(std::process::Stdio::null())

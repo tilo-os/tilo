@@ -2778,8 +2778,7 @@ fn provider_url(profile: &ProviderProfile) -> String {
 /// Whether the peer's `SO_PEERCRED` uid is this process's effective uid.
 #[cfg(target_os = "linux")]
 fn same_user(stream: &tokio::net::UnixStream) -> bool {
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let euid = unsafe { libc::geteuid() };
+    let euid = rustix::process::geteuid().as_raw();
     stream.peer_cred().is_ok_and(|peer| peer.uid() == euid)
 }
 

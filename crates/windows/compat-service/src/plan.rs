@@ -1442,8 +1442,7 @@ mod tests {
         command.runtime_lock_required = true;
         // This fixture runs as the invoking user, independently of the fixed
         // session UID used by planner-only unit tests.
-        // SAFETY: geteuid only reads the current process credentials.
-        command.identity_uid = unsafe { libc::geteuid() };
+        command.identity_uid = rustix::process::geteuid().as_raw();
         command.bwrap_argv.splice(
             0..0,
             [
@@ -1584,8 +1583,7 @@ mod tests {
         let executable = prefix.join(&program.prefix_relative_executable);
         std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
         copy_arm_console_fixture(&executable, architecture);
-        // SAFETY: geteuid has no preconditions and does not mutate process state.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         let runtime = PathBuf::from(format!("/run/user/{uid}"));
         std::fs::create_dir_all(&runtime).unwrap();
         let socket = runtime.join(format!("tilo-console-{}", std::process::id()));
