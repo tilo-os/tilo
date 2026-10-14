@@ -15,6 +15,7 @@
  * has no seat for watches live instead and is let in once a seat frees up.
  */
 import {AdmissionError} from './admission.mjs';
+import {startArrival} from './arrival.mjs';
 import {boot} from './entry.mjs';
 import {loadRuntime, mountDesktop} from './host.mjs';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} from './peer.mjs';
@@ -259,7 +260,8 @@ export async function startEntryPage({mode}) {
   // index.html): `load`ing Tilo, `join`ing through a host's door, `open`ing
   // the desktop, `draw`ing its first frame (GPU set up), `done` once it
   // drew, `stopped` when it cannot go on. Each step says itself in the
-  // status line, unless something else (admission, a visit) is said there.
+  // status line, unless something else (admission, a visit) is said there;
+  // the screen shows a step's note only to screen readers (arrival.mjs).
   const root = document.documentElement.dataset;
   const opening = mode === 'app' ? 'Opening the app…' : 'Opening the workspace…';
   const drawing = 'Starting graphics…';
@@ -269,6 +271,8 @@ export async function startEntryPage({mode}) {
     root.arrival = step;
     if (notes[step] && [loading, opening, drawing].includes(status.textContent)) status.textContent = notes[step];
   };
+  // The arrival screen's line and bar follow those steps (arrival.mjs).
+  startArrival({mode});
   const tell =state => { if (embed && parent !== window) parent.postMessage({type: 'tilo-embed', state}, EMBEDDER); };
   let joinNow = false;
   try { joinNow = sessionStorage.getItem(JOIN_NOW) === '1'; sessionStorage.removeItem(JOIN_NOW); } catch { /* No storage: watch first. */ }
