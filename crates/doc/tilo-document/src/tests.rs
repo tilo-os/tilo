@@ -516,6 +516,58 @@ fn paragraphs_added_at_once_into_one_gap_leave_room_between_them() {
 }
 
 #[test]
+fn a_view_holding_the_state_costs_a_keystroke_its_paragraph_not_the_document() {
+    let mut replica = document(400);
+    let mut reader = tilo_resource::Reader::<RichText>::open(replica.doc_mut()).unwrap();
+    reader
+        .demand(replica.doc(), Demand::range(190..210))
+        .unwrap();
+    let on_screen = reader.state().body().id_at(200).unwrap().to_owned();
+    let off_screen = reader.state().body().id_at(300).unwrap().to_owned();
+    let splice = |block: &str| RichTextAction::SpliceText {
+        region: RegionKind::Body,
+        block: block.to_owned(),
+        at: 0,
+        del: 0,
+        ins: "k".into(),
+    };
+
+    // A view keeps the state it was shown; a paragraph off screen changes.
+    let shown = Rc::clone(reader.state());
+    replica.apply_action(&splice(&off_screen)).unwrap();
+    let scans = model::ordered_keys_scan_count();
+    assert!(reader.sync(replica.doc()).unwrap());
+    assert_eq!(model::ordered_keys_scan_count(), scans, "no whole read");
+    let now = reader.state();
+    assert!(!Rc::ptr_eq(now, &shown));
+    assert!(
+        Rc::ptr_eq(&now.loaded, &shown.loaded),
+        "paragraphs on screen shared"
+    );
+    assert!(Rc::ptr_eq(&now.objects, &shown.objects));
+    assert!(Rc::ptr_eq(&now.paragraph_objects, &shown.paragraph_objects));
+    assert!(
+        Rc::ptr_eq(now.body(), shown.body()),
+        "the order is untouched"
+    );
+
+    // A keystroke on screen: the view still sees the paragraph as it was.
+    let shown = Rc::clone(reader.state());
+    let was = shown.block(&on_screen).unwrap().text.clone();
+    replica.apply_action(&splice(&on_screen)).unwrap();
+    assert!(reader.sync(replica.doc()).unwrap());
+    assert_eq!(model::ordered_keys_scan_count(), scans, "no whole read");
+    assert_eq!(shown.block(&on_screen).unwrap().text, was);
+    assert_eq!(
+        reader.state().block(&on_screen).unwrap().text,
+        format!("k{was}")
+    );
+    let mut read = replica.state().unwrap();
+    RichText::load(&mut read, replica.doc(), &Demand::range(190..210)).unwrap();
+    assert_eq!(reader.state().as_ref(), &read);
+}
+
+#[test]
 fn a_field_paragraph_forgotten_leaves_no_objects_behind() {
     use automerge::transaction::Transactable;
     let mut doc = Doc::new();

@@ -255,14 +255,17 @@ pub struct RichTextState {
     /// Every heading, image and table cell, read whole: the outline and the
     /// document's objects are listed without reading its prose.
     featured: Rc<HashMap<String, Rc<BlockView>>>,
-    loaded: HashMap<String, Rc<BlockView>>,
+    /// The paragraphs on screen. Shared, like the indexes below, so a copy
+    /// of the state (a view still holds the last one) shares them until a
+    /// change writes to them.
+    loaded: Rc<HashMap<String, Rc<BlockView>>>,
     /// Where the objects of loaded and featured paragraphs sit (the
     /// paragraph's map, its text, its attributes), so a change to one is
     /// placed without asking the document.
-    objects: HashMap<ObjId, tilo_resource::ObjPath>,
+    objects: Rc<HashMap<ObjId, tilo_resource::ObjPath>>,
     /// The objects indexed for each paragraph, so forgetting one touches
     /// only its own.
-    paragraph_objects: HashMap<String, Vec<ObjId>>,
+    paragraph_objects: Rc<HashMap<String, Vec<ObjId>>>,
     header: Rc<Vec<BlockView>>,
     footer: Rc<Vec<BlockView>>,
     notes: Rc<Vec<NoteView>>,
@@ -477,16 +480,21 @@ impl RichTextState {
     fn index_paragraph(&mut self, doc: &Doc, id: &str) {
         self.forget_paragraph(id);
         let objects = paragraph_objects(doc, &self.containers, &self.root_path, id);
-        self.paragraph_objects.insert(
+        Rc::make_mut(&mut self.paragraph_objects).insert(
             id.to_owned(),
             objects.iter().map(|(obj, _)| obj.clone()).collect(),
         );
-        self.objects.extend(objects);
+        Rc::make_mut(&mut self.objects).extend(objects);
     }
 
     fn forget_paragraph(&mut self, id: &str) {
-        for obj in self.paragraph_objects.remove(id).unwrap_or_default() {
-            self.objects.remove(&obj);
+        if !self.paragraph_objects.contains_key(id) {
+            return;
+        }
+        let forgotten = Rc::make_mut(&mut self.paragraph_objects).remove(id);
+        let objects = Rc::make_mut(&mut self.objects);
+        for obj in forgotten.unwrap_or_default() {
+            objects.remove(&obj);
         }
     }
 }
@@ -571,6 +579,13 @@ impl Resource for RichText {
         Self::refresh_under(state, doc, delta)
     }
 
+    /// A copy shares every part of the state until a change writes to it,
+    /// so a view still holding the last state costs a keystroke a refresh
+    /// of the paragraph it touched rather than a read of the whole document.
+    fn copy_state(state: &RichTextState) -> Option<RichTextState> {
+        Some(state.clone())
+    }
+
     fn load(state: &mut RichTextState, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
         // Every paragraph demanded and every one already read: a view that
         // shows the whole document, after an edit refreshed what it touched.
@@ -600,7 +615,7 @@ impl Resource for RichText {
             .cloned()
             .collect();
         for id in &evicted {
-            state.loaded.remove(id);
+            Rc::make_mut(&mut state.loaded).remove(id);
             state.forget_paragraph(id);
         }
         let missing: Vec<String> = wanted
@@ -613,7 +628,7 @@ impl Resource for RichText {
         if !missing.is_empty() {
             for view in model::materialize_blocks(doc, &state.containers, &missing) {
                 let id = view.id.clone();
-                state.loaded.insert(id.clone(), Rc::new(view));
+                Rc::make_mut(&mut state.loaded).insert(id.clone(), Rc::new(view));
                 state.index_paragraph(doc, &id);
             }
         }
@@ -847,9 +862,9 @@ impl RichText {
         Ok(RichTextState {
             body: Rc::new(BodyOrder::from_spine(spine)),
             featured: Rc::new(featured),
-            loaded: HashMap::new(),
-            objects: HashMap::new(),
-            paragraph_objects: HashMap::new(),
+            loaded: Rc::default(),
+            objects: Rc::default(),
+            paragraph_objects: Rc::default(),
             header: Rc::new(model::materialize_region(doc, &c, Region::Header)),
             footer: Rc::new(model::materialize_region(doc, &c, Region::Footer)),
             notes: Rc::new(model::materialize_notes(doc, &c)),
@@ -991,8 +1006,8 @@ impl RichText {
             if entry.is_none() {
                 if state.loaded.contains_key(id) {
                     state.log.order();
+                    Rc::make_mut(&mut state.loaded).remove(id);
                 }
-                state.loaded.remove(id);
                 state.forget_paragraph(id);
                 if was_featured {
                     Rc::make_mut(&mut state.featured).remove(id);
@@ -1022,7 +1037,7 @@ impl RichText {
                 Rc::make_mut(&mut state.featured).remove(id);
             }
             if on_screen {
-                state.loaded.insert(id.to_owned(), view);
+                Rc::make_mut(&mut state.loaded).insert(id.to_owned(), view);
                 state.index_paragraph(doc, id);
             }
         }
