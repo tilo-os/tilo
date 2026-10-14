@@ -475,7 +475,7 @@ fn authenticated_session_ready(
     use std::os::unix::fs::MetadataExt;
     let pin = PinnedDirectory::open_absolute(runtime).map_err(|e| e.to_string())?;
     let metadata = pin.file.metadata().map_err(|e| e.to_string())?;
-    let uid = rustix::process::getuid().as_raw();
+    let uid = tilo_process::uid();
     if metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
         return Err("Session runtime directory is not private".into());
     }
@@ -1081,7 +1081,7 @@ mod tests {
     fn seed_native_first_login_fixture() {
         use std::os::unix::fs::MetadataExt;
         // wrong account and must never prepare another user's continuation.
-        let uid = rustix::process::getuid().as_raw();
+        let uid = tilo_process::uid();
         assert_ne!(uid, 0, "run this fixture as the ordinary proof login user");
         let home = tilo_paths::home().unwrap().canonicalize().unwrap();
         let requested = PathBuf::from(

@@ -2054,7 +2054,7 @@ pub fn maybe_run_staging_helper(args: &[String]) -> Result<Option<i32>, String> 
         ));
     };
     #[cfg(unix)]
-    if rustix::process::geteuid().as_raw() != 0 {
+    if tilo_process::effective_uid() != 0 {
         return Err("the staging helper must run as root".into());
     }
     let bytes = read_request(Path::new(request_path))?;

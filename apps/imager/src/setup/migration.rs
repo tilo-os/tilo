@@ -1468,7 +1468,7 @@ mod tests {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::PermissionsExt;
         // ownership of a newly created empty directory in its own fixture.
-        assert_eq!(rustix::process::geteuid().as_raw(), 0);
+        assert_eq!(tilo_process::effective_uid(), 0);
         let (temp, source, _) = fixture();
         let parent = temp.path().canonicalize().unwrap().join("sticky");
         fs::create_dir(&parent).unwrap();
