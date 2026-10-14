@@ -135,6 +135,9 @@ test('arguments need a bundle, a report path and a known renderer', () => {
   assert.equal(parsed.rounds, 2);
   assert.equal(parsed.maxLoad, 0.5);
   assert.equal(parsed.activations, 20);
+  assert.equal(parsed.frameTimeout, 120, 'a software rasterizer may take long over a first pipeline');
+  assert.equal(parseArgs(['bundle', '--out', 'r.json', '--renderer', 'gpu']).frameTimeout, 10);
+  assert.equal(parseArgs(['bundle', '--out', 'r.json', '--renderer', 'gpu', '--frame-timeout', '30']).frameTimeout, 30);
   assert.throws(() => parseArgs(['bundle', '--out', 'r.json']), /usage/);
   assert.throws(() => parseArgs(['bundle', '--out', 'r.json', '--renderer', 'opengl']), /--renderer/);
   assert.throws(() => parseArgs(['bundle', '--out', 'r.json', '--renderer', 'gpu', '--rounds', '1.5']), /whole number/);
