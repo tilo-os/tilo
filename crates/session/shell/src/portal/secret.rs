@@ -197,10 +197,7 @@ impl SecretBackend {
         let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
             return (2, Default::default());
         };
-        if options
-            .get("token")
-            .and_then(|value| value.try_clone().ok())
-            .and_then(|value| String::try_from(value).ok())
+        if crate::portal::option::<String>(&options, "token")
             .is_some_and(|token| valid_identifier(&token, MAX_TOKEN, "token").is_err())
         {
             return (2, Default::default());
