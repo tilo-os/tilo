@@ -391,3 +391,129 @@ fn keywords_find_a_record_below_its_name_and_by_typo() {
         "an exact keyword outranks a misspelt one"
     );
 }
+
+/// Records of every weight, some repeating a text, for comparing the
+/// direct path with tantivy.
+fn alike_documents() -> Vec<Document> {
+    let texts = [
+        "Wi-Fi: turn off",
+        "Switch the Wi-Fi radio of this device",
+        "wifi, wi-fi, wlan, wireless network",
+        "Keyboard layout",
+        "Tastatur & Maus",
+        "so.tilo.word-processor",
+        "Word Processor",
+        "Einstellungen",
+        "Screenshot or float part of the screen",
+        "report2026-final",
+        "dark mode",
+        "Bildschirmfoto",
+        "posteingang",
+        "e-mail",
+        "",
+    ];
+    let weights = [
+        FieldWeight::TITLE,
+        FieldWeight::new(90),
+        FieldWeight::KEYWORD,
+        FieldWeight::IDENTITY,
+        FieldWeight::SUBTITLE,
+        FieldWeight::METADATA,
+        FieldWeight::UNRANKED,
+    ];
+    (0..40u64)
+        .map(|key| {
+            let at = usize::try_from(key).unwrap();
+            (0..=(at % 4)).fold(
+                Document::new(key).signals(
+                    i32::try_from(at % 3).unwrap(),
+                    u32::try_from(at % 5).unwrap(),
+                ),
+                |document, field| {
+                    document.field(
+                        *texts
+                            .iter()
+                            .cycle()
+                            .nth(at.wrapping_mul(7).wrapping_add(field.wrapping_mul(3)))
+                            .unwrap(),
+                        *weights
+                            .iter()
+                            .cycle()
+                            .nth(at.wrapping_add(field.wrapping_mul(5)))
+                            .unwrap(),
+                    )
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn direct_and_tantivy_answer_alike() {
+    let documents = alike_documents();
+    let queries = [
+        "",
+        "s",
+        "w",
+        "wi",
+        "wi-fi",
+        "wifi",
+        "wlan",
+        "turn",
+        "turn off",
+        "keyboard layout",
+        "keybord",
+        "tastatur",
+        "word",
+        "wp",
+        "proc",
+        "einstellungen",
+        "einstelungen",
+        "screenshot",
+        "scrennshot",
+        "dark",
+        "dark mode",
+        "mode dark",
+        "posteingnag",
+        "e-mail",
+        "email",
+        "2026",
+        "final report",
+        "o",
+        "of",
+        "radio device",
+        "zzz",
+    ];
+    for matching in [Matching::LOOSE, Matching::default()] {
+        let direct = committed(matching, documents.clone());
+        let tantivy = {
+            let mut index = SearchIndex::new(matching).through_tantivy();
+            index.replace_all(documents.clone());
+            index.commit().unwrap();
+            index
+        };
+        for query in queries {
+            for page in [
+                Page::first(64),
+                Page {
+                    offset: 3,
+                    limit: 5,
+                },
+            ] {
+                assert_eq!(
+                    direct.search(query, page),
+                    tantivy.search(query, page),
+                    "{query:?} {matching:?} {page:?}"
+                );
+            }
+            let score = |signals: crate::Signals| {
+                signals.boost * 100 - i32::try_from(signals.length).unwrap()
+            };
+            assert_eq!(
+                direct.search_scored(query, Page::first(64), score),
+                tantivy.search_scored(query, Page::first(64), score),
+                "{query:?} {matching:?} scored"
+            );
+        }
+    }
+}

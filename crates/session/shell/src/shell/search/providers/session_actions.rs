@@ -211,79 +211,54 @@ pub struct SessionActionsProvider {
     policy: SessionActionPolicy,
     /// The rows' searchable text, indexed while it stays the same.
     ranker: ui::search::ListIndex,
-    /// Each row's shortcut, read from the settings document it was read
-    /// from: a keystroke checks the document's stamp, not its contents.
-    shortcuts: RefCell<Option<ShortcutTexts>>,
+    /// The rows and their searchable text, built once for what they are
+    /// built from ([`BuiltFrom`]): a keystroke only searches them.
+    built: RefCell<Option<Built>>,
 }
 
-/// The settings document's stamp, and each row's shortcut as read from it.
-type ShortcutTexts = (Option<settings_store::SettingsStamp>, Vec<(String, String)>);
+/// Which session actions are offered, the desktop's language, and the
+/// settings document whose shortcuts the rows show.
+type BuiltFrom = (Vec<bool>, String, Option<settings_store::SettingsStamp>);
+
+struct Built {
+    from: BuiltFrom,
+    rows: Vec<SearchResult>,
+    fields: Vec<Vec<(String, FieldWeight)>>,
+}
 
 impl SessionActionsProvider {
     pub fn new(policy: SessionActionPolicy) -> Self {
         Self {
             policy,
             ranker: ui::search::ListIndex::default(),
-            shortcuts: RefCell::default(),
+            built: RefCell::default(),
         }
     }
 
-    /// The shortcut shown beside the session action `id`, if it has one.
-    fn shortcut(&self, id: &str) -> Option<String> {
-        let stamp = settings_store::stamp();
-        let mut cached = self.shortcuts.borrow_mut();
-        if cached.as_ref().is_none_or(|(held, _)| *held != stamp) {
-            let config = settings_store::hardware::ShortcutConfig::load();
-            let texts = QUEUED_ACTIONS
+    fn built_from(&self) -> BuiltFrom {
+        (
+            QUEUED_ACTIONS
                 .iter()
-                .map(|(id, ..)| *id)
-                .chain([LOGOUT_ID])
-                .filter_map(|id| {
-                    super::actions::action_shortcut(&config, id).map(|text| (id.to_owned(), text))
-                })
-                .collect();
-            *cached = Some((stamp, texts));
-        }
-        cached
-            .as_ref()?
-            .1
-            .iter()
-            .find(|(held, _)| held == id)
-            .map(|(_, text)| text.clone())
-    }
-}
-
-impl SearchProvider for SessionActionsProvider {
-    fn id(&self) -> &str {
-        PROVIDER_ID
+                .map(|(_, action, ..)| self.policy.offers(*action))
+                .collect(),
+            crate::shell::i18n::current_locale(),
+            settings_store::stamp(),
+        )
     }
 
-    fn name(&self) -> &'static str {
-        "Session"
-    }
-
-    fn display_name(&self) -> String {
-        crate::shell::i18n::t("search-provider-session")
-    }
-
-    fn resource_kinds(&self) -> &[ResourceKind] {
-        &[ResourceKind::Action]
-    }
-
-    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        if !ctx.wanted.contains(&ResourceKind::Action) {
-            return Vec::new();
-        }
+    fn build(&self, from: BuiltFrom) -> Built {
         let mut rows: Vec<SearchResult> = QUEUED_ACTIONS
             .iter()
-            .filter(|(_, action, ..)| self.policy.offers(*action))
-            .map(|&entry| self.queued_result(entry))
+            .zip(&from.0)
+            .filter(|(_, offered)| **offered)
+            .map(|(&entry, _)| self.queued_result(entry))
             .collect();
         rows.insert(1.min(rows.len()), self.logout_result());
+        let shortcuts = settings_store::hardware::ShortcutConfig::load();
         for row in &mut rows {
-            row.shortcut = self.shortcut(&row.id);
+            row.shortcut = super::actions::action_shortcut(&shortcuts, &row.id);
         }
-        let fields: Vec<_> = rows
+        let fields = rows
             .iter()
             .map(|row| {
                 let mut fields = vec![
@@ -308,7 +283,40 @@ impl SearchProvider for SessionActionsProvider {
                 fields
             })
             .collect();
-        crate::shell::search::rank_rows(&self.ranker, ctx.needle.trim(), rows, &fields)
+        Built { from, rows, fields }
+    }
+}
+
+impl SearchProvider for SessionActionsProvider {
+    fn id(&self) -> &str {
+        PROVIDER_ID
+    }
+
+    fn name(&self) -> &'static str {
+        "Session"
+    }
+
+    fn display_name(&self) -> String {
+        crate::shell::i18n::t("search-provider-session")
+    }
+
+    fn resource_kinds(&self) -> &[ResourceKind] {
+        &[ResourceKind::Action]
+    }
+
+    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::Action) {
+            return Vec::new();
+        }
+        let from = self.built_from();
+        let mut built = self.built.borrow_mut();
+        if built.as_ref().is_none_or(|built| built.from != from) {
+            *built = Some(self.build(from));
+        }
+        let Some(Built { rows, fields, .. }) = built.as_ref() else {
+            return Vec::new();
+        };
+        crate::shell::search::rank_kept_rows(&self.ranker, ctx.needle.trim(), rows, fields)
     }
 }
 
