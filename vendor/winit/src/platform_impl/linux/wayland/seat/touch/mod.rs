@@ -38,14 +38,12 @@ impl TouchHandler for WinitState {
             None => {
                 warn!("Received wl_touch::down without seat");
                 return;
-            }
+            },
         };
 
         // Update the state of the point.
         let location = LogicalPosition::<f64>::from(position);
-        seat_state
-            .touch_map
-            .insert(id, TouchPoint { surface, location });
+        seat_state.touch_map.insert(id, TouchPoint { surface, location });
 
         self.events_sink.push_window_event(
             WindowEvent::Touch(Touch {
@@ -75,7 +73,7 @@ impl TouchHandler for WinitState {
             None => {
                 warn!("Received wl_touch::up without seat");
                 return;
-            }
+            },
         };
 
         // Remove the touch point.
@@ -118,7 +116,7 @@ impl TouchHandler for WinitState {
             None => {
                 warn!("Received wl_touch::motion without seat");
                 return;
-            }
+            },
         };
 
         // Remove the touch point.
@@ -155,7 +153,7 @@ impl TouchHandler for WinitState {
             None => {
                 warn!("Received wl_touch::cancel without seat");
                 return;
-            }
+            },
         };
 
         for (id, touch_point) in seat_state.touch_map.drain() {
@@ -215,9 +213,7 @@ pub trait TouchDataExt {
 
 impl TouchDataExt for WlTouch {
     fn seat(&self) -> &WlSeat {
-        self.data::<TouchData>()
-            .expect("failed to get touch data.")
-            .seat()
+        self.data::<TouchData>().expect("failed to get touch data.").seat()
     }
 }
 

@@ -221,10 +221,10 @@ fn counter_resource_with_reset(destructive: bool, reset_visible: bool) -> Resour
             .unwrap()
             .with_contract(tilo_actions::ActionContract::default()),
         )
-        .with_action(ActionSpec::prompted_param(
+        .with_action(ActionSpec::prompted(
             "set-label",
             "Set label",
-            tilo_actions::ActionParam::required("value", tilo_actions::ParamType::Text, "Label"),
+            "Label",
             "name…",
             ExecutionLocus::ClientLocal,
             |s: &str| {

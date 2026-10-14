@@ -113,6 +113,9 @@ interface AppHost {
     installLocal @19 (tappBytes :Data, reviewedRoot :Text,
                       reviewedArchiveHash :Text) -> (id :Data);
 
-    # Resolve a precise runtime from enabled, pinned repositories, including retained versions.
-    runtimeOffer @20 (registry :Text, runtime :Text) -> (offer :Text);
+    # The catalogue the host last accepted from one enabled repository, read
+    # without the network so a slow or unreachable repository still describes
+    # what it listed. The stored snapshot is verified again against the pinned
+    # owner key, the rollback checkpoint and its expiry; fails when none does.
+    lastVerifiedCatalogue @20 (registry :Text) -> (entries :Text);
 }

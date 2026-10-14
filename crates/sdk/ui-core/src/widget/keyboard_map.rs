@@ -139,7 +139,6 @@ pub struct KeyboardMap {
     label: String,
     extra_levels: bool,
     preview_level: usize,
-    single_level: bool,
     live_layout: bool,
     inspected_key: Option<String>,
     source: String,
@@ -160,7 +159,6 @@ impl KeyboardMap {
             label,
             extra_levels: false,
             preview_level: 0,
-            single_level: false,
             live_layout: false,
             inspected_key: None,
             source: String::new(),
@@ -250,54 +248,6 @@ impl KeyboardMap {
     pub fn with_input(mut self, input: KeyboardMapInput) -> Self {
         self.input = input;
         self
-    }
-
-    /// Paint only the legend of `level` (base, Shift, AltGr, ...) on each
-    /// key, at the size of a single keycap legend, instead of every level
-    /// packed into the key's corners.
-    #[must_use]
-    pub fn with_single_level(mut self, level: usize) -> Self {
-        self.preview_level = level;
-        self.single_level = true;
-        self
-    }
-
-    /// Whether the focused seat types what this map shows: `None` without
-    /// focused-seat evidence, otherwise whether every letter key's base
-    /// legend matches the seat's. A page that configures a layout uses it to
-    /// say that the configuration has not reached the keyboard.
-    pub fn live_agrees(&self) -> Option<bool> {
-        let state = self
-            .input
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let layout = state.layout.as_ref()?;
-        let caps = crate::keycaps::active();
-        let mut compared = 0_usize;
-        for key in &self.keys {
-            let Some(shown) = key.levels.first().filter(|legend| {
-                let mut chars = legend.chars();
-                chars.next().is_some_and(char::is_alphabetic) && chars.next().is_none()
-            }) else {
-                continue;
-            };
-            let Some(entry) = layout
-                .keys
-                .iter()
-                .find(|entry| entry.physical == key.physical)
-            else {
-                continue;
-            };
-            let Some(symbol) = entry.symbols.first() else {
-                continue;
-            };
-            compared += 1;
-            if caps.native_symbol(&symbol.name, &symbol.text) != *shown {
-                return Some(false);
-            }
-        }
-        (compared > 0).then_some(true)
     }
 
     /// Show the actual focused seat's effective symbols. Explicit layout
@@ -568,7 +518,7 @@ impl KeyboardMap {
             None,
             &path,
         );
-        let style = theme.text(if self.live_layout || self.single_level {
+        let style = theme.text(if self.live_layout {
             TextRole::Body
         } else {
             TextRole::Caption
@@ -582,18 +532,16 @@ impl KeyboardMap {
         // once. Repeated function/control levels must not crowd the keycap.
         let values = self.legend_values(key);
         let mut legends: Vec<&str> = Vec::new();
-        let (skip, take) = if self.live_layout {
-            (0, 1)
-        } else if self.single_level {
-            (self.preview_level, 1)
-        } else {
-            (
+        for legend in values
+            .iter()
+            .skip(if self.live_layout {
+                0
+            } else {
                 self.preview_level
-                    .max(if self.extra_levels { 4 } else { 0 }),
-                4,
-            )
-        };
-        for legend in values.iter().skip(skip).take(take) {
+                    .max(if self.extra_levels { 4 } else { 0 })
+            })
+            .take(if self.live_layout { 1 } else { 4 })
+        {
             if !legend.is_empty()
                 && !legends.contains(&legend.as_str())
                 && (legends.is_empty()

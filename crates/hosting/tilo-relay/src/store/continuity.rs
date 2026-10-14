@@ -49,26 +49,15 @@ impl Evidence {
         else {
             return None;
         };
-        let (msg, trailing) =
-            postcard::take_from_bytes::<tilo_peer_state::NeighbourMsg>(&body).ok()?;
-        if !trailing.is_empty() {
-            return None;
-        }
-        let tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key, ..
-        } = &msg
+        let crate::payloads::CheckpointKind::Continuity { user } =
+            crate::payloads::shell().checkpoint(&channel, &body)?.kind
         else {
             return None;
         };
-        if tilo_peer_state::transport::retention(&msg, false)
-            != Some((channel, tilo_peer_state::transport::Retention::Checkpoint))
-        {
-            return None;
-        }
         Some(Self {
             workspace,
             author,
-            user: *user_public_key,
+            user,
             channel,
             digest: *blake3::hash(bytes).as_bytes(),
         })
@@ -228,7 +217,7 @@ fn association(
 pub(super) fn account_validation(stats: &mut super::bounded::WorkStats, len: usize) {
     let overhead = std::mem::size_of::<Envelope>()
         .saturating_add(std::mem::size_of::<crate::coedit::CoeditPayload>())
-        .saturating_add(std::mem::size_of::<tilo_peer_state::NeighbourMsg>());
+        .saturating_add(crate::payloads::shell().decoded_overhead());
     stats.peak_frame_bytes = stats
         .peak_frame_bytes
         .max(len.saturating_mul(5).saturating_add(overhead));

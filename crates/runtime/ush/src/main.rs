@@ -545,7 +545,7 @@ explain when the host does not offer them.\n";
         // Everything the guest may write, in here: scratch, its own `/var`,
         // home, and whatever was granted (named again so a later remount can't
         // widen it). `/usr` and `/etc` are read-only images and get no rule.
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+        let home = tilo_paths::home().unwrap_or_else(|| PathBuf::from("/"));
         let mut rw: Vec<PathBuf> = ["/tmp", "/var", "/run", "/dev", "/proc"]
             .iter()
             .map(PathBuf::from)

@@ -262,7 +262,6 @@ mod tests {
             managed_agent_id: None,
             managed_workspace_id: None,
             kind: crate::shell::launcher::LaunchEventKind::SpawnFailed {
-                reason: crate::shell::launcher::LaunchFailure::LauncherUnavailable,
                 detail: "synthetic worker refusal".into(),
             },
         });
@@ -309,7 +308,6 @@ mod tests {
                 active_tab: TAB_A,
                 width: StateWidth::Normal,
                 maximized: false,
-                focus_history: Vec::new(),
             }],
         };
         let mut ws = Workspace::new(ws_id, "Home");

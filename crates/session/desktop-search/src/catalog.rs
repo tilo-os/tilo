@@ -305,15 +305,12 @@ pub(super) const APPS: &[CatalogApp] = &[
         category: "Network",
         platforms: &["linux"],
         keywords: &[
-            "discord bridge",
-            "discord server",
-            "connector",
-            "bridge a server",
-            "discord-brücke",
-            "discord-bruecke",
-            "discord-server",
-            "konnektor",
-            "server verbinden",
+            "voice chat",
+            "communities",
+            "community servers",
+            "sprachchat",
+            "gemeinschaften",
+            "community-server",
         ],
     },
     CatalogApp {
@@ -492,7 +489,7 @@ pub(super) const APPS: &[CatalogApp] = &[
     },
     CatalogApp {
         id: "so.tilo.imager",
-        name: "Disk Imager",
+        name: "Tilo Installer",
         category: "System",
         platforms: &["linux", "macos"],
         keywords: &[
