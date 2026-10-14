@@ -137,7 +137,7 @@ pub mod workspace_authority;
 #[cfg(feature = "filesystem")]
 mod tests;
 
-// The qdoc conflict merge decodes peer versions in Automerge workers.
+// The tilo-doc conflict merge decodes peer versions in Automerge workers.
 #[cfg(test)]
 #[cfg(feature = "filesystem")]
 tilo_automerge_isolate::test_worker!();

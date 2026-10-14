@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Rich text as a tilo-resource resource: the typed action vocabulary every editor, agent and script edits a qdoc document through"
+description = "Rich text as a tilo-resource resource: the typed action vocabulary every editor, agent and script edits a tilo-doc document through"
 
 [dependencies]
 tilo-doc = { path = "../tilo-doc" }

@@ -1,7 +1,7 @@
 //! Undoing what an agent did — across one document, and across two.
 //!
 //! Everything here drives the production path: real `automerge` documents with
-//! the real `qdoc` schema the word processor stores, real replication by
+//! the real `tilo-doc` schema the word processor stores, real replication by
 //! fork/merge and by `State::load_incremental` (the code path a peer's CRDT
 //! delta actually arrives through), the real `tilo_ui::history_source` producer, and
 //! the real revert. Nothing is stubbed, and every assertion that matters is on
@@ -39,7 +39,7 @@ fn actor_hex(handle: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// The word processor's document: the real qdoc schema.
+// The word processor's document: the real tilo-doc schema.
 // ---------------------------------------------------------------------------
 
 struct Report {
@@ -500,7 +500,7 @@ fn runs_span_applications_and_are_refused_whole_when_unresolvable() {
             ),
             (
                 WORD_PROCESSOR.into(),
-                "file:/reports/q3.qdoc".into(),
+                "file:/reports/q3.tilo-doc".into(),
                 &mut report.doc,
             ),
         ];
@@ -537,7 +537,7 @@ fn runs_span_applications_and_are_refused_whole_when_unresolvable() {
 
         let mut open: Vec<(String, String, &mut AutoCommit)> = vec![(
             WORD_PROCESSOR.into(),
-            "file:/reports/q3.qdoc".into(),
+            "file:/reports/q3.tilo-doc".into(),
             &mut report.doc,
         )];
         let out = undo_run(&run, Some(&actor_hex(AGENT)), &directory(), &mut open);
@@ -659,7 +659,7 @@ fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentRun) {
         },
         RunStep {
             app: WORD_PROCESSOR.into(),
-            record: "file:/reports/q3.qdoc".into(),
+            record: "file:/reports/q3.tilo-doc".into(),
             run: report_run,
             what: vec![tilo_actions::Described::new(tilo_actions::Did::verb(
                 tilo_actions::ActionKey::new(WORD_PROCESSOR, "document", "place-figure"),
@@ -709,7 +709,7 @@ fn run_records_replicate_without_polluting_history() {
             ),
             (
                 WORD_PROCESSOR.into(),
-                "file:/reports/q3.qdoc".into(),
+                "file:/reports/q3.tilo-doc".into(),
                 &mut report.doc,
             ),
         ];
@@ -752,7 +752,7 @@ fn run_records_replicate_without_polluting_history() {
 
     // Case `the_schema_genesis_is_nobodys_run`.
     {
-        // Every qdoc document opens with a change written under a fixed actor that
+        // Every tilo-doc document opens with a change written under a fixed actor that
         // no person is. Addressing that actor must find nothing: inverting the
         // genesis would take the document's own containers out with it.
         let (mut report, _intro) = Report::started_by_a_person();
