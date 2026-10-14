@@ -727,10 +727,13 @@ impl Widget for NotificationLayer {
             return false;
         };
         let notifications = self.notifications.clone();
+        let Some(layout) = self.layout() else {
+            return false;
+        };
         let Some(center) = self.center.as_mut() else {
             return false;
         };
-        let focused = center.focus_accessibility_path(notifications.host(), dialog);
+        let focused = center.focus_accessibility_path(notifications.host(), &layout, dialog);
         self.dirty |= focused;
         focused
     }

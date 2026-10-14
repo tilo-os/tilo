@@ -17590,6 +17590,7 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
         && let [0, dialog_path @ ..] = child_path
         && host.notification_center.focus_accessibility_path(
             &ChromeNotifications::new(&chrome).with_agents(&host.room_activity),
+            &host.qs_notification_layout(),
             dialog_path,
         )
     {
