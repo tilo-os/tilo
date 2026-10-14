@@ -1124,16 +1124,17 @@ impl Rooms {
                     .remove(room);
                 return Ok(());
             };
-            (
+            let now = SystemTime::now();
+            let room_readers =
+                readers(governed.peer(), &governed.peer().governed_access(now)?, now)?;
+            let taken = (
                 governed.workspace_id(),
                 governed.record.generation,
-                {
-                    let now = SystemTime::now();
-                    let peer = governed.peer();
-                    readers(peer, &peer.governed_access(now)?, now)?
-                },
+                room_readers,
                 steward,
-            )
+            );
+            drop(governed);
+            taken
         };
         {
             let mut stewardship = steward.channels.lock().await;
