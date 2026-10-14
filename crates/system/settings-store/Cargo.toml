@@ -25,12 +25,13 @@ unicode-normalization = "0.1.25"
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# Directory watch behind `watch_settings`; only long-lived readers opt in.
+notify = { workspace = true, optional = true }
 # The sections' types as models, so an app edits them by path.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
 
 [features]
-# Directory watch behind `watch_settings`; only long-lived readers opt in.
-watch = ["tilo-files/watch"]
+watch = ["dep:notify"]
 model = ["dep:tilo-resource"]
 
 [dev-dependencies]

@@ -178,9 +178,6 @@ pub(super) struct ActionRuntime {
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
     pub(super) local_history_status: Option<(bool, bool, bool)>,
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
-    /// What the broker holds of the surface `last_published_actions` names,
-    /// the base of the next delta.
-    pub(super) published_surface: Option<crate::collaboration::SurfacePublication>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
     /// Opaque, revision-bound continuation state for the broker directory.
@@ -252,7 +249,6 @@ impl ActionRuntime {
             last_control_availability: None,
             local_history_status: None,
             last_published_actions: None,
-            published_surface: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),

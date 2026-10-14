@@ -366,11 +366,6 @@ impl RemoteInputFirewall {
         self.peers.clear();
     }
 
-    /// Whether the kill switch is latched.
-    pub fn kill_switch_engaged(&self) -> bool {
-        self.kill_switch
-    }
-
     /// Release the kill switch.
     pub fn clear_kill_switch(&mut self) {
         self.kill_switch = false;

@@ -1037,7 +1037,6 @@ mod tests {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         };
         let mut strip = Strip::new(StripId::from(next_id()), "main");
         strip.window_groups = vec![group];
@@ -1443,7 +1442,6 @@ mod tests {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         };
         let mut strip = Strip::new(StripId::from(next_id()), "main");
         strip.window_groups = vec![group];
@@ -1502,7 +1500,6 @@ mod tests {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         };
         let group_id = group.id;
         let mut strip = Strip::new(StripId::from(next_id()), "main");
@@ -1619,7 +1616,6 @@ mod tests {
                 active_tab: tab_id,
                 width: WindowWidth::Normal,
                 maximized: false,
-                focus_history: Vec::new(),
             };
             let mut strip = Strip::new(StripId::from(peer_id()), "main");
             strip.window_groups = vec![group];
@@ -1655,7 +1651,6 @@ mod tests {
                 active_tab: tab_id,
                 width: WindowWidth::Normal,
                 maximized: false,
-                focus_history: Vec::new(),
             };
             let mut strip = Strip::new(StripId::from(next_id()), "main");
             strip.window_groups = vec![group];
@@ -1867,7 +1862,6 @@ mod tests {
             managed_agent_id: None,
             managed_workspace_id: None,
             kind: launcher::LaunchEventKind::SpawnFailed {
-                reason: launcher::LaunchFailure::LauncherUnavailable,
                 detail: "worker refused".into(),
             },
         }

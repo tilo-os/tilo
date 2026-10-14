@@ -38,7 +38,6 @@ fn desktop() -> (WorkspaceTree, StripId) {
         tabs: vec![tab],
         width: WindowWidth::Normal,
         maximized: false,
-        focus_history: Vec::new(),
     };
     let mut tree = WorkspaceTree::bootstrap_default();
     let strip = StripId::new();

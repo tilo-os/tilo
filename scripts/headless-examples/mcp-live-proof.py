@@ -34,9 +34,7 @@ import tempfile
 import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-# The nightly ignored-test lane points these at the binaries Cargo built for the run.
-SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "shell"))
-CONTROL = pathlib.Path(os.environ.get("TILO_CONTROL_BINARY", REPO / "target" / "debug" / "tilo-control"))
+SHELL = REPO / "target" / "debug" / "shell"
 SHIM = REPO / "scripts" / "tilo-mcp-server.py"
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _control import runtime_socket_path  # noqa: E402
@@ -100,7 +98,7 @@ def overlays() -> dict:
     layer that claimed to cause it is not confirmed at all.
     """
     out = subprocess.run(
-        [str(CONTROL), "--socket", SOCKET, "state-dump"],
+        [str(REPO / "target" / "debug" / "tilo-control"), "--socket", SOCKET, "state-dump"],
         capture_output=True,
         text=True,
         timeout=30,
@@ -111,7 +109,7 @@ def overlays() -> dict:
 
 
 def main() -> int:
-    for path, what in ((SHELL, "compositor"), (CONTROL, "tilo-control"), (SHIM, "MCP shim")):
+    for path, what in ((SHELL, "compositor"), (SHIM, "MCP shim")):
         if not path.exists():
             print(f"FAIL: {what} missing at {path}", file=sys.stderr)
             return 1

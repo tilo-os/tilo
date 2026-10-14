@@ -410,7 +410,6 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::SetBlockingScripts(_)
             | WebViewCommand::SetSiteExceptions(_)
             | WebViewCommand::RequestSiteStatus { .. }
-            | WebViewCommand::DevTools { .. }
             | WebViewCommand::Credentials(_)
             | WebViewCommand::SiteAction { .. }
             | WebViewCommand::StopLoading

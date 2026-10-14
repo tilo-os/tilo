@@ -302,8 +302,6 @@ pub struct GroupRow {
     /// Transient: the promoted group leaves its lane's leading gutter to the
     /// workspace wheel, as a user maximize does; a client fullscreen covers it.
     promotion_keeps_gutter: bool,
-    /// A maximize can cover the gutter without hiding its Restore controls.
-    promotion_keeps_controls: bool,
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
@@ -575,13 +573,9 @@ impl Pan {
         if gr.width() <= 0.0 {
             return None;
         }
-        // A group needs to be on screen, flush with the viewport's edges.
-        // The wheel-disc gutter is canvas the strip pans *with*: every
-        // group already starts past it, so a group revealed at the left
-        // edge never overlaps the disc. Bounding at the gutter instead
-        // panned the leftmost group's reveal all the way home to scroll 0,
-        // dragging the workspace switcher back into view.
-        let left_bound = self.viewport.x0;
+        // Groups must clear the leading wheel-disc gutter on the left and
+        // the viewport's right edge on the right.
+        let left_bound = self.viewport.x0 + self.inset;
         let right_bound = self.viewport.x1;
         let mut sx = self.scroll_x;
         // An oversized group cannot fit; reveal its start consistently.
@@ -991,7 +985,6 @@ impl GroupRow {
             leading_inset: 0.0,
             fullscreen_group: None,
             promotion_keeps_gutter: false,
-            promotion_keeps_controls: false,
             hidden: false,
             group_drag: None,
             touch_pan: None,
@@ -1240,38 +1233,20 @@ impl GroupRow {
 
     /// Visible screen-space edge grip, using ordinary widget dispatch geometry.
     /// The viewport clips grips, and promoted or hidden groups have none.
-    pub fn group_resize_rects(&self, group_id: u64) -> Vec<Rect> {
+    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
         if self.hidden {
-            return Vec::new();
+            return None;
         }
-        let Some((index, group)) = self
+        let (index, group) = self
             .groups
             .iter()
             .enumerate()
-            .find(|(_, group)| group.id == group_id)
-        else {
-            return Vec::new();
-        };
+            .find(|(_, group)| group.id == group_id)?;
         if self.layout_hides_group(index) || self.fullscreen_group == Some(group_id) {
-            return Vec::new();
+            return None;
         }
-        group
-            .resize_grab_rects()
-            .into_iter()
-            .map(|rect| rect.intersect(self.rect))
-            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
-            .collect()
-    }
-
-    /// Whether `p` lies on any visible window's edge grip.
-    pub fn resize_grab_hit_at(&self, p: Point) -> bool {
-        !self.hidden
-            && self.rect.contains(p)
-            && self.groups.iter().enumerate().any(|(i, group)| {
-                !self.layout_hides_group(i)
-                    && self.fullscreen_group != Some(group.id)
-                    && group.resize_grab_hit(p)
-            })
+        let rect = group.resize_grab_rect()?.intersect(self.rect);
+        (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
     }
 
     /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
@@ -1280,15 +1255,6 @@ impl GroupRow {
     pub fn set_promotion_keeps_gutter(&mut self, keeps: bool) {
         if self.promotion_keeps_gutter != keeps {
             self.promotion_keeps_gutter = keeps;
-            self.structure_dirty = true;
-        }
-    }
-
-    /// Keep the maximized system controls even when the promoted group
-    /// covers its gutter. Client fullscreen leaves this off.
-    pub fn set_promotion_keeps_controls(&mut self, keeps: bool) {
-        if self.promotion_keeps_controls != keeps {
-            self.promotion_keeps_controls = keeps;
             self.structure_dirty = true;
         }
     }
@@ -3343,10 +3309,6 @@ impl Widget for GroupRow {
         clippy::too_many_lines,
         reason = "one ordered build of the row: group nodes, handles, then either the single run or one run per lane"
     )]
-    fn composition_follows_allocation(&self) -> bool {
-        true
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3375,9 +3337,6 @@ impl Widget for GroupRow {
         for (i, group) in self.groups.iter_mut().enumerate() {
             group.set_reduce_motion(theme.reduce_motion);
             let lane = lane_of.get(i).copied().unwrap_or(0);
-            // No seam handle sits left of a lane's first group.
-            let prev_lane = i.checked_sub(1).and_then(|p| lane_of.get(p).copied());
-            group.set_leads_lane(prev_lane != Some(lane));
             let dest_fits = snap_lane.get(lane).copied().unwrap_or(false);
             if group.is_closing() && !theme.reduce_motion {
                 // A closing slot owns its width spring even when its destination
@@ -3410,13 +3369,6 @@ impl Widget for GroupRow {
         let usable_per_group = self.usable_per_group();
         for (g, &usable) in self.groups.iter_mut().zip(usable_per_group.iter()) {
             g.set_strip_usable_px(usable);
-        }
-        for group in &mut self.groups {
-            group.set_fullscreen_presentation(
-                self.fullscreen_group == Some(group.id)
-                    && !self.promotion_keeps_gutter
-                    && !self.promotion_keeps_controls,
-            );
         }
         let group_nodes: Vec<NodeId> = self
             .groups
@@ -4767,23 +4719,6 @@ impl GroupRow {
         // remembered cursor (or an active capture) before siblings. Keep every
         // sibling in the fallback order: synthetic and keyboard-adjacent test
         // paths can legitimately lack a preceding cursor move.
-        // Edge grips first, for every group: they overlay the windows' own
-        // content, so no group's tile may swallow the pointer before the group
-        // under it has seen it.
-        if matches!(
-            event,
-            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
-        ) {
-            for i in 0..self.groups.len() {
-                if self.layout_hides_group(i) {
-                    continue;
-                }
-                if self.groups[i].handle_edge_input(event, ctx.scale_factor, *ctx.modifiers) {
-                    *ctx.handled = true;
-                    return;
-                }
-            }
-        }
         let preferred = matches!(event, WindowEvent::MouseInput { .. }).then(|| {
             self.groups
                 .iter()
@@ -7624,44 +7559,6 @@ mod tests {
         direct_pan_keeps_a_fifth_viewport_after_the_last_app();
         direct_pan_tracks_reversals_and_only_settles_elastic_overpull();
         direct_pan_overpull_has_diminishing_gain_and_returns_to_resting_end();
-    }
-
-    #[test]
-    fn revealing_a_half_visible_leftmost_group_pans_only_far_enough() {
-        // Viewport 0..1000 with the 96 px wheel-disc gutter, so the first
-        // group lies at canvas 96..696 and the second at 704..1304.
-        let pan = Pan {
-            viewport: Rect::new(0.0, 0.0, 1000.0, 600.0),
-            inset: 96.0,
-            scroll_x: 400.0,
-            content_w: 2400.0,
-            ..Pan::default()
-        };
-        // Scrolled 400, the first group sits at -304..296: half visible.
-        let leftmost = Rect::new(-304.0, 0.0, 296.0, 600.0);
-        let target = pan
-            .scroll_target_for(leftmost)
-            .expect("a cut group is revealed");
-        assert!(
-            (target - 96.0).abs() < 0.01,
-            "flush with the screen edge (scroll 96), not home (0) with the \
-             wheel disc back on screen: {target}"
-        );
-        // Fully visible already: nothing to do.
-        assert_eq!(
-            pan.scroll_target_for(Rect::new(10.0, 0.0, 610.0, 600.0)),
-            None
-        );
-        // The right edge is unchanged.
-        let target = pan
-            .scroll_target_for(Rect::new(
-                704.0 - 400.0 + 500.0,
-                0.0,
-                1404.0 - 400.0 + 500.0,
-                600.0,
-            ))
-            .expect("a group cut on the right is revealed");
-        assert!((target - 904.0).abs() < 0.01, "{target}");
     }
 
     #[test]

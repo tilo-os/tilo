@@ -28,7 +28,7 @@ serde_json = { workspace = true, optional = true }
 # Native change notification (inotify, FSEvents), for `Dir::watch` on native
 # directories. Off by default so persisting crates stay free of it.
 [features]
-watch = ["dep:notify", "dep:inotify"]
+watch = ["dep:notify"]
 # `native::atomic::json`: load-or-default reading and atomic saving of `serde`
 # values.
 json = ["dep:serde", "dep:serde_json"]
@@ -102,8 +102,3 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-
-# The change-only directory watch (`native::watch_changes`) on Linux, where
-# `notify` always watches opens.
-[target.'cfg(target_os = "linux")'.dependencies]
-inotify = { version = "0.11", default-features = false, optional = true }

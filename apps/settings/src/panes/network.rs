@@ -25,8 +25,7 @@ use ui::LocalState;
 use ui::collaboration::{NetworkWakeStatus, WifiContinuityCommand, WifiContinuityReply};
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
-use ui::tokens::Rhythm;
-use ui::widget::{Button, Dropdown, QrWidget, Row, Spacer, TextInput, Toggle, Widget};
+use ui::widget::{Button, Dropdown, QrWidget, Row, Spacer, Text, TextInput, Toggle, Widget};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::dispatcher::dispatcher_or_real;
@@ -37,8 +36,7 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, Item, SettingsSection, block, card, card_with_action, error_caption, error_row, field_row,
-    note, row, rows, setting_row, setting_row_described, value_row,
+    El, caption, card, card_with_action, error_caption, error_row, rows, setting_row, value_row,
 };
 
 // Ask the authenticated host: this app intentionally has an isolated network
@@ -2299,12 +2297,12 @@ impl NetworkModel {
     }
 
     /// `button`, sized to its label and pushed to the row's start.
-    fn button_row(&self, id: &str, label: &str, effect: NetworkEffect) -> Item {
-        row(Box::new(
+    fn button_row(&self, id: &str, label: &str, effect: NetworkEffect) -> El {
+        Box::new(
             Row::new()
                 .push(Box::new(self.button(id, label, effect)))
                 .push(Box::new(Spacer::new())),
-        ))
+        )
     }
 
     /// A switch showing `on`, invoking `set`.
@@ -2322,9 +2320,9 @@ impl NetworkModel {
 
     fn build_composition(&self) -> Box<dyn Widget> {
         if !self.loaded {
-            let mut pending = vec![note(&t("net-pending"))];
+            let mut pending = vec![caption(&t("net-pending"))];
             if let Some(notice) = &self.notice {
-                pending.push(note(notice));
+                pending.push(caption(notice));
             }
             return crate::widgets::cards(vec![card(&t("net-pending-title"), rows(pending))]);
         }
@@ -2355,7 +2353,7 @@ impl NetworkModel {
 
     /// Connectivity summary card: `NetworkManager`'s captive-portal-aware
     /// state, plus a sign-in shortcut when a portal is blocking the route.
-    fn internet_access_card(&self) -> SettingsSection {
+    fn internet_access_card(&self) -> El {
         let connectivity = t("net-connectivity");
         let connectivity_row = match &self.read_errors.connectivity {
             Some(error) => error_row(
@@ -2370,7 +2368,7 @@ impl NetworkModel {
         let portal = self.connectivity == ConnectivityState::Portal;
         let mut content = vec![
             connectivity_row,
-            note(&t(if portal {
+            caption(&t(if portal {
                 "net-portal-caption"
             } else {
                 "net-connectivity-caption"
@@ -2388,7 +2386,7 @@ impl NetworkModel {
 
     /// Wi-Fi card: header carries the switch; body is status + scanned-network
     /// rows + a Refresh action.
-    fn wifi_card(&self) -> SettingsSection {
+    fn wifi_card(&self) -> El {
         let wifi_toggle =
             self.switch_control("network.wifi", self.wifi_enabled, NetworkEffect::SET_WIFI);
         // An unread radio state is not offered as a switch position.
@@ -2400,7 +2398,7 @@ impl NetworkModel {
             },
         );
 
-        let mut wifi_rows: Vec<Item> = Vec::new();
+        let mut wifi_rows: Vec<El> = Vec::new();
         let status_label = t("net-status");
         if self.wifi_absent() {
             wifi_rows.push(value_row(&status_label, &t("net-no-wifi-adapter")));
@@ -2411,7 +2409,7 @@ impl NetworkModel {
             }
         }
         if let Some(notice) = &self.notice {
-            wifi_rows.push(note(notice));
+            wifi_rows.push(caption(notice));
         }
         if self.wifi_enabled {
             for net in &self.networks {
@@ -2423,34 +2421,32 @@ impl NetworkModel {
             }
         }
         if self.in_flight > 0 {
-            wifi_rows.push(note(&t("net-applying")));
+            wifi_rows.push(caption(&t("net-applying")));
         } else if self.snapshot.is_some() {
-            wifi_rows.push(note(&t("net-refreshing")));
+            wifi_rows.push(caption(&t("net-refreshing")));
         }
-        wifi_rows.push(row(Box::new(
-            Row::new()
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(self.button(
-                    "settings.network.refresh",
-                    &t("net-refresh"),
-                    NetworkEffect::RefreshNetworks,
-                ))),
+        wifi_rows.push(Box::new(Row::new().push(Box::new(Spacer::new())).push(
+            Box::new(self.button(
+                "settings.network.refresh",
+                &t("net-refresh"),
+                NetworkEffect::RefreshNetworks,
+            )),
         )));
-        wifi_rows.push(note(&t("net-wifi-caption")));
+        wifi_rows.push(caption(&t("net-wifi-caption")));
 
         card_with_action(&t("net-wifi"), wifi_toggle, rows(wifi_rows))
     }
 
     /// Wired card. `NetworkManager` applies the switch to this interface
     /// only; Wi-Fi and VPN stay untouched.
-    fn wired_card(&self) -> SettingsSection {
+    fn wired_card(&self) -> El {
         if let Some(error) = &self.read_errors.wired {
             return card(
                 &t("net-wired"),
-                rows(vec![row(error_caption(&t_args(
+                rows(vec![error_caption(&t_args(
                     "net-wired-error",
                     &[("error", error.as_str().into())],
-                )))]),
+                ))]),
             );
         }
         if self.wired.device.is_some() {
@@ -2468,15 +2464,15 @@ impl NetworkModel {
         }
     }
 
-    fn airplane_card(&self) -> SettingsSection {
+    fn airplane_card(&self) -> El {
         let mut content = Vec::new();
         if let Some(error) = &self.read_errors.radios {
-            content.push(row(error_caption(&t_args(
+            content.push(error_caption(&t_args(
                 "net-radios-error",
                 &[("error", error.as_str().into())],
-            ))));
+            )));
         }
-        content.push(note(&t("net-airplane-caption")));
+        content.push(caption(&t("net-airplane-caption")));
         card_with_action(
             &t("net-airplane"),
             Box::new(
@@ -2492,7 +2488,7 @@ impl NetworkModel {
     }
 
     /// The hotspot's on/off state, or why the radios could not be read.
-    fn hotspot_status_row(&self) -> Item {
+    fn hotspot_status_row(&self) -> El {
         let status = t("net-status");
         if let Some(error) = &self.read_errors.radios {
             return error_row(
@@ -2510,31 +2506,25 @@ impl NetworkModel {
 
     /// Rows for the hotspot card: name/password/band, the start and QR
     /// actions, and (when active) the QR code and connected devices.
-    fn hotspot_rows(&self) -> Vec<Item> {
+    fn hotspot_rows(&self) -> Vec<El> {
         let hotspot_secret = self.hotspot_password.lock().map_or_else(
             |_| Zeroizing::new(String::new()),
             |value| Zeroizing::new(value.clone()),
         );
-        let mut hotspot_rows: Vec<Item> = vec![
+        let mut hotspot_rows: Vec<El> = vec![
             self.hotspot_status_row(),
-            field_row(
-                &t("net-hotspot-name"),
-                Box::new(
-                    TextInput::from_state(&self.hotspot_name)
-                        .with_id("network.hotspot.ssid")
-                        .with_placeholder(t("net-hotspot-name")),
-                ),
+            Box::new(
+                TextInput::from_state(&self.hotspot_name)
+                    .with_id("network.hotspot.ssid")
+                    .with_placeholder(t("net-hotspot-name")),
             ),
-            field_row(
-                &t("net-hotspot-password"),
-                Box::new(
-                    TextInput::local()
-                        .with_id("network.hotspot.password")
-                        .with_external_buffer(Arc::clone(&self.hotspot_password))
-                        .with_initial_value(&hotspot_secret)
-                        .with_secret(true)
-                        .with_placeholder(t("net-hotspot-password")),
-                ),
+            Box::new(
+                TextInput::local()
+                    .with_id("network.hotspot.password")
+                    .with_external_buffer(Arc::clone(&self.hotspot_password))
+                    .with_initial_value(&hotspot_secret)
+                    .with_secret(true)
+                    .with_placeholder(t("net-hotspot-password")),
             ),
             setting_row(
                 &t("net-band"),
@@ -2547,7 +2537,7 @@ impl NetworkModel {
                     .with_placeholder(&self.hotspot_band.get()),
                 ),
             ),
-            row(Box::new(
+            Box::new(
                 Row::new()
                     .push(Box::new(self.button(
                         "settings.network.hotspot.apply",
@@ -2568,23 +2558,23 @@ impl NetworkModel {
                         NetworkEffect::ShowHotspotCode,
                     )))
                     .push(Box::new(Spacer::new())),
-            )),
+            ),
         ];
         if self.hotspot_code_shown
             && let Ok(payload) = self
                 .hotspot(None, None, None)
                 .and_then(|config| config.qr_payload())
         {
-            hotspot_rows.push(block(Box::new(QrWidget::new(payload.into_bytes()))));
-            hotspot_rows.push(note(&t("net-qr-caption")));
+            hotspot_rows.push(Box::new(QrWidget::new(payload.into_bytes())));
+            hotspot_rows.push(caption(&t("net-qr-caption")));
         }
         if let Some(error) = &self.read_errors.hotspot_clients
             && self.radios.hotspot_active
         {
-            hotspot_rows.push(row(error_caption(&t_args(
+            hotspot_rows.push(error_caption(&t_args(
                 "net-hotspot-clients-error",
                 &[("error", error.as_str().into())],
-            ))));
+            )));
         } else if self.radios.hotspot_active {
             let clients = t("net-hotspot-clients");
             hotspot_rows.push(value_row(&clients, &self.hotspot_clients.len().to_string()));
@@ -2594,12 +2584,12 @@ impl NetworkModel {
                     .map_or_else(|| t("net-signal-unknown"), |dbm| format!("{dbm} dBm"));
                 hotspot_rows.push(value_row(&client.mac, &signal));
             }
-            hotspot_rows.push(note(&t("net-hotspot-clients-caption")));
+            hotspot_rows.push(caption(&t("net-hotspot-clients-caption")));
         }
         hotspot_rows
     }
 
-    fn hotspot_card(&self) -> SettingsSection {
+    fn hotspot_card(&self) -> El {
         card_with_action(
             &t("net-hotspot"),
             Box::new(self.switch_control(
@@ -2611,7 +2601,7 @@ impl NetworkModel {
         )
     }
 
-    fn profile_card(&self) -> SettingsSection {
+    fn profile_card(&self) -> El {
         card_with_action(
             &t("net-profiles"),
             Box::new(self.button(
@@ -2624,70 +2614,68 @@ impl NetworkModel {
                 NetworkEffect::ShowConnectionPolicy,
             )),
             rows(match &self.read_errors.profiles {
-                Some(error) => vec![row(error_caption(&t_args(
+                Some(error) => vec![error_caption(&t_args(
                     "net-profiles-error",
                     &[("error", error.as_str().into())],
-                )))],
+                ))],
                 None => self.profile_rows(),
             }),
         )
     }
 
-    fn profile_rows(&self) -> Vec<Item> {
+    fn profile_rows(&self) -> Vec<El> {
         let wifi_profiles: Vec<&SavedNetworkProfile> = self
             .profiles
             .iter()
             .filter(|profile| profile.kind == "802-11-wireless")
             .collect();
         if wifi_profiles.is_empty() {
-            return vec![note(&t("net-no-saved-wifi"))];
+            return vec![caption(&t("net-no-saved-wifi"))];
         }
-        let mut rows_out: Vec<Item> = Vec::new();
+        let mut rows_out: Vec<El> = Vec::new();
         for profile in &wifi_profiles {
             let uuid = profile.uuid.clone();
-            rows_out.push(setting_row(
-                &profile.name,
-                Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .with_rhythm(Rhythm::Related)
-                        .push(Box::new(self.button(
-                            &format!("settings.network.profile.share.{}", profile.uuid),
-                            &t("net-share-devices"),
-                            NetworkEffect::ShareNetwork {
-                                profile: profile.uuid.clone(),
-                            },
-                        )))
-                        .push(Box::new(self.button(
-                            &format!("settings.network.profile.forget.{}", profile.uuid),
-                            &t("net-forget"),
-                            NetworkEffect::ForgetNetwork {
-                                profile: profile.uuid.clone(),
-                            },
-                        )))
-                        .push(Box::new(
-                            self.cx.bind(
-                                Toggle::from_state(&LocalState::new(profile.autoconnect)).with_id(
-                                    &format!("network.profile.autoconnect.{}", profile.uuid),
-                                ),
-                                effect(NetworkEffect::SET_AUTOCONNECT)
-                                    .map(move |on: bool| (uuid.clone(), on)),
-                            ),
-                        )),
-                ),
+            rows_out.push(Box::new(
+                Row::new()
+                    .push(Box::new(
+                        Text::new(&profile.name).with_role(ui::TextRole::Body),
+                    ))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(self.button(
+                        &format!("settings.network.profile.share.{}", profile.uuid),
+                        &t("net-share-devices"),
+                        NetworkEffect::ShareNetwork {
+                            profile: profile.uuid.clone(),
+                        },
+                    )))
+                    .push(Box::new(self.button(
+                        &format!("settings.network.profile.forget.{}", profile.uuid),
+                        &t("net-forget"),
+                        NetworkEffect::ForgetNetwork {
+                            profile: profile.uuid.clone(),
+                        },
+                    )))
+                    .push(Box::new(
+                        self.cx.bind(
+                            Toggle::from_state(&LocalState::new(profile.autoconnect))
+                                .with_id(&format!("network.profile.autoconnect.{}", profile.uuid)),
+                            effect(NetworkEffect::SET_AUTOCONNECT)
+                                .map(move |on: bool| (uuid.clone(), on)),
+                        ),
+                    )),
             ));
         }
         for profile in &wifi_profiles {
             rows_out.extend(self.wake_rows(profile));
         }
-        rows_out.push(note(&t("net-share-caption")));
+        rows_out.push(caption(&t("net-share-caption")));
         if self.policy_open {
             self.push_policy_rows(&wifi_profiles, &mut rows_out);
         }
         rows_out
     }
 
-    fn wake_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
+    fn wake_rows(&self, profile: &SavedNetworkProfile) -> Vec<El> {
         let label = t_args(
             "net-wake-network",
             &[("name", profile.name.as_str().into())],
@@ -2703,19 +2691,18 @@ impl NetworkModel {
                     effect(NetworkEffect::SET_NETWORK_WAKE).map(move |on: bool| (uuid.clone(), on)),
                 );
                 let description = wake_description(status);
-                let mut rows = vec![setting_row_described(
-                    &label,
-                    &t(description),
-                    Box::new(toggle),
-                )];
+                let mut rows = vec![
+                    setting_row(&label, Box::new(toggle)),
+                    caption(&t(description)),
+                ];
                 if let Some(problem) = &status.problem {
-                    rows.push(row(error_caption(problem)));
+                    rows.push(error_caption(problem));
                 }
                 rows
             }
             Some(Err(error)) => vec![
                 value_row(&label, &t("net-wake-unavailable")),
-                row(error_caption(error)),
+                error_caption(error),
             ],
             None => vec![value_row(&label, &t("net-wake-unavailable"))],
         }
@@ -2723,7 +2710,7 @@ impl NetworkModel {
 
     /// The selected saved Wi-Fi network's policy editor: metered, hardware
     /// address and proxy.
-    fn push_policy_rows(&self, wifi_profiles: &[&SavedNetworkProfile], rows_out: &mut Vec<Item>) {
+    fn push_policy_rows(&self, wifi_profiles: &[&SavedNetworkProfile], rows_out: &mut Vec<El>) {
         let Some(profile) = Self::selected(wifi_profiles, &self.wifi_profile) else {
             return;
         };
@@ -2739,12 +2726,12 @@ impl NetworkModel {
                 ),
             ));
         }
-        rows_out.push(note(&t_args(
+        rows_out.push(caption(&t_args(
             "net-policy-for",
             &[("name", profile.name.as_str().into())],
         )));
         let Some(form) = self.policy_forms.get(&profile.uuid) else {
-            rows_out.push(note(&t("net-policy-unread")));
+            rows_out.push(caption(&t("net-policy-unread")));
             return;
         };
         rows_out.push(setting_row(
@@ -2772,7 +2759,7 @@ impl NetworkModel {
                 .with_placeholder(&form.mac.get()),
             ),
         ));
-        rows_out.push(field_row(
+        rows_out.push(setting_row(
             &t("net-proxy-url"),
             Box::new(
                 TextInput::from_state(&form.proxy)
@@ -2792,8 +2779,8 @@ impl NetworkModel {
         ));
     }
 
-    fn diagnostic_rows(&self) -> Vec<Item> {
-        let mut out: Vec<Item> = vec![self.button_row(
+    fn diagnostic_rows(&self) -> Vec<El> {
+        let mut out: Vec<El> = vec![self.button_row(
             "settings.network.diagnostics",
             &t("net-run-diagnostics"),
             NetworkEffect::RunDiagnostics,
@@ -2820,55 +2807,49 @@ impl NetworkModel {
             };
             out.push(value_row(&t("net-diag-dns"), &dns));
             for recommendation in &d.recommendations {
-                out.push(note(recommendation));
+                out.push(caption(recommendation));
             }
         } else {
-            out.push(note(&t("net-diag-idle")));
+            out.push(caption(&t("net-diag-idle")));
         }
         out
     }
 
     /// A masked field over `buffer`, which never leaves this process.
-    fn secret_field(buffer: &Arc<Mutex<String>>, id: &str, placeholder: &str) -> Item {
+    fn secret_field(buffer: &Arc<Mutex<String>>, id: &str, placeholder: &str) -> El {
         let initial = buffer.lock().map_or_else(
             |_| Zeroizing::new(String::new()),
             |value| Zeroizing::new(value.clone()),
         );
-        field_row(
-            placeholder,
-            Box::new(
-                TextInput::local()
-                    .with_id(id)
-                    .with_external_buffer(Arc::clone(buffer))
-                    .with_initial_value(&initial)
-                    .with_secret(true)
-                    .with_placeholder(placeholder),
-            ),
+        Box::new(
+            TextInput::local()
+                .with_id(id)
+                .with_external_buffer(Arc::clone(buffer))
+                .with_initial_value(&initial)
+                .with_secret(true)
+                .with_placeholder(placeholder),
         )
     }
 
     /// A text field over `state`.
-    fn text_field(state: &LocalState<String>, id: &str, placeholder: &str) -> Item {
-        field_row(
-            placeholder,
-            Box::new(
-                TextInput::from_state(state)
-                    .with_id(id)
-                    .with_placeholder(placeholder),
-            ),
+    fn text_field(state: &LocalState<String>, id: &str, placeholder: &str) -> El {
+        Box::new(
+            TextInput::from_state(state)
+                .with_id(id)
+                .with_placeholder(placeholder),
         )
     }
 
-    fn mobile_rows(&self) -> Vec<Item> {
+    fn mobile_rows(&self) -> Vec<El> {
         let mut rows = Vec::new();
         if let Some(error) = &self.read_errors.sims {
-            rows.push(row(error_caption(&t_args(
+            rows.push(error_caption(&t_args(
                 "net-sims-error",
                 &[("error", error.as_str().into())],
-            ))));
+            )));
         }
         rows.extend([
-            note(&t("net-mobile-caption")),
+            caption(&t("net-mobile-caption")),
             Self::text_field(
                 &self.mobile_name,
                 "network.mobile.profile",
@@ -2883,7 +2864,7 @@ impl NetworkModel {
                     apn: None,
                 },
             ),
-            note(&t("net-sim-pin-caption")),
+            caption(&t("net-sim-pin-caption")),
         ]);
         if !self.sims.is_empty() {
             rows.push(setting_row(
@@ -2911,7 +2892,7 @@ impl NetworkModel {
         rows
     }
 
-    fn enterprise_rows(&self) -> Vec<Item> {
+    fn enterprise_rows(&self) -> Vec<El> {
         let form = &self.enterprise;
         vec![
             setting_row(
@@ -2993,8 +2974,8 @@ impl NetworkModel {
     /// Keep specialist 802.1X credentials out of the ordinary connection
     /// view. The affordance remains visible, while the form appears only when
     /// someone has chosen to add that kind of network.
-    fn enterprise_card(&self) -> SettingsSection {
-        let mut content = vec![note(&t("net-enterprise-caption"))];
+    fn enterprise_card(&self) -> El {
+        let mut content = vec![caption(&t("net-enterprise-caption"))];
         if self.enterprise_open {
             content.extend(self.enterprise_rows());
         }
@@ -3012,7 +2993,7 @@ impl NetworkModel {
 
     /// One scanned-network row: signal + lock glyph + SSID on the left, a
     /// Connect / Connected / Cancel button on the right.
-    fn network_row(&self, net: &WifiNetworkInfo) -> Item {
+    fn network_row(&self, net: &WifiNetworkInfo) -> El {
         let signal_glyph = wifi_signal_glyph(net.signal);
         // A closed padlock for secure networks, its open-padlock pair for open
         // ones — both from the MDI `lock` family the shipped fonts carry, so the
@@ -3040,12 +3021,17 @@ impl NetworkModel {
                 },
             ))
         };
-        setting_row(&label, cta)
+        Box::new(
+            Row::new()
+                .push(Box::new(Text::new(&label).with_role(ui::TextRole::Body)))
+                .push(Box::new(Spacer::new()))
+                .push(cta),
+        )
     }
 
     /// The password prompt beneath a secure network: a masked,
     /// process-local field and a Join button.
-    fn password_prompt(&self, ssid: &str) -> Item {
+    fn password_prompt(&self, ssid: &str) -> El {
         let buffer = self
             .join_passwords
             .get(ssid)
@@ -3056,8 +3042,7 @@ impl NetworkModel {
             .with_external_buffer(buffer)
             .with_secret(true)
             .with_placeholder(t("net-password"));
-        // A field and its Join button share one line: not a label/control pair.
-        row(Box::new(
+        Box::new(
             Row::new()
                 .push(Box::new(field))
                 .push(Box::new(Spacer::new()))
@@ -3069,16 +3054,16 @@ impl NetworkModel {
                         password: None,
                     },
                 ))),
-        ))
+        )
     }
 
     /// Rows for the Wired card: the link, and the selected wired profile's
     /// IPv4 settings.
-    fn wired_rows(&self) -> Vec<Item> {
+    fn wired_rows(&self) -> Vec<El> {
         if !self.wired.connected {
             return vec![
                 value_row(&t("net-ethernet"), &t("net-not-connected")),
-                note(&t("net-wired-empty")),
+                caption(&t("net-wired-empty")),
             ];
         }
         let mut out = Vec::new();
@@ -3115,7 +3100,7 @@ impl NetworkModel {
             ));
         }
         let Some(form) = self.ipv4_forms.get(&profile.uuid) else {
-            out.push(note(&t("net-ipv4-unsupported")));
+            out.push(caption(&t("net-ipv4-unsupported")));
             return out;
         };
         out.extend([
@@ -3143,58 +3128,56 @@ impl NetworkModel {
                     dns: None,
                 },
             ),
-            note(&t("net-ipv4-caption")),
+            caption(&t("net-ipv4-caption")),
         ]);
         out
     }
 
-    fn vpn_rows(&self) -> Vec<Item> {
+    fn vpn_rows(&self) -> Vec<El> {
         if let Some(error) = &self.read_errors.vpns {
-            return vec![row(error_caption(&t_args(
+            return vec![error_caption(&t_args(
                 "net-vpn-error",
                 &[("error", error.as_str().into())],
-            )))];
+            ))];
         }
         if self.vpns.is_empty() {
             return vec![
-                note(&t("net-vpn-empty")),
-                row(Box::new(Row::new().push(Box::new(Spacer::new())).push(
-                    Box::new(self.button(
-                        "settings.network.vpn.studio.open",
-                        &t("net-open-vpn-studio"),
-                        NetworkEffect::OpenVpnStudio { vpn: None },
-                    )),
-                ))),
-            ];
-        }
-        let mut out: Vec<Item> = Vec::new();
-        for vpn in &self.vpns {
-            let name = vpn.name.clone();
-            out.push(setting_row(
-                &vpn.name,
+                caption(&t("net-vpn-empty")),
                 Box::new(
                     Row::new()
-                        .no_wrap()
-                        .with_rhythm(Rhythm::Related)
+                        .push(Box::new(Spacer::new()))
                         .push(Box::new(self.button(
-                            &format!("settings.network.vpn.studio.{}", vpn.name),
+                            "settings.network.vpn.studio.open",
                             &t("net-open-vpn-studio"),
-                            NetworkEffect::OpenVpnStudio {
-                                vpn: Some(vpn.name.clone()),
-                            },
-                        )))
-                        .push(Box::new(
-                            self.cx.bind(
-                                Toggle::from_state(&LocalState::new(vpn.active))
-                                    .with_id(&format!("settings.network.vpn.{}", vpn.name)),
-                                effect(NetworkEffect::SET_VPN)
-                                    .map(move |on: bool| (name.clone(), on)),
-                            ),
-                        )),
+                            NetworkEffect::OpenVpnStudio { vpn: None },
+                        ))),
                 ),
+            ];
+        }
+        let mut out: Vec<El> = Vec::new();
+        for vpn in &self.vpns {
+            let name = vpn.name.clone();
+            out.push(Box::new(
+                Row::new()
+                    .push(Box::new(Text::new(&vpn.name).with_role(ui::TextRole::Body)))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(self.button(
+                        &format!("settings.network.vpn.studio.{}", vpn.name),
+                        &t("net-open-vpn-studio"),
+                        NetworkEffect::OpenVpnStudio {
+                            vpn: Some(vpn.name.clone()),
+                        },
+                    )))
+                    .push(Box::new(
+                        self.cx.bind(
+                            Toggle::from_state(&LocalState::new(vpn.active))
+                                .with_id(&format!("settings.network.vpn.{}", vpn.name)),
+                            effect(NetworkEffect::SET_VPN).map(move |on: bool| (name.clone(), on)),
+                        ),
+                    )),
             ));
         }
-        out.push(note(&t("net-vpn-caption")));
+        out.push(caption(&t("net-vpn-caption")));
         out
     }
 }
