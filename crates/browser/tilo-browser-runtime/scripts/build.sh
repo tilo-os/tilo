@@ -3,6 +3,7 @@
 #   pkg/                wasm-bindgen output (--target web)
 #   *.mjs, index.html   page host and the desktop entry page
 #   app/index.html      the full-tab app entry page (web-routing.md)
+#   locales/            the entry pages' arrival lines (web/arrival.mjs)
 #   fonts/, fonts.json  canonical product fonts, their manifest and licences
 #   data/, data.json    application data fetched on request (desktop bundle:
 #                       the Typst editor's fonts), with sizes and hashes
@@ -185,6 +186,8 @@ moq_kept=0
 kept media-moq-library.mjs && moq_kept=1
 find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' ! -name media-moq-library.mjs -exec cp {} "$out/" \;
 cp "$crate/web/index.html" "$out/index.html"
+mkdir -p "$out/locales"
+cp "$crate"/web/locales/*.ftl "$out/locales/"
 mkdir -p "$out/app"
 cp "$crate/web/app/index.html" "$out/app/index.html"
 # The live plane's MoQ library is bundled from the published @moq/net pinned
