@@ -635,7 +635,8 @@ def browser_report(**changes) -> dict:
         "adapter": {"vendor": "google", "architecture": "swiftshader", "device": "", "description": ""},
         "browser": {"product": "Chrome/153.0.8010.12"},
         "viewport": {"width": 1920, "height": 1080, "deviceScaleFactor": 1},
-        "workload": {"rounds": 2, "apps": ["so.tilo.notes", "so.tilo.sheets"], "inputHz": 120, "cpuThrottle": 1},
+        "workload": {"rounds": 2, "apps": ["so.tilo.notes", "so.tilo.sheets"], "inputHz": 120, "cpuThrottle": 1,
+                     "demoSeconds": 5},
         "samples": {"load_ms": [900.0, 1100.0], "open_ms": [20.0, 30.0, 25.0, 35.0],
                     "open_ready_ms": [60.0, 90.0, 70.0, 80.0], "activate_ms": [12.0, 14.0, 40.0],
                     "demo_interval_ms": [16.0, 17.0, 33.0, 18.0], "demo_work_ms": [9.0, 10.0, 11.0],
@@ -692,10 +693,24 @@ class BrowserQualification(unittest.TestCase):
         written = set(re.findall(r"\b([a-z_]+_(?:ms|per_s)): rounds", source[source.index("samples: {"):]))
         self.assertEqual(written, set(adapters.BROWSER_KPIS))
 
-    def test_every_browser_kpi_has_a_budget(self):
+    def test_a_run_without_the_demo_reports_everything_else(self):
+        report = browser_report(demoSeconds=0)
+        report["samples"] = {field: values for field, values in report["samples"].items()
+                             if field not in adapters.BROWSER_DEMO_FIELDS}
+        records = {item.kpi for item in adapters.browser_qualification(report, BROWSER_ENV)}
+        self.assertNotIn("browser.demo.frame_interval", records)
+        self.assertIn("browser.activate.first_frame", records)
+        with self.assertRaisesRegex(ValueError, "demo samples from a run without the demo"):
+            adapters.browser_qualification(browser_report(demoSeconds=0), BROWSER_ENV)
+
+    def test_every_kpi_the_scheduled_lane_reports_has_a_budget(self):
+        """The nightly job runs without the demo (perf-scheduled.yml: --demo-seconds 0)."""
         budgets = compare.load_budgets(compare.BUDGETS)
         budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("browser.")}
-        self.assertEqual(budgeted, {kpi for kpi, _ in adapters.BROWSER_KPIS.values()})
+        self.assertEqual(budgeted, {kpi for field, (kpi, _) in adapters.BROWSER_KPIS.items()
+                                    if field not in adapters.BROWSER_DEMO_FIELDS})
+        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        self.assertIn("--demo-seconds 0", workflow)
 
 
 if __name__ == "__main__":

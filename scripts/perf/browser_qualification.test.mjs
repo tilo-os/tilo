@@ -90,11 +90,13 @@ test("Chrome's flags follow the renderer and whether the run is root's", () => {
   assert.ok(ci.includes('--no-sandbox'), 'Chrome refuses to run as root with its sandbox');
   assert.ok(!chromeFlags('swiftshader', 1000).includes('--no-sandbox'));
   assert.ok(!chromeFlags('gpu', undefined).includes('--no-sandbox'));
+  assert.throws(() => parseArgs(['bundle', '--out', 'r.json', '--renderer', 'lavapipe']), /--renderer/,
+    "Chrome never offers a system CPU driver to WebGPU");
 });
 
 test('the adapter names its renderer, and an empty info is unknown', () => {
   assert.equal(classifyAdapter({vendor: 'google', architecture: 'swiftshader', device: '', description: ''}), 'swiftshader');
-  assert.equal(classifyAdapter({vendor: 'mesa', description: 'llvmpipe (LLVM 19)'}), 'llvmpipe');
+  assert.equal(classifyAdapter({vendor: 'mesa', description: 'llvmpipe (LLVM 19, 256 bits)'}), 'lavapipe');
   assert.equal(classifyAdapter({vendor: 'apple', architecture: 'metal-3'}), 'gpu');
   assert.equal(classifyAdapter({vendor: '', architecture: ''}), 'unknown');
   assert.equal(classifyAdapter(null), 'unknown');
@@ -128,6 +130,16 @@ test('goals report the value, the verdict and the remaining gap', () => {
   assert.equal(interval.gap, Math.round((24 - GOALS.demoGoalIntervalMs) * 1000) / 1000);
   assert.equal(missed.find(g => g.name === 'activation (p99, ms)').met, false);
   assert.ok(missed.find(g => g.name.startsWith('demo minimum')).met);
+});
+
+test('a run without the demo judges no demo goal', () => {
+  const noDemo = {...round(1), demo: {intervals: [], work: [], stages: {}, frames: 0, wheels: 0, seconds: 0, fps: NaN}};
+  const goals = judgeGoals(summarize([noDemo]));
+  assert.ok(goals.length > 0);
+  assert.ok(goals.every(g => !g.name.startsWith('demo')), 'no demo goal without a demo');
+  assert.ok(goals.find(g => g.name === 'activation (p99, ms)').met);
+  assert.equal(parseArgs(['bundle', '--out', 'r.json', '--renderer', 'swiftshader', '--demo-seconds', '0']).demoSeconds, 0);
+  assert.throws(() => parseArgs(['bundle', '--out', 'r.json', '--renderer', 'gpu', '--rounds', '0']), /positive/);
 });
 
 test('arguments need a bundle, a report path and a known renderer', () => {

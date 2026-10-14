@@ -3951,8 +3951,8 @@ async fn run_native(
 /// each kills the process at once, before the caller's final namespace save,
 /// so a write acknowledged in the last [`fs::namespace_persist::QUIET`] was
 /// lost. A handler, once installed, stays installed for the life of the
-/// process: a signal that arrives after the mount already ended (systemd's
-/// `ExecStop=` unmounts first, then signals) no longer cuts that save short.
+/// process: a signal that arrives after the mount already ended (an external
+/// unmount, then systemd's stop) no longer cuts that save short.
 struct StopSignals {
     interrupt: tokio::signal::unix::Signal,
     terminate: tokio::signal::unix::Signal,

@@ -7,7 +7,7 @@
 // (Perf / scheduled, tools/perf/kpi-budgets.toml).
 //
 // usage: node scripts/perf/browser_qualification.mjs BUNDLE_DIR --out REPORT_JSON
-//          --renderer gpu|swiftshader|lavapipe|llvmpipe [--rounds N]
+//          --renderer gpu|swiftshader [--rounds N]
 //          [--activations N] [--demo-seconds S] [--idle-seconds S]
 //          [--expect-revision SHA] [--allow-dev] [--max-load L] [--cpu-throttle F]
 //          [--frame-timeout S] [--enforce-goals]
@@ -24,8 +24,9 @@
 //   demo      the demo workload: a strip of the demo windows panned back and
 //             forth by trackpad-rate (120 Hz) wheel input for --demo-seconds;
 //             the interval between consecutive presented frames, and the
-//             runtime's CPU time for each presented frame (`draw_total`)
-//   idle      frames presented per second by the same desktop left alone
+//             runtime's CPU time for each presented frame (`draw_total`),
+//             after the same pan once unmeasured, which compiles its pipelines
+//   idle     frames presented per second by the same desktop left alone
 //
 // --frame-timeout S is how long one awaited frame may take before the run
 // is invalid: 10 s on a GPU, 120 s on a software rasterizer, which compiles
@@ -77,9 +78,9 @@ export const GOALS = {
 // an account or a network, in the order they are opened.
 export const DEMO_APPS = ['so.tilo.notes', 'so.tilo.sheets', 'so.tilo.word-processor', 'so.tilo.calendar',
   'so.tilo.calculator', 'so.tilo.slides'];
-export const RENDERERS = ['gpu', 'swiftshader', 'lavapipe', 'llvmpipe'];
+export const RENDERERS = ['gpu', 'swiftshader'];
 const VIEWPORT = {width: 1920, height: 1080, deviceScaleFactor: 1};
-const USAGE = 'usage: browser_qualification.mjs BUNDLE_DIR --out REPORT_JSON --renderer gpu|swiftshader|lavapipe|llvmpipe '
+const USAGE = 'usage: browser_qualification.mjs BUNDLE_DIR --out REPORT_JSON --renderer gpu|swiftshader '
   + '[--rounds N] [--activations N] [--demo-seconds S] [--idle-seconds S] [--expect-revision SHA] [--allow-dev] '
   + '[--max-load L] [--cpu-throttle F] [--frame-timeout S] [--enforce-goals]';
 
@@ -96,7 +97,9 @@ export function parseArgs(argv) {
     const arg = argv[i];
     if (arg in numbers) {
       const value = Number(argv[++i]);
-      if (!Number.isFinite(value) || value <= 0) throw Error(`${arg} needs a positive number`);
+      // `--demo-seconds 0` leaves the demo out.
+      const least = arg === '--demo-seconds' ? 0 : Number.MIN_VALUE;
+      if (!Number.isFinite(value) || value < least) throw Error(`${arg} needs a positive number`);
       options[numbers[arg]] = value;
     } else if (arg === '--out') options.out = argv[++i];
     else if (arg === '--renderer') options.renderer = argv[++i];
@@ -173,17 +176,19 @@ export function classifyAdapter(info) {
   const text = Object.values(info ?? {}).join(' ').toLowerCase();
   if (!text.trim()) return 'unknown';
   if (text.includes('swiftshader')) return 'swiftshader';
-  if (text.includes('lavapipe')) return 'lavapipe';
-  if (text.includes('llvmpipe')) return 'llvmpipe';
+  // Mesa's Vulkan rasterizer names its device after llvmpipe, its core.
+  if (text.includes('lavapipe') || text.includes('llvmpipe')) return 'lavapipe';
   return 'gpu';
 }
 
 /**
  * Chrome's flags for a run on `renderer` by user `uid`: no frame-rate limit
- * or vsync; SwiftShader's Vulkan and ANGLE when the run is on SwiftShader (a
- * runner without a GPU, as crates/browser/tilo-web-desktop/scripts/navigation.mjs
- * starts it); no sandbox for root (a CI container), which Chrome refuses
- * otherwise. The adapter check still proves which renderer ran.
+ * or vsync; SwiftShader's Vulkan and ANGLE on SwiftShader (as
+ * crates/browser/tilo-web-desktop/scripts/navigation.mjs starts it); no
+ * sandbox for root (a CI container), which Chrome refuses otherwise. The
+ * adapter check still proves which renderer ran. There is no lavapipe run:
+ * Chrome draws its page on a system Vulkan CPU driver but never offers one to
+ * WebGPU (with SwiftShader removed, WebGPU had no adapter at all).
  */
 export function chromeFlags(renderer, uid) {
   return ['--disable-frame-rate-limit', '--disable-gpu-vsync',
@@ -203,6 +208,7 @@ export function judgeGoals(summary) {
   const goal = (name, measured, target, extra = {}) => ({name, measured, target, met: measured <= target,
     gap: Math.max(0, Math.round((measured - target) * 1000) / 1000), ...extra});
   const fps = interval => Math.round(1000 / interval * 10) / 10;
+  // A goal whose workload did not run (no demo) is not judged.
   return [
     goal('demo minimum 30 fps (p95 frame interval, ms)', summary.demo_interval_ms.p95, GOALS.demoMinimumIntervalMs,
       {fps: fps(summary.demo_interval_ms.p95)}),
@@ -215,8 +221,11 @@ export function judgeGoals(summary) {
     goal("open, app's code drawn (p99, ms)", summary.open_ready_ms.p99, GOALS.openReadyMs),
     goal('load (p99, ms)', summary.load_ms.p99, GOALS.loadMs),
     goal('idle (presented frames per second, max)', summary.idle_per_s.max, GOALS.idlePerS),
-  ];
+  ].filter(entry => Number.isFinite(entry.measured));
 }
+
+// A round without the demo (`--demo-seconds 0`).
+const NO_DEMO = {intervals: [], work: [], stages: {}, frames: 0, wheels: 0, seconds: 0, fps: NaN, distinctOffsets: 0};
 
 export function hostState() {
   const [one, five] = os.loadavg();
@@ -332,6 +341,7 @@ const demoExpression = seconds => `(async () => {
   const inputEnd = performance.now();
   await new Promise(done => setTimeout(done, 250));
   observer.disconnect();
+  offsets.add((nav.getSnapshot().desktopPan?.offset ?? 0).toFixed(1));
   const metrics = JSON.parse(runtime.take_frame_metrics()); runtime.configure_frame_metrics(false);
   const samples = metrics.flatMap(mount => mount.samples);
   const work = samples.filter(s => s.stage === 'draw_total').map(s => s.ms);
@@ -383,6 +393,41 @@ async function freshPage(browser, {cpuThrottle, frameTimeout}) {
   return {send, evaluate, errors, close: async () => { off(); await browser.send('Target.closeTarget', {targetId}); }};
 }
 
+/** What Chrome's GPU process saw, so a renderer failure says why: devices, feature status, Vulkan. */
+async function gpuDiagnostics(browser) {
+  const reply = await browser.send('SystemInfo.getInfo').catch(() => null);
+  const gpu = reply?.result?.gpu;
+  if (!gpu) return 'unavailable';
+  const aux = Object.entries(gpu.auxAttributes ?? {}).filter(([key]) => /vulkan|webgpu|dawn|skia|angle/i.test(key));
+  return JSON.stringify({devices: gpu.devices, featureStatus: gpu.featureStatus, aux: Object.fromEntries(aux)}).slice(0, 4000);
+}
+
+/** The demo workload on the strip of `windows`, after one unmeasured pass. */
+async function measureDemo(page, windows, options, index) {
+  await page.evaluate(`(async () => { const s = tiloMount.navigation.getSnapshot();
+    await tiloMount.navigation.dispatch({kind: 'select', generation: s.generation, route: ${JSON.stringify(windows[0].route)}}); return true; })()`);
+  await sleep(1000);
+  // Warm up with the same workload, unmeasured: the first pan frames over
+  // each window compile the renderer's pipelines for it. On a GPU that is
+  // milliseconds; on SwiftShader one frame took a minute and left a
+  // five-second demo with a single frame.
+  await page.evaluate(demoExpression(options.demoSeconds));
+  await sleep(500);
+  const demo = await page.evaluate(demoExpression(options.demoSeconds));
+  if (demo.max <= 0) throw new Invalid(`round ${index}: the demo strip does not overflow the viewport; nothing to pan`);
+  // Pan offsets are read back eight times a second and once at the end.
+  // At least two intervals, and a strip that moved. A software rasterizer
+  // can block the page for seconds at a time, so neither is a rate.
+  if (demo.distinctOffsets < 2 || demo.times.length < 3) {
+    throw new Invalid(`round ${index}: the demo presented ${demo.times.length} frames over ${demo.distinctOffsets} pan offsets`);
+  }
+  if (!demo.work.length || demo.dropped) {
+    throw new Invalid(`round ${index}: frame metrics incomplete (${demo.work.length} samples, ${demo.dropped} dropped)`);
+  }
+  return {intervals: intervals(demo.times), work: demo.work, stages: demo.stages, frames: demo.times.length,
+    wheels: demo.wheels, seconds: demo.seconds, fps: demo.times.length / demo.seconds, distinctOffsets: demo.distinctOffsets};
+}
+
 async function round(browser, url, options, index) {
   const page = await freshPage(browser, options);
   const frameTimeoutMs = options.frameTimeout * 1000;
@@ -393,13 +438,20 @@ async function round(browser, url, options, index) {
     const deadline = Date.now() + 180_000;
     while (!(await page.evaluate('Boolean(globalThis.tiloMount?.navigation)').catch(() => false))) {
       if (Date.now() > deadline || page.errors.some(e => /panic/i.test(e))) {
-        throw new Invalid(`round ${index}: the desktop never presented: ${page.errors.slice(0, 2).join(' | ')}`);
+        const status = await page.evaluate("document.getElementById('status')?.textContent ?? ''").catch(() => '');
+        throw new Invalid(`round ${index}: the desktop never presented: ${status} ${page.errors.slice(0, 2).join(' | ')}; `
+          + `Chrome's GPU: ${await gpuDiagnostics(browser)}`);
       }
       await sleep(100);
     }
     const load = await page.evaluate('globalThis.__tiloPhases?.presented ?? NaN');
     const adapter = await page.evaluate(`(async () => { const a = await navigator.gpu?.requestAdapter();
       if (!a) return null; const i = a.info ?? {}; return {vendor: i.vendor, architecture: i.architecture, device: i.device, description: i.description}; })()`);
+    // Before measuring anything: a run on another renderer is not this one.
+    if (classifyAdapter(adapter) !== options.renderer) {
+      throw new Invalid(`round ${index}: WebGPU adapter is ${classifyAdapter(adapter)}, not ${options.renderer}: `
+        + `${JSON.stringify(adapter)}; Chrome's GPU: ${await gpuDiagnostics(browser)}`);
+    }
     const available = (await page.evaluate('tiloMount.navigation.getSnapshot()')).applications.map(app => app.id);
     const apps = DEMO_APPS.filter(app => available.includes(app));
     if (apps.length < 4) throw new Invalid(`round ${index}: the bundle has only ${apps.join(', ')} of the demo apps`);
@@ -429,28 +481,13 @@ async function round(browser, url, options, index) {
       await sleep(400);
     }
 
-    await page.evaluate(`(async () => { const s = tiloMount.navigation.getSnapshot();
-      await tiloMount.navigation.dispatch({kind: 'select', generation: s.generation, route: ${JSON.stringify(windows[0].route)}}); return true; })()`);
-    await sleep(1000);
-    const demo = await page.evaluate(demoExpression(options.demoSeconds));
-    if (demo.max <= 0) throw new Invalid(`round ${index}: the demo strip does not overflow the viewport; nothing to pan`);
-    // Read back eight times a second: a strip that panned shows several offsets.
-    if (demo.distinctOffsets < 5 || demo.times.length < 10) {
-      throw new Invalid(`round ${index}: the demo presented ${demo.times.length} frames over ${demo.distinctOffsets} pan offsets`);
-    }
-    if (!demo.work.length || demo.dropped) {
-      throw new Invalid(`round ${index}: frame metrics incomplete (${demo.work.length} samples, ${demo.dropped} dropped)`);
-    }
+    const demo = options.demoSeconds > 0 ? await measureDemo(page, windows, options, index) : NO_DEMO;
 
     await sleep(2000);
     const idle = await page.evaluate(idleExpression(options.idleSeconds));
     const resources = await page.evaluate("performance.getEntriesByType('resource').map(e => ({name: e.name, status: e.responseStatus}))");
     if (page.errors.length) throw new Invalid(`round ${index}: page exceptions: ${page.errors.slice(0, 3).join(' | ')}`);
-    return {round: index, loadMs: load, adapter, apps, opens, activations,
-      demo: {intervals: intervals(demo.times), work: demo.work, stages: demo.stages, frames: demo.times.length,
-        wheels: demo.wheels, seconds: demo.seconds, fps: demo.times.length / demo.seconds,
-        distinctOffsets: demo.distinctOffsets},
-      idlePerS: idle, resources};
+    return {round: index, loadMs: load, adapter, apps, opens, activations, demo, idlePerS: idle, resources};
   } finally {
     await page.close().catch(() => {});
   }
@@ -499,8 +536,8 @@ export function formatSummary(report) {
     row('activate (ms)', s.activate_ms),
     row('demo interval (ms)', s.demo_interval_ms), row('demo work (ms)', s.demo_work_ms), row('demo fps', s.demo_fps),
     row('idle (frames/s)', s.idle_per_s),
-    `  demo stages (ms per presented frame, share of wall time): ${report.attribution.slice(0, 8)
-      .map(a => `${a.stage} ${a.msPerFrame} (${a.busyPercent}%)`).join(', ')}`,
+    report.attribution.length ? `  demo stages (ms per presented frame, share of wall time): ${report.attribution.slice(0, 8)
+      .map(a => `${a.stage} ${a.msPerFrame} (${a.busyPercent}%)`).join(', ')}` : '  demo not run',
   ];
   for (const goal of report.goals) {
     const extra = goal.fps ? ` (${goal.fps} fps)` : goal.capacityFps ? ` (capacity ${goal.capacityFps} fps)` : '';

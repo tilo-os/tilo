@@ -132,14 +132,23 @@ pub fn thin_runtime_available() -> bool {
     })
 }
 
-/// The directories fonts are installed in, as the XDG base directories and
-/// fontconfig's defaults name them.
+/// The directories fonts are installed in: the XDG base directories and
+/// fontconfig's defaults, and on macOS and Windows the system's own font
+/// folders (`/System/Library/Fonts`, the Windows font folder), which no XDG
+/// directory names. On Linux the XDG data directories already name the
+/// system font trees.
 fn font_dirs() -> Vec<PathBuf> {
+    let system = if cfg!(any(target_os = "macos", windows)) {
+        tilo_paths::system_font_dirs()
+    } else {
+        Vec::new()
+    };
     tilo_paths::xdg::data_home()
         .into_iter()
         .chain(tilo_paths::xdg::data_dirs())
         .map(|dir| dir.join("fonts"))
         .chain(tilo_paths::home().map(|home| home.join(".fonts")))
+        .chain(system)
         .collect()
 }
 

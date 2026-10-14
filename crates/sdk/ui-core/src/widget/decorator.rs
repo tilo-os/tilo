@@ -240,6 +240,12 @@ decorator_trait! {
         fn view_only_scroll(&self, _event: &WindowEvent) -> bool {
             false
         }
+
+        /// Read from this decorator's own node: one that overrides
+        /// `accessibility` may hide (or reveal) what its inner widget reports.
+        fn accessibility_hidden(&self) -> bool {
+            Decorator::accessibility(self).is_some_and(|node| node.state.hidden)
+        }
     }
 
     /// Every decorator is a widget: each method is the decorator's own, which
@@ -291,6 +297,10 @@ decorator_trait! {
 
         fn view_only_scroll(&self, event: &WindowEvent) -> bool {
             Decorator::view_only_scroll(self, event)
+        }
+
+        fn accessibility_hidden(&self) -> bool {
+            Decorator::accessibility_hidden(self)
         }
     }
 

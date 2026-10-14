@@ -724,6 +724,8 @@ fn owned_notebook_profile_covers_every_interaction() {
     app.harness().relayout();
     profile_writes(&mut app, &pages);
     profile_search_and_read(&mut app, pages.len());
+    profile_restore(&mut app, &pages);
+    profile_launch(app, pages.len());
 }
 
 fn profile_typing(app: &mut OwnedApp) {
@@ -871,10 +873,155 @@ fn profile_search_and_read(app: &mut OwnedApp, notes: usize) {
     for sample in 0..owned_samples(5) {
         let ((projected, elapsed), rows) = ui::tilo_resource::profiling::observe(|| {
             let began = ui::time::now();
-            let projected = app.read_document(crate::read::project).unwrap();
+            let notebook = ui::tilo_resource::profiling::measure("notebook_read.resource", || {
+                app.read_document(<crate::Notebook as ui::tilo_resource::Resource>::read)
+            })
+            .unwrap();
+            let projected =
+                ui::tilo_resource::profiling::measure("notebook_read.workspace", || {
+                    crate::Workspace::of(&notebook, &crate::Workspace::default())
+                });
             (projected, began.elapsed().as_nanos())
         });
         assert_eq!(projected.pages().len(), notes, "every note is read");
+        assert_eq!(
+            projected.pages(),
+            app.read_document(crate::read::project).unwrap().pages(),
+            "the profiled read is the one Notes projects"
+        );
+        assert_eq!(bodies_read(&rows), notes, "every body is read once");
         emit_owned("notebook_read", sample, elapsed, &rows, &[]);
+    }
+}
+
+/// How many rich texts `rows` read: one body spine per read.
+fn bodies_read(rows: &[Sample]) -> usize {
+    rows.iter()
+        .find(|row| row.phase == "rich_text.read.spine")
+        .map_or(0, |row| row.calls)
+}
+
+/// Restoring a saved window view, as a launch that reopens the window does,
+/// to the frame that shows it. Hosted, the framework has read the notebook
+/// already: the restore takes that state and reads no note a second time,
+/// and a collaborator's change that arrived after the framework read is
+/// shown all the same.
+fn profile_restore(app: &mut OwnedApp, pages: &[crate::PageId]) {
+    use ui::application_view::ApplicationViewState as _;
+    let saved_page = pages[40];
+    app.surface(|notes: &mut crate::NotesApp| notes.navigate_to(saved_page))
+        .unwrap();
+    app.harness().relayout();
+    let saved = app
+        .surface(|notes: &mut crate::NotesApp| notes.capture_application_view())
+        .unwrap()
+        .unwrap()
+        .expect("Notes saves its view");
+    let leave = |app: &mut OwnedApp| {
+        app.surface(|notes: &mut crate::NotesApp| notes.navigate_to(pages[0]))
+            .unwrap();
+        app.harness().relayout();
+        drop(app.harness().take_profile_samples());
+    };
+    for sample in 0..owned_samples(10) {
+        leave(app);
+        let doc = app.read_document(Clone::clone);
+        let (elapsed, rows) = observe(|| {
+            app.surface(|notes: &mut crate::NotesApp| {
+                notes.restore_application_view(&saved, &doc).unwrap();
+                notes.finish_application_view_restore().unwrap();
+            })
+            .unwrap();
+            app.harness().relayout();
+        });
+        let frames = app.harness().take_profile_samples();
+        assert_eq!(
+            app.surface(|notes: &mut crate::NotesApp| notes.selected_for_test())
+                .unwrap(),
+            Some(saved_page),
+            "the saved note is selected again"
+        );
+        assert!(
+            shown_text(app).contains("Discussed item 0"),
+            "the saved note is shown"
+        );
+        let reads: Vec<_> = rows
+            .iter()
+            .filter(|row| row.phase == "read_notebook")
+            .collect();
+        assert!(
+            reads.is_empty(),
+            "a hosted restore read the notebook again: {reads:?}"
+        );
+        // Binding the editor to the saved note reads that note's body.
+        assert!(
+            bodies_read(&rows) <= 2,
+            "a hosted restore read more than the note it shows: {rows:?}"
+        );
+        emit_owned("restore_view", sample, elapsed, &rows, &frames);
+    }
+    // A collaborator renames a note after the framework read the notebook:
+    // the document the restore is given holds the rename, the live notebook
+    // has not followed it yet.
+    leave(app);
+    let title = "Renamed before restore";
+    let mut peer = app.peer_document();
+    apply_fixture_action(
+        &mut peer,
+        &crate::actions::rename_page_action(pages[9], title),
+    );
+    let doc = peer.clone();
+    let (shown, rows) = app
+        .surface(|notes: &mut crate::NotesApp| {
+            ui::tilo_resource::profiling::observe(|| {
+                notes.restore_application_view(&saved, &doc).unwrap();
+                notes.finish_application_view_restore().unwrap();
+                notes
+                    .workspace_pages_for_test()
+                    .iter()
+                    .any(|page| page.title == title)
+            })
+        })
+        .unwrap();
+    assert!(
+        shown,
+        "the restore shows a change that arrived after the framework read"
+    );
+    assert!(
+        bodies_read(&rows) <= 2,
+        "catching up on a rename read note bodies: {rows:?}"
+    );
+    app.merge_peer(&mut peer).unwrap();
+    drop(app.harness().take_profile_samples());
+}
+
+/// Closing the window and launching Notes again on the same profile, to its
+/// first frame: the framework reads the notebook once, and Notes projects
+/// that read rather than reading every note a second time.
+fn profile_launch(mut app: OwnedApp, notes: usize) {
+    for sample in 0..owned_samples(5) {
+        let ((reopened, elapsed), rows) = ui::tilo_resource::profiling::observe(|| {
+            let began = ui::time::now();
+            let mut reopened = app.reopen().unwrap();
+            reopened.harness().relayout_at((1280, 900)).unwrap();
+            (reopened, began.elapsed().as_nanos())
+        });
+        app = reopened;
+        assert_eq!(
+            app.surface(|notes: &mut crate::NotesApp| notes.workspace_pages_for_test())
+                .unwrap()
+                .len(),
+            notes,
+            "the relaunched window shows every note"
+        );
+        assert!(
+            rows.iter().all(|row| row.phase != "read_notebook"),
+            "a hosted launch read the notebook in Notes: {rows:?}"
+        );
+        assert!(
+            (notes..2 * notes).contains(&bodies_read(&rows)),
+            "a launch reads the notebook once: {rows:?}"
+        );
+        emit_owned("launch", sample, elapsed, &rows, &[]);
     }
 }
