@@ -2921,7 +2921,9 @@ impl Widget for NotesApp {
                 } else {
                     self.status.right_text()
                 })
-                .with_live(ui::a11y::Politeness::Polite)
+                // Readable on request, never announced: autosave is silent.
+                // The save surface announces a failure and the save that
+                // ends it, as it shows them.
                 .with_hashed_key("notes.save-status"),
         ];
         children.extend(self.save_surface.accessibility(SAVE_STATUS_TARGET));
