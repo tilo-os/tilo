@@ -431,13 +431,14 @@ a peer in its own right. Under its own device key it originates:
   entries the member's signed statement names.
 - **Legacy-window input on behalf of browsers.** The browser bridge publishes
   `RemoteInput` into a desktop's shared legacy windows as the host device
-  (`web::legacy`), behind the desktop's input firewall like any remote input.
+  (`tilo_relay_shell::legacy`), behind the desktop's input firewall like any remote input.
 
 To decide retention, replay and compaction it reads the desktop's peer-sync
 messages inside co-edit bodies: whether a body is a document frame and which
 document it names, whether a checkpoint is governance, a member's own
 continuity checkpoint or complete on its own, and which devices a governance
-step is addressed to (`payloads::ShellPayloads`), plus the retained-proof
+step is addressed to (the `ShellPayloads` adapter its embedder injects,
+`crates/hosting/tilo-relay-shell`), plus the retained-proof
 inputs of native shell replay (`store::shell_selection`). It also refuses a
 document change its app's published surface does not allow, or that
 the room's governor did not grant its author (`surfaces`). The content of a
