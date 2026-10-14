@@ -87,6 +87,15 @@ test('the entry is the page’s directory, with the home workspace the web host 
     {base: 'https://tilo.so/'});
 });
 
+test('the entry names the embedding site only when it is exactly an https origin', async () => {
+  const served = embedder => async () => ({ok: true, json: async () => ({embedder})});
+  const read = embedder => readEntry({mode: 'desktop', location: {href: 'https://app.example/'}, fetch: served(embedder)});
+  assert.deepEqual(await read('https://site.example'), {base: 'https://app.example/', embedder: 'https://site.example'});
+  for (const refused of ['http://site.example', 'https://site.example/', 'https://site.example/page', 'site.example', 7]) {
+    assert.deepEqual(await read(refused), {base: 'https://app.example/'}, String(refused));
+  }
+});
+
 test('the catalogue is never read before admission', async () => {
   const order = [];
   const target = {scope: {kind: 'room', host: 'https://h.example', room: 'r'}, app: 'so.tilo.chat', record: '', resource: message};
