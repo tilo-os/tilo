@@ -149,6 +149,7 @@ mod tests {
                 "slides-toast-export-failed",
                 "slides-toast-chooser-failed",
                 "slides-toast-export-limit",
+                "slides-toast-saved",
                 "slides-toast-process-failed",
                 "slides-toast-image-chooser-failed",
                 "slides-toast-image-import-failed",

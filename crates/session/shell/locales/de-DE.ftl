@@ -1443,6 +1443,9 @@ search-action-permission-roles-subtitle = Wiederverwendbare Arbeitsbereichsrolle
 # Suche: was eine Shell-Aktion getan hat
 search-action-tab-close-failed = Dieser Tab kann nicht geschlossen werden
 search-action-tab-split-failed = Dieser Tab kann nicht geteilt werden
+search-action-device-list-copied = Geräteliste kopiert
+search-action-enrollment-copied = Geräte-Einrichtungscode kopiert · läuft in { $minutes } Min. ab
+search-action-home-server-copied = Heimserver-Einrichtungscode kopiert · läuft in { $minutes } Min. ab
 search-action-device-revoked = Gerät widerrufen
 search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
 

@@ -105,6 +105,27 @@ pub(super) fn mint(
     }))
 }
 
+/// [`mint`] for the person who picked the row: the clipboard is out of sight
+/// and search closes on choose, so the shell says in passing that the code is
+/// copied and how long it lasts.
+pub(super) fn mint_for_person(
+    state: &mut ChromeState,
+    args: &ActionArgs,
+    role: EnrollmentRole,
+) -> Result<(), ActionError> {
+    let minutes = ttl_ns(args)?.div_ceil(60 * 1_000_000_000);
+    mint(state, args, role)?;
+    let key = match role {
+        EnrollmentRole::PersonalDevice => "search-action-enrollment-copied",
+        EnrollmentRole::HomePeer => "search-action-home-server-copied",
+    };
+    state.acknowledge(crate::shell::i18n::t_args(
+        key,
+        &[("minutes", minutes.into())],
+    ));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

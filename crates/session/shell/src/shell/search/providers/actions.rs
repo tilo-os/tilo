@@ -1441,9 +1441,10 @@ impl Action {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                // The row the person chose already said it copies; repeating
-                // it in a notification only confirms their own action.
+                // The clipboard is out of sight and search closes on choose,
+                // so confirm in passing rather than with a notification.
                 ui::text_selection::clipboard_copy(&lines);
+                st.acknowledge(t("search-action-device-list-copied"));
                 Ok(())
             },
         ),
@@ -1453,12 +1454,11 @@ impl Action {
             subtitle: "search-action-identity-device-enroll-subtitle",
             params: enrollment_tokens::ENROLL_PARAMS,
             apply: |st, args| {
-                enrollment_tokens::mint(
+                enrollment_tokens::mint_for_person(
                     st,
                     args,
                     tilo_identity_host::enrollment::EnrollmentRole::PersonalDevice,
                 )
-                .map(|_| ())
             },
         },
         Action {
@@ -1467,12 +1467,11 @@ impl Action {
             subtitle: "search-action-identity-home-peer-enroll-subtitle",
             params: enrollment_tokens::ENROLL_PARAMS,
             apply: |st, args| {
-                enrollment_tokens::mint(
+                enrollment_tokens::mint_for_person(
                     st,
                     args,
                     tilo_identity_host::enrollment::EnrollmentRole::HomePeer,
                 )
-                .map(|_| ())
             },
         },
         Action {

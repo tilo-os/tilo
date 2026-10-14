@@ -1448,6 +1448,9 @@ search-action-permission-roles-subtitle = Manage reusable least-privilege worksp
 # Search: what a shell action did
 search-action-tab-close-failed = Can't close this tab
 search-action-tab-split-failed = Can't split this tab
+search-action-device-list-copied = Device list copied
+search-action-enrollment-copied = Device setup code copied · expires in { $minutes } min
+search-action-home-server-copied = Home-server setup code copied · expires in { $minutes } min
 search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
 

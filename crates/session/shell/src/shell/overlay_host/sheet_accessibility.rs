@@ -131,8 +131,8 @@ impl ShellOverlayHost {
     }
 
     /// Announcements that are not part of any overlay: the newest
-    /// notification banner, the hardware-key readout and a held pad's
-    /// mapping, each a live region.
+    /// notification banner, the hardware-key readout, a passing
+    /// acknowledgement and a held pad's mapping, each a live region.
     pub(super) fn live_status_accessibility(&self) -> Vec<AccessNode> {
         let mut nodes = Vec::new();
         if let Some(chrome) = self.chrome.as_ref()
@@ -162,6 +162,9 @@ impl ShellOverlayHost {
                 .as_ref()
                 .map(|map| (map.name.clone(), map.narration()))
         });
+        if let Some(ack) = self.current_acknowledgement(ui::time::now()) {
+            nodes.push(ack.accessibility());
+        }
         if let Some((name, narration)) = pad_map {
             nodes.push(
                 AccessNode::new(Role::StaticText)
