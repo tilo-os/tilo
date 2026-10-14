@@ -35,7 +35,18 @@ use tilo_user_identity::{DeviceCert, DeviceCertError, RevocationList, verify_dev
 use crate::policy::TrustPolicy;
 
 /// Domain tag bound into every mutual-authentication challenge signature.
-const TILO_AUTH_NONCE_TAG: &[u8] = b"tilo-relay-auth-v1\0";
+/// Domain tag under which the *server* signs the client's challenge.
+///
+/// The two handshake directions sign under different tags. With one shared
+/// tag, a server that signs any `client_nonce` it is handed is a signing
+/// oracle for the `HelloAck2` another server expects from the holder of the
+/// same device key: present the victim's cert, feed the victim's
+/// `server_nonce` back as a `client_nonce`, and the victim signs its own
+/// challenge. A tag per direction makes a server-side signature unusable as a
+/// client-side proof and vice versa.
+const TILO_AUTH_SERVER_TAG: &[u8] = b"tilo-relay-auth-v2/server\0";
+/// Domain tag under which the *client* signs the server's challenge.
+const TILO_AUTH_CLIENT_TAG: &[u8] = b"tilo-relay-auth-v2/client\0";
 
 /// First message: client → server.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -56,7 +67,7 @@ pub struct HelloAck {
     /// to sign.
     pub server_nonce: [u8; 32],
     /// Ed25519 signature by the server's *device* signing key over
-    /// `blake3(AUTH_NONCE_TAG || client_nonce)`. Proves the server
+    /// [`server_challenge_digest`]`(client_nonce)`. Proves the server
     /// holds the private key matching the cert.
     #[serde(with = "serde_bytes")]
     pub sig_over_client_nonce: [u8; 64],
@@ -66,7 +77,7 @@ pub struct HelloAck {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HelloAck2 {
     /// Ed25519 signature by the client's device signing key over
-    /// `blake3(AUTH_NONCE_TAG || server_nonce)`.
+    /// [`client_challenge_digest`]`(server_nonce)`.
     #[serde(with = "serde_bytes")]
     pub sig_over_server_nonce: [u8; 64],
 }
@@ -284,10 +295,21 @@ fn admit_cert(
     })
 }
 
-/// Compute the domain-bound challenge digest both sides sign.
-pub fn challenge_digest(nonce: &[u8; 32]) -> [u8; 32] {
+/// The digest the *server* signs in `HelloAck`: the client's challenge under
+/// the server-direction tag.
+pub fn server_challenge_digest(client_nonce: &[u8; 32]) -> [u8; 32] {
+    challenge_digest_under(TILO_AUTH_SERVER_TAG, client_nonce)
+}
+
+/// The digest the *client* signs in `HelloAck2`: the server's challenge under
+/// the client-direction tag.
+pub fn client_challenge_digest(server_nonce: &[u8; 32]) -> [u8; 32] {
+    challenge_digest_under(TILO_AUTH_CLIENT_TAG, server_nonce)
+}
+
+fn challenge_digest_under(tag: &[u8], nonce: &[u8; 32]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(TILO_AUTH_NONCE_TAG);
+    hasher.update(tag);
     hasher.update(nonce);
     *hasher.finalize().as_bytes()
 }
@@ -328,7 +350,7 @@ pub fn build_hello_ack(
     server_nonce: [u8; 32],
     client_nonce: &[u8; 32],
 ) -> HelloAck {
-    let digest = challenge_digest(client_nonce);
+    let digest = server_challenge_digest(client_nonce);
     let sig = own_signing_key.sign(&digest).to_bytes();
     HelloAck {
         cert: own_cert,
@@ -453,7 +475,7 @@ fn verify_hello_ack_cryptographic(
     }
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)
         .map_err(|_| AuthError::BadChallengeSig)?;
-    let digest = challenge_digest(challenge_client_nonce);
+    let digest = server_challenge_digest(challenge_client_nonce);
     let sig = ed25519_dalek::Signature::from_bytes(&ack.sig_over_client_nonce);
     vk.verify(&digest, &sig)
         .map_err(|_| AuthError::BadChallengeSig)
@@ -474,7 +496,7 @@ pub fn verify_hello_ack2(
 ) -> Result<(), AuthError> {
     let vk = ed25519_dalek::VerifyingKey::from_bytes(client_device_pubkey)
         .map_err(|_| AuthError::BadChallengeSig)?;
-    let digest = challenge_digest(server_nonce);
+    let digest = client_challenge_digest(server_nonce);
     let sig = ed25519_dalek::Signature::from_bytes(&ack.sig_over_server_nonce);
     vk.verify(&digest, &sig)
         .map_err(|_| AuthError::BadChallengeSig)?;
@@ -487,7 +509,7 @@ pub fn build_hello_ack2(
     own_signing_key: &ed25519_dalek::SigningKey,
     server_nonce: &[u8; 32],
 ) -> HelloAck2 {
-    let digest = challenge_digest(server_nonce);
+    let digest = client_challenge_digest(server_nonce);
     let sig = own_signing_key.sign(&digest).to_bytes();
     HelloAck2 {
         sig_over_server_nonce: sig,
@@ -526,6 +548,69 @@ mod tests {
         };
         sign_device_cert(&mut cert, root_sk).unwrap();
         Party { cert, sk: dev_sk }
+    }
+
+    #[test]
+    fn a_signature_from_one_direction_is_never_a_proof_in_the_other() {
+        let (root_sk, user) = UserIdentity::generate("Alice", 1);
+        let relay = enrol(
+            &root_sk,
+            user.public_key,
+            "server",
+            DeviceCapabilities::host(),
+        );
+        let client = enrol(
+            &root_sk,
+            user.public_key,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let revs = RevocationList::new();
+        // A server that signs whatever `client_nonce` it is
+        // handed must not thereby produce the `HelloAck2` another server
+        // expects from the same key. Feed a victim's server nonce in as a
+        // client nonce; the resulting server signature is not a client proof.
+        let victim_server_nonce = [9u8; 32];
+        let oracle = build_hello_ack(
+            relay.cert.clone(),
+            &relay.sk,
+            [3u8; 32],
+            &victim_server_nonce,
+        );
+        let reflected = HelloAck2 {
+            sig_over_server_nonce: oracle.sig_over_client_nonce,
+        };
+        assert!(
+            matches!(
+                verify_hello_ack2(
+                    &reflected,
+                    &relay.cert.device_public_key,
+                    &victim_server_nonce
+                ),
+                Err(AuthError::BadChallengeSig)
+            ),
+            "a server-direction signature must never verify as a client proof"
+        );
+        // And the other way round: a client's proof is not a server's.
+        let client_proof = build_hello_ack2(&client.sk, &victim_server_nonce);
+        let reflected_ack = HelloAck {
+            cert: client.cert,
+            server_nonce: [4u8; 32],
+            sig_over_client_nonce: client_proof.sig_over_server_nonce,
+        };
+        assert!(
+            matches!(
+                verify_hello_ack(
+                    &reflected_ack,
+                    &user.public_key,
+                    &revs,
+                    1000,
+                    &victim_server_nonce
+                ),
+                Err(AuthError::BadChallengeSig)
+            ),
+            "a client-direction signature must never verify as a server proof"
+        );
     }
 
     #[test]

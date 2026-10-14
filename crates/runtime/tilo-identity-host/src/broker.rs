@@ -340,6 +340,10 @@ fn sign(
 ) -> Response {
     let Some(allowed) = read_workspace(tree, room, |workspace| {
         let node = device_signature_node(&workspace.node(), app_id, action);
+        // Caller-chosen bytes require an Outside Allow. The open-app
+        // authorship grant covers only Read and Undoable, so it cannot
+        // make the device key a signing oracle. Keep the tree's normal
+        // specificity, lifetime and Ask/Deny decisions for explicit grants.
         Party::new(
             vec![Subject::App(app_id.to_owned())],
             &workspace.policy.grants,
@@ -858,32 +862,34 @@ mod tests {
         )
     }
 
+    /// The identity service's bytes: the launcher's handshake is a
+    /// little-endian `u32` length then JSON; every later frame is a
+    /// little-endian `u32` length then postcard.
+    fn assert_identity_service_wire_bytes_are_pinned() {
+        let (mut app, mut service) = UnixStream::pair().expect("pair");
+        app.write_all(b"\x21\0\0\0{\"workspace_id\":\"w\",\"app_id\":\"a\"}")
+            .expect("handshake");
+        let handshake = read_frame::<Handshake>(&mut service).expect("handshake");
+        assert_eq!(
+            (handshake.workspace_id.as_str(), handshake.app_id.as_str()),
+            ("w", "a")
+        );
+
+        write_action_frame(&mut service, &Response::Denied("no".into())).expect("write");
+        let mut sent = [0_u8; 8];
+        app.read_exact(&mut sent).expect("response");
+        assert_eq!(sent, [4, 0, 0, 0, 2, 2, b'n', b'o']);
+        app.write_all(&[3, 0, 0, 0, 2, 1, b'w']).expect("request");
+        assert!(matches!(
+            read_action_frame::<Request>(&mut service).expect("request"),
+            Request::CollaborationJoin { workspace_id } if workspace_id == "w"
+        ));
+    }
+
     #[test]
     fn identity_service_wire_is_pinned_and_signing_requires_the_exact_capability() {
         // Phase `identity_service_wire_bytes_are_pinned`.
-        // The identity service's bytes: the launcher's handshake is a
-        // little-endian `u32` length then JSON; every later frame is a
-        // little-endian `u32` length then postcard.
-        {
-            let (mut app, mut service) = UnixStream::pair().expect("pair");
-            app.write_all(b"\x21\0\0\0{\"workspace_id\":\"w\",\"app_id\":\"a\"}")
-                .expect("handshake");
-            let handshake = read_frame::<Handshake>(&mut service).expect("handshake");
-            assert_eq!(
-                (handshake.workspace_id.as_str(), handshake.app_id.as_str()),
-                ("w", "a")
-            );
-
-            write_action_frame(&mut service, &Response::Denied("no".into())).expect("write");
-            let mut sent = [0_u8; 8];
-            app.read_exact(&mut sent).expect("response");
-            assert_eq!(sent, [4, 0, 0, 0, 2, 2, b'n', b'o']);
-            app.write_all(&[3, 0, 0, 0, 2, 1, b'w']).expect("request");
-            assert!(matches!(
-                read_action_frame::<Request>(&mut service).expect("request"),
-                Request::CollaborationJoin { workspace_id } if workspace_id == "w"
-            ));
-        }
+        assert_identity_service_wire_bytes_are_pinned();
         // Phase `signing_requires_the_exact_app_action_capability`.
         {
             let temp = tempfile::tempdir().expect("temp");
@@ -904,6 +910,28 @@ mod tests {
             tree.desktop.workspaces.push(workspace);
             let tree = tree.shared();
 
+            assert!(matches!(
+                sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
+                Response::Denied(_)
+            ));
+            // Use the actual open-app grant: it covers the whole room's
+            // content, but not Outside effects such as arbitrary signatures.
+            let grant = tilo_action_policy::roles::app_authorship(
+                &room.to_string(),
+                "so.tilo.notes",
+                Subject::Person("owner".into()),
+            );
+            tree.write().desktop.workspaces[0].grant(grant);
+            assert!(
+                matches!(
+                    sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
+                    Response::Denied(_)
+                ),
+                "an open-app authorship grant must not authorise a signature"
+            );
+            let mut grant = signing_grant(&tree.read().desktop.workspaces[0]);
+            grant.answer = Answer::Ask;
+            tree.write().desktop.workspaces[0].grant(grant);
             assert!(matches!(
                 sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
                 Response::Denied(_)

@@ -23,6 +23,8 @@ The scenarios we defend against:
 - The certified device public key is the Iroh `EndpointId` used by the shell, filesystem, and workspace-host client. It is the stable peer identity everywhere.
 - Identity decisions carry the whole peer id (`PeerOrigin`), never a fold of it: an equality check a digest can be ground against is not an identity check.
 - The personal signing identity is the user root. It certifies each device key; workspace hosts accept only device certificates chaining to the configured user root and permitted by the workspace membership/revocation state.
+- **No application ever obtains a root signature.** A root signature over the right 32 bytes is a device certificate (enrolling the signer's machine as one of the person's devices) or a revocation (evicting the real ones). The per-launch identity broker the launcher hands a sandboxed app (`runtime_identity::broker`) therefore answers metadata only for a root-capable record and refuses `sign`; application signatures come from the identity service (`tilo-identity-host`), which signs with the enrolled *device* key and only under a grant that names the action (`Scope::Action`) — the `Scope::Workspace` grant every opened app holds matches every resource and is deliberately not enough.
+- A room's membership grants are written with `Scope::Room(room)`, never `Scope::Workspace`: the latter matches every path, device and host, so a member grant carrying it would read as authority over all of them wherever a person actor is evaluated against the room's capability list.
 
 Invite tokens are signed ed25519 blobs scoped to a workspace; see `docs/architecture/collaboration.md §7` for the wire format and validation order.
 
@@ -395,8 +397,9 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 
 ## Encryption
 
-- Iroh provides encrypted QUIC transport, authenticated endpoint ids, NAT traversal, and encrypted relay fallback. Workspace hosts add mutual device-certificate authentication.
+- Iroh provides encrypted QUIC transport, authenticated endpoint ids, NAT traversal, and encrypted relay fallback. Workspace hosts add mutual device-certificate authentication (`tilo_relay_protocol::auth`): each side signs the other's nonce under its *own* direction tag (`tilo-relay-auth-v2/server`, `…/client`), so a server that signs whatever `client_nonce` it is handed can never be used as an oracle for the `HelloAck2` another server expects from the same device key. Everything a relay reads before that proof lands — the `Hello` and the `HelloAck2` frames — is bounded in size, time and concurrency.
 - **A cross-device action is signed by the device that sends it, not vouched for by the host that routes it.** Device certificates are public, so a workspace host — including a hosted server operated for the user — could otherwise name any member it has seen as the source of an action it invented. The sending device signs the exact action and its issue time; the target broker refuses any effect without that signature, outside a 60-second freshness window, or already admitted, and still checks the certificate against the room's current authority. Payloads are not hidden from the host. See `docs/architecture/collaboration.md`, "Private actions are signed by their source device".
+
 - iroh's FUSE traffic (`fs`) is QUIC + TLS 1.3.
 - At-rest encryption for cloud-backed `/var/workspace` is a follow-up.
 
