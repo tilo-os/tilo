@@ -400,8 +400,7 @@ pub struct LoginAccount {
 /// The real user's passwd entry.
 pub fn login_account() -> Option<LoginAccount> {
     use std::ffi::CStr;
-    // SAFETY: getuid has no preconditions.
-    let uid = unsafe { libc::getuid() };
+    let uid = rustix::process::getuid().as_raw();
     let mut buf = vec![0 as libc::c_char; 16 * 1024];
     // SAFETY: zeroed passwd is a valid out-parameter for getpwuid_r.
     let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
