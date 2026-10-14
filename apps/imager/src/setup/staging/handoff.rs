@@ -1,9 +1,9 @@
-//! The Imager's side of the staging ESP handoff ([`staging_handoff`]): the
+//! The Imager's side of the staging ESP handoff ([`staging_handoff_model`]): the
 //! handoff for a plan, and the secret-free profile it may carry onto the
 //! unencrypted staging ESP. The placeholder the exporter reserves for it is
 //! in [`super::fat`].
 
-pub use staging_handoff::{HANDOFF_FILE, Handoff, StagedIdentity, pad_json};
+pub use staging_handoff_model::{HANDOFF_FILE, Handoff, StagedIdentity, pad_json};
 
 use super::plan::Plan;
 
@@ -67,7 +67,7 @@ pub fn for_plan(
     profile: serde_json::Map<String, serde_json::Value>,
 ) -> Handoff {
     Handoff {
-        schema: staging_handoff::SCHEMA,
+        schema: staging_handoff_model::SCHEMA,
         operation_id: operation_id.into(),
         host_os: plan.basis.host_os(),
         disk_guid: plan.basis.disk.guid.to_ascii_lowercase(),

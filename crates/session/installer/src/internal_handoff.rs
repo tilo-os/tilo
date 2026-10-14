@@ -5,7 +5,7 @@
 //! greetd starts, `tilo-staging-handoff detect` (root) publishes a validated
 //! copy at [`HANDOFF_PATH`] only when the firmware loader really ran from the
 //! ESP the handoff names. The Imager writes it with the same
-//! [`staging_handoff`] types and rules.
+//! [`staging_handoff_model`] types and rules.
 //!
 //! The handoff is a hint, never authority. The UI uses it to preselect the one
 //! safe plan on the one disk it applies to and to prefill profile fields; the
@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-pub use staging_handoff::{Extent, Handoff, HostOs, StagedIdentity, is_guid};
+pub use staging_handoff_model::{Extent, Handoff, HostOs, StagedIdentity, is_guid};
 
 pub const HANDOFF_PATH: &str = "/run/tilo-installer/handoff.json";
 pub const HANDOFF_ERROR_PATH: &str = "/run/tilo-installer/handoff.error";
@@ -148,7 +148,7 @@ pub(crate) mod tests {
             let text = serde_json::to_string(&document()).unwrap();
             let duplicated = format!("{}, \"schema\": 1}}", text.trim_end_matches('}'));
             assert!(Handoff::parse(duplicated.as_bytes()).is_err());
-            let oversized = format!("{text}{}", " ".repeat(staging_handoff::MAX_BYTES));
+            let oversized = format!("{text}{}", " ".repeat(staging_handoff_model::MAX_BYTES));
             assert!(
                 Handoff::parse(oversized.as_bytes())
                     .unwrap_err()
