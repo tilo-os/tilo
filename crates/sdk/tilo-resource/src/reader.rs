@@ -217,11 +217,13 @@ impl<R: Resource> Reader<R> {
     ///
     /// Holding the returned `Rc` across the next [`sync`](Self::sync) keeps
     /// what it shows unchanged: that sync brings a copy up to date instead
-    /// ([`Resource::copy_state`]). The copy shares every
-    /// [`Collection`](crate::Collection) item and copies only those the
-    /// change touched, so it costs a pointer per item, but fields held
-    /// whole (a `Vec`, a map) are copied whole: a view that needs only part
-    /// of the state keeps that part rather than the `Rc`.
+    /// ([`Resource::copy_state`]). The copy shares what the change did not
+    /// touch: every [`Collection`](crate::Collection) item, the items of each
+    /// [`Keyed`](crate::Keyed) or [`Ordered`](crate::Ordered) field (a
+    /// touched one is copied once), and the chunks of each
+    /// [`Set`](crate::Set) and [`Grid`](crate::Grid). Plain fields (a `Vec`,
+    /// a `BTreeMap`) are copied whole: a view that needs only part of a
+    /// state with large ones keeps that part rather than the `Rc`.
     pub fn state(&self) -> &Rc<R::State> {
         &self.state
     }

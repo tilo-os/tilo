@@ -1848,7 +1848,7 @@ impl App {
                 error: tilo_actions::ActionFailure {
                     code: crate::bound_dispatch::door_error_code(&error).to_string(),
                     message: error.to_string(),
-                    details: None,
+                    details: error.failure_details(),
                     retryable: false,
                 },
             },
@@ -2845,7 +2845,7 @@ impl App {
                         error: tilo_actions::ActionFailure {
                             code: crate::bound_dispatch::door_error_code(error).to_string(),
                             message: error.to_string(),
-                            details: None,
+                            details: error.failure_details(),
                             retryable: false,
                         },
                     },
