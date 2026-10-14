@@ -3578,6 +3578,9 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         replacement_transactions,
         mut rebind,
     } = services;
+    // Before anything is served: from here on a stop signal ends the mount
+    // through the final save instead of killing the process.
+    let mut stop = StopSignals::install()?;
     if !mount_point.exists() {
         std::fs::create_dir_all(&mount_point)?;
     }
@@ -3741,7 +3744,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         if let Some(path) = namespace_path(predictive_cache_root.as_deref()) {
             fs.set_durability_hook(Arc::new(move || persist_now(&durable_namespace, &path)));
         }
-        let outcome = run_native(fs, cfg, native_sync, rebind).await;
+        let outcome = run_native(fs, cfg, native_sync, rebind, &mut stop).await;
         if let Some(task) = predictive_policy_task {
             task.abort();
         }
@@ -3799,7 +3802,8 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     });
     println!("Mounting QuickFS at {}", mount_point.display());
 
-    // Exit cleanly on Ctrl-C or mount exit (don't hang a crash-looping service forever).
+    // Exit cleanly on a stop signal or mount exit (don't hang a
+    // crash-looping service forever).
     let outcome = tokio::select! {
         res = &mut mount_task => {
             match res {
@@ -3809,8 +3813,8 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             }
             MountOutcome::Unmounted
         },
-        _ = tokio::signal::ctrl_c() => {
-            println!("Interrupted, exiting...");
+        signal = stop.recv() => {
+            println!("{signal}, exiting...");
             let _ = unmount_tx.send(session_supervisor::SessionEvent::Unmount);
             let _ = (&mut mount_task).await;
             MountOutcome::Unmounted
@@ -3904,6 +3908,7 @@ async fn run_native(
     cfg: fs::native::NativeConfig,
     sync: Option<Arc<SyncHandle>>,
     mut rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+    stop: &mut StopSignals,
 ) -> Result<MountOutcome> {
     let fs = Arc::new(fs);
     let content = Arc::clone(&fs.hydrator);
@@ -3913,15 +3918,10 @@ async fn run_native(
         fs::native::NativePlane::start(cfg, fs, content, sync, runtime)
     })
     .await??;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     // Every way out is an event: nothing here wakes until one happens.
     let outcome = tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            println!("Interrupted, exiting...");
-            MountOutcome::Unmounted
-        }
-        _ = terminate.recv() => {
-            println!("Terminated, exiting...");
+        signal = stop.recv() => {
+            println!("{signal}, exiting...");
             MountOutcome::Unmounted
         }
         () = async {
@@ -3943,6 +3943,40 @@ async fn run_native(
     println!("Content received from peers: {ranged} bytes in ranges, {blobs} bytes as blobs");
     println!("Workspace unmounted.");
     Ok(outcome)
+}
+
+/// The signals that end a mount cleanly: SIGINT from a terminal, SIGTERM
+/// from systemd's stop (every shutdown, update reboot and service restart),
+/// SIGHUP when the controlling terminal goes away. The default action of
+/// each kills the process at once, before the caller's final namespace save,
+/// so a write acknowledged in the last [`fs::namespace_persist::QUIET`] was
+/// lost. A handler, once installed, stays installed for the life of the
+/// process: a signal that arrives after the mount already ended (systemd's
+/// `ExecStop=` unmounts first, then signals) no longer cuts that save short.
+struct StopSignals {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+    hangup: tokio::signal::unix::Signal,
+}
+
+impl StopSignals {
+    fn install() -> std::io::Result<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
+            hangup: signal(SignalKind::hangup())?,
+        })
+    }
+
+    /// Waits for the first stop signal since [`Self::install`] and names it.
+    async fn recv(&mut self) -> &'static str {
+        tokio::select! {
+            _ = self.interrupt.recv() => "Interrupted",
+            _ = self.terminate.recv() => "Terminated",
+            _ = self.hangup.recv() => "Hung up",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4361,6 +4395,30 @@ mod tests {
             let args = acl_args_from(&["--acl", path.to_str().unwrap(), "--identity", "abcd"]);
             let err = resolve_acl(&args, NODE_KEY).expect_err("a 2-byte identity is not a key");
             assert!(format!("{err:#}").contains("32 bytes"), "got: {err:#}");
+        }
+    }
+
+    /// systemd stops `fs.service` with SIGTERM; SIGHUP arrives when a
+    /// terminal running the daemon closes. Once a mount installed its stop
+    /// signals, each of them, like SIGINT, reaches the stop path, which
+    /// unmounts and makes the final namespace save, instead of killing the
+    /// process before it. (A signal whose default action still applied would
+    /// end this test binary here.)
+    #[tokio::test]
+    async fn stop_signals_reach_the_stop_path_instead_of_killing_the_process() {
+        let mut stop = StopSignals::install().unwrap();
+        for (signal, name) in [
+            (libc::SIGTERM, "Terminated"),
+            (libc::SIGHUP, "Hung up"),
+            (libc::SIGINT, "Interrupted"),
+        ] {
+            // SAFETY: raising a signal in this process, whose handler the
+            // install above put in place.
+            assert_eq!(unsafe { libc::raise(signal) }, 0);
+            let received = tokio::time::timeout(tilo_test_env::hang_bound(), stop.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{name} never reached the stop path"));
+            assert_eq!(received, name);
         }
     }
 }
