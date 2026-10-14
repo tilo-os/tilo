@@ -247,6 +247,9 @@ struct Mount {
     semantic_targets: Vec<SemanticPresentationTarget>,
     status: Function,
     images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
+    /// The image requests the page is decoding, by loader and URL. Dropping
+    /// one (the mount closing) settles its request as failed.
+    image_tickets: RefCell<HashMap<(usize, String), ui::image_store::ImageCompletionTicket>>,
     error: Option<String>,
     /// The last composed scene exceeded `scene_within_limits` (reported once).
     oversized_scene: bool,
@@ -1274,6 +1277,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         semantic_targets: Vec::new(),
         status: status.clone(),
         images,
+        image_tickets: RefCell::default(),
         error: None,
         oversized_scene: false,
         peer: config.peer,
@@ -3036,7 +3040,10 @@ pub fn font_failed(id: u64) -> Result<(), JsValue> {
     })
 }
 
-/// Image URLs the application asked for, as `[{loader, url}]`.
+/// Image URLs the application asked for, as `[{loader, url, maxDimension}]`.
+/// The page fetches and decodes each with the browser's own image decoders,
+/// no larger than `maxDimension` on either side, and hands the pixels back
+/// through [`complete_asset`].
 ///
 /// # Errors
 ///
@@ -3044,23 +3051,28 @@ pub fn font_failed(id: u64) -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub fn asset_requests(id: u64) -> Result<String, JsValue> {
     with_mount(id, |m| {
-        let requests = m
-            .images
-            .borrow_mut()
-            .iter_mut()
-            .enumerate()
-            .flat_map(|(loader, images)| {
-                images
-                    .take_requests()
-                    .into_iter()
-                    .map(move |url| serde_json::json!({"loader":loader,"url":url}))
-            })
-            .collect::<Vec<_>>();
+        let mut tickets = m.image_tickets.borrow_mut();
+        let mut requests = Vec::new();
+        for (loader, images) in m.images.borrow_mut().iter_mut().enumerate() {
+            for url in images.take_requests() {
+                let Some(ticket) = images.reserve(&url) else {
+                    continue;
+                };
+                requests.push(serde_json::json!({
+                    "loader": loader,
+                    "url": url,
+                    "maxDimension": ticket.max_dimension(),
+                }));
+                tickets.insert((loader, url), ticket);
+            }
+        }
         serde_json::to_string(&requests).map_err(error)
     })
 }
 
-/// Deliver fetched image bytes (or `None` for a failed fetch).
+/// Deliver a requested image the page decoded: `width` × `height` pixels of
+/// unpremultiplied 8-bit RGBA, or `None` when it could not be fetched or
+/// decoded. Resolves whether the image was accepted.
 ///
 /// # Errors
 ///
@@ -3074,15 +3086,31 @@ pub fn complete_asset(
     id: u64,
     loader: usize,
     url: &str,
-    bytes: Option<Vec<u8>>,
+    width: u32,
+    height: u32,
+    rgba: Option<Vec<u8>>,
 ) -> Result<bool, JsValue> {
     with_mount(id, |m| {
+        let Some(ticket) = m
+            .image_tickets
+            .borrow_mut()
+            .remove(&(loader, url.to_owned()))
+        else {
+            return Ok(false);
+        };
         let complete = m
             .images
             .borrow_mut()
             .get_mut(loader)
             .ok_or_else(|| error("unknown image loader"))?
-            .complete(url, bytes.as_deref());
+            .complete_decoded(
+                &ticket,
+                rgba.map(|rgba| ui::image_store::DecodedImage {
+                    rgba,
+                    width,
+                    height,
+                }),
+            );
         // A decoded image changes what widgets measure and draw.
         m.frame.relayout();
         m.pending = true;

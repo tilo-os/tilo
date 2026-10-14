@@ -17,7 +17,7 @@
 import {AdmissionError} from './admission.mjs';
 import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';
 import {boot} from './entry.mjs';
-import {loadRuntime, mountDesktop, prepareGpu} from './host.mjs';
+import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -322,6 +322,7 @@ export async function startEntryPage({mode}) {
   };
   const deps = {
     loadRuntime: async () => (runtime = await loadRuntime()),
+    prefetchApplication,
     mountDesktop,
     enterViaHost: async ({workspace}) => {
       reportErrors(workspace.admission);

@@ -22,6 +22,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill, ImageBrush, ImageData as PenikoImage};
 
+/// Pixels a host decoded itself, for [`HostImageLoader::complete_decoded`]
+/// (the browser's own decoders, so the page's module carries none).
+pub use tilo_image_codec::DecodedImage;
+
 /// Fetches the raw encoded bytes for a URL, or `None` on failure. Invoked as
 /// background work, so it may block on I/O.
 pub type Fetcher = Arc<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
