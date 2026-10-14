@@ -2778,7 +2778,10 @@ impl TileHost {
         rect: Rect,
     ) {
         let (edge_width, edge_color) = if self.focused {
-            (FOCUS_EDGE_STROKE_WIDTH, theme.tokens.colors.border_focus)
+            (
+                FOCUS_EDGE_STROKE_WIDTH,
+                theme.tokens.colors.window_edge_focused(),
+            )
         } else {
             (EDGE_STROKE_WIDTH, theme.window_edge())
         };
@@ -3254,7 +3257,12 @@ mod tests {
 
             for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
                 let name = theme.name.clone();
-                let focus = theme.tokens.colors.border_focus;
+                let focus = theme.tokens.colors.window_edge_focused();
+                assert_ne!(
+                    focus.to_rgba8().to_u32(),
+                    theme.tokens.colors.intent.you.to_rgba8().to_u32(),
+                    "{name}: window focus is neutral, not your colour"
+                );
                 let (fr, fg, fb) = {
                     let rgba = focus.to_rgba8();
                     (rgba.r, rgba.g, rgba.b)
