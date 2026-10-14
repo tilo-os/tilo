@@ -2348,6 +2348,16 @@ impl ActorState {
         }
     }
 
+    /// The host at `peer` subscribed this device to `ws`: refresh what its
+    /// native session holds and send the requests that waited for it.
+    fn host_ready(&mut self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
+        self.request_native_refresh(ws);
+        for request in self.room_governance.ready_for(ws, peer) {
+            self.send_to_host(request, peer);
+        }
+        NetEvent::HostReady { ws, peer }
+    }
+
     /// Send `request` on the session of its workspace with the host at
     /// `endpoint`, to the device that session's handshake authenticated.
     fn send_to_host(&mut self, request: room_governance::Request, endpoint: EndpointId) {
@@ -3201,13 +3211,7 @@ impl ActorState {
         let event = self.admit_native_governance(ws, event).await;
         let mapped = match event {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
-            HostEvent::Ready => {
-                self.request_native_refresh(ws);
-                for request in self.room_governance.ready_for(ws, peer) {
-                    self.send_to_host(request, peer);
-                }
-                Some(NetEvent::HostReady { ws, peer })
-            }
+            HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
             HostEvent::Voice(event) => {
                 let session = self

@@ -90,7 +90,7 @@ async fn invoke(
         reason = "Relay::shutdown consumes the relay after the assertions"
     )
 )]
-async fn the_relays_person_creates_lists_and_enters_rooms_as_actions() {
+async fn the_relays_person_creates_and_lists_rooms_as_actions() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let relay = view_read_relay(dir.path(), &key, &owner).await;
@@ -176,10 +176,30 @@ async fn the_relays_person_creates_lists_and_enters_rooms_as_actions() {
             "{listed:?}"
         );
     }
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions"
+    )
+)]
+async fn the_relays_person_enters_a_room_and_lets_an_app_author_it_as_actions() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = view_read_relay(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms().unwrap();
+    let host = HostRoomActions::new();
+    host.attach(rooms.clone());
+    let laptop = owners_laptop();
+    let created = rooms.create("Plans").await.unwrap();
 
     // Entering admits the laptop and answers the invitation it redeems,
     // restricted to its own person.
-    let enter = || host_request(ENTER_ROOM, json!({ "room": created.room.room }));
+    let enter = || host_request(ENTER_ROOM, json!({ "room": created.room }));
     let entered: EnteredRoom =
         serde_json::from_value(invoke(&host, &laptop, enter()).await.unwrap()).unwrap();
     assert!(entered.changed);
@@ -205,13 +225,13 @@ async fn the_relays_person_creates_lists_and_enters_rooms_as_actions() {
         &laptop,
         host_request(
             GRANT_APP_AUTHORSHIP,
-            json!({ "room": created.room.room, "app": "so.tilo.notes" }),
+            json!({ "room": created.room, "app": "so.tilo.notes" }),
         ),
     )
     .await
     .unwrap();
     assert!(
-        granted["generation"].as_u64() > Some(created.room.generation),
+        granted["generation"].as_u64() > Some(created.generation),
         "{granted}"
     );
     relay.shutdown().await;
