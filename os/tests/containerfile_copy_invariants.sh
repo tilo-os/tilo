@@ -174,7 +174,9 @@ containerfile="$repo/os/Containerfile"
 # the runtime with a fresh key. The installed paths are unchanged.
 # The boot audit's image signature policy checker is one intentional payload
 # addition beside the audit in the existing libexec COPY instruction.
-expected_contract=5f9949a545b5d443cdf299c0093447d2d3a1c2fffa6cf6947a65137b502f9d0b
+# tilo-extension is now compiled: it arrives from the extension component at
+# the same path and mode instead of from the context.
+expected_contract=fc4c2fff13ffe828412236523dabca46ee35beaa4eafc59a63294eb744b941de
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -267,7 +269,6 @@ for path in \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
   os/usr/libexec/tilo-image-policy-check \
-  os/usr/libexec/tilo-extension \
   os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |
     awk -v path="$path" '
