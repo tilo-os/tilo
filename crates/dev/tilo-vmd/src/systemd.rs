@@ -839,6 +839,73 @@ impl Apply for SystemdApply {
         })
     }
 
+    fn private_control(
+        &mut self,
+        session: &Session,
+        args: &[String],
+        input: &str,
+    ) -> Result<ControlResult, DaemonError> {
+        use std::io::Write as _;
+        use std::process::Stdio;
+        let pid = self
+            .session_pid(session)
+            .ok_or_else(|| DaemonError::InvalidParams("slot session is not running".into()))?;
+        // Use the slot's verified control binary, not the older image's client.
+        let mut child = Command::new("nsenter")
+            .args([
+                "--mount",
+                "--target",
+                &pid.to_string(),
+                "--",
+                "runuser",
+                "-u",
+                &session.user,
+                "--",
+                "env",
+            ])
+            .arg(format!(
+                "TILO_TEST_CONTROL={}",
+                session.control_socket.display()
+            ))
+            .arg(TILO_CONTROL)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|_| {
+                DaemonError::InvalidParams("could not start private control client".into())
+            })?;
+        let sent = child
+            .stdin
+            .take()
+            .ok_or_else(|| {
+                DaemonError::InvalidParams("private control stdin is unavailable".into())
+            })?
+            .write_all(input.as_bytes());
+        if sent.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(DaemonError::InvalidParams(
+                "could not send private control arguments".into(),
+            ));
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|_| DaemonError::InvalidParams("private control client failed".into()))?;
+        if !output.status.success() {
+            return Err(DaemonError::InvalidParams(
+                "private action was refused; inspect its declared parameters and custody state"
+                    .into(),
+            ));
+        }
+        Ok(ControlResult {
+            exit_code: 0,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::new(),
+        })
+    }
+
     fn wait_session_ready(&mut self, session: &Session) -> Result<(), String> {
         // Restart=always turns a failing start into active/activating flapping,
         // so the unit has to stay active under one main process for a while.

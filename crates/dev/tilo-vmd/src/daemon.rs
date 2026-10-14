@@ -669,7 +669,18 @@ impl Daemon {
             }
             Request::Control(p) => {
                 let (_, session) = self.user_slot(&p.slot)?;
-                to_value(&self.apply.control(&session, &p.args)?)
+                if let Some(input) = &p.private_args {
+                    if !matches!(p.args.as_slice(), [actions, invoke, _, _, stdin] if actions == "actions" && invoke == "invoke" && stdin == "--args-stdin")
+                        || input.line.len() > 65536
+                    {
+                        return Err(DaemonError::InvalidParams(
+                            "invalid private control request".into(),
+                        ));
+                    }
+                    to_value(&self.apply.private_control(&session, &p.args, &input.line)?)
+                } else {
+                    to_value(&self.apply.control(&session, &p.args)?)
+                }
             }
             Request::Gc(p) => {
                 let _vm = self.locks.vm_exclusive()?;
@@ -1414,8 +1425,19 @@ impl Daemon {
             Some((from, to)) => self.transition(&mut record, &from, &to)?,
             None => unchanged(record),
         };
+        if !result.changed {
+            self.layers.verify(layer)?;
+        }
         if let Some(cohort) = &cohort {
-            let (_, session) = self.user_slot(name)?;
+            let (record, session) = self.user_slot(name)?;
+            if !result.changed {
+                let current = self.slots.generation(name, record.current)?;
+                let layers = self.system_layers(&record, self.layer_paths(&current)?)?;
+                if self.cohort_is_active(&session, &layers, cohort)? {
+                    result.warnings.splice(0..0, warnings);
+                    return Ok(result);
+                }
+            }
             result.cohort_selection.extend(crate::cohort::select(
                 self.apply.as_mut(),
                 &session,
