@@ -20,6 +20,7 @@ zeroize.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "rt", "sync", "time", "macros"] }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 workspace-hack = { version = "0.1" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 
 [dev-dependencies]
 blake3.workspace = true
