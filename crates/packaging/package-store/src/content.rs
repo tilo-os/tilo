@@ -86,6 +86,13 @@ impl Content<'_> {
         Ok(value)
     }
 
+    /// Database syncs this session's writes have made; see
+    /// [`ContentStore::write_syncs`].
+    #[cfg(test)]
+    pub(crate) fn write_syncs(&self) -> u64 {
+        self.store.write_syncs()
+    }
+
     /// Write `blob` to the new file `target`, sharing extents with the
     /// store's copy where the filesystem allows.
     pub(crate) fn export(&self, blob: &BlobHash, target: &Path) -> Result<(), StoreError> {

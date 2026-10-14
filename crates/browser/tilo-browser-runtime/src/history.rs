@@ -6,9 +6,16 @@
 //! log this profile keeps beside its stored desktop. The records the
 //! windows show carry their own histories, read from detached copies of
 //! the open documents.
+//!
+//! The pane's own code is linked in, unless the `deferred-activity` feature
+//! leaves it to the bundling crate: the browser desktop hands over a loader
+//! ([`defer_activity_pane`]) that fetches it as its own module the first
+//! time someone opens Activity, so the start module does not carry it.
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
 use std::hash::{Hash as _, Hasher as _};
+use std::pin::Pin;
 use std::rc::Rc;
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
@@ -18,8 +25,94 @@ use tilo_desktop_surface::activity::{
     WorkspaceSeenFrontier,
 };
 use tilo_desktop_surface::history_log;
+use tilo_desktop_surface::{ActivityPaneCode, OpenActivity};
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::record::RecordCheckout;
+
+/// Fetches the Activity pane's code; `None` when it could not.
+pub type LoadActivity = fn() -> Pin<Box<dyn Future<Output = Option<OpenActivity>>>>;
+
+/// Where the page has the Activity pane's code.
+#[derive(Clone, Copy)]
+enum PaneCode {
+    Ready(OpenActivity),
+    /// Fetched when the pane first opens.
+    Deferred(LoadActivity),
+    Loading,
+    /// The last fetch failed: that request is dismissed, the next one
+    /// fetches again.
+    Failed(LoadActivity),
+}
+
+thread_local! {
+    static PANE_CODE: RefCell<PaneCode> = RefCell::new(linked_pane());
+    /// The desktops that asked for the pane while its code loads.
+    static WAITING: RefCell<Vec<crate::desktop::Shared>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(not(feature = "deferred-activity"))]
+fn linked_pane() -> PaneCode {
+    PaneCode::Ready(tilo_desktop_surface::open_activity)
+}
+
+/// No loader yet: the bundling crate supplies one before it mounts a
+/// desktop, and Activity stays unavailable without it.
+#[cfg(feature = "deferred-activity")]
+fn linked_pane() -> PaneCode {
+    fn missing() -> Pin<Box<dyn Future<Output = Option<OpenActivity>>>> {
+        Box::pin(std::future::ready(None))
+    }
+    PaneCode::Deferred(missing)
+}
+
+/// Fetch the Activity pane's code with `load` the first time it opens,
+/// instead of linking it in (the `deferred-activity` feature).
+pub fn defer_activity_pane(load: LoadActivity) {
+    PANE_CODE.with_borrow_mut(|code| *code = PaneCode::Deferred(load));
+}
+
+fn wait_for_pane(desktop: &crate::desktop::Shared) {
+    WAITING.with_borrow_mut(|waiting| {
+        if !waiting
+            .iter()
+            .any(|other| std::sync::Arc::ptr_eq(&other.woken, &desktop.woken))
+        {
+            waiting.push(desktop.clone());
+        }
+    });
+}
+
+/// The pane's code for `desktop`, which is woken for its update pass once
+/// code still loading has arrived (or failed to).
+fn activity_pane(desktop: &crate::desktop::Shared) -> ActivityPaneCode {
+    let code = PANE_CODE.with_borrow(|code| *code);
+    match code {
+        PaneCode::Ready(open) => ActivityPaneCode::Ready(open),
+        PaneCode::Loading => {
+            wait_for_pane(desktop);
+            ActivityPaneCode::Loading
+        }
+        PaneCode::Deferred(load) => {
+            PANE_CODE.with_borrow_mut(|code| *code = PaneCode::Loading);
+            wait_for_pane(desktop);
+            wasm_bindgen_futures::spawn_local(async move {
+                let loaded = load().await;
+                PANE_CODE.with_borrow_mut(|code| {
+                    *code = loaded.map_or(PaneCode::Failed(load), PaneCode::Ready);
+                });
+                for desktop in WAITING.take() {
+                    desktop.wake();
+                }
+                crate::browser::wake_desktops();
+            });
+            ActivityPaneCode::Loading
+        }
+        PaneCode::Failed(load) => {
+            PANE_CODE.with_borrow_mut(|code| *code = PaneCode::Deferred(load));
+            ActivityPaneCode::Unavailable
+        }
+    }
+}
 
 /// What the pane may ask of the page: who is looking, what they have seen,
 /// application names.
@@ -336,6 +429,10 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
 
     fn history_is_partial(&self) -> bool {
         self.partial
+    }
+
+    fn activity_pane(&self) -> ActivityPaneCode {
+        activity_pane(&self.shared)
     }
 
     fn host(&self) -> Rc<dyn ActivityHost> {

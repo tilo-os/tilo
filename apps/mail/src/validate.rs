@@ -324,8 +324,7 @@ mod live_probe {
         cfg: &AccountConfig,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<(), String> {
-        use lettre::transport::smtp::authentication::Credentials;
-        use lettre::{AsyncSmtpTransport, Tokio1Executor};
+        use lettre::transport::smtp::client::TlsParameters;
 
         if cfg.smtp_host.trim().is_empty() {
             return Err("no SMTP host".into());
@@ -336,29 +335,23 @@ mod live_probe {
         } else {
             cfg.smtp_port
         };
-        let (user, token) = creds(cfg)?;
+        // Credential validity is proven authoritatively by the IMAP login
+        // (SMTP has no no-op AUTH probe); this proves the outgoing server is
+        // reachable and speaks the negotiated security. Resolving them first
+        // keeps an OAuth sign-in that lapsed from reading as a server fault.
+        creds(cfg)?;
+        let starttls = TlsParameters::new(host.to_owned())
+            .map_err(|e| classify_conn_failure(&e.to_string()))?;
         block_on(
             async move {
-                let builder = if port == 465 {
-                    AsyncSmtpTransport::<Tokio1Executor>::relay(host)
+                let mut connection =
+                    crate::connect::smtp(host, port, tls_config(), starttls).await?;
+                let alive = connection.test_connected().await;
+                let _ = connection.quit().await;
+                if alive {
+                    Ok(())
                 } else {
-                    AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
-                }
-                .map_err(|e| classify_conn_failure(&e.to_string()))?;
-                let secret = token.unwrap_or_else(|| cfg.password.clone());
-                let mailer: AsyncSmtpTransport<Tokio1Executor> = builder
-                    .port(port)
-                    .timeout(Some(std::time::Duration::from_secs(10)))
-                    .credentials(Credentials::new(user, secret))
-                    .build();
-                // test_connection performs connect + EHLO (+ TLS upgrade), proving
-                // the outgoing server is reachable and speaks the negotiated
-                // security. Credential validity is proven authoritatively by the
-                // IMAP login above (SMTP has no no-op AUTH probe).
-                match mailer.test_connection().await {
-                    Ok(true) => Ok(()),
-                    Ok(false) => Err("SMTP server did not accept the connection".into()),
-                    Err(e) => Err(classify_conn_failure(&e.to_string())),
+                    Err("SMTP server did not accept the connection".into())
                 }
             },
             cancellation,

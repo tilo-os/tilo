@@ -268,7 +268,7 @@ impl Compositor {
         // short — `/run/user/$UID` also keeps a stray socket out of the repo.
         let runtime_dir = PathBuf::from(format!(
             "/run/user/{}/tilo-clip-{}-{}",
-            unsafe { libc::getuid() },
+            rustix::process::getuid().as_raw(),
             std::process::id(),
             next_id(),
         ));
@@ -5658,7 +5658,7 @@ fn group_for_tab_title(
 fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
     let home = PathBuf::from(format!(
         "/run/user/{}/tilo-dnd-home-{}-{}",
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         std::process::id(),
         next_id(),
     ));
@@ -5885,7 +5885,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
 
     let home = PathBuf::from(format!(
         "/run/user/{}/tilo-dnd-wp-{}-{}",
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         std::process::id(),
         next_id(),
     ));
