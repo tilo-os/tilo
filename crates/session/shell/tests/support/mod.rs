@@ -14,6 +14,7 @@
 pub mod desktop;
 pub mod host;
 pub mod offscreen;
+pub mod peer_stream;
 pub mod snapshot;
 pub mod wayland;
 

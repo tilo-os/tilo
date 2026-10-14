@@ -85,6 +85,20 @@ impl Rooms {
         result
     }
 
+    /// Whether [`Self::authorize`] would let `device` do `op` in `room` at
+    /// `now`: the same decision, asked without acting on it, so a catalogue
+    /// can leave out what its caller may not do. A refusal here is not
+    /// logged; nothing was attempted.
+    pub(super) fn permits(
+        &self,
+        device: &DeviceCert,
+        room: Option<&GovernedRoom>,
+        op: RoomOp<'_>,
+        now: u64,
+    ) -> bool {
+        self.decide(device, room, op, now).is_ok()
+    }
+
     fn decide(
         &self,
         device: &DeviceCert,

@@ -12510,6 +12510,10 @@ pub fn run() {
                     }
                 }
             );
+            // A picture that outlasted its frame's push is shown once it
+            // finishes, even when no later frame arrives to carry it out; the
+            // view's wake deadline brings the loop back for it.
+            let _ = frame_builder.host_mut().collect_late_peer_pictures();
             // Which legacy windows running on the person's other devices this
             // one shows: each host streams them here only while it does.
             // Nothing shows under the lock.

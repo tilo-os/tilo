@@ -577,7 +577,14 @@ desktop. `TILO_WEB_ABOUT_NOTIFY`, `TILO_WEB_ABOUT_SOURCE` and
 `TILO_WEB_ABOUT_COMMUNITY` (https URLs) become `about`, the links the
 About sheet behind the top bar's Tilo mark offers; an unset one is not
 offered. The bundle lives under `v/<content hash>/` and is cached as
-immutable; only the entry pages and `entry.json` revalidate.
+immutable; only the entry pages, `entry.json` and `version.json`
+revalidate. An image serves one version, so a page opened before a deploy
+finds its version's app modules gone the first time it opens an app it had
+not loaded: the loader announces the missing module, the page reads
+`version.json`, and when another version is served it offers to reload
+(`web/bundle-update.mjs`). The reloaded page runs the new version only and
+reopens the same windows from this browser's storage, the one that failed
+included; a page never loads another version's files into its own.
 
 `?embed=1` on an entry page is the page inside another site (the
 homepage's live preview): a workspace whose host has an admission door is

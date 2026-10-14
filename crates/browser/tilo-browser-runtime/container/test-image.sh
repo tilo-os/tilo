@@ -58,6 +58,9 @@ grep -q '^cache-control: no-cache' <(head_of "$home" /) || fail "/ must revalida
 # exactly the bytes it records. A missing or substituted file fails here
 # rather than in a visitor's tab when an app's module is first fetched.
 [[ $(get "$home" /version.json | jq -r .version) == "$version" ]] || fail "version.json names another version than the entry page imports"
+# A page opened before a deploy reads it to learn that its version's files
+# are gone (web/bundle-update.mjs): a cached answer would hide the update.
+grep -q '^cache-control: no-cache' <(head_of "$home" /version.json) || fail "version.json must revalidate"
 listed=$(get "$home" "/v/$version/build.json" \
   | jq -r '.files | to_entries[] | select(.key != "index.html" and .key != "app/index.html") | "\(.value) \(.key)"')
 [[ $(wc -l <<<"$listed") -gt 1 ]] || fail "build.json lists no files"
