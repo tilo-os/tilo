@@ -9,11 +9,13 @@
 //! predates batching, and one on
 //! `tilo-relay/6`. Both must see the pointer paced to at most 20 Hz, its
 //! last position, the caret, and the event after everything sent before it;
-//! the `/6` member must pay a fraction of the bytes.
+//! the byte budget is checked separately on a controlled writer schedule
+//! in `peer::state_tests::presence_cost`.
 //!
-//! It prints one `PRESENCE_COST key=value …` line. It gates only what does not
-//! depend on timing: the final state, the order, a generous frame ceiling and
-//! the bytes per presence.
+//! It prints one `PRESENCE_COST key=value …` line. The network scenario
+//! checks final state, order and the frame ceiling. Its byte observations
+//! depend on how transport and executor scheduling group the presence; the
+//! production-writer test gates both protocols on identical delivered states.
 //!
 //! A second scenario types: each keystroke is a retained delta followed by
 //! the toolkit's `Typing` and `Caret`, as the shell sends them. The caret
@@ -56,9 +58,6 @@ use crate::common::{TestDevice, TestRelay, TestUser, client_endpoint, spawn_rela
 const WORKSPACE: u64 = 710;
 const ROOM: &str = "5e11f00d-7110-4625-8000-000000000710";
 const MOVES: u32 = 60;
-/// What each presence frame cost on `tilo-relay/5` before #4006, ~236 B
-/// for a pointer move; on `tilo-relay/6` it must stay well below a third.
-const BUDGET_SLOT_CODED_BYTES_PER_PRESENCE: f64 = 70.0;
 
 /// A member reading the relay's frames on one ALPN through the production
 /// session reader, which expands `PresenceBatch` frames.
@@ -332,16 +331,6 @@ async fn presence_is_coalesced_for_every_protocol_and_slot_coded_on_tilo_relay_6
         "PRESENCE_COST moves_published={MOVES} relay5_presence={old_count} relay5_bytes={old_bytes} \
          relay5_bytes_per_presence={old_per:.1} relay6_presence={new_count} \
          relay6_bytes={new_bytes} relay6_bytes_per_presence={new_per:.1}"
-    );
-    assert!(
-        new_per <= BUDGET_SLOT_CODED_BYTES_PER_PRESENCE,
-        "tilo-relay/6 paid {new_per:.1} B per presence (budget \
-         {BUDGET_SLOT_CODED_BYTES_PER_PRESENCE} B; /5 paid {old_per:.1} B)"
-    );
-    assert!(
-        old_per > 3.0 * new_per,
-        "slot coding must cut the bytes per presence to under a third: \
-         /5 {old_per:.1} B, /6 {new_per:.1} B"
     );
 }
 
