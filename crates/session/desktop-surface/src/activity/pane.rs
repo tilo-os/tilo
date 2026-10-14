@@ -414,14 +414,18 @@ fn local_resume_snapshot(entries: &[HistoryEntry], local: &str) -> Option<Resume
         .filter_map(|entry| {
             let context = entry.context.as_ref()?;
             let resource = context.resource.as_ref()?;
+            let mut target = ui::HistoryResourceTarget {
+                app_id: context.app.as_ref().map(|app| app.id.clone()),
+                app_label: context.app.as_ref().map(|app| app.label.clone()),
+                id: resource.id.clone(),
+                kind: resource.kind.clone(),
+                label: resource.label.clone(),
+            };
+            // A resource known only by its id has nothing to offer by name.
+            let label = target.display_name()?.to_owned();
+            target.label = label;
             Some(ResumeSnapshot {
-                target: ui::HistoryResourceTarget {
-                    app_id: context.app.as_ref().map(|app| app.id.clone()),
-                    app_label: context.app.as_ref().map(|app| app.label.clone()),
-                    id: resource.id.clone(),
-                    kind: resource.kind.clone(),
-                    label: resource.label.clone(),
-                },
+                target,
                 author: entry.author.clone(),
                 app: context.app.as_ref().map(|app| app.label.clone()),
                 timestamp: entry.timestamp,
@@ -1637,6 +1641,7 @@ impl RoomActivityPane {
             origin.get_or_insert(next);
         }
         if !app_origins.is_empty() {
+            let titles = std::mem::take(&mut detail.resources);
             detail.resources = app_origins
                 .into_iter()
                 .filter_map(|origin| {
@@ -1650,12 +1655,21 @@ impl RoomActivityPane {
                                 .as_ref()
                                 .is_some_and(|doc| doc.pending_ops() == 0)
                     });
+                    let app_label = self.host.app_display_name(app);
+                    // The record's title as its own actions named it, else
+                    // its app: the record id is an address, not a name.
+                    let label = titles
+                        .iter()
+                        .find(|target| target.id == id.as_str())
+                        .and_then(|target| ui::human_label(&target.label, &target.id))
+                        .or(app_label.as_deref())
+                        .map_or_else(|| t("overview-untitled"), str::to_owned);
                     Some(ui::HistoryResourceTarget {
-                        app_label: self.host.app_display_name(app),
+                        app_label,
                         app_id: Some(app.clone()),
                         id: id.as_str().into(),
                         kind: kind.as_str().into(),
-                        label: id.as_str().into(),
+                        label,
                     })
                 })
                 .collect();
@@ -6640,8 +6654,10 @@ impl RoomActivityPane {
             ActivityFocus::Morning(key, remove) => Some(if *remove {
                 t("activity-morning-remove")
             } else {
-                self.morning_target(key)
-                    .map_or_else(|| t("activity-morning-unavailable"), |target| target.label)
+                self.morning_target(key).map_or_else(
+                    || t("activity-morning-unavailable"),
+                    |target| morning_sources::morning_resource_name(&target),
+                )
             }),
             ActivityFocus::Resume => self.resume_target.as_ref().map(|target| {
                 t_args(
