@@ -17,7 +17,8 @@
 //! an agent writes to insert blocks or to replace a body.
 //!
 //! The dialect is small on purpose: headings (`#`..`######`), bullets,
-//! numbered items, checklist items (`- [ ]`, `- [x]`), quotes (`>`), fenced
+//! numbered items, checklist items (`- [ ]`, `- [x]`), quotes (`>`),
+//! callouts (`> [!WARNING] text`, a GitHub alert on one line), fenced
 //! code, a `---` divider, and the inline marks `**bold**`, `*italic*` /
 //! `_italic_`, `~~struck~~`, `` `code` `` and `[text](url)`. A line break
 //! inside a block ends the line with a backslash. Blocks Markdown cannot
@@ -48,8 +49,25 @@ pub(crate) enum Shape {
     Numbered(i64),
     Checklist(i64, bool),
     Quote,
+    /// A quote set apart as a GitHub alert: `note`, `tip`, `important`,
+    /// `warning` or `caution` ([`CALLOUTS`]).
+    Callout(&'static str),
     Code(Option<String>),
     Divider,
+}
+
+/// The callouts a quote can be, by the name its `alert` attribute stores:
+/// GitHub-flavoured Markdown's alerts.
+pub const CALLOUTS: [&str; 5] = ["note", "tip", "important", "warning", "caution"];
+
+/// The stored attribute that makes a quote a callout.
+const CALLOUT_ATTR: &str = "alert";
+
+/// The callout named `name`, in any case.
+pub(crate) fn callout_named(name: &str) -> Option<&'static str> {
+    CALLOUTS
+        .into_iter()
+        .find(|callout| callout.eq_ignore_ascii_case(name.trim()))
 }
 
 /// What to do with one stored attribute when a block takes a shape.
@@ -62,7 +80,7 @@ pub(crate) enum Want {
 /// The stored kind of a shape and what its attributes must be.
 pub(crate) struct Stored {
     pub kind: &'static str,
-    pub attrs: [(&'static str, Want); 6],
+    pub attrs: [(&'static str, Want); 7],
 }
 
 fn int_attr(view: &BlockView, key: &str) -> Option<i64> {
@@ -91,7 +109,10 @@ impl Shape {
             "heading" => Some(Self::Heading(
                 int_attr(view, "level").unwrap_or(1).clamp(1, MAX_HEADING),
             )),
-            "quote" | "blockquote" => Some(Self::Quote),
+            "quote" | "blockquote" => Some(match view.attrs.get(CALLOUT_ATTR) {
+                Some(AttrVal::Str(name)) => callout_named(name).map_or(Self::Quote, Self::Callout),
+                _ => Self::Quote,
+            }),
             "divider" => Some(Self::Divider),
             "list_item" => Some(match bool_attr(view, "checked") {
                 Some(done) => Self::Checklist(indent(), done),
@@ -113,9 +134,9 @@ impl Shape {
     pub(crate) fn stored(&self) -> Stored {
         use AttrVal::{Bool, Int, Str};
         match self {
-            Self::Paragraph | Self::Quote | Self::Divider => Stored {
+            Self::Paragraph | Self::Quote | Self::Callout(_) | Self::Divider => Stored {
                 kind: match self {
-                    Self::Quote => "quote",
+                    Self::Quote | Self::Callout(_) => "quote",
                     Self::Divider => "divider",
                     _ => "paragraph",
                 },
@@ -126,6 +147,13 @@ impl Shape {
                     ("code", Want::Clear),
                     ("lang", Want::Clear),
                     ("code_group", Want::Clear),
+                    (
+                        CALLOUT_ATTR,
+                        match self {
+                            Self::Callout(name) => Want::Set(Str((*name).to_owned())),
+                            _ => Want::Clear,
+                        },
+                    ),
                 ],
             },
             Self::Heading(level) => Stored {
@@ -137,6 +165,7 @@ impl Shape {
                     ("code", Want::Clear),
                     ("lang", Want::Clear),
                     ("code_group", Want::Clear),
+                    (CALLOUT_ATTR, Want::Clear),
                 ],
             },
             Self::Bullet(indent) | Self::Numbered(indent) | Self::Checklist(indent, _) => Stored {
@@ -157,6 +186,7 @@ impl Shape {
                     ("code", Want::Clear),
                     ("lang", Want::Clear),
                     ("code_group", Want::Clear),
+                    (CALLOUT_ATTR, Want::Clear),
                 ],
             },
             Self::Code(lang) => Stored {
@@ -172,6 +202,7 @@ impl Shape {
                             .map_or(Want::Clear, |lang| Want::Set(Str(lang.clone()))),
                     ),
                     ("code_group", Want::Keep),
+                    (CALLOUT_ATTR, Want::Clear),
                 ],
             },
         }
@@ -441,6 +472,9 @@ pub(crate) fn render_line(shape: &Shape, text: &str, marks: &[MarkSpan]) -> Stri
             )
         }
         Shape::Quote => format!("> {}", body()),
+        Shape::Callout(name) => {
+            format!("> [!{}] {}", name.to_ascii_uppercase(), body())
+        }
         Shape::Divider => "---".to_owned(),
         Shape::Code(_) => text.to_owned(),
     }
@@ -629,7 +663,16 @@ fn block_start(line: &str) -> (Shape, &str) {
         return (Shape::Divider, "");
     }
     if let Some(quoted) = rest.strip_prefix('>') {
-        return (Shape::Quote, quoted.strip_prefix(' ').unwrap_or(quoted));
+        let quoted = quoted.strip_prefix(' ').unwrap_or(quoted);
+        if let Some((name, text)) = quoted
+            .strip_prefix("[!")
+            .and_then(|marker| marker.split_once(']'))
+            && let Some(callout) = callout_named(name)
+            && matches!(text.chars().next(), None | Some(' '))
+        {
+            return (Shape::Callout(callout), text.trim_start());
+        }
+        return (Shape::Quote, quoted);
     }
     if let Some(item) = rest
         .strip_prefix("- ")
@@ -1173,6 +1216,13 @@ mod tests {
                 "# not nested",
                 &[("level", AttrVal::Int(2))],
             ),
+            view(
+                "b8b8",
+                "quote",
+                "heed this",
+                &[("alert", AttrVal::Str("warning".into()))],
+            ),
+            view("b9b9", "quote", "[!NOTE] is only text here", &[]),
         ];
         let mut blocks = vec![bold, code];
         blocks.extend(tricky);
@@ -1193,6 +1243,41 @@ mod tests {
                 "{markdown}"
             );
             assert_eq!(item.text, block.text, "{markdown}");
+        }
+    }
+
+    #[test]
+    fn a_callout_is_a_quote_with_its_alert() {
+        let callout = view(
+            "c1c1",
+            "quote",
+            "mind the gap",
+            &[("alert", AttrVal::Str("caution".into()))],
+        );
+        let shape = Shape::of_view(&callout).unwrap();
+        assert_eq!(shape, Shape::Callout("caution"));
+        assert_eq!(
+            render_line(&shape, &callout.text, &[]),
+            "> [!CAUTION] mind the gap"
+        );
+        let parsed = parse("> [!tip] try this\n> [!NOPE] plain\n", &Ids::Discard).unwrap();
+        let shapes: Vec<Shape> = parsed
+            .into_iter()
+            .map(|line| match line {
+                Parsed::Block(item) => item.shape,
+                Parsed::Keep(id) => panic!("kept {id}"),
+            })
+            .collect();
+        assert_eq!(shapes, [Shape::Callout("tip"), Shape::Quote]);
+        // Back to a plain quote clears the alert; every other shape too.
+        for shape in [Shape::Quote, Shape::Paragraph, Shape::Bullet(0)] {
+            assert!(
+                shape
+                    .stored()
+                    .attrs
+                    .iter()
+                    .any(|(key, want)| *key == "alert" && matches!(want, Want::Clear))
+            );
         }
     }
 

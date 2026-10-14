@@ -563,6 +563,17 @@ impl RichTextLine {
         self.inner.text_inset_x(theme)
     }
 
+    /// The first visual row's band, `(top, height)`, where a block's
+    /// prefix (a bullet, an ordinal, a checkbox) sits.
+    pub(super) fn first_row_band(&self) -> (f64, f64) {
+        self.inner.first_row_band()
+    }
+
+    /// The style the line's text is shaped in under `text_scale`.
+    pub(super) fn line_style(&self, text_scale: f32) -> crate::text_render::TextStyle {
+        self.inner.line_style(text_scale)
+    }
+
     /// Returns 0.0 before the first draw.
     pub fn pixel_x_for_byte(&self, theme: &Theme, byte: usize) -> f64 {
         let xs = self.inner.char_x_positions();

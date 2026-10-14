@@ -1166,14 +1166,12 @@ fn block_typography_scales_and_bands_each_kind() {
         let gutter = prefix_gutter_for(&editor.blocks[2].kind) * 2.0;
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(2.0);
-        let (label_width, _) = renderer.measure("1.", BlockKind::Paragraph.font_size(), None);
-        let origin = numbered_prefix_origin(
-            line_rect,
-            line_rect.x0 - gutter,
-            f64::from(label_width),
-            BlockKind::Paragraph.font_size(),
-            2.0,
-            large.tokens.metrics.icon_label_gap,
+        let (origin, _) = list_marker::ordinal_placement(
+            numbered_line,
+            line_rect.x0 - gutter + numbered_line.text_inset(&large),
+            "1.",
+            &large,
+            &mut renderer,
         );
         let caret = numbered_line.caret_rect(&large, 0);
         assert!(

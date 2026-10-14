@@ -473,6 +473,12 @@ block-editor-replace = Replace
 block-editor-replace-all = Replace all
 block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field
 
+block-callout-note = Note
+block-callout-tip = Tip
+block-callout-important = Important
+block-callout-warning = Warning
+block-callout-caution = Caution
+
 dictation-record-once = Record once
 dictation-finish = Finish
 dictation-cancel = Cancel

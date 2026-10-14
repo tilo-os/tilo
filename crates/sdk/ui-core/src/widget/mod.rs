@@ -3119,8 +3119,9 @@ pub use rich_text_line::{LineSignal, RichTextLine};
 pub mod block_editor;
 pub mod paint_damage;
 pub use block_editor::{
-    Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
-    DocumentSelection, EditScope, PresenceKeyFn, TransclusionPreview, legacy_block_id,
+    Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CalloutKind, CursorPlacement,
+    DocumentPosition, DocumentSelection, EditScope, PresenceKeyFn, TransclusionPreview,
+    legacy_block_id,
 };
 mod filter_menu;
 pub use filter_menu::FilterMenu;
