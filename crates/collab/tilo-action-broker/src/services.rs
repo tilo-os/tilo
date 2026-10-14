@@ -747,7 +747,8 @@ pub struct DevicePairingRequest<'a> {
 }
 
 /// How a pairing step ended.
-pub type DevicePairingOutcome = Result<tilo_actions::ActionOutput, tilo_actions::ActionFailure>;
+pub type DevicePairingOutcome =
+    Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
 
 /// Pairing a nearby device with the person's identity, run by the host:
 /// LAN discovery, and the approval an administrator authenticates through

@@ -413,6 +413,7 @@ impl Pairing {
             let label = candidate.label.clone();
             let stop = Arc::new(AtomicBool::new(false));
             flights.approving = Some((approval.device.clone(), Arc::clone(&stop)));
+            drop(flights);
             (label, stop)
         };
         let command = approval_command(approval, paths, &workspace_ids);
@@ -744,11 +745,13 @@ fn outcome(answer: Answer) -> tilo_action_broker::services::DevicePairingOutcome
             value: Some(value),
             resources: Vec::new(),
         })
-        .map_err(|message| tilo_actions::ActionFailure {
-            code: "pairing_failed".into(),
-            message,
-            details: None,
-            retryable: true,
+        .map_err(|message| {
+            Box::new(tilo_actions::ActionFailure {
+                code: "pairing_failed".into(),
+                message,
+                details: None,
+                retryable: true,
+            })
         })
 }
 
@@ -827,7 +830,8 @@ mod tests {
                 if stop.load(Ordering::Acquire) {
                     return Err("stopped".into());
                 }
-                if let Ok(success) = lock_receiver(&release).try_recv() {
+                let released = lock_receiver(&release).try_recv();
+                if let Ok(success) = released {
                     return Ok(Finished {
                         success,
                         stderr: if success {
@@ -849,12 +853,14 @@ mod tests {
         receiver.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The step's answer; a step that never answers reads as that refusal,
+    /// which no assertion below expects.
     fn wait(answer: Pending<Answer>) -> Answer {
-        match answer.wait_timeout(Duration::from_secs(10)) {
-            Ok(Some(value)) => value,
-            Ok(None) => panic!("the step gave no answer"),
-            Err(_) => panic!("the step never ended"),
-        }
+        answer
+            .wait_timeout(Duration::from_secs(10))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| Err("the step never answered".into()))
     }
 
     #[test]
