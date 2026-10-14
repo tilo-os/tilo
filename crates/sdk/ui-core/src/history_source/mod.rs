@@ -75,7 +75,10 @@ pub use runs::{
     AgentRun, RUNS_KEY, RunStep, forget_run, is_run_marker, read_runs, record_run,
     record_run_with_details, run_starting_at,
 };
-pub use schema_ops::{SchemaHistoryOp, SchemaObjectId, schema_operations_since};
+pub use schema_ops::{
+    SchemaChange, SchemaCreation, SchemaHistoryOp, SchemaObjectId, schema_changes_since,
+    schema_operations_since,
+};
 pub use seen::HistorySeenFrontier;
 
 /// The structural path materialises one snapshot per version, so cost is
