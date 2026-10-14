@@ -11,10 +11,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::widget::RouteSnapshot;
 
-/// Directory set by `tilo-app dev`. The checkpoint file inside it is
-/// `checkpoint.bin`.
-pub const DEV_SESSION_ENV: &str = "TILO_DEV_SESSION";
-
 const DEV_CHECKPOINT_VERSION: u32 = 1;
 const CHECKPOINT_FILE: &str = "checkpoint.bin";
 
