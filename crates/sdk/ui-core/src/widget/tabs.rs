@@ -271,6 +271,12 @@ pub struct TabBar {
     /// under them.
     pill_faces: Vec<PillFaces>,
     face_metrics: FaceMetrics,
+    /// Width each unpinned tab's full set of faces wants, keyed by tab id.
+    /// Recorded in `draw` (presence is only known there) and added to the
+    /// pill's natural width so a short title still has room for its faces.
+    face_demand: HashMap<u64, f64>,
+    /// `face_demand` changed since the last layout: the pills must resize.
+    face_demand_stale: bool,
     pending_context_menu: Option<(u64, Point)>,
     hover_idx: Option<usize>,
     hover_close_idx: Option<usize>,
@@ -436,6 +442,8 @@ impl TabBar {
             visible_titles: Vec::new(),
             pill_faces: Vec::new(),
             face_metrics: FaceMetrics::default(),
+            face_demand: HashMap::new(),
+            face_demand_stale: false,
             pending_context_menu: None,
             hover_idx: None,
             hover_close_idx: None,
@@ -988,7 +996,7 @@ impl TabBar {
 
     /// How many peer faces pill `i` has room for: up to [`PILL_MAX_FACES`]
     /// plus a "+N" disc, fewer when the title would drop under
-    /// [`MIN_TITLE_PX`], none on a pinned pill or one too narrow for even a
+    /// its full width or [`MIN_TITLE_PX`], none on a pinned pill or one too narrow for even a
     /// single face. The mist still says someone is there.
     fn fit_pill_faces(&self, i: usize, presence: &PresenceCtx) -> PillFaces {
         let (Some(tab), Some(&r)) = (self.tabs.get(i), self.tab_rects.get(i)) else {
@@ -999,7 +1007,33 @@ impl TabBar {
         }
         let peers = presence.peers_on(&tab_presence_key(tab.id)).len();
         let (x0, x1) = self.title_zone_without_faces(i, r);
-        PillFaces::fit(peers, x1 - x0, self.face_metrics)
+        let keep = self.shaped_title_width(i).min(MIN_TITLE_PX);
+        PillFaces::fit(peers, x1 - x0, keep, self.face_metrics)
+    }
+
+    /// Records how wide each unpinned tab's faces want to be, and marks the
+    /// layout stale when that changed so the pills grow or shrink for them.
+    fn record_face_demand(&mut self, presence: &PresenceCtx) {
+        let metrics = self.face_metrics;
+        let demand: HashMap<u64, f64> = self
+            .tabs
+            .iter()
+            .filter(|tab| !self.pinned_ids.contains(&tab.id))
+            .filter_map(|tab| {
+                let peers = presence.peers_on(&tab_presence_key(tab.id)).len();
+                let faces = peers.min(PILL_MAX_FACES);
+                let wanted = PillFaces {
+                    faces,
+                    overflow: peers - faces,
+                }
+                .width(metrics);
+                (wanted > 0.0).then_some((tab.id, wanted))
+            })
+            .collect();
+        if demand != self.face_demand {
+            self.face_demand = demand;
+            self.face_demand_stale = true;
+        }
     }
 
     /// Small faces of the peers on this tab, at the trailing end of the
@@ -1555,7 +1589,8 @@ impl TabBar {
         }
         let title_w = self.shaped_title_width(i);
         let lead = self.leading_zone(i);
-        (PILL_PAD_X + lead + title_w + reserve).max(PILL_MIN_PX)
+        let faces = self.face_demand.get(&t.id).copied().unwrap_or(0.0);
+        (PILL_PAD_X + lead + title_w + faces + reserve).max(PILL_MIN_PX)
     }
 
     fn shaped_title_width(&self, i: usize) -> f64 {
@@ -2640,16 +2675,16 @@ impl PillFaces {
         }
     }
 
-    /// The most faces for `peers` that still leave the title
-    /// [`MIN_TITLE_PX`] of a `room`-wide zone; fewer faces fold into "+N".
-    fn fit(peers: usize, room: f64, metrics: FaceMetrics) -> Self {
+    /// The most faces for `peers` that still leave the title `keep` px of a
+    /// `room`-wide zone; fewer faces fold into "+N".
+    fn fit(peers: usize, room: f64, keep: f64, metrics: FaceMetrics) -> Self {
         (1..=peers.min(PILL_MAX_FACES))
             .rev()
             .map(|faces| Self {
                 faces,
                 overflow: peers.saturating_sub(faces),
             })
-            .find(|candidate| room - candidate.width(metrics) >= MIN_TITLE_PX)
+            .find(|candidate| room - candidate.width(metrics) >= keep)
             .unwrap_or_default()
     }
 }
@@ -2720,6 +2755,7 @@ impl Widget for TabBar {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.face_demand_stale = false;
         self.tab_rects.clear();
         self.close_rects.clear();
         self.close_hit_rects.clear();
@@ -2849,6 +2885,7 @@ impl Widget for TabBar {
             return;
         }
         self.face_metrics = FaceMetrics::of(theme);
+        self.record_face_demand(presence);
         self.pill_faces = (0..self.tabs.len())
             .map(|i| self.fit_pill_faces(i, presence))
             .collect();
@@ -3114,9 +3151,10 @@ impl Widget for TabBar {
         self.rect
     }
     /// A fixed-height strip sized by its parent: only its first layout is a
-    /// size change. Tab additions and removals are structural.
+    /// size change. Tab additions and removals are structural; peers arriving
+    /// on or leaving a tab resize its pill for their faces.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        self.rect == Rect::ZERO || self.face_demand_stale
     }
     fn is_focusable(&self) -> bool {
         !self.tabs.is_empty()
@@ -5124,7 +5162,7 @@ mod tests {
                     "g1",
                     vec![
                         TabDescriptor::new(1, "Alpha"),
-                        TabDescriptor::new(2, "Beta"),
+                        TabDescriptor::new(2, "Quarterly planning"),
                     ],
                     1,
                 );
@@ -5184,6 +5222,59 @@ mod tests {
             );
             let (narrow, _) = faces_at(70.0);
             assert_eq!(narrow[1], PillFaces::default(), "too narrow: mist only");
+
+            // A short title: the pill grows by its faces' width, so after
+            // the relayout the faces show next to the whole title.
+            let mut b = TabBar::new(
+                "g1",
+                vec![
+                    TabDescriptor::new(1, "Main"),
+                    TabDescriptor::new(2, "Notes"),
+                ],
+                1,
+            );
+            let reserve = b.resting_reveal(1).reserve();
+            let draw_at = |b: &mut TabBar, width: f64, presence: &PresenceCtx| {
+                b.rect = Rect::new(0.0, 0.0, 80.0 + width, 40.0);
+                b.tab_rects = vec![
+                    Rect::new(0.0, 6.0, 80.0, 34.0),
+                    Rect::new(80.0, 6.0, 80.0 + width, 34.0),
+                ];
+                b.reveal_px = vec![0.0, reserve];
+                b.close_rects = vec![Rect::ZERO; 2];
+                b.max_rects = vec![Rect::ZERO; 2];
+                b.search_rects = vec![Rect::ZERO; 2];
+                b.draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut TextRenderer::new(),
+                    &Theme::dark(),
+                    presence,
+                );
+            };
+            draw_at(&mut b, 200.0, &PresenceCtx::default());
+            let content = PILL_PAD_X + b.leading_zone(1) + b.shaped_title_width(1) + reserve;
+            let mut presence = PresenceCtx::default();
+            presence.register_peer_at(
+                "ada".to_string(),
+                PresenceKey::Tab {
+                    id: "2".to_string(),
+                },
+            );
+            draw_at(&mut b, content.max(PILL_MIN_PX), &presence);
+            assert!(b.face_demand_stale, "a new peer asks for a relayout");
+            let one = PillFaces {
+                faces: 1,
+                overflow: 0,
+            };
+            let grown = b.natural_pill_width(1, reserve);
+            let wanted = (content + one.width(FaceMetrics::of(&Theme::dark()))).max(PILL_MIN_PX);
+            assert!(
+                (grown - wanted).abs() < 0.01,
+                "the pill grows by the face: {grown} vs {wanted}"
+            );
+            draw_at(&mut b, grown, &presence);
+            assert_eq!(b.pill_faces[1], one, "the grown pill shows the face");
         }
 
         // Case `user_color_is_stable_per_id_and_differs_across_ids`.
