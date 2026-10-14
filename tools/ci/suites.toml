@@ -606,6 +606,13 @@ inputs = ["crates/browser/tilo-web-desktop/scripts/"]
 suites = ["crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs"]
 
 [[group]]
+name = "browser-auth-e2e"
+# dev/auth-e2e.mjs reuses the browser qualification's bundle check and
+# drives Chrome through tools/web/chrome.mjs.
+inputs = ["crates/hosting/tilo-room-service/dev/", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs"]
+suites = ["crates/hosting/tilo-room-service/dev/auth-e2e.test.mjs"]
+
+[[group]]
 name = "browser-benchmark-scripts"
 inputs = ["scripts/browser/"]
 suites = [
