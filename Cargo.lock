@@ -14436,6 +14436,7 @@ dependencies = [
  "tilo-nm",
  "tilo-paths",
  "tilo-peer-state",
+ "tilo-polkit-agent",
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-reference",
@@ -17796,6 +17797,19 @@ name = "tilo-platform-caps"
 version = "0.1.0"
 dependencies = [
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-polkit-agent"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tilo-copy-lint",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
