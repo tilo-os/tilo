@@ -103,30 +103,70 @@ fn colours_code(kind: TokenKind) -> bool {
     )
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the parser advances one shared index while both slices are bounds-checked by the loop"
-)]
-fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
+/// What one line of a code run is highlighted from: the run's language and
+/// every line up to and including it, since a line's colours depend on the
+/// parse state the lines above it leave (an open string or comment).
+struct SyntaxKeys(rustc_hash::FxHasher);
+
+impl SyntaxKeys {
+    fn new(language: &str) -> Self {
+        let mut hasher = rustc_hash::FxHasher::default();
+        std::hash::Hasher::write(&mut hasher, language.as_bytes());
+        std::hash::Hasher::write_usize(&mut hasher, language.len());
+        Self(hasher)
+    }
+
+    fn line_key(&mut self, line: &str) -> u64 {
+        std::hash::Hasher::write(&mut self.0, line.as_bytes());
+        std::hash::Hasher::write_usize(&mut self.0, line.len());
+        std::hash::Hasher::finish(&self.0)
+    }
+}
+
+/// Colour each fenced code run by its grammar, and clear the colours of
+/// every other block. A run is highlighted again only when its language or
+/// one of its lines changed since its colours were derived: each line keeps
+/// the key it was coloured under, so an unchanged frame parses nothing.
+/// Returns how many lines were highlighted.
+fn refresh_syntax_colors(blocks: &mut [Block]) -> usize {
+    let mut highlighted = 0usize;
     let mut index = 0usize;
-    while index < blocks.len() {
-        let Some(language) = languages.get(index).and_then(Option::as_deref) else {
-            let Some(block) = blocks.get_mut(index) else {
-                break;
-            };
-            block.line.set_transient_colors(Vec::new());
+    while let Some(block) = blocks.get(index) {
+        let BlockKind::CodeBlock { lang } = &block.kind else {
+            if let Some(block) = blocks.get_mut(index) {
+                block.line.set_transient_colors(Vec::new());
+            }
             index = index.saturating_add(1);
             continue;
         };
-        let mut state = SyntaxHighlighter::for_token_or_plain(language).start();
         let start = index;
-        while index < blocks.len()
-            && languages.get(index).and_then(Option::as_deref) == Some(language)
-            && blocks[start].same_code_group(&blocks[index])
+        let mut end = start.saturating_add(1);
+        while blocks
+            .get(end)
+            .is_some_and(|next| block.same_code_group(next))
         {
-            let Some(block) = blocks.get_mut(index) else {
-                break;
-            };
+            end = end.saturating_add(1);
+        }
+        index = end;
+        let language = lang.as_deref().unwrap_or_default();
+        let Some(run) = blocks.get(start..end) else {
+            break;
+        };
+        let mut keys = SyntaxKeys::new(language);
+        if run
+            .iter()
+            .all(|line| line.line.transient_colors_key() == Some(keys.line_key(line.text())))
+        {
+            continue;
+        }
+        let language = language.to_owned();
+        let Some(run) = blocks.get_mut(start..end) else {
+            break;
+        };
+        let mut keys = SyntaxKeys::new(&language);
+        let mut state = SyntaxHighlighter::for_token_or_plain(&language).start();
+        for block in run {
+            let key = keys.line_key(block.text());
             let colors = state
                 .highlight_line(block.text())
                 .into_iter()
@@ -136,10 +176,11 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
                     kind: span.kind,
                 })
                 .collect();
-            block.line.set_transient_colors(colors);
-            index = index.saturating_add(1);
+            block.line.set_keyed_transient_colors(key, colors);
+            highlighted = highlighted.saturating_add(1);
         }
     }
+    highlighted
 }
 
 /// Each `CodeBlock` stores one authored source line. It may wrap visually;
@@ -566,6 +607,14 @@ pub struct BlockEditor {
     font_scale: f32,
     #[cfg(test)]
     painted_blocks: usize,
+    /// Code lines syntax-highlighted, for tests that a frame derives
+    /// colours only for what changed.
+    #[cfg(test)]
+    highlighted_lines: usize,
+    /// Formula previews whose source text was joined, for tests that a
+    /// frame derives it only for what it paints.
+    #[cfg(test)]
+    formula_sources: usize,
     dirty: bool,
     paint_damage: crate::widget::paint_damage::PaintDamage,
     /// Where each line this draw painted past its own rect (a correction
@@ -800,6 +849,10 @@ impl BlockEditor {
             font_scale: 1.0,
             #[cfg(test)]
             painted_blocks: 0,
+            #[cfg(test)]
+            highlighted_lines: 0,
+            #[cfg(test)]
+            formula_sources: 0,
             dirty: true,
             paint_damage: crate::widget::paint_damage::PaintDamage::default(),
             line_overhang: HashMap::new(),
@@ -3345,15 +3398,23 @@ impl BlockEditor {
         let tokens = &theme.tokens;
         let hovered = self.hovered_block();
         let mut painted = Vec::new();
-        for index in 0..self.blocks.len() {
+        // At most three blocks show a handle: the dragged one, the caret's and
+        // the hovered one. Only those are measured.
+        let mut shown = [
+            self.block_drag.map(|drag| drag.source),
+            self.focused.filter(|_| self.is_focused),
+            hovered,
+        ];
+        shown.sort_unstable();
+        let mut previous = None;
+        for index in shown.into_iter().flatten() {
+            if previous.replace(index) == Some(index) {
+                continue;
+            }
             let Some(handle) = self.block_drag_handle_rect(index) else {
                 continue;
             };
             let active = self.block_drag.is_some_and(|drag| drag.source == index);
-            let contains_caret = self.is_focused && self.focused == Some(index);
-            if !active && !contains_caret && hovered != Some(index) {
-                continue;
-            }
             painted.push(handle);
             let color = tokens.colors.text_primary.with_alpha_factor(0.72);
             let center = handle.center();
@@ -4061,9 +4122,17 @@ impl BlockEditor {
         Some((start, end))
     }
 
-    fn refresh_live_link_hits(&mut self, theme: &Theme) {
+    /// The links of the blocks this frame `painted`: a link off screen has
+    /// no geometry anyone can point at, and its line's shaped positions may
+    /// be from an earlier frame.
+    fn refresh_live_link_hits(&mut self, theme: &Theme, painted: &[bool]) {
         self.live_link_hits.clear();
-        for block in &self.blocks {
+        for (block, _) in self
+            .blocks
+            .iter()
+            .zip(painted)
+            .filter(|(_, painted)| **painted)
+        {
             let line = &block.line;
             for span in line.marks() {
                 let target = match &span.mark {
@@ -7968,7 +8037,9 @@ impl Widget for BlockEditor {
             } else {
                 ""
             };
-            block.line.inner_mut().set_placeholder(hint);
+            if block.line.inner().placeholder() != hint {
+                block.line.inner_mut().set_placeholder(hint);
+            }
             // New lines (a split, a paste) take the editor's alignment too.
             if block.line.align() != self.text_align {
                 block.line.set_align(self.text_align);
@@ -7977,19 +8048,20 @@ impl Widget for BlockEditor {
 
         let handles = self.draw_block_drag_affordance(scene, transform, theme);
 
+        // Syntax colours are derived per change, not per frame; an unchanged
+        // run keeps the colours it has.
+        let highlighted = refresh_syntax_colors(&mut self.blocks);
+        #[cfg(test)]
+        {
+            self.highlighted_lines = self.highlighted_lines.saturating_add(highlighted);
+        }
+        #[cfg(not(test))]
+        let _ = highlighted;
+
         // Precompute run geometry so a multi-line fence paints one background
         // and a formula fence paints one preview after its final source line.
         let line_rects: Vec<Rect> = self.blocks.iter().map(|b| b.line.get_rect()).collect();
         let ordinals = numbered_ordinals(&self.blocks);
-        let code_languages: Vec<Option<String>> = self
-            .blocks
-            .iter()
-            .map(|block| match &block.kind {
-                BlockKind::CodeBlock { lang } => Some(lang.clone().unwrap_or_default()),
-                _ => None,
-            })
-            .collect();
-        apply_syntax_colors(&mut self.blocks, &code_languages);
         let mut run_start = 0;
         let code_runs = self
             .blocks
@@ -8005,58 +8077,6 @@ impl Widget for BlockEditor {
                 Some(run_start)
             })
             .collect::<Vec<_>>();
-        let mut formula_runs: Vec<Option<FormulaRunPreview>> = vec![None; self.blocks.len()];
-        let mut formula_index = 0usize;
-        while formula_index < self.blocks.len() {
-            let Some(descriptor) = self
-                .blocks
-                .get(formula_index)
-                .and_then(|b| formula_descriptor(&b.kind))
-            else {
-                formula_index = formula_index.saturating_add(1);
-                continue;
-            };
-            let end = formula_run_end(&self.blocks, formula_index);
-            let source = self
-                .blocks
-                .get(formula_index..=end)
-                .map(|run| run.iter().map(Block::text).collect::<Vec<_>>().join("\n"))
-                .unwrap_or_default();
-            if let Some(slot) = formula_runs.get_mut(formula_index) {
-                *slot = Some(FormulaRunPreview {
-                    end,
-                    descriptor,
-                    source,
-                });
-            }
-            formula_index = end.saturating_add(1);
-        }
-
-        self.code_copy_hits.clear();
-        let mut code_index = 0usize;
-        while code_index < code_languages.len() {
-            let Some(Some(_)) = code_languages.get(code_index) else {
-                code_index = code_index.saturating_add(1);
-                continue;
-            };
-            let mut end = code_index;
-            while code_runs.get(end.saturating_add(1)) == code_runs.get(code_index) {
-                end = end.saturating_add(1);
-            }
-            if formula_runs.get(code_index).is_none_or(Option::is_none)
-                && let Some(line) = line_rects.get(code_index)
-            {
-                let size = 22.0 * self.text_scale;
-                let rect = Rect::new(
-                    line.x1 - size - 4.0 * self.text_scale,
-                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale,
-                    line.x1 - 4.0 * self.text_scale,
-                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale + size,
-                );
-                self.code_copy_hits.push((rect, code_index, end));
-            }
-            code_index = end.saturating_add(1);
-        }
 
         let paint_rects: Vec<_> = (0..self.blocks.len())
             .map(|index| self.block_paint_rect(index))
@@ -8085,6 +8105,70 @@ impl Widget for BlockEditor {
                         .is_some_and(|group| group.contains(&index))
             })
             .collect();
+
+        // A run's ground, formula preview and copy chrome are painted by its
+        // first line, so only a run whose first line paints needs them: the
+        // rest of the document derives nothing this frame.
+        let mut formula_runs: Vec<Option<FormulaRunPreview>> = vec![None; self.blocks.len()];
+        let mut formula_index = 0usize;
+        while formula_index < self.blocks.len() {
+            let Some(descriptor) = self
+                .blocks
+                .get(formula_index)
+                .and_then(|b| formula_descriptor(&b.kind))
+            else {
+                formula_index = formula_index.saturating_add(1);
+                continue;
+            };
+            let end = formula_run_end(&self.blocks, formula_index);
+            if painted.get(formula_index).copied().unwrap_or(false) {
+                let source = self
+                    .blocks
+                    .get(formula_index..=end)
+                    .map(|run| run.iter().map(Block::text).collect::<Vec<_>>().join("\n"))
+                    .unwrap_or_default();
+                #[cfg(test)]
+                {
+                    self.formula_sources = self.formula_sources.saturating_add(1);
+                }
+                if let Some(slot) = formula_runs.get_mut(formula_index) {
+                    *slot = Some(FormulaRunPreview {
+                        end,
+                        descriptor,
+                        source,
+                    });
+                }
+            }
+            formula_index = end.saturating_add(1);
+        }
+
+        self.code_copy_hits.clear();
+        let mut code_index = 0usize;
+        while code_index < code_runs.len() {
+            let Some(Some(_)) = code_runs.get(code_index) else {
+                code_index = code_index.saturating_add(1);
+                continue;
+            };
+            let mut end = code_index;
+            while code_runs.get(end.saturating_add(1)) == code_runs.get(code_index) {
+                end = end.saturating_add(1);
+            }
+            if painted.get(code_index).copied().unwrap_or(false)
+                && formula_descriptor(&self.blocks[code_index].kind).is_none()
+                && let Some(line) = line_rects.get(code_index)
+            {
+                let size = 22.0 * self.text_scale;
+                let rect = Rect::new(
+                    line.x1 - size - 4.0 * self.text_scale,
+                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale,
+                    line.x1 - 4.0 * self.text_scale,
+                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale + size,
+                );
+                self.code_copy_hits.push((rect, code_index, end));
+            }
+            code_index = end.saturating_add(1);
+        }
+
         let mut drag_offset = active_drag
             .map(|drag| self.last_mouse_pos - drag.start)
             .unwrap_or_default();
@@ -8554,14 +8638,12 @@ impl Widget for BlockEditor {
                 ctx.theme.tokens.colors.text_dim,
                 1.5 * self.text_scale,
             );
-            let language =
-                code_languages
-                    .get(*start)
-                    .and_then(Option::as_ref)
-                    .map_or(
-                        "Code",
-                        |value| if value.is_empty() { "Code" } else { value },
-                    );
+            let language = match self.blocks.get(*start).map(|block| &block.kind) {
+                Some(BlockKind::CodeBlock { lang: Some(lang) }) if !lang.is_empty() => {
+                    lang.as_str()
+                }
+                _ => "Code",
+            };
             // The language label starts where the code does.
             let left = line.x0 + inset;
             let available = (rect.x0 - left - 8.0 * self.text_scale).max(0.0);
@@ -8670,7 +8752,7 @@ impl Widget for BlockEditor {
         // style, scale, and BiDi changes unclickable.
         #[cfg(test)]
         let links_probe = crate::profiling::frame_probe::span("block_link_hits");
-        self.refresh_live_link_hits(theme);
+        self.refresh_live_link_hits(theme, &painted);
         #[cfg(test)]
         drop(links_probe);
         if let Some(prefix) = outside_prefix {
