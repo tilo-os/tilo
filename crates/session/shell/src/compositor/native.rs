@@ -608,23 +608,34 @@ impl AnimationSettle {
 /// Who a painted tick's motion belongs to, for the frame trace
 /// ([`metrics::FrameSample::paint_animations`]). Naming a content widget
 /// walks the widget tree, so the label is worked out when the set of
-/// animating sources (or the chrome) changes and kept while it does not:
-/// it names the owners as of the start of that run of motion, which is the
-/// run an idle desktop that keeps painting is stuck in.
+/// animating sources (or the chrome) changes, and otherwise at most once per
+/// [`ANIMATION_LABEL_REFRESH`]. The set of sources does not see which content
+/// widget animates: one window's opening can hand the motion on to another
+/// widget with the same `content` source, and a label kept for the whole run
+/// named the window that had long since settled.
 #[derive(Default)]
 struct AnimationTraceLabel {
     key: Option<(crate::shell::frame::AnimationDemand, bool, u64)>,
+    walked: Option<Instant>,
     label: &'static str,
 }
+
+/// How long a frame-trace motion label is kept while its sources stay the same.
+const ANIMATION_LABEL_REFRESH: Duration = Duration::from_secs(1);
 
 impl AnimationTraceLabel {
     fn label(
         &mut self,
         key: (crate::shell::frame::AnimationDemand, bool, u64),
+        now: Instant,
         owners: impl FnOnce() -> Vec<String>,
     ) -> &'static str {
-        if self.key != Some(key) {
+        let stale = self
+            .walked
+            .is_none_or(|at| now.saturating_duration_since(at) >= ANIMATION_LABEL_REFRESH);
+        if self.key != Some(key) || stale {
             self.key = Some(key);
+            self.walked = Some(now);
             self.label = metrics::intern_animations(&animation_trace_label(&owners(), key.1));
         }
         self.label
@@ -3824,6 +3835,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         reason = "one flat JSON literal with a line per dumped chrome field"
     )]
     fn chrome_state_json(&self) -> serde_json::Value {
+        // Read before the chrome is borrowed below: asking the widgets whether
+        // they animate reaches the top bar, which borrows the chrome itself.
+        let animating = self.fb.animation_owners();
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
         let native_broker = chrome
@@ -3881,6 +3895,10 @@ impl ControlState for FrameBuilderControlState<'_> {
             // (`live`), its app mark because the app holds secrets
             // (`withheld`), or its app mark for now (`none`).
             "window_switcher": self.fb.host().window_switcher_state_json(),
+            // Who asks for animation frames now: chrome sources by name, the
+            // deepest animating widgets by path with their geometry (and a
+            // window's frame state). Empty when the desktop may sleep.
+            "animating": animating,
             // Nested resource search is a visible place in the palette, not
             // merely provider-internal state. Expose the authenticated route
             // and label so agents and accessibility tooling can tell exactly
@@ -13159,10 +13177,11 @@ pub fn run() {
                 clients,
             );
             if animating && !session.is_locked() {
-                let owners = animation_trace
-                    .label((animation_demand, transition_run, revision), || {
-                        frame_builder.animation_owners()
-                    });
+                let owners = animation_trace.label(
+                    (animation_demand, transition_run, revision),
+                    Instant::now(),
+                    || frame_builder.animation_owners(),
+                );
                 metrics.mark_paint_animations(owners);
             }
         }
@@ -14806,19 +14825,32 @@ mod tests {
             ..Default::default()
         };
         let mut walks = 0;
+        let start = Instant::now();
         for _ in 0..3 {
-            let label = trace.label((demand, false, 7), || {
+            let label = trace.label((demand, false, 7), start, || {
                 walks += 1;
                 vec!["osk".to_string()]
             });
             assert_eq!(label, "osk");
         }
         assert_eq!(walks, 1, "the owners are looked up once per set of sources");
-        let _ = trace.label((demand, false, 8), || {
+        let _ = trace.label((demand, false, 8), start, || {
             walks += 1;
             vec!["osk".to_string()]
         });
         assert_eq!(walks, 2, "a chrome change looks them up again");
+
+        // The same sources, but the motion has passed from a window that
+        // settled to another widget: within a second the label says so.
+        let later = start
+            .checked_add(ANIMATION_LABEL_REFRESH)
+            .expect("a second after now");
+        let label = trace.label((demand, false, 8), later, || {
+            walks += 1;
+            vec!["content/DesktopSurface/TileHost@0,0 10x10".to_string()]
+        });
+        assert_eq!(walks, 3, "a label is not kept past its refresh");
+        assert_eq!(label, "content/DesktopSurface/TileHost");
     }
 
     #[test]
@@ -18701,6 +18733,59 @@ mod tests {
         let summoned = &state.chrome_state_json()["wheel_summon"];
         assert_eq!(summoned["x"].as_f64(), Some(1180.0));
         assert_eq!(summoned["y"].as_f64(), Some(450.0));
+    }
+
+    /// The state dump says who asks for animation frames, and asking must
+    /// not trip over the chrome the dump itself is reading: the top bar
+    /// borrows it to answer whether it needs drawing, and a dump that held
+    /// the borrow while asking aborted the compositor.
+    #[test]
+    fn state_dump_names_what_animates_with_the_top_bar_drawn() {
+        use crate::shell::state::{
+            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+            WorkspaceTree,
+        };
+        // A window asked for but not drawn yet holds animation frames, so the
+        // dump walks the content tree, top bar included.
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = Workspace::new(WorkspaceId(73), "Animating");
+        workspace.strips.push(Strip::new(StripId(74), "Main"));
+        workspace.strips[0].window_groups.push(WindowGroup {
+            id: 75,
+            tabs: vec![Tab {
+                id: 76,
+                title: "Opening".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.fixture".into(),
+                    surface_id: 0x7e57_0000_0027,
+                },
+            }],
+            active_tab: 76,
+            focus_history: Vec::new(),
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        tree.desktop.workspaces.push(workspace);
+        tree.set_active(WorkspaceId(73));
+        let mut fb = FrameBuilder::with_handle(tree.shared(), false, (1600, 900));
+        let _ = fb.paint();
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: None,
+            seat: None,
+            resolved: None,
+        };
+        let animating = state.chrome_state_json()["animating"].clone();
+        assert!(
+            animating
+                .as_array()
+                .is_some_and(|owners| owners.iter().any(|owner| owner
+                    .as_str()
+                    .is_some_and(|owner| owner.contains("ForeignSurfaceWidget")))),
+            "the dump names the opening window: {animating}"
+        );
     }
 
     /// `chrome.displays` names what is painted: every connected display and
