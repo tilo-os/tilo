@@ -29,10 +29,14 @@ use crate::shell::state::{Display, GroupId, StripId};
 use crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX;
 
 /// What a display that doesn't touch the desktop's top edge keeps along its
-/// own top edge: its top bar and the tiled layout's top rhythm (the same
-/// spacing step the workspace column puts under the full bar).
+/// own top edge: its top bar and the margin the workspace column puts under
+/// the full bar.
 fn own_top_band() -> f64 {
-    f64::from(TOPBAR_HEIGHT_PX) + f64::from(ui::tokens::Spacing::BASE.s3)
+    let top = match crate::shell::WORK_AREA {
+        tilo_desktop::composition::WorkArea::Flush { top, .. } => top,
+        tilo_desktop::composition::WorkArea::Framed => 0.0,
+    };
+    f64::from(TOPBAR_HEIGHT_PX) + f64::from(top)
 }
 
 /// The outputs that are displays of their own, in the backend's order: the

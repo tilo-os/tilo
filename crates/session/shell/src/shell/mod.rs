@@ -1092,6 +1092,18 @@ pub fn mount_in_process(
     })
 }
 
+/// Spacing of the strip column under the top bar. Nothing between the bar
+/// and the first strip: the tab row above every window already carries
+/// `TAB_PILL_INSET_Y` of air over its pills, and the bar keeps `s1` under
+/// its controls, so a margin on top of both was an empty band (24 physical
+/// px at scale 2) between the bar and the windows' tab row. The windows
+/// keep a margin over the bottom edge, which nothing else provides.
+pub(crate) const WORK_AREA: tilo_desktop::composition::WorkArea =
+    tilo_desktop::composition::WorkArea::Flush {
+        top: 0.0,
+        bottom: 12.0,
+    };
+
 /// The native chrome the shared desktop surface is built with: the session's
 /// top bar and wallpaper, the collaboration launchpad for an empty
 /// workspace, and a leading inset for the sidebar wheel.
@@ -1125,7 +1137,7 @@ pub(crate) fn workspace_surface_chrome(
         navigation: tilo_desktop::composition::NavigationChrome::InSurface,
         // Window surfaces meet the strip boundary: moving apps inward to keep
         // a clipped shadow would leave a visible shell-owned gutter.
-        work_area: tilo_desktop::composition::WorkArea::Flush { top: 12.0 },
+        work_area: WORK_AREA,
         topbar: Box::new(topbar),
         backdrop,
         empty_workspace: Some(Box::new(

@@ -18486,25 +18486,8 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().set_fullscreen_presentation(fullscreen);
         }
-        if let Some(work_area) = self
-            .desktop_surface_mut()
-            .and_then(tilo_desktop::composition::DesktopSurface::work_area_mut)
-        {
-            if fullscreen {
-                work_area.set_vertical_padding(0.0);
-                work_area.set_extra_top_padding(0.0);
-                work_area.set_extra_bottom_padding(0.0);
-                work_area.set_gap(0.0);
-            } else {
-                // The same margin under the windows as above them. The
-                // column holds zero-height navigation leaves ahead of the
-                // rows; a gap between them (`gap_standard` here) stacked
-                // two stray gaps over the first strip.
-                work_area.set_vertical_padding(0.0);
-                work_area.set_extra_top_padding(12.0);
-                work_area.set_extra_bottom_padding(12.0);
-                work_area.set_gap(0.0);
-            }
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.style_work_area(fullscreen);
         }
         let spans = self.strip_output_spans();
         for &ptr in self.group_row_ptrs.values() {

@@ -235,6 +235,8 @@ mod strip_navigation;
 mod surface_substream_e2e;
 #[path = "tilo_e2e_test.rs"]
 mod tilo_e2e_test;
+#[path = "top_chrome_stack.rs"]
+mod top_chrome_stack;
 #[path = "toplevel_configure_states.rs"]
 mod toplevel_configure_states;
 #[path = "toplevel_icon_protocol.rs"]
