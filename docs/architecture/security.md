@@ -251,6 +251,8 @@ pub enum GrantScope { Once, Session, Always, Workspace }
 
 `Workspace.grants: HashMap<AppId, Vec<Capability>>` persists Session/Always/Workspace-scoped grants. Once-grants live only in the in-flight prompt's resolution and never hit the CRDT.
 
+**Read is the floor of a restriction.** Underneath, each capability is a `collab_types::CapOverride`, a `Grant` or a `Restrict` at `Read` or `Write` over a path, device, host or file record, decided by `collab_types::decide_capability`. A `Restrict` caps access at its own level, and `Write` implies `Read`, so `Restrict { Read }` means read-only and no restriction ever takes reading away: the launcher binds the path read-only, `fs` keeps it visible. Reading is refused only where no live grant covers the resource, so the way to keep something from an app is not to grant it. Who may read which room, app or record is a different question, decided over the published tree, where a Deny on Read below the room is expressible ([permissions.md](permissions.md) §5.3).
+
 Replication semantics:
 
 - Grants replicate to peers as part of the room document.
