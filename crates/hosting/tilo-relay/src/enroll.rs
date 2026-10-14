@@ -177,7 +177,7 @@ enum OutOfBand {
         #[arg(long = "capability", value_name = "CAPABILITY")]
         capabilities: Vec<String>,
         /// Also record the certified host as one of the person's home peers
-        /// in IDENTITY_ROOT's home-peer registry, so this device shares
+        /// in the identity root's home-peer registry, so this device shares
         /// workspaces on it: the endpoint id of the relay it runs, hex, as
         /// `device-key` prints it. Needs the `host` capability.
         #[arg(long, value_name = "HEX")]
