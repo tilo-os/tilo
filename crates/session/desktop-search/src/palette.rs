@@ -38,7 +38,7 @@ struct Sources {
 impl Sources {
     fn new(data: SearchData) -> Self {
         Self {
-            applications: Applications::new(data.applications),
+            applications: Applications(data.applications),
             windows: Windows(data.windows),
             commands: Commands(data.commands),
             content: Content::new(data.providers, data.resources.clone()),

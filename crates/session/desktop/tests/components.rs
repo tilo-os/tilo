@@ -106,7 +106,6 @@ fn fixture() -> (
             active_tab: 10,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         }],
     }];
     let tree = DesktopTree {
@@ -227,7 +226,6 @@ fn moving_checked_tabs_between_groups_preserves_record_owner() {
             active_tab: 10,
             width: WindowWidth::Wide,
             maximized: true,
-            focus_history: Vec::new(),
         },
     );
     surface.reconcile(&tree, &records, &mut resolver);

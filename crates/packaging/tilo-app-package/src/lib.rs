@@ -57,7 +57,6 @@ pub mod image;
 pub mod manifest;
 pub mod pack;
 pub mod package;
-pub mod search_keywords;
 pub mod signed;
 pub mod tapp;
 pub mod trust;
