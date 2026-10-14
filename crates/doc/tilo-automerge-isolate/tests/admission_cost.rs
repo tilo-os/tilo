@@ -3,13 +3,20 @@
 //!
 //! The caller decodes only once a worker has accepted the same bytes, so an
 //! admission costs the worker's round trip plus that second decode. This
-//! measures both, for a one-keystroke change into documents with 1,000, 5,000
-//! and 20,000 changes of history and for loading a document of about 1 MB
-//! and 10 MB, and prints one line per case:
+//! measures both, for a one-keystroke change into a document with a long
+//! history and for loading a whole document, and prints one line per case.
+//! A plain test run keeps the cases small; `TILO_ADMISSION_COST=full`
+//! measures keystrokes into 1,000, 5,000 and 20,000 changes of history and
+//! loads of about 1 MB and 10 MB:
 //!
 //! ```text
-//! cargo test --locked -p tilo-automerge-isolate --test admission_cost -- --nocapture
+//! TILO_ADMISSION_COST=full cargo test --release --locked -p tilo-automerge-isolate \
+//!     --test admission_cost -- --nocapture
 //! ```
+//!
+//! Without `--release` the numbers are not the shipped ones: the test
+//! profile keeps Automerge's debug assertions, one of which walks every op
+//! of the document after each apply.
 //!
 //! Workers exist only on Linux; elsewhere admission is a decode in the page
 //! and there is nothing to split.
@@ -34,10 +41,31 @@ use tilo_automerge_isolate::{Applied, Dependencies, Isolate, Limits};
 
 tilo_automerge_isolate::test_worker!();
 
-/// Keystrokes timed per document.
-const KEYSTROKES: usize = 200;
-/// Loads timed per document.
-const LOADS: usize = 5;
+/// How much to measure.
+struct Scale {
+    /// Changes of history each keystroke document has.
+    histories: &'static [usize],
+    /// Keystrokes timed per document.
+    keystrokes: usize,
+    /// Documents to load: a label, their changes and letters per change.
+    documents: &'static [(&'static str, usize, usize)],
+    /// Loads timed per document.
+    loads: usize,
+}
+
+const SMALL: Scale = Scale {
+    histories: &[1_000],
+    keystrokes: 40,
+    documents: &[("small", 800, 120)],
+    loads: 3,
+};
+
+const FULL: Scale = Scale {
+    histories: &[1_000, 5_000, 20_000],
+    keystrokes: 200,
+    documents: &[("1MB", 4_000, 300), ("10MB", 20_000, 600)],
+    loads: 5,
+};
 
 /// A deterministic stream of lowercase letters, so every run builds the same
 /// documents.
@@ -119,7 +147,7 @@ fn isolate() -> Isolate {
     isolate
 }
 
-fn keystroke_cost(isolate: &Isolate, changes: usize) {
+fn keystroke_cost(isolate: &Isolate, changes: usize, keystrokes: usize) {
     let (mut base, text) = history(changes, 4);
     // The caller's document, admitted as a peer's would be.
     let mut doc = isolate.load(&base.save()).unwrap();
@@ -127,9 +155,9 @@ fn keystroke_cost(isolate: &Isolate, changes: usize) {
     let mut mirror = doc.fork().with_actor(doc.get_actor().clone());
     let mut remote = base.fork().with_actor(ActorId::from(vec![0xc3; 16]));
     let mut letters = Letters(u64::try_from(changes).unwrap() | 1);
-    let mut total = Vec::with_capacity(KEYSTROKES);
-    let mut caller = Vec::with_capacity(KEYSTROKES);
-    for _ in 0..KEYSTROKES {
+    let mut total = Vec::with_capacity(keystrokes);
+    let mut caller = Vec::with_capacity(keystrokes);
+    for _ in 0..keystrokes {
         let before = remote.get_heads();
         let at = letters.below(remote.length(&text) + 1);
         remote.splice_text(&text, at, 0, &letters.word(1)).unwrap();
@@ -161,7 +189,7 @@ fn keystroke_cost(isolate: &Isolate, changes: usize) {
     );
 }
 
-fn load_cost(isolate: &Isolate, label: &str, changes: usize, per_change: usize) {
+fn load_cost(isolate: &Isolate, (label, changes, per_change): (&str, usize, usize), loads: usize) {
     let (mut doc, _) = history(changes, per_change);
     let saved = doc.save();
     let hashes = AutoCommit::load(&saved)
@@ -169,10 +197,10 @@ fn load_cost(isolate: &Isolate, label: &str, changes: usize, per_change: usize) 
         .document()
         .change_hashes()
         .to_vec();
-    let mut total = Vec::with_capacity(LOADS);
-    let mut strict_load = Vec::with_capacity(LOADS);
-    let mut known_load = Vec::with_capacity(LOADS);
-    for _ in 0..LOADS {
+    let mut total = Vec::with_capacity(loads);
+    let mut strict_load = Vec::with_capacity(loads);
+    let mut known_load = Vec::with_capacity(loads);
+    for _ in 0..loads {
         let started = Instant::now();
         let mut admitted = isolate.load(&saved).unwrap();
         total.push(started.elapsed());
@@ -194,7 +222,7 @@ fn load_cost(isolate: &Isolate, label: &str, changes: usize, per_change: usize) 
     let known_p50 = percentile(&mut known_load, 50);
     eprintln!(
         "admission_cost load size={label} bytes={} changes={changes} total_p50_ms={:.2} \
-         caller_strict_p50_ms={:.2} caller_known_hashes_p50_ms={:.2} min_total_ms={:.2}",
+         full_load_p50_ms={:.2} known_hashes_load_p50_ms={:.2} min_total_ms={:.2}",
         saved.len(),
         millis(total_p50),
         millis(strict_p50),
@@ -205,10 +233,16 @@ fn load_cost(isolate: &Isolate, label: &str, changes: usize, per_change: usize) 
 
 #[test]
 fn admission_cost() {
+    let scale = if std::env::var_os("TILO_ADMISSION_COST").is_some_and(|value| value == "full") {
+        &FULL
+    } else {
+        &SMALL
+    };
     let isolate = isolate();
-    for changes in [1_000, 5_000, 20_000] {
-        keystroke_cost(&isolate, changes);
+    for &changes in scale.histories {
+        keystroke_cost(&isolate, changes, scale.keystrokes);
     }
-    load_cost(&isolate, "1MB", 4_000, 300);
-    load_cost(&isolate, "10MB", 20_000, 600);
+    for &document in scale.documents {
+        load_cost(&isolate, document, scale.loads);
+    }
 }
