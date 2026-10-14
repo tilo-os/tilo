@@ -2,6 +2,11 @@
 //! owner acting themselves, answered from the workspace's live worker
 //! advertisements, and composed beside the host's other providers.
 
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "each test's plane is the subject until its last assertion; the lint's suggested drop lands inside a loop that still uses it"
+)]
+
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
