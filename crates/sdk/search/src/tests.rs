@@ -290,6 +290,21 @@ fn loose_matching_finds_spread_words_and_typos_below_substrings() {
 }
 
 #[test]
+fn a_typo_in_a_name_outranks_the_same_typo_in_a_keyword() {
+    let loose = committed(
+        Matching::LOOSE,
+        [
+            Document::new(0)
+                .field("Calendar", FieldWeight::TITLE)
+                .field("termin", FieldWeight::KEYWORD),
+            Document::new(1).field("Terminal", FieldWeight::TITLE),
+        ],
+    );
+    assert_eq!(keys(&loose, "terminl"), [1, 0]);
+    assert!(rank(&loose, "terminl").unwrap() <= FUZZY_RANK);
+}
+
+#[test]
 fn many_records_find_a_late_one() {
     let mut index = SearchIndex::default();
     for key in 0..20_000 {
@@ -341,4 +356,164 @@ fn custom_ranks_and_scores_reorder_hits() {
     });
     let order: Vec<_> = scored.hits.iter().map(|hit| (hit.key, hit.score)).collect();
     assert_eq!(order, [(2, 101), (1, 47), (0, 43)]);
+}
+
+#[test]
+fn keywords_find_a_record_below_its_name_and_by_typo() {
+    let documents = [
+        Document::new(0)
+            .field("Tube", FieldWeight::TITLE)
+            .field("youtube", FieldWeight::KEYWORD)
+            .field("videos", FieldWeight::KEYWORD),
+        Document::new(1).field("Youtube Notes", FieldWeight::TITLE),
+        Document::new(2)
+            .field("Mail", FieldWeight::TITLE)
+            .field("email", FieldWeight::KEYWORD)
+            .field("posteingang", FieldWeight::KEYWORD),
+    ];
+    let loose = committed(Matching::LOOSE, documents);
+    // The keyword is an exact hit, ranked below a title prefix.
+    assert_eq!(keys(&loose, "youtube"), [1, 0]);
+    assert_eq!(
+        rank(&loose, "youtube"),
+        MatchTier::PrefixWord.rank_in(FieldWeight::TITLE)
+    );
+    // Only the keyword names Mail, and a typo in it still finds it.
+    assert_eq!(keys(&loose, "email"), [2]);
+    assert_eq!(keys(&loose, "posteingnag"), [2]);
+    assert_eq!(
+        keys(&loose, "yotube"),
+        [1, 0],
+        "a typo in a name leads one in a keyword"
+    );
+    assert!(
+        rank(&loose, "email").unwrap() > rank(&loose, "emial").unwrap(),
+        "an exact keyword outranks a misspelt one"
+    );
+}
+
+/// Records of every weight, some repeating a text, for comparing the
+/// direct path with tantivy.
+fn alike_documents() -> Vec<Document> {
+    let texts = [
+        "Wi-Fi: turn off",
+        "Switch the Wi-Fi radio of this device",
+        "wifi, wi-fi, wlan, wireless network",
+        "Keyboard layout",
+        "Tastatur & Maus",
+        "so.tilo.word-processor",
+        "Word Processor",
+        "Einstellungen",
+        "Screenshot or float part of the screen",
+        "report2026-final",
+        "dark mode",
+        "Bildschirmfoto",
+        "posteingang",
+        "e-mail",
+        "",
+    ];
+    let weights = [
+        FieldWeight::TITLE,
+        FieldWeight::new(90),
+        FieldWeight::KEYWORD,
+        FieldWeight::IDENTITY,
+        FieldWeight::SUBTITLE,
+        FieldWeight::METADATA,
+        FieldWeight::UNRANKED,
+    ];
+    (0..40u64)
+        .map(|key| {
+            let at = usize::try_from(key).unwrap();
+            (0..=(at % 4)).fold(
+                Document::new(key).signals(
+                    i32::try_from(at % 3).unwrap(),
+                    u32::try_from(at % 5).unwrap(),
+                ),
+                |document, field| {
+                    document.field(
+                        *texts
+                            .iter()
+                            .cycle()
+                            .nth(at.wrapping_mul(7).wrapping_add(field.wrapping_mul(3)))
+                            .unwrap(),
+                        *weights
+                            .iter()
+                            .cycle()
+                            .nth(at.wrapping_add(field.wrapping_mul(5)))
+                            .unwrap(),
+                    )
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn direct_and_tantivy_answer_alike() {
+    let documents = alike_documents();
+    let queries = [
+        "",
+        "s",
+        "w",
+        "wi",
+        "wi-fi",
+        "wifi",
+        "wlan",
+        "turn",
+        "turn off",
+        "keyboard layout",
+        "keybord",
+        "tastatur",
+        "word",
+        "wp",
+        "proc",
+        "einstellungen",
+        "einstelungen",
+        "screenshot",
+        "scrennshot",
+        "dark",
+        "dark mode",
+        "mode dark",
+        "posteingnag",
+        "e-mail",
+        "email",
+        "2026",
+        "final report",
+        "o",
+        "of",
+        "radio device",
+        "zzz",
+    ];
+    for matching in [Matching::LOOSE, Matching::default()] {
+        let direct = committed(matching, documents.clone());
+        let tantivy = {
+            let mut index = SearchIndex::new(matching).through_tantivy();
+            index.replace_all(documents.clone());
+            index.commit().unwrap();
+            index
+        };
+        for query in queries {
+            for page in [
+                Page::first(64),
+                Page {
+                    offset: 3,
+                    limit: 5,
+                },
+            ] {
+                assert_eq!(
+                    direct.search(query, page),
+                    tantivy.search(query, page),
+                    "{query:?} {matching:?} {page:?}"
+                );
+            }
+            let score = |signals: crate::Signals| {
+                signals.boost * 100 - i32::try_from(signals.length).unwrap()
+            };
+            assert_eq!(
+                direct.search_scored(query, Page::first(64), score),
+                tantivy.search_scored(query, Page::first(64), score),
+                "{query:?} {matching:?} scored"
+            );
+        }
+    }
 }

@@ -558,6 +558,11 @@ impl BrowserWidget {
     pub(crate) fn content_fullscreen(&self) -> bool {
         self.content_fullscreen
     }
+    #[cfg(test)]
+    pub(crate) fn force_content_fullscreen(&mut self, active: bool) {
+        self.content_fullscreen = active;
+        self.structure_dirty = true;
+    }
     pub(crate) fn set_window_fullscreen_active(&mut self, active: bool) {
         if self.window_fullscreen_active != active {
             self.window_fullscreen_active = active;

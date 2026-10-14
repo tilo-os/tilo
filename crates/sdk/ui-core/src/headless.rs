@@ -3523,17 +3523,50 @@ impl FrameHarness {
                 (
                     allowed && widget.is_focusable() && widget.is_enabled(),
                     allowed && widget.traps_focus(),
-                    widget.accessibility().is_some_and(|node| node.state.hidden),
+                    widget.accessibility_hidden(),
                 )
             })
             .unwrap_or((false, false, false))
         })
     }
 
+    /// Whether the walk in [`Self::update_focus_trap`] could find a trap: History
+    /// review is open, or a widget it would inspect traps focus. `false` is
+    /// exact — that walk would conclude "untrapped" — while `true` may still
+    /// end there (a trap under a hidden or denied ancestor).
+    fn focus_trap_possible(&self) -> bool {
+        let _profile = tilo_resource::profiling::Phase::start("ui.focus_trap_probe");
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.review_is_open())
+        {
+            return true;
+        }
+        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        {
+            // The mapped walk inspects composed nodes, some of which are not
+            // Widget children of the root; every one it can inspect is mapped.
+            self.node_map.keys().any(|&node| {
+                self.inspect_node(node, |widget| widget.traps_focus())
+                    .unwrap_or(false)
+            })
+        } else {
+            crate::focus_navigation::any_trap(self.root.as_ref())
+        }
+    }
+
     fn update_focus_trap(
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,
     ) {
+        // Untrapped and nothing asking to trap: the walk below could only
+        // conclude that again, which leaves focus alone. Skip it, as the live
+        // App does between rebuilds, so headless frames cost what live ones
+        // do; a trap that appears without a rebuild still engages this frame.
+        if !self.focus_trap_active && !self.focus_trap_possible() {
+            return;
+        }
         let _profile = tilo_resource::profiling::Phase::start("ui.focus_order");
         let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
             self.root.as_ref(),

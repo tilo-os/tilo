@@ -42,7 +42,7 @@ use ui::state::{DocumentFrontier, DocumentReplica};
 
 /// The desktop document's route. Changing it splits rooms by build.
 const DESKTOP_APP: &str = "so.tilo.browser-desktop";
-const DESKTOP_RECORD: &str = "desktop";
+pub(crate) const DESKTOP_RECORD: &str = "desktop";
 const DESKTOP_KEY: &str = "desktop";
 
 thread_local! {

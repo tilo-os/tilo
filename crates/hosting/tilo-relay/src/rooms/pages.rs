@@ -83,7 +83,7 @@ impl PageJoins {
     }
 }
 
-const fn member_role(role: RoomRole) -> MemberRole {
+pub(super) const fn member_role(role: RoomRole) -> MemberRole {
     match role {
         RoomRole::Viewer => MemberRole::Viewer,
         RoomRole::Commenter => MemberRole::Commenter,
@@ -209,17 +209,7 @@ impl Rooms {
             }
             RoomsRequest::Pending { room } => self.page_pending(&room, device).await?,
             RoomsRequest::Requests { room } => {
-                {
-                    let governed = self.room(&room).await?;
-                    let governed = governed.lock().await;
-                    self.authorize(
-                        device,
-                        Some(&governed),
-                        RoomOp::Govern(governance::INVITE),
-                        now,
-                    )?;
-                }
-                RoomsReply::Requests(self.waiting(&room, now))
+                RoomsReply::Requests(self.join_requests(&room, device, now).await?)
             }
             RoomsRequest::Admit { room, request_id } => {
                 self.admit_page(&room, device, request_id, now).await?;
@@ -501,6 +491,31 @@ impl Rooms {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The join requests waiting in `room`, for `device`: someone the room
+    /// lets invite.
+    ///
+    /// # Errors
+    ///
+    /// Why the device may not see them.
+    pub(super) async fn join_requests(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        now: u64,
+    ) -> Result<Vec<JoinRequest>, CollaborationError> {
+        {
+            let governed = self.room(room).await?;
+            let governed = governed.lock().await;
+            self.authorize(
+                device,
+                Some(&governed),
+                RoomOp::Govern(governance::INVITE),
+                now,
+            )?;
+        }
+        Ok(self.waiting(room, now))
+    }
+
     fn waiting(&self, room: &str, now: u64) -> Vec<JoinRequest> {
         let mut joins = self.page_joins();
         joins.prune(now);
@@ -512,7 +527,7 @@ impl Rooms {
             .collect()
     }
 
-    async fn decline_page(
+    pub(super) async fn decline_page(
         &self,
         room: &str,
         device: &DeviceCert,
@@ -552,7 +567,7 @@ impl Rooms {
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its decision is committed, published and answered"
     )]
-    async fn admit_page(
+    pub(super) async fn admit_page(
         &self,
         room_id: &str,
         administrator: &DeviceCert,

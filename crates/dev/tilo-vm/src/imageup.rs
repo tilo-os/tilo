@@ -359,6 +359,16 @@ pub fn registry_flavour(inspect: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// bootc's refusal for want of space, as (free, needed) in its own units:
+/// `Insufficient free space for <image> (available: 2.3 GB required: 5.2 GB)`.
+pub fn insufficient_space(bootc_stderr: &str) -> Option<(String, String)> {
+    let (_, rest) = bootc_stderr.split_once("Insufficient free space for ")?;
+    let (_, rest) = rest.split_once("(available: ")?;
+    let (free, rest) = rest.split_once(" required: ")?;
+    let (needed, _) = rest.split_once(')')?;
+    Some((free.trim().to_owned(), needed.trim().to_owned()))
+}
+
 pub fn is_already_rollback(bootc_stderr: &str) -> bool {
     bootc_stderr.contains("same fs-verity digest as the existing Some(Rollback) deployment")
 }
@@ -1074,6 +1084,29 @@ mod tests {
         assert!(!is_already_booted(
             "error: Switching: pulling: connection refused"
         ));
+    }
+
+    /// bootc's space refusal becomes the plain sentence the user reads.
+    #[test]
+    fn bootcs_space_refusal_reads_as_plain_language() {
+        let stderr = "error: Switching: Composefs Switching: Performing Upgrade Operation: Insufficient free space for registry.tilo.so/tilo/tilo-vm:pr-4227-4ab5dcc-lenovo-83ed (available: 2.3 GB required: 5.2 GB)";
+        let (free, needed) = insufficient_space(stderr).unwrap();
+        assert_eq!((free.as_str(), needed.as_str()), ("2.3 GB", "5.2 GB"));
+        let error = CliError::NoSpace {
+            place: "VM yoga".into(),
+            free,
+            what: "the new OS image".into(),
+            needed,
+        };
+        assert_eq!(
+            error.to_string(),
+            "not enough space on VM yoga: the new OS image needs 5.2 GB, 2.3 GB is free"
+        );
+        assert!(error.hint().contains("reused"), "{}", error.hint());
+        assert_eq!(
+            insufficient_space("error: Switching: pulling: connection refused"),
+            None
+        );
     }
 
     /// A commit off main is found by its `<ref>-<sha7>` tags.

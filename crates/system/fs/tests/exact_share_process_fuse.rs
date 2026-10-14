@@ -703,6 +703,83 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     loss_viewer.stop();
 }
 
+/// A write the kernel acknowledged survives `systemctl stop fs.service`:
+/// systemd stops the daemon with SIGTERM, which has to end the mount through
+/// the final namespace save like SIGINT does. Killed by the signal instead,
+/// the daemon lost every change younger than the persister's settle time
+/// (`namespace_persist::QUIET`), so a file copied in just before a
+/// shutdown, an update reboot or a restart was gone afterwards.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_acknowledged_before_sigterm_survives_a_restart() {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!("skipping the SIGTERM restart outside the dedicated mandatory FUSE job");
+        return;
+    }
+    let temp = TempDir::new().unwrap();
+    let identity = temp.path().join("identity");
+    let mount = temp.path().join("mount");
+    let cache = temp.path().join("cache");
+    let seed = temp.path().join("seed");
+    let clock = temp.path().join("clock-ms");
+    let sockets = temp.path().join("authority-sockets");
+    for path in [&mount, &seed, &sockets] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    std::fs::write(seed.join("seeded.txt"), PAYLOAD).unwrap();
+    let clock_now = tilo_clock::unix_now_ms();
+    write_clock(&clock, clock_now);
+    install_identity(&identity, rand::random(), rand::random(), true, clock_now);
+    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let serving = |host: &mut MountedProcess| {
+        host.wait_for_line("Mounting QuickFS");
+        let seeded = mount.join("seeded.txt");
+        wait_for_process(host, "the mount to serve its seed", || {
+            get_xattr(&seeded, fs_protocol::RECORD_ID_XATTR).ok()
+        });
+    };
+
+    let mut host = spawn_host(binary, &identity, &sockets, &mount, &cache, &seed, &clock);
+    serving(&mut host);
+    let written: Vec<u8> = (0..256 * 1024_u32)
+        .map(|index| u8::try_from(index % 251).unwrap())
+        .collect();
+    let file = mount.join("written-before-stop.bin");
+    // `write` returns after `close`, whose FUSE flush committed the bytes:
+    // from here on the write is acknowledged to the application.
+    std::fs::write(&file, &written).unwrap();
+    let pid = libc::pid_t::try_from(host.child.id()).unwrap();
+    // SAFETY: signalling our own child process.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    let status = tilo_test_env::wait_for("the daemon to exit on SIGTERM", || {
+        host.child.try_wait().unwrap()
+    });
+    let output = host.logs.lock().unwrap().join("\n");
+    assert!(
+        status.success(),
+        "SIGTERM must end the daemon cleanly, not kill it; it exited with {status}:\n{output}"
+    );
+    assert!(
+        output.contains("Terminated, exiting..."),
+        "the daemon did not take the clean stop path on SIGTERM:\n{output}"
+    );
+    host.stop();
+
+    let mut restarted = spawn_host(binary, &identity, &sockets, &mount, &cache, &seed, &clock);
+    serving(&mut restarted);
+    let survived = std::fs::read(&file).unwrap_or_else(|error| {
+        let output = restarted.logs.lock().unwrap().join("\n");
+        panic!("a write acknowledged before SIGTERM was lost on restart: {error}\n{output}")
+    });
+    assert!(
+        survived == written,
+        "the restarted mount served {} bytes that differ from the {} written",
+        survived.len(),
+        written.len()
+    );
+    restarted.stop();
+}
+
 /// Voluntary wakeups per second an idle `fs serve` may make across all of
 /// its threads. An idle thread blocks once and stays blocked, so
 /// each voluntary switch is a timer or a poll that fired. Preemptions are

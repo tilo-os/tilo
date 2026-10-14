@@ -9,6 +9,7 @@ use fs_protocol::files::{
 };
 use host_fs::attributes::{self, ErrorCode};
 use std::fs::File;
+use std::time::{Duration, Instant};
 use std::{path::Path, sync::Arc};
 use ui::history_mode::checked_files::{
     FileHistoricalContent, FileHistoryTarget, FileHistoryTransport, FilePreviewInput,
@@ -106,12 +107,21 @@ impl FileHistoryTransport for MountedFileHistory {
         if bytes.len() > MAX_CHECKED_HISTORY_REQUEST_BYTES {
             return CheckedHistoryOutcomeV1::InvalidRequest;
         }
-        match attributes::set_open(&self.file, CHECKED_HISTORY_RESTORE_XATTR, &bytes) {
+        match write_until_hydrated(HYDRATION_WAIT, || {
+            attributes::set_open(&self.file, CHECKED_HISTORY_RESTORE_XATTR, &bytes)
+        }) {
             Ok(()) => self.result(request.intent_id),
             Err(error) if ErrorCode::of(&error) == Some(ErrorCode::Already) => {
                 CheckedHistoryOutcomeV1::Unchanged {
                     intent_id: request.intent_id,
                     review: request.review,
+                }
+            }
+            // Still downloading after the wait: the same request, retried
+            // later, picks the download up where it is.
+            Err(error) if ErrorCode::of(&error) == Some(ErrorCode::InProgress) => {
+                CheckedHistoryOutcomeV1::RecoveryPending {
+                    intent_id: request.intent_id,
                 }
             }
             Err(error) => outcome_error(&error),
@@ -135,6 +145,39 @@ impl FileHistoryTransport for MountedFileHistory {
         response.outcome
     }
 }
+/// How long a history request waits for the filesystem to download the
+/// content it needs before it reports the request as still pending.
+pub(crate) const HYDRATION_WAIT: Duration = Duration::from_secs(10 * 60);
+
+/// Write a history request, repeating it while the filesystem answers that
+/// the content it needs is still downloading (`EINPROGRESS`). The filesystem
+/// downloads off its request path, so no FUSE worker waits meanwhile; the
+/// repeat is the same idempotent request, and it commits once the bytes are
+/// local. After `wait` the last `EINPROGRESS` is the answer.
+///
+/// # Errors
+///
+/// The final error `write` returned.
+pub(crate) fn write_until_hydrated(
+    wait: Duration,
+    mut write: impl FnMut() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let start = Instant::now();
+    let mut pause = Duration::from_millis(20);
+    loop {
+        match write() {
+            Err(error)
+                if ErrorCode::of(&error) == Some(ErrorCode::InProgress)
+                    && start.elapsed() < wait =>
+            {
+                std::thread::sleep(pause.min(wait.saturating_sub(start.elapsed())));
+                pause = pause.saturating_mul(2).min(Duration::from_millis(500));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn outcome_error(error: &std::io::Error) -> CheckedHistoryOutcomeV1 {
     match ErrorCode::of(error) {
         Some(ErrorCode::Busy) => CheckedHistoryOutcomeV1::ReviewRequired,
@@ -298,6 +341,47 @@ mod tests {
             mount_lifetime: uuid::Uuid::from_u128(2),
             record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
+        }
+    }
+    /// A request the filesystem answers with `EINPROGRESS` is repeated until it
+    /// settles, and the last `EINPROGRESS` is the answer once the wait is over.
+    #[test]
+    fn history_writes_repeat_while_content_hydrates() {
+        // --- phase: repeats_until_the_content_is_local ---
+        {
+            let mut calls = 0_u32;
+            let result = write_until_hydrated(Duration::from_secs(30), || {
+                calls = calls.saturating_add(1);
+                if calls < 3 {
+                    Err(ErrorCode::InProgress.into_io_error())
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(result.is_ok());
+            assert_eq!(calls, 3);
+        }
+        // --- phase: other_answers_return_at_once ---
+        {
+            let mut calls = 0_u32;
+            let result = write_until_hydrated(Duration::from_secs(30), || {
+                calls = calls.saturating_add(1);
+                Err(ErrorCode::Busy.into_io_error())
+            });
+            assert_eq!(ErrorCode::of(&result.unwrap_err()), Some(ErrorCode::Busy));
+            assert_eq!(calls, 1);
+        }
+        // --- phase: gives_up_after_the_wait ---
+        {
+            let started = Instant::now();
+            let result = write_until_hydrated(Duration::from_millis(100), || {
+                Err(ErrorCode::InProgress.into_io_error())
+            });
+            assert_eq!(
+                ErrorCode::of(&result.unwrap_err()),
+                Some(ErrorCode::InProgress)
+            );
+            assert!(started.elapsed() < Duration::from_secs(5));
         }
     }
     /// Checked xattr success reads exact intent without claiming applied, and scoped preview names fit macOS with a descriptor that does not follow path replacement.
