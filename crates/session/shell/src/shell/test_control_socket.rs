@@ -110,7 +110,7 @@ mod tests {
             let socket = std::fs::symlink_metadata(&path).unwrap();
             assert!(socket.file_type().is_socket());
             assert_eq!(socket.permissions().mode() & 0o777, 0o600);
-            assert_eq!(socket.uid(), unsafe { libc::geteuid() });
+            assert_eq!(socket.uid(), rustix::process::geteuid().as_raw());
             UnixStream::connect(&path).unwrap();
             // The staging directory is gone.
             assert_eq!(

@@ -917,7 +917,7 @@ fn share_copies_a_link_through_a_real_click() {
 /// worker whose results the test lands; and that button's identity.
 fn hovering_copy_link() -> (
     ui::framework::testing::TestApp<tube::TubeShell>,
-    std::sync::mpsc::SyncSender<tube::api::Update>,
+    tube::api::Updates,
     usize,
 ) {
     let mut app = live_catalogue();
@@ -951,7 +951,7 @@ fn copy_link_identity(app: &mut ui::framework::testing::TestApp<tube::TubeShell>
 /// pointer stays where it was.
 fn land_worker_result(
     app: &mut ui::framework::testing::TestApp<tube::TubeShell>,
-    results: &std::sync::mpsc::SyncSender<tube::api::Update>,
+    results: &tube::api::Updates,
     before: usize,
     label: &str,
 ) {

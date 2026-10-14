@@ -76,9 +76,8 @@ fn private_trash_directory(path: &Path) -> std::io::Result<()> {
             #[cfg(unix)]
             let private = {
                 use std::os::unix::fs::MetadataExt as _;
-                // SAFETY: geteuid only reads this process's effective user.
                 private
-                    && metadata.uid() == unsafe { libc::geteuid() }
+                    && metadata.uid() == rustix::process::geteuid().as_raw()
                     // The six group/other permission bits must all be clear.
                     && metadata.mode().trailing_zeros() >= 6
             };
