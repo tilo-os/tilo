@@ -349,8 +349,15 @@ const demoExpression = seconds => `(async () => {
   const stages = {};
   for (const {stage, ms} of samples) { const entry = stages[stage] ??= {n: 0, ms: 0}; entry.n++; entry.ms += ms; }
   const dropped = metrics.reduce((sum, mount) => sum + (mount.dropped ?? 0), 0);
+  // Layout passes that re-solved sizes, by the widget that asked: a pan
+  // moves laid-out windows, so any entry here is a widget to fix.
+  // A runtime that does not report it leaves it null, not empty.
+  const measuredBy = metrics.some(mount => mount.measuredBy) ? {} : null;
+  for (const mount of metrics) {
+    for (const [widget, n] of Object.entries(mount.measuredBy ?? {})) measuredBy[widget] = (measuredBy[widget] ?? 0) + n;
+  }
   const during = times.filter(t => t <= inputEnd + 50);
-  return {times: during, work, stages, dropped, wheels: sent, seconds: (inputEnd - start) / 1000,
+  return {times: during, work, stages, measuredBy, dropped, wheels: sent, seconds: (inputEnd - start) / 1000,
     distinctOffsets: offsets.size, max};
 })()`;
 
@@ -425,7 +432,8 @@ async function measureDemo(page, windows, options, index) {
     throw new Invalid(`round ${index}: frame metrics incomplete (${demo.work.length} samples, ${demo.dropped} dropped)`);
   }
   return {intervals: intervals(demo.times), work: demo.work, stages: demo.stages, frames: demo.times.length,
-    wheels: demo.wheels, seconds: demo.seconds, fps: demo.times.length / demo.seconds, distinctOffsets: demo.distinctOffsets};
+    wheels: demo.wheels, seconds: demo.seconds, fps: demo.times.length / demo.seconds, distinctOffsets: demo.distinctOffsets,
+    measuredBy: demo.measuredBy};
 }
 
 async function round(browser, url, options, index) {
@@ -539,6 +547,16 @@ export function formatSummary(report) {
     report.attribution.length ? `  demo stages (ms per presented frame, share of wall time): ${report.attribution.slice(0, 8)
       .map(a => `${a.stage} ${a.msPerFrame} (${a.busyPercent}%)`).join(', ')}` : '  demo not run',
   ];
+  if (report.rounds.some(r => r.demo.measuredBy)) {
+    const measuredBy = {};
+    for (const r of report.rounds) {
+      for (const [widget, n] of Object.entries(r.demo.measuredBy ?? {})) measuredBy[widget] = (measuredBy[widget] ?? 0) + n;
+    }
+    const askers = Object.entries(measuredBy).sort((a, b) => b[1] - a[1]);
+    lines.push(askers.length
+      ? `  demo layout re-measured for: ${askers.slice(0, 5).map(([widget, n]) => `${widget} (${n})`).join(', ')}`
+      : '  demo layout re-measured for: nothing (pans only moved laid-out windows)');
+  }
   for (const goal of report.goals) {
     const extra = goal.fps ? ` (${goal.fps} fps)` : goal.capacityFps ? ` (capacity ${goal.capacityFps} fps)` : '';
     lines.push(`  ${goal.met ? 'MET ' : 'MISS'} ${goal.name}: ${goal.measured} vs ${Math.round(goal.target * 100) / 100}${extra}${goal.met ? '' : `, gap ${goal.gap}`}`);
@@ -589,7 +607,8 @@ async function main() {
         demo_work_ms: rounds.flatMap(r => r.demo.work), idle_per_s: rounds.map(r => r.idlePerS),
       },
       rounds: rounds.map(({resources, ...r}) => ({...r, demo: {frames: r.demo.frames, wheels: r.demo.wheels,
-        seconds: r.demo.seconds, fps: r.demo.fps, distinctOffsets: r.demo.distinctOffsets, stages: r.demo.stages}})),
+        seconds: r.demo.seconds, fps: r.demo.fps, distinctOffsets: r.demo.distinctOffsets, stages: r.demo.stages,
+        measuredBy: r.demo.measuredBy}})),
     };
     writeFileSync(options.out, JSON.stringify(report, null, 1) + '\n');
     console.log(formatSummary(report));
