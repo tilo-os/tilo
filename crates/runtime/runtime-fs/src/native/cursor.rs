@@ -99,7 +99,7 @@ impl FsDirectoryCursor {
                 Ok(metadata) => Some(crate::directory_backend::DirectoryStat {
                     metadata: describe(&metadata),
                     identity: [metadata.dev(), metadata.ino()],
-                    file_type: metadata.mode() & libc::S_IFMT,
+                    file_type: metadata.mode() & super::mode_bits(libc::S_IFMT),
                     execute_bits: (metadata.mode() & 0o111) as u16,
                 }),
                 // This live enumeration promises no snapshot. A name removed

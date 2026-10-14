@@ -4072,7 +4072,9 @@ pub(super) mod tests {
             }
             let mut out = Vec::new();
             let mut err = Vec::new();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(30))
+                .expect("test deadline fits the monotonic clock");
             let status = loop {
                 drain_permission_output(&mut stdout, &mut out);
                 drain_permission_output(&mut stderr, &mut err);
