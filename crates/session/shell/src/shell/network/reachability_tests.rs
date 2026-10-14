@@ -301,7 +301,15 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
     until("the two desktops to converge with their relays up", || {
         first.tick();
         second.tick();
+        // Room state can arrive before the owner's peer-name projection.
+        // Keep the collaborator alive until the owner can remove its name.
+        let owner_named_peer = first_tree
+            .read()
+            .room_peer_names
+            .get(&room)
+            .is_some_and(|names| names.contains_key(&second_id));
         (workspace_name(&second_tree, room).as_deref() == Some("Home")
+            && owner_named_peer
             && !first.reachability.is_dormant()
             && !second.reachability.is_dormant())
         .then_some(())

@@ -394,6 +394,26 @@ mod tests {
     }
 
     #[test]
+    fn spotify_account_status_is_published_on_the_empty_library() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = TestApp::<MusicShell>::new().unwrap();
+        app.settle();
+        let surface = app.agent_surface().to_string();
+        assert!(surface.contains("spotify-account-status"), "{surface}");
+        assert!(surface.contains("music.library"), "{surface}");
+        let spec = MusicEffect::specs()
+            .into_iter()
+            .find(|spec| spec.id == "spotify-account-status")
+            .expect("the semantic diagnostic must be registered");
+        assert_eq!(spec.contract.kind, tilo_actions::ActionKind::Read);
+        let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
+        assert!(matches!(
+            MusicEffect::from_payload(&encoded.payload).unwrap(),
+            MusicEffect::SpotifyAccountStatus
+        ));
+    }
+
+    #[test]
     fn recommendations_feedback_uses_framework_history_and_undo() {
         let mut app = TestApp::<MusicShell>::new().unwrap();
         app.invoke(imported("yt:abc123")).unwrap();
