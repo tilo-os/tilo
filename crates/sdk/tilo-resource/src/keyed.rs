@@ -13,10 +13,17 @@
 //! holding items (a view keeping the state it was shown while the reader
 //! follows) costs a pointer, and a change copies only the items of the field
 //! it touched.
+//!
+//! A refresh keeps each item's id beside it, so bringing the items up to
+//! date after a change asks only the items the change touched for their
+//! ids: an id may be costly to make (formatted from a UUID), and finding and
+//! sorting by asking every item again cost more than the change itself.
 
 use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ReadDoc, Value};
@@ -48,8 +55,71 @@ pub trait Identified {
 /// order; [`Ordered`](crate::Ordered) as someone arranged them.
 pub struct Items<T, S> {
     /// Shared between clones until one of them changes the items.
-    items: Shared<Vec<T>>,
+    stock: Shared<Stock<T>>,
     storage: PhantomData<fn() -> S>,
+}
+
+/// The items, and the id of each once a refresh has needed them.
+struct Stock<T> {
+    items: Vec<T>,
+    /// `ids[i]` is `items[i].id()`. Kept by the refreshes that read it,
+    /// dropped whenever the items are handed out to change: whoever changes
+    /// an item may change its id.
+    ids: Option<Vec<Arc<str>>>,
+}
+
+impl<T> Default for Stock<T> {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            ids: None,
+        }
+    }
+}
+
+impl<T: Clone> Clone for Stock<T> {
+    /// The ids come along: a pointer each.
+    fn clone(&self) -> Self {
+        Self {
+            items: self.items.clone(),
+            ids: self.ids.clone(),
+        }
+    }
+}
+
+/// The id of each of `items`, asked once.
+fn ids_of<T: Identified>(items: &[T]) -> Vec<Arc<str>> {
+    items
+        .iter()
+        .map(|item| Arc::from(item.id().as_str()))
+        .collect()
+}
+
+/// How two items sort in memory, given their ids: by
+/// [`Identified::order`], then by id.
+fn in_order<T: Identified>(a: (&T, &str), b: (&T, &str)) -> Ordering {
+    a.0.order(b.0).then_with(|| a.1.cmp(b.1))
+}
+
+/// Sort `items` and their `ids` alike, as a read from the document does: by
+/// [`Identified::order`], then id. Stable, so this is a sort by id followed
+/// by a stable sort by order; items already in place are not moved.
+fn settle_with_ids<T: Identified>(items: &mut Vec<T>, ids: &mut Vec<Arc<str>>) {
+    let held = || items.iter().zip(ids.iter().map(|id| &**id));
+    if held()
+        .zip(held().skip(1))
+        .all(|(a, b)| in_order(a, b).is_le())
+    {
+        return;
+    }
+    let mut pairs: Vec<(T, Arc<str>)> = std::mem::take(items)
+        .into_iter()
+        .zip(std::mem::take(ids))
+        .collect();
+    pairs.sort_by(|(a, a_id), (b, b_id)| in_order((a, a_id), (b, b_id)));
+    let (sorted, sorted_ids) = pairs.into_iter().unzip();
+    *items = sorted;
+    *ids = sorted_ids;
 }
 
 /// Items stored under the ids they carry. See the module docs.
@@ -95,6 +165,23 @@ pub trait ItemStorage: 'static {
         Ok(())
     }
 
+    /// [`refresh`](Self::refresh), given the id of each item when known
+    /// (`ids[i]` is `items[i].id()`) and leaving them known when it can.
+    /// The default forgets them and refreshes.
+    ///
+    /// # Errors
+    /// Returns an item that does not read; `ids` is then unknown.
+    fn refresh_with_ids<T: Model + Identified>(
+        items: &mut Vec<T>,
+        ids: &mut Option<Vec<Arc<str>>>,
+        doc: &Doc,
+        map: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
+        *ids = None;
+        Self::refresh(items, doc, map, delta)
+    }
+
     /// The edits that turn `before` into `after`, below `path`.
     fn diff<T: Model + Identified, R>(
         before: &[T],
@@ -114,7 +201,7 @@ impl<T: Clone, S> Clone for Items<T, S> {
     /// them copies them.
     fn clone(&self) -> Self {
         Self {
-            items: self.items.share(),
+            stock: self.stock.share(),
             storage: PhantomData,
         }
     }
@@ -122,7 +209,7 @@ impl<T: Clone, S> Clone for Items<T, S> {
 
 impl<T: std::fmt::Debug, S> std::fmt::Debug for Items<T, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.items.get().fmt(f)
+        self.items().fmt(f)
     }
 }
 
@@ -130,7 +217,7 @@ impl<T: PartialEq, S> PartialEq for Items<T, S> {
     /// Items two clones still share are the same and not compared one by
     /// one.
     fn eq(&self, other: &Self) -> bool {
-        self.items.same(&other.items) || self.items.get() == other.items.get()
+        self.stock.same(&other.stock) || self.items() == other.items()
     }
 }
 
@@ -140,24 +227,38 @@ impl<T, S> Default for Items<T, S> {
     }
 }
 
+impl<T, S> Items<T, S> {
+    fn items(&self) -> &Vec<T> {
+        &self.stock.get().items
+    }
+
+    /// The items, to change: copied first when a clone still shares them.
+    /// Their ids are forgotten, as the change may change one.
+    fn items_mut(&mut self) -> &mut Vec<T> {
+        let stock = self.stock.make_mut();
+        stock.ids = None;
+        &mut stock.items
+    }
+}
+
 impl<T, S> Deref for Items<T, S> {
     type Target = Vec<T>;
     fn deref(&self) -> &Vec<T> {
-        self.items.get()
+        self.items()
     }
 }
 
 impl<T, S> DerefMut for Items<T, S> {
     /// The items, to change: copied first when a clone still shares them.
     fn deref_mut(&mut self) -> &mut Vec<T> {
-        self.items.make_mut()
+        self.items_mut()
     }
 }
 
 impl<T, S> From<Vec<T>> for Items<T, S> {
     fn from(items: Vec<T>) -> Self {
         Self {
-            items: Shared::new(items),
+            stock: Shared::new(Stock { items, ids: None }),
             storage: PhantomData,
         }
     }
@@ -173,7 +274,7 @@ impl<T, S> IntoIterator for Items<T, S> {
     type Item = T;
     type IntoIter = std::vec::IntoIter<T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.items.into_inner().into_iter()
+        self.stock.into_inner().items.into_iter()
     }
 }
 
@@ -181,7 +282,7 @@ impl<'a, T, S> IntoIterator for &'a Items<T, S> {
     type Item = &'a T;
     type IntoIter = std::slice::Iter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.items.get().iter()
+        self.items().iter()
     }
 }
 
@@ -189,13 +290,13 @@ impl<'a, T, S> IntoIterator for &'a mut Items<T, S> {
     type Item = &'a mut T;
     type IntoIter = std::slice::IterMut<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.items.make_mut().iter_mut()
+        self.items_mut().iter_mut()
     }
 }
 
 impl<T: serde::Serialize, S> serde::Serialize for Items<T, S> {
     fn serialize<Ser: serde::Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
-        self.items.get().serialize(serializer)
+        self.items().serialize(serializer)
     }
 }
 
@@ -219,38 +320,40 @@ impl<T: Identified, S> Items<T, S> {
 
     /// Where the item `id` is.
     pub fn position_of(&self, id: &Id) -> Option<usize> {
-        self.items.get().iter().position(|item| &item.id() == id)
+        let stock = self.stock.get();
+        match &stock.ids {
+            Some(ids) => ids.iter().position(|held| **held == *id.as_str()),
+            None => stock.items.iter().position(|item| &item.id() == id),
+        }
     }
 
     /// The item `id`.
     pub fn find(&self, id: &Id) -> Option<&T> {
-        self.items.get().iter().find(|item| &item.id() == id)
+        self.items().get(self.position_of(id)?)
     }
 
     /// The item `id`, to change. The items are copied first when a clone
     /// still shares them, and only when the item is there.
     pub fn find_mut(&mut self, id: &Id) -> Option<&mut T> {
         let at = self.position_of(id)?;
-        self.items.make_mut().get_mut(at)
+        self.items_mut().get_mut(at)
     }
 
     /// Remove the item `id`.
     pub fn take(&mut self, id: &Id) -> Option<T> {
         let at = self.position_of(id)?;
-        Some(self.items.make_mut().remove(at))
+        Some(self.items_mut().remove(at))
     }
 }
 
 impl<T: Identified> Keyed<T> {
     /// Sort as a read from the document does: by id, then [`Identified::order`].
     pub fn settle(&mut self) {
-        settle(self.items.make_mut());
+        let stock = self.stock.make_mut();
+        let mut ids = stock.ids.take().unwrap_or_else(|| ids_of(&stock.items));
+        settle_with_ids(&mut stock.items, &mut ids);
+        stock.ids = Some(ids);
     }
-}
-
-fn settle<T: Identified>(items: &mut [T]) {
-    items.sort_by(|a, b| a.id().as_str().cmp(b.id().as_str()));
-    items.sort_by(T::order);
 }
 
 impl<R, T: Model + Identified, S> Path<R, Items<T, S>> {
@@ -339,35 +442,59 @@ impl ItemStorage for ById {
         map: &ObjId,
         delta: &Delta,
     ) -> Result<(), ModelError> {
+        Self::refresh_with_ids(items, &mut None, doc, map, delta)
+    }
+
+    /// Finds each touched item by the id kept beside it and asks only the
+    /// items it read for their ids; sorts only when they are out of place.
+    #[inline(never)]
+    fn refresh_with_ids<T: Model + Identified>(
+        items: &mut Vec<T>,
+        known: &mut Option<Vec<Arc<str>>>,
+        doc: &Doc,
+        map: &ObjId,
+        delta: &Delta,
+    ) -> Result<(), ModelError> {
         let touched = delta.under(map);
         if touched.is_all() {
+            *known = None;
             *items = Self::load(doc, map)?;
+            *known = Some(ids_of(items));
             return Ok(());
         }
+        let mut ids = known.take().unwrap_or_else(|| ids_of(items));
         let mut changed = false;
         for key in touched.keys() {
-            let at = items.iter().position(|item| item.id().as_str() == key);
+            let at = ids.iter().position(|id| **id == *key);
             match (doc.get(map, key)?, at) {
                 (None, Some(at)) => {
                     items.remove(at);
+                    ids.remove(at);
                     changed = true;
                 }
                 (None, None) => {}
                 (Some(_), Some(at)) => {
-                    if let Some(item) = items.get_mut(at) {
+                    if let (Some(item), Some(held)) = (items.get_mut(at), ids.get_mut(at)) {
                         refresh_key(item, doc, map, key, delta)?;
+                        let id = item.id();
+                        if **held != *id.as_str() {
+                            *held = Arc::from(id.as_str());
+                        }
                     }
                     changed = true;
                 }
                 (Some(_), None) => {
-                    items.push(read_key(doc, map, key)?);
+                    let item: T = read_key(doc, map, key)?;
+                    ids.push(Arc::from(item.id().as_str()));
+                    items.push(item);
                     changed = true;
                 }
             }
         }
         if changed {
-            settle(items);
+            settle_with_ids(items, &mut ids);
         }
+        *known = Some(ids);
         Ok(())
     }
 
@@ -378,10 +505,11 @@ impl ItemStorage for ById {
         path: &[Segment],
         out: &mut Vec<Edit<R>>,
     ) {
-        removed_and_changed(before, after, path, out);
-        for item in after {
-            let id = item.id();
-            if !before.iter().any(|candidate| candidate.id() == id) {
+        let after_ids: Vec<Id> = after.iter().map(Identified::id).collect();
+        let before_ids = removed_and_changed(before, after, &after_ids, path, out);
+        let held: HashSet<&Id> = before_ids.iter().collect();
+        for (item, id) in after.iter().zip(after_ids) {
+            if !held.contains(&id) {
                 out.push(Edit::new(
                     path.to_vec(),
                     EditOp::InsertItem {
@@ -434,24 +562,37 @@ fn edit_by_id(
     }
 }
 
-/// The edits removing what `after` lacks and changing what both hold.
+/// The edits removing what `after` lacks and changing what both hold, given
+/// the id of each item of `after`; returns the id of each item of `before`.
+/// Each item is asked for its id once.
 pub(crate) fn removed_and_changed<T: Model + Identified, R>(
     before: &[T],
     after: &[T],
+    after_ids: &[Id],
     path: &[Segment],
     out: &mut Vec<Edit<R>>,
-) {
+) -> Vec<Id> {
+    let mut found: HashMap<&str, usize> = HashMap::with_capacity(after_ids.len());
+    for (at, id) in after_ids.iter().enumerate() {
+        found.entry(id.as_str()).or_insert(at);
+    }
+    let mut before_ids = Vec::with_capacity(before.len());
     for item in before {
         let id = item.id();
-        match after.iter().find(|candidate| candidate.id() == id) {
+        match found.get(id.as_str()).and_then(|at| after.get(*at)) {
             Some(next) => {
                 let mut at = path.to_vec();
-                at.push(Segment::Item(id));
+                at.push(Segment::Item(id.clone()));
                 item.diff(next, &at, out);
             }
-            None => out.push(Edit::new(path.to_vec(), EditOp::RemoveItem { id })),
+            None => out.push(Edit::new(
+                path.to_vec(),
+                EditOp::RemoveItem { id: id.clone() },
+            )),
         }
+        before_ids.push(id);
     }
+    before_ids
 }
 
 impl<T: Model + Identified, S> crate::items::ItemSource for Items<T, S> {
@@ -459,7 +600,7 @@ impl<T: Model + Identified, S> crate::items::ItemSource for Items<T, S> {
         crate::collection::listed_items(T::TABLE, self, field)
     }
     fn item_presence(&self) -> usize {
-        usize::from(!self.items.get().is_empty())
+        usize::from(!self.items().is_empty())
     }
     fn label_of_item(&self, id: &Id) -> Option<String> {
         let item = self.find(id)?;
@@ -479,11 +620,11 @@ impl<T: Model + Identified, S: 'static> crate::table::PublishedItems for Items<T
 
 impl<T: Model + Identified, S> crate::collection::ItemList for Items<T, S> {
     fn count(&self) -> usize {
-        self.items.get().len()
+        self.items().len()
     }
 
     fn item(&self, at: usize) -> Option<(Id, &dyn std::any::Any)> {
-        let item = self.items.get().get(at)?;
+        let item = self.items().get(at)?;
         Some((item.id(), item as &dyn std::any::Any))
     }
 }
@@ -503,7 +644,7 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
 
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
-        serde_json::Value::Array(self.items.get().iter().map(Model::to_json).collect())
+        serde_json::Value::Array(self.items().iter().map(Model::to_json).collect())
     }
 
     #[inline(never)]
@@ -533,7 +674,7 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
 
     #[inline(never)]
     fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        S::store(self.items.get(), doc, slot)
+        S::store(self.items(), doc, slot)
     }
 
     #[inline(never)]
@@ -552,7 +693,8 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         if !delta.touches(id) {
             return Ok(());
         }
-        S::refresh(self.items.make_mut(), doc, id, delta)
+        let stock = self.stock.make_mut();
+        S::refresh_with_ids(&mut stock.items, &mut stock.ids, doc, id, delta)
     }
 
     #[inline(never)]
@@ -585,12 +727,12 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
 
     #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<Edit<R>>) {
-        S::diff(self.items.get(), after.items.get(), path, out);
+        S::diff(self.items(), after.items(), path, out);
     }
 
     fn check(&self) -> Result<(), Refusal> {
         if T::CHECKS {
-            self.items.get().iter().try_for_each(Model::check)?;
+            self.items().iter().try_for_each(Model::check)?;
         }
         Ok(())
     }
@@ -645,7 +787,7 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
     }
 
     fn collect_text(&self, out: &mut Vec<String>) {
-        for item in self.items.get() {
+        for item in self.items() {
             item.collect_text(out);
         }
     }

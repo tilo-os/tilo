@@ -9,6 +9,7 @@
 )]
 
 use std::cell::Cell;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -24,6 +25,7 @@ use tilo_resource::{
 thread_local! {
     static LOADS: Cell<usize> = const { Cell::new(0) };
     static CLONES: Cell<usize> = const { Cell::new(0) };
+    static IDS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Text that counts how often it is read from the document and copied.
@@ -856,4 +858,185 @@ fn held_items_and_sets_stay_as_they_were_shown_while_the_reader_follows() {
     for (at, (shown, read)) in held.iter().enumerate() {
         assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 40);
     }
+}
+
+/// A cue at a place on a track: keyed by id, held in memory by place.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Cue {
+    pub id: String,
+    pub at: u32,
+    pub body: String,
+}
+
+impl Identified for Cue {
+    /// Counts how often an item is asked: an id may be costly to make.
+    fn id(&self) -> Id {
+        IDS.with(|ids| ids.set(ids.get() + 1));
+        Id::from_raw(self.id.clone())
+    }
+    fn order(&self, other: &Self) -> Ordering {
+        self.at.cmp(&other.at)
+    }
+}
+
+fn ids_asked() -> usize {
+    IDS.with(Cell::get)
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Track {
+    pub cues: Keyed<Cue>,
+}
+
+#[resource(kind = "test.track", label = "Track")]
+impl Track {
+    /// Add a cue at a place.
+    #[action]
+    pub fn add_cue(&mut self, cx: &mut ActionCx, at: u32) {
+        self.cues.push(Cue {
+            id: cx.id().as_str().to_owned(),
+            at,
+            body: String::new(),
+        });
+    }
+}
+
+fn cue_ids(track: &Track) -> Vec<Id> {
+    track
+        .cues
+        .iter()
+        .map(|cue| Id::from_raw(cue.id.clone()))
+        .collect()
+}
+
+/// Add, move, rewrite or remove a cue; places collide often, so cues at one
+/// place sort by id.
+fn random_cue_action(replica: &mut Replica<Track>, rng: &mut Lcg) {
+    let ids = cue_ids(&replica.state().unwrap());
+    let cues = Track::paths().cues;
+    let place = u32::try_from(rng.next(12)).unwrap();
+    let Some(id) = ids.get(rng.next(ids.len())).cloned() else {
+        replica.apply(Track::ADD_CUE.with(place)).unwrap();
+        return;
+    };
+    let edit = match rng.next(7) {
+        0 | 1 => {
+            replica.apply(Track::ADD_CUE.with(place)).unwrap();
+            return;
+        }
+        2 | 3 => cues.item(&id).at.set(place),
+        4 | 5 => cues.item(&id).body.replace(format!("cue {place}")),
+        _ => cues.remove(&id),
+    };
+    replica
+        .apply_confirmed(tilo_resource::Invoke::edit(&edit).unwrap())
+        .unwrap();
+}
+
+#[test]
+fn keyed_items_a_reader_follows_sort_as_a_full_read_does() {
+    let mut rng = Lcg(37);
+    let mut replica = Replica::<Track>::new();
+    for _ in 0..40 {
+        random_cue_action(&mut replica, &mut rng);
+    }
+    let mut reader = Reader::<Track>::open(replica.doc_mut()).unwrap();
+    let mut held: Vec<(Rc<Track>, Track)> = Vec::new();
+    for step in 40..400 {
+        held.push((Rc::clone(reader.state()), replica.state().unwrap()));
+        random_cue_action(&mut replica, &mut rng);
+        reader.sync(replica.doc()).unwrap();
+        assert_eq!(
+            reader.state().as_ref(),
+            &replica.state().unwrap(),
+            "after step {step}"
+        );
+    }
+    for (at, (shown, read)) in held.iter().enumerate() {
+        assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 40);
+    }
+}
+
+#[test]
+fn a_one_item_change_asks_only_the_items_it_touched_for_their_ids() {
+    let mut replica = Replica::<Track>::new();
+    for n in 0..600 {
+        replica.apply(Track::ADD_CUE.with(n * 10)).unwrap();
+    }
+    let mut reader = Reader::<Track>::open(replica.doc_mut()).unwrap();
+    let ids = cue_ids(reader.state());
+    let cues = Track::paths().cues;
+    // The first change after opening learns every id.
+    replica
+        .apply(tilo_resource::Invoke::edit(&cues.item(&ids[0]).body.replace("first")).unwrap())
+        .unwrap();
+    reader.sync(replica.doc()).unwrap();
+
+    let changes = [
+        (
+            "rewrite one in place",
+            cues.item(&ids[300]).body.replace("changed"),
+        ),
+        (
+            "move one past 200 others",
+            cues.item(&ids[100]).at.set(3_005),
+        ),
+        ("move one to the front", cues.item(&ids[599]).at.set(0)),
+    ];
+    for (change, edit) in changes {
+        replica
+            .apply(tilo_resource::Invoke::edit(&edit).unwrap())
+            .unwrap();
+        // A view keeps the state it was shown, as a surface's `present` may.
+        let shown = Rc::clone(reader.state());
+        let before = ids_asked();
+        assert!(reader.sync(replica.doc()).unwrap());
+        let asked = ids_asked() - before;
+        assert!(
+            asked <= 1,
+            "{change}: {asked} items of 600 asked for their ids, not the one it touched"
+        );
+        assert_ne!(shown.as_ref(), reader.state().as_ref());
+        assert_eq!(
+            reader.state().as_ref(),
+            &replica.state().unwrap(),
+            "{change}"
+        );
+    }
+
+    replica.apply(Track::ADD_CUE.with(1_234)).unwrap();
+    let before = ids_asked();
+    reader.sync(replica.doc()).unwrap();
+    let asked = ids_asked() - before;
+    assert!(asked <= 1, "adding one: {asked} items asked for their ids");
+    assert_eq!(reader.state().as_ref(), &replica.state().unwrap());
+
+    replica
+        .apply_confirmed(tilo_resource::Invoke::edit(&cues.remove(&ids[42])).unwrap())
+        .unwrap();
+    let before = ids_asked();
+    reader.sync(replica.doc()).unwrap();
+    let asked = ids_asked() - before;
+    assert_eq!(asked, 0, "removing one: {asked} items asked for their ids");
+    assert_eq!(reader.state().as_ref(), &replica.state().unwrap());
+}
+
+#[test]
+fn the_edits_between_two_keyed_values_ask_each_item_once() {
+    let mut replica = Replica::<Track>::new();
+    for n in 0..300 {
+        replica.apply(Track::ADD_CUE.with(n)).unwrap();
+    }
+    let before = replica.state().unwrap();
+    let mut after = before.clone();
+    let id = Id::from_raw(after.cues[150].id.clone());
+    after.cues.find_mut(&id).unwrap().body = "changed".into();
+    let asked = ids_asked();
+    let edits = Track::paths().path().edits(&before, &after);
+    let asked = ids_asked() - asked;
+    assert_eq!(edits.len(), 1, "one field of one cue changed: {edits:?}");
+    assert!(
+        asked <= 2 * 300,
+        "{asked} ids asked to compare 300 cues with 300: each at most once per side"
+    );
 }
