@@ -65,6 +65,12 @@ const BLOCKS: usize = 838;
 /// Blocks of the long note every typing and scrolling sample runs in; the
 /// other notes share the rest.
 const LONG_NOTE_BLOCKS: usize = 136;
+/// Blocks of each other note.
+const SHARE: usize = (BLOCKS - LONG_NOTE_BLOCKS) / (PAGES - 1);
+const _: () = assert!(
+    LONG_NOTE_BLOCKS + SHARE * (PAGES - 1) == BLOCKS,
+    "the other notes share the rest evenly"
+);
 
 /// The host frames an input may take to show, before the run fails.
 const FRAMES_TO_SHOW: usize = 120;
@@ -184,7 +190,10 @@ impl Host {
     /// Draw frames for `millis` of wall time, a frame every 16 ms, with no
     /// input: the idle time between a person's keys.
     fn idle(&mut self, app: &mut App, millis: u64) {
-        let until = Instant::now() + std::time::Duration::from_millis(millis);
+        let Some(until) = Instant::now().checked_add(std::time::Duration::from_millis(millis))
+        else {
+            return;
+        };
         while Instant::now() < until {
             std::thread::sleep(std::time::Duration::from_millis(16));
             self.draw(app);
@@ -288,24 +297,17 @@ fn apply(app: &mut App, action: &notes::actions::Action) -> Result<(), Failure> 
 /// Write the notebook: [`PAGES`] notes, [`BLOCKS`] blocks, the first note
 /// the long one. Returns each note's id.
 fn write_notebook(app: &mut App, host: &mut Host) -> Result<Vec<notes::PageId>, Failure> {
-    let others = BLOCKS - LONG_NOTE_BLOCKS;
     let mut pages = Vec::new();
-    let mut written = 0;
+    let mut written: usize = 0;
     for note in 0..PAGES {
         let page = notes::PageId::new_v4();
-        let blocks = if note == 0 {
-            LONG_NOTE_BLOCKS
-        } else {
-            // Spread the rest evenly, the remainder over the first notes.
-            let share = others / (PAGES - 1);
-            share + usize::from(note <= others % (PAGES - 1))
-        };
+        let blocks = if note == 0 { LONG_NOTE_BLOCKS } else { SHARE };
         apply(
             app,
             &notes::actions::create_page_action(page, None, &format!("Latency note {note}")),
         )?;
         let content = notes::MainPanel::seed_blocks(&body(note, blocks), |_| None);
-        written += content.len();
+        written = written.saturating_add(content.len());
         apply(app, &notes::actions::write_body_action(page, &content))?;
         pages.push(page);
         host.draw(app);
@@ -360,7 +362,7 @@ fn typing(
         samples.push(timed(app, host, key_input(&key, ElementState::Pressed)));
         app.surface_input(&Region, key_input(&key, ElementState::Released), false);
         host.draw(app);
-        length += 1;
+        length = length.saturating_add(1);
         require(app, page, length, "typing")?;
         host.idle(app, options.interval_ms);
     }
@@ -379,7 +381,7 @@ fn enter_and_backspace(
     let (mut enters, mut backspaces) = (Vec::new(), Vec::new());
     for _ in 0..options.keys {
         for (key, samples, expected) in [
-            (NamedKey::Enter, &mut enters, length + 1),
+            (NamedKey::Enter, &mut enters, length.saturating_add(1)),
             (NamedKey::Backspace, &mut backspaces, length),
         ] {
             let key = Key::Named(key);
@@ -395,8 +397,9 @@ fn enter_and_backspace(
 
 /// Scroll the long note down and back up with the wheel, a step a sample.
 fn scrolling(app: &mut App, host: &mut Host, options: &Options) -> Result<Vec<Sample>, Failure> {
-    let editor = observe(app)?["editor_rect"]
-        .as_array()
+    let editor = observe(app)?
+        .get("editor_rect")
+        .and_then(serde_json::Value::as_array)
         .and_then(|rect| Some((rect.first()?.as_f64()?, rect.get(1)?.as_f64()?)))
         .ok_or("the editor has no bounds")?;
     app.surface_input(
@@ -492,10 +495,12 @@ fn run(app: &mut App, options: &Options) -> Result<serde_json::Value, Failure> {
     // Warm up: open both notes once, untimed.
     open(app, &mut host, other)?;
     open(app, &mut host, long)?;
+    let others = pages.get(1..).unwrap_or_default();
     let mut opens = Vec::new();
     for index in 0..options.opens {
-        let page = pages
-            .get(1 + index % (pages.len() - 1))
+        let page = index
+            .checked_rem(others.len())
+            .and_then(|at| others.get(at))
             .copied()
             .ok_or("no note to open")?;
         opens.push(open(app, &mut host, page)?);
