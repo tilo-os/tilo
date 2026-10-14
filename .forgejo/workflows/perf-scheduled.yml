@@ -519,6 +519,8 @@ jobs:
             cargo build --locked --release -p shell --example strip_pan_bench
           bash scripts/ci-run.sh "framework-scaling release build" -- \
             cargo build --locked --release -p tilo-app --features test-support --example framework-scaling
+          bash scripts/ci-run.sh "notes-latency release build" -- \
+            cargo build --locked --release -p notes --example notes-latency
 
       - name: Verify, time and record
         run: |
@@ -546,6 +548,12 @@ jobs:
           target/release/examples/framework-scaling 500,1000,2500 focus | tee perf/framework-focus.log
           python3 tools/perf/adapters.py framework-focus --env-json perf/env.json \
             perf/framework-focus.log >> perf/render.jsonl
+          # Notes over a 27-note notebook: typing, Enter, Backspace, the
+          # wheel and opening a note, each input timed to the frame that
+          # shows it and to that frame's raster.
+          target/release/examples/notes-latency | tee perf/notes-latency.log
+          python3 tools/perf/adapters.py notes-latency --env-json perf/env.json \
+            perf/notes-latency.log >> perf/render.jsonl
           cat perf/render.jsonl
 
       - name: Check the render counters

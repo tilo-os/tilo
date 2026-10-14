@@ -1301,6 +1301,110 @@ p99_tolerance = 2.0
 min_delta = 40.0
 source = "framework-scaling focus, an agent call adding one item end to end, 2,500 items (reported)"
 
+# Notes input latency: the notes-latency example
+# (apps/notes/examples/notes-latency.rs) opens Notes over a 27-note,
+# 838-block notebook and sends each input through the host's input path,
+# through adapters.py notes-latency in the render job. `to_frame_ms` runs from
+# the input to the end of the host frame that shows it (input handling, sync,
+# layout, the scene and the accessibility walk), `to_raster_ms` on to GPU
+# completion of that frame's damage; every input is a sample, checked against
+# the editor's canonical body. On an M5 Max, release, 200 keys back to back:
+# to frame p50 4.2-5.4 ms typing, 4.8-5.3 Enter, 5.3-5.8 Backspace, 2.7-2.9
+# a wheel step and 4.7-5.2 opening a note; to raster 3-4 ms more on Metal.
+# The ceilings are the 60 Hz frame (16.7 ms): to frame at p99, to raster at
+# p50, since lavapipe rasterises on the shared runner's CPU. Reported, not
+# enforced; the relative rule catches regressions once three runs are stored.
+
+[kpi."render.notes_latency.type.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a typed character to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.type.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a typed character to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.enter.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, Enter splitting a block to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.enter.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, Enter splitting a block to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.backspace.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, Backspace joining a block to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.backspace.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, Backspace joining a block to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.scroll.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a 40 px wheel step in a 136-block note to the frame that shows it (reported)"
+
+[kpi."render.notes_latency.scroll.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a 40 px wheel step in a 136-block note to its frame rasterised (lavapipe; reported)"
+
+[kpi."render.notes_latency.open.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a note's open action to the frame that shows it bound, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.open.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a note's open action to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
 # The installed desktop: Dev / VM acceptance's nightly run on the newest
 # published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
 # (scripts/vm-acceptance, acceptance/records.py). Those runs compare and publish
