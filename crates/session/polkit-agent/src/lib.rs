@@ -3,9 +3,9 @@
 //! `pkexec`, GNOME Disks, virt-manager and system-wide Flatpak installs ask
 //! polkit for an administrator's consent; polkit asks the session's
 //! registered agent, and without one they fail with "no authentication
-//! agent". The shell registers itself ([`service`]) and asks in a sheet the
-//! compositor draws ([`crate::shell::portal_dialog`]) — never in a window an
-//! application could imitate or read keystrokes from.
+//! agent". The shell registers this agent ([`service`]), which asks in a
+//! sheet the compositor draws through the shell's [`service::Sheets`] —
+//! never in a window an application could imitate or read keystrokes from.
 //!
 //! The password never touches polkit's D-Bus API: it goes to
 //! `polkit-agent-helper-1` ([`helper`]), which runs PAM and reports back.
@@ -128,12 +128,42 @@ pub struct PromptAnswer {
     pub secret: String,
 }
 
+/// A notice for an attempt the helper ended without saying why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StockNotice {
+    /// The helper went away, or would not take the answer.
+    HelperEnded,
+    /// The helper refused the answer and PAM said nothing.
+    Rejected,
+}
+
+impl StockNotice {
+    /// Every notice, for a host that checks its catalogue has words for each.
+    pub const ALL: [Self; 2] = [Self::HelperEnded, Self::Rejected];
+
+    /// The Fluent message a host resolves for this notice.
+    #[must_use]
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::HelperEnded => "portal-auth-ended",
+            Self::Rejected => "portal-auth-rejected",
+        }
+    }
+}
+
 /// Asks the user; `None` when they dismissed the sheet.
 pub trait Prompter: Send + Sync {
     fn ask(
         &self,
         view: PromptView,
     ) -> impl std::future::Future<Output = Option<PromptAnswer>> + Send;
+
+    /// What the sheet says for `notice`, in the person's language. The
+    /// default is the notice's Fluent message key; a prompter that draws for
+    /// a person resolves it in its catalogue.
+    fn stock_notice(&self, notice: StockNotice) -> String {
+        notice.message_key().to_owned()
+    }
 }
 
 /// How an authentication request ended.
@@ -212,7 +242,7 @@ async fn attempt(
     };
     loop {
         let Some(event) = read_event(io.output.as_mut()).await else {
-            return Attempt::Retry(crate::shell::i18n::t("portal-auth-ended"));
+            return Attempt::Retry(prompter.stock_notice(StockNotice::HelperEnded));
         };
         let (prompt, echo) = match event {
             HelperEvent::Success => {
@@ -222,7 +252,7 @@ async fn attempt(
             }
             HelperEvent::Failure => {
                 return Attempt::Retry(
-                    notice.unwrap_or_else(|| crate::shell::i18n::t("portal-auth-rejected")),
+                    notice.unwrap_or_else(|| prompter.stock_notice(StockNotice::Rejected)),
                 );
             }
             HelperEvent::Error(message) | HelperEvent::Info(message) => {
@@ -253,7 +283,7 @@ async fn attempt(
             reply.secret
         };
         if !answer(io.input.as_mut(), &secret).await {
-            return Attempt::Retry(crate::shell::i18n::t("portal-auth-ended"));
+            return Attempt::Retry(prompter.stock_notice(StockNotice::HelperEnded));
         }
     }
 }
@@ -310,3 +340,6 @@ pub async fn authenticate(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod copy_lint_tests;

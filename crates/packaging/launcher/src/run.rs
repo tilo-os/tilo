@@ -3813,15 +3813,7 @@ fn spawn_and_capture_bounded(
             None
         };
         if let Some(reason) = reason {
-            let pid = i32::try_from(child.id()).unwrap_or(i32::MAX);
-            // SAFETY: the child created its own process group before exec;
-            // a negative pid addresses only that exact group.
-            let process_group = pid.saturating_neg();
-            let killed = unsafe { libc::kill(process_group, libc::SIGKILL) } == 0;
-            if !killed {
-                let _ = child.kill();
-            }
-            let _ = child.wait();
+            bounded_command::terminate_tree(&mut child, Duration::ZERO);
             break reason;
         }
         std::thread::sleep(Duration::from_millis(10));

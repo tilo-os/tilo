@@ -3966,6 +3966,7 @@ dependencies = [
  "hex",
  "libc",
  "package-store",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -6256,6 +6257,7 @@ name = "host-fs"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustix 1.1.4",
  "tilo-clock",
  "tilo-paths",
  "trash",
@@ -8103,6 +8105,7 @@ dependencies = [
  "image",
  "legacy-agent-protocol",
  "libc",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -8770,6 +8773,7 @@ dependencies = [
  "hex",
  "libc",
  "reqwest 0.13.4",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -13223,7 +13227,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek 3.0.0",
  "hex",
- "libc",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -14380,6 +14384,7 @@ dependencies = [
  "runtime-fs",
  "runtime-identity",
  "runtime-portal",
+ "rustix 1.1.4",
  "rustls",
  "serde",
  "serde_json",
@@ -14443,6 +14448,7 @@ dependencies = [
  "tilo-nm",
  "tilo-paths",
  "tilo-peer-state",
+ "tilo-polkit-agent",
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-reference",
@@ -15923,6 +15929,7 @@ dependencies = [
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "settings",
@@ -16122,6 +16129,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "bounded-command",
  "clap",
  "fluent",
  "fluent-syntax",
@@ -16653,6 +16661,7 @@ dependencies = [
  "rcgen",
  "ring",
  "rsa 0.10.0-rc.18",
+ "rustix 1.1.4",
  "sha-crypt",
  "sha2 0.10.9",
  "sha2 0.11.0",
@@ -17051,6 +17060,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "libc",
+ "rustix 1.1.4",
  "serde",
  "sha2 0.11.0",
  "tempfile",
@@ -17099,6 +17109,7 @@ dependencies = [
  "redb",
  "ref-cast",
  "runtime-fs",
+ "rustix 1.1.4",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -17495,6 +17506,7 @@ dependencies = [
  "libc",
  "local-model-service",
  "reqwest 0.13.4",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -17632,6 +17644,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "libc",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -17821,6 +17834,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-polkit-agent"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tilo-copy-lint",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "workspace-hack",
+ "zbus",
+]
+
+[[package]]
 name = "tilo-power-mgmt"
 version = "0.1.0"
 dependencies = [
@@ -17855,6 +17881,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "runtime-portal",
+ "rustix 1.1.4",
  "socket2",
  "tempfile",
  "tilo-advisory-lock",
@@ -18289,6 +18316,7 @@ dependencies = [
  "runtime-collab",
  "runtime-fs",
  "runtime-identity",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -18438,6 +18466,7 @@ dependencies = [
  "hex",
  "js-sys",
  "libc",
+ "rustix 1.1.4",
  "security-framework",
  "sha2 0.11.0",
  "tempfile",
@@ -20359,6 +20388,7 @@ dependencies = [
  "libc",
  "package-store",
  "runtime-portal",
+ "rustix 1.1.4",
  "seccompiler",
  "semver",
  "serde",
@@ -22063,6 +22093,7 @@ dependencies = [
  "quick-xml 0.41.0",
  "rand 0.10.1",
  "reqwest 0.13.4",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",

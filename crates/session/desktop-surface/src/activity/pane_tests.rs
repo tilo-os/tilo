@@ -4236,6 +4236,75 @@ mod morning_source_tests {
     use crate::activity::testing::TestTree;
     use automerge::transaction::CommitOptions;
 
+    /// A browser visitor: no private morning sources, no local identity.
+    struct VisitorHost;
+    impl ActivityHost for VisitorHost {}
+
+    #[test]
+    fn a_visitor_catch_up_shows_no_ids_and_no_morning_section() {
+        let record = "3f2a9c41d0b7e8aa5c1d9e0f";
+        let mut tree = TestTree::bootstrap_default();
+        let context = tilo_actions::ActionContext::for_resource(record, "notes.note", record)
+            .with_app("org.tilo.Notes", "org.tilo.Notes")
+            .with_described(crate::activity::testing::verb("Update"));
+        tree.doc
+            .put(automerge::ROOT, "name", "Visitor history")
+            .unwrap();
+        tree.doc.commit_with(
+            CommitOptions::default()
+                .with_time(1_800_000_000)
+                .with_message(context.change_message().unwrap()),
+        );
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(Rc::new(VisitorHost));
+        pane.refresh(&mut tree);
+        pane.set_view(ActivityView::CatchUp);
+        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
+        let theme = Theme::light();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        assert!(
+            !pane.digest().briefs.is_empty(),
+            "the change itself stays visible"
+        );
+        for brief in &pane.digest().briefs {
+            for shown in [
+                brief.title.clone(),
+                brief.detail.clone(),
+                brief.glance(),
+                brief.apps.join(" "),
+                brief.resources.join(" "),
+            ] {
+                assert!(
+                    !ui::history_source::contains_opaque_id(&shown),
+                    "an identifier reached a visitor: {shown:?}"
+                );
+            }
+        }
+        for focus in pane.focus_order() {
+            let label = pane.focus_label(&focus).unwrap_or_default();
+            assert!(
+                !label.contains(record),
+                "an identifier reached a visitor: {label:?}"
+            );
+        }
+        assert!(pane.morning_rects.is_empty());
+        let mut scene = Scene::new();
+        let y = pane.draw_morning_sources(&mut scene, Affine::IDENTITY, &mut text, &theme, 120.0);
+        assert!(
+            (y - 120.0).abs() < f64::EPSILON,
+            "an unavailable morning section must take no space"
+        );
+        assert!(scene.encoding().is_empty(), "nor paint anything");
+    }
+
     fn fixture() -> (TestTree, RoomActivityPane) {
         let mut tree = TestTree::bootstrap_default();
         let context = tilo_actions::ActionContext::for_resource(

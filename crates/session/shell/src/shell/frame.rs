@@ -9346,6 +9346,10 @@ mod tests {
                 rect_named(&during, "TopBarChrome").height() <= 0.5,
                 "Super+F hides the top bar"
             );
+            assert!(
+                rect_named(&during, "SidebarWheelDisc").width() <= 0.5,
+                "the workspace switcher does not show in fullscreen"
+            );
             assert!(fb.host_mut().toggle_focused_group_fullscreen());
             let _ = fb.paint_settled();
             assert!(!fb.chrome().is_fullscreen());

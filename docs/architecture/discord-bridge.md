@@ -438,7 +438,9 @@ visitor is their own person, and joining is rate-limited.
   `RoomEvent::MemberRemoved { user_public_key, banned }`, which the service
   needs for the hashed-IP cooldown below. `Started` names the governed room.
 - **Limits.**
-  - Per IP: 5 joins per 10 minutes and 30 per day. The address is taken from
+  - Per IP: 5 joins per 10 minutes and 30 per day by default
+    (`TILO_ROOMS_GUEST_JOINS_PER_10_MIN`, `TILO_ROOMS_GUEST_JOINS_PER_DAY`;
+    raise them where many visitors share an address). The address is taken from
     `X-Forwarded-For` only when the request comes from a proxy listed in
     `TILO_ROOMS_TRUSTED_PROXIES`.
   - Online cap: at most `TILO_ROOMS_MAX_GUESTS` people online at once (default

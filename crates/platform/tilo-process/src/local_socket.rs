@@ -30,9 +30,7 @@ pub fn connect_owner_only(root: &Path, socket: &Path, timeout: Duration) -> io::
         .strip_prefix(root)
         .map_err(|_| invalid("the service socket is not below its root"))?;
     let parent = below.parent().unwrap_or_else(|| Path::new(""));
-    // SAFETY: `geteuid` reads the current process credential and has no memory
-    // or descriptor ownership effects.
-    let owner = unsafe { libc::geteuid() };
+    let owner = rustix::process::geteuid().as_raw();
     let private = |path: &Path, is_kind: fn(&std::fs::FileType) -> bool| {
         let metadata = std::fs::symlink_metadata(path)?;
         let exposed = metadata.mode() & 0o077 != 0;

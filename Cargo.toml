@@ -314,6 +314,7 @@ members = [
     "crates/session/greeter",
     "crates/session/install-profile-model",
     "crates/session/installer",
+    "crates/session/polkit-agent",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
 
