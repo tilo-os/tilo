@@ -559,7 +559,7 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
     // Phase `a_writable_home_grant_hides_and_protects_the_store`.
     {
         let data = DataHome::new();
-        let grant = [(home_dir.clone(), Access::Write)];
+        let grant = [(home_dir, Access::Write)];
         let run = |argv: &[&str]| run_with_grants(&data, &grant, argv);
 
         // The grant itself works: the person's files read and write.
