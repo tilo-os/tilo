@@ -347,10 +347,10 @@ use smithay::wayland::xdg_activation::{
 };
 use smithay::{
     delegate_compositor, delegate_content_type, delegate_cursor_shape, delegate_data_control,
-    delegate_data_device, delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale,
+    delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale,
     delegate_idle_inhibit, delegate_keyboard_shortcuts_inhibit,
     delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
-    delegate_primary_selection, delegate_relative_pointer,
+    delegate_relative_pointer,
     delegate_session_lock, delegate_shm,
     delegate_viewporter, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
@@ -790,6 +790,10 @@ pub struct State {
     pub presentation_state: smithay::wayland::presentation::PresentationState,
     /// Original timestamp of the currently dispatched trusted physical key.
     pub physical_key_input_time_ns: Option<u64>,
+    /// Key presses and releases the seat forwarded to a client, ever. The loop
+    /// tells keys only a client took, which change no shell pixels, from keys
+    /// the shell kept by how far this moves while it dispatches them.
+    pub client_keys_delivered: u64,
     pub presentation_feedback: crate::compositor::presentation::PresentationFeedback,
 
     /// `xdg_wm_base` global state — toplevels and popups.
@@ -1793,6 +1797,7 @@ impl State {
             compositor_state,
             presentation_state,
             physical_key_input_time_ns: None,
+            client_keys_delivered: 0,
             presentation_feedback: crate::compositor::presentation::PresentationFeedback::default(),
             xdg_shell_state,
             xdg_activation_state,
@@ -7285,8 +7290,7 @@ impl IdleInhibitHandler for State {
 }
 
 // Selection: clipboard, primary selection, drag-and-drop. Handler impls live in `compositor::selection`; only dispatch wiring belongs here.
-delegate_data_device!(State);
-delegate_primary_selection!(State);
+// `wl_data_device` and `zwp_primary_selection_device_v1` are wrapped in `compositor::selection` so a refused `set_selection` is logged.
 delegate_data_control!(State);
 delegate_ext_data_control!(State);
 
