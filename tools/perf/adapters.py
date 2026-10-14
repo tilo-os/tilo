@@ -29,7 +29,7 @@ Each adapter reads what a benchmark already prints and emits records through
   frame). `scripts/perf/latency_bench.py` (headless, nightly) and
   `scripts/perf/device_latency_bench.py` (reference hardware) call it.
 - `idle-wakeups LOG...`: the idle-wakeup gate
-  (`crates/session/shell/tests/idle_wakeups.rs`) prints one
+  (`crates/session/shell/examples/idle-wakeups.rs`) prints one
   `IDLE-WAKEUPS total_per_s=<x> shell_per_s=<y> ...` line per run. Each log is
   one run; repeated runs become the samples of `wakeups.headless_two_apps`
   (the compositor's whole process tree), `.shell` (its own process) and
@@ -263,7 +263,7 @@ def idle_wakeups(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
         lines = [match for line in log.splitlines() if (match := IDLE_WAKEUPS_LINE.search(line.rstrip()))]
         if len(lines) != 1:
             raise ValueError(f"expected one `IDLE-WAKEUPS` line per run, found {len(lines)}: "
-                             "did the gate run with --nocapture?")
+                             "did the idle-wakeups executable finish its measurement?")
         fields = dict(pair.split("=", 1) for pair in lines[0].group(1).split())
         missing = [name for name in (*IDLE_WAKEUPS_KPIS, "window_ms") if name not in fields]
         if missing:

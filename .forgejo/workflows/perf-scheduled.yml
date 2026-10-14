@@ -567,11 +567,9 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
-  # Idle wakeups: the shell integration gate
-  # crates/session/shell/tests/idle_wakeups.rs, which pull requests run with
-  # a 10 s window whenever shell changes, here three times with a 60 s window
-  # through adapters.py idle-wakeups. A debug `it` build with check.yml's
-  # Cargo environment, so the compiler cache its test shards fill serves it.
+  # Idle wakeups: the explicit examples/idle-wakeups.rs benchmark, never a
+  # PR test. Three samples with a 60 s window through adapters.py idle-wakeups.
+  # Build it and the production shell explicitly in the dev profile.
   wakeups:
     needs: [plan, builder]
     if: needs.plan.outputs.wakeups == 'true'
@@ -596,10 +594,12 @@ jobs:
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
 
-      - name: Build the shell integration tests
-        run: >-
-          bash scripts/ci-run.sh "idle wakeup gate build" --
-          cargo test --locked -p shell --test it --no-run
+      - name: Build the idle benchmark and shell
+        run: |
+          bash scripts/ci-run.sh "idle wakeup benchmark build" -- \
+            cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark
+          bash scripts/ci-run.sh "idle wakeup shell build" -- \
+            cargo build --locked -p shell --bin shell
 
       - name: Count an idle desktop's wakeups three times and record them
         run: |
@@ -608,9 +608,9 @@ jobs:
           mkdir -p perf
           status=0
           for run in 1 2 3; do
-            bash tools/test-env.sh cargo test --locked -p shell --test it \
-              idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget \
-              -- --exact --nocapture > "perf/idle-$run.log" 2>&1 || status=$?
+            TILO_IDLE_SHELL_BIN="$PWD/target/debug/shell" \
+              bash tools/test-env.sh target/debug/examples/idle-wakeups \
+              > "perf/idle-$run.log" 2>&1 || status=$?
             grep -A40 '^idle wakeups over' "perf/idle-$run.log" || true
           done
           python3 tools/perf/record.py env --profile dev --renderer lavapipe \
