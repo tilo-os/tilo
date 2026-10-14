@@ -4781,6 +4781,31 @@ pub(crate) mod tests {
                 "{id} is published"
             );
         }
+        // Each import opens the file a launch names, for its own type only.
+        for (id, extension) in [
+            ("import-csv", "csv"),
+            ("import-xlsx", "xlsx"),
+            ("import-ods", "ods"),
+        ] {
+            let import = workbook
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap();
+            assert!(import.contract.opens_path(), "{id} opens a path");
+            assert_eq!(
+                import.contract.opened_extensions().collect::<Vec<_>>(),
+                [extension]
+            );
+        }
+        assert!(
+            workbook
+                .actions
+                .iter()
+                .filter(|action| action.id.starts_with("export-"))
+                .all(|action| !action.contract.opens_path()),
+            "an export takes a path but opens nothing"
+        );
         let sales = workbook
             .children
             .iter()
