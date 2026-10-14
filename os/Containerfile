@@ -2224,6 +2224,7 @@ COPY os/etc/gitconfig /etc/gitconfig
 COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
     os/usr/libexec/tilo-security-audit \
+    os/usr/libexec/tilo-image-policy-check \
     os/usr/libexec/tilo-firstboot-user \
     os/usr/libexec/tilo-firstboot-files.py \
     os/usr/libexec/tilo-firstboot-autologin-cleanup \

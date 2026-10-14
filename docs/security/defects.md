@@ -876,11 +876,18 @@ requires the Tilo registry scope, a `sigstoreSigned` rule, the pinned key path
 and the installed non-empty verification key instead of accepting one unrelated
 string. Held by `os/tests/kernel_hardening_invariants.sh`.
 
-**Residual, open.** The image-policy check is three independent `grep -F` matches over
-`policy.json`, not a parse. It does not prove that the `sigstoreSigned` rule and key path belong
-to the `registry.tilo.so/tilo/tilo` scope: the `code.tilo.so/tilo/tilo` or
-`registry.tilo.so/tilo/legacy-guest` entry alone would satisfy the last two greps if the Tilo
-scope's rule were weakened. Separately, the audit's mem-init check required the kernel to report
+**Residual, resolved.** The image-policy check was three independent `grep -F` matches over
+`policy.json`, not a parse, so a signed `code.tilo.so/tilo/tilo` or
+`registry.tilo.so/tilo/legacy-guest` entry would have satisfied it while the
+`registry.tilo.so/tilo/tilo` scope itself accepted anything. The audit now runs
+`os/usr/libexec/tilo-image-policy-check`, which parses the policy and passes only when
+`registry.tilo.so/tilo/tilo` and `code.tilo.so/tilo/tilo` each hold nothing but `sigstoreSigned`
+requirements on `/usr/share/tilo/cosign.pub` with a repository-bound `signedIdentity`, and every
+more specific scope under either Tilo namespace is that or `reject`. An unreadable, malformed or
+duplicate-keyed policy fails. `os/tests/kernel_hardening_invariants.sh` runs it against the
+shipped policy and fourteen weakened copies (each Tilo scope accepting anything, another key,
+`signedBy`, a remapped identity, extra key material, a tag override, a removed scope, malformed
+JSON, a duplicate scope, a missing file), every one of which must fail. Separately, the audit's mem-init check required the kernel to report
 `heap free:on` and so warned on every correct boot once `init_on_free` left the kernel
 arguments; it now requires `alloc:on`, and `os/tests/kernel_hardening_invariants.sh` refuses the
 old pattern.
