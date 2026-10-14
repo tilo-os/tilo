@@ -31,6 +31,9 @@ pub(super) struct StripSwitcher {
     active: Option<StripId>,
     /// Chips as last painted, for hit testing.
     chips: Vec<(StripId, Rect)>,
+    /// The chip standing for the strips with no room: how many, the one it
+    /// moves to, and where it was painted.
+    more: Option<(usize, StripId, Rect)>,
     add_rect: Rect,
     field_rect: Rect,
     naming: Option<Naming>,
@@ -77,8 +80,18 @@ fn fit_strips(widths: &[f64], active: Option<usize>, room: f64) -> Vec<bool> {
     shown
 }
 
+/// The strip the "more" chip moves to: the first one not shown after the
+/// active one, wrapping, so pressing it again walks through all of them.
+fn next_hidden(shown: &[bool], active: Option<usize>) -> Option<usize> {
+    let start = active.map_or(0, |index| index.saturating_add(1));
+    (start..shown.len())
+        .chain(0..start.min(shown.len()))
+        .find(|index| shown.get(*index) == Some(&false))
+}
+
 impl TopBarChrome {
     pub(super) const CONTROL_STRIP_ADD: &'static str = "topbar:strip-add";
+    const CONTROL_STRIP_MORE: &'static str = "topbar:strip-more";
     const STRIP_TARGET_PREFIX: &'static str = "topbar:strip:";
 
     /// Who is on which strip, when the host shows strips as places.
@@ -150,6 +163,31 @@ impl TopBarChrome {
         f64::from(name_w + count_w) + 2.0 * pad
     }
 
+    /// The widest the "+N" chip gets with up to `most` strips hidden.
+    /// Which strips fit in `room`, and when some do not, the "+N" chip
+    /// standing for them: how many, the one it moves to, and its width.
+    fn fit_strips_with_more(
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        widths: &[f64],
+        active: Option<usize>,
+        room: f64,
+    ) -> (Vec<bool>, Option<(usize, usize, f64)>) {
+        let shown = fit_strips(widths, active, room);
+        if !shown.contains(&false) {
+            return (shown, None);
+        }
+        let label = t_args(
+            "topbar-strips-more-label",
+            &[("count", widths.len().into())],
+        );
+        let more_w = Self::strip_chip_width(text_renderer, theme, &label, 0);
+        let shown = fit_strips(widths, active, room - more_w);
+        let hidden = shown.iter().filter(|shown| !**shown).count();
+        let more = next_hidden(&shown, active).map(|next| (hidden, next, more_w));
+        (shown, more)
+    }
+
     /// What the switcher takes when every strip fits, so the workspace
     /// name can leave it room. Zero without places.
     pub(super) fn strips_natural_width(
@@ -187,6 +225,7 @@ impl TopBarChrome {
         span: (f64, f64),
     ) {
         self.strips.chips.clear();
+        self.strips.more = None;
         self.strips.add_rect = Rect::ZERO;
         self.strips.field_rect = Rect::ZERO;
         let Some(places) = self.strip_places() else {
@@ -220,20 +259,23 @@ impl TopBarChrome {
             .strips
             .iter()
             .position(|(id, _)| Some(*id) == self.strips.active);
-        let shown = fit_strips(&widths, active, x1 - x0 - add_w);
+        // Whatever has no room stays one press away, through a "+N" chip.
+        let (shown, more) =
+            Self::fit_strips_with_more(text_renderer, theme, &widths, active, x1 - x0 - add_w);
+        let more_w = more.map_or(0.0, |(_, _, width)| width);
         let used: f64 = widths
             .iter()
             .zip(&shown)
             .filter(|(_, shown)| **shown)
             .map(|(width, _)| width)
             .sum();
-        if used <= 0.0 && add_w <= 0.0 {
+        if used <= 0.0 && add_w <= 0.0 && more.is_none() {
             return;
         }
         let group = Rect::new(
             x0,
             center_y - BAR_CONTROL_PX / 2.0,
-            x0 + used + add_w,
+            x0 + used + more_w + add_w,
             center_y + BAR_CONTROL_PX / 2.0,
         );
         let radius = ui::chrome::ChromeRole::Selector.radius(theme, group.height());
@@ -258,19 +300,40 @@ impl TopBarChrome {
             self.strips.chips.push((*id, chip));
             x += width;
         }
-        if places.can_add {
-            let add = Rect::new(x, group.y0, x + BAR_CONTROL_PX, group.y1);
-            let glyph = SMALL_GLYPH_PX;
-            ui::icons::draw_icon(
+        if let Some((hidden, next, width)) = more
+            && let Some((next, _)) = strips.get(next)
+        {
+            let chip = Rect::new(x, group.y0, x + width, group.y1);
+            let label = t_args("topbar-strips-more-label", &[("count", hidden.into())]);
+            Self::paint_strip_chip(
                 scene,
                 transform,
-                Rect::from_center_size(add.center(), (glyph, glyph)),
-                ui::icons::Icon::Plus,
-                theme.tokens.colors.text_dim,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                theme,
+                text_renderer,
+                (chip, radius),
+                (&label, 0, false),
             );
+            self.strips.more = Some((hidden, *next, chip));
+            x += width;
+        }
+        if places.can_add {
+            let add = Rect::new(x, group.y0, x + BAR_CONTROL_PX, group.y1);
+            Self::paint_strip_add(scene, transform, theme, add);
             self.strips.add_rect = add;
         }
+    }
+
+    /// The add control: a plus in dim ink.
+    fn paint_strip_add(scene: &mut Scene, transform: Affine, theme: &Theme, add: Rect) {
+        let glyph = SMALL_GLYPH_PX;
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            Rect::from_center_size(add.center(), (glyph, glyph)),
+            ui::icons::Icon::Plus,
+            theme.tokens.colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
     }
 
     /// One strip chip: the active one lifted, its name, then the count in
@@ -451,6 +514,11 @@ impl TopBarChrome {
         if self.strips.add_rect.contains(point) {
             return self.begin_strip_naming();
         }
+        if let Some((_, next, rect)) = self.strips.more
+            && rect.contains(point)
+        {
+            return self.switch_strip(next);
+        }
         let chip = self
             .strips
             .chips
@@ -504,6 +572,10 @@ impl TopBarChrome {
         self.strips.add_rect.contains(point)
             || self
                 .strips
+                .more
+                .is_some_and(|(_, _, rect)| rect.contains(point))
+            || self
+                .strips
                 .chips
                 .iter()
                 .any(|(_, rect)| rect.contains(point))
@@ -519,6 +591,10 @@ impl TopBarChrome {
                 Some((format!("topbar_strip_{name}"), *rect))
             })
             .collect();
+        rects.push((
+            "topbar_strip_more".into(),
+            self.strips.more.map_or(Rect::ZERO, |(_, _, rect)| rect),
+        ));
         rects.push(("topbar_strip_add".into(), self.strips.add_rect));
         rects.push(("topbar_strip_name_field".into(), self.strips.field_rect));
         rects
@@ -533,6 +609,13 @@ impl TopBarChrome {
     pub(super) fn strip_semantic_action(&mut self, target: &str) -> Option<bool> {
         if target == Self::CONTROL_STRIP_ADD {
             return Some(self.begin_strip_naming());
+        }
+        if target == Self::CONTROL_STRIP_MORE {
+            return Some(
+                self.strips
+                    .more
+                    .is_some_and(|(_, next, _)| self.switch_strip(next)),
+            );
         }
         let id: u64 = target
             .strip_prefix(Self::STRIP_TARGET_PREFIX)?
@@ -572,6 +655,23 @@ impl TopBarChrome {
                 )
             })
             .collect();
+        if let Some((hidden, next, rect)) = self.strips.more
+            && let Some((_, name)) = self.strips.strips.iter().find(|(id, _)| *id == next)
+        {
+            nodes.push(
+                AccessNode::new(Role::Button)
+                    .with_action_target(Self::CONTROL_STRIP_MORE)
+                    .with_name(t_args(
+                        "topbar-strips-more",
+                        &[("count", hidden.into()), ("name", name.as_str().into())],
+                    ))
+                    .with_bounds(rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            );
+        }
         if !self.strips.add_rect.is_zero_area() {
             nodes.push(
                 AccessNode::new(Role::Button)
@@ -772,6 +872,44 @@ mod tests {
         );
         assert_eq!(fit_strips(&[50.0, 50.0], None, 60.0), [true, false]);
         assert_eq!(fit_strips(&[80.0], Some(0), 60.0), [false]);
+    }
+
+    #[test]
+    fn more_walks_the_hidden_strips_after_the_active_one() {
+        assert_eq!(next_hidden(&[true, false, true, false], Some(2)), Some(3));
+        assert_eq!(next_hidden(&[false, true, true], Some(2)), Some(0));
+        assert_eq!(next_hidden(&[true, true], Some(0)), None);
+    }
+
+    /// With no room for every strip, a "+N" chip stands for the rest and
+    /// moves to the next one, so every strip is reachable from the bar.
+    #[test]
+    fn strips_without_room_are_one_press_away() {
+        let mut frame = None;
+        // The narrowest wide bar that still shows the switcher at all.
+        for width in (900..1600).step_by(20) {
+            let (candidate, chrome) = bar(Some(places()), width);
+            if !candidate.responsive.active
+                && candidate.strips.more.is_some()
+                && !candidate.strips.chips.is_empty()
+            {
+                frame = Some((candidate, chrome));
+                break;
+            }
+        }
+        let (mut frame, chrome) = frame.expect("some width hides a strip");
+        let (hidden, next, _) = frame.strips.more.unwrap();
+        assert!(hidden >= 1);
+        assert!(frame.strips.chips.iter().all(|(id, _)| *id != next));
+        let more = rect(&frame, "topbar_strip_more");
+        Framed::harness_mut(&mut frame).click_at(more.center().x, more.center().y);
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert_eq!(
+            chrome.intents.borrow().as_slice(),
+            [ChromeIntent::SwitchStrip(next)]
+        );
+        let audit = Framed::harness(&frame).native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
     }
 
     #[test]

@@ -86,6 +86,11 @@ topbar-strip-go = Zu { $name } wechseln, { $count ->
    *[other] { $count } Personen dort
 }
 topbar-strip-add = Leiste hinzufügen
+topbar-strips-more-label = +{ $count }
+topbar-strips-more = { $count ->
+    [one] Eine weitere Leiste
+   *[other] { $count } weitere Leisten
+}, zu { $name } wechseln
 topbar-strip-name-placeholder = Leiste benennen
 
 # Arbeitsbereichsaktivität

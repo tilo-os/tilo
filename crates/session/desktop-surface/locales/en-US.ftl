@@ -77,6 +77,11 @@ topbar-strip-go = Go to { $name }, { $count ->
    *[other] { $count } people there
 }
 topbar-strip-add = Add a strip
+topbar-strips-more-label = +{ $count }
+topbar-strips-more = { $count ->
+    [one] One more strip
+   *[other] { $count } more strips
+}, go to { $name }
 topbar-strip-name-placeholder = Name the strip
 
 # Workspace activity

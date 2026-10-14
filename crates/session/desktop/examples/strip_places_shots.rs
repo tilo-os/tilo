@@ -139,5 +139,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
         Framed::harness(&frame).render_png(&out.join(format!("{name}-added.png")));
     }
+    // Less room than the strips need: the ones left out are a "+N" chip.
+    for width in [1180, 1280] {
+        let frame = bar(width, Theme::dark());
+        Framed::harness(&frame).render_png(&out.join(format!("tight-{width}.png")));
+    }
     Ok(())
 }
