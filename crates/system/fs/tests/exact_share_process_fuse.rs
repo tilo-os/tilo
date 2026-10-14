@@ -890,19 +890,58 @@ fn show_tree(mount: &Path) -> std::collections::BTreeMap<String, Shown> {
     shown
 }
 
+/// Where two trees differ, without dumping file contents.
+#[cfg(target_os = "linux")]
+fn differences(
+    before: &std::collections::BTreeMap<String, Shown>,
+    after: &std::collections::BTreeMap<String, Shown>,
+) -> String {
+    let brief = |shown: Option<&Shown>| {
+        shown.map(|shown| {
+            format!(
+                "directory {}, {:?} bytes (blake3 {:?}), modified {:?}, record id {:?}, pin {:?}",
+                shown.directory,
+                shown.bytes.as_ref().map(Vec::len),
+                shown
+                    .bytes
+                    .as_ref()
+                    .map(|bytes| blake3::hash(bytes).to_hex().to_string()),
+                shown.modified,
+                shown.record_id,
+                shown.pin.as_deref().map(String::from_utf8_lossy),
+            )
+        })
+    };
+    before
+        .keys()
+        .chain(after.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| before.get(*path) != after.get(*path))
+        .map(|path| {
+            format!(
+                "{path}\n  before: {:?}\n  after:  {:?}",
+                brief(before.get(path)),
+                brief(after.get(path))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Patterned bytes, so a short or shifted read cannot match.
 #[cfg(target_os = "linux")]
 fn patterned(len: u32, salt: u32) -> Vec<u8> {
     (0..len)
-        .map(|index| u8::try_from((index + salt) % 251).unwrap())
+        .map(|index| u8::try_from(index.wrapping_add(salt) % 251).unwrap())
         .collect()
 }
 
 /// A workspace that `systemctl stop fs.service` (SIGTERM) and a restart
 /// pass through unchanged, as the kernel showed it: every name and
 /// directory, the exact bytes, the modification times, the stable record
-/// ids (a file stays the same file, not a copy with a new identity) and a
-/// pin. Files created, overwritten, appended, renamed into a new directory
+/// ids (a file stays the same file, not a copy with a new identity) and
+/// pins, a file's own and one inherited from its folder. Files created, overwritten, appended, renamed into a new directory
 /// and deleted, all within the persister's settle time and then stopped at
 /// once: only the stop path's final save can have written them.
 #[cfg(target_os = "linux")]
@@ -918,6 +957,8 @@ fn every_name_byte_time_identity_and_pin_survives_a_stop_and_restart() {
 
     std::fs::write(mount.join("created.bin"), patterned(256 * 1024, 0)).unwrap();
     std::fs::create_dir(mount.join("docs")).unwrap();
+    // Pinned before anything is in it: what lands in it later inherits it.
+    set_xattr(&mount.join("docs"), fs_protocol::PIN_XATTR, b"pinned").unwrap();
     std::fs::create_dir(mount.join("empty-dir")).unwrap();
     std::fs::write(mount.join("docs/nested.txt"), b"nested in a new directory").unwrap();
     std::fs::write(mount.join("rename-me.txt"), b"moved, never copied").unwrap();
@@ -956,9 +997,24 @@ fn every_name_byte_time_identity_and_pin_survives_a_stop_and_restart() {
         before["appended.log"].bytes.as_deref(),
         Some(b"first line\nsecond line\n".as_slice())
     );
+    let pins = before
+        .iter()
+        .map(|(path, shown)| (path.as_str(), shown.pin.as_deref()))
+        .collect::<Vec<_>>();
+    let pinned = Some(b"pinned".as_slice());
+    let automatic = Some(b"automatic".as_slice());
     assert_eq!(
-        before["created.bin"].pin.as_deref(),
-        Some(b"pinned".as_slice())
+        pins,
+        [
+            ("appended.log", automatic),
+            ("created.bin", pinned),
+            ("docs", pinned),
+            ("docs/nested.txt", pinned),
+            ("docs/renamed.txt", pinned),
+            ("empty-dir", automatic),
+            ("seeded.txt", automatic),
+        ],
+        "every file reports its own or its folder's pin"
     );
 
     signal(&host, libc::SIGTERM);
@@ -977,7 +1033,8 @@ fn every_name_byte_time_identity_and_pin_survives_a_stop_and_restart() {
     let output = restarted.logs.lock().unwrap().join("\n");
     assert!(
         after == before,
-        "the restarted mount differs from what was acknowledged before the stop\nbefore: {before:#?}\nafter: {after:#?}\n{output}"
+        "the restarted mount differs from what was acknowledged before the stop:\n{}\n{output}",
+        differences(&before, &after)
     );
     restarted.stop();
 }
