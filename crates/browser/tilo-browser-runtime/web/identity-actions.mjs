@@ -38,8 +38,8 @@ import {
   fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, publishEnvelope, publishProfile, signInWithPasskey,
 } from './root-identity.mjs';
 
-export const KEEP = Object.freeze({id: 'keep-identity', title: 'Keep this identity',
-  subtitle: 'Add a passkey, so you are yourself again on any browser', source: 'identity'});
+export const KEEP = Object.freeze({id: 'keep-identity', title: 'Keep your name and work',
+  subtitle: 'Add a passkey, so you come back as yourself on any browser', source: 'identity'});
 export const RECOVERY = Object.freeze({id: 'save-recovery-key', title: 'Save a recovery key',
   subtitle: 'To your password manager, or as a file', source: 'identity'});
 export const SIGN_IN = Object.freeze({id: 'sign-in-passkey', title: 'Sign in with a passkey',
@@ -169,8 +169,8 @@ export function createIdentityActions({
     }
     try { session?.setItem(ASKED_KEY, '1'); } catch { /* asked once per page then */ }
     offer({...KEEP, title: 'Keep with passkey'},
-      chosenName ? `Keep “${chosenName}” as you?` : 'Keep this identity?',
-      `A passkey brings you back as yourself on any browser. Any time later: ${searchChord}, “${KEEP.title}”.`);
+      chosenName ? `Come back as “${chosenName}” next time?` : 'Keep your name and work?',
+      `A passkey on this device brings you back as yourself, on any browser. Any time later: ${searchChord}, “${KEEP.title}”.`);
   };
   const controller = {
     actions,

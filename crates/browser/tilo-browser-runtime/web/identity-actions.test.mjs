@@ -46,10 +46,10 @@ test('nothing is asked on arrival; the ask comes after enough separate actions, 
   actions.authored(100);
   assert.deepEqual(mount.offers, [KEEP.id]);
   const [ask] = mount.said;
-  assert.equal(ask.title, 'Keep this identity?');
+  assert.equal(ask.title, 'Keep your name and work?');
   assert.equal(ask.action.title, 'Keep with passkey');
   assert.match(ask.body, /passkey/);
-  assert.match(ask.body, /Ctrl\+K, “Keep this identity”/, 'says where to find it later');
+  assert.match(ask.body, /Ctrl\+K, “Keep your name and work”/, 'says where to find it later');
 
   clock += ACTION_GAP_MS;
   actions.authored(101);
@@ -78,7 +78,7 @@ test('the ask waits for a pause in what the person is doing', async () => {
   busy = false;
   retry();
   assert.deepEqual(mount.offers, [KEEP.id]);
-  assert.equal(mount.said[0].title, 'Keep “Ada” as you?');
+  assert.equal(mount.said[0].title, 'Come back as “Ada” next time?');
   assert.match(mount.said[0].body, /⌘K/);
 });
 

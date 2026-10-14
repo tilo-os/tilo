@@ -507,11 +507,12 @@ leaves the browser; the page also calls `navigator.storage.persist()`. It is
 a real identity from the start: it joins and owns
 workspaces like any other, and a host that prunes it lets the same person
 join again. Keeping it only adds wraps to its envelope, through the
-desktop's host actions (`identity-actions.mjs`: desktop search, and a banner
-when the person first posts or creates something, sets their name, or when
-`navigator.storage.persisted()` is false):
+desktop's host actions (`identity-actions.mjs`: desktop search, and one
+banner per browser session, never on arrival: after `ASK_AFTER_ACTIONS`
+separate actions or once the person sets their name, at a pause in their
+input):
 
-- **Keep this identity**: one passkey whose user handle is the root public
+- **Keep your name and work**: one passkey whose user handle is the root public
   key and whose PRF input is fixed (SHA-256 of `tilo-seal/v1/user-root-prf`).
 - **Save a recovery key**: to the password manager (`PasswordCredential`)
   where the browser has one, else as a file.
