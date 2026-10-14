@@ -5,13 +5,13 @@
 a plan, one after another on one machine, and keeps each run's JSON report
 and log. `summarize` reads a sweep's reports and derives:
 
-- resident MiB per guest (the slope of peak RSS over joined guests, plain
-  runs) and per spectator (the slope over the spectator runs, at a fixed
-  number of guests), above the idle host;
+- resident MiB per guest (the slope of the host's peak memory over joined
+  guests, plain runs in which every guest joined) and per spectator (the
+  slope over the spectator runs, at a fixed number of guests);
 - host CPU cores per guest during the hold, and guests per vCPU;
 - host egress per guest;
-- the host's RSS and CPU at the deployed caps (the `caps` run: as many guests
-  and spectators as the caps admit, at once);
+- the host's memory and CPU at the deployed caps (the `caps` run: as many
+  guests and spectators as the caps admit, at once);
 - what 100 concurrent guests cost on each `[room_node.*]` of
   tools/perf/prices.toml.
 
@@ -66,11 +66,20 @@ def plan(which: str) -> list[Run]:
              for n in GUESTS]
     runs += [Run(f"cap{CAP_GUESTS}-g{n}", "capped", ("--guests", str(n), "--max-guests", str(CAP_GUESTS)))
              for n in GUESTS if n >= CAP_GUESTS]
+    # Guests arriving at a quarter of the rate: whether joining is bound by
+    # the arrival rate or by the room's size.
+    runs += [Run(f"ramp5-g{n}", "ramp5", ("--guests", str(n), "--ramp", "5", "--join-timeout", "120"))
+             for n in (300, 500)]
+    # Spectators admitted as Viewers of their own: what a watching session
+    # costs. The homepage embed's path (one spectator person, every page a
+    # device of it) is the `embed` run.
     runs += [Run(f"spect-s{n}", "spectators",
-                 ("--guests", str(SPECTATOR_BASE_GUESTS), "--spectators", str(n)))
+                 ("--guests", str(SPECTATOR_BASE_GUESTS), "--spectators", str(n), "--spectator-members"))
              for n in SPECTATORS]
+    runs.append(Run("embed-s100", "embed", ("--guests", str(SPECTATOR_BASE_GUESTS), "--spectators", "100")))
     runs.append(Run("caps", "caps", ("--guests", str(CAP_GUESTS), "--spectators", str(CAP_SPECTATORS),
-                                     "--max-guests", str(CAP_GUESTS), "--max-spectators", str(CAP_SPECTATORS))))
+                                     "--spectator-members", "--max-guests", str(CAP_GUESTS),
+                                     "--max-spectators", str(CAP_SPECTATORS))))
     if which != "full":
         pattern = re.compile(which)
         runs = [run for run in runs if pattern.search(run.name)]
@@ -137,6 +146,8 @@ def row(run: dict[str, Any]) -> dict[str, Any]:
         "spectator_join_p99_ms": spectators.get("join_ms", {}).get("p99", 0.0),
         "spectator_chat_p99_ms": spectators.get("chat_ms", {}).get("p99", 0.0),
         "cpu_cores": host["hold_cpu_cores"],
+        "busiest_thread_cores": host.get("hold_busiest_thread_cores", 0.0),
+        "processes": host.get("processes", 1),
         "rss_mib_peak": host["rss_mib_peak"],
         "egress_mbit_s": host.get("egress_bytes_per_s", 0.0) * 8 / 1e6,
         "driver_cores": host["driver_cpu_cores_avg"],
@@ -178,18 +189,24 @@ def summarize(runs: list[dict[str, Any]], prices: dict[str, Any]) -> dict[str, A
         return {"prices_checked": prices.get("room_node_checked", prices["checked"]), "rows": rows,
                 "failed_runs": failed, "derived": {}, "cost": {}}
     idle = by_kind.get("idle", [{"rss_mib_peak": 0.0}])[0]["rss_mib_peak"]
-    mib_per_guest = slope([(r["joined"], r["rss_mib_peak"]) for r in plain])
-    cores_per_guest = slope([(r["joined"], r["cpu_cores"]) for r in plain])
-    egress_per_guest = slope([(r["joined"], r["egress_mbit_s"] * 1e6 / 8) for r in plain])
+    # Runs in which every guest joined, when there are two: a guest still
+    # joining holds a session but none of the steady state.
+    complete = [r for r in plain if r["joined"] == r["guests"] and r["failures"] == 0]
+    basis = complete if len(complete) >= 2 else plain
+    mib_per_guest = slope([(r["joined"], r["rss_mib_peak"]) for r in basis])
+    cores_per_guest = slope([(r["joined"], r["cpu_cores"]) for r in basis])
+    egress_per_guest = slope([(r["joined"], r["egress_mbit_s"] * 1e6 / 8) for r in basis])
     derived: dict[str, Any] = {
         "idle_rss_mib": idle,
+        "per_guest_runs": [r["name"] for r in basis],
         "mib_per_guest": mib_per_guest,
         "cores_per_guest": cores_per_guest,
         "guests_per_vcpu": 1 / cores_per_guest if cores_per_guest > 0 else math.inf,
         "egress_kbit_s_per_guest": egress_per_guest * 8 / 1e3,
     }
-    spectators = by_kind.get("spectators", [])
-    if len(spectators) >= 2:
+    # Only runs whose spectators got in say what a spectator costs.
+    spectators = [r for r in by_kind.get("spectators", []) if r["watching"] > 0]
+    if len({r["watching"] for r in spectators}) >= 2:
         derived["mib_per_spectator"] = slope([(r["watching"], r["rss_mib_peak"]) for r in spectators])
         derived["cores_per_spectator"] = slope([(r["watching"], r["cpu_cores"]) for r in spectators])
         derived["egress_kbit_s_per_spectator"] = slope(
@@ -209,20 +226,22 @@ def summarize(runs: list[dict[str, Any]], prices: dict[str, Any]) -> dict[str, A
 
 def markdown(summary: dict[str, Any]) -> str:
     lines = ["| run | guests joined | spectators | refused (full) | failures | join p50 / p99 ms | chat p99 ms "
-             "| spectator join p99 ms | host CPU cores | peak RSS MiB | egress Mbit/s | driver cores |",
+             "| spectator join p99 ms | host CPU cores (busiest thread) | peak memory MiB | egress Mbit/s "
+             "| driver cores |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in summary["rows"]:
         lines.append(
             f"| {r['name']} | {r['joined']}/{r['guests']} | {r['watching']}/{r['spectators']} "
             f"| {r['refused_full'] + r['spectators_refused_full']} | {r['failures']} "
             f"| {r['join_p50_ms']:.0f} / {r['join_p99_ms']:.0f} | {r['chat_p99_ms']:.0f} "
-            f"| {r['spectator_join_p99_ms']:.0f} | {r['cpu_cores']:.2f} | {r['rss_mib_peak']} "
+            f"| {r['spectator_join_p99_ms']:.0f} | {r['cpu_cores']:.2f} ({r['busiest_thread_cores']:.2f}) "
+            f"| {r['rss_mib_peak']} "
             f"| {r['egress_mbit_s']:.1f} | {r['driver_cores']:.1f} |")
     d = summary["derived"]
     if not d:
         return "\n".join(lines) + "\n"
     lines += ["", f"- idle host: {d['idle_rss_mib']} MiB",
-              f"- MiB per guest: {d['mib_per_guest']:.2f}",
+              f"- MiB per guest: {d['mib_per_guest']:.2f} (from {', '.join(d['per_guest_runs'])})",
               f"- guests per vCPU: {d['guests_per_vcpu']:.0f} ({d['cores_per_guest'] * 1000:.2f} millicores each)",
               f"- egress per guest: {d['egress_kbit_s_per_guest']:.1f} kbit/s"]
     if "mib_per_spectator" in d:

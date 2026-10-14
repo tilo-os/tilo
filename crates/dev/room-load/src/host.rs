@@ -249,15 +249,22 @@ impl Host {
     }
 
     /// `POST /spectate`: certify a watching page's device as the spectator
-    /// person, or `None` past the spectator cap.
-    fn spectate(&self, body: &[u8]) -> anyhow::Result<Option<serde_json::Value>> {
+    /// person, or (`"member": true`) pre-admit a Viewer of its own; `None`
+    /// past the spectator cap.
+    async fn spectate(&self, body: &[u8]) -> anyhow::Result<Option<serde_json::Value>> {
         let request: serde_json::Value = serde_json::from_slice(body).context("request")?;
-        let device: [u8; 32] = request
+        let member = request
+            .get("member")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let device: Option<[u8; 32]> = request
             .get("devicePublicKey")
             .and_then(serde_json::Value::as_str)
             .and_then(|text| hex::decode(text).ok())
-            .and_then(|bytes| bytes.try_into().ok())
-            .context("devicePublicKey is 64 hex characters")?;
+            .and_then(|bytes| bytes.try_into().ok());
+        if !member && device.is_none() {
+            bail!("devicePublicKey is 64 hex characters");
+        }
         let seated = self
             .spectator
             .watching
@@ -271,6 +278,14 @@ impl Host {
         if !seated {
             return Ok(None);
         }
+        let Some(device) = device.filter(|_| !member) else {
+            let admission = self
+                .pre_admit(&self.spectator.room, RoomRole::Viewer)
+                .await?;
+            return Ok(Some(
+                serde_json::json!({ "origin": self.origin, "rooms": [admission] }),
+            ));
+        };
         let certificate = spectator_cert(&self.spectator.root, device)?;
         Ok(Some(serde_json::json!({
             "certificate": certificate,
@@ -284,7 +299,7 @@ impl Host {
     async fn answer(&self, path: &str, body: &[u8]) -> (u16, Option<u64>, String) {
         let error = |message: String| serde_json::json!({ "error": message }).to_string();
         if path == "/spectate" {
-            return match self.spectate(body) {
+            return match self.spectate(body).await {
                 Ok(Some(reply)) => (200, None, reply.to_string()),
                 Ok(None) => (503, Some(FULL_RETRY_SECS), error(WATCHING_FULL.into())),
                 Err(problem) => (400, None, error(format!("{problem:#}"))),

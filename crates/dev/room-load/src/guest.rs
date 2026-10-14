@@ -28,9 +28,9 @@ const PHASE_MS: f64 = 4000.0;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct JoinedRoom {
+pub struct JoinedRoom {
     room: String,
-    workspace_id: u64,
+    pub workspace_id: u64,
     invitation: String,
     admission_token: String,
 }
@@ -58,34 +58,46 @@ fn exponential(mean_ms: f64) -> Duration {
 }
 
 /// What the room service tells a visitor past its cap.
-const FULL: &str = "the room is full";
+pub const FULL: &str = "the room is full";
+/// What it tells a spectator past the spectator cap.
+pub const WATCHING_FULL: &str = "too many people are watching";
 
 pub fn now_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-async fn admit(
+/// Ask the service at `path` for pre-admissions, then redeem each with a new
+/// person's one-time token, as a guest's page does. Past a cap, the error is
+/// the service's own message ([`FULL`] or [`WATCHING_FULL`]).
+pub async fn admit(
     shared: &Shared,
+    path: &str,
+    request: serde_json::Value,
     name: &str,
 ) -> Result<(SigningKey, DeviceCert, Vec<JoinedRoom>), String> {
     let (status, body) = shared
         .service
         .post_with(
-            "/join",
+            path,
             &[("content-type", "application/json")],
-            serde_json::json!({ "userPublicKey": "", "displayName": name })
-                .to_string()
-                .into_bytes(),
+            request.to_string().into_bytes(),
         )
         .await?;
     if status == 503
-        && serde_json::from_slice::<serde_json::Value>(&body)
-            .is_ok_and(|reply| reply.get("error").and_then(|e| e.as_str()) == Some(FULL))
+        && let Some(full) = serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|reply| {
+                reply
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .filter(|error| error == FULL || error == WATCHING_FULL)
     {
-        return Err(FULL.into());
+        return Err(full);
     }
     if status != 200 {
-        return Err(format!("/join: status {status}"));
+        return Err(format!("{path}: status {status}"));
     }
     let joined: Joined = serde_json::from_slice(&body).map_err(|error| error.to_string())?;
     let root = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -129,7 +141,8 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
     let stats = shared.stats.clone();
     let begun = Instant::now();
     let name = format!("Guest {index}");
-    let (key, cert, rooms) = match admit(&shared, &name).await {
+    let request = serde_json::json!({ "userPublicKey": "", "displayName": name });
+    let (key, cert, rooms) = match admit(&shared, "/join", request, &name).await {
         Ok(admitted) => admitted,
         Err(error) if error == FULL => {
             stats.full(begun.elapsed().as_secs_f64() * 1000.0);

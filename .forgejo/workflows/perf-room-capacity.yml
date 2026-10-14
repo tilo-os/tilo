@@ -67,7 +67,10 @@ jobs:
             echo "commit: $GITHUB_SHA"
             echo "cpu: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
             echo "cpus: $(nproc)"
-            echo "memory: $(free -g | awk '/^Mem:/ {print $2}') GiB"
+            echo "memory: $(awk '/^MemTotal:/ {printf "%.1f", $2 / 1048576}' /proc/meminfo) GiB"
+            # The job's CPU and memory quota, which nproc does not show.
+            echo "cgroup cpu.max: $(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo unknown)"
+            echo "cgroup memory.max: $(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo unknown)"
             echo "kernel: $(uname -r)"
           } | tee capacity/machine.txt
 
