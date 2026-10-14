@@ -55,16 +55,14 @@ use web_time::SystemTime;
 pub(crate) use actions::{GovernedPlane, HostRoomActions};
 pub use admin::RoomAdminProtocol;
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
-pub use collaboration::{
-    CollaborationError, GovernanceCompletion, GrantAppAuthorshipRequest, RoomJoinService,
-};
+pub use collaboration::{CollaborationError, GovernanceCompletion, RoomJoinService};
 pub use pages::PreAdmitRequest;
 // The administration wire vocabulary and the device's client, under the
 // daemon's historic paths.
 pub use tilo_relay_session::rooms::{
-    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
-    ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand, RoomReply,
-    RoomSummary, SetMemberRoleRequest,
+    CancelInvitationRequest, GrantAppAuthorshipRequest, IssueInvitationRequest, IssuedInvitation,
+    PendingInvitation, ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError,
+    RoomCommand, RoomReply, RoomSummary, SetMemberRoleRequest,
 };
 
 use crate::peer::WorkspaceRegistry;
