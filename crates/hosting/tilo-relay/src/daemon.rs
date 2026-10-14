@@ -743,6 +743,22 @@ impl Relay {
                 as Arc<dyn crate::app_serving::AppServingPlane>),
             None => app_serving,
         };
+        // A certified host routes its owner's compute jobs, so it answers
+        // which of the owner's devices a job should run on, beside whatever
+        // else it answers. It serves no apps by doing so: `app_serving`
+        // above is unchanged.
+        let app_serving = if startup_mode == RelayStartupMode::CertifiedHost {
+            Some(Arc::new(crate::compute_actions::ComputePlane {
+                compute: crate::compute_actions::ComputeActions::new(
+                    identity.user_public_key,
+                    workspaces.clone(),
+                ),
+                rest: app_serving,
+            })
+                as Arc<dyn crate::app_serving::AppServingPlane>)
+        } else {
+            app_serving
+        };
         let handler = RelayProtocol {
             protocol: crate::peer::SessionProtocol::V1,
             workspaces: workspaces.clone(),

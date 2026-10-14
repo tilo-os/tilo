@@ -83,7 +83,6 @@ pub mod fleet;
 pub mod image;
 #[cfg(target_os = "macos")]
 mod keychain;
-pub mod machine_mesh;
 #[cfg(target_os = "linux")]
 pub mod nofollow;
 // Identity files need an owner-checked filesystem; the browser keeps its
