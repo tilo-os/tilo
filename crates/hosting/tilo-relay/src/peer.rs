@@ -2823,6 +2823,24 @@ struct ReplayPendingWork {
     frame: Option<ReplayPendingFrame>,
     written: u64,
 }
+/// Advance a commit's pending replay by one output budget; once it finishes,
+/// the bytes it wrote count toward the commit.
+fn step_commit_replay(
+    replay: &mut Option<ReplayPendingWork>,
+    commit: &mut Option<StateCommit>,
+    state: &mut crate::persistence::State,
+) -> Result<Step<()>, crate::store::StoreError> {
+    if let Some(work) = replay {
+        let Step::Done(written) = work.step(state, crate::persistence::output_budget())? else {
+            return Ok(Step::More);
+        };
+        let commit = commit.as_mut().invariant("commit missing")?;
+        commit.persisted_bytes = commit.persisted_bytes.saturating_add(written);
+        *replay = None;
+    }
+    Ok(Step::Done(()))
+}
+
 impl ReplayPendingWork {
     fn original(
         envelope: Arc<Envelope>,
@@ -3495,17 +3513,11 @@ impl ProjectedCheckpointCommit {
                 });
                 return Ok(ProjectedCheckpointStep::More);
             }
-            if let Some(replay) = &mut self.replay {
-                match replay.step(state, crate::persistence::output_budget())? {
-                    Step::More => return Ok(ProjectedCheckpointStep::More),
-                    Step::Done(written) => {
-                        self.commit
-                            .as_mut()
-                            .invariant("commit missing")?
-                            .persisted_bytes = written;
-                        self.replay = None;
-                    }
-                }
+            if matches!(
+                step_commit_replay(&mut self.replay, &mut self.commit, state)?,
+                Step::More
+            ) {
+                return Ok(ProjectedCheckpointStep::More);
             }
             self.supplemental_recovery = None;
             return Ok(ProjectedCheckpointStep::Commit(Box::new(
@@ -3547,22 +3559,11 @@ impl ProjectedCheckpointCommit {
                 self.commit = Some(commit);
                 return Ok(ProjectedCheckpointStep::More);
             }
-            if let Some(replay) = &mut self.replay {
-                match replay.step(state, crate::persistence::output_budget())? {
-                    Step::More => return Ok(ProjectedCheckpointStep::More),
-                    Step::Done(written) => {
-                        self.commit
-                            .as_mut()
-                            .invariant("commit missing")?
-                            .persisted_bytes = self
-                            .commit
-                            .as_ref()
-                            .invariant("commit missing")?
-                            .persisted_bytes
-                            .saturating_add(written);
-                        self.replay = None;
-                    }
-                }
+            if matches!(
+                step_commit_replay(&mut self.replay, &mut self.commit, state)?,
+                Step::More
+            ) {
+                return Ok(ProjectedCheckpointStep::More);
             }
             self.publication_index = self.publication_index.saturating_add(1);
             return Ok(ProjectedCheckpointStep::Commit(Box::new(
@@ -3636,15 +3637,11 @@ impl ProjectedCheckpointCommit {
             };
             return Ok(ProjectedCheckpointStep::More);
         }
-        if let Some(replay) = &mut self.replay {
-            match replay.step(state, crate::persistence::output_budget())? {
-                Step::More => return Ok(ProjectedCheckpointStep::More),
-                Step::Done(written) => {
-                    let commit = self.commit.as_mut().invariant("commit missing")?;
-                    commit.persisted_bytes = commit.persisted_bytes.saturating_add(written);
-                    self.replay = None;
-                }
-            }
+        if matches!(
+            step_commit_replay(&mut self.replay, &mut self.commit, state)?,
+            Step::More
+        ) {
+            return Ok(ProjectedCheckpointStep::More);
         }
         self.emission_done = true;
         Ok(ProjectedCheckpointStep::Commit(Box::new(
@@ -3797,10 +3794,6 @@ impl SerialCheckpointCommit {
         })
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-    )]
     fn step(
         &mut self,
         state: &mut crate::persistence::State,
@@ -3892,22 +3885,11 @@ impl SerialCheckpointCommit {
             };
             return Ok(Step::More);
         }
-        if let Some(replay) = &mut self.replay {
-            match replay.step(state, crate::persistence::output_budget())? {
-                Step::More => return Ok(Step::More),
-                Step::Done(written) => {
-                    self.commit
-                        .as_mut()
-                        .invariant("commit missing")?
-                        .persisted_bytes = self
-                        .commit
-                        .as_ref()
-                        .invariant("commit missing")?
-                        .persisted_bytes
-                        .saturating_add(written);
-                    self.replay = None;
-                }
-            }
+        if matches!(
+            step_commit_replay(&mut self.replay, &mut self.commit, state)?,
+            Step::More
+        ) {
+            return Ok(Step::More);
         }
         Ok(Step::Done(self.commit.take().invariant("commit missing")?))
     }
