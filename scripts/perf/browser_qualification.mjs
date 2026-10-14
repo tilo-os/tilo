@@ -10,7 +10,7 @@
 //          --renderer gpu|swiftshader|lavapipe|llvmpipe [--rounds N]
 //          [--activations N] [--demo-seconds S] [--idle-seconds S]
 //          [--expect-revision SHA] [--allow-dev] [--max-load L] [--cpu-throttle F]
-//          [--enforce-goals]
+//          [--frame-timeout S] [--enforce-goals]
 //
 // Each round is a fresh browser context (empty HTTP cache and storage) at FHD
 // (1920x1080, DPR 1), and measures, in order:
@@ -26,6 +26,10 @@
 //             the interval between consecutive presented frames, and the
 //             runtime's CPU time for each presented frame (`draw_total`)
 //   idle      frames presented per second by the same desktop left alone
+//
+// --frame-timeout S is how long one awaited frame may take before the run
+// is invalid: 10 s on a GPU, 120 s on a software rasterizer, which compiles
+// each new pipeline on the CPU when it is first used.
 //
 // --cpu-throttle F slows the page's CPU F times (DevTools CPU throttling), a
 // stand-in for older hardware on a fast host; it is part of the report's
@@ -77,7 +81,7 @@ export const RENDERERS = ['gpu', 'swiftshader', 'lavapipe', 'llvmpipe'];
 const VIEWPORT = {width: 1920, height: 1080, deviceScaleFactor: 1};
 const USAGE = 'usage: browser_qualification.mjs BUNDLE_DIR --out REPORT_JSON --renderer gpu|swiftshader|lavapipe|llvmpipe '
   + '[--rounds N] [--activations N] [--demo-seconds S] [--idle-seconds S] [--expect-revision SHA] [--allow-dev] '
-  + '[--max-load L] [--cpu-throttle F] [--enforce-goals]';
+  + '[--max-load L] [--cpu-throttle F] [--frame-timeout S] [--enforce-goals]';
 
 export class Invalid extends Error {}
 
@@ -86,7 +90,8 @@ export function parseArgs(argv) {
     enforceGoals: false};
   const positionals = [];
   const numbers = {'--rounds': 'rounds', '--activations': 'activations', '--demo-seconds': 'demoSeconds',
-    '--idle-seconds': 'idleSeconds', '--max-load': 'maxLoad', '--cpu-throttle': 'cpuThrottle'};
+    '--idle-seconds': 'idleSeconds', '--max-load': 'maxLoad', '--cpu-throttle': 'cpuThrottle',
+    '--frame-timeout': 'frameTimeout'};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg in numbers) {
@@ -104,6 +109,9 @@ export function parseArgs(argv) {
   if (positionals.length !== 1 || !options.out || !options.renderer) throw Error(USAGE);
   if (!RENDERERS.includes(options.renderer)) throw Error(`--renderer must be one of ${RENDERERS.join(', ')}`);
   if (options.cpuThrottle < 1) throw Error('--cpu-throttle is a slowdown factor of at least 1');
+  // A software rasterizer compiles each new pipeline on the CPU when it is
+  // first used; one frame can then take tens of seconds.
+  options.frameTimeout ??= options.renderer === 'gpu' ? 10 : 120;
   for (const name of ['rounds', 'activations']) {
     if (!Number.isInteger(options[name])) throw Error(`--${name} must be a whole number`);
   }
@@ -243,11 +251,11 @@ const PHASE_PROBE = `(() => {
 const RUNTIME = `(await import(new URL('pkg/tilo_browser_runtime.js', document.baseURI).href))`;
 
 // Resolves with the time of the first presented frame after `frames` for
-// which `ready()` holds, or NaN after 10 s.
-const PRESENTED_HELPER = `
+// which `ready()` holds, or NaN after `timeoutMs`.
+const presentedHelper = timeoutMs => `
   const host = tiloMount.canvas.parentElement;
   const presentedAfter = (frames, ready) => new Promise(done => {
-    const timer = setTimeout(() => { observer.disconnect(); done(NaN); }, 10000);
+    const timer = setTimeout(() => { observer.disconnect(); done(NaN); }, ${timeoutMs});
     const observer = new MutationObserver(() => {
       if (host.dataset.phase === 'presented' && Number(host.dataset.frames) > frames && ready()) {
         observer.disconnect(); clearTimeout(timer); done(performance.now());
@@ -257,8 +265,8 @@ const PRESENTED_HELPER = `
   });`;
 
 // `files`: the app's split-off modules; ready once each is instantiated.
-const openExpression = (app, files) => `(async () => {
-  ${PRESENTED_HELPER}
+const openExpression = (app, files, timeoutMs) => `(async () => {
+  ${presentedHelper(timeoutMs)}
   const nav = tiloMount.navigation, snapshot = nav.getSnapshot(), before = snapshot.entries.length;
   const frames = Number(host.dataset.frames), files = ${JSON.stringify(files)};
   const opened = () => nav.getSnapshot().entries.length === before + 1;
@@ -285,8 +293,8 @@ export function appModules(split, app) {
   return [...(own.shared ?? []).map(shared => modules.get(shared)?.file ?? `tilo_browser_runtime.${shared}.wasm`), own.file];
 }
 
-const activateExpression = route => `(async () => {
-  ${PRESENTED_HELPER}
+const activateExpression = (route, timeoutMs) => `(async () => {
+  ${presentedHelper(timeoutMs)}
   const nav = tiloMount.navigation, snapshot = nav.getSnapshot(), route = ${JSON.stringify(route)};
   const frames = Number(host.dataset.frames);
   const presented = presentedAfter(frames, () => nav.getSnapshot().active?.tab === route.tab);
@@ -344,7 +352,7 @@ const idleExpression = seconds => `(async () => {
 
 // --- one round ----------------------------------------------------------------
 
-async function freshPage(browser, cpuThrottle) {
+async function freshPage(browser, {cpuThrottle, frameTimeout}) {
   const {result: {browserContextId}} = await browser.send('Target.createBrowserContext', {disposeOnDetach: true});
   const {result: {targetId}} = await browser.send('Target.createTarget', {url: 'about:blank', browserContextId});
   const {result: {sessionId}} = await browser.send('Target.attachToTarget', {targetId, flatten: true});
@@ -358,7 +366,7 @@ async function freshPage(browser, cpuThrottle) {
   });
   const send = (method, params = {}) => browser.send(method, params, sessionId);
   const evaluate = async expression => {
-    const reply = await send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true, timeout: 120000});
+    const reply = await send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true, timeout: (2 * frameTimeout + 60) * 1000});
     if (reply.error) throw Error(reply.error.message);
     if (reply.result.exceptionDetails) {
       const details = reply.result.exceptionDetails;
@@ -376,7 +384,8 @@ async function freshPage(browser, cpuThrottle) {
 }
 
 async function round(browser, url, options, index) {
-  const page = await freshPage(browser, options.cpuThrottle);
+  const page = await freshPage(browser, options);
+  const frameTimeoutMs = options.frameTimeout * 1000;
   try {
     await page.send('Page.navigate', {url: `${url}/`});
     // SwiftShader compiles the renderer's pipelines on the CPU before the
@@ -398,7 +407,7 @@ async function round(browser, url, options, index) {
 
     const opens = [];
     for (const app of apps) {
-      const result = await page.evaluate(openExpression(app, appModules(options.split, app)));
+      const result = await page.evaluate(openExpression(app, appModules(options.split, app), frameTimeoutMs));
       if (!Number.isFinite(result.ms)) throw new Invalid(`round ${index}: ${app} never presented its window`);
       if (!Number.isFinite(result.readyMs)) throw new Invalid(`round ${index}: ${app}'s code never presented a frame`);
       opens.push({app, ms: result.ms, readyMs: result.readyMs});
@@ -414,7 +423,7 @@ async function round(browser, url, options, index) {
       const active = (await page.evaluate('tiloMount.navigation.getSnapshot()')).active;
       const others = windows.filter(w => w.route.tab !== active?.tab);
       const target = others[i % others.length].route;
-      const {ms} = await page.evaluate(activateExpression(target));
+      const {ms} = await page.evaluate(activateExpression(target, frameTimeoutMs));
       if (!Number.isFinite(ms)) throw new Invalid(`round ${index}: selecting a window presented no frame`);
       activations.push(ms);
       await sleep(400);
