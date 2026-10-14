@@ -10,7 +10,6 @@
 use std::any::TypeId;
 
 use tilo_resource::{Reader, Resource, Shape};
-use ui_core::Theme;
 use ui_core::automerge::AutoCommit;
 use ui_core::history_mode::restore::{
     HistoryMapEntries, HistoryMapField, HistoryMapOverlay, HistoryMembership, HistoryRestoreNode,
@@ -21,9 +20,13 @@ use ui_core::history_mode::{
     FrozenRootPreview, HistoryDefinition, HistoryPresentation, HistoryPreview,
     HistoryScopeDefinition, PreviewInput,
 };
-use ui_core::text_render::TextRenderer;
-use ui_core::vello::Scene;
-use ui_core::vello::kurbo::{Affine, Rect};
+use ui_core::vello::kurbo::Rect;
+#[cfg(not(target_family = "wasm"))]
+use ui_core::{
+    Theme,
+    text_render::TextRenderer,
+    vello::{Scene, kurbo::Affine},
+};
 
 use super::app::{Editing, ResourceApp, build_root, leaked};
 use super::live::Live;
