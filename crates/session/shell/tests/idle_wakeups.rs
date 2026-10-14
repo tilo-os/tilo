@@ -206,7 +206,7 @@ impl Desktop {
         // One per desktop: this module's tests run beside each other.
         let runtime_dir = PathBuf::from(format!(
             "/run/user/{}/tilo-idle-{}-{}",
-            unsafe { libc::getuid() },
+            rustix::process::getuid().as_raw(),
             std::process::id(),
             STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));

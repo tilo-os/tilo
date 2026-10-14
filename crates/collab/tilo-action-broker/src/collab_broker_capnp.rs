@@ -12358,8 +12358,7 @@ fn private_socket_parent(path: &Path) -> std::io::Result<&Path> {
         )
     })?;
     let metadata = std::fs::symlink_metadata(parent)?;
-    // SAFETY: geteuid takes no arguments and has no failure mode.
-    let effective_uid = unsafe { libc::geteuid() };
+    let effective_uid = rustix::process::geteuid().as_raw();
     if !metadata.file_type().is_dir()
         || metadata.uid() != effective_uid
         || metadata.mode() & 0o077 != 0
@@ -13291,7 +13290,7 @@ async fn read_launcher_handoff(
     })?;
     // A socket pathname is not authority. The kernel must identify a process
     // from this user before it can attest the compositor's launch record.
-    if credentials.uid() != unsafe { libc::geteuid() } {
+    if credentials.uid() != rustix::process::geteuid().as_raw() {
         return Err(capnp::Error::failed(
             "collaboration service rejected a peer from another user".into(),
         ));

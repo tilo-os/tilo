@@ -47,6 +47,7 @@ iroh.workspace = true
 # its binary builds every Linux app sandbox.
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 package-store = { path = "../../packaging/package-store" }
 postcard = { workspace = true, features = ["alloc"] }
 rand_core.workspace = true

@@ -220,6 +220,7 @@ tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
 parking_lot.workspace = true
 
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 # Peer invitations are base64-url wrapped signed JSON tickets containing the
 # owner's stable iroh EndpointAddr.

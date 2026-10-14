@@ -86,8 +86,10 @@ async fn bind_inner(
     observation.phase(Phase::Challenge);
     // SO_PASSCRED was armed before the challenge; every chunk is tied to the
     // same sender. Cancellation drops its one optional proof descriptor.
-    let mut receiver =
-        runtime_portal::process_binding::Receiver::new(challenge, unsafe { libc::geteuid() });
+    let mut receiver = runtime_portal::process_binding::Receiver::new(
+        challenge,
+        rustix::process::geteuid().as_raw(),
+    );
     let peer = loop {
         if let Some(peer) = stream
             .async_io(tokio::io::Interest::READABLE, || receiver.receive(stream))
