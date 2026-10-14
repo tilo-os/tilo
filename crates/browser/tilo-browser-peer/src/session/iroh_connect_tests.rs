@@ -91,3 +91,41 @@ async fn transport_refusal_remains_generic_unavailable() {
     assert!(!reason.is_empty());
     assert_ne!(reason, "host does not speak tilo-relay/1");
 }
+
+#[test]
+fn every_client_error_has_a_deliberate_link_class() {
+    use tilo_relay_protocol::auth::AuthError;
+    use tilo_relay_session::ClientError;
+
+    // Reachability: retried with backoff, never counted as a refusal.
+    assert_eq!(
+        iroh_link_error(ClientError::UnsupportedProtocol),
+        LinkError::Unavailable("host does not speak tilo-relay/1".into()),
+    );
+    assert_eq!(
+        iroh_link_error(ClientError::Iroh("timed out".into())),
+        LinkError::Unavailable("timed out".into()),
+    );
+    assert_eq!(
+        iroh_link_error(ClientError::PrivateTransportClosed),
+        LinkError::Unavailable("private transport closed".into()),
+    );
+    // The device's own signer.
+    assert_eq!(
+        iroh_link_error(ClientError::Sign("locked".into())),
+        LinkError::Sign("locked".into()),
+    );
+    // The host answered and turned this device away.
+    assert_eq!(
+        iroh_link_error(ClientError::Codec("bad ack".into())),
+        LinkError::Malformed("bad ack".into()),
+    );
+    assert_eq!(
+        iroh_link_error(ClientError::Auth(AuthError::Revoked)),
+        LinkError::Refused("auth: peer device is revoked".into()),
+    );
+    assert_eq!(
+        iroh_link_error(ClientError::Io(std::io::ErrorKind::UnexpectedEof.into())),
+        LinkError::Refused("io: unexpected end of file".into()),
+    );
+}
