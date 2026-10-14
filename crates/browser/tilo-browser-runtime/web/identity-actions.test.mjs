@@ -13,7 +13,8 @@ function memoryStorage() {
 
 function fakeMount() {
   return {
-    actions: [], offers: [], subtitles: {}, said: [],
+    actions: [], offers: [], subtitles: {}, said: [], acknowledged: [],
+    acknowledge(text) { this.acknowledged.push(text); },
     setHostActions(actions) {
       this.actions = actions.map(action => action.id);
       for (const action of actions) this.subtitles[action.id] = action.subtitle;
@@ -226,7 +227,7 @@ test('a device takes the name its person keeps on their hosts, and a root holder
   assert.equal(published.length, 2, 'a name nobody chose is not published');
 });
 
-test('pairing copies a link and says so on the action, showing the link only when it could not be copied', async () => {
+test('pairing shows the link in a banner only when it could not be copied', async () => {
   const identity = await browserIdentity({storage: memoryStorage(), persist: null});
   const mount = fakeMount();
   const actions = createIdentityActions({identity, copy: async () => { throw new Error('denied'); },
@@ -236,7 +237,7 @@ test('pairing copies a link and says so on the action, showing the link only whe
   await actions.perform(PAIR.id);
   assert.deepEqual(mount.offers, [PAIR.id]);
   assert.equal(mount.said[0].body, 'https://tilo.example/#/@rooms.example/w/ROOM?pair=ab');
-  assert.equal(mount.subtitles[PAIR.id], PAIR.subtitle);
+  assert.deepEqual(mount.acknowledged, [], 'nothing was copied to acknowledge');
 });
 
 test('pairing copies a link, then offers each waiting device for approval and approves the one chosen', async () => {
@@ -257,8 +258,8 @@ test('pairing copies a link, then offers each waiting device for approval and ap
   assert.ok(mount.actions.includes(PAIR.id));
   await actions.perform(PAIR.id);
   assert.deepEqual(copied, ['https://tilo.example/#/@rooms.example/w/ROOM?pair=ab']);
-  assert.deepEqual(mount.offers, [], 'copying is not announced');
-  assert.match(mount.subtitles[PAIR.id], /Link copied/, 'the action says it, where it was chosen');
+  assert.deepEqual(mount.offers, [], 'copying is no notification');
+  assert.deepEqual(mount.acknowledged, ['Link copied: open it on the new device'], 'said in passing');
 
   pending = [{digest: 'd1', pairingCode: '123456', label: 'Browser on Linux', device: 'ee'.repeat(32)}];
   poll();
