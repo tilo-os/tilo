@@ -4,8 +4,7 @@
 //! [`broker`] to sign for them, and it answers only for the identity the
 //! [`registry`] selected for their workspace, only while this device holds a
 //! valid, enrolled, non-revoked certificate ([`device_fleet`],
-//! [`certificates`]). [`enrollment`] is the one place a token admits another
-//! device. [`provisioning`] creates that chain, [`custody`]
+//! [`certificates`]). [`provisioning`] creates that chain, [`custody`]
 //! selects the certificate this device presents to the hosts of each room,
 //! and [`join_proof`] keeps the signed proof it presents there.
 //!
@@ -20,8 +19,6 @@ pub mod certificates;
 pub mod custody;
 #[cfg(unix)]
 pub mod device_fleet;
-#[cfg(unix)]
-pub mod enrollment;
 #[cfg(unix)]
 pub mod join_proof;
 pub mod policy_change;

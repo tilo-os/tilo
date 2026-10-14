@@ -165,11 +165,10 @@ fn admit_checkpoint_reader(
             .unwrap();
     let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::from_env().unwrap();
     let now_ns = tilo_joined_room::testing::ns(now).unwrap();
-    let role = tilo_identity_host::enrollment::EnrollmentRole::PersonalDevice;
     let token = fleet
         .mint_enrollment(
             &profile.id,
-            role.preset(),
+            fixture.certificate.capabilities.clone(),
             now_ns,
             now_ns.checked_add(60_000_000_000).unwrap(),
         )
@@ -179,7 +178,6 @@ fn admit_checkpoint_reader(
             .complete_enrollment(
                 &profile.id,
                 &token,
-                role,
                 key.verifying_key().to_bytes(),
                 "Checkpoint reader",
                 now_ns,
