@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 use std::ffi::CStr;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio_util::sync::CancellationToken;
@@ -10,14 +12,30 @@ use zbus::zvariant::{OwnedValue, Value};
 
 use super::helper::SystemHelper;
 use super::{
-    AuthRequest, Outcome, PromptAnswer, PromptView, Prompter, authenticate, initial_identity,
-};
-use crate::shell::portal_dialog::{
-    AuthenticationDecision, AuthenticationRequest, PortalDialogQueue,
+    AuthRequest, Outcome, PromptAnswer, PromptView, Prompter, StockNotice, authenticate,
+    initial_identity,
 };
 
 /// Where the agent object lives on the system bus.
 pub const AGENT_PATH: &str = "/org/tilo/PolicyKit1/AuthenticationAgent";
+
+/// The person's answer to one sheet, once they give it.
+pub type SheetAnswer = Pin<Box<dyn Future<Output = Option<PromptAnswer>> + Send>>;
+
+/// The sheets the agent asks in, drawn by its host — in the shell, the
+/// compositor's own dialog queue, which no application can imitate.
+pub trait Sheets: Send + Sync {
+    /// Show `view` in the sheet named `handle`, replacing what that sheet
+    /// showed. The answer is `None` when the person dismissed the sheet or
+    /// it could not be shown.
+    fn ask(&self, handle: &str, view: PromptView) -> SheetAnswer;
+
+    /// Take down the sheet named `handle`, if it is still up.
+    fn cancel(&self, handle: &str);
+
+    /// What a sheet says for `notice`, in the person's language.
+    fn stock_notice(&self, notice: StockNotice) -> String;
+}
 
 #[derive(Debug, zbus::DBusError)]
 #[zbus(prefix = "org.freedesktop.PolicyKit1.Error")]
@@ -30,14 +48,14 @@ pub enum PolkitError {
 
 /// The sheet the compositor draws, keyed by the request's cookie.
 pub struct SheetPrompter {
-    queue: PortalDialogQueue,
+    sheets: Arc<dyn Sheets>,
     handle: String,
 }
 
 impl SheetPrompter {
-    pub fn new(queue: PortalDialogQueue, cookie: &str) -> Self {
+    pub fn new(sheets: Arc<dyn Sheets>, cookie: &str) -> Self {
         Self {
-            queue,
+            sheets,
             handle: format!("polkit:{cookie}"),
         }
     }
@@ -49,25 +67,11 @@ impl SheetPrompter {
 
 impl Prompter for SheetPrompter {
     async fn ask(&self, view: PromptView) -> Option<PromptAnswer> {
-        let receiver = self
-            .queue
-            .enqueue_authentication(AuthenticationRequest {
-                handle: self.handle.clone(),
-                message: view.message,
-                action_id: view.action_id,
-                identities: view.identities,
-                identity: view.identity,
-                prompt: view.prompt,
-                echo: view.echo,
-                notice: view.notice,
-            })
-            .ok()?;
-        match receiver.await.ok()? {
-            AuthenticationDecision::Answered { identity, secret } => {
-                Some(PromptAnswer { identity, secret })
-            }
-            AuthenticationDecision::Cancelled => None,
-        }
+        self.sheets.ask(&self.handle, view).await
+    }
+
+    fn stock_notice(&self, notice: StockNotice) -> String {
+        self.sheets.stock_notice(notice)
     }
 }
 
@@ -166,16 +170,15 @@ fn session_user() -> Option<String> {
     user_name(unsafe { libc::getuid() })
 }
 
-#[derive(Default)]
 pub struct AuthenticationAgent {
-    queue: PortalDialogQueue,
+    sheets: Arc<dyn Sheets>,
     live: Arc<Mutex<HashMap<String, CancellationToken>>>,
 }
 
 impl AuthenticationAgent {
-    pub fn new(queue: PortalDialogQueue) -> Self {
+    pub fn new(sheets: Arc<dyn Sheets>) -> Self {
         Self {
-            queue,
+            sheets,
             live: Arc::default(),
         }
     }
@@ -212,14 +215,14 @@ impl AuthenticationAgent {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(cookie.clone(), token.clone());
-        let prompter = SheetPrompter::new(self.queue.clone(), &cookie);
+        let prompter = SheetPrompter::new(Arc::clone(&self.sheets), &cookie);
         let first = initial_identity(&request.identities, session_user().as_deref());
         let helper = SystemHelper::default();
         let outcome = tokio::select! {
             outcome = authenticate(&helper, &prompter, &request, first) => outcome,
             () = token.cancelled() => Outcome::Cancelled,
         };
-        self.queue.cancel(prompter.handle());
+        self.sheets.cancel(prompter.handle());
         self.live
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -301,11 +304,11 @@ async fn session_id(system: &zbus::Connection) -> zbus::Result<String> {
 /// # Errors
 ///
 /// When the system bus, logind or polkit cannot be reached.
-pub async fn serve(queue: PortalDialogQueue) -> zbus::Result<AgentHandle> {
+pub async fn serve(sheets: Arc<dyn Sheets>) -> zbus::Result<AgentHandle> {
     let connection = zbus::Connection::system().await?;
     connection
         .object_server()
-        .at(AGENT_PATH, AuthenticationAgent::new(queue))
+        .at(AGENT_PATH, AuthenticationAgent::new(sheets))
         .await?;
     let session = session_id(&connection).await?;
     let authority = zbus::Proxy::new(
