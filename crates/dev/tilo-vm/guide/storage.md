@@ -46,4 +46,7 @@ cached in `~/.cache/tilo-vm/imports/`; delete one once no VM is made from it.
 on the host (`~/.cache/tilo-vm/images/<vm>/`) and one in the VM
 (`/var/lib/tilo-vm/image`), so the next upgrade sends only new layers. Either
 can be deleted; the next upgrade then sends the whole image once
-(`tilo-vm guide images`).
+(`tilo-vm guide images`). On a Tilo OS VM or device, `tilo-cache-gc.timer` deletes the
+in-VM copy once no upgrade has used it for 14 days (the `[vm_image]` policy in
+`/etc/tilo/cache-gc.toml`), never while an upgrade holds `image.lock` or
+`vm.lock`; `tilo os status` says when it went or when it will.

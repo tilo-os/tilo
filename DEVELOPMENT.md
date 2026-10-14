@@ -1341,6 +1341,13 @@ tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "not ($
 tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "$golden"
 ```
 
+The fixtures it caches live in `~/.cache/tilo/test-env` (`TILO_TEST_CACHE_DIR`),
+one set per generator revision. On Tilo OS your `tilo-cache-gc.timer` removes a
+set nothing has read for 14 days, never one a running test holds the lock of;
+`tilo os clean` does it now, `tilo os status` says what went, and
+`~/.config/tilo/cache-gc.toml` changes the policy (see
+`/etc/tilo/cache-gc.toml`).
+
 ### Tests and the process environment
 
 `cargo test` runs a binary's tests as threads of one process, so an

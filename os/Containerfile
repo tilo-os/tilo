@@ -1277,7 +1277,7 @@ COPY dist/session/tilo-flight-recorder.py /usr/libexec/tilo-flight-recorder
 COPY dist/session/tilo-session-report.py /usr/libexec/tilo-session-report
 
 FROM scratch AS remote-capture-files
-COPY os/etc/tilo/desktop.toml /etc/tilo/desktop.toml
+COPY os/etc/tilo/desktop.toml os/etc/tilo/cache-gc.toml /etc/tilo/
 COPY os/etc/modprobe.d/tilo-remote-camera.conf /etc/modprobe.d/tilo-remote-camera.conf
 COPY os/etc/modules-load.d/tilo-remote-camera.conf os/etc/modules-load.d/tilo-ddc.conf /etc/modules-load.d/
 
@@ -2145,6 +2145,8 @@ COPY \
     os/usr/lib/systemd/user/tilo-app-host.socket \
     os/usr/lib/systemd/user/tilo-projector.service \
     os/usr/lib/systemd/user/tilo-projector.socket \
+    os/usr/lib/systemd/user/tilo-cache-gc.service \
+    os/usr/lib/systemd/user/tilo-cache-gc.timer \
     /usr/lib/systemd/user/
 COPY \
     os/usr/lib/systemd/system/tilo-relay.service \
@@ -2264,6 +2266,8 @@ COPY \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.timer \
     os/usr/lib/systemd/system/tilo-firstboot-user.service \
     os/usr/lib/systemd/system/tilo-flatpak-defaults.service \
+    os/usr/lib/systemd/system/tilo-cache-gc.service \
+    os/usr/lib/systemd/system/tilo-cache-gc.timer \
     os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
     os/usr/lib/systemd/system/tilo-session-recovery.service \
     /usr/lib/systemd/system/
@@ -2676,6 +2680,8 @@ RUN systemctl enable greetd.service && \
        /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
     systemctl enable tilo-flatpak-defaults.service && \
+    systemctl enable tilo-cache-gc.timer && \
+    systemctl --global enable tilo-cache-gc.timer && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
     systemctl enable tilo-fs-start.timer fs-identity.path && \

@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -272,6 +273,36 @@ class EndToEnd(unittest.TestCase):
 
 
 class Groups(unittest.TestCase):
+    def test_idle_timing_is_an_explicit_executable_not_a_pr_test(self):
+        root = HERE.parents[1]
+        manifest = tomllib.loads((root / "crates/session/shell/Cargo.toml").read_text())
+        target = next(target for target in manifest["example"] if target["name"] == "idle-wakeups")
+        self.assertFalse(target["test"])
+        self.assertFalse(target["bench"])
+        self.assertEqual(target["required-features"], ["scheduled-idle-benchmark"])
+        self.assertNotIn("scheduled-idle-benchmark", manifest["features"]["default"])
+        fixture = (root / "crates/session/shell/tests/idle_wakeups.rs").read_text()
+        self.assertNotIn("fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget", fixture)
+        benchmark = (root / "crates/session/shell/examples/idle-wakeups.rs").read_text()
+        self.assertIn("fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget", benchmark)
+        self.assertNotIn("#[test]", benchmark)
+        group = ab.GROUPS["wakeups"]
+        self.assertFalse(group.tests)
+        self.assertEqual(set(group.binaries), {"shell", "idle-wakeups"})
+        self.assertTrue(any("--bin" in command and "shell" == command[-1] for command in group.builds))
+
+    def test_idle_ab_uses_the_old_test_only_for_historical_refs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            selected = ab.GROUPS["wakeups"]
+            legacy = ab.side_group(selected, repo)
+            self.assertEqual(set(legacy.tests), {"it"})
+            self.assertEqual(set(legacy.binaries), {"shell"})
+            source = repo / "crates/session/shell/examples/idle-wakeups.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text("fn main() {}")
+            self.assertIs(ab.side_group(selected, repo), selected)
+
     def test_every_build_lane_but_footprint_has_an_ab_group(self):
         workflow = (HERE.parents[1] / ".forgejo/workflows/perf-scheduled.yml").read_text()
         for name in ab.GROUPS:
