@@ -22,10 +22,7 @@ impl IntersectionObserverHandle {
             .expect("Invalid `options`");
         observer.observe(element);
 
-        Self {
-            observer,
-            _closure: closure,
-        }
+        Self { observer, _closure: closure }
     }
 }
 

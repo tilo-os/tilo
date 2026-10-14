@@ -153,7 +153,14 @@ tilo-rollback sign-prediction \
     --out-dir os/pcr-predictions
 ```
 
-The results ship in the image at `/usr/share/tilo/pcr-predictions/`. A generation
+The results do not ship in the image tree: `/usr/share/tilo/pcr-predictions/`
+exists but is deliberately empty, because the final composefs-resealed UKI they
+measure does not exist until after that layer is built (`os/Containerfile`).
+`os/dev/sign-target-prediction.sh` measures that exact UKI and adds the signed
+predictions in a `/boot`-only layer (`boot/tilo-target/predictions` and
+`boot/EFI/tilo/pcr-predictions`); the installer enrolls from the former and copies
+them to `EFI/tilo/pcr-predictions` on the target ESP (`tilo-install`), where
+`tilo-deployment` looks for them. A generation
 with no prediction cannot be enrolled — the enrollment path refuses rather than
 sealing a keyslot that can never open.
 
@@ -241,8 +248,9 @@ from an image `os/dev/build-image.sh` produced. The unlock hand-off is reported
 `n/a` on an unencrypted disk and asserted on an enrolled encrypted one. The
 initramfs module now calls `tilo-rollback unlock` before the matching cryptsetup
 unit and yields to its independent recovery prompt on failure. Signed target
-predictions and installer enrollment remain outstanding; the check reports an
-enrolled volume without a working hand-off as a failure rather than a skip.
+predictions and installer enrollment ship (see [boot-chain.md](boot-chain.md),
+"Target-independent enrollment"); the check reports an enrolled volume without a
+working hand-off as a failure rather than a skip.
 
 **A check that only ever passes is not evidence**, so there are two ways to make it
 fail on purpose:

@@ -520,66 +520,63 @@ impl Here {
         let mut job = None;
         let people = state.workspaces.entry(workspace_id).or_default();
         people.retain(|_, entry| alive(entry, now));
-        if actions.is_empty() {
-            if let Some(entry) = people.get_mut(&device) {
-                entry.label = label;
-                entry.window = window;
-            }
-        } else {
-            actions.sort_by_key(|action| action.at_ms);
-            let digest = digest(&actions);
-            if !people.contains_key(&device)
-                && people.len() >= MAX_PEOPLE_PER_WORKSPACE
-                && let Some(oldest) = people
-                    .iter()
-                    .min_by_key(|(_, entry)| entry.seen)
-                    .map(|(device, _)| *device)
+        // Every post lists its person, with where they are, even before
+        // they did anything; their actions are the set they send now, so a
+        // person who stopped acting (or stopped sharing) keeps no line.
+        actions.sort_by_key(|action| action.at_ms);
+        let digest = (!actions.is_empty()).then(|| digest(&actions));
+        if !people.contains_key(&device)
+            && people.len() >= MAX_PEOPLE_PER_WORKSPACE
+            && let Some(oldest) = people
+                .iter()
+                .min_by_key(|(_, entry)| entry.seen)
+                .map(|(device, _)| *device)
+        {
+            people.remove(&oldest);
+        }
+        let entry = people.entry(device).or_insert_with(|| Entry {
+            user,
+            label: String::new(),
+            window: None,
+            actions: Vec::new(),
+            digest: None,
+            seen: now,
+            updated_ms: now_ms,
+            fallback: Some(deterministic(&[])),
+            model: None,
+            summarized: None,
+            last_call: None,
+            in_flight: false,
+        });
+        entry.user = user;
+        entry.label = label;
+        // Not part of the action set: moving between windows never
+        // counts as a change a model is asked about.
+        entry.window = window;
+        entry.seen = now;
+        if entry.digest != digest {
+            entry.fallback = Some(deterministic(&actions));
+            entry.actions = actions;
+            entry.digest = digest;
+            entry.updated_ms = now_ms;
+            if entry
+                .model
+                .as_ref()
+                .is_some_and(|line| !cites_only(line, &entry.actions))
             {
-                people.remove(&oldest);
+                entry.model = None;
             }
-            let entry = people.entry(device).or_insert_with(|| Entry {
-                user,
-                label: String::new(),
-                window: None,
-                actions: Vec::new(),
-                digest: None,
-                seen: now,
-                updated_ms: now_ms,
-                fallback: None,
-                model: None,
-                summarized: None,
-                last_call: None,
-                in_flight: false,
+        }
+        if digest.is_some()
+            && let Some(summarizer) = &self.summarizer
+            && summarizer.reserve(entry, now)
+        {
+            job = Some(Job {
+                workspace_id,
+                device,
+                actions: entry.actions.clone(),
+                now_ms,
             });
-            entry.user = user;
-            entry.label = label;
-            // Not part of the action set: moving between windows never
-            // counts as a change a model is asked about.
-            entry.window = window;
-            entry.seen = now;
-            if entry.digest != Some(digest) {
-                entry.fallback = Some(deterministic(&actions));
-                entry.actions = actions;
-                entry.digest = Some(digest);
-                entry.updated_ms = now_ms;
-                if entry
-                    .model
-                    .as_ref()
-                    .is_some_and(|line| !cites_only(line, &entry.actions))
-                {
-                    entry.model = None;
-                }
-            }
-            if let Some(summarizer) = &self.summarizer
-                && summarizer.reserve(entry, now)
-            {
-                job = Some(Job {
-                    workspace_id,
-                    device,
-                    actions: entry.actions.clone(),
-                    now_ms,
-                });
-            }
         }
         let mut listed: Vec<_> = people
             .iter()
@@ -919,14 +916,27 @@ mod tests {
         assert!(person.recent.chars().count() <= MAX_HERE_RECENT_CHARS);
         assert_eq!(person.sources.last(), Some(&[25; 16]));
 
-        // Another workspace sees none of them; a fetch lists no one new.
+        // Another workspace sees none of them. Someone who has done
+        // nothing yet is listed with where they are and no line.
         let (other, _) = here.post(request(8, Vec::new()), [9; 32], USER, start, 10);
-        assert!(other.people.is_empty());
-        // Silent past the lifetime, they are gone.
+        assert_eq!(
+            other.people.iter().map(|p| p.device).collect::<Vec<_>>(),
+            vec![[9; 32]]
+        );
         let (fetched, _) = here.post(request(7, Vec::new()), [9; 32], USER, after(start, 299), 10);
-        assert_eq!(fetched.people.len(), 2);
+        assert_eq!(fetched.people.len(), 3);
+        let idle = fetched.people.iter().find(|p| p.device == [9; 32]).unwrap();
+        assert_eq!(
+            (idle.window, idle.status.as_str(), idle.recent.as_str()),
+            (Some(4), "", "")
+        );
+        assert!(idle.sources.is_empty());
+        // Silent past the lifetime, they are gone.
         let (expired, _) = here.post(request(7, Vec::new()), [9; 32], USER, after(start, 300), 10);
-        assert!(expired.people.is_empty());
+        assert_eq!(
+            expired.people.iter().map(|p| p.device).collect::<Vec<_>>(),
+            vec![[9; 32]]
+        );
     }
 
     #[tokio::test]
@@ -1006,8 +1016,13 @@ mod tests {
                 .collect();
             let (_, job) = here.post(request(7, actions), DEVICE, USER, after(start, at), 10);
             here.clone().summarize(job.unwrap()).await;
-            let (reply, _) = here.post(request(7, Vec::new()), DEVICE, USER, after(start, at), 10);
-            reply.people[0].clone()
+            // As another member reads it.
+            let (reply, _) = here.post(request(7, Vec::new()), [9; 32], USER, after(start, at), 10);
+            reply
+                .people
+                .into_iter()
+                .find(|p| p.device == DEVICE)
+                .unwrap()
         };
         let long = "word ".repeat(30);
         for (refused, ids) in [

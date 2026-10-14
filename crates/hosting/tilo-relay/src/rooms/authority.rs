@@ -15,8 +15,9 @@
 //!    checked against the room's policy, read under the room's lock so a
 //!    role change and an administration call cannot race. A Moderator
 //!    removes and bans those ranked below; a member the owner granted
-//!    `invite` invites, never above their own role; an Editor by role alone
-//!    governs nothing.
+//!    `invite` invites, never above their own role; an administrator holds
+//!    every governance action and is still bounded by their Editor role; an
+//!    Editor by role alone governs nothing.
 
 use tilo_action_policy::{Change, Context, Role, roles};
 use tilo_user_identity::DeviceCert;
@@ -82,6 +83,20 @@ impl Rooms {
             );
         }
         result
+    }
+
+    /// Whether [`Self::authorize`] would let `device` do `op` in `room` at
+    /// `now`: the same decision, asked without acting on it, so a catalogue
+    /// can leave out what its caller may not do. A refusal here is not
+    /// logged; nothing was attempted.
+    pub(super) fn permits(
+        &self,
+        device: &DeviceCert,
+        room: Option<&GovernedRoom>,
+        op: RoomOp<'_>,
+        now: u64,
+    ) -> bool {
+        self.decide(device, room, op, now).is_ok()
     }
 
     fn decide(

@@ -143,8 +143,6 @@ pub enum ActionKind {
     /// cached) + launch. The Tilo path never shows a separate
     /// "Install" step — opening an app *is* adding it.
     Open,
-    /// Install a runtime without launching its host executable.
-    RuntimeInstall,
     /// Tilo registry, installed → **Remove**.
     Remove,
     /// Tilo registry, installed but older version available → **Update**.
@@ -187,7 +185,7 @@ impl ActionKind {
             ActionKind::Update | ActionKind::FlatpakUpdate => "Update",
             ActionKind::MarkInstalled => "Keep on device",
             ActionKind::Unmark => "Allow cleanup",
-            ActionKind::FlatpakInstall | ActionKind::RuntimeInstall => "Install",
+            ActionKind::FlatpakInstall => "Install",
             ActionKind::NeedsFlatpakHost => "Install flatpak first",
             ActionKind::AddBot => "Add to a room…",
         }
@@ -204,7 +202,7 @@ impl ActionKind {
             Self::Update | Self::FlatpakUpdate => "Updating",
             Self::MarkInstalled => "Keeping on device",
             Self::Unmark => "Allowing cleanup",
-            Self::FlatpakInstall | Self::RuntimeInstall => "Installing",
+            Self::FlatpakInstall => "Installing",
             Self::NeedsFlatpakHost => "Preparing Flatpak",
             Self::AddBot => "Adding",
         }
@@ -241,9 +239,6 @@ pub struct BotListing {
 /// One version the source knows about.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreItemVersion {
-    /// Signed runtime provided/required by this exact package version.
-    #[serde(default)]
-    pub runtime: Option<String>,
     pub version: String,
     /// Unix seconds. `0` means the source didn't publish a release date.
     pub released_at_unix: u64,
@@ -341,11 +336,6 @@ impl StoreItem {
     pub fn action_kind(&self, flatpak_available: bool) -> ActionKind {
         if self.bot.is_some() {
             return ActionKind::AddBot;
-        }
-        if matches!(self.source, StoreSource::Tilo { .. })
-            && registry_types::is_runtime_package_id(&self.id)
-        {
-            return ActionKind::RuntimeInstall;
         }
         match (&self.source, &self.installed, flatpak_available) {
             (StoreSource::Tilo { .. }, InstalledState::Not, _) => ActionKind::Open,
@@ -465,10 +455,8 @@ impl StoreItem {
                 "device_managed_repository",
                 ui::i18n!("store-remote-managed"),
             ))
-        } else if matches!(
-            action,
-            ActionKind::Open | ActionKind::Update | ActionKind::RuntimeInstall
-        ) && matches!(self.source, StoreSource::Tilo { .. })
+        } else if matches!(action, ActionKind::Open | ActionKind::Update)
+            && matches!(self.source, StoreSource::Tilo { .. })
             && self.versions.is_empty()
             && !self.installed.is_installed()
         {
@@ -628,7 +616,6 @@ mod tests {
                 download_url: Some("https://x/y.tapp".into()),
                 root_hash_hex: Some("de".repeat(32)),
                 size_bytes: 100,
-                runtime: None,
             }],
             publisher_pubkey_hex: Some("aa".repeat(32)),
             installed,
@@ -657,7 +644,6 @@ mod tests {
                 download_url: None,
                 root_hash_hex: None,
                 size_bytes: 0,
-                runtime: None,
             }],
             publisher_pubkey_hex: None,
             installed,

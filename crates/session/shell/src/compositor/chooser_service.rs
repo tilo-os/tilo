@@ -375,7 +375,6 @@ fn scope_for(
     let scope = PickerScope {
         initial_dir: PathBuf::new(),
         roots: Vec::new(),
-        home: None,
     }
     .with_granted_paths(granted);
     let first = scope.roots.first()?.clone();

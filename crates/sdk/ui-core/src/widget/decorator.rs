@@ -230,15 +230,16 @@ decorator_trait! {
             super::StructureChange::of(Decorator::take_structure_dirty(self))
         }
 
-        /// A decorator composes from its allocation when anything it wraps does.
-        fn composition_follows_allocation(&self) -> bool {
-            crate::widget::layout::tree_composition_follows_allocation(self.inner())
-        }
-
         /// Decorators must opt in themselves: an outer handler can change what
         /// its inner widget declares even when the inner scroll is view-only.
         fn view_only_scroll(&self, _event: &WindowEvent) -> bool {
             false
+        }
+
+        /// Read from this decorator's own node: one that overrides
+        /// `accessibility` may hide (or reveal) what its inner widget reports.
+        fn accessibility_hidden(&self) -> bool {
+            Decorator::accessibility(self).is_some_and(|node| node.state.hidden)
         }
     }
 
@@ -285,12 +286,12 @@ decorator_trait! {
             Decorator::take_structure_change(self)
         }
 
-        fn composition_follows_allocation(&self) -> bool {
-            Decorator::composition_follows_allocation(self)
-        }
-
         fn view_only_scroll(&self, event: &WindowEvent) -> bool {
             Decorator::view_only_scroll(self, event)
+        }
+
+        fn accessibility_hidden(&self) -> bool {
+            Decorator::accessibility_hidden(self)
         }
     }
 

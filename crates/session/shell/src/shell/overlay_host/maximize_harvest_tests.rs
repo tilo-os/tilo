@@ -32,7 +32,6 @@ fn one_group_tree(maximized: bool) -> (WorkspaceTree, StripId, GroupId) {
             active_tab: tab_id,
             width: StateWidth::Normal,
             maximized,
-            focus_history: Vec::new(),
         }],
     };
     let ws = Workspace {

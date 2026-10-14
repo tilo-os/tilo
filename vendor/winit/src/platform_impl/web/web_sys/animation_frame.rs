@@ -17,11 +17,7 @@ impl AnimationFrameHandler {
             move || handle.set(None)
         });
 
-        Self {
-            window,
-            closure,
-            handle,
-        }
+        Self { window, closure, handle }
     }
 
     pub fn on_animation_frame<F>(&mut self, mut f: F)
@@ -45,9 +41,7 @@ impl AnimationFrameHandler {
 
     pub fn cancel(&mut self) {
         if let Some(handle) = self.handle.take() {
-            self.window
-                .cancel_animation_frame(handle)
-                .expect("Failed to cancel animation frame");
+            self.window.cancel_animation_frame(handle).expect("Failed to cancel animation frame");
         }
     }
 }
@@ -55,9 +49,7 @@ impl AnimationFrameHandler {
 impl Drop for AnimationFrameHandler {
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
-            self.window
-                .cancel_animation_frame(handle)
-                .expect("Failed to cancel animation frame");
+            self.window.cancel_animation_frame(handle).expect("Failed to cancel animation frame");
         }
     }
 }

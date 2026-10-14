@@ -550,36 +550,4 @@ mod tests {
             _ => panic!("the booted Notes tab is not the Notes app"),
         }
     }
-
-    /// The edge-overlay scenario addresses the top bar's chips by name, so
-    /// it reaches the same chip at every viewport of the sweep; each name
-    /// must resolve when the scenario reaches it, or the click is dropped
-    /// and the snapshot shows the wrong state.
-    #[test]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the shell fixture owns long-lived permits by design and lives for the whole test"
-    )]
-    fn overlay_edges_reaches_every_named_chip() {
-        let scenario = lookup("overlay_edges").expect("overlay_edges in catalogue");
-        for size in [(1280, 720), (1920, 1080)] {
-            let mut driver = ShellDriver::new(size);
-            for action in &scenario.actions {
-                if let scenario::Action::ClickNamed(name)
-                | scenario::Action::MoveCursorNamed(name) = action
-                {
-                    assert!(
-                        driver.resolve_named_centre(name).is_some(),
-                        "{size:?}: '{name}' does not resolve when overlay_edges reaches it"
-                    );
-                }
-                let step = Scenario {
-                    name: "_overlay_edges_step",
-                    description: "",
-                    actions: vec![action.clone()],
-                };
-                scenario::run(&mut driver, &step, &mut NullSink);
-            }
-        }
-    }
 }

@@ -97,27 +97,7 @@ frame is in flight. When a frame no longer fits one interval (worst cost plus
 margin above it), the loop raises the floor to one queued frame
 (`PresentPipe::set_min_queue_depth`) so building overlaps presenting, as
 before; `TILO_PRESENT_PIPELINED=1` keeps one queued frame for A/B
-measurement.
-
-A single vblank-paced direct output overlaps rendering with the previous
-frame's flip instead (`Presenter::overlaps_presentation`). Its swapchain has
-three slots: while KMS shows one and a queued flip owns another, the next
-frame renders into the third, then is queued once that flip retired (KMS takes
-one flip per CRTC at a time). The presenter returns as soon as the frame is
-rendered and its flip queued; the pipe frees capacity then, and publishes the
-frame's retirement, physical proof and vblank only when its flip retires
-(`Presenter::retire_owed`), in submission order. No frame is admitted behind
-one rendering, the render-bound floor included: the GPU is busy either way,
-so the frame rendered next is built from the newest state, and at most two
-frames are between handoff and the screen (`present::admits`). The
-GPU-completion wait stays on the render thread: vello's bump-allocator
-counters must be read back before a frame may be shown, and a legacy page
-flip takes no in-fence. `TILO_PRESENT_OVERLAP=0` restores waiting for each
-frame's own flip, for A/B measurement; `FRAME-LIFECYCLE` reports
-`overlapped=` and `retire_wait_us=` (render return to flip retirement), and
-`kms_retirement_us=` then counts only the wait for the previous flip.
-
-When the pipe is full the paint gate declines to build rather
+measurement. When the pipe is full the paint gate declines to build rather
 than grow a queue the display can never drain. A transition's clock is held
 only while a *due* frame is refused (`present_hold_credit`); the normal wait
 for a vblank-paced flip is animation time.
@@ -181,15 +161,7 @@ so a client that commits faster than the compositor presents made the
 compositor late. Capture now runs on workers, coalesced to the newest
 buffer per surface. For a dma-buf no thread waits on the client's GPU:
 the commit's buffer is captured once the loop sees its implicit fence
-signal, so a slow client delays only its own commits. The GPU orders its
-reads after the client's writes as well, whoever imports the buffer: each
-commit's import exports the buffer's pending write fence as a sync file
-(`DMA_BUF_IOCTL_EXPORT_SYNC_FILE`) and, when it has not signalled yet,
-imports it as a semaphore the presenting queue's next submission waits for
-(`ui::dmabuf_import::wait_for_writes`, `VK_KHR_external_semaphore_fd`); no
-thread waits on it. Vulkan does not follow a dma-buf's implicit fences on
-its own, and without this a frame sampled what the buffer held a frame or
-two earlier. The shared GPU
+signal, so a slow client delays only its own commits. The shared GPU
 route imports each client buffer once and copies nothing at capture: the
 presenter draws the frame into Vello's image atlas straight from the
 client's buffer (`vello::Renderer::draw_image_from`, a render pass that
@@ -823,7 +795,7 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 
 ## Where to read first
 
-- `crates/session/shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
+- `crates/session/shell/src/compositor/{mod.rs, state.rs, native.rs, session_bootstrap.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
 - `crates/session/shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
 - `crates/session/shell/tests/{compositor_test.rs, interaction_test.rs, control_socket_test.rs}` — the integration coverage.
 - `crates/session/shell/examples/drm_backend_boot.rs` — the DRM backend's hardware probe, run from a free TTY; it fails rather than skips when it cannot claim the seat.

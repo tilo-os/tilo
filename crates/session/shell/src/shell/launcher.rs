@@ -189,10 +189,6 @@ fn register_launched_process(
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
     };
-    // Its scope starts in the foreground tier; the focus policy keeps it
-    // there only until the window appears and settles.
-    #[cfg(target_os = "linux")]
-    ::launcher::priority::notify_launch(pid);
     if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
         map.insert(
             pid,
@@ -466,8 +462,6 @@ pub fn windows_compat_entry_generation() -> u64 {
 
 #[cfg(any(test, target_os = "linux"))]
 fn unregister_launched_process(pid: u32) {
-    #[cfg(target_os = "linux")]
-    ::launcher::priority::notify_launch_exited(pid);
     if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
         map.remove(&pid);
     }
@@ -956,97 +950,6 @@ impl LaunchError {
     }
 }
 
-/// Why a launch failed before the app's process existed, as a closed set the
-/// notification can name. `detail` on the event stays in the log; this is
-/// what the person reads, so a refusal is never reported as "the launcher is
-/// unavailable" unless the launcher really is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LaunchFailure {
-    /// `tilo-launcher` is missing or its process could not be created.
-    LauncherUnavailable,
-    ProviderUnavailable,
-    NotInstalled,
-    NotAGuiApp,
-    NotAManagedService,
-    NotAuthorized,
-    NoDisplay,
-    NoWorkspace,
-    ShellOwnedIntent,
-    IdentityUnavailable,
-    RegistryUnreadable,
-    HostAppRefused,
-    /// The room's file permissions changed between choosing to open the app
-    /// and starting it, so the grants it was given no longer hold.
-    AuthorityChanged,
-    /// The room's file permissions were not published in time.
-    AuthorityTimedOut,
-    /// The sandbox's file permissions could not be supervised.
-    SandboxSupervision,
-    /// The previous copy of the app is still shutting down.
-    PreviousInstanceBusy,
-    /// Held launches released by a failed prerequisite and other causes with
-    /// no more specific copy.
-    Other,
-}
-
-impl LaunchFailure {
-    /// Classify the error that stopped `register_sandbox` or the sandbox
-    /// supervision around it.
-    #[cfg(any(test, target_os = "linux"))]
-    pub(crate) fn of_authority_error(error: &std::io::Error) -> Self {
-        match error.kind() {
-            std::io::ErrorKind::PermissionDenied => Self::AuthorityChanged,
-            std::io::ErrorKind::TimedOut => Self::AuthorityTimedOut,
-            _ => Self::SandboxSupervision,
-        }
-    }
-
-    pub(crate) const fn message_key(self) -> &'static str {
-        match self {
-            Self::LauncherUnavailable | Self::Other => "launch-failed-launcher-unavailable",
-            Self::ProviderUnavailable => "launch-error-provider-unavailable",
-            Self::NotInstalled => "launch-error-not-installed",
-            Self::NotAGuiApp => "launch-error-not-gui-app",
-            Self::NotAManagedService => "launch-error-not-managed-service",
-            Self::NotAuthorized => "launch-error-not-authorized",
-            Self::NoDisplay => "launch-error-no-display",
-            Self::NoWorkspace => "launch-error-no-workspace",
-            Self::ShellOwnedIntent => "launch-error-shell-owned-intent",
-            Self::IdentityUnavailable => "launch-error-identity-unavailable",
-            Self::RegistryUnreadable => "launch-error-registry-unreadable",
-            Self::HostAppRefused => "launch-error-host-app-refused",
-            Self::AuthorityChanged => "launch-failed-authority-changed",
-            Self::AuthorityTimedOut => "launch-failed-authority-timeout",
-            Self::SandboxSupervision => "launch-error-sandbox-supervision",
-            Self::PreviousInstanceBusy => "launch-failed-previous-instance",
-        }
-    }
-}
-
-impl LaunchError {
-    /// The typed reason this error is reported under.
-    pub(crate) const fn failure(&self) -> LaunchFailure {
-        match self {
-            Self::ProviderUnavailable { .. } => LaunchFailure::ProviderUnavailable,
-            Self::NotInstalled { .. } | Self::HostAppNotFound { .. } => LaunchFailure::NotInstalled,
-            Self::NotAGuiApp { .. } => LaunchFailure::NotAGuiApp,
-            Self::NotAManagedService { .. } => LaunchFailure::NotAManagedService,
-            Self::AgentNotAdmitted { .. } | Self::AgentLaunchNotAuthorized => {
-                LaunchFailure::NotAuthorized
-            }
-            Self::AgentLaunchWorkerUnavailable { .. } | Self::LauncherBinaryMissing { .. } => {
-                LaunchFailure::LauncherUnavailable
-            }
-            Self::NoDisplay => LaunchFailure::NoDisplay,
-            Self::NoWorkspace => LaunchFailure::NoWorkspace,
-            Self::ShellOwnedIntent => LaunchFailure::ShellOwnedIntent,
-            Self::IdentityUnavailable { .. } => LaunchFailure::IdentityUnavailable,
-            Self::RegistryUnreadable { .. } => LaunchFailure::RegistryUnreadable,
-            Self::HostAppRefused { .. } => LaunchFailure::HostAppRefused,
-        }
-    }
-}
-
 impl std::fmt::Display for LaunchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.user_message())
@@ -1072,11 +975,7 @@ pub enum LaunchEventKind {
     /// `tilo-launcher` is running with this host pid.
     Started { pid: u32 },
     /// The child could not be spawned at all.
-    SpawnFailed {
-        /// Why, as the person is told. `detail` is the log's account of it.
-        reason: LaunchFailure,
-        detail: String,
-    },
+    SpawnFailed { detail: String },
     /// The launch chain exited non-zero. `stderr_tail` is the last few
     /// lines it printed — usually the actual reason.
     Failed {
@@ -1115,8 +1014,8 @@ impl LaunchEvent {
     /// copied into notification chrome.
     pub(crate) fn failure_notice(&self) -> Option<LaunchFailureNotice> {
         let body = match &self.kind {
-            LaunchEventKind::SpawnFailed { reason, .. } => {
-                crate::shell::i18n::t(reason.message_key())
+            LaunchEventKind::SpawnFailed { .. } => {
+                crate::shell::i18n::t("launch-failed-launcher-unavailable")
             }
             LaunchEventKind::Failed { code, stderr_tail } => {
                 crate::shell::i18n::t(stopped_reason_key(*code, stderr_tail))
@@ -1149,7 +1048,7 @@ impl LaunchEvent {
     /// terminal escapes cannot alter the surrounding log record.
     pub(crate) fn log_failure(&self) {
         match &self.kind {
-            LaunchEventKind::SpawnFailed { detail, .. } => {
+            LaunchEventKind::SpawnFailed { detail } => {
                 tracing::error!(
                     target: "tilo::app_launch",
                     package_id = %self.package_id,
@@ -2859,56 +2758,6 @@ pub fn launch_terminal_command(argv: &[String], room: RoomId) -> Result<Installe
     execute_installed_with_context(app, room, context)
 }
 
-/// [`launch_terminal_command`] for the compositor thread: the argv is
-/// validated here, and everything that touches the registry or the disk runs
-/// on a preflight worker. A refusal after that point arrives as a launch
-/// event.
-///
-/// # Errors
-///
-/// Returns an error when `argv` is empty or too large for the launch context,
-/// or when the preflight worker cannot be started.
-pub(crate) fn queue_terminal_command(argv: &[String], room: RoomId) -> Result<(), LaunchError> {
-    let context = terminal_command_context(argv);
-    if argv.is_empty() || context.len() > 4 * 1024 {
-        return Err(LaunchError::HostAppRefused {
-            desktop_id: argv.first().cloned().unwrap_or_default(),
-            detail: "the command does not fit a terminal launch".to_string(),
-        });
-    }
-    spawn_reporting(
-        std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
-        super::launch_readiness::inherit(move || {
-            let outcome = installed_apps().and_then(|apps| {
-                let app = apps
-                    .into_iter()
-                    .find(|a| a.package_id == TERMINAL_PACKAGE_ID)
-                    .ok_or_else(|| LaunchError::NotInstalled {
-                        package_id: TERMINAL_PACKAGE_ID.to_string(),
-                    })?;
-                execute_installed_with_context(app, room, context)
-            });
-            if let Err(error) = outcome {
-                super::launch_readiness::fail_current(error.user_message());
-                push_event(LaunchEvent {
-                    package_id: TERMINAL_PACKAGE_ID.to_string(),
-                    display_name: display_name_for_package_id(TERMINAL_PACKAGE_ID),
-                    managed_agent_id: None,
-                    managed_workspace_id: None,
-                    kind: LaunchEventKind::SpawnFailed {
-                        detail: error.user_message(),
-                        reason: error.failure(),
-                    },
-                });
-            }
-        }),
-    )
-    .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
-        detail: error.to_string(),
-    })?;
-    Ok(())
-}
-
 #[derive(Clone)]
 struct MediaHandoffLaunch {
     title: String,
@@ -3237,12 +3086,7 @@ pub fn queue_launch_target_in_workspace(
     uri: Option<String>,
 ) -> Result<(), LaunchError> {
     let grants = workspace.launch_grants(tilo_clock::unix_now());
-    queue_prepared_launch(
-        app,
-        workspace.room,
-        move || Ok(grants),
-        QueuedOpen::uri(uri),
-    )
+    queue_prepared_launch(app, workspace.room, move || Ok(grants), uri)
 }
 
 /// A retained host notification resolves its verified package on the same
@@ -3252,28 +3096,6 @@ pub(crate) fn queue_package_target_in_workspace(
     package_id: String,
     workspace: &Workspace,
     uri: String,
-) -> Result<(), LaunchError> {
-    queue_package_open(package_id, None, workspace, None, Some(uri))
-}
-
-/// Open `document` or `uri` (or just the app) in the package `package_id`
-/// into `workspace`, resolving the package on the preflight worker. For
-/// callers on the compositor thread that hold an app id and not an
-/// [`InstalledApp`]; a refusal arrives as a launch event, named
-/// `display_name` when the caller knows what the person asked to open (a
-/// package that is no longer installed has no registry name to fall back
-/// on), else the package's own display name.
-///
-/// # Errors
-///
-/// Returns [`LaunchError::AgentLaunchWorkerUnavailable`] when the preflight
-/// worker cannot be started.
-pub(crate) fn queue_package_open(
-    package_id: String,
-    display_name: Option<String>,
-    workspace: &Workspace,
-    document: Option<PathBuf>,
-    uri: Option<String>,
 ) -> Result<(), LaunchError> {
     let workspace = workspace.clone();
     spawn_reporting(
@@ -3295,8 +3117,8 @@ pub(crate) fn queue_package_open(
                 execute_installed(
                     app,
                     workspace.room,
-                    document.as_deref(),
-                    uri.as_deref(),
+                    None,
+                    Some(&uri),
                     None,
                     None,
                     Some(grants),
@@ -3305,13 +3127,11 @@ pub(crate) fn queue_package_open(
             if let Err(error) = outcome {
                 super::launch_readiness::fail_current(error.user_message());
                 push_event(LaunchEvent {
-                    display_name: display_name
-                        .unwrap_or_else(|| display_name_for_package_id(&package_id)),
+                    display_name: package_id.clone(),
                     package_id,
                     managed_agent_id: None,
                     managed_workspace_id: None,
                     kind: LaunchEventKind::SpawnFailed {
-                        reason: error.failure(),
                         detail: error.user_message(),
                     },
                 });
@@ -3405,7 +3225,7 @@ pub(crate) fn queue_native_authoring_launch(
             };
             prepare().map_err(|detail| LaunchError::IdentityUnavailable { detail })
         },
-        QueuedOpen::default(),
+        None,
     )
 }
 
@@ -3430,7 +3250,7 @@ pub(crate) fn queue_observed_native_launch(
             prepare_observed_native_launch(&tree, room, &package, &original)
                 .map_err(|detail| LaunchError::IdentityUnavailable { detail })
         },
-        QueuedOpen::default(),
+        None,
     )
 }
 
@@ -3554,57 +3374,21 @@ fn native_launch_workspace(
         .ok_or_else(|| "native app launch room disappeared".into())
 }
 
-/// What a queued launch asks its app to open, and what to undo if the
-/// launch is refused before the process starts.
-#[derive(Default)]
-struct QueuedOpen {
-    document: Option<PathBuf>,
-    uri: Option<String>,
-    /// Runs on the preflight worker when the launch is refused, so state the
-    /// caller recorded optimistically (an "opening" note) does not outlive it.
-    refused: Option<Box<dyn FnOnce() + Send>>,
-}
-
-impl QueuedOpen {
-    fn uri(uri: Option<String>) -> Self {
-        Self {
-            uri,
-            ..Self::default()
-        }
-    }
-}
-
 fn queue_prepared_launch(
     app: InstalledApp,
     room: RoomId,
     prepare: impl FnOnce() -> Result<LaunchGrants, LaunchError> + Send + 'static,
-    open: QueuedOpen,
+    uri: Option<String>,
 ) -> Result<(), LaunchError> {
     let package_id = app.package_id.clone();
     let display_name = app.display_name.clone();
     spawn_reporting(
         std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
         super::launch_readiness::inherit(move || {
-            let QueuedOpen {
-                document,
-                uri,
-                refused,
-            } = open;
             let outcome = prepare().and_then(|grants| {
-                execute_installed(
-                    app,
-                    room,
-                    document.as_deref(),
-                    uri.as_deref(),
-                    None,
-                    None,
-                    Some(grants),
-                )
+                execute_installed(app, room, None, uri.as_deref(), None, None, Some(grants))
             });
             if let Err(error) = outcome {
-                if let Some(refused) = refused {
-                    refused();
-                }
                 super::launch_readiness::fail_current(error.user_message());
                 push_event(LaunchEvent {
                     package_id,
@@ -3612,7 +3396,6 @@ fn queue_prepared_launch(
                     managed_agent_id: None,
                     managed_workspace_id: None,
                     kind: LaunchEventKind::SpawnFailed {
-                        reason: error.failure(),
                         detail: error.user_message(),
                     },
                 });
@@ -3623,54 +3406,6 @@ fn queue_prepared_launch(
         detail: error.to_string(),
     })?;
     Ok(())
-}
-
-/// [`launch_document_in_workspace`] for the compositor thread: the launch's
-/// file work (the synced capability file, the identity registry, the
-/// authority binding) runs on a preflight worker, so a click that opens a
-/// document never waits on the disk. The workspace's capabilities are still
-/// published first, so a read grant added for this document reaches the
-/// sandbox. A refusal arrives as a launch event, after `refused` has run on
-/// the worker.
-///
-/// # Errors
-///
-/// Returns [`LaunchError::AgentLaunchWorkerUnavailable`] when the preflight
-/// worker cannot be started; later failures arrive as launch events.
-pub(crate) fn queue_document_in_workspace(
-    app: InstalledApp,
-    workspace: &Workspace,
-    document: PathBuf,
-    refused: impl FnOnce() + Send + 'static,
-) -> Result<(), LaunchError> {
-    let grants = workspace.launch_grants(tilo_clock::unix_now());
-    set_workspace_capabilities(grants.clone());
-    queue_prepared_launch(
-        app,
-        workspace.room,
-        move || Ok(grants),
-        QueuedOpen {
-            document: Some(document),
-            uri: None,
-            refused: Some(Box::new(refused)),
-        },
-    )
-}
-
-/// [`launch_uri_in_room`] for the compositor thread; see
-/// [`queue_document_in_workspace`].
-///
-/// # Errors
-///
-/// As [`queue_document_in_workspace`].
-pub(crate) fn queue_uri_in_room(
-    app: InstalledApp,
-    room: RoomId,
-    grants: LaunchGrants,
-    uri: String,
-) -> Result<(), LaunchError> {
-    set_workspace_capabilities(grants.clone());
-    queue_prepared_launch(app, room, move || Ok(grants), QueuedOpen::uri(Some(uri)))
 }
 
 /// [`launch_in_workspace`], additionally asking the app to open
@@ -3887,7 +3622,6 @@ fn held_launch_failure(launch: HeldLaunch, detail: &str) -> LaunchEvent {
             .service_identity
             .map(|identity| identity.workspace_id),
         kind: LaunchEventKind::SpawnFailed {
-            reason: LaunchFailure::Other,
             detail: detail.to_string(),
         },
     }
@@ -4038,10 +3772,7 @@ fn start_launch(
                 display_name: app.display_name.clone(),
                 managed_agent_id: app.managed_agent_id.clone(),
                 managed_workspace_id: app.managed_workspace_id.clone(),
-                kind: LaunchEventKind::SpawnFailed {
-                    reason: LaunchFailure::PreviousInstanceBusy,
-                    detail,
-                },
+                kind: LaunchEventKind::SpawnFailed { detail },
             });
             return;
         }
@@ -4075,7 +3806,6 @@ fn start_launch(
                     managed_agent_id: app.managed_agent_id.clone(),
                     managed_workspace_id: app.managed_workspace_id.clone(),
                     kind: LaunchEventKind::SpawnFailed {
-                        reason: LaunchFailure::LauncherUnavailable,
                         detail: error.to_string(),
                     },
                 });
@@ -4094,7 +3824,6 @@ fn start_launch(
                     managed_agent_id: app.managed_agent_id.clone(),
                     managed_workspace_id: app.managed_workspace_id.clone(),
                     kind: LaunchEventKind::SpawnFailed {
-                        reason: LaunchFailure::LauncherUnavailable,
                         detail: e.to_string(),
                     },
                 });
@@ -4148,7 +3877,6 @@ fn start_launch(
                 managed_agent_id: app.managed_agent_id.clone(),
                 managed_workspace_id: app.managed_workspace_id.clone(),
                 kind: LaunchEventKind::SpawnFailed {
-                    reason: LaunchFailure::of_authority_error(&error),
                     detail: error.to_string(),
                 },
             });
@@ -4254,7 +3982,6 @@ fn start_launch(
                 stderr_tail: tail.iter().cloned().collect::<Vec<_>>().join("\n"),
             },
             Err(e) => LaunchEventKind::SpawnFailed {
-                reason: LaunchFailure::LauncherUnavailable,
                 detail: e.to_string(),
             },
         };
@@ -4263,7 +3990,7 @@ fn start_launch(
                 startup_token,
                 format!("the application launcher exited ({code:?}): {stderr_tail}"),
             ),
-            LaunchEventKind::SpawnFailed { detail, .. } => {
+            LaunchEventKind::SpawnFailed { detail } => {
                 events.startup.fail(startup_token, detail.clone());
             }
             LaunchEventKind::Started { .. }
@@ -4292,7 +4019,6 @@ fn start_launch(
                 managed_agent_id: identity.2,
                 managed_workspace_id: identity.3,
                 kind: LaunchEventKind::SpawnFailed {
-                    reason: LaunchFailure::LauncherUnavailable,
                     detail: detail.clone(),
                 },
             });
@@ -5374,7 +5100,6 @@ mod tests {
             assert_eq!(
                 reported[0].kind,
                 LaunchEventKind::SpawnFailed {
-                    reason: LaunchFailure::Other,
                     detail: "peer sync could not start".into()
                 }
             );
@@ -5421,7 +5146,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn launch_failure_copy_and_logs_are_bounded_and_never_leak_detail() {
         fn failed_launch_banner_never_contains_raw_stderr() {
             let raw = "error: could not connect\nWAYLAND_DISPLAY=wayland-1\nbacktrace: 0xdeadbeef";
@@ -5440,63 +5164,8 @@ mod tests {
             assert_eq!(LAUNCH_FAILURE_NOTICE_LIFETIME, Duration::from_secs(8));
         }
 
-        fn spawn_failure_notice_names_the_typed_reason_not_a_missing_launcher() {
-            let unavailable = crate::shell::i18n::t("launch-failed-launcher-unavailable");
-            let cases = [
-                (
-                    LaunchFailure::AuthorityChanged,
-                    "launch-failed-authority-changed",
-                ),
-                (
-                    LaunchFailure::AuthorityTimedOut,
-                    "launch-failed-authority-timeout",
-                ),
-                (
-                    LaunchFailure::SandboxSupervision,
-                    "launch-error-sandbox-supervision",
-                ),
-                (LaunchFailure::NotInstalled, "launch-error-not-installed"),
-                (LaunchFailure::NoWorkspace, "launch-error-no-workspace"),
-                (
-                    LaunchFailure::PreviousInstanceBusy,
-                    "launch-failed-previous-instance",
-                ),
-            ];
-            for (reason, key) in cases {
-                let notice = launch_event(LaunchEventKind::SpawnFailed {
-                    reason,
-                    detail: "raw detail stays in the log".into(),
-                })
-                .failure_notice()
-                .unwrap();
-                assert_eq!(notice.body, crate::shell::i18n::t(key));
-                assert_ne!(notice.body, unavailable);
-                assert!(!notice.body.contains("raw detail"));
-            }
-            let missing = launch_event(LaunchEventKind::SpawnFailed {
-                reason: LaunchError::LauncherBinaryMissing { searched: vec![] }.failure(),
-                detail: String::new(),
-            })
-            .failure_notice()
-            .unwrap();
-            assert_eq!(missing.body, unavailable);
-            let refused = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "x");
-            assert_eq!(
-                LaunchFailure::of_authority_error(&refused),
-                LaunchFailure::AuthorityChanged
-            );
-            assert_eq!(
-                LaunchError::NotInstalled {
-                    package_id: "p".into()
-                }
-                .failure(),
-                LaunchFailure::NotInstalled
-            );
-        }
-
         fn spawn_failure_and_non_failure_events_have_sensible_banner_copy() {
             let event = launch_event(LaunchEventKind::SpawnFailed {
-                reason: LaunchFailure::LauncherUnavailable,
                 detail: "No such file or directory (os error 2)".into(),
             });
             let notice = event.failure_notice().expect("failure has a notice");
@@ -5572,7 +5241,6 @@ mod tests {
 
         failed_launch_banner_never_contains_raw_stderr();
         spawn_failure_and_non_failure_events_have_sensible_banner_copy();
-        spawn_failure_notice_names_the_typed_reason_not_a_missing_launcher();
         launch_failure_title_normalises_and_bounds_untrusted_app_names();
         preflight_notification_copy_excludes_paths_and_backend_detail();
         untrusted_app_log_lines_are_memory_bounded_and_stream_label_safe();
@@ -7018,70 +6686,6 @@ mod tests {
         CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
     }
 
-    /// A launch asked for on the compositor thread must not do its
-    /// preflight there: the capability file is synced, the identity registry
-    /// and authority binding are files too, and a click waits on none of them.
-    /// The preflight here blocks until released, so running it on the caller
-    /// would hang the call past the budget. A refusal (no display is
-    /// published) must still unwind the caller's state on the worker and
-    /// reach the session as a launch event.
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn queued_open_runs_its_preflight_off_the_calling_thread() {
-        const BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
-        const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
-        set_wayland_socket_path(None);
-        let _ = drain_events();
-        let caller = std::thread::current().id();
-        let (release, released) = std::sync::mpsc::channel::<()>();
-        let (refusal, refused) = std::sync::mpsc::channel::<std::thread::ThreadId>();
-
-        let asked = Instant::now();
-        queue_prepared_launch(
-            test_app("so.tilo.queued-open"),
-            RoomId::new(),
-            move || {
-                let _ = released.recv_timeout(HANG_BOUND);
-                Ok(LaunchGrants::default())
-            },
-            QueuedOpen {
-                document: Some(PathBuf::from("/var/workspace/books/novel.epub")),
-                uri: None,
-                refused: Some(Box::new(move || {
-                    let _ = refusal.send(std::thread::current().id());
-                })),
-            },
-        )
-        .expect("the preflight worker starts");
-        let waited = asked.elapsed();
-        assert!(
-            waited < BUDGET,
-            "queueing a launch took {waited:?}: its preflight ran on the calling thread"
-        );
-        assert!(
-            refused.try_recv().is_err(),
-            "the launch was refused before its preflight finished"
-        );
-
-        release.send(()).expect("the preflight is waiting");
-        let worker = refused
-            .recv_timeout(HANG_BOUND)
-            .expect("a refused launch runs its unwind");
-        assert_ne!(worker, caller, "the unwind ran on the calling thread");
-        let deadline = Instant::now() + HANG_BOUND;
-        loop {
-            let failed = drain_events().into_iter().any(|event| {
-                event.package_id == "so.tilo.queued-open"
-                    && matches!(event.kind, LaunchEventKind::SpawnFailed { .. })
-            });
-            if failed {
-                break;
-            }
-            assert!(Instant::now() < deadline, "no SpawnFailed event arrived");
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-
     fn sandbox(capabilities: Vec<CapOverride>) -> LaunchGrants {
         LaunchGrants {
             authors: Vec::new(),
@@ -7709,7 +7313,6 @@ mod tests {
             active_tab: tabs[0].0,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         }];
         tree.seed_doc_from_cache();
         tree
@@ -7946,7 +7549,6 @@ mod tests {
                 active_tab: 1_000_u64.saturating_add(i),
                 width: WindowWidth::Normal,
                 maximized: false,
-                focus_history: Vec::new(),
             });
         }
         for (group_id, tab_id, title, app_id, surface) in [
@@ -7966,7 +7568,6 @@ mod tests {
                 active_tab: tab_id,
                 width: WindowWidth::Normal,
                 maximized: false,
-                focus_history: Vec::new(),
             });
         }
         let strip = tree.desktop.workspaces[0].strips[0].id;

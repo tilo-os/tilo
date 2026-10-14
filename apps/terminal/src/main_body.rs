@@ -79,6 +79,32 @@ pub(crate) fn classify_pty_read(
     }
 }
 
+/// Whether the peer still holds a hosted session's lifetime socket open. The
+/// probe peeks without blocking and without changing the descriptor's flags,
+/// which it shares with the widget's own handle.
+#[cfg(unix)]
+pub(crate) fn lifetime_socket_open(socket: &std::os::unix::net::UnixStream) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut byte = 0u8;
+    // SAFETY: `byte` is valid writable storage for the one byte requested and
+    // the descriptor stays open for the duration of the call.
+    let received = unsafe {
+        libc::recv(
+            socket.as_raw_fd(),
+            (&raw mut byte).cast::<libc::c_void>(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    if received >= 0 {
+        return received > 0;
+    }
+    matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EAGAIN | libc::EINTR)
+    )
+}
+
 /// What the session banner says once the shell has exited.
 const SESSION_ENDED_MESSAGE: &str =
     "Session ended. The shell has exited, so typing no longer reaches it.";
@@ -1644,22 +1670,6 @@ impl TerminalWidget {
         self.banner_rect
     }
 
-    /// A hosted terminal in a test has no process behind it and starts
-    /// disconnected; this lets its input reach an attached probe.
-    #[cfg(test)]
-    pub(crate) fn accept_input_for_test(&self) {
-        self.session_disconnected.store(false, Ordering::Release);
-    }
-
-    /// The framework's verdict on `effect` as this terminal's own gesture.
-    #[cfg(test)]
-    pub(crate) fn own_gesture_verdict(
-        &self,
-        effect: &crate::resource::TerminalEffect,
-    ) -> Option<bool> {
-        self.dispatch.as_ref().map(|d| d.is_own_gesture(effect))
-    }
-
     /// Tee subsequent PTY writes so a compositor-path test can see them, in
     /// any profile it is built in (`test-support`).
     #[cfg(any(test, debug_assertions, feature = "test-support"))]
@@ -2430,23 +2440,18 @@ impl TerminalWidget {
         }
     }
 
-    /// Do `effect` as the person's own gesture: a shortcut, a click or a
-    /// menu row in this terminal. Like a keystroke, it reaches the process
-    /// at once when the framework says it is the person's own gesture
-    /// ([`Dispatcher::is_own_gesture`](ui::framework::Dispatcher::is_own_gesture)):
-    /// the person pasting their own clipboard already chose the text. Under
-    /// any invocation, or when the role does not allow it, it goes through
-    /// the session's host, which checks and confirms as for any caller; a
-    /// terminal with no session record performs it directly.
+    /// Ask for `effect` as the person's own gesture: through the session's
+    /// host, which checks their role and asks for confirmation as it would
+    /// for any caller, or — for a terminal that has no session record —
+    /// directly.
     fn submit_effect(&mut self, effect: crate::resource::TerminalEffect) {
-        if let Some(dispatch) = &self.dispatch
-            && !dispatch.is_own_gesture(&effect)
-        {
-            dispatch.effect(&effect);
-            return;
-        }
-        if let Err(error) = self.perform(effect) {
-            tracing::warn!(%error, "terminal gesture failed");
+        match &self.dispatch {
+            Some(dispatch) => dispatch.effect(&effect),
+            None => {
+                if let Err(error) = self.perform(effect) {
+                    tracing::warn!(%error, "terminal gesture failed");
+                }
+            }
         }
     }
 }
@@ -6828,9 +6833,9 @@ pub fn exec_script(argv: &[String]) -> String {
 /// service socket on this app's behalf, per `[sandbox.services]`.
 pub const USH_SERVICE_FD_ENV: &str = "TILO_SVC_USH_FD";
 
-/// The inherited control connection is distinct from each session lifetime lease.
-static USH_SERVICE: runtime_portal::service_socket::InheritedControlSocket =
-    runtime_portal::service_socket::InheritedControlSocket::new("ush");
+/// Ownership and refusal retries live with the runtime's service transport.
+static USH_SERVICE: runtime_portal::service_socket::InheritedServiceSocket =
+    runtime_portal::service_socket::InheritedServiceSocket::new("ush");
 
 /// Who caused a session to open. The device's own shell is never opened for
 /// an agent, whatever else allows it.
@@ -7117,19 +7122,18 @@ fn ush_service_backend(
 ) -> Result<TerminalBackend, OpenError> {
     use runtime_portal::service_socket::ServiceSocketError;
 
-    // SAFETY: this instance alone owns the inherited fd. ush_backend_on
-    // negotiates protocol two and returns only its independent session lease.
-    unsafe {
-        USH_SERVICE.with_control(|stream| {
-            ush_backend_on(stream, program, target, requested_by, relay_session)
-        })
-    }
-    .map_err(|error| match error {
-        ServiceSocketError::InUse => {
-            OpenError::Unavailable(t("terminal-service-control-unavailable"))
-        }
+    // SAFETY: this process-wide instance alone owns the launcher's ush fd.
+    let stream = unsafe { USH_SERVICE.take() }.map_err(|error| match error {
+        ServiceSocketError::InUse => OpenError::Unavailable(
+            "This window's shell service is already in use; open a new tab".into(),
+        ),
         other => OpenError::Failed(other.to_string()),
-    })?
+    })?;
+    let opened = ush_backend_on(&stream, program, target, requested_by, relay_session);
+    if opened.as_ref().is_err_and(OpenError::is_refusal) {
+        let _ = USH_SERVICE.retry_after_refusal(stream);
+    }
+    opened
 }
 
 #[cfg(windows)]
@@ -7203,36 +7207,6 @@ struct UshSessionReply {
     runs: bool,
     #[serde(default)]
     editor_protocol: Option<u8>,
-    /// The control protocol that granted this session's private lease.
-    #[serde(default)]
-    protocol: u16,
-}
-
-impl UshSessionReply {
-    /// Whether the supervisor's session declaration is well formed and matches
-    /// what was asked: a session and relay key of 32 hex digits, an environment
-    /// of sane length, the editor capability only where an editor may be offered,
-    /// and one descriptor more than the plain pair when it is.
-    fn is_valid(
-        &self,
-        descriptor_count: usize,
-        program: &[String],
-        target: &crate::target::SessionTarget,
-    ) -> bool {
-        let hex_key = |key: &str| key.len() == 32 && key.bytes().all(|b| b.is_ascii_hexdigit());
-        let descriptors = if self.editor_protocol.is_some() { 3 } else { 2 };
-        self.result == "session"
-            && hex_key(&self.session)
-            && !self.environment.is_empty()
-            && self.environment.len() <= 1024
-            && self.relay_session.as_deref().is_none_or(hex_key)
-            && self
-                .editor_protocol
-                .is_none_or(|version| version == runtime_portal::editor::VERSION)
-            && (self.editor_protocol.is_none() || (program.is_empty() && !target.is_host()))
-            && self.protocol == 2
-            && descriptor_count == descriptors
-    }
 }
 
 #[cfg(unix)]
@@ -7250,25 +7224,6 @@ pub(crate) fn ush_backend_on(
     // bound, nor add one where the connection has none.
     const USH_OPEN_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());
-    {
-        let mut writer = stream;
-        writer
-            .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
-            .map_err(|e| failed(&e))?;
-        writer.flush().map_err(|e| failed(&e))?;
-    }
-    let (hello, rights) =
-        runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| failed(&e))?;
-    let ready = serde_json::from_slice::<serde_json::Value>(&hello).ok();
-    if !rights.is_empty()
-        || ready
-            .as_ref()
-            .is_none_or(|value| value["result"] != "ready" || value["protocol"] != 2)
-    {
-        return Err(OpenError::Unavailable(t(
-            "terminal-service-protocol-unavailable",
-        )));
-    }
     let key = crate::runs::new_key();
     let request = ush_request(
         program,
@@ -7300,8 +7255,28 @@ pub(crate) fn ush_backend_on(
     }
     let response: UshSessionReply = serde_json::from_slice(&payload)
         .map_err(|_| OpenError::Failed("Malformed ush session descriptor declaration".into()))?;
-    if !response.is_valid(descriptors.len(), program, target) {
-        return Err(OpenError::Failed(t("terminal-service-invalid-session")));
+    if response.result != "session"
+        || response.session.len() != 32
+        || !response.session.bytes().all(|b| b.is_ascii_hexdigit())
+        || response.environment.is_empty()
+        || response.environment.len() > 1024
+        || response.relay_session.as_ref().is_some_and(|session| {
+            session.len() != 32 || !session.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+        || response
+            .editor_protocol
+            .is_some_and(|version| version != runtime_portal::editor::VERSION)
+        || (response.editor_protocol.is_some() && (!program.is_empty() || target.is_host()))
+        || descriptors.len()
+            != if response.editor_protocol.is_some() {
+                2
+            } else {
+                1
+            }
+    {
+        return Err(OpenError::Failed(
+            "Invalid ush session descriptor roles".into(),
+        ));
     }
     let native_editor = if response.editor_protocol.is_some() {
         let fd = descriptors
@@ -7311,21 +7286,13 @@ pub(crate) fn ush_backend_on(
     } else {
         None
     };
-    let lifetime = descriptors
-        .pop()
-        .ok_or_else(|| OpenError::Failed(t("terminal-service-missing-lease")))?;
     let fd = descriptors
         .pop()
-        .ok_or_else(|| OpenError::Failed(t("terminal-service-missing-terminal")))?;
+        .ok_or_else(|| OpenError::Failed("Missing PTY descriptor".into()))?;
 
-    // Every descriptor arrived over `SCM_RIGHTS` and this process now owns it.
-    // The supervisor declares PTY first, then the private session lease, and
-    // only after negotiation the editor capability last.
+    // `fd` arrived over `SCM_RIGHTS` and this process now owns it. The
+    // supervisor declares PTY first and, only after negotiation, editor second.
     let master = std::fs::File::from(fd);
-    let lifetime = std::os::unix::net::UnixStream::from(lifetime);
-    lifetime
-        .peer_addr()
-        .map_err(|_| OpenError::Failed(t("terminal-service-invalid-lease")))?;
     tilo_process::editor::validate_master(&master).map_err(|e| failed(&e))?;
     let reader = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Read + Send>;
     let writer = Box::new(master.try_clone().map_err(|e| failed(&e))?) as Box<dyn Write + Send>;
@@ -7338,7 +7305,7 @@ pub(crate) fn ush_backend_on(
         runs: response.runs.then_some(key),
         native_editor,
         service_lifetime: Some(runtime_portal::pending_connection::SessionLifetime::new(
-            lifetime,
+            stream.try_clone().map_err(|e| failed(&e))?,
         )),
     })
 }
@@ -7548,11 +7515,7 @@ impl TerminalWidget {
             .as_ref()
             .and_then(|socket| socket.clone_for_reader().ok());
         #[cfg(unix)]
-        let session_open = move || {
-            reader_lifetime
-                .as_ref()
-                .is_some_and(runtime_portal::pending_connection::ReaderLifetime::is_open)
-        };
+        let session_open = move || reader_lifetime.as_ref().is_some_and(lifetime_socket_open);
         #[cfg(not(unix))]
         let session_open = || false;
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));

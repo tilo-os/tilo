@@ -215,10 +215,13 @@ impl<R: Resource> Reader<R> {
 
     /// The current state. Cheap: shares the value.
     ///
-    /// Holding the returned `Rc` across the next [`sync`](Self::sync) makes
-    /// that sync read the whole resource again (it cannot update a state
-    /// someone else is looking at), so views read through the reader rather
-    /// than keep it.
+    /// Holding the returned `Rc` across the next [`sync`](Self::sync) keeps
+    /// what it shows unchanged: that sync brings a copy up to date instead
+    /// ([`Resource::copy_state`]). The copy shares every
+    /// [`Collection`](crate::Collection) item and copies only those the
+    /// change touched, so it costs a pointer per item, but fields held
+    /// whole (a `Vec`, a map) are copied whole: a view that needs only part
+    /// of the state keeps that part rather than the `Rc`.
     pub fn state(&self) -> &Rc<R::State> {
         &self.state
     }
@@ -384,7 +387,7 @@ impl Following {
                 let copied = if delta.is_everything() {
                     None
                 } else {
-                    state.copy()
+                    crate::profiling::measure("resource.reader_copy", || state.copy())
                 };
                 let mut fresh = match copied {
                     Some(mut copy) => {

@@ -1,5 +1,5 @@
 //! A closed tab comes back where it was: same content, same group, same
-//! index through `tab.reopen`, without producing close notifications.
+//! index, whether through `tab.reopen` or the close toast's Undo.
 
 use shell::shell::chrome_state::ChromeState;
 use shell::shell::state::{
@@ -27,7 +27,6 @@ fn group(id: u64, tabs: Vec<Tab>, width: WindowWidth) -> WindowGroup {
         active_tab,
         width,
         maximized: false,
-        focus_history: Vec::new(),
     }
 }
 
@@ -61,6 +60,14 @@ fn layout(chrome: &ChromeState) -> Vec<(u64, Vec<u64>)> {
     groups
 }
 
+fn undo_toast(chrome: &ChromeState) -> Option<u64> {
+    chrome
+        .notifications()
+        .iter()
+        .find(|toast| toast.title.starts_with("Closed"))
+        .map(|toast| toast.id)
+}
+
 #[test]
 fn close_then_reopen_restores_content_group_and_index() {
     let chrome = ChromeState::new(desktop());
@@ -68,10 +75,9 @@ fn close_then_reopen_restores_content_group_and_index() {
 
     close_tab(&mut chrome.borrow_mut(), 2).unwrap();
     assert_eq!(layout(&chrome.borrow())[0], (100, vec![1, 3]));
-    assert_eq!(
-        chrome.borrow().notification_count(),
-        0,
-        "a normal close is quiet"
+    assert!(
+        undo_toast(&chrome.borrow()).is_some(),
+        "a close says how to undo it"
     );
 
     assert_eq!(chrome.borrow_mut().reopen_closed_tab(), Some(2));
@@ -87,8 +93,10 @@ fn close_then_reopen_restores_content_group_and_index() {
     let strip = tree.desktop.workspaces[0].strips[0].id;
     assert_eq!(tree.desktop.active_group.get(&strip), Some(&100));
     drop(tree);
-    assert_eq!(state.notification_count(), 0);
-    assert_eq!(state.notification_history().len(), 0);
+    assert!(
+        undo_toast(&state).is_none(),
+        "the toast would now undo nothing"
+    );
     drop(state);
     assert_eq!(
         chrome.borrow_mut().reopen_closed_tab(),
@@ -98,7 +106,7 @@ fn close_then_reopen_restores_content_group_and_index() {
 }
 
 #[test]
-fn reopening_quietly_recreates_a_closed_group_in_place() {
+fn undo_on_the_toast_recreates_a_closed_group_in_place() {
     let chrome = ChromeState::new(desktop());
     let before = layout(&chrome.borrow());
 
@@ -112,14 +120,19 @@ fn reopening_quietly_recreates_a_closed_group_in_place() {
         "closing a group's last tab closes the group"
     );
 
-    assert_eq!(chrome.borrow().notification_count(), 0);
-    assert_eq!(chrome.borrow_mut().reopen_closed_tab(), Some(4));
+    let toast = undo_toast(&chrome.borrow()).expect("undo toast");
+    assert!(chrome.borrow_mut().activate_notification(toast));
     assert_eq!(layout(&chrome.borrow()), before);
     let state = chrome.borrow();
     let width = state.tree().desktop.workspaces[0].strips[0].window_groups[1].width;
     assert_eq!(width, WindowWidth::Wide, "the group keeps its width");
-    assert_eq!(state.notification_count(), 0);
-    assert_eq!(state.notification_history().len(), 0);
+    assert!(
+        state
+            .notification_history()
+            .iter()
+            .all(|entry| !entry.title.starts_with("Closed")),
+        "a used Undo is not kept as a notification"
+    );
 }
 
 #[test]
@@ -153,8 +166,8 @@ fn a_close_whose_workspace_is_gone_is_skipped() {
     }
     let before = layout(&chrome.borrow());
     assert_eq!(chrome.borrow_mut().reopen_closed_tab(), None);
-    assert_eq!(chrome.borrow_mut().reopen_closed_tab(), None);
-    assert_eq!(chrome.borrow().notification_count(), 0);
+    let toast = undo_toast(&chrome.borrow()).expect("undo toast");
+    chrome.borrow_mut().activate_notification(toast);
     assert_eq!(
         layout(&chrome.borrow()),
         before,

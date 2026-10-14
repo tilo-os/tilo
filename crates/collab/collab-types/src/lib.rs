@@ -157,6 +157,6 @@ pub use redaction::{
 pub use role::{ArtifactKind, OpKind, Role};
 pub use space::{Space, SpaceId};
 pub use validator::{
-    ChannelState, DEFAULT_ROOM, ValidationError, document_node, validate_admitted_inbound_op,
-    validate_inbound_op, validate_replayed_inbound_op,
+    ChannelState, DEFAULT_ROOM, ValidationError, document_node, named_record_of_channel,
+    named_records, validate_admitted_inbound_op, validate_inbound_op, validate_replayed_inbound_op,
 };
