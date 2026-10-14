@@ -314,6 +314,7 @@ pub type ResolveOutcome = Result<ResolvedStream, BackendError>;
 /// Device-local Spotify work; remote player state never claims local PCM.
 #[derive(Clone, Debug)]
 pub enum SpotifyOperation {
+    AccountStatus,
     Devices,
     Queue,
     LibraryPage {
@@ -349,6 +350,23 @@ pub enum SpotifyOperation {
         playlist: String,
         track: String,
     },
+}
+
+/// Provider product classifications; unknown metadata never establishes eligibility.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpotifyProduct {
+    Premium,
+    Free,
+    Open,
+    Unknown,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct SpotifyAccountStatus {
+    pub catalogue_product: SpotifyProduct,
+    pub streaming_product: SpotifyProduct,
+    pub account_match: bool,
 }
 
 #[derive(Clone, Debug, Default)]

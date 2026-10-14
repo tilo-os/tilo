@@ -291,6 +291,8 @@ impl DesktopChromeSource for NativeChrome {
                 }
                 return true;
             }
+            // The native bar carries no Tilo mark; its About is in Settings.
+            ChromeIntent::ToggleTiloMenu => return false,
             ChromeIntent::SetTopBarWidgets(widgets) => {
                 let widgets = widgets.normalised();
                 save_widgets(&widgets);

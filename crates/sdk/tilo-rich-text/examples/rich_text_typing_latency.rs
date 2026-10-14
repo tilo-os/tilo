@@ -259,7 +259,7 @@ fn main() -> Result<(), String> {
             direct(paragraph, count, chars)?,
         );
         report(
-            "  SDK rich-text editor (qdoc)",
+            "  SDK rich-text editor (tilo-doc)",
             rich_text(paragraph, count, chars)?,
         );
     }

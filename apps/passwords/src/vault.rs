@@ -1084,7 +1084,6 @@ impl Core {
                 self.show_pane = Some(NavPane::Content);
                 self.reveal_open = true;
                 self.touch();
-                self.toast("Saved");
             }
             Err(error) => self.toast(error),
         }
@@ -1120,7 +1119,6 @@ impl Core {
                     self.close_editor();
                     self.select_first_visible();
                     self.show_pane = Some(NavPane::Overview);
-                    self.toast("Item deleted");
                     Ok(())
                 }
                 Ok(false) => Err("That item is no longer in your vault".to_owned()),
@@ -1527,7 +1525,7 @@ impl Core {
                         path.set_extension("csv");
                     }
                     match self.write_plaintext_export(&path) {
-                        Ok(count) => self.toast(format!("Exported {count} items")),
+                        Ok(_) => {}
                         Err(error) => self.toast(error),
                     }
                 }

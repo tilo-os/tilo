@@ -26,6 +26,8 @@ pub(super) struct Spec {
     pub enabled: bool,
     pub active: Option<bool>,
     pub dot: bool,
+    /// Painted as the Tilo mark instead of `icon`.
+    pub mark: bool,
 }
 
 pub(super) struct ResponsiveBar {
@@ -36,7 +38,7 @@ pub(super) struct ResponsiveBar {
     pub dirty: bool,
     reading: String,
     commands: Vec<Command>,
-    icons: Vec<Icon>,
+    icons: Vec<(Icon, bool)>,
     specs: Vec<Spec>,
     requests: Rc<RefCell<Vec<Command>>>,
 }
@@ -59,7 +61,7 @@ impl ResponsiveBar {
 
     pub fn configure(&mut self, specs: Vec<Spec>) {
         let commands: Vec<_> = specs.iter().map(|spec| spec.command.clone()).collect();
-        let icons: Vec<_> = specs.iter().map(|spec| spec.icon).collect();
+        let icons: Vec<_> = specs.iter().map(|spec| (spec.icon, spec.mark)).collect();
         let rebuilt = commands != self.commands || icons != self.icons;
         self.dirty |= self.specs != specs;
         if rebuilt {
@@ -73,7 +75,9 @@ impl ResponsiveBar {
                     Command::Tray { key, menu } => format!("topbar.tray:{key}:{menu}"),
                 };
                 let callback = move || request.borrow_mut().push(command.clone());
-                toolbar = if let Some(active) = spec.active {
+                toolbar = if spec.mark {
+                    toolbar.push_glyph(super::paint_tilo_mark, &spec.name, callback)
+                } else if let Some(active) = spec.active {
                     toolbar.push_icon_toggle(spec.icon, &spec.name, active, callback)
                 } else {
                     toolbar.push_icon(spec.icon, &spec.name, callback)
@@ -154,12 +158,16 @@ impl TopBarChrome {
     }
 
     pub(super) fn responsive_specs(&self) -> Vec<Spec> {
-        let mut targets = vec![
+        let mut targets = Vec::new();
+        if self.tilo_mark.is_some() {
+            targets.push(Self::CONTROL_TILO_MARK);
+        }
+        targets.extend([
             Self::CONTROL_OVERVIEW,
             Self::CONTROL_WORKSPACE_UP,
             Self::CONTROL_WORKSPACE_DOWN,
             Self::CONTROL_WORKSPACE_SETTINGS,
-        ];
+        ]);
         targets.extend(
             self.widget_config
                 .widgets
@@ -218,6 +226,7 @@ impl TopBarChrome {
                     enabled: true,
                     active: None,
                     dot: item.status == AppTrayStatus::NeedsAttention,
+                    mark: false,
                 });
                 if item.item_is_menu {
                     break;
@@ -229,6 +238,9 @@ impl TopBarChrome {
 
     fn responsive_control_spec(&self, target: &'static str, offline: bool) -> Spec {
         let (icon, priority) = match target {
+            // What Tilo is stays reachable as long as the overview does.
+            // Painted as the mark; the icon only keys the spec.
+            Self::CONTROL_TILO_MARK => (Icon::Info, 100),
             Self::CONTROL_OVERVIEW => (Self::overview_glyph_icon(), 100),
             Self::CONTROL_WORKSPACE_UP => (Icon::ChevronUp, 10),
             Self::CONTROL_WORKSPACE_DOWN => (Icon::ChevronDown, 10),
@@ -269,6 +281,7 @@ impl TopBarChrome {
             active,
             dot: (target == Self::CONTROL_QUICK_SETTINGS && self.notification_badge > 0)
                 || (target == Self::CONTROL_COLLABORATORS && self.activity_unread > 0),
+            mark: target == Self::CONTROL_TILO_MARK,
         }
     }
 

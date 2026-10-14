@@ -1,7 +1,7 @@
 //! Tests for the PDF export engine.
 //!
 //! Snapshots are built directly (the structs are public) so the tests exercise
-//! `render_pdf` without coupling to qdoc's mutation API. We assert on the real
+//! `render_pdf` without coupling to tilo-doc's mutation API. We assert on the real
 //! output bytes — a valid PDF header, non-trivial length, the expected page
 //! count via `/Type /Page`, and (for the content-object test) the number of
 //! content streams emitted.

@@ -910,6 +910,7 @@ impl ui::widget::controls::ActionControls for MusicApp {
 
 fn operation(effect: &MusicEffect) -> Option<SpotifyOperation> {
     Some(match effect {
+        MusicEffect::SpotifyAccountStatus => SpotifyOperation::AccountStatus,
         MusicEffect::SpotifyDevices => SpotifyOperation::Devices,
         MusicEffect::SpotifyQueue => SpotifyOperation::Queue,
         MusicEffect::SpotifyCreatePlaylist { name } => {

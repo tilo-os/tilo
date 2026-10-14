@@ -21,9 +21,11 @@ topbar-sharing-count = { $viewers } { $viewers ->
     }
 topbar-sharing-surface = Oberfläche { $surface }
 topbar-open-overview = Übersicht öffnen
+topbar-tilo-menu = Tilo-Menü
 topbar-previous-workspace = Vorheriger Arbeitsbereich
 topbar-next-workspace = Nächster Arbeitsbereich
 topbar-workspace-settings = Einstellungen für Arbeitsbereich { $workspace }
+topbar-workspace-host = Gehostet bei { $host }
 topbar-show-clock = Uhr anzeigen
 topbar-show-system-monitor = Systemmonitor anzeigen
 topbar-show-calendar = Kalender anzeigen
@@ -1024,6 +1026,16 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Wechseln zu
 overview-panel-new-workspace = Neuer Arbeitsbereich
 browser-new-workspace-name = Arbeitsbereich { $number }
+
+# Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet
+tilo-menu-about = Über diesen Computer
+tilo-about-title = Über diesen Computer
+tilo-about-lead = Das ist Tilo, ein Betriebssystem.
+tilo-about-body-browser = Was du gerade benutzt, läuft in deinem Browser. Tilo kommt bald nativ auf Computer.
+tilo-about-body-native = Es läuft direkt hier, auf diesem Computer.
+tilo-about-link-notify = Benachrichtigt werden
+tilo-about-link-source = Quellcode
+tilo-about-link-community = Community
 
 notification-preview-hidden = Benachrichtigungsvorschau verborgen
 

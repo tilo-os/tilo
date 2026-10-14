@@ -72,7 +72,7 @@ mime = [
     "text/markdown",
     "text/html",
 ]
-# Every extension qdoc has a rich-text codec for. An extension the
+# Every extension tilo-doc has a rich-text codec for. An extension the
 # format registry calls a document but no installed package claims is a
 # reportable dead end ("nothing here opens .html") rather than an open,
 # so the list is kept in step with `tilo_doc_codecs::DOCUMENT_EXTENSIONS`.

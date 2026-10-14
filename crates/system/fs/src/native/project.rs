@@ -28,7 +28,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
@@ -82,6 +82,39 @@ pub fn rel_path(components: &[Vec<u8>]) -> PathBuf {
         .iter()
         .map(|c| OsString::from_vec(c.clone()))
         .collect()
+}
+
+/// Whether `rel` stays inside the tree it is joined onto: at least one
+/// component, every one of them a plain name. A `..`, a root or a prefix
+/// component would make `live.join(rel)` name something outside `live`,
+/// which this plane writes as root.
+pub fn confined_rel(rel: &Path) -> bool {
+    let mut components = rel.components().peekable();
+    components.peek().is_some() && components.all(|c| matches!(c, Component::Normal(_)))
+}
+
+#[cfg(test)]
+mod confinement_tests {
+    use super::{confined_rel, rel_path};
+
+    #[test]
+    fn only_plain_relative_paths_are_confined() {
+        assert!(confined_rel(&rel_path(&[b"a".to_vec(), b"b.txt".to_vec()])));
+        assert!(confined_rel(&rel_path(&[b"..x".to_vec()])));
+        for hostile in [
+            vec![],
+            vec![b"..".to_vec()],
+            vec![b"../etc".to_vec()],
+            vec![b"a".to_vec(), b"..".to_vec(), b"b".to_vec()],
+            vec![b"/etc/cron.d/x".to_vec()],
+            vec![b"a/../../b".to_vec()],
+        ] {
+            assert!(
+                !confined_rel(&rel_path(&hostile)),
+                "{hostile:?} must not be written through"
+            );
+        }
+    }
 }
 
 /// `path` with its `from` prefix replaced by `to`, if it lies below `from`.
@@ -600,6 +633,18 @@ impl Projector {
             mut record,
             ..
         } = p;
+        // `tree_snapshot` already drops names that are not one component;
+        // this is the last line before a root write, so it checks again.
+        if !confined_rel(&rel) {
+            if let Install::Staged(staging) = &install {
+                let _ = fs::remove_file(staging);
+            }
+            out.errors.push(format!(
+                "{}: refusing a path that leaves the live tree",
+                rel.display()
+            ));
+            return;
+        }
         let abs = self.live.join(&rel);
         let result = (|| -> io::Result<()> {
             if let Some(parent) = abs.parent() {

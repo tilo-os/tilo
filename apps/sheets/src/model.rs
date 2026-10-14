@@ -97,7 +97,7 @@ fn delete_span(a: u32, b: u32, at: u32) -> Option<(u32, u32)> {
 
 /// Convert a zero-based column index to spreadsheet letters.
 /// `0 -> "A"`, `25 -> "Z"`, `26 -> "AA"`, `701 -> "ZZ"`. The letters are
-/// qdoc's, the same the `.xlsx`/`.ods` codecs write.
+/// tilo-doc's, the same the `.xlsx`/`.ods` codecs write.
 pub fn col_to_letters(col: Col) -> String {
     tilo_doc::sheet::a1::index_to_col(col.saturating_add(1))
 }
