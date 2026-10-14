@@ -509,6 +509,7 @@ async fn a_host_without_apps_answers_only_its_rooms_governance() {
     let Some(answer) = plane.serve(7, &someone, governance) else {
         panic!("an invocation is answered");
     };
+    drop(plane);
     let RemoteActionMessage::Receipt(receipt) = settled(answer).await else {
         panic!("a receipt");
     };
