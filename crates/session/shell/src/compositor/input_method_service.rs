@@ -251,7 +251,9 @@ impl InputMethodService {
             }
             InputMethodOwner::Composer(engine) => {
                 let runtime = crate::shell::launcher::runtime_dir();
-                let config_home = runtime.join("tilo-session").join("input-method");
+                let config_home = runtime
+                    .join(tilo_paths::login::SESSION_DIR)
+                    .join("input-method");
                 let launch = super::input_method::composer_launch(
                     engine,
                     &request.layout,

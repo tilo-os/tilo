@@ -2728,12 +2728,8 @@ fn control_listener_wake(
     }
 }
 
-/// Directory under `$XDG_RUNTIME_DIR` where a running compositor publishes
-/// facts the next terminal command needs; torn down with the session.
-pub const SESSION_RUNTIME_SUBDIR: &str = "tilo-session";
-
-/// File inside [`SESSION_RUNTIME_SUBDIR`] holding the bare socket name (no
-/// trailing newline), so `WAYLAND_DISPLAY=$(cat …)` is exactly right.
+/// File inside the session directory ([`tilo_paths::login::session_dir`])
+/// holding the bare socket name (no trailing newline), so `WAYLAND_DISPLAY=$(cat …)` is exactly right.
 pub const WAYLAND_DISPLAY_FILE: &str = "wayland-display";
 
 /// Where [`publish_wayland_display`] writes, given `$XDG_RUNTIME_DIR`. Split
@@ -2742,11 +2738,7 @@ pub const WAYLAND_DISPLAY_FILE: &str = "wayland-display";
 /// `None` when the variable is unset or not absolute — guessing `/tmp`
 /// would put a session-scoped file somewhere world-writable.
 pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    let dir = PathBuf::from(runtime_dir?);
-    if !dir.is_absolute() {
-        return None;
-    }
-    Some(dir.join(SESSION_RUNTIME_SUBDIR).join(WAYLAND_DISPLAY_FILE))
+    Some(tilo_paths::login::session_dir(runtime_dir)?.join(WAYLAND_DISPLAY_FILE))
 }
 
 /// Publish the compositor's Wayland socket name to
@@ -2779,7 +2771,7 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
 }
 
-/// File inside [`SESSION_RUNTIME_SUBDIR`] naming the room of the workspace in
+/// File inside the session directory naming the room of the workspace in
 /// front: the room a command started now (an app run from a terminal, or by
 /// `tilo-app dev`) joins, as an app the shell starts joins the room it names
 /// with the launcher's `--workspace-id`.
