@@ -52,6 +52,11 @@ version=$(grep -o "v/[0-9a-f]\{20\}/entry-page.mjs" <<<"$page" | head -1 | cut -
 [[ -n $version ]] || fail "the entry page imports no versioned entry-page.mjs"
 grep -q "'../v/$version/entry-page.mjs'" <<<"$(get "$home" /app/)" || fail "the app entry points elsewhere"
 grep -q '^cache-control: no-cache' <(head_of "$home" /) || fail "/ must revalidate"
+# The arrival screen's lines, which arrival.mjs fetches beside itself.
+for locale in en-US de-DE; do
+  grep -q '^arrival-label-tip = ' <<<"$(get "$home" "/v/$version/locales/$locale.ftl")" \
+    || fail "the bundle carries no locales/$locale.ftl"
+done
 
 # Every answer to a plain GET is a whole 200, encoded or not: CDNs never
 # cache a 206, so a partial answer to a request without Range sends every
