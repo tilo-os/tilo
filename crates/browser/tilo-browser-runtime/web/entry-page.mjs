@@ -16,7 +16,7 @@
  */
 import {AdmissionError} from './admission.mjs';
 import {boot} from './entry.mjs';
-import {loadRuntime, mountDesktop} from './host.mjs';
+import {loadRuntime, mountDesktop, prepareGpu} from './host.mjs';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -259,7 +259,7 @@ export async function startEntryPage({mode}) {
       return pairViaHost({origin, room, userPublicKey, workspace, runtime, displayName, label: deviceLabel(),
         onPairingCode: showPairingCode});
     },
-    readAccounts: origin => readBrowserAccounts({origin, runtime}),
+    readAccounts: async origin => readBrowserAccounts({origin, runtime: await loadRuntime()}),
     chooseAccount: accounts => card('Open this link as',
       accounts.map(account => [account.displayName || account.userPublicKey.slice(0, 12), account])),
     // A guest ticket: a fresh device of the room's root, certified once the
@@ -267,7 +267,7 @@ export async function startEntryPage({mode}) {
     // read from the host's own certificate, so the link need not carry it.
     redeemTicket: async ({origin, room, ticket, tickets}) => {
       const {connectRelayPeer} = await import('./relay.mjs');
-      const hostCert = await hostCertificate(runtime, origin);
+      const hostCert = await hostCertificate(await loadRuntime(), origin);
       const admit = new URL(`${encodeURIComponent(room)}/admit`, tickets).href;
       return connectRelayPeer({origin, room, userPublicKey: hex(hostCert.user_public_key), label: 'Guest',
         onPairingCode: async pairingCode => {
@@ -294,6 +294,8 @@ export async function startEntryPage({mode}) {
     rendererCard(unavailable);
     return;
   }
+  // The GPU is set up while the page joins and opens the workspace.
+  prepareGpu();
   try {
     const page = await boot({mode, surface, status, deps, diagnostics, onStep: arrive});
     if (!page) return;

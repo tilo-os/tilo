@@ -52,6 +52,14 @@ const data=createDataLoader({baseURL:import.meta.url,runtime});
  * `flush()` resolves when writes are durable; call `release()` once. */
 /** The wasm runtime module, once loaded (the peer's codec and certificates). */
 export async function loadRuntime(){await ready();return runtime;}
+/** Open the WebGPU device and compile the renderer once the module is in,
+ * while the page joins and opens the workspace; the first mount takes it.
+ * Skipped where mounting would refuse WebGPU, and on WebKit, whose renderer
+ * starts only once the page's load settled (`settleBeforeGpu`). */
+export function prepareGpu(){
+  if(!navigator.gpu||webgpuRefusal()||isWebKit(navigator))return;
+  void ready().then(()=>runtime.prepare_gpu()).catch(()=>{});
+}
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
