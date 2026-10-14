@@ -216,6 +216,37 @@ pub struct StripPlaces {
 }
 
 impl StripPlaces {
+    /// Who is on which strip of `tree`'s active workspace: the room's other
+    /// people at the strips their presence names (`others`), and this
+    /// person on the strip shown. No counts while nobody else is here;
+    /// adding is offered.
+    pub fn in_active_workspace(tree: &DesktopTree, others: &[tilo_desktop_model::StripId]) -> Self {
+        let mut present: Vec<(tilo_desktop_model::StripId, usize)> = Vec::new();
+        if let Some(workspace) = tree.active_workspace()
+            && !others.is_empty()
+        {
+            let mine = tree
+                .active_strip
+                .get(&workspace.id)
+                .copied()
+                .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
+                .or_else(|| workspace.strips.first().map(|strip| strip.id));
+            for place in others.iter().copied().chain(mine) {
+                if !workspace.strips.iter().any(|strip| strip.id == place) {
+                    continue;
+                }
+                match present.iter_mut().find(|(id, _)| *id == place) {
+                    Some((_, count)) => *count = count.saturating_add(1),
+                    None => present.push((place, 1)),
+                }
+            }
+        }
+        Self {
+            present,
+            can_add: true,
+        }
+    }
+
     pub fn people_on(&self, strip: tilo_desktop_model::StripId) -> usize {
         self.present
             .iter()
@@ -322,3 +353,44 @@ pub trait DesktopChromeSource {
     }
 }
 pub type Chrome = std::rc::Rc<dyn DesktopChromeSource>;
+
+#[cfg(test)]
+mod strip_places_tests {
+    use super::StripPlaces;
+    use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceId};
+
+    fn tree() -> DesktopTree {
+        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+        workspace.strips = vec![
+            Strip::new(StripId(10), "Main"),
+            Strip::new(StripId(11), "Games"),
+        ];
+        let mut tree = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        tree.active_strip.insert(WorkspaceId(1), StripId(11));
+        tree
+    }
+
+    #[test]
+    fn counts_everyone_present_where_they_are_including_this_person() {
+        let places =
+            StripPlaces::in_active_workspace(&tree(), &[StripId(11), StripId(10), StripId(11)]);
+        assert_eq!(places.people_on(StripId(11)), 3);
+        assert_eq!(places.people_on(StripId(10)), 1);
+        assert!(places.can_add);
+    }
+
+    #[test]
+    fn alone_shows_no_counts_and_unknown_places_are_ignored() {
+        assert!(
+            StripPlaces::in_active_workspace(&tree(), &[])
+                .present
+                .is_empty()
+        );
+        let places = StripPlaces::in_active_workspace(&tree(), &[StripId(99)]);
+        assert_eq!(places.present, [(StripId(11), 1)]);
+    }
+}

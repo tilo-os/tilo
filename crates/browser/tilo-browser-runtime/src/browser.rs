@@ -245,6 +245,8 @@ struct Mount {
     replica_changed: Rc<std::cell::Cell<bool>>,
     /// The focus presence last reported to the page.
     focus_presence: RefCell<Option<serde_json::Value>>,
+    /// The last `livePlace` the page was told.
+    live_place: RefCell<Option<serde_json::Value>>,
 }
 
 struct Desktop {
@@ -255,6 +257,8 @@ struct Desktop {
     generation: String,
     /// What the desktop asked of the page since its last status.
     requests: crate::shell::HostRequests,
+    /// Where the room's other people are, for the bar.
+    room: crate::shell::Room,
 }
 
 impl Mount {
@@ -921,6 +925,11 @@ fn present_desktop(
     DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
     let generation = format!("mount-{id}");
     let requests = crate::shell::HostRequests::default();
+    let room = crate::shell::Room {
+        authors: Rc::clone(&shared.authors),
+        author: config.author(),
+        ..crate::shell::Room::default()
+    };
     let wake = proxy()?;
     let shell = crate::shell::BrowserShell::new(
         surface,
@@ -931,6 +940,7 @@ fn present_desktop(
             mac: config.mac,
         },
         Rc::clone(&requests),
+        room.clone(),
         Arc::new(move || {
             let _ = wake.send_event(id);
         }),
@@ -946,6 +956,7 @@ fn present_desktop(
             persistence,
             generation,
             requests,
+            room,
         }),
     })
 }
@@ -1240,6 +1251,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         peer: config.peer,
         replica_changed,
         focus_presence: RefCell::new(None),
+        live_place: RefCell::new(None),
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
     emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
@@ -1753,6 +1765,32 @@ impl Mount {
         )
     }
 
+    /// Where this person is on the desktop, for the room's presence:
+    /// `{focus, place}`, the record of the focused window (the desktop's
+    /// own record where no window is focused or it has none yet) and the
+    /// strip shown. `None` for a single application.
+    fn live_place_value(&self) -> Option<serde_json::Value> {
+        let desktop = self.desktop.as_ref()?;
+        let (focus, place) = desktop.handle.read(|tree| {
+            let place = tree.active_workspace().and_then(|workspace| {
+                tilo_desktop_surface::navigation::active_strip(tree, workspace)
+            });
+            let focus = tilo_desktop_surface::navigation::active_route(tree)
+                .and_then(|route| desktop.shared.live_record_of(tree, route.tab));
+            (focus, place)
+        });
+        let (app, record) = focus.unwrap_or_else(|| {
+            (
+                crate::desktop::DESKTOP_PACKAGE.to_owned(),
+                crate::replication::DESKTOP_RECORD.to_owned(),
+            )
+        });
+        Some(serde_json::json!({
+            "focus": {"app": app, "record": record},
+            "place": place.map(|strip| strip.0.to_string()),
+        }))
+    }
+
     fn publish(&self, id: u64) {
         let ime = self.frame.ime_window().map(|i| {
             serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})
@@ -1811,6 +1849,16 @@ impl Mount {
                 presence.clone().unwrap_or(serde_json::Value::Null),
             );
             *self.focus_presence.borrow_mut() = presence;
+        }
+        let place = self.live_place_value();
+        if *self.live_place.borrow() != place
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert(
+                "livePlace".into(),
+                place.clone().unwrap_or(serde_json::Value::Null),
+            );
+            *self.live_place.borrow_mut() = place;
         }
         let mut text = value.to_string();
         if let crate::semantics_status::SemanticsDecision::Deliver { .. } = decision {
@@ -2617,6 +2665,25 @@ pub fn remote_presence(
         m.frame.relayout();
         m.pending = true;
         m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// The places the room's other people are (`["<strip id>", ...]`, one per
+/// person present), for the bar's strips.
+///
+/// # Errors
+///
+/// Rejects a closed mount or a list that is not one.
+#[wasm_bindgen]
+pub fn desktop_set_places(id: u64, places: &str) -> Result<(), JsValue> {
+    let places: Vec<String> = serde_json::from_str(places).map_err(error)?;
+    with_mount(id, |m| {
+        if let Some(desktop) = &m.desktop {
+            desktop.room.set_places(places);
+            m.pending = true;
+            m.window.request_redraw();
+        }
         Ok(())
     })
 }

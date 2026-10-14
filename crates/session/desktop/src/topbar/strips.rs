@@ -698,16 +698,16 @@ mod tests {
     use tilo_desktop_model::{Strip, Workspace, WorkspaceId};
     use ui::headless::Framed;
 
-    struct Places {
+    struct Host {
         tree: RefCell<DesktopTree>,
-        places: Option<StripPlaces>,
+        reported: Option<StripPlaces>,
         intents: RefCell<Vec<ChromeIntent>>,
     }
 
-    impl DesktopChromeSource for Places {
+    impl DesktopChromeSource for Host {
         fn snapshot(&self) -> DesktopChromeSnapshot {
             DesktopChromeSnapshot {
-                strip_places: self.places.clone(),
+                strip_places: self.reported.clone(),
                 ..Default::default()
             }
         }
@@ -736,11 +736,11 @@ mod tests {
         tree
     }
 
-    fn bar(places: Option<StripPlaces>, width: u32) -> (Framed<TopBarChrome>, Rc<Places>) {
+    fn bar(places: Option<StripPlaces>, width: u32) -> (Framed<TopBarChrome>, Rc<Host>) {
         let tree = tree();
-        let chrome = Rc::new(Places {
+        let chrome = Rc::new(Host {
             tree: RefCell::new(tree.clone()),
-            places,
+            reported: places,
             intents: RefCell::default(),
         });
         let bar =
@@ -754,8 +754,7 @@ mod tests {
             .test_rects()
             .into_iter()
             .find(|(key, _)| key == name)
-            .map(|(_, rect)| rect)
-            .unwrap_or(Rect::ZERO)
+            .map_or(Rect::ZERO, |(_, rect)| rect)
     }
 
     fn places() -> StripPlaces {
