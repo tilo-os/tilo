@@ -121,16 +121,6 @@ pub struct SplitModule {
     pub relies_on_chunks: HashSet<usize>,
 }
 
-fn emit_groups<A: Send, B: Send>(
-    pool: &rayon::ThreadPool,
-    chunks: impl FnOnce() -> A + Send,
-    modules: impl FnOnce() -> B + Send,
-) -> (A, B) {
-    // Both groups read immutable split metadata. Share the existing bounded
-    // pool so a long shared chunk does not leave app-emission workers idle.
-    pool.install(|| rayon::join(chunks, modules))
-}
-
 impl<'a> Splitter<'a> {
     /// Create a new "splitter" instance using the original wasm and the wasm from the output of wasm-bindgen.
     ///
@@ -203,23 +193,19 @@ impl<'a> Splitter<'a> {
             .num_threads(threads)
             .build()
             .context("starting the split threads")?;
-        let (chunks, modules) = emit_groups(
-            &pool,
-            || {
-                chunk_parts
-                    .into_par_iter()
-                    .enumerate()
-                    .map(|(idx, parts)| self.emit_split_chunk(idx, parts))
-                    .collect::<Result<Vec<SplitModule>>>()
-            },
-            || {
-                module_parts
-                    .into_par_iter()
-                    .enumerate()
-                    .map(|(idx, parts)| self.emit_split_module(idx, parts))
-                    .collect::<Result<Vec<SplitModule>>>()
-            },
-        );
+        let (chunks, modules) = pool.install(|| {
+            let chunks = chunk_parts
+                .into_par_iter()
+                .enumerate()
+                .map(|(idx, parts)| self.emit_split_chunk(idx, parts))
+                .collect::<Result<Vec<SplitModule>>>();
+            let modules = module_parts
+                .into_par_iter()
+                .enumerate()
+                .map(|(idx, parts)| self.emit_split_module(idx, parts))
+                .collect::<Result<Vec<SplitModule>>>();
+            (chunks, modules)
+        });
 
         Ok(OutputModules {
             modules: modules?,
@@ -2149,35 +2135,6 @@ fn self_names(module: &Module, id: FunctionId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn independent_emission_groups_share_the_bounded_pool() {
-        use std::sync::mpsc;
-        use std::time::Duration;
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(2)
-            .build()
-            .unwrap();
-        let (chunk_started, chunk_wait) = mpsc::channel();
-        let (module_started, module_wait) = mpsc::channel();
-        let (chunks, modules) = emit_groups(
-            &pool,
-            move || {
-                assert_eq!(rayon::current_num_threads(), 2);
-                chunk_started.send(()).unwrap();
-                module_wait.recv_timeout(Duration::from_secs(5)).unwrap();
-                vec!["chunk"]
-            },
-            move || {
-                assert_eq!(rayon::current_num_threads(), 2);
-                module_started.send(()).unwrap();
-                chunk_wait.recv_timeout(Duration::from_secs(5)).unwrap();
-                vec!["module"]
-            },
-        );
-        assert_eq!(chunks, vec!["chunk"]);
-        assert_eq!(modules, vec!["module"]);
-    }
 
     #[test]
     fn initializer_offsets_are_stable() {
