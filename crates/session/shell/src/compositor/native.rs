@@ -9326,8 +9326,11 @@ pub fn run() {
     let identity_recovery =
         std::env::var_os(crate::shell::identity_provisioning::IDENTITY_RECOVERY_ENV)
             .is_some_and(|value| value == "1");
+    // A device enrolled without the root (a node's session) has its
+    // identity already; nobody sits at it to set one up.
     let identity_missing =
-        crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
+        crate::shell::identity_provisioning::needs_first_run_flow(&identity_store)
+            && !crate::shell::identity_provisioning::enrolled_device_ready();
     // The normal admin socket remains the real seat's. An owner can request
     // a separate semantic endpoint for headless work without enabling the
     // development input socket or changing first-use and lock handling.
