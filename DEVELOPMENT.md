@@ -1,7 +1,8 @@
 # Development Guide
 
-Build dependencies, local development and testing. See `AGENTS.md` for repository
-conventions.
+Build dependencies, local development and testing. The project's rules, and the
+check that enforces each, are in [`docs/policies.md`](docs/policies.md); `AGENTS.md`
+is what agents working here are told.
 
 ## Dev VMs (tilo-vm)
 
@@ -1791,7 +1792,8 @@ on the staged Rust files, workspace membership
 (`scripts/check-workspace-complete.sh`), the app text and shell copy contracts,
 lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
-CI (`.forgejo/workflows/check.yml`).
+CI (`.forgejo/workflows/check.yml`). [`docs/policies.md`](docs/policies.md) maps
+every rule to the hook or CI step that holds it.
 
 Committing a merge checks only what the resolution changed. A file staged
 exactly as the merged-in side has it already passed that side's checks, so the
