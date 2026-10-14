@@ -2629,6 +2629,16 @@ impl crate::search::capability::SearchSource for TileHost {
             _ => Vec::new(),
         }
     }
+    fn search_provider_descriptors(
+        &self,
+    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+        match &self.content {
+            TileContent::App(app) => {
+                crate::search::capability::search_provider_descriptors(app.as_ref())
+            }
+            _ => Vec::new(),
+        }
+    }
     fn activate_search_result(
         &mut self,
         action_id: &str,

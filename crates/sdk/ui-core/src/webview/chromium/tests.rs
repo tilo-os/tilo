@@ -2491,3 +2491,11 @@ fn devtools_extension_calls_round_trip_bounded_and_validated() {
         assert!(validate_event(&broken).is_err());
     }
 }
+
+#[test]
+fn a_governed_app_routes_page_audio_through_the_host_bridge() {
+    // The sandbox withholds the audio sockets and devices, so the engine must
+    // not try to open any; its sound reaches the app over the host protocol.
+    assert_eq!(host_audio_switches(true), ["--tilo-audio-bridge"]);
+    assert!(host_audio_switches(false).is_empty());
+}

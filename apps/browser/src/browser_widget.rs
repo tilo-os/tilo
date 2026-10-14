@@ -598,6 +598,11 @@ impl BrowserWidget {
     pub(crate) fn content_fullscreen(&self) -> bool {
         self.content_fullscreen
     }
+    #[cfg(test)]
+    pub(crate) fn force_content_fullscreen(&mut self, active: bool) {
+        self.content_fullscreen = active;
+        self.structure_dirty = true;
+    }
     pub(crate) fn set_window_fullscreen_active(&mut self, active: bool) {
         if self.window_fullscreen_active != active {
             self.window_fullscreen_active = active;
@@ -3438,7 +3443,7 @@ pub(crate) enum EngineProblem {
 
 /// Where the engine runtime is offered for install: its Store page, the
 /// same consented route every package takes.
-pub(crate) const ENGINE_INSTALL_URI: &str = "tilo-store:runtime/tilo-runtime/2026.10.9-chromium";
+pub(crate) const ENGINE_INSTALL_URI: &str = "tilo-store:runtime/tilo-runtime/2026.10.10-chromium";
 
 /// Live browsing runs the Chromium engine runtime
 /// ([`ui::webview::chromium::runtime`]); there is no other engine and no

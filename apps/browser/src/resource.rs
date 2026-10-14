@@ -425,6 +425,20 @@ mod tests {
         assert!(include_str!("../tilo-app.toml").contains(&expected));
     }
 
+    /// The window's host asks the root widget each frame whether the app
+    /// wants the OS window fullscreen; a page in fullscreen must reach it
+    /// through the framework's root, not only through the bare window.
+    #[test]
+    fn page_fullscreen_reaches_the_root_the_host_polls() {
+        use ui::widget::FullscreenWidgetExt as _;
+        let mut app = TestApp::<BrowserShell>::capture(None).unwrap();
+        assert_eq!(app.harness().root_widget().fullscreen_intent(), Some(false));
+        app.with_widget::<crate::BrowserWindow, _>(|page| page.force_content_fullscreen(true))
+            .expect("the window shows a page");
+        app.settle();
+        assert_eq!(app.harness().root_widget().fullscreen_intent(), Some(true));
+    }
+
     #[test]
     fn the_window_bookmarks_its_page_and_follows_preferences_through_the_door() {
         let mut app = TestApp::<BrowserShell>::capture(None).unwrap();
