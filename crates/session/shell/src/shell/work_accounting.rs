@@ -3,6 +3,7 @@
 //! These count actual factory calls, not cache hits or switch decisions. Keeping
 //! them separate makes a rebuilt empty surface distinguishable from remounting
 //! applications. They are exposed with the compositor's diagnostic state.
+//! Counts saturate rather than wrapping and making cumulative work decrease.
 
 use std::cell::Cell;
 
@@ -34,13 +35,13 @@ fn record(increment: impl FnOnce(&mut WorkspaceWork)) {
 }
 
 pub(crate) fn surface_built() {
-    record(|work| work.surface_builds += 1);
+    record(|work| work.surface_builds = work.surface_builds.saturating_add(1));
 }
 
 pub(crate) fn tile_resolved() {
-    record(|work| work.tile_resolutions += 1);
+    record(|work| work.tile_resolutions = work.tile_resolutions.saturating_add(1));
 }
 
 pub(crate) fn app_mounted() {
-    record(|work| work.app_mounts += 1);
+    record(|work| work.app_mounts = work.app_mounts.saturating_add(1));
 }
