@@ -11482,7 +11482,7 @@ fn code_header_height(blocks: &[Block], index: usize, scale: f64) -> f64 {
         return 0.0;
     };
     if matches!(block.kind, BlockKind::Callout(_)) {
-        return callout::CALLOUT_HEADER_HEIGHT * scale;
+        return callout::callout_header_height() * scale;
     }
     if !matches!(block.kind, BlockKind::CodeBlock { .. })
         || formula_descriptor(&block.kind).is_some()

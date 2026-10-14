@@ -292,7 +292,7 @@ fn a_callout_paints_its_wash_under_its_header_and_text() {
     let line = editor.blocks[1].line.get_rect();
     let painted = editor.block_paint_rect(1).unwrap();
     assert!(
-        (line.y0 - painted.y0 - callout::CALLOUT_HEADER_HEIGHT).abs() < 0.01,
+        (line.y0 - painted.y0 - callout::callout_header_height()).abs() < 0.01,
         "{line:?} in {painted:?}"
     );
     let mut names = Vec::new();
