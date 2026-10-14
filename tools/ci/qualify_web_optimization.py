@@ -55,8 +55,13 @@ def qualify(root, output):
     source = checked_source(root)
     output.mkdir(parents=True, exist_ok=False)
     bundle = root / "target/tilo-app/web/calculator/bundle"
-    environment = {**os.environ, "BINARYEN_CORES": "3"}
+    environment = dict(os.environ)
+    environment.pop("BINARYEN_CORES", None)
     execute(root, ["cargo", "build", "--locked", "-p", "tilo-app-cli", "--bin", "tilo-app"], environment)
+    # Warm the independent native postprocessor before either timed bundle.
+    # Its first compilation must not be credited as a parallel optimizer gain.
+    execute(root, ["cargo", "build", "--release", "--locked", "--manifest-path",
+                   "tools/web/wasm-split/Cargo.toml", "--target-dir", "target/wasm-split-tool"], environment)
     results = []
     try:
         for jobs in (1, 2):
@@ -64,9 +69,14 @@ def qualify(root, output):
             # The source, compiled module, profile, flags and size gate stay identical.
             (bundle / ".wasm-input").unlink(missing_ok=True)
             environment["TILO_WASM_OPT_JOBS"] = str(jobs)
+            if jobs == 1:
+                environment.pop("BINARYEN_CORES", None)
+            else:
+                environment["BINARYEN_CORES"] = "3"
             result = execute(root, ["target/debug/tilo-app", "build", "--target", "web",
                                    "--bundle", "desktop", "--release", "apps/calculator"], environment)
             result["optimizer_jobs"] = jobs
+            result["binaryen_cores"] = environment.get("BINARYEN_CORES", "default")
             result["module_hashes"] = module_hashes(bundle)
             results.append(result)
             (output / f"jobs-{jobs}.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -75,11 +85,13 @@ def qualify(root, output):
         if checked_source(root) != source:
             raise ValueError("source changed during qualification")
         execute(root, ["python3", "tools/web/wasm_size_ratchet.py", "measure", "desktop", str(bundle)], environment)
-        receipt = {"source_sha": source, "binaryen_cores_per_process": 3,
+        receipt = {"source_sha": source, "candidate_binaryen_cores_per_process": 3,
+                   "resource_limits": {name: (Path("/sys/fs/cgroup") / name).read_text().strip()
+                                       for name in ("cpu.max", "memory.max", "memory.peak")},
                    "module_bytes_identical": True, "results": results}
         (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
         print(json.dumps({"source_sha": source, "module_bytes_identical": True,
-                          "results": [{k: row[k] for k in ("optimizer_jobs", "wall_seconds", "phases")}
+                          "results": [{k: row[k] for k in ("optimizer_jobs", "binaryen_cores", "wall_seconds", "phases")}
                                       for row in results]}), flush=True)
     finally:
         (output / "source.json").write_text(json.dumps({"source_sha": source}) + "\n")

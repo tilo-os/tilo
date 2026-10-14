@@ -206,18 +206,44 @@ fn optimize_modules(optimizer: &Optimizer, modules: &[PathBuf], jobs: usize) -> 
     // optimizer prevents the input stamp from certifying a partial bundle.
     for batch in modules.chunks(jobs) {
         std::thread::scope(|scope| {
-            let handles: Vec<_> = batch
-                .iter()
-                .map(|module| scope.spawn(move || optimizer.optimize(module)))
-                .collect();
-            let results: Vec<_> = handles.into_iter().map(|handle| handle.join()).collect();
-            for result in results {
-                result.map_err(|_| anyhow::anyhow!("module optimizer worker panicked"))??;
+            // Spawn the whole batch before joining; a lazy iterator would serialize it.
+            let mut handles = Vec::with_capacity(batch.len());
+            for module in batch {
+                handles.push(scope.spawn(move || optimizer.optimize(module)));
             }
-            Ok::<_, anyhow::Error>(())
+            let mut first_error = None;
+            for handle in handles {
+                let result = handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("module optimizer worker panicked"))
+                    .and_then(std::convert::identity);
+                if let Err(error) = result
+                    && first_error.is_none()
+                {
+                    first_error = Some(error);
+                }
+            }
+            first_error.map_or(Ok(()), Err)
         })?;
     }
     Ok(())
+}
+
+fn split_input(script: &Path) -> Result<serde_json::Value> {
+    let directory = script
+        .parent()
+        .context("splitter has no source directory")?;
+    let mut sources = std::collections::BTreeMap::new();
+    for name in ["Cargo.toml", "Cargo.lock", "src/main.rs", "src/split.rs"] {
+        let path = directory.join(name);
+        let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        sources.insert(name, hex::encode(Sha256::digest(bytes)));
+    }
+    let script_bytes =
+        std::fs::read(script).with_context(|| format!("reading {}", script.display()))?;
+    Ok(
+        serde_json::json!({"path": script, "script": hex::encode(Sha256::digest(script_bytes)), "sources": sources}),
+    )
 }
 
 /// `split` is the splitter script when the module is split
@@ -235,7 +261,7 @@ fn bundle_runtime(
     let input = serde_json::to_string(&serde_json::json!({
         "wasm":wasm_stamp(wasm, release)?,
         "optimizer":optimizer.map(Optimizer::input),
-        "split":split,
+        "split":split.map(split_input).transpose()?,
     }))?;
     let pkg = bundle.join("pkg");
     let output = pkg.join("tilo_browser_runtime_bg.wasm");
@@ -1784,7 +1810,7 @@ mod tests {
         let program = root.join("optimizer");
         executable(
             &program,
-            r#"#!/usr/bin/env python3
+            r"#!/usr/bin/env python3
 import pathlib, sys, time
 path = pathlib.Path(sys.argv[-1])
 path.with_suffix('.started').touch()
@@ -1795,7 +1821,7 @@ if (path.parent / 'barrier').exists():
             sys.exit(23)
         time.sleep(.01)
 path.write_bytes(b'optimized\0' + path.read_bytes())
-"#,
+",
         );
         let optimizer = Optimizer {
             program,
@@ -1835,14 +1861,14 @@ path.write_bytes(b'optimized\0' + path.read_bytes())
         let program = root.join("optimizer");
         executable(
             &program,
-            r#"#!/usr/bin/env python3
+            r"#!/usr/bin/env python3
 import pathlib, sys, time
 path = pathlib.Path(sys.argv[-1])
 if path.name == 'fail.wasm':
     sys.exit(17)
 time.sleep(.05)
 path.with_suffix('.finished').touch()
-"#,
+",
         );
         let optimizer = Optimizer {
             program,
@@ -1858,6 +1884,54 @@ path.with_suffix('.finished').touch()
         assert!(!root.join("third.finished").exists());
         assert!(optimize_modules(&optimizer, &modules, 0).is_err());
         assert!(optimize_modules(&optimizer, &modules, 9).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_bundle_invalidates_splitter_source_and_preserves_no_op_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let tool = root.join("split-tool");
+        std::fs::create_dir_all(tool.join("src")).unwrap();
+        for name in ["Cargo.toml", "Cargo.lock", "src/main.rs", "src/split.rs"] {
+            std::fs::write(tool.join(name), b"first source").unwrap();
+        }
+        let wasm = root.join("input.wasm");
+        std::fs::write(&wasm, b"unoptimized").unwrap();
+        let bundle = root.join("bundle");
+        std::fs::create_dir_all(bundle.join("pkg")).unwrap();
+        let bindgen = root.join("bindgen");
+        executable(
+            &bindgen,
+            r#"#!/bin/sh
+set -eu
+input=$1
+while [ "$1" != --out-dir ]; do shift; done
+cp "$input" "$2/tilo_browser_runtime_bg.wasm"
+"#,
+        );
+        let split = tool.join("split.sh");
+        executable(
+            &split,
+            r#"#!/bin/sh
+set -eu
+printf 'split\n' >> "$2/../calls"
+"#,
+        );
+        bundle_runtime(&wasm, false, &bindgen, &bundle, None, Some(&split)).unwrap();
+        bundle_runtime(&wasm, false, &bindgen, &bundle, None, Some(&split)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bundle.join("calls")).unwrap(),
+            "split\n"
+        );
+        std::fs::write(tool.join("src/split.rs"), b"second source").unwrap();
+        bundle_runtime(&wasm, false, &bindgen, &bundle, None, Some(&split)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bundle.join("calls")).unwrap(),
+            "split\nsplit\n"
+        );
+        std::fs::remove_file(tool.join("Cargo.lock")).unwrap();
+        assert!(bundle_runtime(&wasm, false, &bindgen, &bundle, None, Some(&split)).is_err());
     }
 
     #[cfg(unix)]

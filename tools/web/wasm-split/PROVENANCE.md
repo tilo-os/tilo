@@ -43,6 +43,11 @@ time:
   module and other chunks, and the chunk functions called from outside get
   a table slot the main module leaves empty and the chunk fills.
 
+- Function-table initializer segments are emitted in ascending table-offset
+  order, preserving every function and offset while making module bytes stable
+  across fresh splitter processes. Randomized hash iteration changed the bytes
+  of split modules even for the same linked input.
+
 Memory: upstream parses the whole program once per split module, all at
 once, which took 140 GB for a 170 MB module split in 34. Here each split
 module is parsed with only the function bodies it keeps (the rest are

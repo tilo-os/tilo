@@ -760,7 +760,9 @@ impl<'a> Splitter<'a> {
     fn create_ifunc_initializers(&self, out: &mut Module, unique_symbols: &HashSet<Node>) {
         let ifunc_table = self.load_funcref_table(out);
 
-        let mut initializers = HashMap::new();
+        // Element segment insertion order becomes serialized module order.
+        // Preserve table offsets instead of a fresh randomized hash order.
+        let mut initializers = BTreeMap::new();
         for segment in out.elements.iter_mut() {
             let ElementKind::Active { offset, .. } = &mut segment.kind else {
                 continue;
@@ -2128,4 +2130,66 @@ fn self_names(module: &Module, id: FunctionId) -> String {
         .chars()
         .take(160)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initializer_offsets_are_stable() {
+        let splitter = Splitter {
+            source_module: Module::default(),
+            original: &[],
+            bindgened: &[],
+            fns_to_ids: HashMap::new(),
+            _ids_to_fns: Vec::new(),
+            shared_symbols: BTreeSet::new(),
+            split_points: Vec::new(),
+            chunks: Vec::new(),
+            main_graph: HashSet::new(),
+            call_graph: HashMap::new(),
+            parent_graph: HashMap::new(),
+        };
+        let mut previous = None;
+        for _ in 0..8 {
+            let mut module = Module::default();
+            let table = module
+                .tables
+                .add_local(false, 64, Some(64), RefType::Funcref);
+            let functions: Vec<_> = (0..64)
+                .map(|_| {
+                    let function = FunctionBuilder::new(&mut module.types, &[], &[]);
+                    function.finish(Vec::new(), &mut module.funcs)
+                })
+                .collect();
+            let symbols = functions.iter().copied().map(Node::Function).collect();
+            let segment = module.elements.add(
+                ElementKind::Active {
+                    table,
+                    offset: ConstExpr::Value(ir::Value::I32(0)),
+                },
+                ElementItems::Functions(functions),
+            );
+            module.tables.get_mut(table).elem_segments.insert(segment);
+            splitter.create_ifunc_initializers(&mut module, &symbols);
+            let offsets: Vec<_> = module
+                .elements
+                .iter()
+                .map(|element| match &element.kind {
+                    ElementKind::Active {
+                        offset: ConstExpr::Value(ir::Value::I32(value)),
+                        ..
+                    } => *value,
+                    other => panic!("unexpected initializer: {other:?}"),
+                })
+                .collect();
+            assert_eq!(offsets, (0..64).collect::<Vec<_>>());
+            let bytes = module.emit_wasm();
+            if let Some(expected) = &previous {
+                assert_eq!(&bytes, expected);
+            }
+            previous = Some(bytes);
+        }
+    }
 }
