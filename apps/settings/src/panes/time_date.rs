@@ -30,7 +30,7 @@ use ui::theme::Theme;
 use ui::tilo_resource;
 use ui::widget::{AppModel, ModelPath, Toggle, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::effects::effect;
@@ -75,10 +75,16 @@ pub fn timezone_map(zones: &[String]) -> Vec<TimeZonePoint> {
         "/usr/share/zoneinfo/zone1970.tab",
         "/usr/share/zoneinfo/zone.tab",
     ];
-    TABLES
+    // `zone1970.tab` lists one zone per region of identical clocks since
+    // 1970; zones merged into another (Europe/Amsterdam into Brussels) are
+    // only in `zone.tab`. Reading both, the newer first, puts every zone the
+    // device accepts on the map, including the one it may be set to.
+    let tables: String = TABLES
         .iter()
-        .find_map(|path| fs::read_to_string(path).ok())
-        .map_or_else(Vec::new, |table| timezone_map_from_tab(zones, &table))
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .collect::<Vec<_>>()
+        .join("\n");
+    timezone_map_from_tab(zones, &tables)
 }
 
 fn timezone_map_from_tab(zones: &[String], table: &str) -> Vec<TimeZonePoint> {
@@ -166,6 +172,54 @@ struct TimeZoneMap {
     hit_radius: f64,
     action: Option<ui::widget::ActionEmitter<String>>,
     rect: Rect,
+    /// [`Self::land`]'s cache and the plot it was projected into.
+    land_plot: Rect,
+    land_path: BezPath,
+    /// The plot's inset inside the well, and the room below it for the
+    /// caption naming the hovered or chosen zone; theme spacing.
+    inset: f64,
+    caption: f64,
+}
+
+/// The latitudes drawn, in degrees: everything people live at, without the
+/// polar band that would take a third of an equirectangular map's height.
+const MAP_LATITUDES: std::ops::RangeInclusive<f64> = -58.0..=84.0;
+const MAP_SOUTH: f64 = *MAP_LATITUDES.start();
+const MAP_NORTH: f64 = *MAP_LATITUDES.end();
+/// The well's width over its height: the plot's own 360:142 degrees, less
+/// the caption's share.
+const MAP_ASPECT: f32 = 2.2;
+
+/// The land masses, as closed rings of (longitude, latitude) in degrees,
+/// from Natural Earth's 1:110m land polygons (`data/world-land.json`,
+/// provenance in `data/README.md`). tzdata publishes where each zone's city
+/// is, but nothing installed describes the coastlines the cities sit on.
+fn world_land() -> &'static [Vec<(f64, f64)>] {
+    static LAND: std::sync::LazyLock<Vec<Vec<(f64, f64)>>> = std::sync::LazyLock::new(|| {
+        parse_world_land(include_str!("../../data/world-land.json")).unwrap_or_default()
+    });
+    &LAND
+}
+
+/// Parse `data/world-land.json`: an array of rings, each a flat array of
+/// alternating longitude and latitude in tenths of a degree.
+fn parse_world_land(json: &str) -> Option<Vec<Vec<(f64, f64)>>> {
+    let rings: Vec<Vec<i16>> = serde_json::from_str(json).ok()?;
+    Some(
+        rings
+            .iter()
+            .map(|ring| {
+                ring.chunks_exact(2)
+                    .filter_map(|pair| match *pair {
+                        [longitude, latitude] => {
+                            Some((f64::from(longitude) / 10.0, f64::from(latitude) / 10.0))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .collect(),
+    )
 }
 
 impl TimeZoneMap {
@@ -182,6 +236,10 @@ impl TimeZoneMap {
             hit_radius: f64::from(ui::tokens::Metrics::BASE.min_pointer_target) / 2.0,
             action: None,
             rect: Rect::ZERO,
+            land_plot: Rect::ZERO,
+            land_path: BezPath::new(),
+            inset: f64::from(ui::tokens::Spacing::BASE.s2),
+            caption: f64::from(ui::tokens::Spacing::BASE.s8),
         }
     }
 
@@ -190,12 +248,28 @@ impl TimeZoneMap {
         self
     }
 
+    /// The equirectangular plot: one degree of longitude is as wide as one
+    /// degree of latitude is tall, centred in the well above the caption,
+    /// so the continents keep their shape at every window width.
     fn plot_rect(&self) -> Rect {
-        Rect::new(
-            self.rect.x0 + 10.0,
-            self.rect.y0 + 10.0,
-            (self.rect.x1 - 10.0).max(self.rect.x0 + 11.0),
-            (self.rect.y1 - 34.0).max(self.rect.y0 + 11.0),
+        let available = Rect::new(
+            self.rect.x0 + self.inset,
+            self.rect.y0 + self.inset,
+            (self.rect.x1 - self.inset).max(self.rect.x0 + self.inset + 1.0),
+            (self.rect.y1 - self.caption).max(self.rect.y0 + self.inset + 1.0),
+        );
+        let aspect = 360.0 / (MAP_NORTH - MAP_SOUTH);
+        let width = available.width().min(available.height() * aspect);
+        let height = width / aspect;
+        let x0 = available.center().x - width / 2.0;
+        let y0 = available.center().y - height / 2.0;
+        Rect::new(x0, y0, x0 + width, y0 + height)
+    }
+
+    fn project(plot: Rect, longitude: f64, latitude: f64) -> Point {
+        Point::new(
+            plot.x0 + ((longitude + 180.0) / 360.0) * plot.width(),
+            plot.y0 + ((MAP_NORTH - latitude) / (MAP_NORTH - MAP_SOUTH)) * plot.height(),
         )
     }
 
@@ -203,11 +277,44 @@ impl TimeZoneMap {
         let Some(point) = self.points.get(index) else {
             return Point::ZERO;
         };
+        Self::project(self.plot_rect(), point.longitude(), point.latitude())
+    }
+
+    /// Whether the zone's city lies inside the drawn latitudes. Antarctic
+    /// stations fall south of the map and stay choosable in the selector.
+    fn on_map(&self, index: usize) -> bool {
+        self.points
+            .get(index)
+            .is_some_and(|point| MAP_LATITUDES.contains(&point.latitude()))
+    }
+
+    /// The coastlines of [`world_land`] in plot coordinates. Rebuilt only
+    /// when the plot moves or resizes, not every frame.
+    fn land(&mut self) -> &BezPath {
         let plot = self.plot_rect();
-        Point::new(
-            plot.x0 + ((point.longitude() + 180.0) / 360.0) * plot.width(),
-            plot.y0 + ((90.0 - point.latitude()) / 180.0) * plot.height(),
-        )
+        if self.land_plot != plot {
+            self.land_plot = plot;
+            let mut path = BezPath::new();
+            // Antarctica lies wholly south of the plot and is left out; any
+            // other ring is pinned inside it, so nothing draws over the well.
+            let drawn = world_land()
+                .iter()
+                .filter(|ring| ring.iter().any(|&(_, latitude)| latitude > MAP_SOUTH));
+            for ring in drawn {
+                let mut points = ring.iter().map(|&(longitude, latitude)| {
+                    Self::project(plot, longitude, latitude.clamp(MAP_SOUTH, MAP_NORTH))
+                });
+                if let Some(first) = points.next() {
+                    path.move_to(first);
+                    for point in points {
+                        path.line_to(point);
+                    }
+                    path.close_path();
+                }
+            }
+            self.land_path = path;
+        }
+        &self.land_path
     }
 
     fn point_at(&self, position: Point) -> Option<usize> {
@@ -217,6 +324,7 @@ impl TimeZoneMap {
         self.points
             .iter()
             .enumerate()
+            .filter(|(index, _)| self.on_map(*index))
             .filter_map(|(index, _)| {
                 let projected = self.projected(index);
                 let distance = (projected.x - position.x).hypot(projected.y - position.y);
@@ -247,7 +355,7 @@ impl TimeZoneMap {
             .points
             .iter()
             .enumerate()
-            .filter(|(index, _)| *index != current)
+            .filter(|(index, _)| *index != current && self.on_map(*index))
             .filter_map(|(index, candidate)| {
                 let dx = candidate.longitude() - origin.longitude();
                 // Positive screen-y means south, hence the inversion.
@@ -305,10 +413,20 @@ impl Widget for TimeZoneMap {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.hit_radius = f64::from(theme.tokens.metrics.min_pointer_target) / 2.0;
+        self.inset = f64::from(theme.tokens.spacing.s2);
+        self.caption = f64::from(theme.tokens.spacing.s8);
+        // The height follows the width, so the plot keeps the continents'
+        // proportions instead of squashing them into a fixed-height strip.
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(theme.tokens.metrics.panel_width_utility * 11.0 / 20.0),
+                height: Dimension::auto(),
+            },
+            aspect_ratio: Some(MAP_ASPECT),
+            // Scales to any width, so it never sets its column's minimum.
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::auto(),
             },
             flex_shrink: 0.0,
             ..Default::default()
@@ -345,28 +463,39 @@ impl Widget for TimeZoneMap {
 
         let plot = self.plot_rect();
         // Graticule lines are the same derived hairline as the well's edge,
-        // so they read as one surface's ruling rather than a second border.
-        let grid_color = theme.tokens.colors.border_standard;
+        // so they read as one surface's ruling rather than a second border;
+        // one path, under the land.
+        let mut graticule = BezPath::new();
         for longitude in [-120.0, -60.0, 0.0, 60.0, 120.0] {
-            let x = plot.x0 + ((longitude + 180.0) / 360.0) * plot.width();
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                grid_color,
-                None,
-                &Line::new((x, plot.y0), (x, plot.y1)),
-            );
+            let x = Self::project(plot, longitude, 0.0).x;
+            graticule.move_to((x, plot.y0));
+            graticule.line_to((x, plot.y1));
         }
         for latitude in [-45.0, 0.0, 45.0] {
-            let y = plot.y0 + ((90.0 - latitude) / 180.0) * plot.height();
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                grid_color,
-                None,
-                &Line::new((plot.x0, y), (plot.x1, y)),
-            );
+            let y = Self::project(plot, 0.0, latitude).y;
+            graticule.move_to((plot.x0, y));
+            graticule.line_to((plot.x1, y));
         }
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &graticule,
+        );
+
+        // Land is a tint of the well rather than a colour of its own, so the
+        // map reads in every theme and covers the graticule; the zone dots
+        // and the chosen city stay the strongest marks on it.
+        let land_fill = theme.tokens.colors.overlay_medium;
+        let land = self.land();
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            land_fill,
+            None,
+            land,
+        );
 
         if self.points.is_empty() {
             text_renderer.draw_style(
@@ -381,7 +510,7 @@ impl Widget for TimeZoneMap {
         }
 
         let selected = self.selected_index();
-        for index in 0..self.points.len() {
+        for index in (0..self.points.len()).filter(|index| self.on_map(*index)) {
             let centre = self.projected(index);
             let is_selected = selected == Some(index);
             let is_active =
@@ -398,11 +527,18 @@ impl Widget for TimeZoneMap {
                 None,
                 &Circle::new(centre, radius),
             );
-            if is_active {
+            // A ring marks the city under the pointer or the keyboard and,
+            // in the text colour, the chosen one, so it can be found among
+            // the others.
+            if is_active || is_selected {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
-                    theme.border_focus,
+                    if is_active {
+                        theme.border_focus
+                    } else {
+                        theme.tokens.colors.text_primary
+                    },
                     None,
                     &Circle::new(centre, radius + 4.0),
                 );
@@ -1063,30 +1199,37 @@ mod tests {
         )
     }
 
-    /// tzdata parsing, map projection, keyboard access and non-empty timezones.
+    /// A zone merged out of zone1970.tab (Amsterdam, only in zone.tab) still
+    /// gets its dot; a zone in both tables keeps zone1970.tab's coordinates.
     #[test]
-    fn timezone_map_parses_projects_and_commits_known_zones() {
-        // Case `tzdata_coordinates_are_parsed_and_filtered_by_timedated_ids`.
+    fn a_zone_merged_out_of_zone1970_is_still_on_the_map() {
+        // Case `a_zone_merged_out_of_zone1970_is_still_on_the_map`: the
+        // device's own zone (here Amsterdam, only in zone.tab) gets its dot;
+        // a zone in both tables keeps zone1970.tab's coordinates.
         {
-            let points = fixture_points();
-            assert_eq!(
-                points
-                    .iter()
-                    .map(|point| point.id.as_str())
-                    .collect::<Vec<_>>(),
-                ["America/New_York", "Europe/Amsterdam", "Europe/Berlin"]
+            let zones = vec![
+                "Europe/Amsterdam".to_string(),
+                "Europe/Brussels".to_string(),
+            ];
+            let points = timezone_map_from_tab(
+                &zones,
+                "BE,LU,NL\t+5050+00420\tEurope/Brussels\n\
+                 NL\t+5222+00454\tEurope/Amsterdam\n\
+                 BE\t+0000+00000\tEurope/Brussels\n",
             );
-            let new_york = &points[0];
-            assert_eq!(new_york.latitude_e6, 40_714_167);
-            assert_eq!(new_york.longitude_e6, -74_006_389);
-            assert!(
-                points.iter().all(|point| point.id != "Europe/London"),
-                "a coordinate-table entry not accepted by timedated must not enter the map"
-            );
-            assert_eq!(parse_iso6709_coordinate("+9001+00000"), None);
-            assert_eq!(parse_iso6709_coordinate("garbage"), None);
+            let brussels = points
+                .iter()
+                .find(|point| point.id == "Europe/Brussels")
+                .expect("Brussels is mapped");
+            assert_eq!(brussels.latitude_e6, 50_833_333);
+            assert!(points.iter().any(|point| point.id == "Europe/Amsterdam"));
         }
+    }
 
+    /// The map draws the land, keeps its proportions and stays inside its
+    /// well at a narrow and a wide width.
+    #[test]
+    fn the_map_draws_the_land_in_proportion_at_every_width() {
         // Case `map_projects_points_inside_normal_and_narrow_layouts`.
         {
             for width in [280.0, 720.0] {
@@ -1112,17 +1255,74 @@ mod tests {
 
                 assert!((map.rect.width() - f64::from(width)).abs() < 0.1);
                 assert!(
-                    (map.rect.height()
-                        - f64::from(
-                            Theme::dark().tokens.metrics.panel_width_utility * 11.0 / 20.0
-                        ))
-                    .abs()
-                        < 0.1
+                    (map.rect.height() - f64::from(width) / f64::from(MAP_ASPECT)).abs() < 0.5,
+                    "the map's height follows its width at {width}"
+                );
+                let plot = map.plot_rect();
+                assert!(
+                    (plot.width() / plot.height() - 360.0 / (MAP_NORTH - MAP_SOUTH)).abs() < 0.01,
+                    "a degree is as wide as it is tall at {width}: {plot:?}"
+                );
+                assert!(
+                    plot.width() > map.rect.width() * 0.75,
+                    "the plot uses the well at {width}: {plot:?} in {:?}",
+                    map.rect
                 );
                 for index in 0..map.points.len() {
                     assert!(map.plot_rect().contains(map.projected(index)));
                 }
+                // The user saw an empty grid: the map must draw the land the
+                // zones lie on, all of it inside the plot.
+                let land = map.land().clone();
+                let bounds = vello::kurbo::Shape::bounding_box(&land);
+                assert!(
+                    land.elements().len() > 1000,
+                    "the coastlines are drawn at {width}"
+                );
+                assert!(
+                    bounds.width() > plot.width() * 0.95 && bounds.height() > plot.height() * 0.9,
+                    "the land spans the plot at {width}: {bounds:?} in {plot:?}"
+                );
+                assert!(
+                    plot.inflate(0.01, 0.01).contains_rect(bounds),
+                    "no land outside the plot at {width}: {bounds:?} in {plot:?}"
+                );
+                // Berlin lies well inland.
+                let berlin = map
+                    .points
+                    .iter()
+                    .position(|point| point.id == "Europe/Berlin")
+                    .expect("fixture zone");
+                assert!(
+                    vello::kurbo::Shape::contains(&land, map.projected(berlin)),
+                    "Berlin's dot lies on the drawn land at {width}"
+                );
             }
+        }
+    }
+
+    /// tzdata parsing, keyboard access and non-empty timezones.
+    #[test]
+    fn timezone_map_parses_projects_and_commits_known_zones() {
+        // Case `tzdata_coordinates_are_parsed_and_filtered_by_timedated_ids`.
+        {
+            let points = fixture_points();
+            assert_eq!(
+                points
+                    .iter()
+                    .map(|point| point.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["America/New_York", "Europe/Amsterdam", "Europe/Berlin"]
+            );
+            let new_york = &points[0];
+            assert_eq!(new_york.latitude_e6, 40_714_167);
+            assert_eq!(new_york.longitude_e6, -74_006_389);
+            assert!(
+                points.iter().all(|point| point.id != "Europe/London"),
+                "a coordinate-table entry not accepted by timedated must not enter the map"
+            );
+            assert_eq!(parse_iso6709_coordinate("+9001+00000"), None);
+            assert_eq!(parse_iso6709_coordinate("garbage"), None);
         }
 
         // Case `map_is_keyboard_accessible_and_only_offers_known_zones`.
