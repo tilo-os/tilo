@@ -20,6 +20,7 @@ fn rows(theme: &Theme) -> Vec<RosterRow> {
             invited: false,
             activity: None,
             status: None,
+            recent: None,
             followable: true,
         })
         .collect()
@@ -48,6 +49,9 @@ fn paint(overlay: &mut CollaboratorsOverlay, rows: &[RosterRow], theme: &Theme) 
             status_editing: false,
             status_selection: ui::text_selection::Selection::default(),
             screen_exposure: None,
+            expanded_id: None,
+            watching: 0,
+            status_editable: true,
         },
         None,
     );
