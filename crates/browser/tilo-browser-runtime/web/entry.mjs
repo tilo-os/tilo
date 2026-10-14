@@ -183,6 +183,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     say(error?.message ?? String(error));
     throw error;
   }
+  // The app in front (a home workspace's, or the link's) is what the first
+  // frame shows: its code downloads beside the runtime, not after it.
+  if (route.target.app) deps.prefetchApplication?.(route.target.app);
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
   const {peer} = await admit({
     scope: route.target.scope, secrets, tickets: entry.tickets,
