@@ -216,7 +216,6 @@ impl Provider {
             acknowledgements: self.acknowledgements.clone(),
         };
         SearchResult {
-            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: if operation == "inspect" {
                 tilo_actions::OperationKind::View

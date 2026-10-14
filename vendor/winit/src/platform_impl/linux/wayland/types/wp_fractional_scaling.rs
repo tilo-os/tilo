@@ -41,11 +41,8 @@ impl FractionalScalingManager {
         surface: &WlSurface,
         queue_handle: &QueueHandle<WinitState>,
     ) -> WpFractionalScaleV1 {
-        let data = FractionalScaling {
-            surface: surface.clone(),
-        };
-        self.manager
-            .get_fractional_scale(surface, queue_handle, data)
+        let data = FractionalScaling { surface: surface.clone() };
+        self.manager.get_fractional_scale(surface, queue_handle, data)
     }
 }
 

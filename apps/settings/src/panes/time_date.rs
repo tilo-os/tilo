@@ -38,7 +38,7 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{Item, block, card, error_row, note, rows, setting_row, value_row};
+use crate::widgets::{caption, card, error_row, rows, setting_row, value_row};
 use tilo_locale::Locale;
 use ui::clock::TimeStyle;
 use ui::i18n::ArgValue;
@@ -894,7 +894,7 @@ impl TimeDatePane {
     }
 
     /// The automatic-time switch, or why its position is unknown.
-    fn auto_row(&self) -> Item {
+    fn auto_row(&self) -> Box<dyn Widget> {
         match (&self.auto_error, self.sync_status.ntp_enabled) {
             (Some(error), _) => error_row(
                 &t("time-auto"),
@@ -908,7 +908,7 @@ impl TimeDatePane {
     }
 
     /// The zone chooser, or why there is nothing to choose from.
-    fn zone_row(&self) -> Item {
+    fn zone_row(&self) -> Box<dyn Widget> {
         match &self.timezones_error {
             Some(error) => error_row(
                 &t("time-timezone"),
@@ -985,18 +985,18 @@ impl TimeDatePane {
             &t("time-display-title"),
             rows(vec![
                 value_row(&t("time-clock-format"), &clock_format),
-                note(&t("time-display-caption")),
+                caption(&t("time-display-caption")),
             ]),
         );
 
         let map = card(
             &t("time-map-title"),
             rows(vec![
-                block(Box::new(
+                Box::new(
                     TimeZoneMap::new(self.timezone_points.clone(), self.timezone.clone())
                         .on_action(self.cx.binding(effect(TimeDateEffect::SET_TIME_ZONE))),
-                )),
-                note(&map_note),
+                ),
+                caption(&map_note),
             ]),
         );
 
@@ -1008,19 +1008,22 @@ impl TimeDatePane {
                         &t("time-sync"),
                         &t_args("time-status-error", &[("error", error.as_str().into())]),
                     ),
-                    note(&t("time-source-caption")),
+                    caption(&t("time-source-caption")),
                 ],
                 None => vec![
                     value_row(&t("time-sync"), &sync),
                     value_row(&t("time-source"), &source_name),
-                    note(&t("time-source-caption")),
+                    caption(&t("time-source-caption")),
                 ],
             }),
         );
 
         let mut cards = vec![clock, map, source, formats];
         if let Some(notice) = &self.notice_shown {
-            cards.insert(0, card(&t("time-notice-title"), rows(vec![note(notice)])));
+            cards.insert(
+                0,
+                card(&t("time-notice-title"), rows(vec![caption(notice)])),
+            );
         }
         crate::widgets::cards(cards)
     }

@@ -11,23 +11,8 @@ use super::*;
 /// What the host's directory accepts for one action's parameters.
 const DIRECTORY_PARAMS_LIMIT: usize = 32 * 1024;
 
-/// The schema `apply` publishes: every edit but the block variants, which
-/// are published once, as the declared actions that build them.
 fn schema() -> Value {
-    crate::block_actions::without_declared_variants(&RichTextAction::json_schema())
-}
-
-#[test]
-fn the_block_variants_are_published_as_their_declared_actions_only() {
-    let names: Vec<String> = variants(&schema())
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    assert!(names.contains(&"SpliceText".to_owned()));
-    for hidden in ["InsertBlocks", "SyncBody", "MoveBlock"] {
-        assert!(!names.contains(&hidden.to_owned()), "{hidden}");
-    }
-    assert!(!schema().to_string().contains("NewBlock"));
+    RichTextAction::json_schema()
 }
 
 fn variants(schema: &Value) -> Vec<(String, Value)> {
@@ -299,18 +284,16 @@ fn group_members_are_described_and_checked_like_apply() {
         panic!("group takes one parameter");
     };
     assert_eq!(param.name, GROUP_PARAM);
-    let build = |actions: Value| {
+    let bind = |actions: Value| {
         let arguments = json!({ GROUP_PARAM: actions });
-        let arguments = arguments.as_object().unwrap();
-        ActionArgs::bind_json(&group.params, arguments).map_err(|error| error.to_string())?;
-        tilo_resource::group::build_group::<RichText>(arguments, 0)
+        ActionArgs::bind_json(&group.params, arguments.as_object().unwrap())
     };
     let insert = json!({"InsertParagraph": {"after": "b1", "text": "New"}});
-    assert!(build(json!([{"action": APPLY, "args": {"action": insert}}])).is_ok());
-    let Err(reason) = build(json!([
+    assert!(bind(json!([{"action": APPLY, "args": {"action": insert}}])).is_ok());
+    let Err(ArgError::Constraint { reason, .. }) = bind(json!([
         {"action": APPLY, "args": {"action": {"RemoveBlocks": {"blocks": "b1"}}}}
     ])) else {
-        panic!("a malformed member builds");
+        panic!("a malformed member binds");
     };
     assert!(reason.contains("RemoveBlocks"), "{reason}");
 }

@@ -468,9 +468,7 @@ pub enum ExecutingBindingPhase {
     Answer,
     Admitted,
     Refused,
-    /// The launch exited before the app answered. The binding waits for the
-    /// answer, not for a clock, so this is how an unanswered binding ends.
-    Abandoned,
+    TimedOut,
 }
 
 pub trait LauncherServices: Send + Sync {

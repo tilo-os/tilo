@@ -280,9 +280,7 @@ impl MonitorHandle {
                 return None;
             }
 
-            (time.time_scale as i64)
-                .checked_div(time.time_value)
-                .map(|v| (v * 1000) as u32)
+            (time.time_scale as i64).checked_div(time.time_value).map(|v| (v * 1000) as u32)
         }
     }
 
@@ -360,10 +358,7 @@ impl MonitorHandle {
             } else {
                 // Display ID was just fetched from live NSScreen, but can still result in `None`
                 // with certain Thunderbolt docked monitors.
-                warn!(
-                    other_native_id,
-                    "comparing against screen with invalid display ID"
-                );
+                warn!(other_native_id, "comparing against screen with invalid display ID");
                 false
             }
         })
