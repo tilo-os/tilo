@@ -20,6 +20,13 @@ if grep -Eq '^[[:space:]]*sync([[:space:]]|$)' "$secureboot"; then
   printf 'Secure Boot signing still performs a system-wide sync\n' >&2
   exit 1
 fi
+# The signer's writer is the image's tilo-esp-write, built from its crate.
+esp_write="${TILO_ESP_WRITE_BIN:-}"
+if [ -z "$esp_write" ]; then
+  cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-esp-write
+  esp_write="${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-esp-write"
+fi
+[ -x "$esp_write" ] || { printf 'no tilo-esp-write at %s\n' "$esp_write" >&2; exit 1; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 export TILO_SB_BOOT_ID_FILE="$work/boot-id"
@@ -127,7 +134,7 @@ cat >"$work/bin/esp-write" <<EOF
 set -euo pipefail
 dst="\$(sed -n 's/.*"dst": "\([^"]*\)".*/\1/p' "$work/plans/secureboot-sign/plan.json")"
 TILO_ESP="\$TILO_SB_ESP" TILO_ESP_PLAN_ROOT="$work/plans" TILO_ESP_PLAN_OWNER="\$(id -u)" \\
-  TILO_ESP_WRITE_NO_REMOUNT=1 "$repo/os/usr/libexec/tilo-esp-write" secureboot-sign
+  TILO_ESP_WRITE_NO_REMOUNT=1 "$esp_write" secureboot-sign
 if [[ \${TILO_TEST_CORRUPT_DURABLE_RENAME:-0} == 1 ]]; then
   printf 'corrupt published artifact\n' >"\$TILO_SB_ESP/\$dst"
 fi

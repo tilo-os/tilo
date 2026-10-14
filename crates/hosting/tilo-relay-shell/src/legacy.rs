@@ -18,15 +18,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::coedit::AttributedPresence;
 use tilo_moq::live::LiveRelay;
 use tilo_peer_state::NeighbourMsg;
 use tilo_relay_protocol::legacy_window as wire;
 use tilo_relay_protocol::web::live_room;
+use tilo_relay_session::AttributedPresence;
 
 /// How often streams are looked after: replays to new subscribers, index
 /// re-sends, departures.
-pub(crate) const MAINTAIN_EVERY: Duration = Duration::from_millis(250);
+pub const MAINTAIN_EVERY: Duration = Duration::from_millis(250);
 /// While any stream is live its index is re-sent this often, so a member that
 /// subscribes later learns it.
 const INDEX_EVERY: Duration = Duration::from_secs(1);
@@ -82,7 +82,7 @@ struct Room {
 }
 
 /// Every room's legacy windows on this host's live relay.
-pub(crate) struct LegacyWindows {
+pub struct LegacyWindows {
     live: LiveRelay,
     /// This host's device and its session handle, the viewer sessions grant.
     device: [u8; 32],
@@ -93,13 +93,13 @@ pub(crate) struct LegacyWindows {
 
 /// What [`LegacyWindows::input`] refuses.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum InputRefusal {
+pub enum InputRefusal {
     /// The device does not stream that window to this host.
     NoSuchWindow,
 }
 
 impl LegacyWindows {
-    pub(crate) fn new(live: LiveRelay, device: [u8; 32]) -> Arc<Self> {
+    pub fn new(live: LiveRelay, device: [u8; 32]) -> Arc<Self> {
         Arc::new(Self {
             live,
             device,
@@ -115,7 +115,7 @@ impl LegacyWindows {
 
     /// Release media when the browser listener stops. The relay retains its
     /// bridge, so it must no longer accept late native presence or input.
-    pub(crate) fn close(&self) {
+    pub fn close(&self) {
         self.closed.store(true, Ordering::Release);
         let rooms = std::mem::take(&mut *self.rooms());
         let index = wire::Frame::Index(Vec::new()).encode().ok();
@@ -139,7 +139,7 @@ impl LegacyWindows {
     /// Presence `payload` that the subscribed device `author` of `user` sent
     /// in `workspace_id`. Anything but a legacy-window message of the
     /// device itself is ignored.
-    pub(crate) fn observe_presence(
+    pub fn observe_presence(
         &self,
         workspace_id: u64,
         author: [u8; 32],
@@ -408,7 +408,7 @@ impl LegacyWindows {
     }
 
     /// The devices publishing streams, per room, for [`Self::present`].
-    pub(crate) fn publishers(&self) -> Vec<(u64, [u8; 32])> {
+    pub fn publishers(&self) -> Vec<(u64, [u8; 32])> {
         self.rooms()
             .iter()
             .flat_map(|(workspace_id, room)| {
@@ -425,7 +425,7 @@ impl LegacyWindows {
     /// Whether the publishing device is still subscribed to the room. A
     /// static window sends no frames, so its session leaving, not silence,
     /// ends its streams; a reconnect shorter than [`DEPARTURE`] does not.
-    pub(crate) fn present(&self, workspace_id: u64, device: [u8; 32], here: bool, now: Instant) {
+    pub fn present(&self, workspace_id: u64, device: [u8; 32], here: bool, now: Instant) {
         let mut rooms = self.rooms();
         let Some(state) = rooms.get_mut(&workspace_id) else {
             return;
@@ -463,7 +463,7 @@ impl LegacyWindows {
     }
 
     /// End immediately when membership, write permission or the device certificate is lost.
-    pub(crate) fn revoke(&self, workspace_id: u64, device: [u8; 32], now: Instant) {
+    pub fn revoke(&self, workspace_id: u64, device: [u8; 32], now: Instant) {
         if let Some(publisher) = self
             .rooms()
             .get_mut(&workspace_id)
@@ -475,7 +475,7 @@ impl LegacyWindows {
     }
 
     /// Replay sequences to new subscribers and keep every index current.
-    pub(crate) fn maintain(&self, now: Instant) {
+    pub fn maintain(&self, now: Instant) {
         let mut rooms = self.rooms();
         if self.closed.load(Ordering::Acquire) {
             return;
@@ -535,7 +535,7 @@ impl LegacyWindows {
 
     /// The user the publishing device chains to, while it streams `surface`
     /// to this host.
-    pub(crate) fn publisher_user(
+    pub fn publisher_user(
         &self,
         workspace_id: u64,
         device: [u8; 32],
@@ -552,7 +552,12 @@ impl LegacyWindows {
     /// The presence payloads that deliver `events` for `surface` to the
     /// publishing device: this host's identity first when it is due, then
     /// one `RemoteInput` per event, authored by this host's device.
-    pub(crate) fn input(
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InputRefusal::NoSuchWindow`] when `device` does not stream
+    /// `surface` to this host, or the bridge has closed.
+    pub fn input(
         &self,
         workspace_id: u64,
         device: [u8; 32],

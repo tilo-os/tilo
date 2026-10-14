@@ -9,6 +9,7 @@ use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use crate::action::{ActionCx, Refusal};
+use crate::chunk_map::ChunkMap;
 use crate::collection::{Collection, Id};
 use crate::delta::Delta;
 use crate::model::LocatedAt as _;
@@ -145,15 +146,18 @@ fn element_key<T: Model>(value: &T) -> String {
 
 /// A set whose concurrent adds and removes merge per element. Stored as a map
 /// keyed by each element's JSON form.
+///
+/// Clones share the elements in chunks: a copy costs a pointer per few dozen
+/// elements, and adding or removing one copies only its chunk.
 #[derive(Clone, Debug)]
 pub struct Set<T> {
-    elements: BTreeMap<String, T>,
+    elements: ChunkMap<T>,
 }
 
 impl<T> Default for Set<T> {
     fn default() -> Self {
         Self {
-            elements: BTreeMap::new(),
+            elements: ChunkMap::default(),
         }
     }
 }
@@ -668,13 +672,10 @@ fn cell_key(row: &str, column: &str) -> String {
 }
 
 /// Every cell `cells` (the grid's `cells` map) holds, by row then column.
-fn read_cells<T: Model>(
-    doc: &Doc,
-    grid: &ObjId,
-) -> Result<BTreeMap<String, RowCells<T>>, ModelError> {
+fn read_cells<T: Model>(doc: &Doc, grid: &ObjId) -> Result<ChunkMap<RowCells<T>>, ModelError> {
     let mut out: BTreeMap<String, RowCells<T>> = BTreeMap::new();
     let Some((Value::Object(ObjType::Map), cells)) = doc.get(grid, CELLS)? else {
-        return Ok(out);
+        return Ok(ChunkMap::default());
     };
     for key in doc.keys(&cells) {
         let Some((row, column)) = key.split_once('/') else {
@@ -685,7 +686,7 @@ fn read_cells<T: Model>(
             .or_default()
             .insert(column.to_owned(), value);
     }
-    Ok(out)
+    Ok(out.into())
 }
 
 /// A table of cells addressed by stable row and column ids. Inserting or
@@ -697,11 +698,14 @@ fn read_cells<T: Model>(
 /// cell. Cells sit flat in one map made with the grid, so no write ever
 /// makes an object per row: two people writing into a row they both just
 /// added both keep their cells.
+///
+/// Clones share the cells, rows in chunks: a copy of a sheet costs a pointer
+/// per few dozen rows, and writing a cell copies only its rows' chunk.
 #[derive(Clone, Debug)]
 pub struct Grid<T> {
     rows: Collection<()>,
     columns: Collection<()>,
-    cells: BTreeMap<String, RowCells<T>>,
+    cells: ChunkMap<RowCells<T>>,
 }
 
 /// The cells of one row, by column, sorted: a row holds a few cells, and a
@@ -781,7 +785,7 @@ impl<T> Default for Grid<T> {
         Self {
             rows: Collection::new(),
             columns: Collection::new(),
-            cells: BTreeMap::new(),
+            cells: ChunkMap::default(),
         }
     }
 }
@@ -824,10 +828,12 @@ impl<T> Grid<T> {
         }
         match value {
             Some(value) => {
-                self.cells
-                    .entry(row.as_str().to_owned())
-                    .or_default()
-                    .insert(column.as_str().to_owned(), value);
+                if let Some(cells) = self
+                    .cells
+                    .get_or_insert_with(row.as_str(), RowCells::default)
+                {
+                    cells.insert(column.as_str().to_owned(), value);
+                }
             }
             None => {
                 if let Some(cells) = self.cells.get_mut(row.as_str()) {
@@ -859,10 +865,14 @@ impl<T> Grid<T> {
 
     /// Remove a column and its cells.
     pub fn remove_column(&mut self, column: &Id) -> bool {
-        for cells in self.cells.values_mut() {
-            cells.remove(column.as_str());
-        }
-        self.cells.retain(|_, cells| !cells.is_empty());
+        // Only the rows holding a cell of the column change.
+        self.cells.retain_where(
+            |cells| cells.contains_key(column.as_str()),
+            |cells| {
+                cells.remove(column.as_str());
+                !cells.is_empty()
+            },
+        );
         self.columns.remove(column).is_some()
     }
 
@@ -934,10 +944,9 @@ impl<T: Model> Grid<T> {
                 }
                 _ => {
                     let cell = T::load(doc, &value, &id).located(key)?;
-                    self.cells
-                        .entry(row.to_owned())
-                        .or_default()
-                        .insert(column.to_owned(), cell);
+                    if let Some(cells) = self.cells.get_or_insert_with(row, RowCells::default) {
+                        cells.insert(column.to_owned(), cell);
+                    }
                 }
             }
         }
