@@ -310,7 +310,6 @@ mod admitted_history_tests {
                 active_tab: (5 << 48) | 3,
                 width: WindowWidth::Normal,
                 maximized: false,
-                focus_history: Vec::new(),
                 tabs: vec![Tab {
                     id: (5 << 48) | 3,
                     title: "Before".into(),

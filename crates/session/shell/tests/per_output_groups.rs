@@ -102,7 +102,6 @@ fn group(id: GroupId) -> WindowGroup {
         // is something to pan to.
         width: WindowWidth::Fraction(600),
         maximized: false,
-        focus_history: Vec::new(),
     }
 }
 

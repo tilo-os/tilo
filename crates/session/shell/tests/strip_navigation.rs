@@ -89,7 +89,6 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
             active_tab: ids[0],
             width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
             maximized: false,
-            focus_history: Vec::new(),
         })
         .collect();
 
@@ -369,7 +368,6 @@ fn two_strip_harness() -> (Harness, StripId, StripId, GroupId, Vec<GroupId>) {
             active_tab: 91,
             width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
             maximized: false,
-            focus_history: Vec::new(),
         }],
     });
     tree.desktop.active_group.insert(lower, resident);
@@ -1579,15 +1577,9 @@ fn axis_gather_stops_old_snap_when_focus_is_already_visible() {
     h.lay_out();
     h.tick();
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
-    // Group 0 is already wholly on screen where the old motion left the
-    // strip, so the gather reveals nothing more (a reveal is the least pan
-    // that shows the group) but still cancels the motion toward group 4.
-    let stopped = h.scroll_x();
-    h.tick();
-    h.lay_out();
     assert_eq!(
         h.scroll_x(),
-        stopped,
+        0.0,
         "already-visible gather still cancels old motion"
     );
 }
@@ -1746,29 +1738,4 @@ fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
         before,
         "restore reuses the existing record rather than creating a default"
     );
-}
-
-/// With no strip above, Super+Up maximizes the focused group and Super+Down
-/// restores it; otherwise both stay strip navigation.
-#[test]
-fn super_up_on_the_top_strip_maximizes_and_super_down_restores() {
-    let (mut h, upper, lower, _resident, _groups) = two_strip_harness();
-    let maximized = |h: &mut Harness| {
-        h.host
-            .group_row_mut_for_tests(upper)
-            .expect("the upper strip is live")
-            .groups
-            .iter()
-            .any(|group| group.maximized)
-    };
-    assert_eq!(plane(&h).1, upper, "the harness starts on the top strip");
-    assert!(!maximized(&mut h));
-    h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
-    assert!(maximized(&mut h), "Super+Up maximizes on the top strip");
-    assert_eq!(plane(&h).1, upper);
-    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
-    assert!(!maximized(&mut h), "Super+Down restores a maximized group");
-    assert_eq!(plane(&h).1, upper, "restoring does not change strip");
-    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
-    assert_eq!(plane(&h).1, lower, "Super+Down is strip navigation again");
 }

@@ -899,7 +899,7 @@ impl DesktopSurface {
                 if let Some(model) = find_group(&mut shared.tree, strip_id, group.id)
                     && model.tabs.iter().any(|t| t.id == tab)
                 {
-                    model.activate_tab(tab);
+                    model.active_tab = tab;
                 }
                 shared.tree.set_active_group(strip_id, group.id);
                 changed = true;
@@ -971,7 +971,7 @@ impl DesktopSurface {
                         tree.active_strip.insert(ids.workspace, ids.strip);
                         tree.set_active_group(ids.strip, ids.group);
                         if let Some(group) = find_group(tree, ids.strip, ids.group) {
-                            group.activate_tab(ids.tab);
+                            group.active_tab = ids.tab;
                         }
                         ops.push(RowOp::Show(ids.strip, ids.group, ids.tab));
                     }
@@ -1402,7 +1402,6 @@ fn launch(tiles: &mut dyn TileSource, shared: &mut Shared, app: &str) -> Option<
             active_tab: tab.id,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         },
     );
     shared.tree.set_active_group(strip, group_id);
@@ -2062,7 +2061,6 @@ pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) ->
             tabs: vec![tab],
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         })
         .collect();
     let first_group = strip.window_groups.first().map(|g| g.id);

@@ -984,17 +984,13 @@ pub(crate) fn live_extras(app: &MailApp) -> Vec<tilo_actions::Resource> {
 
 /// Mail's preferences, which follow the person across their devices and are
 /// never seen by collaborators: the format a new message is written in and
-/// the accounts whose folders the sidebar keeps folded, and the senders
-/// whose remote images load.
+/// the accounts whose folders the sidebar keeps folded.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MailPreferences {
     #[serde(default)]
     pub compose_format: crate::model::ComposeFormat,
     #[serde(default)]
     pub collapsed_accounts: Vec<String>,
-    /// The senders whose remote images load without asking.
-    #[serde(default)]
-    pub remote_content_senders: Vec<String>,
 }
 
 impl ui::storage::SettingsSchema for MailPreferences {
@@ -1018,8 +1014,6 @@ const SCENARIOS: &[&str] = &[
     "setup",
     "setup_narrow",
     "setup_add",
-    "setup_blank",
-    "setup_discovering",
     "setup_oauth",
     "firstrun",
     "html_mail",
@@ -1071,10 +1065,7 @@ impl ResourceApp for MailShell {
             ) => (560, 860),
             Some("mid") => (1000, 720),
             Some("compose" | "reply") => (1180, 820),
-            Some(
-                "setup" | "setup_add" | "setup_blank" | "setup_discovering" | "setup_oauth"
-                | "firstrun" | "error",
-            ) => (1100, 780),
+            Some("setup" | "setup_add" | "setup_oauth" | "firstrun" | "error") => (1100, 780),
             Some("html_mail") => (1280, 820),
             _ => (1280, 800),
         }

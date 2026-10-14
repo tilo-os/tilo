@@ -89,10 +89,12 @@ impl Route {
             ContinuationQuery::Exact(arguments) => {
                 let value = match arguments {
                     ContinuationArguments::Text(value) => value,
-                    ContinuationArguments::Json(arguments) => {
-                        tilo_actions::sole_text_argument(arguments)?
+                    ContinuationArguments::Json(arguments) if arguments.len() == 1 => arguments
+                        .get(tilo_actions::resource::PROMPTED_PARAM)?
+                        .as_str()?,
+                    ContinuationArguments::Immediate | ContinuationArguments::Json(_) => {
+                        return None;
                     }
-                    ContinuationArguments::Immediate => return None,
                 };
                 let mut parts = self.parts.clone();
                 parts.push(value.as_bytes().to_vec());
