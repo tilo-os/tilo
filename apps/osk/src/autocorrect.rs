@@ -253,7 +253,7 @@ impl Autocorrector {
         // is resolved before the edit-distance search, which would pick a
         // spelling neighbour ("dont" -> "done").
         if typed_idx.is_none()
-            && let Some(full) = spellcheck::contraction(&lower)
+            && let Some(full) = ui::autocorrect::contraction(&lower)
         {
             return Some(match_case(typed, full));
         }
