@@ -7388,6 +7388,28 @@ fn priority_route(
     }
 }
 
+/// Start the device fabric's pump on its own thread, or say why not.
+fn start_device_fabric(
+    network: &Arc<crate::shell::network::ShellNetwork>,
+    notifications: &crate::notifications::NotificationBridge,
+) -> Option<
+    crate::shell::device_fabric_runtime::worker::FabricWorker<
+        crate::shell::device_fabric_runtime::FabricTurn,
+    >,
+> {
+    let runtime = crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
+        network,
+        notifications.clone(),
+    );
+    match crate::shell::device_fabric_runtime::spawn_worker(runtime, Arc::clone(network)) {
+        Ok(worker) => Some(worker),
+        Err(error) => {
+            tracing::error!(%error, "device fabric: could not start its thread");
+            None
+        }
+    }
+}
+
 fn active_physical_gamepad_binding(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
@@ -9331,9 +9353,12 @@ pub fn run() {
     let mut peer_sync = enable_peer_sync
         .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, &tree_handle))
         .flatten();
-    let mut device_fabric_runtime = peer_sync.as_ref().map(|network| {
-        crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(network, notif_bridge.clone())
-    });
+    let mut device_fabric_worker = peer_sync
+        .as_ref()
+        .and_then(|network| start_device_fabric(network, &notif_bridge));
+    // Started once, with the first network: a thread that could not start
+    // is reported, not retried every turn.
+    let mut device_fabric_tried = peer_sync.is_some();
     let mut spatial_control: Option<SpatialControlSession> = None;
     let mut spatial_pointer_parked = false;
     // Loop iterations since the last quiet trim was asked for.
@@ -9370,13 +9395,6 @@ pub fn run() {
     let mut realtime_fabric_bridge = collab_broker
         .as_ref()
         .and_then(crate::shell::collab_broker::BrokerHandle::realtime_fabric_bridge);
-    if let (Some(runtime), Some(bridge)) = (
-        device_fabric_runtime.as_mut(),
-        realtime_fabric_bridge.as_ref(),
-    ) && let Some(adapter) = bridge.adapter()
-    {
-        runtime.set_realtime_adapter(adapter);
-    }
     let mut remote_capture_runtime = realtime_fabric_bridge
         .as_ref()
         .and_then(
@@ -9391,9 +9409,6 @@ pub fn run() {
         });
     if let Some(remote_capture) = remote_capture_runtime.as_ref() {
         crate::shell::remote_capture::runtime::install_active_runtime(remote_capture);
-        if let Some(runtime) = device_fabric_runtime.as_mut() {
-            runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
-        }
     }
     let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Onboarding defers the broker; its start below says so then.
@@ -12189,20 +12204,8 @@ pub fn run() {
         let pump_network_started = pump_bookkeeping_done;
         if let Some(net) = peer_sync.as_ref() {
             pump_phase!("network-tick", net.frame_tick());
-            let runtime = device_fabric_runtime.get_or_insert_with(|| {
-                crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
-                    net,
-                    notif_bridge.clone(),
-                )
-            });
-            if let Some(adapter) = realtime_fabric_bridge
-                .as_ref()
-                .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::adapter)
-            {
-                runtime.set_realtime_adapter(adapter);
-            }
-            if let Some(remote_capture) = remote_capture_runtime.as_ref() {
-                runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
+            if !std::mem::replace(&mut device_fabric_tried, true) {
+                device_fabric_worker = start_device_fabric(net, &notif_bridge);
             }
             // The desktop a cross-device pointer crosses into: the logical
             // one it moves in.
@@ -12215,20 +12218,27 @@ pub fn run() {
                     height,
                 });
             let app_focus = active_physical_gamepad_binding(&tree_handle.read());
-            runtime.set_local_app_focus(app_focus.clone());
-            pump_phase!(
-                "device-fabric-runtime",
-                runtime.pump(
-                    net,
-                    &state.selection_store(),
-                    crate::shell::device_fabric_runtime::LocalFabricCapabilities {
-                        display,
-                        pointer: true,
-                        keyboard: true,
-                        audio_output: system_audio,
-                    },
-                )
-            );
+            // The pump runs on its own thread; this hands it the turn's facts
+            // and returns at once.
+            if let Some(worker) = device_fabric_worker.as_ref() {
+                pump_phase!(
+                    "device-fabric-runtime",
+                    worker.tick(crate::shell::device_fabric_runtime::FabricTurn {
+                        selection: state.selection_store(),
+                        local: crate::shell::device_fabric_runtime::LocalFabricCapabilities {
+                            display,
+                            pointer: true,
+                            keyboard: true,
+                            audio_output: system_audio,
+                        },
+                        app_focus: app_focus.clone(),
+                        realtime_adapter: realtime_fabric_bridge.as_ref().and_then(
+                            crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::adapter,
+                        ),
+                        remote_capture: remote_capture_runtime.as_ref().map(std::sync::Arc::clone),
+                    })
+                );
+            }
             pump_phase!(
                 "physical-gamepads",
                 crate::shell::physical_gamepad::pump_physical_gamepads(
@@ -12735,13 +12745,6 @@ pub fn run() {
                         .install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
                 }
                 realtime_fabric_bridge = broker.realtime_fabric_bridge();
-                if let (Some(runtime), Some(bridge)) = (
-                    device_fabric_runtime.as_mut(),
-                    realtime_fabric_bridge.as_ref(),
-                ) && let Some(adapter) = bridge.adapter()
-                {
-                    runtime.set_realtime_adapter(adapter);
-                }
                 remote_capture_runtime = realtime_fabric_bridge
                     .as_ref()
                     .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::realtime_capture_broker)
@@ -12754,9 +12757,6 @@ pub fn run() {
                     });
                 if let Some(remote_capture) = remote_capture_runtime.as_ref() {
                     crate::shell::remote_capture::runtime::install_active_runtime(remote_capture);
-                    if let Some(runtime) = device_fabric_runtime.as_mut() {
-                        runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
-                    }
                 }
                 if let Some(net) = peer_sync.as_ref() {
                     attach_peer_presence(&mut frame_builder, broker, net);
