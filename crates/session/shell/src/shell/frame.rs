@@ -7309,6 +7309,55 @@ mod tests {
         assert!(fb.focused_ime_field(None).is_none());
     }
 
+    fn query_bounds(node: &ui::a11y::AccessNode) -> Option<ui::a11y::AccessBounds> {
+        if node.action_target.as_deref() == Some("command-palette:query") {
+            return node.bounds;
+        }
+        node.children.iter().find_map(query_bounds)
+    }
+
+    #[test]
+    fn search_query_target_is_the_editable_row_and_disappears_on_close() {
+        let mut fb = FrameBuilder::new((1920, 1080));
+        let mut doc = AutoCommit::new();
+        let mut focus = None;
+        let _ = fb.paint_settled();
+        assert!(!fb.widget_registry().contains_key("command-palette:query"));
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Space)),
+            &Modifiers::from(ModifiersState::SUPER),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        let _ = fb.paint_settled();
+        let targets = fb.widget_registry();
+        let mut names: Vec<_> = targets.keys().collect();
+        names.sort();
+        println!("open Search targets ({}): {names:?}", targets.len());
+        let query = *targets
+            .get("command-palette:query")
+            .expect("open Search must publish its editable query row, not just its card");
+        let tree = fb
+            .host()
+            .accessibility()
+            .expect("Search accessibility tree");
+        assert_eq!(query_bounds(&tree), Some(query.into()));
+        assert!(query.area() > 0.0, "the target is a visible editable row");
+        let card = fb.host().palette_rect_for_tests();
+        assert!(card.contains(query.center()));
+        assert!(query.height() < card.height());
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Escape)),
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        let _ = fb.paint_settled();
+        assert!(!fb.widget_registry().contains_key("command-palette:query"));
+    }
+
     #[test]
     fn super_s_moves_the_wheel_disc_to_the_pointer() {
         let mut fb = FrameBuilder::new((1600, 900));
