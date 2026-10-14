@@ -3500,6 +3500,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-clock",
  "tilo-connector",
  "tilo-net",
  "tilo-relay",
@@ -4162,6 +4163,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "serde_json",
+ "tilo-clock",
  "tokio",
  "tokio-websockets",
  "workspace-hack",
@@ -16399,7 +16401,6 @@ name = "tilo-browser-runtime"
 version = "0.1.0"
 dependencies = [
  "accounts",
- "chrono",
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -16561,6 +16562,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-clock",
  "tilo-files",
  "tilo-secrets",
  "tokio",
