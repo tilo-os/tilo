@@ -7001,6 +7001,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "staging-handoff",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -7166,6 +7167,7 @@ dependencies = [
  "os-actions",
  "serde",
  "serde_json",
+ "staging-handoff",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -15052,6 +15054,15 @@ dependencies = [
  "libc",
  "psm",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "staging-handoff"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
