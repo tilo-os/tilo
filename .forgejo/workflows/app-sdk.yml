@@ -365,6 +365,11 @@ jobs:
     # 5 GiB.
     runs-on: runner
     timeout-minutes: 90
+    env:
+      # Two independent modules, three Binaryen workers each, within this job's six CPUs.
+      # Set TILO_WASM_OPT_JOBS back to "1" for serial qualification.
+      TILO_WASM_OPT_JOBS: "2"
+      BINARYEN_CORES: "3"
     container:
       image: ${{ needs.builder.outputs.image }}
     steps:

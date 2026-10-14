@@ -24,6 +24,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
+use std::time::Instant;
 
 use anyhow::{Context as _, Result, bail};
 use sha2::{Digest as _, Sha256};
@@ -62,20 +63,26 @@ pub(super) fn build(project: &Project, request: &TargetRequest) -> Result<BuildO
         profile if split.is_some() && profile == "wasm-release" => "wasm-split".to_owned(),
         profile => profile,
     };
-    let wasm = cargo_build_wasm(project, &web_crate, &profile, request)?;
+    let wasm = timed_build_phase("wasm_compile", || {
+        cargo_build_wasm(project, &web_crate, &profile, request)
+    })?;
     let bundle = project.output_dir(Target::Web).join("bundle");
     std::fs::create_dir_all(bundle.join("pkg"))
         .with_context(|| format!("creating {}", bundle.display()))?;
     let optimizer = Optimizer::discover(request.release);
-    bundle_runtime(
-        &wasm,
-        request.release,
-        &bindgen,
-        &bundle,
-        optimizer.as_ref(),
-        split.as_deref(),
-    )?;
-    let compute = build_compute(project, request, &bindgen, &bundle, optimizer.as_ref())?;
+    timed_build_phase("wasm_bundle", || {
+        bundle_runtime(
+            &wasm,
+            request.release,
+            &bindgen,
+            &bundle,
+            optimizer.as_ref(),
+            split.as_deref(),
+        )
+    })?;
+    let compute = timed_build_phase("wasm_compute", || {
+        build_compute(project, request, &bindgen, &bundle, optimizer.as_ref())
+    })?;
     copy_page_host(&project.sdk_root, &bundle)?;
     bundle_moq_library(&project.sdk_root, &bundle)?;
     copy_fonts(&project.sdk_root, &bundle)?;
@@ -153,7 +160,8 @@ impl Optimizer {
     }
 
     fn input(&self) -> serde_json::Value {
-        serde_json::json!({"program":self.program,"version":self.version,"flags":self.flags})
+        serde_json::json!({"program":self.program,"version":self.version,"flags":self.flags,
+            "binaryen_cores":std::env::var("BINARYEN_CORES").ok()})
     }
 
     fn optimize(&self, wasm: &Path) -> Result<()> {
@@ -166,6 +174,50 @@ impl Optimizer {
             "wasm-opt",
         )
     }
+}
+
+fn timed_build_phase<T>(phase: &str, build: impl FnOnce() -> Result<T>) -> Result<T> {
+    let started = Instant::now();
+    let result = build();
+    eprintln!(
+        "TILO_BUILD_TIMING phase={phase} elapsed_seconds={:.3}",
+        started.elapsed().as_secs_f64()
+    );
+    result
+}
+
+/// Keep module concurrency opt-in and bounded within the caller's job budget.
+fn optimization_jobs() -> Result<usize> {
+    let value = std::env::var("TILO_WASM_OPT_JOBS").unwrap_or_else(|_| "1".to_owned());
+    let jobs = value
+        .parse::<usize>()
+        .context("TILO_WASM_OPT_JOBS must be 1 through 8")?;
+    if !(1..=8).contains(&jobs) {
+        bail!("TILO_WASM_OPT_JOBS must be 1 through 8");
+    }
+    Ok(jobs)
+}
+
+fn optimize_modules(optimizer: &Optimizer, modules: &[PathBuf], jobs: usize) -> Result<()> {
+    if !(1..=8).contains(&jobs) {
+        bail!("module optimizer concurrency must be 1 through 8");
+    }
+    // Finish every owned child in a batch before returning an error. A failed
+    // optimizer prevents the input stamp from certifying a partial bundle.
+    for batch in modules.chunks(jobs) {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = batch
+                .iter()
+                .map(|module| scope.spawn(move || optimizer.optimize(module)))
+                .collect();
+            let results: Vec<_> = handles.into_iter().map(|handle| handle.join()).collect();
+            for result in results {
+                result.map_err(|_| anyhow::anyhow!("module optimizer worker panicked"))??;
+            }
+            Ok::<_, anyhow::Error>(())
+        })?;
+    }
+    Ok(())
 }
 
 /// `split` is the splitter script when the module is split
@@ -228,17 +280,16 @@ fn bundle_runtime(
             )?;
         }
         if let Some(optimizer) = optimizer {
-            for entry in
-                std::fs::read_dir(&pkg).with_context(|| format!("reading {}", pkg.display()))?
-            {
-                let path = entry?.path();
-                if path
-                    .extension()
+            let mut modules = std::fs::read_dir(&pkg)
+                .with_context(|| format!("reading {}", pkg.display()))?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            modules.retain(|path| {
+                path.extension()
                     .is_some_and(|extension| extension == "wasm")
-                {
-                    optimizer.optimize(&path)?;
-                }
-            }
+            });
+            modules.sort();
+            optimize_modules(optimizer, &modules, optimization_jobs()?)?;
         } else if release {
             eprintln!("[tilo-app] wasm-opt not found; the release bundle is not size-optimized");
         }
@@ -1723,6 +1774,90 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::write(path, script).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn module_optimization_overlaps_owned_children_and_preserves_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let program = root.join("optimizer");
+        executable(
+            &program,
+            r#"#!/usr/bin/env python3
+import pathlib, sys, time
+path = pathlib.Path(sys.argv[-1])
+path.with_suffix('.started').touch()
+if (path.parent / 'barrier').exists():
+    deadline = time.monotonic() + 5
+    while len(list(path.parent.glob('*.started'))) < 2:
+        if time.monotonic() >= deadline:
+            sys.exit(23)
+        time.sleep(.01)
+path.write_bytes(b'optimized\0' + path.read_bytes())
+"#,
+        );
+        let optimizer = Optimizer {
+            program,
+            version: "fixture".to_owned(),
+            flags: &[],
+        };
+        let modules: Vec<_> = ["first.wasm", "second.wasm"]
+            .iter()
+            .map(|name| root.join(name))
+            .collect();
+        for module in &modules {
+            std::fs::write(module, b"original module").unwrap();
+        }
+        optimize_modules(&optimizer, &modules, 1).unwrap();
+        let expected: Vec<_> = modules
+            .iter()
+            .map(|module| std::fs::read(module).unwrap())
+            .collect();
+        for module in &modules {
+            std::fs::write(module, b"original module").unwrap();
+            std::fs::remove_file(module.with_extension("started")).unwrap();
+        }
+        std::fs::write(root.join("barrier"), b"").unwrap();
+        optimize_modules(&optimizer, &modules, 2).unwrap();
+        let actual: Vec<_> = modules
+            .iter()
+            .map(|module| std::fs::read(module).unwrap())
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_module_waits_for_owned_children_and_stops_later_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let program = root.join("optimizer");
+        executable(
+            &program,
+            r#"#!/usr/bin/env python3
+import pathlib, sys, time
+path = pathlib.Path(sys.argv[-1])
+if path.name == 'fail.wasm':
+    sys.exit(17)
+time.sleep(.05)
+path.with_suffix('.finished').touch()
+"#,
+        );
+        let optimizer = Optimizer {
+            program,
+            version: "fixture".to_owned(),
+            flags: &[],
+        };
+        let modules: Vec<_> = ["fail.wasm", "second.wasm", "third.wasm"]
+            .iter()
+            .map(|name| root.join(name))
+            .collect();
+        assert!(optimize_modules(&optimizer, &modules, 2).is_err());
+        assert!(root.join("second.finished").is_file());
+        assert!(!root.join("third.finished").exists());
+        assert!(optimize_modules(&optimizer, &modules, 0).is_err());
+        assert!(optimize_modules(&optimizer, &modules, 9).is_err());
     }
 
     #[cfg(unix)]
