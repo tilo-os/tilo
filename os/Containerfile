@@ -74,7 +74,7 @@ ARG ENV_RUNTIME_REF=scratch
 # boot-test while the engine's own build is being repaired.
 ARG TILO_WITH_BROWSER=1
 # The engine runtime's version: ui::webview::chromium::runtime::RUNTIME_VERSION.
-ARG CHROMIUM_RUNTIME_VERSION=2026.10.9-chromium
+ARG CHROMIUM_RUNTIME_VERSION=2026.10.10-chromium
 # The pinned builder bootc-builder compiles the image's bootc in, the one
 # os/Containerfile.bootc-helper uses.
 ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
@@ -293,6 +293,9 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 # and `switch` use the ESP the boot loader started from. Upstream takes the
 # disk's first ESP, which on a laptop that came with Windows is Windows', and
 # every one of them then fails reading loader entries that ESP does not have.
+# And an upgrade needs room only for the layers it does not have yet (0003):
+# upstream's composefs space check counted the whole image, so a laptop with
+# most of the new image's layers already stored refused to upgrade.
 # The frozen snapshot carries no ostree-devel, so this builds in the pinned
 # builder image as os/Containerfile.bootc-helper does, with that image's own
 # Fedora repositories (BOOTC_BUILD_PACKAGES are no snapshot input). Nothing of
@@ -305,7 +308,8 @@ ARG BOOTC_SOURCE=bootc-fa0d3f9.tar.gz
 ARG BOOTC_SHA256=e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac
 ARG BOOTC_BUILD_PACKAGES="ostree-devel patch"
 COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
-    os/external-assets/bootc-runtime/0002-zlink-macros-from-tilo-vendor.patch /patches/
+    os/external-assets/bootc-runtime/0002-zlink-macros-from-tilo-vendor.patch \
+    os/external-assets/bootc-runtime/0003-space-check-counts-missing-layers.patch /patches/
 # zlink-macros with its generated enum variants in a fixed order (0002 patches
 # bootc's build onto it): the release emits them in HashMap order, so no two
 # bootc builds matched and the image was not reproducible.
@@ -2224,6 +2228,7 @@ COPY os/etc/gitconfig /etc/gitconfig
 COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
     os/usr/libexec/tilo-security-audit \
+    os/usr/libexec/tilo-image-policy-check \
     os/usr/libexec/tilo-firstboot-user \
     os/usr/libexec/tilo-firstboot-files.py \
     os/usr/libexec/tilo-firstboot-autologin-cleanup \

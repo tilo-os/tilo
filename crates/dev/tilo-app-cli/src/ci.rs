@@ -382,7 +382,7 @@ fn workflow_jobs(forge: Forge, runner: &str, working_directory: &str, lock: &str
     let _ = writeln!(out, "    container: {BUILDER_IMAGE}");
     job_directory(&mut out, working_directory);
     out.push_str("    steps:\n");
-    steps_prelude(&mut out, lock);
+    steps_prelude(&mut out, working_directory, lock);
     out.push_str("      - run: tilo-app check\n\n");
 
     out.push_str("  package:\n    needs: check\n");
@@ -410,7 +410,7 @@ fn workflow_jobs(forge: Forge, runner: &str, working_directory: &str, lock: &str
     }
     job_directory(&mut out, working_directory);
     out.push_str("    steps:\n");
-    steps_prelude(&mut out, lock);
+    steps_prelude(&mut out, working_directory, lock);
     android_steps(&mut out);
     out.push_str(
         "      - name: Package\n        \
@@ -428,7 +428,7 @@ fn workflow_jobs(forge: Forge, runner: &str, working_directory: &str, lock: &str
     let _ = writeln!(out, "    container: {BUILDER_IMAGE}");
     job_directory(&mut out, working_directory);
     out.push_str("    steps:\n");
-    steps_prelude(&mut out, lock);
+    steps_prelude(&mut out, working_directory, lock);
     let _ = write!(
         out,
         "      - uses: {download}\n        \
@@ -523,13 +523,16 @@ fn matrix_entry(out: &mut String, build: &Build, prefix: &str, runner: &str) {
 }
 
 /// Checkout, then the `tilo-app` built from the SDK revision `Cargo.lock`
-/// pins, cached per revision.
-fn steps_prelude(out: &mut String, lock: &str) {
+/// pins, cached per revision. A lock no build has resolved yet (committed
+/// straight after `tilo-app new`) names no SDK source, so the revision the
+/// app's manifest pins comes next, and `main` only when neither names one.
+fn steps_prelude(out: &mut String, working_directory: &str, lock: &str) {
     let lock_expression = if lock == "${{ inputs.lockfile }}" {
         "inputs.lockfile".to_owned()
     } else {
         format!("'{lock}'")
     };
+    let manifest = join_slash(working_directory, "Cargo.toml");
     out.push_str("      - uses: actions/checkout@v4\n");
     let _ = write!(
         out,
@@ -537,9 +540,13 @@ fn steps_prelude(out: &mut String, lock: &str) {
            id: sdk\n        \
            working-directory: .\n        \
            env:\n          \
-             LOCK_FILE: {lock}\n        \
+             LOCK_FILE: {lock}\n          \
+             APP_MANIFEST: {manifest}\n        \
            run: |\n          \
              rev=$(sed -n 's|^source = \"git+{SDK_GIT}?rev=\\([0-9a-f]\\{{40\\}}\\)#.*|\\1|p' \"$LOCK_FILE\" | head -n1)\n          \
+             if [ -z \"$rev\" ] && [ -f \"$APP_MANIFEST\" ]; then\n            \
+               rev=$(sed -n 's|.*git = \"{SDK_GIT}\", rev = \"\\([0-9a-f]\\{{40\\}}\\)\".*|\\1|p' \"$APP_MANIFEST\" | head -n1)\n          \
+             fi\n          \
              echo \"rev=${{rev:-main}}\" >> \"$GITHUB_OUTPUT\"\n\
          \x20     - uses: actions/cache@v4\n        \
            with:\n          \
@@ -560,6 +567,79 @@ fn steps_prelude(out: &mut String, lock: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The revision step reads the SDK pin from a lock a build resolved, from
+    /// the app's manifest when the lock is still the scaffold's seed (which
+    /// names no SDK source), and falls back to `main` only when neither pins
+    /// one: a CLI from another revision than the app's SDK may not build it.
+    #[test]
+    fn the_revision_step_reads_the_lock_then_the_app_manifest() {
+        use crate::standalone::{Baseline, SdkSource, Standalone};
+
+        let text = workflow(Forge::Forgejo, "docker", "apps/editor", "Cargo.lock");
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
+        let step = yaml["jobs"]["check"]["steps"]
+            .as_sequence()
+            .expect("steps")
+            .iter()
+            .find(|step| step["id"].as_str() == Some("sdk"))
+            .expect("the revision step");
+        assert_eq!(
+            step["env"]["APP_MANIFEST"].as_str(),
+            Some("apps/editor/Cargo.toml")
+        );
+        let script = step["run"].as_str().expect("its script");
+
+        let pinned = "0123456789abcdef0123456789abcdef01234567";
+        let scaffold = Standalone {
+            source: SdkSource::Git {
+                url: SDK_GIT.to_owned(),
+                rev: Some(pinned.to_owned()),
+            },
+            baseline: Baseline::embedded().expect("the embedded baseline"),
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = temp.path().join("Cargo.toml");
+        let lock = temp.path().join("Cargo.lock");
+        let output = temp.path().join("output");
+        let revision = |lock_text: &str| {
+            std::fs::write(&lock, lock_text).expect("lock");
+            std::fs::write(&output, "").expect("output");
+            let status = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(script)
+                .env("LOCK_FILE", &lock)
+                .env("APP_MANIFEST", &manifest)
+                .env("GITHUB_OUTPUT", &output)
+                .status()
+                .expect("bash runs the step");
+            assert!(status.success(), "the step failed: {status}");
+            std::fs::read_to_string(&output).expect("step output")
+        };
+
+        std::fs::write(
+            &manifest,
+            format!(
+                "[package]\nname = \"editor\"\n\n[dependencies]\n{}",
+                scaffold.dependencies()
+            ),
+        )
+        .expect("manifest");
+        let seeded = "[[package]]\nname = \"tilo-app\"\nversion = \"0.1.0\"\n";
+        assert_eq!(revision(seeded), format!("rev={pinned}\n"));
+
+        let resolved_rev = "fedcba9876543210fedcba9876543210fedcba98";
+        let resolved =
+            format!("{seeded}source = \"git+{SDK_GIT}?rev={resolved_rev}#{resolved_rev}\"\n");
+        assert_eq!(revision(&resolved), format!("rev={resolved_rev}\n"));
+
+        std::fs::write(
+            &manifest,
+            "[dependencies]\nui = { package = \"tilo-app\", path = \"../tilo/crates/sdk/tilo-app\" }\n",
+        )
+        .expect("path manifest");
+        assert_eq!(revision(seeded), "rev=main\n");
+    }
 
     #[test]
     fn github_reusable_checks_the_callers_app_and_publishes_only_when_requested() {
@@ -607,11 +687,13 @@ mod tests {
     #[test]
     fn github_generator_writes_a_callable_pair_and_preserves_existing_files() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let app = temp.path().join("apps/editor");
-        std::fs::create_dir_all(temp.path().join(".git")).expect("git");
+        // The app directory resolves through symlinks (macOS: /var is /private/var).
+        let root = temp.path().canonicalize().expect("canonical tempdir");
+        let app = root.join("apps/editor");
+        std::fs::create_dir_all(root.join(".git")).expect("git");
         std::fs::create_dir_all(&app).expect("app");
-        std::fs::write(temp.path().join("Cargo.lock"), "").expect("lock");
-        let reusable = temp.path().join(".github/workflows/tilo-build.yml");
+        std::fs::write(root.join("Cargo.lock"), "").expect("lock");
+        let reusable = root.join(".github/workflows/tilo-build.yml");
         let preview = add_ci(&app, Forge::Github, None, false, true).expect("preview");
         assert_eq!(preview.reusable_path.as_ref(), Some(&reusable));
         assert_eq!(preview.to_json()["written"], false);
@@ -810,12 +892,14 @@ mod tests {
     #[test]
     fn workflow_goes_at_the_repository_root() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let app = temp.path().join("apps/editor");
-        std::fs::create_dir_all(temp.path().join(".git")).expect("git");
+        // The app directory resolves through symlinks (macOS: /var is /private/var).
+        let root = temp.path().canonicalize().expect("canonical tempdir");
+        let app = root.join("apps/editor");
+        std::fs::create_dir_all(root.join(".git")).expect("git");
         std::fs::create_dir_all(&app).expect("app");
-        std::fs::write(temp.path().join("Cargo.lock"), "").expect("lock");
+        std::fs::write(root.join("Cargo.lock"), "").expect("lock");
         let outcome = add_ci(&app, Forge::Gitea, None, false, false).expect("add ci");
-        assert_eq!(outcome.path, temp.path().join(".gitea/workflows/tilo.yml"));
+        assert_eq!(outcome.path, root.join(".gitea/workflows/tilo.yml"));
         assert_eq!(outcome.working_directory, "apps/editor");
         let text = std::fs::read_to_string(&outcome.path).expect("written");
         assert!(text.contains("hashFiles('Cargo.lock')"));

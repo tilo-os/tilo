@@ -74,3 +74,11 @@ before the kernel/libinput timestamp and physical panel pixel response.
 Historical `KEY-LATENCY` and `VELLO-STAGES` aggregates are diagnostic context,
 not this acceptance proof. GPU stage samples must retain their own submission
 identity and coverage; they cannot be reassigned to the most recent frame.
+
+The app's own share of that interval needs no device: `cargo run --release -p
+notes --example notes-latency` times typing, Enter, Backspace, the wheel and
+opening a note on an owned 27-note, 838-block notebook, from the input through
+the host's input path to the frame that shows it and that frame's GPU raster
+([measured figures](app-performance.md#notes-input-latency-on-a-27-note-notebook)).
+It is the regression signal between device runs and is likewise no acceptance
+proof: it excludes kernel delivery, the compositor and KMS presentation.

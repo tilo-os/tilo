@@ -48,6 +48,13 @@ const SUPERSEDED: &[&str] = &[
     "download_runtime",
 ];
 
+/// Page audio packets a client may be behind by before the oldest is dropped.
+const AUDIO_PACKETS: usize = 16;
+
+fn is_audio_packet(value: &Value) -> bool {
+    value.get("event").and_then(Value::as_str) == Some("audio")
+}
+
 fn superseded(value: &Value) -> bool {
     value
         .get("event")
@@ -88,6 +95,20 @@ impl Outbox {
             state.events.retain(|old| {
                 old.get("event") != value.get("event") || old.get("tab") != value.get("tab")
             });
+        }
+        if is_audio_packet(&value) {
+            // PCM is real time: past 16 queued packets (~160 ms) the oldest
+            // goes, so a slow client hears a gap rather than lagging behind.
+            let queued = state
+                .events
+                .iter()
+                .filter(|old| is_audio_packet(old))
+                .count();
+            if queued >= AUDIO_PACKETS
+                && let Some(oldest) = state.events.iter().position(is_audio_packet)
+            {
+                state.events.remove(oldest);
+            }
         }
         if state.events.len() >= OUTBOX_EVENTS {
             let oldest = state.events.iter().position(superseded).unwrap_or(0);

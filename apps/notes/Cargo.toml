@@ -23,6 +23,11 @@ path = "src/android.rs"
 crate-type = ["cdylib"]
 required-features = ["android"]
 
+# Input→display latency on an owned 27-note notebook; see its header.
+[[example]]
+name = "notes-latency"
+path = "examples/notes-latency.rs"
+
 [features]
 thin = ["dep:runtime-dylib"]
 android = []
