@@ -55,7 +55,7 @@ Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See 
 
 ### 2. Compositor (`shell`)
 - Smithay-based Wayland **server**. Hosts foreign Wayland clients and adopts them as tabs in the active strip via `app-id` matching.
-- Two modes selected at boot: `--mode hosted` (smithay-backed Wayland session running as a client of a parent display server, for dev) and `--mode native` (default — smithay running on bare hardware via `--backend drm` or in winit for development).
+- One session, on the backend selected at boot: `--backend drm` on bare hardware, `--backend winit` (default) in a window inside an existing desktop for development, `--backend headless` for CI.
 - Backends are a trait (`compositor::backend::Backend`); current implementations are `winit` and `drm` (libseat + libinput + udev + GBM).
 - Per-frame paint uses `vello` over `wgpu`. Shell chrome (top bar, wheel disc, command palette, modals) and foreign-surface buffers compose in the same `vello::Scene`.
 - See `docs/architecture/compositor.md`.

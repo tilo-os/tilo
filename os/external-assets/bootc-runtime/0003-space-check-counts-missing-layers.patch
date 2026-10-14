@@ -1,0 +1,211 @@
+From: Tilo <noreply@tilo.so>
+Subject: [PATCH] composefs: count only missing layers in the space check
+
+The native composefs backend refused an upgrade unless the whole image fit
+in the free space, although composefs-oci stores each layer once under its
+diff id and fetches only the layers it lacks. An image sharing most layers
+with the booted one (or with an attempt that was cut short) was refused
+for want of space it would never use. Sum the compressed sizes of the
+layers whose `oci-layer-<diff id>` stream the repository does not hold.
+---
+diff --git a/crates/lib/src/bootc_composefs/switch.rs b/crates/lib/src/bootc_composefs/switch.rs
+index 0cb0b9e..fd1616c 100644
+--- a/crates/lib/src/bootc_composefs/switch.rs
++++ b/crates/lib/src/bootc_composefs/switch.rs
+@@ -117,7 +117,7 @@ pub(crate) async fn switch_composefs(
+                     &host,
+                     &target_imgref,
+                     &do_upgrade_opts,
+-                    &img_config.manifest,
++                    &img_config,
+                 )
+                 .await;
+             }
+@@ -130,7 +130,7 @@ pub(crate) async fn switch_composefs(
+         &host,
+         &target_imgref,
+         &do_upgrade_opts,
+-        &img_config.manifest,
++        &img_config,
+     )
+     .await?;
+ 
+diff --git a/crates/lib/src/bootc_composefs/update.rs b/crates/lib/src/bootc_composefs/update.rs
+index c2b43c8..1d1c965 100644
+--- a/crates/lib/src/bootc_composefs/update.rs
++++ b/crates/lib/src/bootc_composefs/update.rs
+@@ -254,10 +254,10 @@ pub(crate) async fn do_upgrade(
+     host: &Host,
+     imgref: &ImageReference,
+     opts: &DoUpgradeOpts,
+-    manifest: &ostree_ext::oci_spec::image::ImageManifest,
++    img: &ImgConfigManifest,
+ ) -> Result<()> {
+     // Pre-flight disk space check before pulling.
+-    crate::deploy::check_disk_space_composefs(&*booted_cfs.repo, manifest, imgref)?;
++    crate::deploy::check_disk_space_composefs(&*booted_cfs.repo, img, imgref)?;
+ 
+     start_finalize_stated_svc()?;
+ 
+@@ -564,7 +564,7 @@ pub(crate) async fn upgrade_composefs(
+                         &host,
+                         booted_imgref,
+                         &do_upgrade_opts,
+-                        &img_config.manifest,
++                        &img_config,
+                     )
+                     .await;
+                 }
+@@ -596,7 +596,7 @@ pub(crate) async fn upgrade_composefs(
+                     &host,
+                     booted_imgref,
+                     &do_upgrade_opts,
+-                    &img_config.manifest,
++                    &img_config,
+                 )
+                 .await;
+             }
+@@ -616,7 +616,7 @@ pub(crate) async fn upgrade_composefs(
+         &host,
+         booted_imgref,
+         &do_upgrade_opts,
+-        &img_config.manifest,
++        &img_config,
+     )
+     .await?;
+ 
+diff --git a/crates/lib/src/deploy.rs b/crates/lib/src/deploy.rs
+index b361a3b..ebcbbc8 100644
+--- a/crates/lib/src/deploy.rs
++++ b/crates/lib/src/deploy.rs
+@@ -476,18 +476,45 @@ pub(crate) fn check_disk_space_unified(
+ }
+ 
+ /// Verify there is sufficient disk space to pull an image into the composefs store
+-/// for the native composefs backend (uses a raw `ImageManifest`).
++/// for the native composefs backend.
++///
++/// Only the layers the repository does not hold yet are fetched, so only they
++/// count: composefs-oci stores each layer once, under its diff id, and an image
++/// that shares most of its layers with the booted one (or with an earlier
++/// attempt that was cut short) needs room for the rest alone.
+ pub(crate) fn check_disk_space_composefs(
+     cfs: &crate::store::ComposefsRepository,
+-    manifest: &ostree_ext::oci_spec::image::ImageManifest,
++    img: &crate::bootc_composefs::status::ImgConfigManifest,
+     imgref: &ImageReference,
+ ) -> Result<()> {
+-    let bytes_to_fetch: u64 = manifest
++    let bytes_to_fetch = composefs_bytes_to_fetch(&img.manifest, &img.config, |diff_id| {
++        let Ok(digest) = diff_id.parse::<composefs_ctl::composefs_oci::OciDigest>() else {
++            return false;
++        };
++        cfs.has_stream(&composefs_ctl::composefs_oci::layer_content_id(&digest))
++            .ok()
++            .flatten()
++            .is_some()
++    });
++    check_disk_space_inner(cfs.objects_dir()?, bytes_to_fetch, 0, imgref)
++}
++
++/// The compressed size of the layers `present` says are not stored yet. The
++/// manifest lists layers in the order of the config's diff ids; a layer without
++/// one (a malformed image) always counts.
++pub(crate) fn composefs_bytes_to_fetch(
++    manifest: &ostree_ext::oci_spec::image::ImageManifest,
++    config: &ostree_ext::oci_spec::image::ImageConfiguration,
++    present: impl Fn(&str) -> bool,
++) -> u64 {
++    let diff_ids = config.rootfs().diff_ids();
++    manifest
+         .layers()
+         .iter()
+-        .map(|l: &ostree_ext::oci_spec::image::Descriptor| l.size())
+-        .sum();
+-    check_disk_space_inner(cfs.objects_dir()?, bytes_to_fetch, 0, imgref)
++        .enumerate()
++        .filter(|(index, _)| !diff_ids.get(*index).is_some_and(|id| present(id)))
++        .map(|(_, layer)| layer.size())
++        .sum()
+ }
+ 
+ pub(crate) struct PreparedImportMeta {
+@@ -1401,6 +1428,65 @@ pub(crate) fn fixup_etc_fstab(root: &Dir) -> Result<()> {
+ 
+ #[cfg(test)]
+ mod tests {
++
++    #[test]
++    fn composefs_space_check_counts_only_missing_layers() {
++        use ostree_ext::oci_spec::image::{
++            DescriptorBuilder, ImageConfigurationBuilder, ImageManifestBuilder, MediaType,
++            RootFsBuilder,
++        };
++        let digest = |n: u8| -> Digest { format!("sha256:{}", format!("{n:02x}").repeat(32)).parse().unwrap() };
++        let layer = |n: u8, size: u64| {
++            DescriptorBuilder::default()
++                .media_type(MediaType::ImageLayerGzip)
++                .digest(digest(n))
++                .size(size)
++                .build()
++                .unwrap()
++        };
++        let manifest = ImageManifestBuilder::default()
++            .schema_version(2u32)
++            .config(layer(9, 1))
++            .layers(vec![layer(1, 4_000), layer(2, 1_000), layer(3, 200)])
++            .build()
++            .unwrap();
++        let diff_ids = vec![
++            "sha256:aa".to_owned(),
++            "sha256:bb".to_owned(),
++            "sha256:cc".to_owned(),
++        ];
++        let config = ImageConfigurationBuilder::default()
++            .rootfs(
++                RootFsBuilder::default()
++                    .typ("layers")
++                    .diff_ids(diff_ids)
++                    .build()
++                    .unwrap(),
++            )
++            .build()
++            .unwrap();
++        // Nothing stored: the whole image.
++        assert_eq!(composefs_bytes_to_fetch(&manifest, &config, |_| false), 5_200);
++        // The two big layers are there already (booted image, or an attempt
++        // that was cut short): only the new one counts.
++        assert_eq!(
++            composefs_bytes_to_fetch(&manifest, &config, |id| id != "sha256:cc"),
++            200
++        );
++        // A layer the config gives no diff id for always counts.
++        let short = ImageConfigurationBuilder::default()
++            .rootfs(
++                RootFsBuilder::default()
++                    .typ("layers")
++                    .diff_ids(vec!["sha256:aa".to_owned()])
++                    .build()
++                    .unwrap(),
++            )
++            .build()
++            .unwrap();
++        assert_eq!(composefs_bytes_to_fetch(&manifest, &short, |_| true), 1_200);
++    }
++
+     use super::*;
+ 
+     #[test]
+diff --git a/crates/lib/src/install.rs b/crates/lib/src/install.rs
+index c82d857..13d12c1 100644
+--- a/crates/lib/src/install.rs
++++ b/crates/lib/src/install.rs
+@@ -2038,7 +2038,7 @@ async fn install_to_filesystem_impl(
+             )?;
+             crate::deploy::check_disk_space_composefs(
+                 &cfs_repo,
+-                &img_manifest_config.manifest,
++                &img_manifest_config,
+                 &crate::spec::ImageReference {
+                     image: imgref.name.clone(),
+                     transport: imgref.transport.to_string(),

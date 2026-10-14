@@ -1,0 +1,58 @@
+# The web entry: static files behind Cloudflare. Everything under /v/ is
+# named by its content and never changes; the entry pages and entry.json are
+# revalidated on every visit, so a new image takes effect at once.
+{
+	admin off
+	auto_https off
+	persist_config off
+	log {
+		format console
+		level WARN
+	}
+}
+
+:8080 {
+	header {
+		# The page holds the visitor's identity, so a first visit typed as
+		# http:// must never be answerable by whoever sits on the path:
+		# browsers keep to HTTPS for this host once they have seen this over
+		# HTTPS (over plain HTTP they ignore it). This host only, not its
+		# subdomains, which are workspace hosts with their own operators.
+		Strict-Transport-Security "max-age=31536000"
+		# Only this site and the homepage's live preview may frame the app
+		# (web/entry-page.mjs posts an embed's state to that EMBEDDER alone):
+		# an embed joins on the visitor's first click, which another site
+		# could otherwise take with a frame laid under its own page.
+		Content-Security-Policy "frame-ancestors 'self' https://tilo.so"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# Written at start from the environment (entrypoint.sh).
+	handle /entry.json {
+		root * /tmp/tilo-web
+		header Cache-Control "no-cache"
+		file_server
+	}
+
+	handle /v/* {
+		root * /srv/tilo-web
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server {
+			precompressed zstd br
+		}
+	}
+
+	handle {
+		root * /srv/tilo-web
+		header Cache-Control "no-cache"
+		file_server {
+			precompressed zstd br
+		}
+	}
+}

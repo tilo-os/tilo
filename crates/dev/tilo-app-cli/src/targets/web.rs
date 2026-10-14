@@ -2,12 +2,15 @@
 //!
 //! A bundle is `crates/browser/tilo-browser-runtime/scripts/build.sh`'s
 //! layout: `pkg/` (wasm-bindgen output under the runtime's module name), the
-//! page host's `*.mjs` and `index.html`, the product fonts with
-//! `fonts.json`, and `apps.json`. Two bundles exist:
+//! page host's `*.mjs` and `index.html`, the entry pages' `locales/` (the
+//! arrival screen's lines), the product fonts with `fonts.json`, and
+//! `apps.json`. Two bundles exist:
 //!
 //! - **desktop**: `crates/browser/tilo-web-desktop`, every web-capable Tilo
-//!   app, opened at `index.html?app=<id>`. Used for Tilo's own apps, so they
-//!   share one build.
+//!   app, opened at `app/#/me/<id>`. Used for Tilo's own apps, so they
+//!   share one build. Its module is split as the page's is
+//!   (`tools/web/wasm-split/split.sh`): a start module, and one module per
+//!   app fetched when the app first opens.
 //! - **app**: the runtime with only this app registered. `wasm32` has no
 //!   dynamic linking, so the runtime and the app are one module: a small
 //!   generated crate under the target directory links both and registers the
@@ -35,6 +38,7 @@ const RUNTIME: &str = "crates/browser/tilo-browser-runtime";
 const DESKTOP: &str = "crates/browser/tilo-web-desktop";
 const MOQ_BROWSER: &str = "scripts/moq-browser";
 const MOQ_LIBRARY: &str = "media-moq-library.mjs";
+const SPLIT: &str = "tools/web/wasm-split/split.sh";
 
 /// The crate a web build compiles, and how to open the result.
 struct WebCrate {
@@ -52,7 +56,12 @@ pub(super) fn build(project: &Project, request: &TargetRequest) -> Result<BuildO
         WebBundle::Desktop => desktop_crate(project)?,
         WebBundle::App | WebBundle::Auto => app_crate(project)?,
     };
-    let profile = web_profile(project, request.release)?;
+    let split = (web_crate.package == "tilo-web-desktop").then(|| project.sdk_root.join(SPLIT));
+    let profile = match web_profile(project, request.release)? {
+        // The splitter reads the symbol table `wasm-release` strips.
+        profile if split.is_some() && profile == "wasm-release" => "wasm-split".to_owned(),
+        profile => profile,
+    };
     let wasm = cargo_build_wasm(project, &web_crate, &profile, request)?;
     let bundle = project.output_dir(Target::Web).join("bundle");
     std::fs::create_dir_all(bundle.join("pkg"))
@@ -64,6 +73,7 @@ pub(super) fn build(project: &Project, request: &TargetRequest) -> Result<BuildO
         &bindgen,
         &bundle,
         optimizer.as_ref(),
+        split.as_deref(),
     )?;
     let compute = build_compute(project, request, &bindgen, &bundle, optimizer.as_ref())?;
     copy_page_host(&project.sdk_root, &bundle)?;
@@ -106,10 +116,12 @@ const COMPUTE_ASSETS: [&str; 5] = [
     "pkg/compute/tilo_browser_compute.js",
     "pkg/compute/tilo_browser_compute_bg.wasm",
 ];
-const WASM_OPT_FLAGS: [&str; 4] = [
+const WASM_OPT_FLAGS: [&str; 5] = [
     "-Oz",
     "--enable-bulk-memory",
     "--enable-nontrapping-float-to-int",
+    // A split module keeps the name section the splitter read.
+    "--strip-debug",
     // Sound for rustc's stack-first wasm32 layout: the first KiB is the
     // bottom of the stack, reached only by a stack about to overflow.
     "--low-memory-unused",
@@ -156,36 +168,77 @@ impl Optimizer {
     }
 }
 
+/// `split` is the splitter script when the module is split
+/// (`tools/web/wasm-split/split.sh`).
 fn bundle_runtime(
     wasm: &Path,
     release: bool,
     bindgen: &Path,
     bundle: &Path,
     optimizer: Option<&Optimizer>,
+    split: Option<&Path>,
 ) -> Result<()> {
     // Cargo leaves an up-to-date module untouched; so does this step.
     let stamp = bundle.join(".wasm-input");
     let input = serde_json::to_string(&serde_json::json!({
         "wasm":wasm_stamp(wasm, release)?,
         "optimizer":optimizer.map(Optimizer::input),
+        "split":split,
     }))?;
-    let output = bundle.join("pkg/tilo_browser_runtime_bg.wasm");
+    let pkg = bundle.join("pkg");
+    let output = pkg.join("tilo_browser_runtime_bg.wasm");
     if !output.is_file() || std::fs::read_to_string(&stamp).ok().as_deref() != Some(&input) {
-        run(
-            ProcessCommand::new(bindgen)
-                .arg(wasm)
-                .args([
-                    "--target",
-                    "web",
-                    "--out-name",
-                    "tilo_browser_runtime",
-                    "--out-dir",
-                ])
-                .arg(bundle.join("pkg")),
-            "wasm-bindgen",
-        )?;
+        // Modules split off an earlier build would linger beside this one's.
+        for entry in
+            std::fs::read_dir(&pkg).with_context(|| format!("reading {}", pkg.display()))?
+        {
+            let path = entry?.path();
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if name.starts_with("tilo_browser_runtime.")
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension == "wasm")
+            {
+                std::fs::remove_file(&path)
+                    .with_context(|| format!("removing {}", path.display()))?;
+            }
+        }
+        let mut command = ProcessCommand::new(bindgen);
+        command
+            .arg(wasm)
+            .args([
+                "--target",
+                "web",
+                "--out-name",
+                "tilo_browser_runtime",
+                "--out-dir",
+            ])
+            .arg(&pkg);
+        if split.is_some() {
+            command.args(["--keep-lld-exports", "--no-demangle"]);
+        }
+        run(&mut command, "wasm-bindgen")?;
+        if let Some(split) = split {
+            run(
+                ProcessCommand::new("bash").arg(split).arg(wasm).arg(&pkg),
+                "wasm-split",
+            )?;
+        }
         if let Some(optimizer) = optimizer {
-            optimizer.optimize(&output)?;
+            for entry in
+                std::fs::read_dir(&pkg).with_context(|| format!("reading {}", pkg.display()))?
+            {
+                let path = entry?.path();
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "wasm")
+                {
+                    optimizer.optimize(&path)?;
+                }
+            }
         } else if release {
             eprintln!("[tilo-app] wasm-opt not found; the release bundle is not size-optimized");
         }
@@ -480,7 +533,7 @@ fn desktop_crate(project: &Project) -> Result<WebCrate> {
         target_dir: None,
         apps_json: std::fs::read_to_string(crate_dir.join("apps.json"))
             .context("reading the desktop bundle's apps.json")?,
-        entry: format!("index.html?app={}", project.manifest.package.id),
+        entry: app_entry(&project.manifest.package.id),
     })
 }
 
@@ -512,8 +565,14 @@ fn app_crate(project: &Project) -> Result<WebCrate> {
         package: bundle_package_name(project),
         target_dir: Some(project.target_dir.clone()),
         apps_json: serde_json::to_string_pretty(&apps)? + "\n",
-        entry: format!("index.html?app={}", package.id),
+        entry: app_entry(&package.id),
     })
+}
+
+/// The page that shows `app` full tab in the person's own room, relative to
+/// the bundle: the link grammar's `app/#/me/<app-id>`.
+fn app_entry(app: &str) -> String {
+    format!("app/#/me/{app}")
 }
 
 fn bundle_package_name(project: &Project) -> String {
@@ -906,8 +965,34 @@ fn copy_page_host(sdk_root: &Path, bundle: &Path) -> Result<()> {
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if runtime_module(name) || resource_entry_asset(name) || name == "index.html" {
+        if runtime_module(name) || name == "index.html" {
             link_or_copy(&entry.path(), &bundle.join(name))?;
+        }
+    }
+    // The full-tab page that `app/#…` links load.
+    let app_page = web.join("app").join("index.html");
+    if app_page.is_file() {
+        let app_dir = bundle.join("app");
+        std::fs::create_dir_all(&app_dir)
+            .with_context(|| format!("creating {}", app_dir.display()))?;
+        link_or_copy(&app_page, &app_dir.join("index.html"))?;
+    }
+    // The arrival screen's lines: `arrival.mjs` fetches `locales/<locale>.ftl`.
+    let locales = web.join("locales");
+    if locales.is_dir() {
+        let into = bundle.join("locales");
+        std::fs::create_dir_all(&into).with_context(|| format!("creating {}", into.display()))?;
+        for entry in
+            std::fs::read_dir(&locales).with_context(|| format!("reading {}", locales.display()))?
+        {
+            let entry = entry?;
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "ftl")
+            {
+                link_or_copy(&entry.path(), &into.join(entry.file_name()))?;
+            }
         }
     }
     Ok(())
@@ -959,10 +1044,6 @@ fn runtime_module(name: &str) -> bool {
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("mjs"))
         && !name.ends_with(".test.mjs")
-}
-
-fn resource_entry_asset(name: &str) -> bool {
-    matches!(name, "resource.html" | "resource.css")
 }
 
 /// The product fonts and `fonts.json`, as `build.sh` writes them. Fonts are
@@ -1077,21 +1158,18 @@ pub(super) struct VersionFile {
 }
 
 /// The files Cloud packages from a bundle, in Cloud's order: top-level
-/// names sorted, `pkg/` and `fonts/` expanded in place, recursively sorted.
+/// names sorted, `pkg/`, `fonts/` and `locales/` expanded in place,
+/// recursively sorted.
 pub(super) fn packaged_files(bundle: &Path) -> Result<Vec<VersionFile>> {
     let mut files = Vec::new();
     for name in sorted_names(bundle)? {
         let path = bundle.join(&name);
-        if name == "pkg" || name == "fonts" {
+        if name == "pkg" || name == "fonts" || name == "locales" {
             if !path.is_dir() {
                 bail!("{name} in {} must be a directory", bundle.display());
             }
             collect_tree(&path, &format!("{name}/"), &mut files)?;
-        } else if runtime_module(&name)
-            || resource_entry_asset(&name)
-            || name == "fonts.json"
-            || name == "apps.json"
-        {
+        } else if runtime_module(&name) || name == "fonts.json" || name == "apps.json" {
             files.push(version_file(&path, name)?);
         }
     }
@@ -1429,8 +1507,7 @@ mod tests {
             "host.test.mjs",
             "apps.json",
             "index.html",
-            "resource.html",
-            "resource.css",
+            "locales/en-US.ftl",
             "untrusted.html",
             "build.json",
         ] {
@@ -1451,11 +1528,37 @@ mod tests {
                 "fonts/LICENSES/a.txt",
                 "fonts.json",
                 "host.mjs",
-                "pkg/tilo_browser_runtime.js",
-                "resource.css",
-                "resource.html"
+                "locales/en-US.ftl",
+                "pkg/tilo_browser_runtime.js"
             ]
         );
+    }
+
+    #[test]
+    fn a_packaged_bundle_carries_the_arrival_screens_locales() {
+        let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let bundle = tempfile::tempdir().unwrap();
+        copy_page_host(&sdk, bundle.path()).unwrap();
+        let packaged: Vec<String> = packaged_files(bundle.path())
+            .unwrap()
+            .into_iter()
+            .map(|file| file.name)
+            .collect();
+        assert!(packaged.iter().any(|name| name == "arrival.mjs"));
+        // Every locale `arrivalLocale` picks, and each one shipped beside it.
+        let shipped = std::fs::read_dir(sdk.join(RUNTIME).join("web/locales"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap());
+        let mut wanted: Vec<String> = shipped.map(|name| format!("locales/{name}")).collect();
+        wanted.sort();
+        assert!(wanted.iter().any(|name| name == "locales/en-US.ftl"));
+        assert!(wanted.iter().any(|name| name == "locales/de-DE.ftl"));
+        for name in &wanted {
+            assert!(
+                packaged.contains(name),
+                "{name} is not packaged: {packaged:?}"
+            );
+        }
     }
 
     #[test]
@@ -1660,12 +1763,12 @@ printf 'optimizer\n' >> "$(dirname "$output")/../calls"
         let stamp = bundle.join(".wasm-input");
         // A release built before the optimizer is installed must be revisited.
         assert!(Optimizer::probe(program.clone(), true).is_none());
-        bundle_runtime(&wasm, true, &bindgen, &bundle, None).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, None, None).unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"unoptimized");
         executable(&program, script);
         let mut optimizer = Optimizer::probe(program.clone(), true).unwrap();
         assert!(Optimizer::probe(program.clone(), false).is_none());
-        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer)).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer), None).unwrap();
         assert_eq!(
             std::fs::read_to_string(&calls).unwrap(),
             "bindgen\nbindgen\noptimizer\n"
@@ -1677,7 +1780,7 @@ printf 'optimizer\n' >> "$(dirname "$output")/../calls"
         );
         let unchanged_stamp = std::fs::metadata(&stamp).unwrap().modified().unwrap();
         let unchanged_output = std::fs::metadata(&output).unwrap().modified().unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer)).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer), None).unwrap();
         assert_eq!(
             std::fs::read_to_string(&calls).unwrap(),
             "bindgen\nbindgen\noptimizer\n"
@@ -1693,13 +1796,13 @@ printf 'optimizer\n' >> "$(dirname "$output")/../calls"
 
         std::fs::write(&version, "optimizer 2").unwrap();
         optimizer = Optimizer::probe(program.clone(), true).unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer)).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer), None).unwrap();
         let other_program = root.join("other-optimizer");
         executable(&other_program, script);
         optimizer = Optimizer::probe(other_program, true).unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer)).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer), None).unwrap();
         optimizer.flags = &["-O2"];
-        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer)).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, Some(&optimizer), None).unwrap();
         assert!(
             std::fs::read_to_string(&output)
                 .unwrap()
@@ -1711,14 +1814,14 @@ printf 'optimizer\n' >> "$(dirname "$output")/../calls"
         );
         // Removing the optimizer restores bindgen output, not stale optimized bytes.
         std::fs::remove_file(program).unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, None).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, None, None).unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"unoptimized");
         let absent_calls = std::fs::read(&calls).unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, None).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, None, None).unwrap();
         assert_eq!(std::fs::read(&calls).unwrap(), absent_calls);
         // A missing output must rebuild even with a matching input stamp.
         std::fs::remove_file(&output).unwrap();
-        bundle_runtime(&wasm, true, &bindgen, &bundle, None).unwrap();
+        bundle_runtime(&wasm, true, &bindgen, &bundle, None, None).unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"unoptimized");
         assert_ne!(std::fs::read(&calls).unwrap(), absent_calls);
     }

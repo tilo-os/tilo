@@ -27,6 +27,8 @@ mod support;
 mod active_group_wireup_test;
 #[path = "advertised_globals.rs"]
 mod advertised_globals;
+#[path = "agent_door_e2e.rs"]
+mod agent_door_e2e;
 #[path = "argb_opaque_region.rs"]
 mod argb_opaque_region;
 #[path = "blend_layer_cost.rs"]
@@ -69,6 +71,8 @@ mod cursor_protocol;
 mod dbus_runtime_context;
 #[path = "desktop_env_interactions.rs"]
 mod desktop_env_interactions;
+#[path = "desktop_smoke.rs"]
+mod desktop_smoke;
 #[path = "display_layout_switcher.rs"]
 mod display_layout_switcher;
 #[path = "dmabuf_commit_barrier.rs"]
@@ -173,6 +177,8 @@ mod permissions_tab_test;
 mod persisted_app_placeholders;
 #[path = "pointer_lock_protocol.rs"]
 mod pointer_lock_protocol;
+#[path = "popover_pointer_routing.rs"]
+mod popover_pointer_routing;
 #[path = "portal_file_chooser_e2e.rs"]
 mod portal_file_chooser_e2e;
 #[path = "portal_grant_reaches_sandbox.rs"]

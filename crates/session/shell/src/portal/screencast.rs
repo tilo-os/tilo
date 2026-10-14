@@ -627,11 +627,7 @@ impl ScreenCastBackend {
 
 /// Read a `(u32, u32)` `size` option, defaulting to 1920x1080.
 fn size_from_options(options: &HashMap<String, OwnedValue>) -> (u32, u32) {
-    options
-        .get("size")
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|owned| <(u32, u32)>::try_from(owned).ok())
-        .unwrap_or((1920, 1080))
+    crate::portal::option::<(u32, u32)>(options, "size").unwrap_or((1920, 1080))
 }
 
 /// Expand a source-type bitmask into the concrete streams to provision.

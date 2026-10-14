@@ -30,15 +30,7 @@ impl SelectedDescriptor {
 }
 
 fn valid_id(value: &str) -> bool {
-    value.len() == 36
-        && value != "00000000-0000-0000-0000-000000000000"
-        && value.bytes().enumerate().all(|(i, byte)| {
-            if matches!(i, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
+    crate::valid_uuid(value) && value != "00000000-0000-0000-0000-000000000000"
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

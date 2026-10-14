@@ -122,6 +122,12 @@ pub struct CaptureExecutor {
     external_updates: Vec<(String, Rect, String, Rect)>,
     external_dismissals: Vec<String>,
     portal_screenshot_armed: bool,
+    /// The desktop as it was when the screenshot picker opened. While the
+    /// person chooses, this is what is presented under the scrim and what the
+    /// screenshot is cropped from, so the capture is the screen they saw, not
+    /// whatever clients drew meanwhile. Held through the frame that confirms
+    /// or cancels, then released.
+    frozen_desktop: Option<Scene>,
     /// Live window previews for the switcher and the overview, rendered
     /// here because this is where live geometry and a GPU meet.
     window_previews: super::window_previews::WindowPreviewRenderer,
@@ -421,6 +427,47 @@ impl CaptureExecutor {
         reason = "the ordered capture tick keeps mirror, recording, and replay transitions in one state-machine boundary"
     )]
     pub fn execute_ready(
+        &mut self,
+        frame_builder: &mut FrameBuilder,
+        clean_screen_scene: &mut Scene,
+    ) -> (Vec<CaptureOutcome>, bool) {
+        let frozen_swapped = self.hold_desktop_while_choosing(
+            frame_builder.capture_choosing_screenshot(),
+            clean_screen_scene,
+        );
+        let (outcomes, overlays_appended) =
+            self.execute_ready_frame(frame_builder, clean_screen_scene);
+        // The confirming (or cancelling) frame has now read the held scene.
+        if !frame_builder.capture_choosing_screenshot() {
+            self.frozen_desktop = None;
+        }
+        (outcomes, overlays_appended || frozen_swapped)
+    }
+
+    /// Freeze the desktop while the screenshot picker is choosing: the first
+    /// such frame keeps `clean` as the snapshot, later frames (and the frame
+    /// that confirms, once the picker has already closed) have `clean`
+    /// replaced by it. Returns whether `clean` was replaced, which the caller
+    /// must treat as a full repaint.
+    fn hold_desktop_while_choosing(&mut self, choosing: bool, clean: &mut Scene) -> bool {
+        if choosing && self.frozen_desktop.is_none() {
+            self.frozen_desktop = Some(clean.clone());
+            return false;
+        }
+        match self.frozen_desktop.as_ref() {
+            Some(frozen) => {
+                *clean = frozen.clone();
+                true
+            }
+            None => false,
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one frame: capture, scene, present and retirement stay in order"
+    )]
+    fn execute_ready_frame(
         &mut self,
         frame_builder: &mut FrameBuilder,
         clean_screen_scene: &mut Scene,
@@ -2042,11 +2089,7 @@ mod tests {
             _theme: &ui::theme::Theme,
             node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
-            let style = taffy::Style {
-                size: taffy::Size::from_percent(1.0, 1.0),
-                ..taffy::Style::default()
-            };
-            taffy.widget_leaf(style, node_map, self)
+            taffy.fill_leaf(node_map, self)
         }
 
         fn apply_layout(
@@ -2127,6 +2170,59 @@ mod tests {
             &RoundedRect::from_rect(Rect::new(900.0, 40.0, 1_100.0, 140.0), 12.0),
         );
         scene
+    }
+
+    fn solid(color: Color) -> Scene {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            color,
+            None,
+            &Rect::new(0.0, 0.0, 10.0, 10.0),
+        );
+        scene
+    }
+
+    fn same_scene(a: &Scene, b: &Scene) -> bool {
+        a.encoding().draw_data == b.encoding().draw_data
+            && a.encoding().path_data == b.encoding().path_data
+    }
+
+    /// The screenshot is the screen the person saw when the picker opened:
+    /// what a client draws while they choose does not reach the capture, and
+    /// the hold ends with the confirming frame.
+    #[test]
+    fn the_desktop_is_held_still_while_the_screenshot_picker_chooses() {
+        let before = solid(Color::from_rgb8(220, 48, 64));
+        let after = solid(Color::from_rgb8(48, 96, 220));
+        let mut executor = CaptureExecutor::default();
+
+        // Opening: the live desktop becomes the snapshot.
+        let mut clean = before.clone();
+        assert!(!executor.hold_desktop_while_choosing(true, &mut clean));
+        assert!(same_scene(&clean, &before));
+
+        // Choosing: a changed desktop is replaced by the snapshot.
+        let mut clean = after.clone();
+        assert!(executor.hold_desktop_while_choosing(true, &mut clean));
+        assert!(same_scene(&clean, &before), "client updates stay hidden");
+        assert!(!same_scene(&clean, &after));
+
+        // Confirming: the picker has closed but this frame still captures
+        // the snapshot.
+        let mut clean = after.clone();
+        assert!(executor.hold_desktop_while_choosing(false, &mut clean));
+        assert!(
+            same_scene(&clean, &before),
+            "the capture is the frozen frame"
+        );
+        executor.frozen_desktop = None;
+
+        // Released: the live desktop is untouched again.
+        let mut clean = after.clone();
+        assert!(!executor.hold_desktop_while_choosing(false, &mut clean));
+        assert!(same_scene(&clean, &after));
     }
 
     #[test]
@@ -2397,6 +2493,7 @@ mod tests {
                         active_tab: tab_id,
                         width: WindowWidth::Fraction(1_000),
                         maximized: false,
+                        focus_history: Vec::new(),
                     });
                 }
                 (strip.id, target_group, target_tab)

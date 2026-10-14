@@ -1905,7 +1905,8 @@ impl MusicApp {
             | MusicEffect::DisconnectSpotify
             | MusicEffect::BrowseSpotify
             | MusicEffect::BrowseYouTube => self.begin_source_effect(invocation, &effect),
-            MusicEffect::SpotifyDevices
+            MusicEffect::SpotifyAccountStatus
+            | MusicEffect::SpotifyDevices
             | MusicEffect::SpotifyQueue
             | MusicEffect::SpotifyLibraryMore
             | MusicEffect::SpotifyCreatePlaylist { .. }

@@ -149,6 +149,9 @@ struct VariantOptions {
     risk: Option<syn::Path>,
     programmatic: bool,
     untrusted: bool,
+    /// `opens_path` declares the effect opens the file its `path` names;
+    /// `opens_path = "csv,tsv"` limits it to those extensions.
+    opens_path: Option<Vec<String>>,
     participant: bool,
     edit: bool,
     kind: Option<String>,
@@ -197,6 +200,18 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.programmatic = true;
             } else if meta.path.is_ident("untrusted") {
                 options.untrusted = true;
+            } else if meta.path.is_ident("opens_path") {
+                options.opens_path = Some(if meta.input.peek(syn::Token![=]) {
+                    meta.value()?
+                        .parse::<syn::LitStr>()?
+                        .value()
+                        .split(',')
+                        .map(|extension| extension.trim().to_ascii_lowercase())
+                        .filter(|extension| !extension.is_empty())
+                        .collect()
+                } else {
+                    Vec::new()
+                });
             } else if meta.path.is_ident("participant") {
                 options.participant = true;
             } else if meta.path.is_ident("edit") {
@@ -207,8 +222,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `risk`, `programmatic`, `untrusted`, `participant`, `edit`, `item = field` \
-                     or `kind`",
+                     `risk`, `programmatic`, `untrusted`, `opens_path`, `participant`, `edit`, \
+                     `item = field` or `kind`",
                 ));
             }
             Ok(())
@@ -419,6 +434,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         let row = options.row;
         let programmatic = options.programmatic;
         let untrusted = options.untrusted;
+        let opens = options.opens_path.as_ref().map_or_else(
+            || quote!(::core::option::Option::None),
+            |extensions| quote!(::core::option::Option::Some(&[#(#extensions),*])),
+        );
         if options.participant && !options.view && !options.edit {
             return Err(syn::Error::new(
                 variant.span(),
@@ -469,6 +488,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 risk_of: #risk_of,
                 programmatic: #programmatic,
                 untrusted: #untrusted,
+                opens: #opens,
                 participant: #participant,
                 edits: #edits,
                 item: #item,

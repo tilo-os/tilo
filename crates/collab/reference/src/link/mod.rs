@@ -98,15 +98,6 @@ impl RecordSegment {
         }
     }
 
-    /// The store's record id.
-    #[must_use]
-    pub fn as_record_id(&self) -> &str {
-        match self {
-            Self::Primary => PACKAGE_PRIMARY,
-            Self::Id(id) => id,
-        }
-    }
-
     /// The record part of a `record:<app>:<record>` provider: empty for the primary.
     #[must_use]
     pub fn provider_part(&self) -> &str {
@@ -427,12 +418,24 @@ pub struct LinkSecrets {
     pub invite: Option<Secret>,
     pub ticket: Option<Secret>,
     pub token: Option<Secret>,
+    /// The person (their user root, hex) whose new device this browser asks
+    /// to become: one of their devices that holds the root approves it.
+    pub pair: Option<Secret>,
+    /// A machine waiting for its owner (its HTTPS origin, device key and
+    /// install token; `web/machine-setup.mjs`): the root this browser holds
+    /// certifies it and the page installs the certificate, once the person
+    /// confirms.
+    pub install: Option<Secret>,
 }
 
 impl LinkSecrets {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.invite.is_none() && self.ticket.is_none() && self.token.is_none()
+        self.invite.is_none()
+            && self.ticket.is_none()
+            && self.token.is_none()
+            && self.pair.is_none()
+            && self.install.is_none()
     }
 }
 
@@ -569,6 +572,8 @@ impl LinkTarget {
             ("invite", &secrets.invite),
             ("ticket", &secrets.ticket),
             ("token", &secrets.token),
+            ("pair", &secrets.pair),
+            ("install", &secrets.install),
         ] {
             if let Some(secret) = secret {
                 params.push(format!("{name}={}", secret.expose()));
@@ -842,6 +847,8 @@ mod tests {
                 invite: Some(Secret::new("SECRETinvite").unwrap()),
                 ticket: None,
                 token: Some(Secret::new("SECRETtoken").unwrap()),
+                pair: None,
+                install: None,
             },
         };
         let printed = format!(

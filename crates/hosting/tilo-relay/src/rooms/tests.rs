@@ -39,7 +39,10 @@ pub(crate) async fn view_read_relay(
     .unwrap()
 }
 
-fn signed_pre_admission(room: &str, token: &[u8]) -> tilo_relay_protocol::rooms::PreAdmission {
+pub(crate) fn signed_pre_admission(
+    room: &str,
+    token: &[u8],
+) -> tilo_relay_protocol::rooms::PreAdmission {
     use ed25519_dalek::Signer as _;
     use sha2::Digest as _;
     let owner = SigningKey::from_bytes(&[1; 32]);
@@ -86,6 +89,173 @@ async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redee
         .find(|pending| pending.invite_id == issued.invite_id)
         .unwrap();
     assert_eq!(invitation.recipient_user_public_key, Some(guest));
+    relay.shutdown().await;
+}
+
+/// A person's device certificate, as a guest's browser makes one.
+pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
+    let root = SigningKey::from_bytes(&rand::random());
+    let key = SigningKey::from_bytes(&rand::random());
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "guest".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    (key, cert)
+}
+
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_refused_alone() {
+    use ed25519_dalek::Signer as _;
+    use tilo_relay_protocol::rooms::{JoinReply, JoinStep, join_proof_digest};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Public").await.unwrap();
+    let mut proofs = Vec::new();
+    let mut people = Vec::new();
+    for index in 0..6_u8 {
+        let token = [index + 1; 8];
+        let issued = rooms
+            .pre_admit(
+                &cert,
+                PreAdmitRequest {
+                    request_id: [index + 1; 32],
+                    grant: signed_pre_admission(&created.room, &token),
+                    recipient_user_public_key: None,
+                    inviter_name: None,
+                },
+            )
+            .await
+            .unwrap();
+        let (device, device_cert) = guest_device();
+        people.push(device_cert.user_public_key);
+        let JoinReply::Challenge { challenge } = rooms
+            .page_join(JoinStep::Ask {
+                invitation: issued.signed_invitation,
+                device_cert,
+                request_id: rand::random(),
+            })
+            .await
+        else {
+            panic!("no challenge");
+        };
+        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
+        // The last guest presents someone else's token.
+        let token = if index == 5 { [1; 8] } else { token };
+        proofs.push(JoinStep::ProvePreAdmitted {
+            challenge,
+            signature,
+            name: format!("Guest {index}"),
+            token: token.to_vec(),
+        });
+    }
+    let before = rooms.summary(&created.room).await.unwrap().generation;
+    let answers = n0_future::join_all(proofs.into_iter().map(|proof| rooms.page_join(proof))).await;
+    for answer in answers.iter().take(5) {
+        assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
+    }
+    assert!(
+        matches!(answers.last(), Some(JoinReply::Refused(reason)) if reason.contains("token")),
+        "{:?}",
+        answers.last()
+    );
+    let summary = rooms.summary(&created.room).await.unwrap();
+    assert_eq!(summary.generation, before + 1, "one change admits them all");
+    let members: Vec<_> = summary
+        .members
+        .iter()
+        .map(|member| member.user_public_key)
+        .collect();
+    for person in people.iter().take(5) {
+        assert!(members.contains(person));
+    }
+    assert!(!members.contains(&people[5]));
+    relay.shutdown().await;
+}
+
+/// Concurrent pre-admissions and challenges share their room's writes, and
+/// every one of them is written before it is answered: after a restart each
+/// guest still proves its challenge and is admitted.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes each relay after its phase; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_a_restart() {
+    use ed25519_dalek::Signer as _;
+    use tilo_relay_protocol::rooms::{JoinReply, JoinStep, join_proof_digest};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Public").await.unwrap();
+    let issued = n0_future::join_all((0..8_u8).map(|index| {
+        let rooms = rooms.clone();
+        let room = created.room.clone();
+        let cert = cert.clone();
+        async move {
+            rooms
+                .pre_admit(
+                    &cert,
+                    PreAdmitRequest {
+                        request_id: [index + 1; 32],
+                        grant: signed_pre_admission(&room, &[index + 1; 8]),
+                        recipient_user_public_key: None,
+                        inviter_name: None,
+                    },
+                )
+                .await
+                .unwrap()
+        }
+    }))
+    .await;
+    let guests: Vec<_> = issued.iter().map(|_| guest_device()).collect();
+    let asked = n0_future::join_all(issued.iter().zip(&guests).map(
+        |(issued, (_, device_cert))| {
+            rooms.page_join(JoinStep::Ask {
+                invitation: issued.signed_invitation.clone(),
+                device_cert: device_cert.clone(),
+                request_id: rand::random(),
+            })
+        },
+    ))
+    .await;
+    relay.shutdown().await;
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    for (index, (asked, (device, _))) in asked.into_iter().zip(&guests).enumerate() {
+        let JoinReply::Challenge { challenge } = asked else {
+            panic!("no challenge: {asked:?}");
+        };
+        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
+        let token = u8::try_from(index + 1).unwrap();
+        let answer = rooms
+            .page_join(JoinStep::ProvePreAdmitted {
+                challenge,
+                signature,
+                name: format!("Guest {index}"),
+                token: vec![token; 8],
+            })
+            .await;
+        assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
+    }
     relay.shutdown().await;
 }
 
@@ -273,6 +443,49 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     }
     assert_view_reader_refused(&rooms, created.workspace_id, &caller, &source).await;
     drop(rooms);
+    relay.shutdown().await;
+}
+
+/// The room's default record a host seeds is the one every member's first
+/// window opens: it names the default id, or members refuse it.
+#[cfg(feature = "agents")]
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay stays live through the record check and its consuming shutdown"
+)]
+async fn a_seeded_room_default_record_names_the_default_id() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Seeded default record").await.unwrap();
+    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    // An app that keeps a record per window: one that keeps a room record
+    // seeds its package primary, not the default route.
+    let app = "so.tilo.scratchpad";
+    let record = crate::room_bots::room_record(&catalogue, app);
+    assert_eq!(record, ui::record::RecordId::room_default().as_str());
+    assert!(
+        rooms
+            .prepare_application(&created.room, &cert, &catalogue, app, &record)
+            .await
+            .unwrap()
+    );
+    let bytes = rooms
+        .record_document(&created.room, app, &record)
+        .await
+        .unwrap()
+        .expect("the room holds its default record");
+    let doc = automerge::AutoCommit::load(&bytes).unwrap();
+    let kind = catalogue.get(app).unwrap().record_kind.clone();
+    assert_eq!(
+        ui::record::identity(&doc),
+        Some(ui::record::RecordCheckout::new(
+            ui::record::RecordId::room_default(),
+            kind
+        ))
+    );
     relay.shutdown().await;
 }
 
@@ -705,6 +918,87 @@ async fn assert_canonical_chat_preparation(
             "preparing again must preserve the actual original document"
         );
     }
+}
+
+/// The room's copy of `record` of `app`, when it has one.
+#[cfg(feature = "agents")]
+async fn room_record(
+    rooms: &Rooms,
+    room: &str,
+    (app, record): (&str, &str),
+) -> Option<automerge::AutoCommit> {
+    let current = rooms.room(room).await.unwrap();
+    let bytes = current.lock().await.peer().document(app, record);
+    bytes.map(|bytes| automerge::AutoCommit::load(&bytes).unwrap())
+}
+
+/// The governor starts a room record no app factory makes, such as the
+/// shared desktop, then changes it in place: the record keeps its graph, an
+/// unchanged pass publishes nothing, and another certificate is refused.
+#[cfg(feature = "agents")]
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Relay::shutdown consumes the relay after the authoring assertions; the suggested subsequent drop would use a moved value"
+)]
+async fn governor_authors_a_room_record_no_factory_makes() {
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
+    const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Shared desktop").await.unwrap();
+    let room = created.room.as_str();
+    let read = || room_record(rooms, room, DESKTOP);
+    let text = |doc: &automerge::AutoCommit| {
+        doc.get(ROOT, "desktop")
+            .unwrap()
+            .unwrap()
+            .0
+            .into_string()
+            .unwrap()
+    };
+    assert!(read().await.is_none());
+    rooms
+        .author_room_record(room, &cert, DESKTOP, |doc| {
+            doc.put(ROOT, "desktop", "first").map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let mut first = read().await.expect("the record was started");
+    assert_eq!(text(&first), "first");
+    rooms
+        .author_room_record(room, &cert, DESKTOP, |_| Ok(()))
+        .await
+        .unwrap();
+    assert_eq!(read().await.unwrap().get_heads(), first.get_heads());
+    rooms
+        .author_room_record(room, &cert, DESKTOP, |doc| {
+            doc.put(ROOT, "desktop", "second")
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let second = read().await.unwrap();
+    assert_eq!(text(&second), "second");
+    let first_head = first.get_heads()[0];
+    assert!(
+        second.get_change_by_hash(&first_head).is_some(),
+        "the record keeps its graph"
+    );
+    let mut different = cert.clone();
+    different.device_label = "different current certificate".into();
+    sign_device_cert(&mut different, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    assert!(
+        rooms
+            .author_room_record::<()>(room, &different, DESKTOP, |_| {
+                panic!("another certificate must never reach the change")
+            })
+            .await
+            .is_err()
+    );
+    relay.shutdown().await;
 }
 
 #[cfg(feature = "agents")]

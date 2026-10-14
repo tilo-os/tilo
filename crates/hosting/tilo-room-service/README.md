@@ -152,9 +152,15 @@ Chat starts with while the room's workspace has none, each with the id
 `c_<name>` (`-` becomes `_`) so a bridged Discord server maps onto the same
 channels on every start. Without it no channels are made, and a chat that
 has channels keeps exactly those.
+`TILO_ROOMS_STRIPS` (for example `Main,Games,Quiet`) are the strips, the
+named places people gather in, of the room's shared desktop: each is added
+to its first workspace at start where none has that name, so the first
+person in finds them in the top bar. The strips people make are kept.
 
-The service is the room's API and relay, never a page. Admission runs in
-the app: each visitor is their own
+The service is the room's API and relay, never a page: the Tilo app lives
+at its web entry (`TILO_ROOMS_WEB_ENTRY`, e.g. `https://app.example/`), which
+opens the room as a workspace. `GET /` redirects there, or answers 404
+without a web entry. Admission runs in the app: each visitor is their own
 person with their own identity, `POST /join` pre-admits it (per-IP join
 windows, an online cap, a cooldown for addresses of removed members) and
 the browser redeems the bound invitation. A read-only embed joins as the
@@ -181,8 +187,10 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_PERSISTENT` | unset | the room's name; turns persistent mode on |
 | `TILO_ROOMS_NAME` | `<name>`, capitalized | the name people see for the room (1–80 characters) |
 | `TILO_ROOMS_CHAT_CHANNELS` | unset: none | channels Chat starts with while it has none, comma-separated names of lowercase letters, digits and `-` |
+| `TILO_ROOMS_STRIPS` | unset: none | strips the shared desktop has, comma-separated names of up to 48 characters |
 | `TILO_ROOMS_RELAY_ORIGIN` | required | the relay's public origin, e.g. `https://rooms.example` |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the relay's plain listener the ingress forwards `/peer/` to |
+| `TILO_ROOMS_WEB_ENTRY` | none | the Tilo app's web entry (e.g. `https://app.example/`), announced by the relay so `share-link` and bots mint links that open the room there; without it the room's resources cannot be shared as links |
 | `TILO_ROOMS_LIVE_ORIGIN` | unset | an `https://` origin (port allowed), e.g. `https://live.rooms.example` with UDP 443 forwarded to the listener, that reaches the relay's QUIC listener directly, for an ingress that passes HTTP only (a CDN): browsers try WebTransport there first and fall back within 2 s, silently, to the HTTPS stream through the ingress |
 | `TILO_ROOMS_LIVE_LISTEN` | `0.0.0.0:9781` | that listener: WebTransport on UDP (HTTPS on TCP too, unused) |
 | `TILO_ROOMS_LIVE_TLS_CERT`, `TILO_ROOMS_LIVE_TLS_KEY` | `/run/live-tls/tls.crt`, `/run/live-tls/tls.key` | its PEM certificate and key for the live origin's name; re-read within 30 s of a renewal, no restart |
@@ -203,6 +211,28 @@ is guests plus spectators plus 64, `TILO_RELAY_MAX_HANDSHAKES` 1024,
 per session. Any of them set in the environment wins. The child also runs
 with `MALLOC_ARENA_MAX=2` unless set, which halves its memory under load.
 
+**Who is here.** Members' pages post their own recent actions (titles only)
+to the relay's `/peer/v1/here` and show everyone's one-line status. The relay
+always answers a deterministic line. Optionally it asks a model provider for
+a short prose line, which is shown only while it cites actions the person
+still has; otherwise the deterministic line stays. The child relay inherits
+these variables. Without an endpoint, no model is asked. An invalid setting
+logs a warning and leaves the lines deterministic; the room keeps serving.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TILO_RELAY_SUMMARY_ENDPOINT` | unset: off | the provider's base URL, e.g. `https://api.anthropic.com` |
+| `TILO_RELAY_SUMMARY_PROTOCOL` | `anthropic` | `anthropic` or `openai-compatible` |
+| `TILO_RELAY_SUMMARY_MODEL` | `claude-haiku-5-5` | the model id |
+| `TILO_RELAY_SUMMARY_KEY_FILE` | unset | a file holding the API key, read once at start; required for `anthropic` |
+| `TILO_RELAY_SUMMARY_MAX_TOKENS` | `200` | output tokens per call, 1–512 |
+| `TILO_RELAY_SUMMARY_PER_HOUR` | `120` | calls in any rolling hour across the relay, 1–3600; after that lines stay deterministic until the hour rolls on |
+| `TILO_RELAY_SUMMARY_MIN_INTERVAL_SECS` | `60` | least time between two calls for one person, 10–3600 |
+
+A call is made only when a person's set of actions changed. Each person has
+at most one call in flight, and the relay has at most two. A call that takes
+longer than 15 s is dropped. Calls never hold up a reply.
+
 ## Build and run
 
 The image is built by `.forgejo/workflows/room-service-image.yml`: the CI
@@ -210,11 +240,32 @@ builder compiles `tilo-relay` (feature `agents`), `tilo-room-service` and
 the desktop bundle, and BuildKit assembles
 `container/Containerfile` from those outputs (`bin/`, `assets/`). Pushes to
 main and manual runs publish `registry.tilo.so/tilo/room-service:sha-<commit>`
-and a digest receipt; deployments pin the digest. `container/test-image.sh`
-is the image's smoke test. Run it on a branch with
+and a digest receipt (`room-service-image-receipt`: repository, tag, digest,
+source revision, platform and the build run); deployments pin the digest.
+`container/test-image.sh` is the image's smoke test. Run it on a branch with
 `fgj workflow run room-service-image.yml -R tilo/tilo --ref <branch>`.
 
-Locally, serve the output of
+Production pins this image and the web entry together, from one main
+commit, in the infra repository. `tools/release/cloud_promotion.py` plans
+that change: `plan` picks the newest main commit with both images (or
+`--revision`, or two `--receipt` files), checks each digest's revision label
+and platform in the registry and prints the exact manifest diff and pull
+request body (`--infra <checkout> --apply` edits a checkout); `propose` opens
+the pull request on a `promote/` branch with `INFRA_PROMOTION_TOKEN`; `drift`
+reports which revision each service runs and how far main is ahead. The
+`Release / Cloud promotion` workflow (`cloud-promotion.yml`) runs `drift`
+every Monday and the promotion on a manual run. Promotions are batched: each
+web entry deploy makes open tabs offer a reload.
+
+Locally, `dev/run.py` runs the persistent room as production does: this
+service in persistent mode with its child relay, and the web entry laid out
+by the web entry image's `layout.py` with the `entry.json` that opens the
+room, on plain `localhost` origins (`TILO_ROOMS_LOCAL=1`). It builds what it
+needs or reuses prebuilt binaries and a bundle, prints the URL to open and
+stops everything on Ctrl-C; `dev/run.py --help` describes the edit loop and
+driving it with headless Chromium.
+
+For short-lived rooms, serve the output of
 `crates/browser/tilo-browser-runtime/scripts/build.sh DIR --bundle desktop`
 plus `web/*` as `TILO_ROOMS_ASSETS`, and run `target/release/tilo-room-service`
 with `TILO_ROOMS_RELAY_BIN=target/release/tilo-relay` and
@@ -225,7 +276,11 @@ uses it with `PUBLIC_TILO_ROOMS_URL=http://localhost:8790`.
 ## Operating it
 
 - **`GET /metrics`** (Prometheus text, in-cluster only: requests carrying
-  `X-Forwarded-For` get 404). `tilo_rooms_*`: rooms, online guests and
+  `X-Forwarded-For` get 404). `tilo_rooms_build_info{revision}` is 1 and
+  names the commit the running image was built from (`TILO_SOURCE_REVISION`,
+  which the Containerfile sets from the revision label; `unknown` outside an
+  image), to compare with the revision of the pinned digest.
+  `tilo_rooms_*`: rooms, online guests and
   spectators, `joins_total`, `join_failures_total{reason}`, mode, browser
   error counters, and the relay's own counters read from the snapshot each
   relay persists every second (`relay_up`, `relay_sessions`,
@@ -245,4 +300,6 @@ uses it with `PUBLIC_TILO_ROOMS_URL=http://localhost:8790`.
   is the mode at start, the file wins once set. `spectator-only` refuses new
   rooms, invitations and admissions with `503` and `Retry-After`;
   `back-soon` also stops spectating (the persistent room's routes read
-  `ops::get().mode()`). `GET /mode` tells the page which.
+  `ops::get().mode()`). `GET /mode` tells the page which, and is public:
+  `{"mode": "normal", "revision": "<commit>"}`, the same revision as the
+  build info, so drift can be seen from outside the cluster.

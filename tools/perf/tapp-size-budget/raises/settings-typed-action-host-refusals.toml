@@ -1,0 +1,5 @@
+reason = "the action vocabulary keeps a stale revision and an out-of-range argument as typed data: a wire-compatible host error, the argument violation and the failure details every app's door fills. With main's own growth Settings crossed its aarch64 budget by 1,024 B; check run 111511 measured 5,252,096 B on aarch64"
+run = 111511
+
+[apps."so.tilo.settings"]
+aarch64 = 8192

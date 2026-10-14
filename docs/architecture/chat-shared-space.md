@@ -163,18 +163,18 @@ then the existing read-only rich-text editor highlights that exact range. The hi
 is local and disappears when the source text changes. Other apps must declare their
 own supported range view; this change does not claim they all do.
 
-The certified peer's `resourceLink(page, reference, provider, action)` creates the
-versioned browser link only after fresh authorized lookup. The isolated mounted acceptance journey below exercises this against a real
-governed host, compiled app and existing fixture browser account. Production
-deployment and physical devices remain separate acceptance work.
-Its fragment carries the HTTPS host origin, room, host device key, exact source provider, kind/id, optional
-span and declared view action. It carries no invitation, account key, bearer grant or
-caller-supplied label. `resource.html` opens the standalone resource after an explicit
-Open, using the recipient's existing browser identity profile and certificate. A
-missing certificate is refused without pairing or renewal; current host/room/device
-binding and permissions are checked before opening. Leave aborts pending navigation,
-closes the app and releases the peer/device key. This is the runtime's shipped browser
-entry point, not a newly deployed service.
+Browser links to a resource use the one link grammar of
+[web-routing.md](web-routing.md): `entry["app/"]#[/@host]/w/[slug~]room/app/record/resource`
+with an optional `view` and `chars`/`bytes` span, formatted and parsed only by
+`tilo_reference::link`. The fragment carries no account key, bearer grant or
+caller-supplied label; an invitation rides in it only when the sharer chose to
+include one, and the entry page strips it from the address before any module
+runs. The desktop entry (`index.html`) and the full-tab app entry
+(`app/index.html`) admit the visitor with their existing browser identity, then
+open the target through the declared view action, so current room membership
+and permissions are checked by the action door, not by the link. The separate
+`resource.html` page and its versioned fragment are gone; the sections below
+that mention them record the evidence gathered with that earlier page.
 
 Native messages now keep the exact source provider beside `ResourceRef` and expose
 public Copy/Open effects backed by fresh host-provided route metadata. Older
@@ -363,7 +363,20 @@ existing retained checkpoints/tails and must leave history unchanged.
 
 ### Read-only browser deployment discovery
 
-The sibling Cloud repository owns browser hosting. Its
+**Superseded (2026-10-14).** `tilo.coffee` is no longer Cloud's CloudFront
+distribution: it serves the web entry image built from this repository
+(`.forgejo/workflows/web-entry.yml`, `crates/browser/tilo-browser-runtime/container/`).
+Its `/version.json` names the content version and source revision; the entry
+pages import one `v/<version>/` directory whose files match that version's
+`build.json` hashes, and everything under `v/` is immutable. `/qos-runtime/`
+answers 404 there. The resource entry is the link grammar opened through
+`index.html` or `app/index.html` ([web-routing.md](web-routing.md)), so
+`resource.html` is in no release, and Cloud's `/qos-runtime/resource.html`
+packaging is never fed: current bundles do not contain the page, and Cloud
+publishes its resource entry only when one is present. The rest of this
+section records the earlier Cloud-hosted layout.
+
+The sibling Cloud repository owned browser hosting. Its
 `deployment/aws/template.yaml` publishes the public console origin as the
 CloudFormation `SiteUrl` output, derived from `SiteDistribution.DomainName`.
 The configured runtime paths are `/qos-runtime/` and `/qos-session-runtime/`,
@@ -394,19 +407,16 @@ New `share-resource` messages can include `sourceProvider`, the existing typed
 `record:<app>:<record>` provider. The message keeps that provenance beside its
 resource address; it does not carry a host URL, bytes or access grant. Older
 messages remain readable but cannot mint a browser link without provenance.
-`read-message` exports the provider, and message resources with provenance offer
-`copy-resource-link` and `open-resource-link`. Their visible controls use shared
-Buttons and the same public effects as automation.
-
-Both effects request fresh exact-view metadata through the existing certified
-native catalogue bridge. One lookup may run at a time, with cancellation and a
-30-second timeout. The completion checks the message still carries the same
-reference/provider. The host's locator supplies the governed room, certified
-host device, HTTPS listener origin, and optional operator-configured
-`resource_browser_page`. Absent browser hosting is reported, never guessed from
-the API listener origin. Only a matching permitted declared local View becomes a
-version-one browser fragment; labels, document bytes, invitations and credentials
-are excluded. Browser hydration still rechecks admission and current Read.
+`read-message` exports the provider. A message carrying a resource shows
+"Copy link" and "Open resource in browser" controls in shared Buttons. Both
+invoke `share-link` on the referenced resource through the action door, so the
+resource's own app (which knows its views) asks its room's host for a fresh
+locator and renders the link grammar under the host's web entry; Chat builds no
+link itself. Agents and automations call that same `share-link` directly. Open
+hands the link to the browser, since Chat cannot show another app's view in
+place. One request runs at a time with a 30-second limit, and its outcome is
+checked against the message still carrying the same reference and provider. A
+host without a web entry refuses with its reason, which the control shows.
 
 Settings' device-local `publish-browser-identity` effect takes a canonical HTTPS
 host origin and reads the process's bound public identity. It invokes the typed
@@ -508,7 +518,7 @@ exactly once in the browser and native replica. It requires a newly presented
 frame and keeps the same certified device. The SDK web lane preserves its
 Viewer journey and adds the actual Chat build/recovery journey with separate
 receipts. See `docs/native-chat-browser-acceptance.md` for scope and reproduction.
-These loopback fixture results do not establish public demo access, browser
+These loopback fixture results do not establish access to a public room, browser
 voice, a full profile restart with queued edits or cross-app Follow.
 
 ## Compiled browser call acceptance (2026-10-07)
@@ -532,6 +542,6 @@ real signed governance tail crosses its publication limit.
 
 This qualifies the governed loopback compiled-browser call. It does not
 establish physical microphone support, arbitrary remote encrypted Chat routes,
-cross-app Follow, or public demo access. See
+cross-app Follow, or access to a public room. See
 `docs/native-chat-browser-acceptance.md` for reproduction and the separate
 Viewer and disconnect/retry journeys.

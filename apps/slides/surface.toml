@@ -17,7 +17,7 @@ fields = [
   { path = "slides.*.elements.*.y", type = "f64" },
   { path = "slides.*.elements.*.w", type = "f64" },
   { path = "slides.*.elements.*.h", type = "f64" },
-  { path = "slides.*.elements.*.body", type = "RichText", label = true, ops = "sha256:50b5e5015161641c" },
+  { path = "slides.*.elements.*.body", type = "RichText", label = true, ops = "sha256:1ce89d3350d639da" },
   { path = "slides.*.elements.*.src", type = "Atom" },
   { path = "slides.*.elements.*.fill", type = "Atom" },
   { path = "slides.*.elements.*.stroke", type = "Atom" },

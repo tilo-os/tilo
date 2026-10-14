@@ -51,6 +51,9 @@ pub mod handoff;
 mod history;
 pub mod owner_view;
 pub mod participants;
+mod surface_publication;
+pub use runtime_collab::{SurfaceDelta, SurfaceTable};
+pub use surface_publication::SurfacePublication;
 pub mod record_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
@@ -304,10 +307,19 @@ pub enum CollabRequest {
         /// Page size cap; chrome UX bounds pages to ~50 ops.
         max: u16,
     },
-    /// Replace this application's complete exported resource/action surface.
+    /// Replace this application's complete exported resource/action surface,
+    /// whole. For small surfaces a caller builds directly; the toolkit's own
+    /// publication sends [`Self::PublishActionSurface`].
     PublishActions {
         app_id: String,
         actions: Vec<ExportedAction>,
+    },
+    /// Change this application's exported resource/action surface: the
+    /// delta from what the broker holds (or, when it resets, a whole new
+    /// surface). See [`SurfacePublication`].
+    PublishActionSurface {
+        app_id: String,
+        delta: SurfaceDelta,
     },
     /// App-owned CRDT state projected for same-identity continuation. The
     /// local broker authenticates the route and stores this only for shell
@@ -527,34 +539,7 @@ pub struct BrokerActionSurface {
     pub cluster_id: String,
     pub record_id: String,
     pub live: bool,
-    pub actions: Vec<BrokerActionDescriptor>,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct BrokerActionDescriptor {
-    pub resource: String,
-    #[serde(default)]
-    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
-    pub action: String,
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub action_label: String,
-    pub description: Option<String>,
-    pub operation_kind: tilo_actions::OperationKind,
-    pub params: Vec<tilo_actions::ActionParam>,
-    pub contract: tilo_actions::ActionContract,
-    pub input: BrokerActionInput,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-pub struct BrokerActionInput {
-    pub kind: String,
-    #[serde(default)]
-    pub prompt: String,
-    #[serde(default)]
-    pub placeholder: String,
-    #[serde(default)]
-    pub wants_content: bool,
+    pub actions: Vec<ExportedAction>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1442,9 +1427,9 @@ impl CollaborationManager {
     }
 
     /// Fire-and-forget and non-blocking on every backend. Presence may be
-    /// shed under saturation; any other durable enqueue failure visibly
-    /// disconnects the manager, so callers never continue under the illusion
-    /// it was sent. Document mutations never disconnect: see
+    /// shed under saturation; any other durable command is accepted and
+    /// waits for the transport's queue to have room, so a burst is
+    /// backpressure, never a disconnect. Document mutations never disconnect: see
     /// [`Self::try_send`] for why one was not sent.
     ///
     /// While the manager is [`CollaborationState::Connecting`] only a

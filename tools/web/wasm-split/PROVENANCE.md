@@ -1,0 +1,48 @@
+# Provenance
+
+`src/split.rs` is `src/lib.rs` of [wasm-split-cli
+0.7.10](https://crates.io/crates/wasm-split-cli/0.7.10) from the
+[Dioxus](https://github.com/DioxusLabs/dioxus) project, by Jonathan Kelley
+and contributors, licensed MIT OR Apache-2.0. It builds the call graph of a
+module linked with `--emit-relocs` and moves what only a split point reaches
+into its own module.
+
+Changes:
+
+- A module without a `main` function (a `cdylib`, as the browser bundles
+  are) anchors the call graph at wasm-bindgen's `__wbindgen_start` export.
+- The JavaScript loader template it embedded is gone; `src/main.rs` writes
+  the bundle's own loader (`__wasm_split.js`, module URLs relative to the
+  loader, a callback on failure too, and a `tilo-module-unavailable` event
+  on the page when the server no longer has a module) and file names.
+
+Fixes, each of which broke the split program of a large Rust module at run
+time:
+
+- Type-index relocations (the signature of a `call_indirect`) are no longer
+  read as symbol indices, which linked callers to unrelated functions.
+- A function symbol resolves to its function by index, not by name: several
+  functions share a name (copies of a generic shim), and a name lookup picked
+  an arbitrary one.
+- The call graph rebuilt for the bindgened module is merged into the one the
+  split uses; it was built and then dropped.
+- Functions are paired between the linked and the bindgened module by table
+  slot where they have one. An `#[inline]` function gets one copy per codegen
+  unit, all under the same name, so name pairing could install a copy with
+  another signature into a table slot.
+- Data stays in the main module, and split modules carry none. Code-to-data
+  edges also come through name pairing, and a static wrongly attributed to a
+  split module was cleared while main still read it.
+- Every function the kept part of the main module still references (through
+  its code or the call graph) stays, even when the split analysis missed it.
+
+Memory: upstream parses the whole program once per split module, all at
+once, which took 140 GB for a 170 MB module split in 34. Here each split
+module is parsed with only the function bodies it keeps (the rest are
+`unreachable`), the linked module is parsed without bodies (the call graph
+comes from its relocations), the main module is emitted before the split
+modules so its parse is gone by then, and only as many split modules are
+emitted at once as available memory (the cgroup limit, else MemAvailable)
+allows. The same split now fits in 7 GB.
+
+`src/main.rs` is Tilo's.

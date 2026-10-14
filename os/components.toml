@@ -313,6 +313,18 @@ files = [
   { from = "tilo-model-gateway", to = "/usr/bin/tilo-model-gateway", mode = "0755" },
 ]
 
+[[component]]
+name = "secret-service"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-secret-service"]
+bins = ["tilo-secret-service"]
+user_units = ["tilo-secret-service.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-secret-service", to = "/usr/bin/tilo-secret-service", mode = "0755" },
+]
+
 # The shared runtime and every packaged thin app. One component because Rust
 # dylib symbols carry crate hashes: a thin app only runs against the
 # libruntime_dylib.so built in the same Cargo graph (os/scripts/build-thin-apps.sh).
@@ -472,6 +484,20 @@ files = [
   { from = "completions/fish/tilo.fish", to = "/usr/share/fish/vendor_completions.d/tilo.fish", mode = "0644", optional = true, layer = "desktop-binaries" },
   { from = "completions/zsh/_tilo", to = "/usr/share/zsh/site-functions/_tilo", mode = "0644", optional = true, layer = "desktop-binaries" },
   { link = "_tilo", to = "/usr/share/zsh/site-functions/_system", layer = "desktop-binaries" },
+]
+
+# The one writer of the read-only ESP, started on demand as
+# tilo-esp-write@CALLER.service by the boot-entry and Secure Boot units, at
+# boot and on the way down; a swap takes effect at its next start.
+[[component]]
+name = "esp-write"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-esp-write"]
+bins = ["tilo-esp-write"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-esp-write", to = "/usr/libexec/tilo-esp-write", mode = "0755" },
 ]
 
 [[component]]

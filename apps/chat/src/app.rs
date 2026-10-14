@@ -3276,13 +3276,13 @@ impl ChatApp {
                     Hit::StopSharingLiveContext => {
                         (crate::i18n::t("chat-context-stop"), Role::Button, false)
                     }
-                    Hit::CopyResourceLink(_) => (
-                        crate::i18n::t("chat-resource-copy-link"),
+                    Hit::CopyResourceLink(message) => (
+                        self.resource_navigation.label(message, false, true),
                         Role::Button,
                         false,
                     ),
-                    Hit::OpenResourceLink(_) => (
-                        crate::i18n::t("chat-resource-open-link"),
+                    Hit::OpenResourceLink(message) => (
+                        self.resource_navigation.label(message, true, true),
                         Role::Button,
                         false,
                     ),
@@ -3495,7 +3495,8 @@ impl Collaborative for ChatApp {
             self.realtime.target_media_ready = false;
         }
         let mut requests = std::mem::take(&mut self.realtime.requests);
-        requests.extend(self.resource_navigation_requests());
+        self.settle_resource_navigation();
+        requests.extend(self.resource_navigation.remote_mut().take_collab_requests());
         requests.extend(self.moderation_requests());
         requests.extend(self.agent_tasks.actions_mut().take_collab_requests());
         for surface in self.agent_surfaces.values_mut() {
@@ -3527,7 +3528,10 @@ impl Collaborative for ChatApp {
         match event {
             ui::collaboration::CollabEvent::RemoteAction { message } => {
                 self.complete_moderation(message);
-                self.complete_resource_navigation(message);
+                self.resource_navigation
+                    .remote_mut()
+                    .handle_collab_event(event);
+                self.settle_resource_navigation();
             }
             ui::collaboration::CollabEvent::FollowChanged { peer_id } => {
                 self.context_follow_requested = peer_id.is_some();
@@ -4109,6 +4113,10 @@ impl Widget for ChatApp {
         self.sync_composers(doc);
         self.request_visible_images();
         // Native capture/transport belongs to the shell's lease-bound service.
+    }
+
+    fn composition_follows_allocation(&self) -> bool {
+        true
     }
 
     fn build_layout(

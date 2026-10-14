@@ -23,6 +23,11 @@ path = "src/android.rs"
 crate-type = ["cdylib"]
 required-features = ["android"]
 
+# Input→display latency on an owned 27-note notebook; see its header.
+[[example]]
+name = "notes-latency"
+path = "examples/notes-latency.rs"
+
 [features]
 thin = ["dep:runtime-dylib"]
 android = []
@@ -61,6 +66,9 @@ taffy.workspace = true
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# Mounts Notes in the desktop surface the browser desktop hosts apps in.
+tilo-desktop-model = { path = "../../crates/session/desktop-model" }
+tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
 
 [[test]]
 name = "it"

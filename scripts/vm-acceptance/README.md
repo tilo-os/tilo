@@ -119,6 +119,30 @@ renderer; frame-timing checks gated to real display hardware report that. The re
 job summary, and the job fails unless every check passes.
 
 
+### Agent door (M01-M04) and input fidelity (I01-I07)
+
+M01-M04 (`checks/agent.py`) run `guest/mcp_client.py` in the guest, as Claude Code would run
+`tilo-runtime-mcp --connect`: the person's consent is answered through the control socket's
+`permission-prompts` actions, `tilo_list_apps` must list the desktop's live apps (Notes is
+open), a Notes `new-page` is read back through the desktop, and refusals must reach the agent
+as `isError` / a JSON-RPC error. Until the image serves `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
+(fix/agent-door) they report **xfail** with that reason: an expected failure does not fail the
+run (`core.ExpectedFailure`), is listed in the report, and becomes an ordinary check when the
+socket appears.
+
+I01-I07 (`checks/input_devices.py`) plug uinput devices copied from the Lenovo Yoga Slim 7x
+(`os/hardware/profiles/lenovo-83ed/input/*.json`: I2C bus, 048D:8987 keyboard, 0488:1054
+touchpad; `tilo-vm input device plug lenovo-83ed-keyboard`) and check German keysyms,
+layout state over hotplug, no stuck modifiers after a lock, and touchpad tap/click/scroll and
+disable-while-typing. I05-I07 are `calibrating`: their observables come from the compositor's
+code and have not yet been seen in a CI run, so a failure is **xfail** (with its reason) until
+the marker is removed. hwdb `KEYBOARD_KEY_` remaps need the real driver and are not covered.
+Capture a new profile from a device's `/sys/class/input/eventN/device/capabilities/*` and HID
+report descriptor (see `crates/dev/tilo-vm-protocol/src/profile.rs`).
+
+Pull requests touching the input path, tilo-vm(d), the profiles or the agent door run only
+these areas (`ci_select.py`).
+
 ### Startup and GPU (A14, R05)
 
 A14 opens Files before anything else in the run does and times it from the app's own
@@ -173,7 +197,8 @@ run here on every full run instead, on the dev disk under KVM:
   endpoint within `boot_to_greeter_s` (20 s), with the image's boot contract. It reads the
   VM's boot timestamps, so where it runs in the order does not matter. Every run also
   writes where the boot's time went (`R06-boot-analysis.txt`: `systemd-analyze time`,
-  `critical-chain` of greetd and of graphical.target, `blame`; and `R06-boot-plot.svg`),
+  `critical-chain` of greetd and of graphical.target, `blame`; `R06-boot-plot.svg`; and
+  the whole kernel log with the journal's boot list, `R06-dmesg.txt`),
   holds userspace start to greetd active to `userspace_to_greeter_s` (10 s), and fails
   when the network (NetworkManager, firewalld, `network.target`) is on greetd's critical
   chain: greetd waits for `systemd-user-sessions.service`, which upstream orders after
@@ -228,6 +253,42 @@ run here on every full run instead, on the dev disk under KVM:
 The greeter keystroke check (`os/dev/greeter-acceptance.py`) needs QEMU's monitor, which
 a `tilo-vm` VM does not expose, so it stays in `build-image.yml`.
 
+### An idle shared workspace (R09)
+
+R01 and R02 measure workspaces that only this device holds. A shared workspace's apps read
+their records through the compositor's collaboration broker, which holds each committed
+read's wait and re-checks it only when an identity file, the membership or a timer it
+registered announces a change; when one of those cannot be followed it re-checks every
+200 ms, five times a second per read, forever. R09 measures that on the installed desktop.
+
+A workspace is natively committed only when a relay of another of the person's devices
+governs it: a host that may not own workspaces (one that may is a node, whose rooms are
+stewarded, not committed). One VM has no second device, so R09 makes one the way a person
+enrolls a home server out of band, as the slot user and only into its throwaway identity
+(`TILO_IDENTITY_ROOT`; a slot without one leaves R09 unobservable):
+
+1. `tilo-enroll device-key` makes the relay's key in an owner-only directory of the slot
+   user's runtime dir.
+2. `tilo-enroll certify --capability host --capability read-all --home-peer-service <relay
+   endpoint id> --home-peer-addr 127.0.0.1:<port>` certifies it with the identity's root,
+   lists it in the identity's devices and records it in `$TILO_IDENTITY_ROOT/peers/home-peers.json`
+   as a home peer listening on loopback (`24000 + uid % 8000`); `tilo-enroll install-cert`
+   gives the relay its certificate.
+3. `tilo-relay run` starts as the transient user unit `tilo-acceptance-home-relay`.
+4. `workspace.create` makes a workspace and `invitation.issue` invites into it, which shares
+   it on the home relay and enrolls this device into it; R09 waits until the state dump's
+   `native_authority` holds the workspace's room under the relay's governance.
+
+It then opens Notes and Files there (R02's opener) and, over the idle window, sums the
+context switches of the compositor's `tilo-collab-bro` threads and of every app's
+`ui-collab-shove` threads (`R09-idle-shared.json` `named_threads`): the broker within
+`idle_shared_broker_wakeups_per_s` (1/s), the shovels within
+`idle_shared_shovel_wakeups_per_s` (0). A compositor with no broker thread or apps with no
+shovel leave it unobservable. Afterwards it closes the windows, returns to the workspace the
+run was in, stops the relay (its journal is `R09-home-relay.log`) and removes the relay from
+the home-peer registry. It runs before R07, A16 and R05, which judge the apps it opens too.
+An image whose `tilo-enroll` predates `certify --home-peer-service` leaves R09 unobservable.
+
 ### Performance records
 
 `run.py --records FILE` writes one record per KPI (`tools/perf/record.py`) from what the
@@ -238,6 +299,8 @@ the store (docs/measurements/performance.md) and publishes the nightly run's.
 |---|---|---|---|
 | `boot.to_greeter_s`, `boot.{kernel,initrd,userspace}_s` | s | R06 | kernel+userspace to a usable greeter, and its phases |
 | `boot.greeter_s`, `boot.userspace_to_greeter_s` | s | R06 | kernel start, and userspace start, to greetd.service active |
+| `boot.kernel_meminit_s` | s | R06 | the kernel log's silence ending at `SLUB: HWalign`, while the boot CPU alone frees all RAM to the page allocator (from `R06-dmesg.txt`) |
+| `boot.first_boot` | count | R06 | 1 when this boot is the only one the persistent journal holds: fresh host pages and first-boot units, so not comparable with a reboot |
 | `session.sign_in_{first,again}.{shell,first_frame,usable}_s` | s | R08 | greeter sign-in request to the compositor process, its first presented frame, and a usable desktop |
 | `idle.shell_cpu_pct`, `idle.session_cpu_pct` | percent | R01 | compositor and whole session CPU over the idle window |
 | `idle.gpu_driver_cpu_pct` | percent | R01 | the part of `idle.shell_cpu_pct` on threads the GPU driver started (`llvmpipe-N`, and `tilo-gpu-driver`, the name the compositor gives threads started while it opens the device). On lavapipe this is the window's frames rasterised, a GPU's work on real hardware, so R01 and R02 judge a software renderer's compositor CPU without it; with no frame painted it must stay under `idle_software_raster_cpu_pct` |
@@ -251,6 +314,7 @@ the store (docs/measurements/performance.md) and publishes the nightly run's.
 | `idle.ram_mib.{reserve,untracked}` | MiB | R01 | what MemAvailable withholds (the zones' reserve from `/proc/zoneinfo`, and min(half, low watermarks) of the file LRU and reclaimable kernel memory); the rest, pages no meminfo counter names |
 | `memory.idle_anon_mib.<process>` | MiB | R01 | anonymous RSS of the ten largest process names, every user's |
 | `idle.*.four_apps`, `memory.idle_*.four_apps` | | R02 | the same with Terminal, Files, Settings and Notes open |
+| `idle.wakeups_per_s.shared_broker`, `idle.wakeups_per_s.shared_shovels` | per_s | R09 | context switches of the compositor's collaboration broker threads, and of every app's collaboration shovel, with Notes and Files idle in a natively committed workspace |
 | `idle.ram_mib.after_close`, `idle.ram_mib.*.after_close`, `memory.idle_*.after_close` | MiB | R03 | the same once R03 has closed the four apps |
 | `memory.shell_anon_mib.per_open_close` | MiB | A15 | least-squares growth of the compositor's anonymous RSS per warm open and close |
 | `memory.shell_anon_mib`, `memory.session_mib`, `memory.app_mib.<app>`, `memory.app_anon_mib.<app>` | MiB | R03 | the compositor's anonymous RSS; the compositor's and apps' cgroups |
@@ -354,7 +418,7 @@ fail P01 if the VM booted anything else, was moved onto another image since, or 
 | ui | U01 theme and language through actions, U02/U03 Settings, quick settings, workspace settings, overview in light/dark/high-contrast (en, de) with layout checks on `list-targets` rects, U04 German action titles |
 | apps | A01–A07: Terminal (live shell), Files, Settings, Notes, Store, a host Wayland app, an X11 app — first frame, placement, focus, exit on close, no false toasts. A08–A13, the apps used every day, one per toolkit and protocol path: Chromium on Wayland (A08, the engine Electron apps ship) and forced onto X11 (A09), GNOME Text Editor (A10, GTK4/libadwaita), FeatherPad (A11, Qt6 Wayland), alacritty (A12, winit/OpenGL), glxgears (A13, OpenGL X11 like games) — window in the current strip with focus, a first frame with content, the right buffer scale on both outputs as it moves between them, real-keyboard typing, copy to and paste from Tilo's clipboard, exit on close; A13 also full screen and back. A14 Files' first launch: process start to first presented frame within budget, and its folder listing read off its AT-SPI tree. A15 ten warm opens each of Files, Notes and Settings, request to first frame; A16 every launch of the run within its app's budget; A17 Files opens after the session's compositor ended abruptly |
 | search | S01–S09: empty-query view, English and German names, launch from search, windows, actions, files, room activity, workspace history |
-| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several (`R01-idle-empty.json`/`R02-idle-apps.json` carry CPU and context switches per thread of the compositor, `shell_threads` and `shell_thread_groups`, and of any other process above 0.5%, plus the compositor's age when the window opened, `session_age_s`; the compositor is the slot user's `shell` with no `shell` above it, so its own shader-seed child is never taken for it; an over-budget compositor names its busiest threads), R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS; R01 and R03 also write the compositor's `smaps_rollup`, status lines and 20 largest anonymous mappings (`R01-shell-smaps.json`/`R03-shell-smaps.json`), so R03 less R01 is what four windows cost and a growing `[heap]` or run of glibc arenas reads apart from one GPU buffer, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware), R05 every app window renders on the machine's GPU, not a CPU fallback; the renderer and whether the display is real hardware are recorded; R06 boot to a usable greeter and where its time went, R07 the render-path gate, R08 greeter sign-in to a usable desktop |
+| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several (`R01-idle-empty.json`/`R02-idle-apps.json` carry CPU and context switches per thread of the compositor, `shell_threads` and `shell_thread_groups`, and of any other process above 0.5%, plus the compositor's age when the window opened, `session_age_s`; the compositor is the slot user's `shell` with no `shell` above it, so its own shader-seed child is never taken for it; an over-budget compositor names its busiest threads), R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS; R01 and R03 also write the compositor's `smaps_rollup`, status lines and 20 largest anonymous mappings (`R01-shell-smaps.json`/`R03-shell-smaps.json`), so R03 less R01 is what four windows cost and a growing `[heap]` or run of glibc arenas reads apart from one GPU buffer, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware), R05 every app window renders on the machine's GPU, not a CPU fallback; the renderer and whether the display is real hardware are recorded; R06 boot to a usable greeter and where its time went, R07 the render-path gate, R08 greeter sign-in to a usable desktop, R09 an idle shared workspace's broker and app shovels |
 | basics | B01 brightness, B02 Wi-Fi, B03 Bluetooth (unavailable without hardware, no fake controls), B04 de nodeadkeys + compose applied to the physical keys, B05 display arrangement, B06 hotplug. The GNOME keyboard import runs only in a host-desktop session, so the host-desktop VM test checks it (dist/session/vm-e2e, H05) |
 
 The everyday apps (A08–A13) come with the dev image (`os/Containerfile.dev`, about 600 MiB,

@@ -201,6 +201,21 @@ launches the packaged app and should be checked with foreign-frame counters.
 invocation against an isolated compositor. `app-launch-proof.py` selects native
 applications by provider/ID and checks that a new surface actually paints.
 
+### Native mounted host-service regression tests
+
+Use `ui::framework::testing::drive_live_window` to exercise a resource app's
+actual mounted native root without starting its window event loop. With
+`test-support`, attach a socket pair through
+`App::test_floating_service_connection` and
+`FloatingSurfaceServiceClient::from_test_stream`, then send host messages and
+call `App::test_pump_floating_service`. This runs production dispatch and
+response serialization rather than invoking the app's handler directly.
+For device-shell operations, assert the request ID and successful outcome on
+the original connection, repeat on that same connection, and verify that an
+idle pump does not replay the operation. Terminal's
+`native_resource_terminal_inspector_is_acknowledged_through_the_mounted_root`
+test covers forwarding through the mounted component's `AppWidget` capability.
+
 ### Wire protocol (when you can't use the CLI)
 
 The socket accepts newline-delimited JSON. Every command returns one JSON response line.
@@ -818,6 +833,54 @@ The test spawns the binary itself. It is intentionally separate from the
 offscreen lanes until the native compositor can run without a host display.
 `control_socket_test` is a module inside the shared `it` test binary, not a
 separate Cargo target. Keep the module filter when opting into ignored tests.
+
+## Desktop smoke gate
+
+`desktop_smoke::` in the shell `it` target (`crates/session/shell/tests/desktop_smoke.rs`)
+is the required end-to-end gate: a real headless compositor restored over a
+session of several windows (in-process Tilo apps and Wayland clients), driven
+through the control socket the way a person drives it: the pointer over every
+window, edge, corner and the top bar and in and out of each client, typing into
+each window, resize, a new window, the palette and a search, workspace
+switches, lock and unlock. A second test runs the same scenario under CPU and
+memory pressure. Both take seconds once the shell tests are built.
+
+```bash
+cargo nextest run --locked -p shell --test it -E 'test(desktop_smoke::)' --no-capture
+```
+
+It is part of the shell test target, so it runs in the required
+`CI / affected packages` check. `tools/ci/affected_packages.py`
+(`DESKTOP_GATE`) also runs it, as just that filter, when a change reaches the
+shell without scheduling the shell's tests.
+
+**Liveness is an assertion.** With `TILO_TEST_CONTROL` set, a dev-build
+compositor also binds `<control socket>.live`
+(`crates/session/shell/src/compositor/liveness.rs`), answered on its own
+threads, so it still answers when the main loop is deadlocked, which the
+control socket itself cannot:
+
+```bash
+printf '{"op":"heartbeat","budget_ms":500}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
+# {"alive":{"ticks":812,"latency_ms":0.2}}  or  {"stalled":{"budget_ms":500,"threads":[...]}}
+printf '{"op":"threads"}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
+```
+
+A heartbeat asks the loop, through a calloop ping source, to acknowledge a
+wake. One it does not acknowledge within the budget is a stall, and the answer
+carries every thread's state, kernel wait channel and backtrace. The harness
+(`tests/support/desktop.rs`) polls it every 50 ms from a monitor thread and fails
+the test within the budget, whichever call it is blocked in, with that report.
+Every control call has a hard deadline of its own, and a call that outlives it
+says whether the loop was frozen or still turning (slow). The same report is
+written to the compositor's stderr.
+
+Seat state is a second line of defence in a debug build. Smithay holds the
+seat's pointer and keyboard lock while it delivers an event, and calls
+`SeatHandler::focus_changed` and `cursor_image` under it, so a handler that
+asks the seat for the pointer location waits on itself. Handlers open a
+`compositor::seat_lock::Callback` scope, and the seat reads in
+`compositor::seat_lock` panic inside one, naming the read, instead of hanging.
 
 ## Desktop UX journeys
 

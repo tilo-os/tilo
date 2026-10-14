@@ -22,6 +22,8 @@ class PublicReferenceTests(unittest.TestCase):
             'label = "' + KEY.lower() + '-after"',
             "see https://linear" + ".app/tilo/issue/x",
             "targets come from the Linear" + " document",
+            "spec at https://www.notion" + ".so/tilo/abc",
+            "thread: https://tilo.slack" + ".com/archives/C01/p1",
         ):
             with self.subTest(text=text):
                 self.assertIsNotNone(contract.internal_reference(text))
@@ -33,6 +35,7 @@ class PublicReferenceTests(unittest.TestCase):
             "Linear projection of the die layout",
             "linear interpolation",
             "STILL-4",
+            "slack.com is a chat service",
         ):
             with self.subTest(text=text):
                 self.assertIsNone(contract.internal_reference(text))

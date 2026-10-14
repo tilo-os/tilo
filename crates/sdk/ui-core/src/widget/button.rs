@@ -48,6 +48,11 @@ pub struct Button {
     /// so toolbars render crisp lucide icons without depending on a
     /// Nerd Font being installed.
     icon: Option<crate::icons::Icon>,
+    /// A picture drawn in the icon's place (an icon-only button), with an
+    /// optional badge pill on its corner: what an extension's toolbar action
+    /// shows. The glyph in `icon` remains the fallback and the layout key.
+    image: Option<vello::peniko::ImageData>,
+    badge: Option<String>,
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
     /// What the button does, which decides its whole look (see
@@ -93,6 +98,9 @@ pub struct Button {
     cached: vello::Scene,
     dirty: bool,
     layout_dirty: bool,
+    /// Whether the layout solver has ever placed it. A button only its host
+    /// places ([`Self::apply_layout_external`]) has no node to measure.
+    solver_placed: bool,
     i18n_revision: u64,
     interaction: crate::interaction::InteractionEnvironment,
     /// Compared *by size* to the current rect — pure translation is
@@ -153,6 +161,8 @@ impl Button {
             is_focused: false,
             pressed_into_focus: false,
             icon: None,
+            image: None,
+            badge: None,
             fill_width: false,
             role: ButtonRole::Secondary,
             toggled: None,
@@ -172,6 +182,7 @@ impl Button {
             cached: vello::Scene::new(),
             dirty: true,
             layout_dirty: false,
+            solver_placed: false,
             i18n_revision: crate::i18n::I18nManager::revision(),
             interaction: crate::interaction::InteractionEnvironment::default(),
             cache_rect: Rect::ZERO,
@@ -269,6 +280,16 @@ impl Button {
     #[must_use]
     pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Draw `image` where the icon would be, and a small pill with `badge`
+    /// on its bottom-right corner. Only an icon-only button shows either.
+    #[must_use]
+    pub fn with_image(mut self, image: vello::peniko::ImageData, badge: Option<&str>) -> Self {
+        self.image = Some(image);
+        self.badge = badge.filter(|text| !text.is_empty()).map(str::to_owned);
+        self.dirty = true;
         self
     }
 
@@ -823,6 +844,8 @@ impl FaceSizer {
     ) -> f64 {
         FaceContent {
             icon,
+            image: None,
+            badge: None,
             label,
             hint: None,
             flush: false,
@@ -832,10 +855,22 @@ impl FaceSizer {
     }
 }
 
+/// A badge pill on the bottom-right corner of `rect`.
+fn paint_corner_badge(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
+    use crate::widget::badge::BadgeFace;
+    let height = BadgeFace::height(ctx.theme);
+    let width = BadgeFace::intrinsic_width(label, ctx.text, ctx.theme).min(rect.width());
+    let pill = Rect::new(rect.x1 - width, rect.y1 - height, rect.x1, rect.y1);
+    BadgeFace::new(pill, label).paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
+}
+
 /// What sits inside a button's face: an optional leading icon, the label and
 /// an optional trailing shortcut hint.
 struct FaceContent<'a> {
     icon: Option<crate::icons::Icon>,
+    /// Painted instead of `icon` on an icon-only face.
+    image: Option<&'a vello::peniko::ImageData>,
+    badge: Option<&'a str>,
     label: &'a str,
     hint: Option<String>,
     /// A labelled plain face: no inner padding, the ink on the layout edge.
@@ -869,6 +904,23 @@ impl FaceContent<'_> {
         } else {
             width.ceil().max(2.0 * height)
         }
+    }
+
+    /// `image` stretched over `rect`.
+    fn draw_image(&self, ctx: &mut PaintCtx<'_>, image: &vello::peniko::ImageData, rect: Rect) {
+        let (width, height) = (f64::from(image.width), f64::from(image.height));
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let place = Affine::translate((rect.x0, rect.y0))
+            * Affine::scale_non_uniform(rect.width() / width, rect.height() / height);
+        ctx.scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            &vello::peniko::ImageBrush::new(image.clone()),
+            Some(place),
+            &rect,
+        );
     }
 
     fn draw_icon(
@@ -905,6 +957,15 @@ impl FaceContent<'_> {
     ) {
         let icon_px = metrics.icon.min(rect.height());
         if self.label.is_empty() {
+            if let Some(image) = self.image {
+                let ix = rect.center().x - icon_px / 2.0;
+                let iy = rect.center().y - icon_px / 2.0;
+                self.draw_image(ctx, image, Rect::new(ix, iy, ix + icon_px, iy + icon_px));
+                if let Some(badge) = self.badge {
+                    paint_corner_badge(ctx, rect, badge);
+                }
+                return;
+            }
             if let Some(icon) = self.icon {
                 let ix = rect.center().x - icon_px / 2.0;
                 let iy = rect.center().y - icon_px / 2.0;
@@ -1207,6 +1268,8 @@ impl<'a> ButtonFace<'a> {
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
         FaceContent {
             icon: self.icon,
+            image: None,
+            badge: None,
             label: &label,
             hint: self.shortcut.as_ref().map(shortcut_text),
             flush: false,
@@ -1266,6 +1329,8 @@ impl Button {
             interact: face.interact,
             content: FaceContent {
                 icon: face.icon,
+                image: None,
+                badge: None,
                 label: &label,
                 hint: face.shortcut.as_ref().map(shortcut_text),
                 // A painted face fills the rect its host gave it.
@@ -1312,6 +1377,8 @@ impl Button {
             FaceContent {
                 flush: self.role.flush() && !label.is_empty(),
                 icon: self.icon,
+                image: None,
+                badge: None,
                 label: &label,
                 hint,
                 filled_icon: false,
@@ -1485,6 +1552,7 @@ impl Widget for Button {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.solver_placed = true;
         // Bitwise: this asks whether the cached size is stale at all, not
         // whether it drifted by more than some tolerance.
         let size_changed = self.rect.width().to_bits() != self.cache_rect.width().to_bits()
@@ -1558,6 +1626,8 @@ impl Widget for Button {
             content: FaceContent {
                 flush: self.role.flush() && !label.is_empty(),
                 icon: self.icon,
+                image: self.image.as_ref(),
+                badge: self.badge.as_deref(),
                 label: &label,
                 hint,
                 filled_icon: on && self.icon.is_some_and(fills_when_on),
@@ -1594,9 +1664,11 @@ impl Widget for Button {
     /// The `Rect::ZERO` sentinel keeps the first frame's
     /// `compute_layout` running so `apply_layout` can populate the rect;
     /// after that it stays clean (pure translation handled via the
-    /// cache's append transform, no taffy involvement).
+    /// cache's append transform, no taffy involvement). The sentinel is the
+    /// laid-out rect, not the paint cache's: a button that is not drawn
+    /// (scrolled or panned out of view) has nothing new to measure.
     fn is_layout_dirty(&self) -> bool {
-        self.cache_rect == Rect::ZERO
+        self.rect == Rect::ZERO
             || self.layout_dirty
             || self.i18n_revision != crate::i18n::I18nManager::revision()
     }
@@ -1604,9 +1676,12 @@ impl Widget for Button {
     fn layout_needs_measure(&self) -> bool {
         // A missing paint cache asks for drawing, not another intrinsic
         // measurement. Geometry is available as soon as layout is applied.
-        self.rect == Rect::ZERO
-            || self.layout_dirty
-            || self.i18n_revision != crate::i18n::I18nManager::revision()
+        // A button only its host places has no node for the solver to
+        // measure: the host sizes it, however hidden or unplaced it is.
+        self.solver_placed
+            && (self.rect == Rect::ZERO
+                || self.layout_dirty
+                || self.i18n_revision != crate::i18n::I18nManager::revision())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -2566,6 +2641,43 @@ mod tests {
                 theme.name
             );
         }
+    }
+
+    /// Only a node the layout solver placed can be measured again: a button
+    /// its host places never asks for a measure, placed or hidden, while one
+    /// in the solver's tree asks when what it shows may change its width.
+    #[test]
+    fn a_host_placed_button_never_asks_the_solver_for_a_measure() {
+        let mut hosted = Button::new("history", "History");
+        for rect in [Rect::ZERO, Rect::new(0.0, 0.0, 32.0, 32.0), Rect::ZERO] {
+            hosted.apply_layout_external(rect);
+            assert!(!hosted.layout_needs_measure(), "placed at {rect:?}");
+        }
+
+        let mut laid_out = Button::new("save", "Save");
+        let mut tree = TaffyTree::new();
+        let node = laid_out.build_layout(
+            &mut tree,
+            &Theme::dark(),
+            &mut std::collections::HashMap::new(),
+        );
+        tree.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::MaxContent,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+        )
+        .unwrap();
+        laid_out.apply_layout(&tree, node, Point::ZERO);
+        assert!(!laid_out.layout_needs_measure(), "laid out and unchanged");
+        laid_out.set_interaction_environment(
+            crate::interaction::InteractionEnvironment::default().with_touch_modality(),
+        );
+        assert!(
+            laid_out.layout_needs_measure(),
+            "a touch target may be wider"
+        );
     }
 
     #[test]

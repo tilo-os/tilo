@@ -7,7 +7,8 @@ import type {CertifiedActionsV1,PrivateInvocation} from './peer';
 /**
  * What a mount runs: the id of any application compiled into the runtime
  * (`so.tilo.word-processor`, `so.tilo.ebook`, …), or `desktop` for the
- * canonical desktop.
+ * canonical desktop. A page URL selects it through the link grammar in
+ * `docs/architecture/web-routing.md` (the `app/` entry is a single-app mount).
  */
 export type Application = 'desktop' | (string & {});
 export interface RuntimeStatus {
@@ -33,6 +34,8 @@ export interface RuntimeStatus {
   /** Native semantic command receipt lifecycle; signed room state owns rendering. */
   desktopCommand?: { invocation: string; state: string; terminal: boolean; error: string | null };
   desktopErrors?: string[];
+  /** A desktop mount's active workspace, as its top bar names it. */
+  workspaceName?: string | null;
   document?: unknown;
   heads?: string[];
   [diagnostic: string]: unknown;
@@ -64,8 +67,27 @@ export interface MountOptions {
    * top bar) calls this; without it the desktop offers no invitation.
    */
   onInvite?: () => void;
+  /**
+   * What only the page can do for the person (keeping their identity):
+   * desktop search lists these beside its own commands, and choosing one,
+   * there or on a banner `offerHostAction` showed, calls `onHostAction(id)`
+   * inside the person's gesture.
+   */
+  hostActions?: HostAction[];
+  onHostAction?: (id: string) => void;
   /** The workspace name a desktop this mount seeds starts with. */
   workspaceName?: string;
+  /**
+   * The host of the room shown (`example.org`), which the top bar names in
+   * a quiet pill beside the workspace; leave it out on the person's own
+   * desktop.
+   */
+  host?: string;
+  /**
+   * The links the desktop's About sheet (behind the Tilo mark in its top
+   * bar) offers; an empty or missing one is not offered.
+   */
+  about?: {notify?: string; source?: string; community?: string};
 }
 /** Which window of a desktop an action call addresses. */
 export interface WindowOption {
@@ -116,6 +138,10 @@ export interface SemanticPresentationWatch {
 
 export interface DesktopMount {
   navigation?: DesktopNavigationV1;
+  /** Offer these host actions in place of earlier ones. */
+  setHostActions(actions: HostAction[]): void;
+  /** Show a banner offering `action` until the person chooses or dismisses it. */
+  offerHostAction(offer: {action: HostAction; title: string; body?: string}): void;
   /**
    * The actions the mounted application publishes now, with its permissions
    * applied. `resource` narrows to one resource and its children, including
@@ -168,3 +194,11 @@ export function retryPendingRecovery(): Promise<void>;
 /** Number of failed closes retaining actor custody and pending durable bytes. */
 export function pendingRecoveryCount(): number;
 
+
+export interface HostAction {
+  id: string;
+  title: string;
+  subtitle?: string;
+  /** What the action is about, shown as the source of a banner offering it. */
+  source?: 'identity' | 'devices';
+}

@@ -113,7 +113,8 @@ fn content_type(path: &str) -> Option<&'static str> {
         "otf" => "font/otf",
         "ttc" => "font/collection",
         "woff2" => "font/woff2",
-        "txt" | "md" => "text/plain; charset=utf-8",
+        // `ftl`: the entry pages' arrival lines (`locales/`).
+        "txt" | "md" | "ftl" => "text/plain; charset=utf-8",
         _ => return None,
     })
 }
@@ -196,6 +197,19 @@ impl Service {
             StatusCode::OK,
             &serde_json::json!({"tickets": format!("{}/rooms/", self.config.public_api)}),
         )
+    }
+
+    /// `GET /` of a persistent room. The service is the room's API, not a
+    /// page: the Tilo app lives at its web entry, so a visitor goes there.
+    fn front_door(web_entry: Option<&str>) -> Response<Body> {
+        let Some(location) = web_entry.and_then(|entry| header::HeaderValue::from_str(entry).ok())
+        else {
+            return Self::error(StatusCode::NOT_FOUND, "not found");
+        };
+        let mut response = Response::new(full(Bytes::new()));
+        *response.status_mut() = StatusCode::FOUND;
+        response.headers_mut().insert(header::LOCATION, location);
+        response
     }
 
     /// One more guest's link into `room`.
@@ -580,6 +594,12 @@ impl Service {
         let path = request.uri().path().to_owned();
         let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
         Ok(match (request.method(), parts.as_slice()) {
+            (&Method::GET, [""]) => Self::front_door(
+                self.config
+                    .persistent
+                    .as_ref()
+                    .and_then(|persistent| persistent.web_entry.as_deref()),
+            ),
             (&Method::POST, ["join"]) => match Self::paused() {
                 Some(refused) => refused,
                 None => match Self::decode::<persistent::JoinRequest>(request.into_body()).await {
@@ -680,7 +700,12 @@ impl Service {
             (&Method::GET, ["metrics"]) => self.metrics(request.headers()).await,
             (&Method::GET, ["mode"]) => Self::json(
                 StatusCode::OK,
-                &serde_json::json!({"mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str()}),
+                &serde_json::json!({
+                    "mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str(),
+                    // Public like the web entry's version.json: which build
+                    // answers here, for drift reports from outside the cluster.
+                    "revision": ops::get().map_or(ops::UNKNOWN_REVISION, ops::Ops::revision),
+                }),
             ),
             (&Method::POST, ["errors"]) => self.client_error(request.into_body()).await,
             (&Method::POST, ["rooms"]) => match Self::paused() {
@@ -843,11 +868,22 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::guest_link;
+    use super::{Service, content_type, guest_link};
     use tilo_reference::link::{Link, Mode, WebEntries, WebEntry};
 
     const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
     const ENTRY: &str = "https://rooms.example/open/";
+
+    #[test]
+    fn the_arrival_screens_lines_are_served_as_text() {
+        // The entry pages fetch `locales/<locale>.ftl`; an unknown type is a 404.
+        for locale in ["en-US", "de-DE"] {
+            assert_eq!(
+                content_type(&format!("locales/{locale}.ftl")),
+                Some("text/plain; charset=utf-8")
+            );
+        }
+    }
 
     #[test]
     fn a_guest_link_is_a_route_and_a_ticket() {
@@ -887,6 +923,20 @@ mod tests {
         assert!(
             url.ends_with(&format!("/w/{ROOM}/so.tilo.word-processor?ticket=t")),
             "{url}"
+        );
+    }
+
+    #[test]
+    fn a_persistent_rooms_front_door_leads_to_the_app_or_nowhere() {
+        let door = Service::front_door(Some("https://app.example/"));
+        assert_eq!(door.status(), hyper::StatusCode::FOUND);
+        assert_eq!(
+            door.headers()[hyper::header::LOCATION],
+            "https://app.example/"
+        );
+        assert_eq!(
+            Service::front_door(None).status(),
+            hyper::StatusCode::NOT_FOUND
         );
     }
 }

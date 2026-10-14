@@ -386,6 +386,56 @@ fn dev_mode_is_an_explicit_daemon_flag() {
     assert!(args(&["--profile", "/tmp/profile", "--daemon", "--dev", "--dev"]).is_err());
 }
 
+/// A client that names a profile chose a standalone runtime itself; one that
+/// names none is routed by its login (`session_door::route`).
+#[test]
+fn standalone_is_the_clients_own_explicit_choice_for_connect() {
+    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+    assert!(args(&["--connect", "--standalone"]).unwrap().standalone);
+    assert!(
+        args(&["--profile", "/tmp/profile", "--connect"])
+            .unwrap()
+            .standalone,
+        "a named profile is a standalone runtime's"
+    );
+    assert!(args(&["--profile", "/tmp/profile", "--daemon", "--standalone"]).is_err());
+    assert!(args(&["--connect", "--standalone", "--standalone"]).is_err());
+}
+
+#[test]
+fn admission_daemon_requires_an_explicit_non_root_owner_and_no_dev_bypass() {
+    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+    let parsed = args(&["--profile", "/run/admission", "--admission-daemon", "1000"]).unwrap();
+    assert_eq!(parsed.mode, Mode::AdmissionDaemon { owner_uid: 1000 });
+    for invalid in [
+        vec!["--admission-daemon", "1000"],
+        vec!["--profile", "/run/admission", "--admission-daemon"],
+        vec!["--profile", "/run/admission", "--admission-daemon", "0"],
+        vec![
+            "--profile",
+            "/run/admission",
+            "--admission-daemon",
+            "unknown",
+        ],
+        vec![
+            "--profile",
+            "/run/admission",
+            "--admission-daemon",
+            "1000",
+            "--dev",
+        ],
+        vec![
+            "--profile",
+            "/run/admission",
+            "--admission-daemon",
+            "1000",
+            "--daemon",
+        ],
+    ] {
+        assert!(args(&invalid).is_err(), "{invalid:?}");
+    }
+}
+
 /// One page resource with an `open` view action, offered by publisher `7`,
 /// and every invocation the host was asked to run.
 #[derive(Clone, Default)]

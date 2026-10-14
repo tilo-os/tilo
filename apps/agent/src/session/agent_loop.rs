@@ -1848,7 +1848,7 @@ mod tests {
     use tilo_actions::remote::RemoteActionMessage;
     use tilo_actions::{ActionContract, ActionParam, Availability, ParamType};
     use ui::collaboration::CollabRequest;
-    use ui::collaboration::{BrokerActionDescriptor, BrokerActionInput, BrokerActionSurface};
+    use ui::collaboration::{BrokerActionSurface, ExportedAction, ExportedInput};
     use uuid::Uuid;
 
     // -- A scripted model ------------------------------------------------
@@ -2028,8 +2028,8 @@ mod tests {
         params: Vec<ActionParam>,
         availability: Availability,
         tags: Vec<String>,
-    ) -> BrokerActionDescriptor {
-        BrokerActionDescriptor {
+    ) -> ExportedAction {
+        ExportedAction {
             semantic_identity: None,
             resource: DOC.into(),
             action: action.into(),
@@ -2044,12 +2044,8 @@ mod tests {
                 tags,
                 ..ActionContract::default()
             },
-            input: BrokerActionInput {
-                kind: "none".into(),
-                prompt: String::new(),
-                placeholder: String::new(),
-                wants_content: false,
-            },
+            view: None,
+            input: ExportedInput::None,
         }
     }
 
@@ -2229,7 +2225,7 @@ mod tests {
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: String::new(),
                     live: true,
-                    actions: vec![BrokerActionDescriptor {
+                    actions: vec![ExportedAction {
                         semantic_identity: None,
                         resource: "chat.channel:general".into(),
                         resource_kind: "chat.channel".into(),
@@ -2238,7 +2234,7 @@ mod tests {
                             "post",
                             "Post message",
                             tilo_actions::OperationKind::Document,
-                            vec![text("value")],
+                            vec![text("message")],
                             Availability::Available,
                             vec![],
                         )
@@ -2256,7 +2252,7 @@ mod tests {
                 if !self.writer_opened {
                     surfaces.remove(0);
                 }
-                let open = |app: &str, title: &str| BrokerActionDescriptor {
+                let open = |app: &str, title: &str| ExportedAction {
                     semantic_identity: None,
                     resource: format!("{}{app}", tools::LAUNCHER_OPEN_PREFIX),
                     resource_kind: "desktop.application".into(),
@@ -2393,7 +2389,7 @@ mod tests {
                     (serde_json::json!({"succeeded": {}}), false)
                 }
                 "post" => {
-                    self.posts.push(text("value"));
+                    self.posts.push(text("message"));
                     (serde_json::json!({"succeeded": {}}), false)
                 }
                 "open" => (self.open_writer(), true),
@@ -4230,7 +4226,7 @@ mod tests {
             tools::INVOKE,
             serde_json::json!({
                 "operation": format!("broker:{CHAT_PEER}:chat.channel:general#post"),
-                "parameters": {"value": message}
+                "parameters": {"message": message}
             }),
         )
     }
@@ -4658,7 +4654,7 @@ mod tests {
                 CHAT_PEER,
                 "chat.channel:general",
                 "post",
-                &serde_json::json!({"value": "Standup moved to 10."}),
+                &serde_json::json!({"message": "Standup moved to 10."}),
                 independent,
             ),
             invoke_on(
@@ -4786,7 +4782,7 @@ mod tests {
                             CHAT_PEER,
                             "chat.channel:general",
                             "post",
-                            &serde_json::json!({"value": "Writing the notes."}),
+                            &serde_json::json!({"message": "Writing the notes."}),
                             true,
                         ),
                         invoke_on(
@@ -4810,7 +4806,7 @@ mod tests {
                             CHAT_PEER,
                             "chat.channel:general",
                             "post",
-                            &serde_json::json!({"value": "Notes are drafted."}),
+                            &serde_json::json!({"message": "Notes are drafted."}),
                             false,
                         ),
                     ],
@@ -4857,7 +4853,7 @@ mod tests {
                         CHAT_PEER,
                         "chat.channel:general",
                         "post",
-                        &serde_json::json!({"value": "Standup moved."}),
+                        &serde_json::json!({"message": "Standup moved."}),
                         true,
                     ),
                     invoke_on(
@@ -4918,7 +4914,7 @@ mod tests {
                             CHAT_PEER,
                             "chat.channel:general",
                             "post",
-                            &serde_json::json!({"value": "Standup moved."}),
+                            &serde_json::json!({"message": "Standup moved."}),
                             true,
                         ),
                         invoke_on(

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 
@@ -15,6 +16,18 @@ SPEC = importlib.util.spec_from_file_location("ci_select", MODULE_PATH)
 assert SPEC and SPEC.loader
 ci_select = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ci_select)
+
+
+class NamedPackageTests(unittest.TestCase):
+    def test_named_packages_exist_in_the_workspace(self):
+        # The selector intersects these sets with the workspace, so a renamed
+        # crate would otherwise silently drop out of the contract or heavy set.
+        manifests = subprocess.run(["git", "ls-files", "*Cargo.toml"], cwd=REPO_ROOT, text=True,
+                                   capture_output=True, check=True).stdout.split()
+        names = {tomllib.loads((REPO_ROOT / path).read_text()).get("package", {}).get("name")
+                 for path in manifests}
+        self.assertFalse(ci_select.ALWAYS_PACKAGES - names)
+        self.assertFalse(ci_select.HEAVY_PACKAGES - names)
 
 
 class SelectorTests(unittest.TestCase):
@@ -39,9 +52,9 @@ class SelectorTests(unittest.TestCase):
             package("base", "base"),
             package("middle", "middle", ["base"]),
             package("leaf", "leaf", ["middle"]),
-            package("qdoc", "qdoc"),
-            package("qdoc-codecs", "qdoc-codecs", ["qdoc"]),
-            package("pkg", "pkg"),
+            package("tilo-doc", "tilo-doc"),
+            package("tilo-doc-codecs", "tilo-doc-codecs", ["tilo-doc"]),
+            package("tilo-app-package", "tilo-app-package"),
             package("collab-types", "collab-types"),
         ]}
 
@@ -77,6 +90,36 @@ class SelectorTests(unittest.TestCase):
         self.assertIn("tilo-web-desktop", plan["tested"])
         self.assertTrue(any("-p tilo-web-desktop" in row["test_packages"]
                             for row in plan["matrix"]["include"]))
+
+    def test_the_desktop_gate_runs_whenever_a_change_reaches_the_desktop(self):
+        gate = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(desktop_smoke::)")
+        saved = ci_select.DESKTOP_GATE
+        self.addCleanup(setattr, ci_select, "DESKTOP_GATE", saved)
+        # "leaf" stands in for the shell: the end of the dependency chain.
+        ci_select.DESKTOP_GATE = {"leaf": gate}
+        with self.subTest(phase="a foundation change reaching it without testing it still runs the smoke"):
+            plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
+            self.assertIn("leaf", plan["selected"])
+            self.assertNotIn("leaf", plan["tested"])
+            self.assertEqual(plan["scoped_tests"], {"leaf": "--test it -E 'binary(it) and test(desktop_smoke::)'"})
+            rows = [json.loads(row["scoped_tests"]) for row in plan["matrix"]["include"] if row["scoped_tests"]]
+            self.assertEqual(rows, [[{"package": "leaf", "test": "it", "filter": gate.filter}]])
+        with self.subTest(phase="a change to it tests all of it, and the smoke is part of that"):
+            plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/main.rs"], 2)
+            self.assertIn("leaf", plan["tested"])
+            self.assertEqual(plan["scoped_tests"], {})
+        with self.subTest(phase="a change that cannot reach it does not run it"):
+            plan = ci_select.make_plan(self.metadata, self.root, ["qdoc/src/lib.rs"], 2)
+            self.assertNotIn("leaf", plan["selected"])
+            self.assertEqual(plan["scoped_tests"], {})
+        with self.subTest(phase="a reading scope on the same target is joined, not replaced"):
+            manifest = ci_select.path_suites.parse(
+                '[[cargo]]\npackage = "leaf"\ninputs = ["os/x.json"]\nreaders = ["leaf/tests/audit.rs"]\n'
+                'scope = { inputs = ["os/x.json"], test = "it", filter = "test(/^audit::/)" }\n')
+            plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs", "os/x.json"], 2,
+                                       suite_manifest=manifest)
+            self.assertEqual(plan["scoped_tests"], {
+                "leaf": "--test it -E '(test(/^audit::/)) or (binary(it) and test(desktop_smoke::))'"})
 
     def test_a_recheck_keeps_only_what_the_base_changes_reach(self):
         with self.subTest(phase="the plan narrows to packages the base's own changes reach"):
@@ -174,7 +217,7 @@ class SelectorTests(unittest.TestCase):
                 return ci_select.make_plan(self.metadata, self.root, changes, 2,
                                            suite_manifest=manifest, **options)
             leaf = plan(["leaf/src/main.rs"])
-            self.assertEqual(set(leaf["tested"]), {"leaf", "base", "qdoc", "qdoc-codecs", "pkg", "collab-types"})
+            self.assertEqual(set(leaf["tested"]), {"leaf", "base", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types"})
             # The reader's code did not change, so its dependants are not re-checked.
             self.assertNotIn("middle", leaf["selected"])
             self.assertIn("read the changed files", leaf["reason"])
@@ -265,12 +308,12 @@ class SelectorTests(unittest.TestCase):
         def plan(changes, **options):
             return ci_select.make_plan(self.metadata, self.root, changes, 2, **options)
         for changes, options in ((["base/src/lib.rs"], {}), (["leaf/src/android.rs"], {}),
-                                 (["qdoc/src/lib.rs"], {"force_full": True})):
+                                 (["tilo-doc/src/lib.rs"], {"force_full": True})):
             with self.subTest(changes=changes, options=options):
                 reached = plan(changes, **options)
                 self.assertTrue(reached["android_required"])
                 self.assertEqual(reached["android"], ["leaf"])
-        unrelated = plan(["qdoc/src/lib.rs"])
+        unrelated = plan(["tilo-doc/src/lib.rs"])
         self.assertFalse(unrelated["android_required"])
         self.assertEqual(unrelated["android"], [])
         with tempfile.TemporaryDirectory() as directory:
@@ -290,7 +333,7 @@ class SelectorTests(unittest.TestCase):
             if package["name"] == "leaf":
                 package["dependencies"] = [*package.get("dependencies", []),
                                            {"name": "wasm-bindgen", "kind": None}]
-            if package["name"] == "qdoc":
+            if package["name"] == "tilo-doc":
                 # A dev-dependency on wasm-bindgen does not make a browser crate.
                 package["dependencies"] = [*package.get("dependencies", []),
                                            {"name": "wasm-bindgen", "kind": "dev"}]
@@ -299,7 +342,7 @@ class SelectorTests(unittest.TestCase):
         reached = plan(["base/src/lib.rs"])
         self.assertTrue(reached["wasm_required"])
         self.assertEqual(reached["wasm"], ["leaf"])
-        unrelated = plan(["qdoc/src/lib.rs"])
+        unrelated = plan(["tilo-doc/src/lib.rs"])
         self.assertFalse(unrelated["wasm_required"])
         self.assertEqual(unrelated["wasm"], [])
         with tempfile.TemporaryDirectory() as directory:
@@ -327,7 +370,7 @@ class SelectorTests(unittest.TestCase):
         self.assertTrue(reached["wasm_required"])
         self.assertEqual(reached["wasm"], [])
         self.assertEqual(reached["web_examples"], ["example-counter"])
-        unrelated = plan(["qdoc/src/lib.rs"])
+        unrelated = plan(["tilo-doc/src/lib.rs"])
         self.assertFalse(unrelated["wasm_required"])
         self.assertEqual(unrelated["web_examples"], [])
         build = plan(["crates/browser/tilo-browser-runtime/scripts/build.sh"])
@@ -347,10 +390,10 @@ class SelectorTests(unittest.TestCase):
         with self.subTest(phase='reverse dependency closure'):
             self.setUp()
             plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
-            self.assertEqual(set(plan["selected"]), {"base", "middle", "leaf", "qdoc", "qdoc-codecs", "pkg", "collab-types"})
+            self.assertEqual(set(plan["selected"]), {"base", "middle", "leaf", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types"})
             self.assertFalse(plan["full"])
             # Direct dependants are tested; further reverse dependencies are checked.
-            self.assertEqual(set(plan["tested"]), {"base", "middle", "qdoc", "qdoc-codecs", "pkg", "collab-types"})
+            self.assertEqual(set(plan["tested"]), {"base", "middle", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types"})
             self.assertEqual(plan["dependants_tested_nightly"], [])
             self.assertEqual(len(plan["matrix"]["include"]), 1)
             row = plan["matrix"]["include"][0]
@@ -531,7 +574,7 @@ class SelectorTests(unittest.TestCase):
         with self.subTest(phase='recorded test time splits test jobs, not type-check shards'):
             self.setUp()
             changes = ["base/src/lib.rs"]
-            seconds = {"base": 400, "middle": 350, "qdoc": 150, "pkg": 10}
+            seconds = {"base": 400, "middle": 350, "tilo-doc": 150, "tilo-app-package": 10}
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2, test_seconds=seconds)
             self.assertEqual(plan["shard_count"], 1)
             self.assertEqual(len(plan["clippy_matrix"]["include"]), 1)
@@ -554,7 +597,7 @@ class SelectorTests(unittest.TestCase):
             changes = ["base/src/lib.rs"]
             packages, _ = ci_select.package_maps(self.metadata, self.root)
             heavy = ci_select.DEDICATED_TEST_WEIGHT  # seconds, so twice the target weight
-            seconds = {"base": heavy, "middle": 100, "qdoc": 150, "pkg": 10}
+            seconds = {"base": heavy, "middle": 100, "tilo-doc": 150, "tilo-app-package": 10}
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2, test_seconds=seconds)
             rows = plan["matrix"]["include"]
             # The dedicated shard comes first and holds only the heavy package.
@@ -911,7 +954,7 @@ class SelectorTests(unittest.TestCase):
                 2,
             )
             self.assertFalse(plan["full"])
-            self.assertEqual(set(plan["selected"]), {"qdoc", "qdoc-codecs", "pkg", "collab-types"})
+            self.assertEqual(set(plan["selected"]), {"tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types"})
             self.assertEqual(plan["shard_count"], 1)
         with self.subTest(phase='tested ci helper changes have no native shards'):
             self.setUp()
@@ -1337,7 +1380,7 @@ class SelectorTests(unittest.TestCase):
 
 
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
-LOCAL_PACKAGES = ("base", "middle", "leaf", "qdoc", "qdoc-codecs", "pkg", "collab-types")
+LOCAL_PACKAGES = ("base", "middle", "leaf", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types")
 
 
 def lockfile(external: dict[tuple[str, str], list[str]], local: dict[str, list[str]],
@@ -1358,7 +1401,7 @@ def lockfile(external: dict[tuple[str, str], list[str]], local: dict[str, list[s
 ROOT_MANIFEST = """\
 [workspace]
 resolver = "3"
-members = ["base", "middle", "leaf", "qdoc", "qdoc-codecs", "pkg", "collab-types"]
+members = ["base", "middle", "leaf", "tilo-doc", "tilo-doc-codecs", "tilo-app-package", "collab-types"]
 
 [workspace.package]
 edition = "2024"
@@ -1392,7 +1435,7 @@ class ManifestAttributionTests(unittest.TestCase):
         self.metadata = {"packages": []}
         for name, deps in [("base", [("serde", None)]), ("middle", [("base", "path"), ("itoa", None)]),
                            ("leaf", [("middle", "path"), ("serde_json", "json")]),
-                           ("qdoc", []), ("qdoc-codecs", [("qdoc", "path")]), ("pkg", []), ("collab-types", [])]:
+                           ("tilo-doc", []), ("tilo-doc-codecs", [("tilo-doc", "path")]), ("tilo-app-package", []), ("collab-types", [])]:
             self.add_package(name, deps)
         self.external = {
             ("serde", "1.0.0"): [],
@@ -1403,7 +1446,7 @@ class ManifestAttributionTests(unittest.TestCase):
         }
         self.local = {
             "base": ["serde"], "middle": ["base", "itoa"], "leaf": ["middle", "serde_json"],
-            "qdoc": [], "qdoc-codecs": ["qdoc"], "pkg": [], "collab-types": [],
+            "tilo-doc": [], "tilo-doc-codecs": ["tilo-doc"], "tilo-app-package": [], "collab-types": [],
         }
 
     def add_package(self, name: str, deps: list[tuple[str, str | None]]) -> None:
@@ -1567,7 +1610,7 @@ class ManifestAttributionTests(unittest.TestCase):
                 (good, self.lock(local={**self.local, "middle": ["base", "missing"]})),
                 (good, good.replace(b'name = "cc"', b'name_typo = "cc"')),
                 # Attribution requires every workspace member to be a lockfile node.
-                (good, self.lock(local={k: v for k, v in self.local.items() if k != "qdoc"})),
+                (good, self.lock(local={k: v for k, v in self.local.items() if k != "tilo-doc"})),
             ]:
                 with self.subTest(after=after and after[:40]):
                     self.assertIsNone(ci_select.resolve_lockfile(before, after, self.metadata))

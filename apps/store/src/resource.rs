@@ -113,6 +113,22 @@ pub enum StoreEffect {
         #[param("App identity (for example so.tilo.notes)")]
         app: String,
     },
+    /// Review the exact runtime required by an app; installing remains a separate step.
+    #[effect(job, kind = "read")]
+    ShowRuntimeDetails {
+        #[param("Exact runtime reference, for example tilo-runtime/2026.10.4-chromium")]
+        runtime: String,
+        #[param("Optional enabled repository name; omit only when its offer is unambiguous")]
+        registry: Option<String>,
+    },
+    /// Install the reviewed signed runtime without launching an application.
+    #[effect(job)]
+    InstallRuntime {
+        #[param("Reviewed runtime package identity")]
+        app: String,
+        #[param("Exact reviewed signed package root")]
+        root: String,
+    },
     /// Show or hide technical package details.
     #[effect(kind = "read")]
     SetTechnicalDetails {
@@ -299,8 +315,17 @@ pub enum StoreEffect {
 
 impl StoreEffect {
     /// The effect that carries out `action` on `app`.
-    pub fn package(action: ActionKind, app: String) -> Self {
+    pub fn package(action: ActionKind, item: &crate::StoreItem) -> Self {
+        let app = item.id.clone();
         match action {
+            ActionKind::RuntimeInstall => Self::InstallRuntime {
+                app,
+                root: item
+                    .versions
+                    .first()
+                    .and_then(|version| version.root_hash_hex.clone())
+                    .unwrap_or_default(),
+            },
             ActionKind::Open => Self::OpenApp { app },
             ActionKind::Update => Self::Update { app },
             ActionKind::Remove => Self::Remove { app },
@@ -319,6 +344,7 @@ impl StoreEffect {
     /// one.
     pub fn as_package(&self) -> Option<(&str, ActionKind)> {
         let (app, action) = match self {
+            Self::InstallRuntime { app, .. } => (app, ActionKind::RuntimeInstall),
             Self::OpenApp { app } => (app, ActionKind::Open),
             Self::Update { app } => (app, ActionKind::Update),
             Self::Remove { app } => (app, ActionKind::Remove),
@@ -467,6 +493,12 @@ impl ResourceApp for StoreShell {
             if argument == "tilo-store:catalogue" {
                 StoreEffect::ShowCatalogue
             } else if argument.starts_with("tilo-store:") {
+                if let Some(runtime) = argument.strip_prefix("tilo-store:runtime/") {
+                    return vec![Invoke::effect(&StoreEffect::ShowRuntimeDetails {
+                        runtime: runtime.to_owned(),
+                        registry: None,
+                    })];
+                }
                 match parse_store_uri(argument) {
                     Ok(app) => StoreEffect::ShowDetails { app },
                     Err(error) => {
@@ -610,7 +642,7 @@ mod tests {
     /// A Store whose catalogue sources answer at once and offer nothing:
     /// no configured registry, an unreachable Flathub, a private cache.
     struct Offline {
-        _env: tilo_test_env::ScopedEnv,
+        env: tilo_test_env::ScopedEnv,
         dir: tempfile::TempDir,
     }
 
@@ -626,7 +658,61 @@ mod tests {
             .set("TILO_STORE_CACHE_DIR", dir.path().join("cache"))
             .set("FLATHUB_API_BASE", "http://127.0.0.1:9")
             .set("TILO_STORE_HTTP_TIMEOUT", "1");
-        Offline { _env: env, dir }
+        Offline { env, dir }
+    }
+
+    struct AvailableFeed {
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for AvailableFeed {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.worker.take().unwrap().join().unwrap();
+        }
+    }
+
+    fn available_feed(environment: &mut Offline) -> AvailableFeed {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        environment.env.set(
+            "FLATHUB_API_BASE",
+            format!("http://{}", listener.local_addr().unwrap()),
+        );
+        listener.set_nonblocking(true).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = std::sync::Arc::clone(&stop);
+        let worker = std::thread::spawn(move || {
+            while !stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                            .unwrap();
+                        stream
+                            .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+                            .unwrap();
+                        let mut request = [0; 4096];
+                        let length = stream.read(&mut request).unwrap();
+                        assert!(
+                            String::from_utf8_lossy(&request[..length])
+                                .starts_with("GET /collection/popular?")
+                        );
+                        let body = r#"{"hits":[]}"#;
+                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("feed accept failed: {error}"),
+                }
+            }
+        });
+        AvailableFeed {
+            stop,
+            worker: Some(worker),
+        }
     }
 
     fn frame(app: &mut TestApp<StoreShell>) -> String {
@@ -1030,6 +1116,7 @@ mod tests {
         browses: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         registry_gate: Option<std::sync::Arc<CatalogueGate>>,
         account: bool,
+        failed_repository: bool,
         disabled: std::sync::atomic::AtomicBool,
     }
 
@@ -1175,7 +1262,7 @@ mod tests {
                     ""
                 },
             );
-            let row = if self.registry_gate.is_some() {
+            let mut row = if self.registry_gate.is_some() || self.failed_repository {
                 let scope = if self.account { "user" } else { "system" };
                 let disabled = if self.disabled.load(std::sync::atomic::Ordering::SeqCst) {
                     ",disabled"
@@ -1186,6 +1273,11 @@ mod tests {
             } else {
                 "tools\thttps://tools.example/repo\tExample tools\tsystem\n".into()
             };
+            if self.failed_repository {
+                row.push_str(
+                    "fedora\thttps://registry.fedoraproject.org\tFedora Flatpaks\tsystem\n",
+                );
+            }
             result.set_remotes(&row);
             std::future::ready(Ok(()))
         }
@@ -1217,7 +1309,13 @@ mod tests {
             mut results: app_host::app_host_capnp::app_host::FlatpakCatalogueResults,
         ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
             let params = params.get().unwrap();
-            let name = if self.registry_gate.is_some() {
+            if self.failed_repository && params.get_remote().unwrap().to_str().unwrap() == "fedora"
+            {
+                return std::future::ready(Err(capnp::Error::failed(
+                    "Unable to load summary".into(),
+                )));
+            }
+            let name = if self.registry_gate.is_some() || self.failed_repository {
                 "flathub"
             } else {
                 "tools"
@@ -1283,6 +1381,7 @@ mod tests {
             browses: std::sync::Arc::clone(&browses),
             registry_gate: Some(std::sync::Arc::clone(&gate)),
             account: false,
+            failed_repository: false,
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();
@@ -1427,6 +1526,7 @@ mod tests {
             browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             registry_gate: Some(std::sync::Arc::clone(&gate)),
             account: true,
+            failed_repository: false,
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();
@@ -1496,6 +1596,7 @@ mod tests {
             browses: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             registry_gate: Some(std::sync::Arc::clone(&gate)),
             account: false,
+            failed_repository: false,
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();
@@ -1526,6 +1627,163 @@ mod tests {
     }
 
     #[test]
+    fn failed_repository_does_not_poison_healthy_browse_or_install() {
+        let mut environment = offline();
+        let _feed = available_feed(&mut environment);
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        settle_catalogue_worker(&mut app);
+        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            installs: std::sync::Arc::default(),
+            browses: std::sync::Arc::default(),
+            registry_gate: None,
+            account: false,
+            failed_repository: true,
+            disabled: std::sync::atomic::AtomicBool::new(false),
+        })
+        .unwrap();
+        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+            .unwrap()
+            .unwrap();
+        settle_catalogue_worker(&mut app);
+        app.with_surface::<StoreApp, _>(|surface| {
+            let inspected = surface.inspect_catalogue(None).unwrap();
+            assert!(inspected["error"].is_null(), "an independent failed repository must not fail healthy catalogue operations: {inspected}");
+            let failed = inspected["remotes"].as_array().unwrap().iter().find(|remote| remote["name"] == "fedora").unwrap();
+            assert!(failed["catalogue_error"].as_str().unwrap().contains("Unable to load summary"));
+            assert!(surface.items().iter().any(|item| item.id == "org.example.Editor"));
+        }).unwrap();
+        assert_metadata_refresh_keeps_repository_failure(&mut app);
+        let remote = "remote:system:flathub";
+        let contract = find(&app.harness().resources(), remote)
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "browse-remote")
+            .unwrap()
+            .contract;
+        let invocation = app
+            .start_effect_on(
+                remote,
+                &StoreEffect::BrowseRemote {
+                    remote: remote.into(),
+                },
+            )
+            .unwrap();
+        assert_valid_unit_job_completion(&mut app, invocation, &contract);
+        app.with_surface::<StoreApp, _>(|surface| {
+            assert!(surface.inspect_catalogue(None).unwrap()["error"].is_null());
+        })
+        .unwrap();
+        let item_id = "app:org.example.Editor";
+        let contract = find(&app.harness().resources(), item_id)
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "flatpak-install")
+            .unwrap()
+            .contract;
+        let invocation = app
+            .start_effect_on(
+                item_id,
+                &StoreEffect::FlatpakInstall {
+                    app: "org.example.Editor".into(),
+                },
+            )
+            .unwrap();
+        assert_valid_unit_job_completion(&mut app, invocation, &contract);
+        settle_catalogue_worker(&mut app);
+        app.with_surface::<StoreApp, _>(|surface| {
+            let inspected = surface
+                .inspect_catalogue(Some("org.example.Editor"))
+                .unwrap();
+            assert_eq!(inspected["detail"]["installed"], true);
+            assert!(inspected["error"].is_null());
+            assert!(
+                inspected["remotes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|remote| remote["name"] == "fedora")
+                    .unwrap()["catalogue_error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Unable to load summary")
+            );
+        })
+        .unwrap();
+        service.shutdown().unwrap();
+    }
+
+    fn assert_metadata_refresh_keeps_repository_failure(app: &mut TestApp<StoreShell>) {
+        let refresh_contract = find(&app.harness().resources(), "store:remotes")
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "refresh-remotes")
+            .unwrap()
+            .contract;
+        let invocation = app
+            .start_effect_on("store:remotes", &StoreEffect::RefreshRemotes)
+            .unwrap();
+        assert_valid_unit_job_completion(app, invocation, &refresh_contract);
+        app.with_surface::<StoreApp, _>(|surface| {
+            assert!(
+                surface.inspect_catalogue(None).unwrap()["remotes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|remote| remote["name"] == "fedora")
+                    .unwrap()["catalogue_error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Unable to load summary")
+            );
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn explicitly_browsing_failed_repository_retains_failed_terminal_receipt() {
+        let mut environment = offline();
+        let _feed = available_feed(&mut environment);
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        settle_catalogue_worker(&mut app);
+        let (service, connection) = app_host::testing::ConnectedService::start(CatalogueHost {
+            installs: std::sync::Arc::default(),
+            browses: std::sync::Arc::default(),
+            registry_gate: None,
+            account: false,
+            failed_repository: true,
+            disabled: std::sync::atomic::AtomicBool::new(false),
+        })
+        .unwrap();
+        app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
+            .unwrap()
+            .unwrap();
+        settle_catalogue_worker(&mut app);
+        let id = "remote:system:fedora";
+        let invocation = app
+            .start_effect_on(id, &StoreEffect::BrowseRemote { remote: id.into() })
+            .unwrap();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(5), |harness| harness
+                    .job_updates(invocation)
+                    .iter()
+                    .any(ui::tilo_actions::InvocationUpdate::is_terminal))
+        );
+        let updates = app.harness().job_updates(invocation);
+        assert!(updates.iter().any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Failed { error, .. } if error.message.contains("Unable to load summary"))));
+        assert!(
+            !updates.iter().any(|update| matches!(
+                update,
+                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+            ))
+        );
+        service.shutdown().unwrap();
+    }
+
+    #[test]
     fn declared_browse_job_completes_through_host_rpc_worker_and_snapshot() {
         let _offline = offline();
         let mut app = TestApp::<StoreShell>::new().unwrap();
@@ -1536,6 +1794,7 @@ mod tests {
             browses: std::sync::Arc::clone(&browses),
             registry_gate: None,
             account: false,
+            failed_repository: false,
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();
@@ -1610,6 +1869,7 @@ mod tests {
             browses: std::sync::Arc::default(),
             registry_gate: Some(gate),
             account: false,
+            failed_repository: false,
             disabled: std::sync::atomic::AtomicBool::new(false),
         })
         .unwrap();

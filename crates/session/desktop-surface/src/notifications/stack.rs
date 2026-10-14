@@ -89,6 +89,10 @@ pub struct NotificationStack {
     /// stale hit cannot fire after expiry.
     hit_rects: Vec<(u64, Rect, Rect)>,
     action_rects: Vec<(u64, String, Rect)>,
+    /// What a press on a painted banner does, as buttons for assistive
+    /// technology (and anything else that reads the semantics): each card
+    /// (opening it, labelled by its title) and its action buttons.
+    action_buttons: Vec<(Rect, String)>,
     rect: Rect,
     /// Mirrored from the last paint so the frame and deadline hooks obey
     /// reduced motion without a theme argument.
@@ -234,9 +238,16 @@ impl NotificationStack {
     ) -> Rect {
         let title_style = ctx.theme.text(TextRole::Caption);
         let card_rect = Rect::new(x0, y, x0 + width, y + TOAST_HEIGHT);
-        // A Panel-role floater like the toasts it stands in for (HIG §9.5),
-        // so one column is one material.
-        ui::surface::panel(ctx.scene, ctx.transform, card_rect, radius, ctx.theme);
+        // The card surface of the toasts it stands in for (HIG §9.5), so
+        // one column is one material.
+        ui::widget::toast::paint_surface(
+            ctx.scene,
+            ctx.transform,
+            card_rect,
+            radius,
+            1.0,
+            ctx.theme,
+        );
         let label = lock_suppressed_label(count);
         // Centre on the measured line, not the font size (HIG §7a).
         let max_width = f32_of_f64(width - CARD_PADDING_X * 2.0);
@@ -292,7 +303,14 @@ impl NotificationStack {
         let pill_h =
             SELECTOR_HEIGHT.max(f64::from(label_h) + f64::from(ctx.theme.tokens.spacing.s2));
         let pill_rect = Rect::new(x0, y, x0 + width, y + pill_h);
-        ui::surface::panel(ctx.scene, ctx.transform, pill_rect, radius, ctx.theme);
+        ui::widget::toast::paint_surface(
+            ctx.scene,
+            ctx.transform,
+            pill_rect,
+            radius,
+            1.0,
+            ctx.theme,
+        );
         let dot_center = Point::new(
             pill_rect.x0 + CARD_PADDING_X + DOT_RADIUS,
             pill_rect.y0 + pill_h / 2.0,
@@ -332,10 +350,22 @@ impl NotificationStack {
             // The stack owns what to show and click routing; the toast
             // widget owns the card's look and hands back the close rect.
             let mut card = ToastCard::new(&n.title, n.severity.toast_kind())
+                .icon(n.icon_kind.icon())
                 .body(if n.show_preview { &n.body } else { "" })
                 .caption(n.app_name.as_deref().unwrap_or(""))
-                .closable(true)
+                // A card that offers its own way out ("Not now", "Dismiss")
+                // needs no second one in its corner.
+                .closable(
+                    !actions
+                        .iter()
+                        .any(|(key, _)| key == super::model::NOT_NOW_ACTION || key == "dismiss"),
+                )
                 .actionable(!n.actions.is_empty());
+            // A person's notification leads with them; the app stays the
+            // small source line above the title.
+            if let Some(person) = &n.from {
+                card = card.person(&person.name, &person.identity);
+            }
             let close = self.targets.interaction(&BannerTarget::Dismiss(n.id).key());
             card.close_hovered = close.hovered;
             card.close_pressed = close.pressed;
@@ -358,9 +388,8 @@ impl NotificationStack {
                 card.primary_action_hovered = state.hovered;
                 card.primary_action_pressed = state.pressed;
             }
-            let height =
-                ui::widget::toast::minimum_card_height(ctx.text_renderer, ctx.theme, &card)
-                    .max(TOAST_HEIGHT);
+            let height = ui::widget::toast::card_height(ctx.text_renderer, ctx.theme, &card, width)
+                .max(TOAST_HEIGHT);
             if y + height > self.viewport.y1 - EDGE_INSET {
                 break;
             }
@@ -382,11 +411,14 @@ impl NotificationStack {
                 &card,
             );
             self.register_target(BannerTarget::Open(n.id), card_rect, &n.title);
-            self.register_target(
-                BannerTarget::Dismiss(n.id),
-                hit.close_rect,
-                &t("notification-center-dismiss"),
-            );
+            self.action_buttons.push((card_rect, n.title.clone()));
+            if card.closable {
+                self.register_target(
+                    BannerTarget::Dismiss(n.id),
+                    hit.close_rect,
+                    &t("notification-center-dismiss"),
+                );
+            }
             if let Some((key, label)) = actions.first() {
                 let rect = if actions.len() >= 2 {
                     hit.secondary_action_rect
@@ -395,6 +427,7 @@ impl NotificationStack {
                 };
                 self.register_target(BannerTarget::Action(n.id, key.clone()), rect, label);
                 self.action_rects.push((n.id, key.clone(), rect));
+                self.action_buttons.push((rect, label.clone()));
             }
             if let Some((key, label)) = actions.get(1) {
                 self.register_target(
@@ -404,6 +437,8 @@ impl NotificationStack {
                 );
                 self.action_rects
                     .push((n.id, key.clone(), hit.primary_action_rect));
+                self.action_buttons
+                    .push((hit.primary_action_rect, label.clone()));
             }
             self.hit_rects.push((n.id, card_rect, hit.close_rect));
             y += height + TOAST_GAP;
@@ -422,6 +457,7 @@ impl NotificationStack {
     ) {
         self.hit_rects.clear();
         self.action_rects.clear();
+        self.action_buttons.clear();
         self.targets.begin_frame();
         self.target_actions.clear();
         self.reduce_motion = theme.reduce_motion;
@@ -593,7 +629,17 @@ impl NotificationStack {
             AccessNode::new(Role::Group)
                 .with_name(t("notification-stack-a11y"))
                 .with_live(politeness)
-                .with_value(text),
+                .with_value(text)
+                .with_children(
+                    self.action_buttons
+                        .iter()
+                        .map(|(rect, label)| {
+                            AccessNode::new(Role::Button)
+                                .with_name(label.clone())
+                                .with_bounds(*rect)
+                        })
+                        .collect(),
+                ),
         )
     }
 }
@@ -735,6 +781,21 @@ pub(super) mod tests {
                 "both real painted controls must exist"
             );
             let actions = stack.action_rects.clone();
+            let buttons = stack.accessibility(&host).expect("a live region").children;
+            let mut named: Vec<_> = buttons
+                .iter()
+                .map(|button| (button.role, button.name.clone().unwrap_or_default()))
+                .collect();
+            named.sort_by(|a, b| a.1.cmp(&b.1));
+            assert_eq!(
+                named,
+                [
+                    (ui::a11y::Role::Button, "Alarm".to_owned()),
+                    (ui::a11y::Role::Button, "Dismiss".to_owned()),
+                    (ui::a11y::Role::Button, "Snooze".to_owned())
+                ],
+                "the painted choices are buttons a reader can press"
+            );
             let card = stack.hit_rects[0].1;
             for (actual, _, rect) in &actions {
                 assert_eq!(*actual, id);

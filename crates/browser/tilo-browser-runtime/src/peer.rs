@@ -520,27 +520,86 @@ pub async fn ask_to_join(
     )
     .await
     .map_err(js_error)?;
-    let request_id = request_id(&request_id_hex)?;
+    ask_as(
+        post,
+        &invitation,
+        cert,
+        &signer,
+        &request_id_hex,
+        &name,
+        admission_token,
+    )
+    .await
+}
+
+/// [`ask_to_join`] as a device already certified elsewhere (`certificate`,
+/// `{cert}` JSON as `certifyDevice` resolves to: a device a person paired
+/// from another of theirs) rather than by a root the page holds.
+///
+/// # Errors
+///
+/// As [`ask_to_join`], and when `custody` does not hold the certified key.
+#[wasm_bindgen(js_name = askToJoinAs)]
+pub async fn ask_to_join_as(
+    post: Function,
+    invitation: Vec<u8>,
+    certificate: String,
+    custody: JsValue,
+    request_id_hex: String,
+    name: String,
+    admission_token: Option<Vec<u8>>,
+) -> Result<String, JsError> {
+    #[derive(Deserialize)]
+    struct Stored {
+        cert: DeviceCert,
+    }
+    let Stored { cert } = serde_json::from_str(&certificate).map_err(js_error)?;
+    let signer = PageSigner::from_js(&custody)?;
+    if signer.device_public_key() != cert.device_public_key {
+        return Err(js_error("custody does not hold the certified device key"));
+    }
+    ask_as(
+        post,
+        &invitation,
+        cert,
+        &signer,
+        &request_id_hex,
+        &name,
+        admission_token,
+    )
+    .await
+}
+
+async fn ask_as(
+    post: Function,
+    invitation: &[u8],
+    cert: DeviceCert,
+    signer: &PageSigner,
+    request_id_hex: &str,
+    name: &str,
+    admission_token: Option<Vec<u8>>,
+) -> Result<String, JsError> {
+    let request_id = request_id(request_id_hex)?;
     let reply = match admission_token {
         None => {
             tilo_browser_peer::invite::ask_to_join(
                 &PageHttp(post),
-                &invitation,
+                invitation,
                 &cert,
-                &signer,
+                signer,
                 request_id,
-                &name,
+                name,
             )
             .await
         }
         Some(token) => {
             tilo_browser_peer::invite::ask_to_join_pre_admitted(
                 &PageHttp(post),
-                &invitation,
+                invitation,
                 &cert,
-                &signer,
+                signer,
                 request_id,
-                &name,
+                name,
                 &token,
             )
             .await
@@ -613,6 +672,58 @@ pub async fn certify_with_root(
     .map_err(js_error)
 }
 
+/// The new devices waiting at the host at `post` for the member root the
+/// page holds (`root`) to pair them: `[{digest, pairingCode, label,
+/// device}]` JSON, keys and digest as hex.
+///
+/// # Errors
+///
+/// Rejects when the host is unreachable or refuses.
+#[wasm_bindgen(js_name = pendingPairings)]
+pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, JsError> {
+    let root = PageSigner::from_js(&root)?;
+    let pending = tilo_browser_peer::pending_pairings(&PageHttp(post), &root)
+        .await
+        .map_err(js_error)?;
+    Ok(serde_json::Value::Array(
+        pending
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "digest": hex::encode(entry.request_digest),
+                    "pairingCode": entry.pairing_code,
+                    "label": entry.request.device_label,
+                    "device": hex::encode(entry.request.device_public_key),
+                })
+            })
+            .collect(),
+    )
+    .to_string())
+}
+
+/// Pair (`approved`) or turn away the waiting device `digest_hex` at the
+/// host at `post`, with the member root the page holds.
+///
+/// # Errors
+///
+/// Rejects when the request is gone, or the host is unreachable or refuses.
+#[wasm_bindgen(js_name = answerPairing)]
+pub async fn answer_pairing(
+    post: Function,
+    root: JsValue,
+    digest_hex: String,
+    approved: bool,
+) -> Result<(), JsError> {
+    let root = PageSigner::from_js(&root)?;
+    let digest: [u8; 32] = hex::decode(&digest_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| JsError::new("a request digest is 64 hex characters"))?;
+    tilo_browser_peer::answer_pairing(&PageHttp(post), &root, digest, approved)
+        .await
+        .map_err(js_error)
+}
+
 // ---- Live frames as the JavaScript shape of `web/live-presence.mjs` -------
 
 #[derive(Serialize, Deserialize)]
@@ -662,6 +773,8 @@ struct JsPresence {
     drag: Option<JsDrag>,
     #[serde(default)]
     participant: Option<JsParticipant>,
+    #[serde(default)]
+    place: Option<String>,
 }
 
 fn participant_from_js(value: JsParticipant) -> Result<LiveParticipant, JsError> {
@@ -793,6 +906,7 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
             })
             .transpose()?,
         participant: value.participant.map(participant_from_js).transpose()?,
+        place: value.place,
     })
 }
 
@@ -816,6 +930,7 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
             size,
         }),
         participant: frame.participant.map(participant_to_js),
+        place: frame.place,
     }
 }
 
@@ -936,6 +1051,33 @@ pub fn decode_live_frame(frame: &[u8]) -> Result<String, JsError> {
 pub fn live_record_track(record_json: &str) -> Result<String, JsError> {
     let record = record_from_js(serde_json::from_str(record_json).map_err(js_error)?);
     Ok(format!("ops/{}", hex::encode(record.digest())))
+}
+
+/// One of [`WasmPeer::here`]'s actions as the page sends it.
+#[derive(serde::Deserialize)]
+struct JsHereAction {
+    id: String,
+    action: String,
+    #[serde(default)]
+    resource: String,
+    #[serde(default)]
+    app: String,
+    #[serde(default)]
+    at_ms: u64,
+}
+
+/// One person of [`WasmPeer::here`]'s answer as the page reads it.
+#[derive(serde::Serialize)]
+struct JsHerePerson {
+    device: String,
+    user: String,
+    label: String,
+    window: Option<String>,
+    status: String,
+    recent: String,
+    sources: Vec<String>,
+    generated: bool,
+    updated_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -1738,6 +1880,86 @@ impl WasmPeer {
         serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
     }
 
+    /// Post this person's display name, the window they focus (`window`:
+    /// tab id in hex) and own recent semantic actions in `room` (`actions`:
+    /// JSON array of `{id: 32 hex, action, resource, app, at_ms}`, titles
+    /// only) and resolve to who is here there: a JSON array of `{device,
+    /// user, label, window, status, recent, sources, generated, updated_ms}` with keys and
+    /// ids in hex. An empty array only fetches.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed or out-of-bounds actions, or when the host is not
+    /// reached or this device is not admitted to `room`.
+    #[wasm_bindgen(js_name = here)]
+    pub async fn here(
+        &self,
+        room: String,
+        label: String,
+        window: Option<String>,
+        actions: String,
+    ) -> Result<String, JsError> {
+        let actions: Vec<JsHereAction> = serde_json::from_str(&actions).map_err(js_error)?;
+        let request = tilo_relay_protocol::web::HereRequest {
+            workspace_id: workspace(&room)?,
+            label: label
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(tilo_relay_protocol::web::MAX_HERE_LABEL_CHARS)
+                .collect(),
+            window: window
+                .map(|window| u64::from_str_radix(&window, 16))
+                .transpose()
+                .map_err(js_error)?,
+            actions: actions
+                .into_iter()
+                .map(|action| {
+                    let id: [u8; 16] = hex::decode(&action.id)
+                        .ok()
+                        .and_then(|id| id.try_into().ok())
+                        .ok_or_else(|| js_error("action id is not 32 hex"))?;
+                    Ok(tilo_relay_protocol::web::HereAction {
+                        id,
+                        action: action.action,
+                        resource: action.resource,
+                        app: action.app,
+                        at_ms: action.at_ms,
+                    })
+                })
+                .collect::<Result<_, JsError>>()?,
+        };
+        request.validate().map_err(js_error)?;
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .here_then(
+                request,
+                Box::new(move |here| {
+                    let _ = reply.send(here);
+                }),
+            )
+            .map_err(js_error)?;
+        let here = receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)?;
+        let people: Vec<JsHerePerson> = here
+            .people
+            .into_iter()
+            .map(|person| JsHerePerson {
+                device: hex::encode(person.device),
+                user: hex::encode(person.user),
+                label: person.label,
+                window: person.window.map(|window| format!("{window:x}")),
+                status: person.status,
+                recent: person.recent,
+                sources: person.sources.iter().map(hex::encode).collect(),
+                generated: person.generated,
+                updated_ms: person.updated_ms,
+            })
+            .collect();
+        serde_json::to_string(&people).map_err(js_error)
+    }
+
     /// Send `events` (JSON array of `legacy_window::InputEvent`s, externally
     /// tagged: `{"PointerMotion": {"x": 1, "y": 2}}`) for the legacy window
     /// `surface` (16 hex) that `publisher` (64 hex) streams in `room`. With
@@ -1783,6 +2005,18 @@ impl WasmPeer {
             .await
             .map_err(|_| js_error("peer session closed"))?
             .map_err(js_error)
+    }
+
+    /// How many changes this page made to its room's records and sent:
+    /// above zero once the person posted or created something.
+    #[wasm_bindgen(js_name = authoredChanges)]
+    pub fn authored_changes(&self) -> f64 {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a count far below 2^53, read by JavaScript as a number"
+        )]
+        let count = crate::replication::authored(self.id) as f64;
+        count
     }
 
     /// Records whose durable change landed since the last call, as a JSON
@@ -1955,6 +2189,13 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = clearSurface)]
     pub fn clear_surface(&self, surface: &str) {
         self.handle.clear_surface(surface);
+    }
+
+    /// The person's chosen name from now on, for history and presence
+    /// (empty for none).
+    #[wasm_bindgen(js_name = setDisplayName)]
+    pub fn set_display_name(&self, name: String) {
+        install_identity(&self.reporter_cert, name);
     }
 
     /// End the session. The page no longer acts as the certified user.

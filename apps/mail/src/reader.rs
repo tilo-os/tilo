@@ -21,7 +21,7 @@ use ui::theme::Theme;
 use ui::webview::{SharedEngine, WebViewCommand};
 use ui::widget::{
     AvatarFace, AvatarSize, Banner, BannerContent, BannerKind, ChipFace, ChipLead, EmptyState,
-    EmptyStateContent, ScrollRegion, TaffyTreeExt, WebView, Widget,
+    EmptyStateContent, ScrollRegion, TaffyTreeExt, TextInput, WebView, Widget,
 };
 use ui::{TextKind, TextRole};
 
@@ -29,10 +29,134 @@ use crate::model::{Message, MessageId};
 use crate::state::{Intent, MailState, Shared};
 use crate::util::{format_absolute, gravatar_url, local_minutes};
 
-/// The deterministic HTML-mail engine, matching the native mail runtime.
+/// The engine for HTML mail: the packaged Chromium runtime when the image has
+/// it, over a throwaway profile (no cookies or storage survive the process),
+/// otherwise the deterministic test engine, whose frames are never shown.
 fn new_html_engine() -> (SharedEngine, bool) {
+    #[cfg(feature = "live")]
+    if let Some(engine) = native_html_engine() {
+        return (engine, true);
+    }
     let e: SharedEngine = ui::webview::test_engine::TestEngine::new();
     (e, false)
+}
+
+#[cfg(feature = "live")]
+fn native_html_engine() -> Option<SharedEngine> {
+    use std::sync::OnceLock;
+    static PROFILE: OnceLock<Option<tempfile::TempDir>> = OnceLock::new();
+    ui::webview::chromium::runtime::locate().ok()?;
+    let profile = PROFILE
+        .get_or_init(|| {
+            tempfile::Builder::new()
+                .prefix("tilo-mail-view")
+                .tempdir()
+                .ok()
+        })
+        .as_ref()?;
+    match ui::webview::chromium::ChromiumEngine::with_profile_extensions(profile.path(), &[]) {
+        Ok(engine) => Some(engine as SharedEngine),
+        Err(error) => {
+            tracing::warn!(%error, "mail: the HTML engine did not start");
+            None
+        }
+    }
+}
+
+/// Open a link of a mail in the browser through the host opener. Only the web
+/// and mail addresses open.
+fn open_link(url: &str) {
+    let lower = url.to_ascii_lowercase();
+    if ["https://", "http://", "mailto:"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme))
+    {
+        ui::widget::open_external_url(url);
+    }
+}
+
+/// The open message's text: a read-only field, so it can be selected and
+/// copied and its addresses open.
+struct BodyText {
+    /// The message and whether its HTML part is shown.
+    key: (MessageId, bool),
+    /// The style the runs were coloured in.
+    style: crate::html_mail::DocumentStyle,
+    input: TextInput,
+}
+
+impl BodyText {
+    fn new(
+        key: (MessageId, bool),
+        style: crate::html_mail::DocumentStyle,
+        message: &Message,
+        html: Option<&str>,
+        theme: &Theme,
+    ) -> Self {
+        let quiet = ui::color::to_rgb8(theme.tokens.colors.text_dim);
+        let (runs, links) = match html {
+            Some(html) => html_runs(html, style.font_px, quiet),
+            None => (plain_runs(&message.body, quiet), Vec::new()),
+        };
+        let input = TextInput::local()
+            .multiline(true)
+            .with_plain_chrome()
+            .with_text_role(TextRole::Body)
+            .with_spellcheck(false)
+            .with_autocorrect(false)
+            .with_id("mail_body")
+            .with_accessible_name(message.subject.clone())
+            .with_runs(runs)
+            .with_links(links)
+            .with_read_only(true);
+        Self { key, style, input }
+    }
+}
+
+/// A plain-text body as runs; quoted lines are quieter.
+fn plain_runs(body: &str, quiet: [u8; 3]) -> Vec<ui::RichSpan> {
+    let mut runs: Vec<ui::RichSpan> = Vec::new();
+    for (index, line) in body.split('\n').enumerate() {
+        let mut text = String::with_capacity(line.len() + 1);
+        if index > 0 {
+            text.push('\n');
+        }
+        text.push_str(line.trim_end_matches('\r'));
+        let quoted = line.trim_start().starts_with('>');
+        runs.push(ui::RichSpan::new(text).color(quoted.then_some(quiet)));
+    }
+    runs
+}
+
+/// An HTML body as runs, and where its links go, in byte ranges of the
+/// runs' text. `body_px` is the size a heading is scaled from.
+fn html_runs(
+    html: &str,
+    body_px: f32,
+    quiet: [u8; 3],
+) -> (Vec<ui::RichSpan>, Vec<(std::ops::Range<usize>, String)>) {
+    let mut runs = Vec::new();
+    let mut links = Vec::new();
+    let mut at = 0;
+    for run in crate::html_text::render(html) {
+        let end = at + run.text.len();
+        if let Some(target) = &run.link {
+            links.push((at..end, target.clone()));
+        }
+        let mut span = ui::RichSpan::new(run.text)
+            .bold(run.bold)
+            .italic(run.italic)
+            .color(run.quote.then_some(quiet));
+        span.size = match run.heading {
+            1 => Some(body_px * 1.5),
+            2 => Some(body_px * 1.25),
+            3 => Some(body_px * 1.1),
+            _ => None,
+        };
+        runs.push(span);
+        at = end;
+    }
+    (runs, links)
 }
 
 /// The label of an attachment chip.
@@ -169,20 +293,6 @@ impl Flow<'_, '_> {
         self.y = y.max(self.y + side);
     }
 
-    /// The message text, paragraph by paragraph; quoted lines are quieter.
-    fn body(&mut self, body: &str) {
-        let style = self.style(TextRole::Body);
-        let blank = self.line(TextRole::Body) / 2.0;
-        for paragraph in body.split('\n') {
-            if paragraph.trim().is_empty() {
-                self.y += blank;
-                continue;
-            }
-            let quote = paragraph.trim_start().starts_with('>');
-            self.paragraph(paragraph, &style, quote);
-        }
-    }
-
     /// The message's attachments as chips that wrap; each one saves its file.
     fn attachments(&mut self, message: &Message) {
         let theme = self.ctx.theme;
@@ -211,6 +321,10 @@ impl Flow<'_, '_> {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent view flags of one reader, each toggled on its own event"
+)]
 pub struct MessageReader {
     shared: Shared,
     rect: Rect,
@@ -240,9 +354,16 @@ pub struct MessageReader {
     /// The message the HTML view shows, so remote content is blocked again
     /// for each message.
     html_shown_id: Option<MessageId>,
-    /// The person allowed remote images for the open message.
+    /// Whether remote images are loaded for the open message: the person
+    /// allowed them for its sender.
     html_load_remote: bool,
+    /// The open message's sender.
+    html_sender: String,
     html_view_rect: Option<Rect>,
+    /// The text of the message shown, as last painted.
+    body: Option<BodyText>,
+    /// Whether the reader has the keyboard, which its text uses.
+    focused: bool,
     dirty: bool,
 }
 
@@ -264,7 +385,10 @@ impl MessageReader {
             html_style: None,
             html_shown_id: None,
             html_load_remote: false,
+            html_sender: String::new(),
             html_view_rect: None,
+            body: None,
+            focused: false,
             dirty: true,
         }
     }
@@ -352,22 +476,12 @@ impl MessageReader {
 
     /// Paint the remote-content banner for an HTML body at the flow's
     /// cursor: what is blocked and the button that changes it.
-    fn paint_remote_line(&mut self, flow: &mut Flow<'_, '_>, interactive: bool) {
+    fn paint_remote_line(&mut self, flow: &mut Flow<'_, '_>) {
         let theme = flow.ctx.theme;
-        let (icon, title, action) = if !interactive {
-            (Icon::Info, "Showing the plain text of this message.", None)
-        } else if self.html_load_remote {
-            (
-                Icon::Image,
-                "Remote images are shown.",
-                Some("Block images"),
-            )
+        let (icon, title, action) = if self.html_load_remote {
+            (Icon::Image, "Remote images shown", Some("Block images"))
         } else {
-            (
-                Icon::Shield,
-                "Remote images are blocked to protect your privacy.",
-                Some("Load images"),
-            )
+            (Icon::Shield, "Remote images blocked", Some("Load images"))
         };
         let mut content = BannerContent::new(BannerKind::Neutral, title).with_icon(icon);
         if let Some(label) = action {
@@ -377,6 +491,44 @@ impl MessageReader {
         let rect = Rect::new(flow.x, flow.y, flow.x + flow.width, flow.y + height);
         let hit = Banner::paint(&mut flow.ctx, rect, &content, flow.pointer);
         self.remote_button = hit.action;
+        flow.y += height;
+    }
+
+    /// The message text as a field the person can select and copy, its
+    /// addresses links: an HTML body read into styled runs, a plain one
+    /// with its quoted lines quieter. Moves below it.
+    fn paint_body(
+        &mut self,
+        flow: &mut Flow<'_, '_>,
+        message: &Message,
+        html: Option<&str>,
+        presence: &PresenceCtx,
+    ) {
+        let theme = flow.ctx.theme;
+        let style = crate::html_mail::DocumentStyle::from_theme(theme);
+        let key = (message.id, html.is_some());
+        let needs_rebuild = self
+            .body
+            .as_ref()
+            .is_none_or(|body| body.key != key || body.style != style);
+        if needs_rebuild {
+            let mut body = BodyText::new(key, style, message, html, theme);
+            body.input.set_focus(self.focused);
+            self.body = Some(body);
+        }
+        let Some(body) = self.body.as_mut() else {
+            return;
+        };
+        let inset = body.input.text_inset_x(theme);
+        let rect = Rect::new(flow.x - inset, flow.y, flow.x + flow.width + inset, flow.y);
+        let height = body.input.place_wrapped(rect, flow.ctx.text, theme);
+        body.input.draw(
+            flow.ctx.scene,
+            flow.ctx.transform,
+            flow.ctx.text,
+            theme,
+            presence,
+        );
         flow.y += height;
     }
 
@@ -402,6 +554,7 @@ impl MessageReader {
             self.attachments.clear();
             self.remote_button = None;
             self.html_view_rect = None;
+            self.body = None;
             self.paint_empty(&mut ctx, &state);
             return;
         };
@@ -414,9 +567,10 @@ impl MessageReader {
         let gutter = f64::from(spacing.s6);
         let r = self.rect;
         let head_html = head.html_body.clone();
+        let head_sender = head.from.email.to_ascii_lowercase();
         // An HTML body takes the rest of the reader, so the thread above it
         // does not scroll.
-        if head_html.is_some() {
+        if head_html.is_some() && self.html_engine_live {
             self.region.set_offset(Vec2::ZERO);
         }
         let scroll = self.region.offset().y;
@@ -462,9 +616,9 @@ impl MessageReader {
                 theme.text_dim,
             );
             let text = if head.read {
-                "Previewing: the read state is unchanged."
+                "Preview"
             } else {
-                "Previewing: this message stays unread."
+                "Preview, still unread"
             };
             let x = flow.x + icon + f64::from(theme.tokens.metrics.icon_label_gap);
             let width = flow.width - (x - flow.x);
@@ -479,23 +633,18 @@ impl MessageReader {
             let is_head = index + 1 == count;
             flow.sender(message);
             flow.y += f64::from(spacing.s3);
-            if is_head && head_html.is_some() {
-                let interactive = self.html_engine_live;
-                self.paint_remote_line(&mut flow, interactive);
+            if is_head && head_html.is_some() && self.html_engine_live {
+                self.paint_remote_line(&mut flow);
                 flow.y += f64::from(spacing.s3);
-                if interactive {
-                    let bottom = r.y1 - gutter;
-                    if bottom > flow.y + f64::from(spacing.s12) {
-                        webview_rect = Some(Rect::new(flow.x, flow.y, flow.x + flow.width, bottom));
-                    }
-                    flow.y = bottom;
-                } else {
-                    // Without an isolated renderer the decoded text
-                    // alternative is shown, never the test engine's frame.
-                    flow.body(&message.body);
+                let bottom = r.y1 - gutter;
+                if bottom > flow.y + f64::from(spacing.s12) {
+                    webview_rect = Some(Rect::new(flow.x, flow.y, flow.x + flow.width, bottom));
                 }
+                flow.y = bottom;
             } else if is_head {
-                flow.body(&message.body);
+                // Without an isolated renderer the HTML is read into styled
+                // text; nothing in it is fetched.
+                self.paint_body(&mut flow, message, head_html.as_deref(), presence);
             } else {
                 // Earlier messages show their first line.
                 let caption = flow.style(TextRole::Caption);
@@ -543,7 +692,8 @@ impl MessageReader {
         match (webview_rect, head_html) {
             (Some(rect), Some(html)) => {
                 if self.html_shown_id != Some(head_id) {
-                    self.html_load_remote = false;
+                    self.html_load_remote = shared.borrow().remote_senders.contains(&head_sender);
+                    self.html_sender = head_sender;
                     self.html_shown_id = Some(head_id);
                 }
                 self.load_html_body(head_id, &html, theme);
@@ -551,6 +701,7 @@ impl MessageReader {
                 view.set_viewport(rect, 1.0);
                 view.draw(scene, t, tr, theme, presence);
                 self.html_view_rect = Some(rect);
+                self.intercept_navigation();
             }
             (None, Some(_)) => {}
             (_, None) => {
@@ -565,6 +716,13 @@ impl MessageReader {
     fn press(&mut self, point: Point) -> bool {
         if self.remote_button.is_some_and(|rect| rect.contains(point)) {
             self.html_load_remote = !self.html_load_remote;
+            let mut state = self.shared.borrow_mut();
+            if self.html_load_remote {
+                state.remote_senders.insert(self.html_sender.clone());
+            } else {
+                state.remote_senders.remove(&self.html_sender);
+            }
+            drop(state);
             // Reload with the new policy on the next draw.
             self.html_key = None;
             self.dirty = true;
@@ -583,6 +741,44 @@ impl MessageReader {
             return true;
         }
         false
+    }
+
+    /// A mail never navigates its own view: a link the person follows opens in
+    /// the browser, and the message is shown again.
+    fn intercept_navigation(&mut self) {
+        let Some(engine) = self.html_view.as_ref().map(|view| view.engine().clone()) else {
+            return;
+        };
+        let mut left = false;
+        for (url, _) in engine.take_new_tab_requests() {
+            open_link(&url);
+        }
+        for event in engine.drain_events() {
+            if let ui::webview::WebViewEvent::UriChanged(uri) = event
+                && !uri.is_empty()
+                && !uri.starts_with("data:")
+                && uri != "about:blank"
+            {
+                open_link(&uri);
+                left = true;
+            }
+        }
+        if left {
+            self.html_key = None;
+            self.dirty = true;
+        }
+    }
+
+    /// Give the message text the pointer and the keys: selecting, copying and
+    /// opening its links. The wheel stays the reader's, which scrolls.
+    fn forward_to_body(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if matches!(event, WindowEvent::MouseWheel { .. }) {
+            return;
+        }
+        if let Some(body) = self.body.as_mut() {
+            body.input.handle_event(event, ctx);
+            self.dirty = true;
+        }
     }
 
     fn forward_to_html(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -624,6 +820,7 @@ impl Widget for MessageReader {
             self.attachments.clear();
             self.remote_button = None;
             self.html_view_rect = None;
+            self.body = None;
             let shared = self.shared.clone();
             let state = shared.borrow();
             self.paint_empty(&mut PaintCtx::new(scene, t, tr, theme), &state);
@@ -639,6 +836,10 @@ impl Widget for MessageReader {
             return;
         }
         self.forward_to_html(event, ctx);
+        if *ctx.handled {
+            return;
+        }
+        self.forward_to_body(event, ctx);
         if *ctx.handled {
             return;
         }
@@ -667,6 +868,24 @@ impl Widget for MessageReader {
 
     fn name(&self) -> &'static str {
         "MailReader"
+    }
+
+    /// The reader takes the keyboard while a message is open, so its text
+    /// can be selected and copied from the keys.
+    fn is_focusable(&self) -> bool {
+        self.body.is_some()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if let Some(body) = self.body.as_mut() {
+            body.input.set_focus(focused);
+        }
+        self.dirty = true;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -702,6 +921,10 @@ impl Widget for MessageReader {
                 .html_view
                 .as_ref()
                 .is_some_and(ui::Widget::needs_animation_frame)
+            || self
+                .body
+                .as_ref()
+                .is_some_and(|body| body.input.needs_animation_frame())
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -725,6 +948,9 @@ impl Widget for MessageReader {
         self.dirty = false;
         if let Some(view) = self.html_view.as_mut() {
             view.mark_drawn();
+        }
+        if let Some(body) = self.body.as_mut() {
+            body.input.mark_drawn();
         }
     }
 }
@@ -811,8 +1037,15 @@ mod tests {
         assert!(reader.press(button.center()));
         draw(&mut reader);
         assert_eq!(reader.html_loaded_key(), Some((id, false)));
+        assert!(
+            shared
+                .borrow()
+                .remote_senders
+                .contains("hello@fieldnotes.example"),
+            "the permission is the person's preference, not the reader's memory"
+        );
 
-        // Another message blocks remote content again.
+        // A plain message skips the webview; the allowed sender stays allowed.
         let plain = message_from(&shared, "lena@fischer.example");
         let mut doc = crate::resource::TestMail::doc();
         shared
@@ -828,7 +1061,37 @@ mod tests {
             .borrow_mut()
             .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
         draw(&mut reader);
-        assert_eq!(reader.html_loaded_key(), Some((id, true)));
+        assert_eq!(
+            reader.html_loaded_key(),
+            Some((id, false)),
+            "the sender stays allowed for the session"
+        );
+    }
+
+    #[test]
+    fn a_message_reads_as_selectable_text_and_html_loads_nothing() {
+        let shared = shared();
+        let html = message_from(&shared, "hello@fieldnotes.example");
+        let mut reader = reader_for(&shared, html, 960.0, 820.0);
+        assert!(
+            !reader.is_focusable(),
+            "nothing to select before it is drawn"
+        );
+        draw(&mut reader);
+        assert!(
+            reader.html_loaded_key().is_none(),
+            "without an isolated engine nothing is fetched"
+        );
+        let body = reader.body.as_ref().expect("the message text is a field");
+        assert!(body.input.is_read_only(), "selectable, never editable");
+        assert!(
+            !body.input.value().contains('<'),
+            "the markup is read, not shown: {:?}",
+            body.input.value()
+        );
+        assert!(reader.is_focusable(), "the keys can reach the text");
+        reader.set_focus(true);
+        assert!(reader.body.as_ref().is_some_and(|b| b.input.is_focused()));
     }
 
     #[test]

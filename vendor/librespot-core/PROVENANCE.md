@@ -27,6 +27,10 @@ Tilo changes:
   other platforms, including an explicit host OAuth registration. These changes
   are exercised through the native `tilo-spotify` dependency graph; this vendored
   dependency is excluded from workspace dev-dependency test selection.
+- HTTP refusals read at most 8 KiB for at most one second and retain only an
+  allowlisted error code or a fixed body classification. Unknown response text,
+  headers and credentials are discarded. Status-to-error-kind mapping and
+  refusal behavior remain unchanged; no alternate identity or bearer is tried.
 
 The upstream TLS feature definitions/defaults are retained. Music explicitly
 disables defaults and selects Rustls with native roots; the root workspace

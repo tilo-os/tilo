@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use ui::application::OpenFile;
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx,
-    ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, LaunchInput, ResourceApp, ResourceSurface, SeedCx,
+    SurfaceCx, ViewCx,
 };
 use ui::headless::FrameHarness;
 use ui::permissions::UserId;
@@ -28,6 +28,16 @@ impl ResourceApp for NotesShell {
     const ICON: Option<&'static str> = Some("notes");
     const OPENS: &'static [&'static str] = &["text/markdown", "text/x-markdown"];
     const ARGUMENTS: usize = 1;
+    /// One notebook per room, not one per window. A notebook is a
+    /// collection every window of Notes in the room shows (the sidebar is
+    /// its pages), so a new window, or Notes reopened after its windows
+    /// closed, must show the pages already written there: with a record
+    /// per window each new window started on an empty notebook, and the
+    /// pages came back only by restoring the very window that wrote them.
+    /// A room is the unit of collaboration, so its collaborators share the
+    /// notebook too. Notes from before this keep their per-window records;
+    /// the room's notebook adopts them when it is created ([`Self::seed`]).
+    const ROOM_RECORD: bool = true;
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
         // `present` installs the framework's workspace before the first frame.
@@ -73,6 +83,16 @@ impl ResourceApp for NotesShell {
                 note: Some(crate::notebook::page_id(page)),
             }),
         ]
+    }
+
+    /// The room's notebook starts with the pages of the notebooks Notes
+    /// kept per window before it kept one per room, on this device, in
+    /// record order ([`crate::adopt`]). Those records are left as they were.
+    fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Notebook>> {
+        crate::adopt::adoption(
+            &cx.window_records(),
+            cx.host().and_then(ui::application::HostContext::content),
+        )
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -136,7 +156,7 @@ impl ResourceSurface<Notebook, NotesEffect> for NotesApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Notebook>) {
-        self.attach_framework(cx.dispatcher(), cx.actions());
+        self.attach_framework(cx.dispatcher(), cx.actions(), cx.live());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {

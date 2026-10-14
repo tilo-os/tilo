@@ -1478,6 +1478,59 @@ fn validate_resource_range_binding(
     Ok(())
 }
 
+/// The checks every published surface passes, whichever request carried it:
+/// addresses non-empty, unique and separator-free, kinds and labels present,
+/// contracts and parameters valid, resource views consistent.
+fn validate_published_surface(
+    rows: Vec<PublishedAction>,
+) -> Result<Vec<PublishedAction>, capnp::Error> {
+    let mut seen = std::collections::HashSet::with_capacity(rows.len());
+    let mut actions = Vec::with_capacity(rows.len());
+    for published in rows {
+        if published.resource.is_empty()
+            || published.action.is_empty()
+            || published.resource.contains(tilo_actions::KEY_SEP)
+            || published.action.contains(tilo_actions::KEY_SEP)
+            || !seen.insert((published.resource.clone(), published.action.clone()))
+        {
+            return Err(capnp::Error::failed(
+                "exported action addresses must be non-empty, unique, and contain no separator"
+                    .into(),
+            ));
+        }
+        if published.resource_kind.trim().is_empty()
+            || published.resource_label.trim().is_empty()
+            || published.action_label.trim().is_empty()
+        {
+            return Err(capnp::Error::failed(
+                "exported actions require non-empty kind and labels".into(),
+            ));
+        }
+        if let Some(reason) = published.contract.validate_declaration().into_iter().next() {
+            return Err(capnp::Error::failed(format!(
+                "invalid exported action contract: {reason}"
+            )));
+        }
+        let mut parameter_names = std::collections::HashSet::new();
+        for parameter in &published.params {
+            if !parameter_names.insert(parameter.name.as_ref()) {
+                return Err(capnp::Error::failed(
+                    "exported action parameter names must be unique".into(),
+                ));
+            }
+            if let Some(reason) = parameter.validate_declaration().into_iter().next() {
+                return Err(capnp::Error::failed(format!(
+                    "invalid exported action parameter `{}`: {reason}",
+                    parameter.name
+                )));
+            }
+        }
+        actions.push(published);
+    }
+    validate_resource_view_descriptors(&actions)?;
+    Ok(actions)
+}
+
 /// Recheck the resource-view invariants after decoding an untrusted action
 /// surface. A view with a mount must carry that action in the same atomic
 /// publication/page so the broker can prove the binding before exposing it.
@@ -3198,6 +3251,9 @@ pub struct CapnpBrokerState {
     certificate_authority: std::sync::OnceLock<Arc<dyn super::peer_actions::CertificateAuthority>>,
     /// Latest complete action surface per live connection.
     surfaces: Mutex<HashMap<u64, PublishedSurface>>,
+    /// Each connection's surface as `publishActionSurface` deltas built it:
+    /// the shapes and bindings the next delta applies to.
+    surface_tables: Mutex<HashMap<u64, runtime_collab::SurfaceTable>>,
     /// Monotonic generation for shell-side retained action projections.
     /// Every change to a published surface moves it; a change to an
     /// application's invocation stream notifies its receivers without
@@ -3256,6 +3312,10 @@ pub struct CapnpBrokerState {
     // Retain result authorization even when the host has no durable journal.
     // Entries share the completed invocation cache's bounded lifetime.
     checkpoint_jobs: Mutex<HashMap<u64, (String, String, tilo_actions::ActionContract)>>,
+    /// Jobs whose action's contract declares untrusted content, so every
+    /// observation of them says so. They share the completed invocation
+    /// cache's bounded lifetime.
+    untrusted_jobs: Mutex<std::collections::HashSet<u64>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     /// Confirmations people gave on their own device for an invocation
     /// someone acting for them makes; see [`Self::witness_confirmation`].
@@ -3448,6 +3508,7 @@ impl CapnpBrokerState {
         clear!(self.host_workers);
         clear!(self.channels);
         clear!(self.surfaces);
+        clear!(self.surface_tables);
         clear!(self.action_directory_roots);
         clear!(self.native_checkouts);
         clear!(self.invocation_subscribers);
@@ -3731,6 +3792,9 @@ impl CapnpBrokerState {
                 if let Ok(mut checkpoints) = self.checkpoint_jobs.lock() {
                     checkpoints.remove(&oldest);
                 }
+                if let Ok(mut untrusted) = self.untrusted_jobs.lock() {
+                    untrusted.remove(&oldest);
+                }
             }
         }
     }
@@ -4005,6 +4069,7 @@ impl CapnpBrokerState {
                     .or_else(|| services.native_certificates.clone())
                     .map_or_else(std::sync::OnceLock::new, std::sync::OnceLock::from),
                 surfaces: Mutex::new(HashMap::new()),
+                surface_tables: Mutex::new(HashMap::new()),
                 surface_changes: tokio::sync::watch::Sender::new(0),
                 launchable: launchable::LaunchableCatalogue::new(),
                 action_directory_bridge: ActionDirectoryRequestQueue {
@@ -4040,6 +4105,7 @@ impl CapnpBrokerState {
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 checkpoint_jobs: Mutex::new(HashMap::new()),
+                untrusted_jobs: Mutex::default(),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 witnessed_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
@@ -4958,38 +5024,7 @@ impl CapnpBrokerState {
             .into_iter()
             .filter_map(|surface| {
                 let provider = (!surface.live).then(|| launchable::launchable_provider(&surface));
-                let actions = surface
-                    .actions
-                    .into_iter()
-                    .map(|action| {
-                        let input = match action.input {
-                            PublishedInput::None => serde_json::json!({"kind": "none"}),
-                            PublishedInput::Text {
-                                prompt,
-                                placeholder,
-                                wants_content,
-                            } => serde_json::json!({
-                                "kind": "text",
-                                "prompt": prompt,
-                                "placeholder": placeholder,
-                                "wants_content": wants_content,
-                            }),
-                        };
-                        serde_json::json!({
-                            "resource": action.resource,
-                            "action": action.action,
-                            "resource_kind": action.resource_kind,
-                            "resource_label": action.resource_label,
-                            "action_label": action.action_label,
-                            "description": action.description,
-                            "operation_kind": action.operation_kind,
-                            "params": action.params,
-                            "contract": action.contract,
-                            "input": input,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                (!actions.is_empty()).then(|| {
+                (!surface.actions.is_empty()).then(|| {
                     serde_json::json!({
                         "peer_id": surface.peer_id,
                         "provider": provider,
@@ -4997,7 +5032,7 @@ impl CapnpBrokerState {
                         "cluster_id": surface.route.cluster_id,
                         "record_id": surface.route.record_id,
                         "live": surface.live,
-                        "actions": actions,
+                        "actions": surface.actions,
                     })
                 })
             })
@@ -5012,17 +5047,21 @@ impl CapnpBrokerState {
                 "cluster_id": cluster_id,
                 "record_id": "",
                 "live": true,
-                "actions": [{
-                    "resource": format!("app.{package_id}"),
-                    "action": "open",
-                    "resource_kind": "applications.app",
-                    "resource_label": display_name,
-                    "action_label": format!("Open {display_name}"),
-                    "description": "Launch this application into the current workspace",
-                    "operation_kind": tilo_actions::OperationKind::Effect,
-                    "params": [],
-                    "contract": tilo_actions::ActionContract::default(),
-                    "input": {"kind": "none"},
+                "actions": [PublishedAction {
+                    resource: format!("app.{package_id}"),
+                    semantic_identity: None,
+                    action: "open".into(),
+                    resource_kind: "applications.app".into(),
+                    action_label: format!("Open {display_name}"),
+                    resource_label: display_name,
+                    description: Some(
+                        "Launch this application into the current workspace".into(),
+                    ),
+                    operation_kind: tilo_actions::OperationKind::Effect,
+                    params: Vec::new(),
+                    contract: tilo_actions::ActionContract::default(),
+                    view: None,
+                    input: PublishedInput::None,
                 }],
             }));
         }
@@ -5647,6 +5686,12 @@ impl CapnpBrokerState {
                     ),
                 );
         }
+        if offered.1.contract.carries_untrusted_content() {
+            self.untrusted_jobs
+                .lock()
+                .map_err(|_| "untrusted job registry unavailable")?
+                .insert(id);
+        }
         self.spend_once_grants(&offered.0.route.cluster_id, &spent);
         // Keep acceptance before an immediately completing application's first
         // update. Sending to the unbounded app queue and bounded observation
@@ -6016,6 +6061,13 @@ impl CapnpBrokerState {
             witnessed.remove(token);
         }
         matches
+    }
+
+    /// Whether job `id`'s action declares untrusted content.
+    pub fn untrusted_job(&self, id: u64) -> bool {
+        self.untrusted_jobs
+            .lock()
+            .is_ok_and(|untrusted| untrusted.contains(&id))
     }
 
     pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
@@ -6552,6 +6604,9 @@ impl CapnpBrokerState {
             realtime.disconnect(peer_id);
         }
         self.disconnect_file_transfers(peer_id);
+        if let Ok(mut tables) = self.surface_tables.lock() {
+            tables.remove(&peer_id);
+        }
         if let Ok(mut surfaces) = self.surfaces.lock()
             && surfaces.remove(&peer_id).is_some()
         {
@@ -6577,6 +6632,14 @@ impl CapnpBrokerState {
             subscribers.remove(&peer_id);
         }
         self.disconnect_native_task_stream(peer_id);
+        self.fail_pending_invocations_of(peer_id);
+        self.publish_action_catalogue();
+    }
+
+    /// Fail every invocation still pending on `peer_id`, which went away
+    /// before completing it: an unjournaled one fails, a journaled one's
+    /// outcome is unknown.
+    fn fail_pending_invocations_of(&self, peer_id: u64) {
         if let Ok(mut pending) = self.pending_invocations.lock() {
             let ids = pending
                 .iter()
@@ -6633,7 +6696,6 @@ impl CapnpBrokerState {
                 }
             }
         }
-        self.publish_action_catalogue();
     }
 
     fn disconnect_file_transfers(&self, peer_id: u64) {
@@ -9549,54 +9611,11 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "publishActions appId must match the certified connection route".into(),
                 ));
             }
-            let rows = request.get_actions()?;
-            let mut actions = Vec::with_capacity(rows.len() as usize);
-            for row in rows {
-                let published = runtime_collab::decode_exported_action(row)?;
-                if published.resource.is_empty()
-                    || published.action.is_empty()
-                    || published.resource.contains(tilo_actions::KEY_SEP)
-                    || published.action.contains(tilo_actions::KEY_SEP)
-                    || actions.iter().any(|candidate: &PublishedAction| {
-                        candidate.resource == published.resource
-                            && candidate.action == published.action
-                    })
-                {
-                    return Err(capnp::Error::failed(
-                        "exported action addresses must be non-empty, unique, and contain no separator"
-                            .into(),
-                    ));
-                }
-                if published.resource_kind.trim().is_empty()
-                    || published.resource_label.trim().is_empty()
-                    || published.action_label.trim().is_empty()
-                {
-                    return Err(capnp::Error::failed(
-                        "exported actions require non-empty kind and labels".into(),
-                    ));
-                }
-                if let Some(reason) = published.contract.validate_declaration().into_iter().next() {
-                    return Err(capnp::Error::failed(format!(
-                        "invalid exported action contract: {reason}"
-                    )));
-                }
-                let mut parameter_names = std::collections::HashSet::new();
-                for parameter in &published.params {
-                    if !parameter_names.insert(parameter.name.as_ref()) {
-                        return Err(capnp::Error::failed(
-                            "exported action parameter names must be unique".into(),
-                        ));
-                    }
-                    if let Some(reason) = parameter.validate_declaration().into_iter().next() {
-                        return Err(capnp::Error::failed(format!(
-                            "invalid exported action parameter `{}`: {reason}",
-                            parameter.name
-                        )));
-                    }
-                }
-                actions.push(published);
+            let mut rows = Vec::with_capacity(request.get_actions()?.len() as usize);
+            for row in request.get_actions()? {
+                rows.push(runtime_collab::decode_exported_action(row)?);
             }
-            validate_resource_view_descriptors(&actions)?;
+            let actions = validate_published_surface(rows)?;
             let surface = PublishedSurface {
                 peer_id,
                 app_id,
@@ -9604,6 +9623,72 @@ impl channel_handle::Server for CapnpChannelHandle {
                 actions,
                 live: true,
             };
+            // A whole surface supersedes any delta state: a later delta
+            // without `reset` finds no shapes and is refused, so the
+            // publisher resets.
+            if let Ok(mut tables) = state.surface_tables.lock() {
+                tables.remove(&peer_id);
+            }
+            state.launchable.retain(&surface);
+            state
+                .surfaces
+                .lock()
+                .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
+                .insert(peer_id, surface);
+            state.surfaces_changed();
+            state.publish_action_catalogue();
+            Ok(())
+        })
+    }
+
+    fn publish_action_surface(
+        self: Rc<Self>,
+        params: channel_handle::PublishActionSurfaceParams,
+        _results: channel_handle::PublishActionSurfaceResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        let route = self.route();
+        Promise::from_future(async move {
+            let request = params.get()?;
+            let app_id = request.get_app_id()?.to_str()?.to_owned();
+            if route.app_id.is_empty() || app_id != route.app_id {
+                return Err(capnp::Error::failed(
+                    "publishActionSurface appId must match the certified connection route".into(),
+                ));
+            }
+            let delta = runtime_collab::decode_surface_delta(request)?;
+            // Apply to a copy: a delta that does not apply, or whose result
+            // is not a valid surface, changes nothing.
+            let mut table = state
+                .surface_tables
+                .lock()
+                .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
+                .get(&peer_id)
+                .cloned()
+                .unwrap_or_default();
+            table.apply(&delta).map_err(|reason| {
+                capnp::Error::failed(format!("action surface delta refused: {reason}"))
+            })?;
+            let actions = validate_published_surface(table.actions())?;
+            let surface = PublishedSurface {
+                peer_id,
+                app_id,
+                route,
+                actions,
+                live: true,
+            };
+            state
+                .surface_tables
+                .lock()
+                .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
+                .insert(peer_id, table);
             state.launchable.retain(&surface);
             state
                 .surfaces

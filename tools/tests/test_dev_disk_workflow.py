@@ -340,7 +340,7 @@ class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
             self.assertIn("BASE_REPOSITORY: registry.tilo.so/tilo/tilo-ci", publish)
             self.assertIn("BASE_TRUST: integration", publish)
             self.assertIn("DEV_TAG: ${{ steps.release-mode.outputs.dev-series }}-ci", publish)
-            self.assertIn("DISK_TOOLING_REVISION: ${{ github.sha }}", publish)
+            self.assertIn("DISK_TOOLING_REVISION: ${{ env.TILO_IMAGE_SOURCE }}", publish)
             self.assertLess(
                 self.lane.index("- name: Reseal, install, boot, and stage the verified image"),
                 self.lane.index("- name: Publish this architecture's dev image and disk"),
@@ -352,7 +352,7 @@ class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
             self.assertIn('ref="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"', push)
             self.assertNotRegex(push, r"cosign (?:sign|attest)")
             mode = step(self.lane, "Select build, validation, or publication mode")
-            self.assertIn('series="main-${GITHUB_SHA:0:7}"', mode)
+            self.assertIn('series="main-${TILO_IMAGE_SOURCE:0:7}"', mode)
             self.assertIn('echo "dev-channel=$([[ $GITHUB_REF == refs/heads/main ]]', mode)
         with self.subTest(phase='publication requests its architecture from the signed child'):
             request = step(self.lane, "Request this architecture's dev disk from the signed child")

@@ -103,6 +103,25 @@ pub enum RelayError {
     ProtocolRegistration(String),
 }
 
+/// What an embedder plugs into a relay it starts.
+struct Planes {
+    /// Answers remote-action frames addressed to this host, see
+    /// [`Relay::start_with_app_serving`].
+    app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    /// Classifies co-edit bodies, see [`Relay::start_with_shell_payloads`].
+    shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
+}
+
+impl Planes {
+    /// The desktop's payload adapter, with `app_serving` if any.
+    fn desktop(app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>) -> Self {
+        Self {
+            app_serving,
+            shell_payloads: crate::payloads::neighbour(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayStartupMode {
     CertifiedHost,
@@ -117,11 +136,17 @@ pub(crate) struct GovernedAccessWriter {
     handshake_trust: HandshakeTrust,
     update: Arc<AsyncMutex<()>>,
     state_root: PathBuf,
+    shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
 }
 
 impl GovernedAccessWriter {
     pub(crate) fn state_root(&self) -> &std::path::Path {
         &self.state_root
+    }
+
+    /// The adapter the relay opens workspaces with.
+    pub(crate) const fn shell_payloads(&self) -> &Arc<dyn crate::payloads::ShellPayloads> {
+        &self.shell_payloads
     }
 
     /// Replace the standing of each member device of the room.
@@ -134,6 +159,7 @@ impl GovernedAccessWriter {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
             self.state_root.clone(),
+            &self.shell_payloads,
             workspace_id,
             pinned,
             crate::room_access::AdmissionMode::Explicit,
@@ -163,6 +189,7 @@ impl GovernedAccessWriter {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
             self.state_root.clone(),
+            &self.shell_payloads,
             workspace_id,
             pinned,
             crate::room_access::AdmissionMode::Explicit,
@@ -313,6 +340,8 @@ pub struct Relay {
     handshake_trust: HandshakeTrust,
     governed_access_update: Arc<AsyncMutex<()>>,
     state_root: PathBuf,
+    /// Classifies co-edit bodies for every workspace this relay opens.
+    shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
     /// The rooms this relay governs; absent when it hosts no room authority.
     rooms: Option<crate::rooms::Rooms>,
     /// Exact server-side room ceiling for native interactive startup. A
@@ -423,7 +452,7 @@ impl Relay {
             None,
             Vec::new(),
             RelayStartupMode::CertifiedHost,
-            None,
+            Planes::desktop(None),
             Arc::new(tilo_clock::SystemClock),
         ))
         .await
@@ -457,7 +486,7 @@ impl Relay {
             Some(endpoint),
             protocols,
             RelayStartupMode::CertifiedHost,
-            None,
+            Planes::desktop(None),
             Arc::new(tilo_clock::SystemClock),
         ))
         .await
@@ -486,7 +515,7 @@ impl Relay {
             Some(endpoint),
             protocols,
             RelayStartupMode::NativeInteractiveWorkspaceOwner,
-            None,
+            Planes::desktop(None),
             Arc::new(tilo_clock::SystemClock),
         ))
         .await
@@ -540,7 +569,7 @@ impl Relay {
             None,
             Vec::new(),
             RelayStartupMode::CertifiedHost,
-            app_serving,
+            Planes::desktop(app_serving),
             Arc::new(tilo_clock::SystemClock),
         ))
         .await
@@ -563,7 +592,41 @@ impl Relay {
             None,
             Vec::new(),
             RelayStartupMode::CertifiedHost,
-            app_serving,
+            Planes::desktop(app_serving),
+            Arc::new(tilo_clock::SystemClock),
+        ))
+        .await
+    }
+
+    /// [`Relay::start`], asking `shell_payloads` what the host may know
+    /// about opaque co-edit bodies instead of the desktop's
+    /// [`NeighbourPayloads`](crate::payloads::NeighbourPayloads).
+    ///
+    /// The adapter decides document compaction, retained-checkpoint
+    /// replacement, continuity evidence, surface admission and the live
+    /// checkpoint gate for every workspace this relay opens. Data retained
+    /// under one adapter must be served by the same one: its verdicts are
+    /// reproduced from the stored bytes after a restart.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Relay::start`].
+    pub async fn start_with_shell_payloads(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
+    ) -> Result<Self, RelayError> {
+        Box::pin(Self::start_inner(
+            cfg,
+            identity,
+            None,
+            None,
+            Vec::new(),
+            RelayStartupMode::CertifiedHost,
+            Planes {
+                app_serving: None,
+                shell_payloads,
+            },
             Arc::new(tilo_clock::SystemClock),
         ))
         .await
@@ -587,7 +650,7 @@ impl Relay {
             None,
             Vec::new(),
             RelayStartupMode::CertifiedHost,
-            None,
+            Planes::desktop(None),
             replica_clock,
         ))
         .await
@@ -607,9 +670,13 @@ impl Relay {
         endpoint: Option<Endpoint>,
         additional_protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
         startup_mode: RelayStartupMode,
-        app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+        planes: Planes,
         replica_clock: Arc<dyn Clock>,
     ) -> Result<Self, RelayError> {
+        let Planes {
+            app_serving,
+            shell_payloads,
+        } = planes;
         validate_additional_protocols(&additional_protocols)?;
         let operator_trust_policy = cfg.trust_policy.clone();
         match startup_mode {
@@ -693,6 +760,7 @@ impl Relay {
             };
         let workspaces = build_workspace_registry(
             &cfg,
+            &shell_payloads,
             startup_mode == RelayStartupMode::NativeInteractiveWorkspaceOwner,
         )?;
         if startup_mode == RelayStartupMode::NativeInteractiveWorkspaceOwner {
@@ -725,6 +793,40 @@ impl Relay {
         );
         handshake_trust.refresh(&workspaces).await;
         let live_trust_policy = handshake_trust.live_policy.clone();
+        // A certified host governs the rooms it creates, unless its embedder
+        // serves workspace joining itself. It answers their governance as
+        // actions itself, beside whatever apps its embedder serves.
+        let governs_rooms = startup_mode == RelayStartupMode::CertifiedHost
+            && !handshake_trust.allow_any
+            && !additional_protocols.iter().any(|(alpn, _)| {
+                alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
+                    || alpn.as_slice() == crate::rooms::ROOM_ADMIN_ALPN
+            });
+        let governance = governs_rooms.then(crate::rooms::HostRoomActions::new);
+        let app_serving = match &governance {
+            Some(governance) => Some(Arc::new(crate::rooms::GovernedPlane {
+                governance: governance.clone(),
+                apps: app_serving,
+            })
+                as Arc<dyn crate::app_serving::AppServingPlane>),
+            None => app_serving,
+        };
+        // A certified host routes its owner's compute jobs, so it answers
+        // which of the owner's devices a job should run on, beside whatever
+        // else it answers. It serves no apps by doing so: `app_serving`
+        // above is unchanged.
+        let app_serving = if startup_mode == RelayStartupMode::CertifiedHost {
+            Some(Arc::new(crate::compute_actions::ComputePlane {
+                compute: crate::compute_actions::ComputeActions::new(
+                    identity.user_public_key,
+                    workspaces.clone(),
+                ),
+                rest: app_serving,
+            })
+                as Arc<dyn crate::app_serving::AppServingPlane>)
+        } else {
+            app_serving
+        };
         let handler = RelayProtocol {
             protocol: crate::peer::SessionProtocol::V1,
             workspaces: workspaces.clone(),
@@ -735,6 +837,7 @@ impl Relay {
                 && matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser))
             .then(|| WorkspaceAutobind {
                 state_root: cfg.state_root.clone(),
+                shell_payloads: shell_payloads.clone(),
             }),
             app_serving,
             live_bridge: Arc::default(),
@@ -742,6 +845,7 @@ impl Relay {
             compactor: crate::compaction::Compactor::new(
                 identity.device_signing_key.clone(),
                 identity.device_cert.clone(),
+                shell_payloads.clone(),
             ),
             member_limits: cfg
                 .member_limits
@@ -759,6 +863,7 @@ impl Relay {
                 && matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser))
             .then(|| WorkspaceAutobind {
                 state_root: cfg.state_root.clone(),
+                shell_payloads: shell_payloads.clone(),
             }),
             agents: handler.agents.clone(),
         };
@@ -788,14 +893,7 @@ impl Relay {
             node_session: Arc::default(),
         });
         let governed_access_update = Arc::new(AsyncMutex::new(()));
-        // A certified host governs the rooms it creates, unless its embedder
-        // serves workspace joining itself.
-        let rooms = if startup_mode == RelayStartupMode::CertifiedHost
-            && !handshake_trust.allow_any
-            && !additional_protocols.iter().any(|(alpn, _)| {
-                alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
-                    || alpn.as_slice() == crate::rooms::ROOM_ADMIN_ALPN
-            }) {
+        let rooms = if governs_rooms {
             Some(
                 crate::rooms::Rooms::open(
                     crate::rooms::RoomHost {
@@ -805,6 +903,7 @@ impl Relay {
                             handshake_trust: handshake_trust.clone(),
                             update: Arc::clone(&governed_access_update),
                             state_root: cfg.state_root.clone(),
+                            shell_payloads: shell_payloads.clone(),
                         },
                         records: crate::room_records::RoomRecords::new(
                             workspaces.clone(),
@@ -833,6 +932,9 @@ impl Relay {
         } else {
             None
         };
+        if let (Some(governance), Some(rooms)) = (&governance, &rooms) {
+            governance.attach(rooms.clone());
+        }
         let mut router = Router::builder(endpoint.clone())
             .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
@@ -955,6 +1057,7 @@ impl Relay {
             handshake_trust,
             governed_access_update,
             state_root: cfg.state_root,
+            shell_payloads,
             interactive_workspace_id,
             interactive_owner_trust,
             rooms,
@@ -1127,6 +1230,7 @@ impl Relay {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
             state_root,
+            &self.shell_payloads,
             workspace_id,
             pinned,
             crate::room_access::AdmissionMode::Explicit,
@@ -1183,6 +1287,7 @@ impl Relay {
             handshake_trust: self.handshake_trust.clone(),
             update: Arc::clone(&self.governed_access_update),
             state_root: self.state_root.clone(),
+            shell_payloads: self.shell_payloads.clone(),
         }
     }
 
@@ -1479,11 +1584,12 @@ fn validate_additional_alpns<'a>(
 /// through.
 fn build_workspace_registry(
     cfg: &RelayConfig,
+    shell_payloads: &Arc<dyn crate::payloads::ShellPayloads>,
     require_durable_snapshot: bool,
 ) -> Result<WorkspaceRegistry, RelayError> {
     let mut wsmap: HashMap<u64, SharedWorkspace> = HashMap::new();
     for binding in &cfg.workspaces {
-        let runtime = open_bound_workspace(cfg, binding, require_durable_snapshot)?;
+        let runtime = open_bound_workspace(cfg, binding, shell_payloads, require_durable_snapshot)?;
         wsmap.insert(binding.id, Arc::new(AsyncMutex::new(runtime)));
     }
     Ok(Arc::new(AsyncMutex::new(wsmap)))
@@ -1493,6 +1599,7 @@ fn build_workspace_registry(
 fn open_bound_workspace(
     cfg: &RelayConfig,
     binding: &WorkspaceBinding,
+    shell_payloads: &Arc<dyn crate::payloads::ShellPayloads>,
     require_durable_snapshot: bool,
 ) -> Result<WorkspaceRuntime, RelayError> {
     let mut rt = if require_durable_snapshot {
@@ -1501,6 +1608,7 @@ fn open_bound_workspace(
             binding.id,
             binding.pin,
             Membership::default(),
+            shell_payloads.clone(),
         )
         .map_err(|error| {
             RelayError::Identity(format!(
@@ -1508,11 +1616,12 @@ fn open_bound_workspace(
             ))
         })?
     } else {
-        WorkspaceRuntime::open(
+        WorkspaceRuntime::open_with_payloads(
             &cfg.state_root,
             binding.id,
             binding.pin,
             Membership::default(),
+            shell_payloads.clone(),
         )?
     };
     if let Some(authority) = &binding.shell_authority {
@@ -2508,8 +2617,8 @@ async fn handle_conn(
     mut recv: RecvStream,
 ) -> Result<(), RelayError> {
     ctx.metrics.inc_conns_accepted();
-    // 1. The handshake, under the live policy: the owner and every user the
-    // relay currently admits.
+    // 1. The bounded shared handshake, under the live policy: the owner and
+    // every user the relay currently admits.
     let client_peer = match ctx
         .identity
         .authenticate(
@@ -3625,11 +3734,13 @@ mod tests {
                 workspaces: Vec::new(),
                 ..RelayConfig::default()
             };
-            let workspaces = build_workspace_registry(&config, false).unwrap();
+            let workspaces =
+                build_workspace_registry(&config, &crate::payloads::neighbour(), false).unwrap();
             get_or_autobind_workspace(
                 &workspaces,
                 Some(&WorkspaceAutobind {
                     state_root: config.state_root.clone(),
+                    shell_payloads: crate::payloads::neighbour(),
                 }),
                 42,
             )
@@ -3739,11 +3850,13 @@ mod tests {
                 workspaces: Vec::new(),
                 ..RelayConfig::default()
             };
-            let workspaces = build_workspace_registry(&config, false).unwrap();
+            let workspaces =
+                build_workspace_registry(&config, &crate::payloads::neighbour(), false).unwrap();
             get_or_autobind_workspace(
                 &workspaces,
                 Some(&WorkspaceAutobind {
                     state_root: config.state_root.clone(),
+                    shell_payloads: crate::payloads::neighbour(),
                 }),
                 42,
             )
@@ -3863,11 +3976,13 @@ mod tests {
                 workspaces: Vec::new(),
                 ..RelayConfig::default()
             };
-            let workspaces = build_workspace_registry(&config, false).unwrap();
+            let workspaces =
+                build_workspace_registry(&config, &crate::payloads::neighbour(), false).unwrap();
             get_or_autobind_workspace(
                 &workspaces,
                 Some(&WorkspaceAutobind {
                     state_root: config.state_root.clone(),
+                    shell_payloads: crate::payloads::neighbour(),
                 }),
                 42,
             )

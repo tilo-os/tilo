@@ -72,6 +72,16 @@ pub struct PersistentArgs {
         value_parser = crate::room_seed::channel_name
     )]
     pub chat_channels: Vec<String>,
+    /// A strip, by name, the room's shared desktop has in its first
+    /// workspace; repeatable, in order. Added at start where missing; the
+    /// strips people made are kept.
+    #[arg(
+        long = "strip",
+        value_name = "NAME",
+        requires = "persistent",
+        value_parser = crate::room_strips::strip_name
+    )]
+    pub strips: Vec<String>,
     /// The room's owner root: a file of 64 hex characters (the Ed25519
     /// seed), mounted from the operator's encrypted secrets.
     #[arg(long = "root-file", value_name = "PATH")]
@@ -754,6 +764,26 @@ pub(crate) async fn settle_chat(
         .map_err(|error| anyhow::anyhow!("name the chat and open its channels: {error}"))
 }
 
+/// Give the room's shared desktop the operator's `strips` where missing.
+pub(crate) async fn settle_strips(
+    rooms: &Rooms,
+    room: &str,
+    cert: &DeviceCert,
+    shown: &str,
+    strips: &[String],
+) -> anyhow::Result<()> {
+    if strips.is_empty() {
+        return Ok(());
+    }
+    rooms
+        .author_room_record(room, cert, crate::room_strips::DESKTOP, |doc| {
+            crate::room_strips::settle_strips(doc, room, shown, strips)
+        })
+        .await
+        .map(drop)
+        .map_err(|error| anyhow::anyhow!("give the shared desktop its strips: {error}"))
+}
+
 /// Snapshot each seeded app with starting content under
 /// `<state>/snapshots/<app>/`, then reset it to that content. Chat has no
 /// starting content and is never touched.
@@ -871,7 +901,7 @@ pub(crate) async fn run(
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     )?;
     let config = tilo_relay::RelayConfig {
-        state_root: state.join("relay"),
+        state_root: tilo_relay_protocol::metrics::room_relay_root(&state),
         identity_root: state.join("identity"),
         member_limits: persistent.member_limits.then(Default::default),
         ..Default::default()
@@ -916,6 +946,7 @@ pub(crate) async fn run(
         (&shown, &persistent.chat_channels),
     )
     .await?;
+    settle_strips(&rooms, &room, &host_cert, &shown, &persistent.strips).await?;
     ensure_guest_policy(&rooms, &room, &host_cert).await?;
     let web = hosted
         .relay

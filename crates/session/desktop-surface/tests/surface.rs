@@ -787,6 +787,57 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
     assert!((pan_offset(&handle) - before).abs() < 0.01);
 }
 
+/// A browser page presents on animation frames, and a trackpad's wheel
+/// events outpace them: each event pans the strip at once, and the next
+/// frame moves the laid-out windows there without solving any size.
+#[test]
+fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
+    let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
+    driver.set_coalesce_wheel_frames(true);
+    let first_window_x = |driver: &ui::headless::FrameHarness| {
+        find(&driver.inspection().root, "WindowGroup").unwrap().rect[0]
+    };
+    let drawn = first_window_x(&driver);
+    let start = pan_offset(&handle);
+    let frames = driver.relayout_frames();
+    for _ in 0..3 {
+        driver.send_host_event(&ui::winit::event::WindowEvent::MouseWheel {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+                ui::winit::dpi::PhysicalPosition::new(-10.0, 0.0),
+            ),
+            phase: ui::winit::event::TouchPhase::Moved,
+        });
+    }
+    assert_eq!(driver.relayout_frames(), frames, "a wheel lays nothing out");
+    assert!(driver.frame_schedule().queued_work, "it asks for a frame");
+
+    assert!(driver.poll_frame().unwrap());
+    assert_eq!(
+        driver.relayout_frames(),
+        frames + 1,
+        "one frame for all three"
+    );
+    let stats = driver.last_relayout();
+    assert!(
+        !stats.rebuilt && !stats.measured,
+        "a pan only re-applies positions: {stats:?}, asked by {:?}",
+        driver.layout_measure_requesters()
+    );
+    assert!(
+        (pan_offset(&handle) - start - 30.0).abs() < 0.01,
+        "each wheel panned the strip 1:1"
+    );
+    assert!(
+        (drawn - first_window_x(&driver) - 30.0).abs() < 0.01,
+        "the windows are laid out where the strip panned to"
+    );
+    assert!(
+        !driver.frame_schedule().queued_work,
+        "the frame took the wheels' work"
+    );
+}
+
 #[test]
 fn a_trackpad_swipe_the_strip_cannot_follow_is_the_apps() {
     let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
@@ -1022,9 +1073,10 @@ fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
     driver.relayout();
     let entries = handle.snapshot("g", vec![]).entries;
     driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
-    // A mouse tilt wheel held sideways: one run of line-delta clicks.
-    for dx in [0.3, 1.0, 2.0, 1.0, 0.5] {
-        driver.send(&ui::synthetic_input::mouse_wheel(dx, 0.0));
+    // A mouse tilt wheel held to the right: one run of line-delta clicks,
+    // which winit reports with negative x.
+    for rightward in [0.3, 1.0, 2.0, 1.0, 0.5] {
+        driver.send(&ui::synthetic_input::mouse_wheel(-rightward, 0.0));
     }
     driver.relayout();
     assert_eq!(
@@ -1034,7 +1086,7 @@ fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
     );
     for _ in 0..3 {
         std::thread::sleep(std::time::Duration::from_millis(250));
-        driver.send(&ui::synthetic_input::mouse_wheel(1.0, 0.0));
+        driver.send(&ui::synthetic_input::mouse_wheel(-1.0, 0.0));
         driver.relayout();
     }
     assert_eq!(
@@ -1405,4 +1457,65 @@ fn published_selection_prefers_keyboard_focus_inside_the_window() {
     assert_eq!(published_selection(own.clone(), &window), own);
     assert_eq!(published_selection(own.clone(), &[]), own);
     assert_eq!(published_selection(None, &[]), None);
+}
+
+/// A window's new-tab control asks which application to open, as the
+/// native shell's does, and the one chosen opens as a tab of that window.
+#[test]
+fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
+    // Mounted as its own type, so the test can find the control to press.
+    let mut minter = IdMinter::new(7);
+    let tabs = vec![tab(&mut minter, "Notes"), tab(&mut minter, "Scratch")];
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1200, 800),
+        ui::Theme::dark(),
+    );
+    driver.set_caller_palette_enabled(false);
+    driver.relayout();
+    let before = handle.snapshot("g", vec![]);
+    let group = before.active.clone().unwrap().group;
+    let windows = |snapshot: &tilo_desktop_surface::navigation::Snapshot| {
+        snapshot
+            .entries
+            .iter()
+            .map(|e| e.route.group.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let plus = driver
+        .root::<DesktopSurface>()
+        .new_tab_rect(group.parse().unwrap())
+        .expect("the focused window offers a new tab");
+    driver.click_at(plus.center().x, plus.center().y);
+    driver.relayout();
+    assert!(handle.search_open(), "the control opens search");
+    assert_eq!(
+        labels(&handle.snapshot("g", vec![])),
+        labels(&before),
+        "nothing opens before an application is chosen"
+    );
+    driver.type_text("sheets");
+    driver.key("Enter");
+    driver.relayout();
+    assert!(!handle.search_open());
+    let after = handle.snapshot("g", vec![]);
+    let active = after.active.clone().unwrap();
+    let opened = after.entries.iter().find(|e| e.route == active).unwrap();
+    assert_eq!(opened.label, "sheets", "the chosen app is focused");
+    assert_eq!(active.group, group, "it opens as a tab of that window");
+    assert_eq!(windows(&after), windows(&before), "no window is added");
+
+    // Search opened otherwise opens an application as its own window.
+    handle.toggle_search();
+    driver.relayout();
+    driver.type_text("writer");
+    driver.key("Enter");
+    driver.relayout();
+    let last = handle.snapshot("g", vec![]);
+    assert_ne!(last.active.as_ref().unwrap().group, group);
+    assert_eq!(windows(&last).len(), windows(&before).len() + 1);
 }

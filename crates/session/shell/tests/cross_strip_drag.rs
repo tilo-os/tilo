@@ -57,6 +57,7 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
             active_tab: a_tabs[0],
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     };
     let strip_b = Strip {
@@ -68,6 +69,7 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
             active_tab: b_tabs[0],
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     };
     let ws = Workspace {

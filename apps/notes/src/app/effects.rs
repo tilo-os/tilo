@@ -19,9 +19,19 @@ impl NotesApp {
             let document = cx.document().ok_or("the editor document is unavailable")?;
             return Ok(Effected::value(self.editor_observation(&document)));
         }
-        let state = Workspace::of(cx.live().get(), &self.workspace);
+        if let NotesEffect::FindText { text, page } = &effect {
+            let document = cx.document().ok_or("the notebook is unavailable")?;
+            return Ok(Effected::value(actions::find_text(&document, text, *page)?));
+        }
+        let state = Workspace::of(&cx.live().get(), &self.workspace);
         match effect {
-            NotesEffect::InspectEditor => Err("the editor document is unavailable".into()),
+            NotesEffect::InspectEditor | NotesEffect::FindText { .. } => {
+                Err("the editor document is unavailable".into())
+            }
+            NotesEffect::FindPage { title } => Ok(Effected::value(actions::find_pages(
+                &state.data.pages,
+                &title,
+            ))),
             NotesEffect::ImportMarkdownFile => Ok(Self::choose_markdown(cx)),
             NotesEffect::ImportMarkdownContent { title, body } => {
                 let title = title.trim();
@@ -303,17 +313,11 @@ impl NotesApp {
         let request = PickRequest::save("Export Markdown", "Export", &export_name(title))
             .filter(FileFilter::new("Markdown").glob("*.md"))
             .thread_name("notes-export-markdown");
-        Ok(cx.save_file(
-            request,
-            portable.into_bytes(),
-            |app: &mut Self, saved, _| {
-                if saved {
-                    app.transfer_toasts
-                        .push("Note exported", ui::widget::toast::ToastKind::Success);
-                }
+        Ok(
+            cx.save_file(request, portable.into_bytes(), |_: &mut Self, _, _| {
                 Ok(Effected::done())
-            },
-        ))
+            }),
+        )
     }
 
     fn choose_image(page: PageId, cx: &mut Cx) -> Effected {

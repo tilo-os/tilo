@@ -420,6 +420,13 @@ impl DispatchCore {
         ))
     }
 
+    /// Whether the participant may invite people to the room.
+    pub(crate) fn may_invite(&self) -> bool {
+        self.may_scope(&PermissionScope::governance(
+            policy::roles::governance::INVITE,
+        ))
+    }
+
     fn may_scope(&self, scope: &PermissionScope) -> bool {
         match self.permissions.borrow().as_ref() {
             Some(permissions) => permissions.check(scope),
@@ -810,6 +817,40 @@ impl<R: Resource> Dispatcher<R> {
         );
     }
 
+    /// Whether the person at this device may do `effect` at once, as their
+    /// own gesture on the surface: a shortcut, a pointer gesture, a row of
+    /// the surface's own menu, whose arguments the gesture itself supplied
+    /// (the clipboard they paste). Like a keystroke, such a gesture is its
+    /// own confirmation, so a surface told `true` performs the effect
+    /// itself. The confirmation a destructive declaration asks for stays
+    /// with the callers who supply its arguments — the palette, a script,
+    /// an agent — because automation is the same door: under any
+    /// invocation (an invoked action, an effect's handler or completion, a
+    /// dispatcher lent to one) this is `false`, and the surface submits
+    /// the effect ([`Self::effect`]) for the host to check and confirm as
+    /// for any caller. So it is in a past version, and when the
+    /// participant's role does not grant what the declaration needs.
+    pub fn is_own_gesture<E: Effect>(&self, effect: &E) -> bool {
+        if self.core.past
+            || self.core.custody.is_some()
+            || super::effect::acting_for().is_some()
+            || ui_core::invocation_scope::current_invoker().is_some()
+        {
+            return false;
+        }
+        let id = effect.id();
+        E::declarations()
+            .iter()
+            .find(|decl| decl.id == id)
+            .is_some_and(|decl| {
+                self.may(&ActionNeed {
+                    kind: decl.action_kind,
+                    field: None,
+                    privileged: false,
+                })
+            })
+    }
+
     /// Invoke `effect` as the live row `row` offers it
     /// ([`LiveRow::effect`](super::LiveRow::effect)): under the row's
     /// contract, so a confirmation the row asks for (typing the name of the
@@ -892,6 +933,18 @@ impl<R: Resource> Dispatcher<R> {
             ui_core::search::open_search_invocation(request),
             super::effect::acting_for(),
         ));
+    }
+
+    /// Ask for the link to `resource` (this resource or one nested in it,
+    /// such as an item) as a control bound to its `share-link` would: the
+    /// framework copies it to the clipboard and reports it in
+    /// [`Self::landed`], or why there is none in [`Self::refused`]. A link
+    /// grants nothing, so a participant who may only view asks too.
+    pub fn share_link(&self, resource: &str) {
+        self.core.queue_invocation(
+            ActionAddress::new(resource, tilo_resource::share::SHARE_LINK),
+            serde_json::Map::new(),
+        );
     }
 
     /// Invoke an action published on a nested resource, such as one item of

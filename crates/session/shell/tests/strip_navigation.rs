@@ -89,6 +89,7 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
             active_tab: ids[0],
             width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
             maximized: false,
+            focus_history: Vec::new(),
         })
         .collect();
 
@@ -284,11 +285,11 @@ impl Harness {
             .send(&mut self.host, &event);
     }
 
-    /// A horizontally-dominant wheel event over the strip, the way a
-    /// two-finger sideways swipe arrives.
-    fn scroll_horizontally(&mut self, dx: f32) {
+    /// A horizontally-dominant wheel event over the strip, `rightward`
+    /// lines to the right. winit reports a rightward wheel with negative x.
+    fn scroll_horizontally(&mut self, rightward: f32) {
         self.event(&ui::synthetic_input::cursor_moved(600.0, 500.0));
-        self.event(&ui::synthetic_input::mouse_wheel(dx, 0.0));
+        self.event(&ui::synthetic_input::mouse_wheel(-rightward, 0.0));
     }
 
     fn scroll_x(&self) -> f64 {
@@ -368,6 +369,7 @@ fn two_strip_harness() -> (Harness, StripId, StripId, GroupId, Vec<GroupId>) {
             active_tab: 91,
             width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
             maximized: false,
+            focus_history: Vec::new(),
         }],
     });
     tree.desktop.active_group.insert(lower, resident);
@@ -851,7 +853,7 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
         let by_swipe = {
             let mut h = Harness::new();
             for _ in 0..3 {
-                // Positive dx steps forward, matching the chord's direction.
+                // A rightward wheel steps forward, matching the chord's direction.
                 h.scroll_horizontally(4.0);
                 h.tick();
             }
@@ -1382,6 +1384,18 @@ fn magnifier_shortcuts_step_the_zoom_show_it_and_save_it() {
 }
 
 #[test]
+fn a_rightward_wheel_steps_forward_like_super_right() {
+    let mut h = Harness::new();
+    let start = h.active_window();
+    // Winit reports a wheel turned rightward with a negative x, as the
+    // libinput backend maps a tilt to the right.
+    assert!(h.event(&ui::synthetic_input::mouse_wheel(-1.0, 0.0)));
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
+    assert!(h.event(&ui::synthetic_input::mouse_wheel(1.0, 0.0)));
+    assert_eq!(h.active_window(), start, "and leftward steps back");
+}
+
+#[test]
 fn axis_navigation_is_opt_in_and_preserves_tab_selection() {
     let mut h = Harness::new();
     assert!(!h.chrome.borrow().axis_navigation_enabled());
@@ -1565,9 +1579,15 @@ fn axis_gather_stops_old_snap_when_focus_is_already_visible() {
     h.lay_out();
     h.tick();
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+    // Group 0 is already wholly on screen where the old motion left the
+    // strip, so the gather reveals nothing more (a reveal is the least pan
+    // that shows the group) but still cancels the motion toward group 4.
+    let stopped = h.scroll_x();
+    h.tick();
+    h.lay_out();
     assert_eq!(
         h.scroll_x(),
-        0.0,
+        stopped,
         "already-visible gather still cancels old motion"
     );
 }
@@ -1726,4 +1746,29 @@ fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
         before,
         "restore reuses the existing record rather than creating a default"
     );
+}
+
+/// With no strip above, Super+Up maximizes the focused group and Super+Down
+/// restores it; otherwise both stay strip navigation.
+#[test]
+fn super_up_on_the_top_strip_maximizes_and_super_down_restores() {
+    let (mut h, upper, lower, _resident, _groups) = two_strip_harness();
+    let maximized = |h: &mut Harness| {
+        h.host
+            .group_row_mut_for_tests(upper)
+            .expect("the upper strip is live")
+            .groups
+            .iter()
+            .any(|group| group.maximized)
+    };
+    assert_eq!(plane(&h).1, upper, "the harness starts on the top strip");
+    assert!(!maximized(&mut h));
+    h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
+    assert!(maximized(&mut h), "Super+Up maximizes on the top strip");
+    assert_eq!(plane(&h).1, upper);
+    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
+    assert!(!maximized(&mut h), "Super+Down restores a maximized group");
+    assert_eq!(plane(&h).1, upper, "restoring does not change strip");
+    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
+    assert_eq!(plane(&h).1, lower, "Super+Down is strip navigation again");
 }

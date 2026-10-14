@@ -3,10 +3,16 @@
 //!
 //! The counters live in one process-wide [`Ops`] so the join routes, the
 //! persistent room's supervisor and the error endpoint all feed the same
-//! `/metrics` page. Whatever other processes of the pod measure arrives as
-//! Prometheus text files in `<state>/metrics.d/*.prom` (the bridge writes
-//! `bridge.prom`), which `/metrics` appends under a freshness gauge; the
-//! relay's own counters are read from the snapshot it persists every second.
+//! `/metrics` page. Each room's relay persists its counters every second and
+//! its connector workers keep theirs as Prometheus text (the Discord
+//! connector's is `discord.prom`), both under the relay's `--state`, at the
+//! paths `tilo_relay_protocol::metrics` defines; other processes of the pod
+//! may drop text files into `<state>/metrics.d`. `/metrics` reads the
+//! snapshots and appends the text files under a freshness gauge.
+//!
+//! The page also says which source revision the running binary was built
+//! from (`tilo_rooms_build_info`), so a rollout that did not happen, or a pod
+//! left on an older image, shows beside the digest the deployment pins.
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -15,7 +21,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
-use tilo_relay_protocol::metrics::{METRICS_FILE, MetricsSnapshot};
+use tilo_relay_protocol::metrics::{
+    METRICS_FILE, MetricsSnapshot, room_relay_root, room_textfile_dir,
+};
 
 /// The file the `mode` command writes inside the state directory.
 const MODE_FILE: &str = "mode";
@@ -35,6 +43,11 @@ const FIELD_MAX: usize = 1024;
 /// Reports per second across all visitors, and the burst allowed.
 const REPORT_RATE: f64 = 20.0;
 const REPORT_BURST: f64 = 50.0;
+/// The image's source revision, set by its Containerfile from the same build
+/// argument as the `org.opencontainers.image.revision` label.
+const SOURCE_REVISION_ENV: &str = "TILO_SOURCE_REVISION";
+/// What a build without a valid revision reports.
+pub const UNKNOWN_REVISION: &str = "unknown";
 
 /// How much of the persistent room is open to visitors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +156,7 @@ pub struct Ops {
     reports: AtomicU64,
     reports_dropped: AtomicU64,
     report_bucket: Mutex<Bucket>,
+    revision: String,
 }
 
 static OPS: OnceLock<Ops> = OnceLock::new();
@@ -174,7 +188,14 @@ impl Ops {
                 tokens: REPORT_BURST,
                 at: now,
             }),
+            revision: source_revision(std::env::var(SOURCE_REVISION_ENV).ok().as_deref()),
         }
+    }
+
+    /// The commit this binary was built from: 40 lowercase hex digits, or
+    /// [`UNKNOWN_REVISION`] outside a published image.
+    pub fn revision(&self) -> &str {
+        &self.revision
     }
 
     /// The current mode: the operator's `mode` file wins over the
@@ -234,6 +255,14 @@ impl Ops {
     pub fn render(&self, rooms: usize) -> String {
         let mut out = String::new();
         let mode = self.mode();
+        metric(
+            &mut out,
+            "gauge",
+            "tilo_rooms_build_info",
+            "1, labelled with the source revision the running image was built from.",
+        );
+        let label = format!("{{revision=\"{}\"}}", self.revision);
+        sample(&mut out, "tilo_rooms_build_info", &label, 1);
         metric(&mut out, "gauge", "tilo_rooms_rooms", "Rooms running.");
         sample(&mut out, "tilo_rooms_rooms", "", rooms);
         metric(
@@ -311,9 +340,28 @@ impl Ops {
             "",
             load(&self.reports_dropped),
         );
-        relay(&mut out, &self.state);
-        textfiles(&mut out, &self.state.join(TEXTFILE_DIR));
+        let rooms = room_states(&self.state);
+        relay(&mut out, &rooms);
+        let mut dirs = vec![self.state.join(TEXTFILE_DIR)];
+        dirs.extend(rooms.iter().map(|room| room_textfile_dir(room)));
+        textfiles(&mut out, &dirs);
         out
+    }
+}
+
+/// A full commit id, or [`UNKNOWN_REVISION`]: the value becomes a metric
+/// label and a JSON field, so nothing else from the environment passes.
+fn source_revision(value: Option<&str>) -> String {
+    match value {
+        Some(revision)
+            if revision.len() == 40
+                && revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) =>
+        {
+            revision.to_owned()
+        }
+        _ => UNKNOWN_REVISION.to_owned(),
     }
 }
 
@@ -338,18 +386,33 @@ fn age_of(path: &Path) -> Option<Duration> {
     )
 }
 
-/// The relay snapshots under the state directory: one per room
-/// (`<state>/<room>/state/metrics.json`) or the persistent room's own.
-fn relay_snapshots(state: &Path) -> Vec<(MetricsSnapshot, Duration)> {
-    let mut candidates = vec![state.join(METRICS_FILE)];
-    if let Ok(entries) = std::fs::read_dir(state) {
-        for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
-            candidates.push(entry.path().join(METRICS_FILE));
-            candidates.push(entry.path().join("state").join(METRICS_FILE));
-        }
-    }
-    candidates
-        .into_iter()
+/// The `--state` of every room relay this service runs: each room, and the
+/// persistent room, has a directory under the state directory.
+fn room_states(state: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(state) else {
+        return Vec::new();
+    };
+    let mut rooms: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .flat_map(|dir| {
+            [
+                crate::room::relay_state(&dir),
+                crate::persistent::relay_state(&dir),
+            ]
+        })
+        .filter(|room| room.is_dir())
+        .collect();
+    rooms.sort();
+    rooms
+}
+
+/// The relay snapshot of each room, with its age.
+fn relay_snapshots(rooms: &[PathBuf]) -> Vec<(MetricsSnapshot, Duration)> {
+    rooms
+        .iter()
+        .map(|room| room_relay_root(room).join(METRICS_FILE))
         .filter_map(|path| {
             let age = age_of(&path)?;
             let snapshot = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
@@ -358,8 +421,8 @@ fn relay_snapshots(state: &Path) -> Vec<(MetricsSnapshot, Duration)> {
         .collect()
 }
 
-fn relay(out: &mut String, state: &Path) {
-    let snapshots = relay_snapshots(state);
+fn relay(out: &mut String, rooms: &[PathBuf]) {
+    let snapshots = relay_snapshots(rooms);
     let youngest = snapshots.iter().map(|(_, age)| *age).min();
     let fresh: Vec<&MetricsSnapshot> = snapshots
         .iter()
@@ -439,14 +502,15 @@ fn relay(out: &mut String, state: &Path) {
     }
 }
 
-/// Appends every `*.prom` file of `dir`, with a per-file age gauge so a
-/// writer that stopped is visible.
-fn textfiles(out: &mut String, dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
+/// Appends every `*.prom` file of `dirs`, with a per-file age gauge so a
+/// writer that stopped is visible. A file name seen twice is kept once.
+fn textfiles(out: &mut String, dirs: &[PathBuf]) {
     let mut files: BTreeMap<String, (String, u64)> = BTreeMap::new();
-    for entry in entries.flatten() {
+    for entry in dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(Iterator::flatten)
+    {
         let path = entry.path();
         let Some(name) = path
             .file_name()
@@ -465,7 +529,7 @@ fn textfiles(out: &mut String, dir: &Path) {
         }
         let age = age_of(&path).map_or(0, |age| age.as_secs());
         if let Ok(text) = std::fs::read_to_string(&path) {
-            files.insert(name, (text, age));
+            files.entry(name).or_insert((text, age));
         }
     }
     if files.is_empty() {
@@ -550,10 +614,11 @@ pub fn mode_command(state: &Path, args: &[String]) -> Result<()> {
             let Some(mode) = Mode::parse(wanted) else {
                 bail!("mode is one of: normal, spectator-only, back-soon");
             };
-            std::fs::create_dir_all(state).context("create the state directory")?;
-            let temporary = state.join("mode.new");
-            std::fs::write(&temporary, mode.as_str()).context("write the mode")?;
-            std::fs::rename(&temporary, state.join(MODE_FILE)).context("set the mode")?;
+            tilo_files::native::atomic::write_creating_parent(
+                &state.join(MODE_FILE),
+                mode.as_str().as_bytes(),
+            )
+            .context("set the mode")?;
             println!("{}", mode.as_str());
             Ok(())
         }
@@ -586,9 +651,12 @@ mod tests {
     fn metrics_render_counters_relay_snapshots_and_dropped_in_files() {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path();
-        std::fs::create_dir_all(state.join("room/state")).unwrap();
+        // Where a room's relay keeps its snapshot, under the `--state` the
+        // room is started with.
+        let room = room_relay_root(&crate::room::relay_state(&state.join("room")));
+        std::fs::create_dir_all(&room).unwrap();
         tilo_relay_protocol::metrics::save_metrics(
-            &state.join("room/state"),
+            &room,
             &MetricsSnapshot {
                 sessions_open: 7,
                 subscriber_dropped_backpressure: 2,
@@ -602,12 +670,15 @@ mod tests {
             "tilo_rooms_bridge_queue_depth 3",
         )
         .unwrap();
-        let ops = Ops::new(state.to_owned(), Mode::Normal);
+        let mut ops = Ops::new(state.to_owned(), Mode::Normal);
+        ops.revision = source_revision(Some(REVISION));
         ops.joined();
         ops.join_failed(JoinFailure::Full);
         ops.set_online(5, 9);
         let page = ops.render(1);
         for expected in [
+            "# TYPE tilo_rooms_build_info gauge",
+            "tilo_rooms_build_info{revision=\"353db50e31c9c661b080b9dfefe17688d4a8b2f0\"} 1",
             "tilo_rooms_rooms 1",
             "tilo_rooms_online_guests 5",
             "tilo_rooms_online_spectators 9",
@@ -622,6 +693,31 @@ mod tests {
         ] {
             assert!(page.contains(expected), "{expected} missing from\n{page}");
         }
+    }
+
+    const REVISION: &str = "353db50e31c9c661b080b9dfefe17688d4a8b2f0";
+
+    #[test]
+    fn the_build_revision_is_a_full_commit_or_unknown() {
+        assert_eq!(source_revision(Some(REVISION)), REVISION);
+        for invalid in [
+            None,
+            Some(""),
+            Some("353db50e31c9"),
+            Some("353DB50E31C9C661B080B9DFEFE17688D4A8B2F0"),
+            Some("353db50e31c9c661b080b9dfefe17688d4a8b2f0\"} 1\nevil 1"),
+            Some("g53db50e31c9c661b080b9dfefe17688d4a8b2f0"),
+        ] {
+            assert_eq!(source_revision(invalid), UNKNOWN_REVISION, "{invalid:?}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut ops = Ops::new(dir.path().to_owned(), Mode::Normal);
+        ops.revision = source_revision(None);
+        assert_eq!(ops.revision(), UNKNOWN_REVISION);
+        assert!(
+            ops.render(0)
+                .contains("tilo_rooms_build_info{revision=\"unknown\"} 1")
+        );
     }
 
     #[test]

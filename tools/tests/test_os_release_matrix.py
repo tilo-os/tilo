@@ -44,7 +44,7 @@ def plan(
                 "GITHUB_REF": ref,
                 "GITHUB_EVENT_NAME": event,
                 "GITHUB_OUTPUT": str(output),
-                "GITHUB_SHA": SHA,
+                "TILO_IMAGE_SOURCE": SHA,
                 "REQUESTED_RELEASE": requested,
                 "PUBLISHED_REVISION": published,
                 "PUBLICATION_CONFIGURED": configured,
@@ -226,6 +226,11 @@ class OsDevLaneTests(unittest.TestCase):
                 concurrency_group("refs/heads/main", "workflow_call", ""),
                 "tilo-os-dev-" + SHA,
             )
+        with self.subTest(phase='historical main dev publication locks the pinned source'):
+            self.assertEqual(
+                concurrency_group("refs/heads/main", "workflow_call", "", source_revision="a" * 40),
+                "tilo-os-dev-" + "a" * 40,
+            )
         with self.subTest(phase='explicit image requests queue without cancelling useful progress'):
             caller = (ROOT / ".forgejo/workflows/os-dev.yml").read_text()
             self.assertIn("name: Build / OS dev", caller)
@@ -255,7 +260,7 @@ class OsDevLaneTests(unittest.TestCase):
         self.assertNotIn("        if:", step)
         # A dev build takes the published collection only when its source has
         # this commit's app inputs, as Release / apps defines them.
-        self.assertIn('git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"', step)
+        self.assertIn('git diff --quiet "$COLLECTION_SOURCE" "$TILO_IMAGE_SOURCE" -- "${inputs[@]}"', step)
         self.assertIn(".forgejo/workflows/release-apps.yml", step)
         self.assertIn("index.json | jq -r '.source // empty'", step)
         self.assertLess(step.index("[[ $source != \"$COLLECTION_SOURCE\" ]]"),
@@ -326,7 +331,7 @@ class OsDevLaneTests(unittest.TestCase):
                 env = os.environ.copy()
                 env.update({
                     "GITHUB_REF": ref, "GITHUB_REF_NAME": ref.split("/", 2)[2],
-                    "GITHUB_EVENT_NAME": event, "GITHUB_SHA": SHA,
+                    "GITHUB_EVENT_NAME": event, "TILO_IMAGE_SOURCE": SHA,
                     "GITHUB_OUTPUT": str(output), "GITHUB_ENV": str(Path(temporary) / "env"),
                     "REQUESTED_RELEASE": "", "PLANNED_PUBLISH": "false",
                 })
@@ -360,7 +365,7 @@ def empty_series_allowed(publish: str, genesis: str, sha: str = SHA) -> bool:
         environment.update(
             {
                 "GITHUB_ENV": str(root / "env"),
-                "GITHUB_SHA": sha,
+                "TILO_IMAGE_SOURCE": sha,
                 "PUBLISH": publish,
                 "SERIES_GENESIS_REVISION": genesis,
                 "TILO_REGISTRY_CREDS": "user:token",
@@ -407,7 +412,7 @@ class ReleaseGateTests(unittest.TestCase):
             workflow = WORKFLOW.read_text()
             archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
             uses = list(archive.finditer(workflow))
-            self.assertEqual(len(uses), 6)
+            self.assertEqual(len(uses), 7)
             for use in uses:
                 self.assertRegex(
                     workflow[use.end():use.end() + 24],
@@ -522,7 +527,7 @@ class ReleaseGateTests(unittest.TestCase):
 
 
 def concurrency_group(
-    ref: str, event: str, requested: str, profile: str = "generic", sha: str = SHA,
+    ref: str, event: str, requested: str, profile: str = "generic", sha: str = SHA, source_revision: str = "",
 ) -> str:
     """Evaluate the workflow's concurrency expression for one event."""
     line = next(
@@ -534,8 +539,8 @@ def concurrency_group(
         ("format('tilo-os-image-lenovo-{0}', github.sha)", "('tilo-os-image-lenovo-' + sha)"),
         ("format('tilo-os-image-orangepi-{0}', github.sha)", "('tilo-os-image-orangepi-' + sha)"),
         ("format('tilo-os-image-validate-{0}', github.ref)", "('tilo-os-image-validate-' + ref)"),
-        ("format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && github.sha || github.ref)",
-         "('tilo-os-dev-' + (sha if ref == 'refs/heads/main' else ref))"),
+        ("format('tilo-os-dev-{0}', github.ref == 'refs/heads/main' && (inputs.source_revision || github.sha) || github.ref)",
+         "('tilo-os-dev-' + ((source_revision or sha) if ref == 'refs/heads/main' else ref))"),
         ("github.event.inputs.hardware_profile", "profile"),
         ("github.event.inputs.release", "requested"),
         ("github.event_name", "event"),
@@ -545,7 +550,7 @@ def concurrency_group(
     ]:
         expression = expression.replace(source, target)
     return eval(expression, {}, {
-        "ref": ref, "event": event, "requested": requested, "profile": profile, "sha": sha,
+        "ref": ref, "event": event, "requested": requested, "profile": profile, "sha": sha, "source_revision": source_revision,
     })
 
 

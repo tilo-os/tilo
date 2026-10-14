@@ -1,7 +1,7 @@
 //! The word processor's exported **actions** and the **resource tree** it
 //! publishes to Ctrl+K.
 //!
-//! Every document-mutating operation is a [`RichTextAction`] from qdoc's
+//! Every document-mutating operation is a [`RichTextAction`] from tilo-doc's
 //! rich-text vocabulary (re-exported here with its builders). The same
 //! [`EncodedAction`] is what toolbar/panel/menu affordances dispatch and what
 //! Ctrl+K dispatches — one source of truth, one replay path. This module adds
@@ -28,6 +28,7 @@ use ui::tilo_resource::Effect as _;
 use crate::effects::WordProcessorEffect;
 
 pub use tilo_document::action::*;
+pub use tilo_document::block_edit::Placement;
 /// Register the word processor's action decoder for palette execution + remote
 /// replay.
 pub fn register(registry: &mut ActionRegistry) {
@@ -1820,9 +1821,11 @@ mod tests {
         assert_eq!(state.doc.save(), before);
     }
 
-    /// The host offers every Document operation of its workers as one grant
-    /// set, and withdraws the offer above 64. A fresh document's catalogue
-    /// stays well inside that bound.
+    /// A fresh document publishes a small catalogue of Document operations,
+    /// both paragraph operations among them: every operation is a tool an
+    /// agent must read and a grant a person must understand, so the count is a
+    /// design budget, kept down by folding near-duplicates into one
+    /// parameterised operation rather than by raising it.
     #[test]
     fn a_fresh_document_publishes_few_grantable_document_operations() {
         fn document_ops(resource: &tilo_actions::Resource, out: &mut Vec<String>) {

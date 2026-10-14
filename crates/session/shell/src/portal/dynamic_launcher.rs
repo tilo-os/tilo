@@ -50,14 +50,6 @@ impl DynamicLauncherBackend {
     }
 }
 #[cfg(target_os = "linux")]
-fn bool_opt(options: &HashMap<String, OwnedValue>, key: &str, default: bool) -> bool {
-    options
-        .get(key)
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| bool::try_from(v).ok())
-        .unwrap_or(default)
-}
-#[cfg(target_os = "linux")]
 fn str_opt(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     options
         .get(key)?
@@ -68,11 +60,7 @@ fn str_opt(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
 }
 #[cfg(target_os = "linux")]
 fn launcher_type(options: &HashMap<String, OwnedValue>) -> u32 {
-    options
-        .get("launcher_type")
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| u32::try_from(v).ok())
-        .unwrap_or(1)
+    crate::portal::option::<u32>(options, "launcher_type").unwrap_or(1)
 }
 fn safe_web_target(target: &str) -> bool {
     target.starts_with("https://")
@@ -168,8 +156,8 @@ impl DynamicLauncherBackend {
         if kind == 1 && target.is_some() {
             return (2, HashMap::new());
         }
-        let editable_name = bool_opt(&options, "editable_name", true);
-        let editable_icon = bool_opt(&options, "editable_icon", false);
+        let editable_name = crate::portal::option(&options, "editable_name").unwrap_or(true);
+        let editable_icon = crate::portal::option(&options, "editable_icon").unwrap_or(false);
         let resource = match target.as_deref() {
             Some(target) => format!("{name}\n{target}"),
             None => name.clone(),

@@ -59,6 +59,8 @@ pub struct Remote {
     pub disabled: bool,
     /// System remotes are supplied by the image and cannot be deleted as this user.
     pub user_managed: bool,
+    /// Last configured-source read failure; independent sources remain usable.
+    pub catalogue_error: Option<String>,
 }
 
 impl Remote {
@@ -69,6 +71,22 @@ impl Remote {
             format!("remote:system:{}", self.name)
         }
     }
+}
+
+/// A metadata-only refresh must not claim a failed catalogue recovered.
+/// Changed identity, URL or disabled state needs a new source observation.
+pub fn refreshed_remotes(rows: &str, previous: &[Remote]) -> Vec<Remote> {
+    let mut remotes = list_remotes(rows);
+    for remote in &mut remotes {
+        if !remote.disabled
+            && let Some(old) = previous.iter().find(|old| {
+                old.resource_id() == remote.resource_id() && old.url == remote.url && !old.disabled
+            })
+        {
+            remote.catalogue_error.clone_from(&old.catalogue_error);
+        }
+    }
+    remotes
 }
 
 /// Explain a device repository's known permission refusal in human terms.
@@ -448,6 +466,7 @@ pub fn list_remotes(output: &str) -> Vec<Remote> {
                 title: if title.is_empty() { name } else { title }.to_string(),
                 user_managed: !options.split(',').any(|option| option.trim() == "system"),
                 disabled: options.split(',').any(|option| option.trim() == "disabled"),
+                catalogue_error: None,
             })
         })
         .collect()
@@ -458,6 +477,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metadata_refresh_preserves_only_the_same_enabled_source_failure() {
+        let rows = "fedora\thttps://registry.example/repo\tFedora\tsystem\n";
+        let mut old = list_remotes(rows);
+        old[0].catalogue_error = Some("Unable to load summary".into());
+        assert_eq!(
+            refreshed_remotes(rows, &old)[0].catalogue_error,
+            old[0].catalogue_error
+        );
+        for changed in [
+            "fedora\thttps://other.example/repo\tFedora\tsystem\n",
+            "fedora\thttps://registry.example/repo\tFedora\tuser\n",
+            "fedora\thttps://registry.example/repo\tFedora\tsystem,disabled\n",
+        ] {
+            assert!(
+                refreshed_remotes(changed, &old)[0]
+                    .catalogue_error
+                    .is_none()
+            );
+        }
+        assert!(refreshed_remotes("", &old).is_empty());
+    }
+
+    #[test]
     fn repository_timeout_explains_retry_without_rpc_internals() {
         crate::resource::STORE_CATALOG.ensure();
         let remote = Remote {
@@ -466,6 +508,7 @@ mod tests {
             title: "Fedora Flatpaks".into(),
             disabled: false,
             user_managed: false,
+            catalogue_error: None,
         };
         let message = remote_error(
             &remote,

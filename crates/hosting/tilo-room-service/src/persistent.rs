@@ -159,10 +159,6 @@ pub struct Persistent {
     waiters: std::sync::Mutex<Waiters>,
 }
 
-fn now_ms() -> u64 {
-    tilo_clock::unix_now_ms()
-}
-
 fn token_digest(token: &str) -> String {
     use sha2::Digest as _;
     hex::encode(sha2::Sha256::digest(token.as_bytes()))
@@ -219,6 +215,11 @@ fn tls_listener(
     }
 }
 
+/// The `--state` of the persistent room's relay, under its directory.
+pub(crate) fn relay_state(dir: &Path) -> PathBuf {
+    dir.join("relay")
+}
+
 /// The child's command line.
 fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     let persistent = config
@@ -230,7 +231,7 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
         .env("TILO_RELAY_LOG", "warn")
         .arg("room")
         .arg("--state")
-        .arg(dir.join("relay"));
+        .arg(relay_state(dir));
     tls_listener(&mut command, config, persistent);
     command.arg("--allowed-origin").arg(config.api_origin());
     for origin in &config.site_origins {
@@ -252,6 +253,9 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
                 .saturating_add(crate::config::LOCAL_PLAIN_OFFSET)
         ));
     }
+    if let Some(entry) = &persistent.web_entry {
+        command.arg("--web-entry").arg(entry);
+    }
     command
         .arg("--persistent")
         .arg(&persistent.name)
@@ -269,6 +273,9 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     }
     for channel in &persistent.chat_channels {
         command.arg("--chat-channel").arg(channel);
+    }
+    for strip in &persistent.strips {
+        command.arg("--strip").arg(strip);
     }
     for owner in &persistent.owners {
         command.arg("--owner").arg(owner);
@@ -492,7 +499,7 @@ impl Persistent {
                         .guests
                         .lock()
                         .map_err(|_| anyhow::anyhow!("guest ledger poisoned"))?
-                        .removed(&user_public_key, now_ms())?;
+                        .removed(&user_public_key, tilo_clock::unix_now_ms())?;
                     eprintln!(
                         "tilo-room-service: a guest was {}; their address {}",
                         if banned { "banned" } else { "removed" },
@@ -612,7 +619,7 @@ impl Persistent {
         seats: &std::sync::Mutex<Seats>,
     ) -> std::result::Result<String, JoinRefusal> {
         let ip_hash = self.shared.hasher.hash(ip);
-        let now = now_ms();
+        let now = tilo_clock::unix_now_ms();
         if self
             .shared
             .guests
@@ -682,7 +689,11 @@ impl Persistent {
             return Err(JoinRefusal::Unavailable);
         };
         if let Ok(mut guests) = self.shared.guests.lock()
-            && let Err(error) = guests.record_join(&request.user_public_key, &ip_hash, now_ms())
+            && let Err(error) = guests.record_join(
+                &request.user_public_key,
+                &ip_hash,
+                tilo_clock::unix_now_ms(),
+            )
         {
             eprintln!("tilo-room-service: could not record a join: {error:#}");
         }
@@ -1152,6 +1163,61 @@ mod tests {
         assert!(shared.avatar_path(&"ab".repeat(32)).is_some());
     }
 
+    /// `/metrics` finds the counters where the relay this command starts,
+    /// and its connector workers, write them under its `--state`.
+    #[test]
+    fn metrics_read_what_the_persistent_relay_and_its_connectors_write() {
+        use tilo_relay_protocol::metrics::{
+            MetricsSnapshot, room_relay_root, room_textfile_dir, save_metrics,
+        };
+        let state = tempfile::tempdir().unwrap();
+        let vars = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example"),
+        ];
+        let config = Config::from_lookup(|name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        })
+        .unwrap();
+        let command = child_command(&config, &state.path().join("plaza")).unwrap();
+        let args: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let at = args.iter().position(|arg| arg == "--state").unwrap();
+        let relay_state = PathBuf::from(&args[at + 1]);
+        let root = room_relay_root(&relay_state);
+        std::fs::create_dir_all(&root).unwrap();
+        save_metrics(
+            &root,
+            &MetricsSnapshot {
+                sessions_open: 2,
+                ..MetricsSnapshot::default()
+            },
+        )
+        .unwrap();
+        let textfiles = room_textfile_dir(&relay_state);
+        std::fs::create_dir_all(&textfiles).unwrap();
+        std::fs::write(
+            textfiles.join("discord.prom"),
+            "tilo_rooms_bridge_queue_depth 0\n",
+        )
+        .unwrap();
+        let page =
+            crate::ops::Ops::new(state.path().to_owned(), crate::ops::Mode::Normal).render(1);
+        for expected in [
+            "tilo_rooms_relay_up 1",
+            "tilo_rooms_relay_sessions 2",
+            "tilo_rooms_textfile_age_seconds{file=\"discord.prom\"}",
+            "tilo_rooms_bridge_queue_depth 0",
+        ] {
+            assert!(page.contains(expected), "{expected} missing from\n{page}");
+        }
+    }
+
     #[test]
     fn a_direct_live_origin_gives_the_relay_its_own_certificate_and_keeps_the_ingress() {
         let vars = [
@@ -1188,36 +1254,48 @@ mod tests {
 
     #[test]
     fn the_relay_opens_chat_with_the_channels_the_operator_names() {
-        let channel_args = |vars: &[(&str, &str)]| {
-            let config = Config::from_lookup(|name| {
-                vars.iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            })
-            .unwrap();
-            let command = child_command(&config, Path::new("/state")).unwrap();
-            let args: Vec<String> = command
-                .as_std()
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect();
-            args.windows(2)
-                .filter(|pair| pair[0] == "--chat-channel")
-                .map(|pair| pair[1].clone())
-                .collect::<Vec<_>>()
-        };
+        assert!(relay_args("--chat-channel", &[]).is_empty());
+        assert_eq!(
+            relay_args(
+                "--chat-channel",
+                &[("TILO_ROOMS_CHAT_CHANNELS", "general,show-and-tell")]
+            ),
+            ["general", "show-and-tell"]
+        );
+    }
+
+    #[test]
+    fn the_relay_gives_the_desktop_the_strips_the_operator_names() {
+        assert!(relay_args("--strip", &[]).is_empty());
+        assert_eq!(
+            relay_args("--strip", &[("TILO_ROOMS_STRIPS", "Main,Games night")]),
+            ["Main", "Games night"]
+        );
+    }
+
+    /// The values the relay is started with for `flag`, under the
+    /// persistent room's base configuration and `vars`.
+    fn relay_args(flag: &str, vars: &[(&str, &str)]) -> Vec<String> {
         let base = [
             ("TILO_ROOMS_PERSISTENT", "plaza"),
             ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example"),
         ];
-        assert!(channel_args(&base).is_empty());
-        assert_eq!(
-            channel_args(&[
-                base[0],
-                base[1],
-                ("TILO_ROOMS_CHAT_CHANNELS", "general,show-and-tell"),
-            ]),
-            ["general", "show-and-tell"]
-        );
+        let config = Config::from_lookup(|name| {
+            base.iter()
+                .chain(vars)
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        })
+        .unwrap();
+        let command = child_command(&config, Path::new("/state")).unwrap();
+        let args: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        args.windows(2)
+            .filter(|pair| pair[0] == flag)
+            .map(|pair| pair[1].clone())
+            .collect()
     }
 }

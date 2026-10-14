@@ -4606,7 +4606,7 @@ fn typing_and_clipboard_edit_the_document_through_one_action() {
         wp.inner.insert_str(&mut edits(&mut state.doc), "hello");
 
         // Copy a bold selection. The system-facing clipboard carries plain text;
-        // the widget's matching sidecar carries the qdoc marks.
+        // the widget's matching sidecar carries the tilo-doc marks.
         wp.inner.caret.offset = 0;
         wp.inner.set_anchor();
         wp.inner.caret.offset = 5;
@@ -5585,7 +5585,7 @@ fn tracked_changes_render_and_accept_individually() {
     // Phase: accepting_tracked_deletion_removes_the_struck_text.
     {
         // "keep gone": flag "gone" (5..9) as a tracked deletion (retained-but-struck).
-        // qdoc semantics: ACCEPTING a deletion applies it (removes the struck text);
+        // tilo-doc semantics: ACCEPTING a deletion applies it (removes the struck text);
         // REJECTING keeps the text and drops the `del` mark. We assert both arms
         // on the materialized snapshot (the production read path).
         let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
@@ -6026,9 +6026,9 @@ fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
     );
 }
 
-/// Regenerating the TOC replaces rather than duplicates, and the TOC action sets a confirmation toast.
+/// Regenerating the TOC replaces rather than duplicates, and the TOC action brings the table into view.
 #[test]
-fn regenerating_the_toc_replaces_it_and_confirms() {
+fn regenerating_the_toc_replaces_it_and_shows_it() {
     // Phase: regenerating_toc_replaces_rather_than_duplicating.
     {
         let mut framed = doc_with_headings(1000, 700);
@@ -6058,18 +6058,16 @@ fn regenerating_the_toc_replaces_it_and_confirms() {
         );
     }
 
-    // Phase: toc_action_sets_a_confirmation_toast.
-    // Generating a TOC leaves a visible confirmation toast (the button used to
-    // give no feedback at all).
+    // Phase: toc_action_scrolls_the_table_into_view.
+    // The table itself is the feedback: generating it scrolls to the top
+    // where it lands, with no toast repeating what is on screen.
     {
         let mut framed = doc_with_headings(1000, 700);
         let (wp, state) = Framed::split(&mut framed);
-        assert!(!wp.toast.is_shown(), "no toast before the action");
+        wp.scroll_y = 144.0;
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertToc);
-        assert!(
-            wp.toast.is_shown(),
-            "generating a TOC surfaces a confirmation toast"
-        );
+        assert_eq!(wp.scroll_y, 0.0, "the new table of contents is in view");
+        assert!(!wp.toast.is_shown(), "no toast repeats the visible result");
         // And it actually produced TOC lines.
         let c = wp.model().containers.clone().unwrap();
         let toc = tilo_doc::model::materialize(&state.doc, &c)

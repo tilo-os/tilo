@@ -2,13 +2,15 @@
 //! [`tilo_relay_protocol::rooms`]).
 //!
 //! `/rooms` is room administration with the authorization of
-//! [`ROOM_ADMIN_ALPN`](super::ROOM_ADMIN_ALPN): the session's device must be
-//! one of the relay's own user. `/join` redeems an invitation for a device
-//! with no session yet. Unlike the workspace-join protocol, a page's
-//! verified redemption is not admitted at once: it waits, in memory, until
-//! the room's owner admits or declines it. A relay restart forgets waiting
+//! [`ROOM_ADMIN_ALPN`](super::ROOM_ADMIN_ALPN) ([`Rooms::authorize`]): the
+//! session's device is one of the relay's own user, or a member's the
+//! room's governance lets do what it asks. `/join` redeems an invitation for
+//! a device with no session yet. Unlike the workspace-join protocol, a
+//! page's verified redemption is not admitted at once: it waits, in memory,
+//! until someone the room lets invite admits or declines it. A relay restart forgets waiting
 //! requests; the person asks again.
 
+use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::{
     JoinChallenge, JoinChallengeRequest, JoinProof, MemberRole, VerifiedRedemption,
 };
@@ -18,10 +20,12 @@ use tilo_relay_protocol::rooms::{
 };
 use tilo_user_identity::DeviceCert;
 
+use super::authority::RoomOp;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedRoom, IssueInvitationRequest,
     IssuedInvitation, RemoveMemberRequest, Rooms, SetMemberRoleRequest, system_time,
 };
+use crate::host_authority::HostOperation;
 
 /// How long a declined request still answers its device's status.
 const DECIDED_LIFETIME_NS: u64 = 10 * 60 * 1_000_000_000;
@@ -38,6 +42,16 @@ pub struct PreAdmitRequest {
     pub recipient_user_public_key: Option<[u8; 32]>,
     /// How the invitation names who issued it.
     pub inviter_name: Option<String>,
+}
+
+/// A pre-admitted redemption waiting for its room's next admission pass,
+/// and where its answer goes.
+pub(super) struct QueuedAdmission {
+    proof: JoinProof,
+    proof_digest: [u8; 32],
+    name: String,
+    token: Vec<u8>,
+    answer: tokio::sync::oneshot::Sender<Result<JoinReply, CollaborationError>>,
 }
 
 /// A verified redemption waiting for the room's owner.
@@ -69,7 +83,7 @@ impl PageJoins {
     }
 }
 
-const fn member_role(role: RoomRole) -> MemberRole {
+pub(super) const fn member_role(role: RoomRole) -> MemberRole {
     match role {
         RoomRole::Viewer => MemberRole::Viewer,
         RoomRole::Commenter => MemberRole::Commenter,
@@ -195,18 +209,14 @@ impl Rooms {
             }
             RoomsRequest::Pending { room } => self.page_pending(&room, device).await?,
             RoomsRequest::Requests { room } => {
-                self.authorize(device, now, "join.requests")?;
-                self.room(&room).await?;
-                RoomsReply::Requests(self.waiting(&room, now))
+                RoomsReply::Requests(self.join_requests(&room, device, now).await?)
             }
             RoomsRequest::Admit { room, request_id } => {
-                self.authorize(device, now, "join.admit")?;
-                self.admit_page(&room, request_id, now).await?;
+                self.admit_page(&room, device, request_id, now).await?;
                 self.page_room(&room).await?
             }
             RoomsRequest::Decline { room, request_id } => {
-                self.authorize(device, now, "join.decline")?;
-                self.decline_page(&room, request_id, now).await?;
+                self.decline_page(&room, device, request_id, now).await?;
                 RoomsReply::Requests(self.waiting(&room, now))
             }
             request @ (RoomsRequest::SetRole { .. }
@@ -222,10 +232,10 @@ impl Rooms {
                     .await?
             }
             RoomsRequest::Notices { room } => {
-                self.authorize(device, now, "room.notices")?;
                 let room = self.room(&room).await?;
-                let notices = room.lock().await.admissions.notices();
-                RoomsReply::Notices(notices)
+                let room = room.lock().await;
+                self.authorize(device, Some(&room), RoomOp::Govern(governance::INVITE), now)?;
+                RoomsReply::Notices(room.admissions.notices())
             }
         })
     }
@@ -367,16 +377,19 @@ impl Rooms {
             inviter_name,
         } = request;
         let now = tilo_clock::unix_now_ns();
-        self.authorize(device, now, "invitation.pre-admit")?;
+        self.authorize(device, None, RoomOp::Host(HostOperation::PreAdmit), now)?;
         grant.verify()?;
         if grant.owner_user_public_key != self.inner.host.cert.user_public_key {
             return Err(CollaborationError::new(
                 "only the room's owner pre-admits people",
             ));
         }
-        let issued = self
-            .issue(
-                &grant.room,
+        let room_id = grant.room.clone();
+        let issued = {
+            let room = self.room(&room_id).await?;
+            let mut room = room.lock().await;
+            let issued = self.stage_issue(
+                &mut room,
                 device,
                 IssueInvitationRequest {
                     request_id,
@@ -386,15 +399,20 @@ impl Rooms {
                     expires_at_ns: grant.expires_at_ns,
                     inviter_name,
                 },
-            )
-            .await?;
-        let room = self.room(&grant.room).await?;
-        room.lock().await.admissions.record(
-            issued.invite_id,
-            grant,
-            now,
-            self.inner.host.max_pre_admissions,
-        )?;
+                now,
+            )?;
+            room.admissions.record(
+                issued.invite_id,
+                grant,
+                now,
+                self.inner.host.max_pre_admissions,
+            )?;
+            issued
+        };
+        // The invitation and its grant are written with whatever else the
+        // room staged meanwhile: a crowd's pre-admissions took the room for
+        // two whole writes each, one after another.
+        self.written(&room_id, true).await?;
         Ok(issued)
     }
 
@@ -404,7 +422,7 @@ impl Rooms {
         name: &str,
         now: u64,
     ) -> Result<RoomsReply, CollaborationError> {
-        self.authorize(device, now, "room.create")?;
+        self.authorize(device, None, RoomOp::Host(HostOperation::CreateRoom), now)?;
         let created = self.create(name).await?;
         self.page_room(&created.room).await
     }
@@ -414,7 +432,7 @@ impl Rooms {
         device: &DeviceCert,
         now: u64,
     ) -> Result<RoomsReply, CollaborationError> {
-        self.authorize(device, now, "room.list")?;
+        self.authorize(device, None, RoomOp::Host(HostOperation::ListRooms), now)?;
         let rooms = self
             .inner
             .rooms
@@ -473,6 +491,31 @@ impl Rooms {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The join requests waiting in `room`, for `device`: someone the room
+    /// lets invite.
+    ///
+    /// # Errors
+    ///
+    /// Why the device may not see them.
+    pub(super) async fn join_requests(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        now: u64,
+    ) -> Result<Vec<JoinRequest>, CollaborationError> {
+        {
+            let governed = self.room(room).await?;
+            let governed = governed.lock().await;
+            self.authorize(
+                device,
+                Some(&governed),
+                RoomOp::Govern(governance::INVITE),
+                now,
+            )?;
+        }
+        Ok(self.waiting(room, now))
+    }
+
     fn waiting(&self, room: &str, now: u64) -> Vec<JoinRequest> {
         let mut joins = self.page_joins();
         joins.prune(now);
@@ -484,9 +527,10 @@ impl Rooms {
             .collect()
     }
 
-    async fn decline_page(
+    pub(super) async fn decline_page(
         &self,
         room: &str,
+        device: &DeviceCert,
         request_id: [u8; 32],
         now: u64,
     ) -> Result<(), CollaborationError> {
@@ -494,6 +538,12 @@ impl Rooms {
         // Serialize with admission, which holds this lock until governance
         // publication completes and removes the waiting request.
         let decision = governed.lock().await;
+        self.authorize(
+            device,
+            Some(&decision),
+            RoomOp::Govern(governance::INVITE),
+            now,
+        )?;
         let mut joins = self.page_joins();
         let join = joins
             .0
@@ -517,9 +567,10 @@ impl Rooms {
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its decision is committed, published and answered"
     )]
-    async fn admit_page(
+    pub(super) async fn admit_page(
         &self,
         room_id: &str,
+        administrator: &DeviceCert,
         request_id: [u8; 32],
         now: u64,
     ) -> Result<(), CollaborationError> {
@@ -528,6 +579,12 @@ impl Rooms {
         // A retry after a lost HTTPS reply observes the committed receipt.
         // Never re-admit a member who has since lost governed access.
         if let Some(device) = room.admitted_device(request_id) {
+            self.authorize(
+                administrator,
+                Some(&room),
+                RoomOp::Govern(governance::INVITE),
+                now,
+            )?;
             room.peer().permissions(device, system_time(now))?;
             return Ok(());
         }
@@ -543,6 +600,14 @@ impl Rooms {
                 join.redemption.clone(),
             )
         };
+        // Admitting someone hands out the role their invitation carries:
+        // the invite action, and never a role above the admitter's own.
+        self.authorize(
+            administrator,
+            Some(&room),
+            RoomOp::Invite(redemption.join().grant().role.into()),
+            now,
+        )?;
         self.admit_redemption(
             &mut room,
             device,
@@ -664,12 +729,15 @@ impl Rooms {
         token: Option<&[u8]>,
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
+        if let Some(token) = token {
+            return self.prove_pre_admitted(proof, name, token).await;
+        }
         let room_id = proof.challenge.room.clone();
         let request_id = proof.challenge.request_id;
         let device = proof.challenge.device_public_key;
         let proof_digest = super::collaboration::request_digest(&proof)?;
         let room = self.room(&room_id).await?;
-        let mut room = room.lock().await;
+        let room = room.lock().await;
         if let Some(prior) = self.page_joins().find(&room_id, request_id) {
             if prior.proof_digest != proof_digest {
                 return Err(CollaborationError::new(
@@ -685,11 +753,6 @@ impl Rooms {
         let invite_id = redemption.join().invite_id();
         if room.redeemed(invite_id) {
             return Err(CollaborationError::new("invitation was already redeemed"));
-        }
-        if let Some(token) = token {
-            return self
-                .admit_pre_admitted(&mut room, &redemption, proof_digest, name, token, now)
-                .await;
         }
         let mut joins = self.page_joins();
         joins.prune(now);
@@ -733,59 +796,232 @@ impl Rooms {
 
     /// Admit the redeeming device at once under the owner's pre-admission
     /// for its invitation, spend the grant and tell the owner.
+    ///
+    /// A public room admits a crowd this way, and each admission is a write
+    /// and a publication of the room that grow with it. So redemptions only
+    /// queue here; the first since the room last took them starts a pass
+    /// that takes the room once and admits all of them in one change.
+    async fn prove_pre_admitted(
+        &self,
+        proof: JoinProof,
+        name: &str,
+        token: &[u8],
+    ) -> Result<JoinReply, CollaborationError> {
+        let room = proof.challenge.room.clone();
+        let proof_digest = super::collaboration::request_digest(&proof)?;
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let first = self.queue_admission(
+            &room,
+            QueuedAdmission {
+                proof,
+                proof_digest,
+                name: name.to_owned(),
+                token: token.to_vec(),
+                answer,
+            },
+        );
+        if first {
+            // Its own task: a page that goes away mid-pass must not cut off
+            // the answers of everyone else in it.
+            let rooms = self.clone();
+            tokio::spawn(async move { rooms.admit_queued(&room).await });
+        }
+        answered
+            .await
+            .map_err(|_| CollaborationError::new("the room stopped admitting"))?
+    }
+
+    /// Queue `join` for `room`'s next admission pass. True when it is the
+    /// first since the room last took them, so its sender starts the pass.
+    fn queue_admission(&self, room: &str, join: QueuedAdmission) -> bool {
+        let mut queued = self
+            .inner
+            .queued_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let waiting = queued.entry(room.to_owned()).or_default();
+        waiting.push(join);
+        let first = waiting.len() == 1;
+        drop(queued);
+        first
+    }
+
+    /// Admit every pre-admitted redemption queued for `room`.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room stays locked until its admissions are committed, published and answered"
+    )]
+    async fn admit_queued(&self, room_id: &str) {
+        let room = self.room(room_id).await;
+        let mut locked = match &room {
+            Ok(room) => Some(room.lock().await),
+            Err(_) => None,
+        };
+        let queued = self
+            .inner
+            .queued_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(room_id)
+            .unwrap_or_default();
+        let answers = match (&room, locked.as_mut()) {
+            (Ok(_), Some(room)) => self.admit_pre_admitted(room, &queued).await,
+            (Err(error), _) => vec![Err(error.clone()); queued.len()],
+            (Ok(_), None) => Vec::new(),
+        };
+        for (queued, answer) in queued.into_iter().zip(answers) {
+            let _ = queued.answer.send(answer);
+        }
+    }
+
+    /// Check each queued redemption alone, then admit those that hold in one
+    /// change and spend their grants in one write. Answers each in order.
     async fn admit_pre_admitted(
         &self,
         room: &mut GovernedRoom,
-        redemption: &VerifiedRedemption,
-        proof_digest: [u8; 32],
-        name: &str,
-        token: &[u8],
-        now: u64,
-    ) -> Result<JoinReply, CollaborationError> {
-        let invite_id = redemption.join().invite_id();
-        let role = room_role(redemption.join().grant().role);
-        let label = {
-            let grant = room.admissions.grant_for(invite_id, token, now)?;
-            if grant.role != role || grant.room != room.room() {
-                return Err(CollaborationError::new(
-                    "the pre-admission is for another room or role",
-                ));
+        queued: &[QueuedAdmission],
+    ) -> Vec<Result<JoinReply, CollaborationError>> {
+        let now = tilo_clock::unix_now_ns();
+        let mut answers: Vec<Option<Result<JoinReply, CollaborationError>>> =
+            Vec::with_capacity(queued.len());
+        let mut admitting = Vec::new();
+        let mut invites = std::collections::BTreeSet::new();
+        for (index, join) in queued.iter().enumerate() {
+            match self.check_pre_admitted(room, join, &mut invites, now) {
+                Ok(checked) => {
+                    admitting.push((index, checked));
+                    answers.push(None);
+                }
+                Err(answer) => answers.push(Some(*answer)),
             }
-            grant.label.clone()
+        }
+        let joins: Vec<_> = admitting
+            .iter()
+            .map(
+                |(index, (redemption, _, _))| super::collaboration::Redeeming {
+                    remote_endpoint: redemption.certificate().device_public_key,
+                    request_id: redemption.request_id(),
+                    proof_digest: queued.get(*index).map_or([0; 32], |join| join.proof_digest),
+                    redemption,
+                },
+            )
+            .collect();
+        let admitted = if joins.is_empty() {
+            Ok(Vec::new())
+        } else {
+            self.admit_redemptions(room, &joins, now).await
         };
-        let certificate = redemption.certificate();
-        self.admit_redemption(
-            room,
-            certificate.device_public_key,
-            redemption.request_id(),
-            proof_digest,
-            redemption,
-            now,
-        )
-        .await?;
-        room.admissions.spend(
-            invite_id,
-            RoomNotice::PreAdmitted {
-                user_public_key: certificate.user_public_key,
-                name: name.to_owned(),
-                label,
-                role,
-                at_ns: now,
-            },
-        )?;
-        tracing::info!(
-            room = %room.room(),
-            invite_id = %hex::encode(invite_id),
-            person = %hex::encode(certificate.user_public_key),
-            outcome = "pre-admitted",
-            "workspace join admitted under the owner's pre-admission"
-        );
-        Ok(JoinReply::Admitted {
-            room: room.room().to_owned(),
-            workspace_id: room.workspace_id(),
-            name: room.record.name.clone(),
-            role,
-        })
+        drop(joins);
+        let mut spent = Vec::new();
+        match admitted {
+            Ok(admitted) => {
+                for ((index, (redemption, label, role)), admitted) in
+                    admitting.into_iter().zip(admitted)
+                {
+                    let answer = admitted.map(|_| {
+                        let certificate = redemption.certificate();
+                        let invite_id = redemption.join().invite_id();
+                        spent.push((
+                            invite_id,
+                            RoomNotice::PreAdmitted {
+                                user_public_key: certificate.user_public_key,
+                                name: queued
+                                    .get(index)
+                                    .map(|join| join.name.clone())
+                                    .unwrap_or_default(),
+                                label,
+                                role,
+                                at_ns: now,
+                            },
+                        ));
+                        tracing::info!(
+                            room = %room.room(),
+                            invite_id = %hex::encode(invite_id),
+                            person = %hex::encode(certificate.user_public_key),
+                            outcome = "pre-admitted",
+                            "workspace join admitted under the owner's pre-admission"
+                        );
+                        JoinReply::Admitted {
+                            room: room.room().to_owned(),
+                            workspace_id: room.workspace_id(),
+                            name: room.record.name.clone(),
+                            role,
+                        }
+                    });
+                    if let Some(slot) = answers.get_mut(index) {
+                        *slot = Some(answer);
+                    }
+                }
+            }
+            Err(error) => {
+                for (index, _) in admitting {
+                    if let Some(slot) = answers.get_mut(index) {
+                        *slot = Some(Err(error.clone()));
+                    }
+                }
+            }
+        }
+        if !spent.is_empty()
+            && let Err(error) = room.admissions.spend(spent)
+        {
+            let error = CollaborationError::from(error);
+            for answer in answers.iter_mut().flatten() {
+                if answer.is_ok() {
+                    *answer = Err(error.clone());
+                }
+            }
+        }
+        answers
+            .into_iter()
+            .map(|answer| {
+                answer.unwrap_or_else(|| Err(CollaborationError::new("join was not answered")))
+            })
+            .collect()
+    }
+
+    /// What admits one queued redemption under its pre-admission (the
+    /// verified redemption, the grant's label and role), or its answer.
+    /// `invites` holds the invitations already admitted in this pass.
+    fn check_pre_admitted(
+        &self,
+        room: &GovernedRoom,
+        join: &QueuedAdmission,
+        invites: &mut std::collections::BTreeSet<[u8; 32]>,
+        now: u64,
+    ) -> Result<(VerifiedRedemption, String, RoomRole), Box<Result<JoinReply, CollaborationError>>>
+    {
+        let request_id = join.proof.challenge.request_id;
+        if let Some(prior) = self.page_joins().find(room.room(), request_id) {
+            if prior.proof_digest != join.proof_digest {
+                return Err(Box::new(Err(CollaborationError::new(
+                    "join request ID already names a different proof",
+                ))));
+            }
+            return Err(Box::new(Ok(match prior.declined_at_ns {
+                Some(_) => JoinReply::Declined,
+                None => JoinReply::Waiting,
+            })));
+        }
+        let device = join.proof.challenge.device_public_key;
+        let redemption =
+            Self::redeem(room, device, &join.proof, now).map_err(|error| Box::new(Err(error)))?;
+        let invite_id = redemption.join().invite_id();
+        if room.redeemed(invite_id) || !invites.insert(invite_id) {
+            return Err(Box::new(Err(CollaborationError::new(
+                "invitation was already redeemed",
+            ))));
+        }
+        let role = room_role(redemption.join().grant().role);
+        let grant = room
+            .admissions
+            .grant_for(invite_id, &join.token, now)
+            .map_err(|error| Box::new(Err(CollaborationError::from(error))))?;
+        if grant.role != role || grant.room != room.room() {
+            return Err(Box::new(Err(CollaborationError::new(
+                "the pre-admission is for another room or role",
+            ))));
+        }
+        Ok((redemption, grant.label.clone(), role))
     }
 
     async fn status(

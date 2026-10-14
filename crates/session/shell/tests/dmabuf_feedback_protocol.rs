@@ -305,21 +305,16 @@ fn dmabuf_feedback_advertises_the_render_node_and_compositable_formats() {
                 let fourcc = Fourcc::try_from(entry.fourcc).unwrap_or_else(|_| {
                     panic!("advertised an unrecognised FourCC 0x{:08x}", entry.fourcc)
                 });
-                // Single-plane RGBA under LINEAR is the whole importable set — see
-                // `foreign::validate_importable`, the gate a client buffer passes.
+                // A buffer in an advertised layout must be one the compositor
+                // draws: the CPU reads it linear, or the presenting GPU was
+                // confirmed to sample it (the probe the advertised tiled
+                // layouts come from).
+                let modifier = Modifier::from(entry.modifier);
                 assert!(
-                    matches!(
-                        fourcc,
-                        Fourcc::Argb8888 | Fourcc::Xrgb8888 | Fourcc::Abgr8888 | Fourcc::Xbgr8888
-                    ),
-                    "advertised {fourcc:?}, which the tile importer cannot composite; \
-                     a client that picks it renders into an error tile"
-                );
-                assert_eq!(
-                    Modifier::from(entry.modifier),
-                    Modifier::Linear,
-                    "advertised modifier 0x{:x} for {fourcc:?}; the importer only handles \
-                     LINEAR, so a client using this would produce unreadable buffers",
+                    shell::shell::foreign::composites(fourcc, modifier)
+                        || shell::shell::gpu_frames::sampleable(fourcc, modifier),
+                    "advertised {fourcc:?} with modifier 0x{:x}, which the tile importer \
+                     cannot composite; a client that picks it renders into an error tile",
                     entry.modifier
                 );
             }

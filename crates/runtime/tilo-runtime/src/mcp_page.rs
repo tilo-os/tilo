@@ -255,6 +255,9 @@ fn signature(action: &ActionDescriptor, describe: bool) -> String {
             line.push(']');
         }
     }
+    if action.contract.carries_untrusted_content() {
+        line.push_str(" [untrusted content]");
+    }
     if let Availability::Unavailable { reason, .. } = &action.contract.availability {
         line.push_str(" [unavailable: ");
         line.push_str(reason);
@@ -263,7 +266,7 @@ fn signature(action: &ActionDescriptor, describe: bool) -> String {
     line
 }
 
-fn param(param: &ActionParam) -> String {
+pub fn param(param: &ActionParam) -> String {
     let mut text = param.name.to_string();
     if !param.required {
         text.push('?');
@@ -310,6 +313,20 @@ fn range(schema: &Value) -> Option<String> {
     }
     let show = |value: Option<&Value>| value.map(ToString::to_string).unwrap_or_default();
     Some(format!("{}..{}", show(minimum), show(maximum)))
+}
+
+/// What an action's contract says an agent should know before calling it:
+/// its risk when it is more than low, and why it is unavailable.
+pub fn risk_note(contract: &tilo_actions::ActionContract) -> Option<String> {
+    let mut notes = Vec::new();
+    match contract.risk {
+        RiskLevel::None | RiskLevel::Low => {}
+        risk => notes.push(risk_label(risk).to_owned()),
+    }
+    if let Availability::Unavailable { reason, .. } = &contract.availability {
+        notes.push(format!("unavailable: {reason}"));
+    }
+    (!notes.is_empty()).then(|| notes.join(", "))
 }
 
 const fn risk_label(risk: RiskLevel) -> &'static str {

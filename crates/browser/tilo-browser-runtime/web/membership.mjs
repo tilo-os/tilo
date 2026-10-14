@@ -11,7 +11,7 @@
  * one.
  */
 
-const ROLES = {viewer: 'Viewer', commenter: 'Commenter', editor: 'Editor'};
+const ROLES = {viewer: 'Viewer', commenter: 'Commenter', editor: 'Editor', moderator: 'Moderator'};
 const DAY_SECONDS = 24 * 60 * 60;
 /** How long an invitation stays redeemable unless `expiresIn` says. */
 export const DEFAULT_INVITATION_SECONDS = 7 * DAY_SECONDS;
@@ -152,6 +152,10 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
         notices: notices.map(notice),
       };
     },
+    /** Only the people waiting to join, as `list().waiting`: one request. */
+    async requests() {
+      return expect(await ask({Requests: {room}}), 'Requests').map(waiting);
+    },
     /** Admit a waiting person (`requestId` from `list().waiting`). */
     async admit(requestIdHex) {
       return roomOf(await ask({Admit: {room, request_id: bytesOf(requestIdHex)}}));
@@ -169,6 +173,15 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
     /** Remove a member and every device of theirs. */
     async remove(userPublicKey) {
       return roomOf(await ask({Remove: {room, request_id: requestId(), user_public_key: bytesOf(userPublicKey)}}));
+    },
+    /** Remove a person and keep them out until `unban`. The owner, or a
+     * Moderator for people ranked below Moderator; the host decides. */
+    async ban(userPublicKey) {
+      return roomOf(await ask({Ban: {room, request_id: requestId(), user_public_key: bytesOf(userPublicKey)}}));
+    },
+    /** Let a banned person be admitted again. */
+    async unban(userPublicKey) {
+      return roomOf(await ask({Unban: {room, request_id: requestId(), user_public_key: bytesOf(userPublicKey)}}));
     },
     /** Withdraw an invitation nobody redeemed yet. */
     async cancelInvitation(inviteId) {

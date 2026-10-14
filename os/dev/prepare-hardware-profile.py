@@ -26,6 +26,9 @@ DRACUT_PATH = Path("etc/dracut.conf.d/41-tilo-hardware.conf")
 # Sorts after the image's own kargs.d drop-ins, so a board console named here
 # is the last console= and becomes /dev/console.
 KARGS_PATH = Path("usr/lib/bootc/kargs.d/10-hardware-profile.toml")
+# libinput's system quirks directory; /etc/libinput holds only the
+# administrator's local-overrides.quirks.
+LIBINPUT_QUIRKS_DIR = Path("usr/share/libinput")
 # Broadcom's sample station address. Vendor NVRAM files (the Orange Pi's
 # AP6256 among them) ship it, and brcmfmac programs whatever the NVRAM names,
 # so every board would share one MAC. The pinned bytes are checked as
@@ -39,6 +42,33 @@ def installed_firmware(destination: str, payload: bytes) -> bytes:
         return payload
     lines = payload.splitlines(keepends=True)
     return b"".join(line for line in lines if line.rstrip(b"\r\n") != SAMPLE_BROADCOM_MAC)
+
+
+def libinput_quirks(profile: str, keyboards: list[dict[str, str]]) -> str:
+    """The libinput quirks naming the profile's built-in keyboards internal.
+
+    libinput enables a touchpad's disable-while-typing only against a keyboard
+    it tags internal, and its shipped quirks tag only PS/2 keyboards so. An
+    I2C or SPI HID keyboard is otherwise unpaired and the touchpad keeps
+    tapping and moving under the typing hand. Every match is ANDed, so the
+    section applies to that bus, id and name on that device-tree board only.
+    """
+    lines = [f"# Generated from the {profile} hardware profile (os/hardware/profiles).",
+             "# Built-in keyboards libinput would otherwise leave unpaired from the",
+             "# touchpad, so disable-while-typing never engaged."]
+    for keyboard in keyboards:
+        lines += [
+            "",
+            f"[Tilo {profile} internal keyboard {keyboard['vendor']}:{keyboard['product']}]",
+            "MatchUdevType=keyboard",
+            f"MatchBus={keyboard['bus']}",
+            f"MatchVendor=0x{keyboard['vendor']}",
+            f"MatchProduct=0x{keyboard['product']}",
+            f"MatchName={keyboard['name']}",
+            f"MatchDeviceTree={keyboard['devicetree_compatible']}",
+            "AttrKeyboardIntegration=internal",
+        ]
+    return "\n".join(lines) + "\n"
 
 
 def checked_path(root: Path, relative: Path, *, required: bool) -> Path:
@@ -211,6 +241,9 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
             "match-device=driver:ath12k_wifi7_pci\n"
             f"wifi.wake-on-wlan={definition['wifi_wake_on_wlan']}\n"
         ).encode("utf-8")
+    if definition.get("internal_keyboards"):
+        outputs[LIBINPUT_QUIRKS_DIR / f"50-tilo-{profile}.quirks"] = libinput_quirks(
+            profile, definition["internal_keyboards"]).encode("utf-8")
     # Check every destination before creating directories or installing bytes.
     # This includes existing output files, including dangling symlinks.
     destinations = {

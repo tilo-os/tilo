@@ -23,6 +23,7 @@ pub mod display;
 pub mod input;
 pub mod layer_hash;
 pub mod manifest;
+pub mod profile;
 
 use std::collections::BTreeMap;
 
@@ -375,6 +376,8 @@ pub const USERSPACE_COMPONENTS: &[&str] = &[
     "apps+runtime",
     "app-host",
     "native-runtime-host",
+    "model-manager",
+    "model-gateway",
     "control",
     "app-cli",
     "ush",
@@ -470,6 +473,9 @@ pub struct Shot {
 pub struct Control {
     pub slot: String,
     pub args: Vec<String>,
+    /// Private action arguments carried only to the control client's stdin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_args: Option<DeviceActions>,
 }
 
 /// Remove what no kept generation references, and evict build dirs.
@@ -989,6 +995,90 @@ pub struct StatusResult {
     pub seat0: Option<Lease>,
     pub storage: Storage,
     pub issues: Vec<Issue>,
+    /// The last time the machine booted another OS image than its slots
+    /// were made on, and what that took off them. Absent from a daemon that
+    /// does not reconcile slots with the image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_change: Option<ImageChange>,
+    /// The OS image the slots' generations are made on, as [`booted_image`]
+    /// names it: recorded at every boot, so it is the booted one. Absent
+    /// from a daemon that does not reconcile slots with the image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slots_image: Option<String>,
+}
+
+/// The machine booted another OS image than its slots' generations were
+/// made on. Layers are built against one image (its libraries, its
+/// protocols, its other components), so on the new one they would run old
+/// programs against new ones: every slot went back to the image itself
+/// (generation 0), and the generations made for the old image are gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageChange {
+    /// The image the generations were made on; `None` when tilo-vmd had not
+    /// recorded one (state from before it did).
+    pub from: Option<String>,
+    /// The booted image, as `composefs:<digest>` or `ostree:<deployment>`.
+    pub to: String,
+    /// RFC 3339, when the boot found the change.
+    pub at: String,
+    /// Slots that ran layers and no longer do.
+    pub dropped: Vec<DroppedLayers>,
+    /// Layers no generation referenced any more, deleted afterwards.
+    #[serde(default)]
+    pub freed_bytes: u64,
+}
+
+/// One slot an [`ImageChange`] put back on the image.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DroppedLayers {
+    pub slot: String,
+    /// The generation it was on.
+    pub generation: u64,
+    /// The components that generation had swapped in, by name.
+    pub components: Vec<String>,
+}
+
+/// The booted OS image, from a kernel command line: the composefs digest of
+/// the deployment (`composefs=`, bootc's composefs backend) or its ostree
+/// deployment path (`ostree=`). `None` for a machine booted some other way,
+/// where nothing tells two images apart.
+#[must_use]
+pub fn booted_image(cmdline: &str) -> Option<String> {
+    cmdline.split_whitespace().find_map(|word| {
+        let (key, value) = word.split_once('=')?;
+        match key {
+            "composefs" if !value.is_empty() => Some(format!("composefs:{value}")),
+            "ostree" if !value.is_empty() => Some(format!("ostree:{value}")),
+            _ => None,
+        }
+    })
+}
+
+impl ImageChange {
+    /// One line per slot, for people: what the upgrade took off and why.
+    #[must_use]
+    pub fn describe(&self) -> Vec<String> {
+        if self.dropped.is_empty() {
+            return Vec::new();
+        }
+        let mut lines = vec![format!(
+            "the OS image changed ({}): layers built for the previous image were dropped, because they would run old programs against the new ones",
+            self.at
+        )];
+        for slot in &self.dropped {
+            lines.push(format!(
+                "  slot {} left generation {} ({}) and runs the image as installed",
+                slot.slot,
+                slot.generation,
+                if slot.components.is_empty() {
+                    "no components".to_owned()
+                } else {
+                    slot.components.join(", ")
+                }
+            ));
+        }
+        lines
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1417,6 +1507,7 @@ mod tests {
                 Control {
                     slot: "a".into(),
                     args: vec![],
+                    private_args: None,
                 }
                 .into(),
             ];

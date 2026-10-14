@@ -5,6 +5,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -37,6 +38,61 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
         !state.path().join("agents.probe").exists(),
         "the worker created a file beside the host's state"
     );
+}
+
+/// A record a host creates under the room's default route is the record
+/// every member's first window opens: its genesis names that id, not one
+/// of its own, or a member's store refuses it as not matching its binding.
+#[test]
+fn a_confined_record_created_under_a_room_route_names_that_route() {
+    assert_seed_route("so.tilo.scratchpad", ui::record::RecordId::room_default());
+}
+
+#[test]
+fn a_confined_room_record_is_created_under_the_package_primary_route() {
+    assert_seed_route("so.tilo.notes", ui::record::RecordId::package_primary());
+}
+
+fn assert_seed_route(app: &str, default: ui::record::RecordId) {
+    let catalogue = catalogue();
+    let source = ConfinedReplica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "host",
+        &tilo_agent_participant::ReplicaActor::Owner,
+        Seed::NewAt(default.clone()),
+    )
+    .unwrap();
+    assert_eq!(source.record(), default.as_str());
+    let Some(DocumentMutation::Snapshot(genesis)) = source.take_mutation().unwrap() else {
+        panic!("a new record is published whole");
+    };
+    let doc = automerge::AutoCommit::load(&genesis).unwrap();
+    let kind = catalogue.get(app).unwrap().record_kind.clone();
+    if default.is_package_primary() {
+        // A package primary uses its store namespace, not a minted identity.
+        assert_eq!(ui::record::identity(&doc), None);
+    } else {
+        assert_eq!(ui::record::room_scope(&doc).as_deref(), Some(ROOM));
+        assert_eq!(
+            ui::record::identity(&doc),
+            Some(ui::record::RecordCheckout::new(default, kind))
+        );
+    }
+    // Both route shapes must reopen through the actual confined factory.
+    ConfinedReplica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "member",
+        &tilo_agent_participant::ReplicaActor::Owner,
+        Seed::Existing {
+            record: source.record_id().clone(),
+            changes: vec![genesis],
+        },
+    )
+    .unwrap();
 }
 
 fn edit(text: &str) -> serde_json::Map<String, serde_json::Value> {
