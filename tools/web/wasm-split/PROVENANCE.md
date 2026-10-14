@@ -34,6 +34,13 @@ time:
   split module was cleared while main still read it.
 - Every function the kept part of the main module still references (through
   its code or the call graph) stays, even when the split analysis missed it.
+- Shared chunks hold code again. Upstream's loop that collected the
+  functions several split modules use recorded nothing, so its one shared
+  chunk was empty and every split module carried its own copy of all such
+  code. Functions are now grouped by which split modules reach them (small
+  groups merged into one chunk), a chunk imports what it calls from the main
+  module and other chunks, and the chunk functions called from outside get
+  a table slot the main module leaves empty and the chunk fills.
 
 Memory: upstream parses the whole program once per split module, all at
 once, which took 140 GB for a 170 MB module split in 34. Here each split
