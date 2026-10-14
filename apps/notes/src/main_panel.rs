@@ -1220,6 +1220,12 @@ impl MainPanel {
         self.scroll_y
     }
 
+    /// Test hook: the dates the header shows for the open note.
+    #[doc(hidden)]
+    pub fn dates_for_test(&self) -> crate::metadata::NoteDates {
+        self.dates
+    }
+
     /// Test hook: the laid-out title band, for click targeting through the
     /// real event path.
     #[doc(hidden)]

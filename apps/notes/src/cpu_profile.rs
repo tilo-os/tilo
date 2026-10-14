@@ -1022,6 +1022,59 @@ fn profile_launch(mut app: OwnedApp, notes: usize) {
             (notes..2 * notes).contains(&bodies_read(&rows)),
             "a launch reads the notebook once: {rows:?}"
         );
+        // The notes' dates come from the whole history; a launch reads it
+        // away from the UI thread and its first frame does not wait for it.
+        assert!(
+            rows.iter().all(|row| row.phase != "schema_changes.read"),
+            "a launch read the notebook's history on the UI thread: {rows:?}"
+        );
         emit_owned("launch", sample, elapsed, &rows, &[]);
+        await_note_dates(&mut app);
+    }
+    // The read a launch hands to a background thread, run here: what it
+    // costs that thread.
+    for sample in 0..owned_samples(5) {
+        let ((read, elapsed), rows) = ui::tilo_resource::profiling::observe(|| {
+            let began = ui::time::now();
+            let read = app.read_document(read_note_dates_in_place);
+            (read, began.elapsed().as_nanos())
+        });
+        assert!(
+            rows.iter().any(|row| row.phase == "schema_changes.read"),
+            "the history was read: {rows:?}"
+        );
+        drop(read);
+        emit_owned("note_dates_read", sample, elapsed, &rows, &[]);
+    }
+}
+
+/// Every note's dates, read from the whole history on this thread.
+fn read_note_dates_in_place(doc: &ui::tilo_resource::Doc) -> crate::metadata::NoteDateIndex {
+    let mut index = crate::metadata::NoteDateIndex::default();
+    index.sync_reading_off_thread_from(doc, u64::MAX);
+    index
+}
+
+/// Wait for the open note's dates to land from the read a launch started
+/// off the UI thread, and check they are the ones the history gives.
+fn await_note_dates(app: &mut OwnedApp) {
+    let page = app
+        .surface(|notes: &mut crate::NotesApp| notes.selected_for_test())
+        .unwrap()
+        .expect("the relaunched window opens a note");
+    let expected = app.read_document(read_note_dates_in_place).get(page);
+    assert!(expected.edited.is_some(), "the open note has an edit time");
+    let started = ui::time::now();
+    while app
+        .surface(|notes: &mut crate::NotesApp| notes.main_panel_mut().dates_for_test())
+        .unwrap()
+        != expected
+    {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "the open note's dates land after a launch"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        app.harness().relayout();
     }
 }
