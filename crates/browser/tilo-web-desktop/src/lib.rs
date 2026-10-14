@@ -12,10 +12,12 @@
 // Linked for its `#[wasm_bindgen]` exports, not named.
 extern crate tilo_browser_runtime;
 
+mod activity;
 mod apps;
 mod split;
 
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 fn start() {
+    activity::register();
     apps::register();
 }
