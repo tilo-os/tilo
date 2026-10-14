@@ -1981,6 +1981,17 @@ impl FrameBuilder {
         }
     }
 
+    /// Install adversarial app content while retaining the real host, pump,
+    /// layout and paint passes for native scheduling regression tests.
+    #[cfg(test)]
+    pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
+        let mut frame = Self::new((800, 600));
+        frame.node_map.clear();
+        *frame.host = ShellOverlayHost::with_fixture_content(content);
+        frame.rebuild_layout_tree();
+        frame
+    }
+
     /// Run the widget tree's per-frame pump (`sync` then `update`).
     /// Returns `true` when something changed and the frame should repaint.
     /// The compositor's frame loop needs this too, or a hosted app that

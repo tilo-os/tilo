@@ -176,7 +176,10 @@ containerfile="$repo/os/Containerfile"
 # addition beside the audit in the existing libexec COPY instruction.
 # tilo-extension is now compiled: it arrives from the extension component at
 # the same path and mode instead of from the context.
-expected_contract=fc4c2fff13ffe828412236523dabca46ee35beaa4eafc59a63294eb744b941de
+# The cache cleanup's policy (/etc/tilo/cache-gc.toml, beside desktop.toml) and
+# its system and user tilo-cache-gc.service/.timer units ride existing COPY
+# instructions; they are the intentional payload rows.
+expected_contract=f8da8f778e14a85961c51848e523d9fce7097fe2b2952bd1b854c0c62ef66a9b
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
