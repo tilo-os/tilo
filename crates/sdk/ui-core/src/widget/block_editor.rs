@@ -320,79 +320,59 @@ impl Block {
         }
     }
 
+    /// A prose block of `kind` holding `text`, set in the kind's size: what
+    /// every text kind's constructor makes. One copy, not inlined: each
+    /// constructor building its own line put the whole line constructor
+    /// into the module once per kind.
+    #[inline(never)]
+    fn text_block(kind: BlockKind, text: &str) -> Self {
+        let line = RichTextLine::new()
+            .with_text(text)
+            .with_size(kind.font_size());
+        Self::with_id(kind, line)
+    }
+
     pub fn paragraph(text: &str) -> Self {
-        Self::with_id(
-            BlockKind::Paragraph,
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(BlockKind::Paragraph.font_size()),
-        )
+        Self::text_block(BlockKind::Paragraph, text)
     }
 
     pub fn quote(text: &str) -> Self {
-        let kind = BlockKind::Quote;
-        Self::with_id(
-            kind.clone(),
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(kind.font_size()),
-        )
+        Self::text_block(BlockKind::Quote, text)
     }
 
     pub fn callout(kind: CalloutKind, text: &str) -> Self {
-        let kind = BlockKind::Callout(kind);
-        Self::with_id(
-            kind.clone(),
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(kind.font_size()),
-        )
+        Self::text_block(BlockKind::Callout(kind), text)
     }
 
     pub fn heading(level: u8, text: &str) -> Self {
-        let kind = BlockKind::Heading(level.clamp(1, 3));
-        Self::with_id(
-            kind.clone(),
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(kind.font_size()),
-        )
+        Self::text_block(BlockKind::Heading(level.clamp(1, 3)), text)
     }
 
     pub fn bullet(indent: u8, text: &str) -> Self {
-        let kind = BlockKind::Bullet {
-            indent: indent.min(MAX_LIST_INDENT),
-        };
-        Self::with_id(
-            kind.clone(),
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(kind.font_size()),
+        Self::text_block(
+            BlockKind::Bullet {
+                indent: indent.min(MAX_LIST_INDENT),
+            },
+            text,
         )
     }
 
     pub fn numbered(indent: u8, text: &str) -> Self {
-        let kind = BlockKind::Numbered {
-            indent: indent.min(MAX_LIST_INDENT),
-        };
-        Self::with_id(
-            kind.clone(),
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(kind.font_size()),
+        Self::text_block(
+            BlockKind::Numbered {
+                indent: indent.min(MAX_LIST_INDENT),
+            },
+            text,
         )
     }
 
     pub fn checklist(indent: u8, done: bool, text: &str) -> Self {
-        let kind = BlockKind::Checklist {
-            indent: indent.min(MAX_LIST_INDENT),
-            done,
-        };
-        Self::with_id(
-            kind.clone(),
-            RichTextLine::new()
-                .with_text(text)
-                .with_size(kind.font_size()),
+        Self::text_block(
+            BlockKind::Checklist {
+                indent: indent.min(MAX_LIST_INDENT),
+                done,
+            },
+            text,
         )
     }
 

@@ -53,9 +53,10 @@ impl CalloutKind {
     /// spells it, `warning` as stored).
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|kind| kind.name().eq_ignore_ascii_case(name.trim()))
+        // Lower-cased once, then compared exactly: a case-insensitive
+        // comparison per kind is unrolled into a loop for each name.
+        let name = name.trim().to_ascii_lowercase();
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
 
     /// The alert marker that opens the callout in Markdown: `[!WARNING]`.
