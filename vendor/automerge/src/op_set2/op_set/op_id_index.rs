@@ -19,17 +19,21 @@
 //! growing past [`MAX_GAP`] or more ops spliced in than a quarter of those
 //! built; the next apply rebuilds it. It costs about 8 bytes per built op.
 //!
-//! Only a document whose search would be slow is indexed: one whose
-//! `id_ctr` column spans at least [`MIN_SLABS`] slabs, at least half of
-//! which hold a counter lower than the one before it (a document typed in
-//! order has nearly none, and its slabs pack thousands of ops). Such a
-//! document keeps more than 8 bytes per op in its columns already. Others
-//! are checked again once they have grown by an eighth.
+//! Only a document whose searches have been slow is indexed: once the
+//! searches since the last decision would have paid for building the index
+//! (each counted as the slabs it may decode, at [`SEARCH_COST`] ops of
+//! building per slab), an apply builds it if the `id_ctr` column spans at
+//! least [`MIN_SLABS`] slabs and at least half as many counters are lower
+//! than the one before them. A document typed in order has next to none
+//! and packs thousands of ops into a slab; an import or a load searches
+//! little. Those keep nothing more. A document found not worth it is looked
+//! at again once it has grown by an eighth.
 //!
 //! A position the index gives is only a candidate: the caller reads the id
 //! there, and searches the column as before if it is not the op asked for.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::types::{OpId, SmallHashMap};
 
@@ -44,16 +48,35 @@ const MAX_GAP: usize = 4096;
 /// Gaps per block of the Fenwick tree.
 const BLOCK: usize = 64;
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct OpIdIndex(State);
+/// Ops of building the index that decoding one slab in a search costs as
+/// much time as (about 0.45 µs against 30 ns).
+const SEARCH_COST: usize = 16;
+
+#[derive(Debug, Default)]
+pub(crate) struct OpIdIndex {
+    state: State,
+    /// Slabs the searches since the last decision may have decoded.
+    searched: AtomicUsize,
+}
+
+impl Clone for OpIdIndex {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            searched: AtomicUsize::new(self.searched.load(Ordering::Relaxed)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 enum State {
-    /// Not built; the next apply decides.
+    /// Not built; an apply builds it once searches have been slow enough.
     #[default]
     Unknown,
     /// Not worth building until the document holds this many ops.
     Unneeded(usize),
+    /// Was built and had to be dropped; the next apply builds it again.
+    Dropped,
     Built(Box<Built>),
 }
 
@@ -73,14 +96,24 @@ struct Built {
 }
 
 impl OpIdIndex {
+    /// A search for an op went through a column of `slabs` slabs.
+    pub(crate) fn searched(&self, slabs: usize) {
+        if !matches!(self.state, State::Built(_)) {
+            self.searched.fetch_add(slabs, Ordering::Relaxed);
+        }
+    }
+
     /// Whether a document of `len` ops whose `id_ctr` column spans `slabs`
     /// slabs, not indexed, is to be looked at with [`Self::decide`] now.
     pub(crate) fn wants_counters(&self, len: usize, slabs: usize) -> bool {
-        match self.0 {
-            State::Built(_) => false,
-            State::Unneeded(until) if len < until => false,
-            _ => slabs >= MIN_SLABS,
-        }
+        let searched = self.searched.load(Ordering::Relaxed);
+        slabs >= MIN_SLABS
+            && match self.state {
+                State::Built(_) => false,
+                State::Dropped => true,
+                State::Unneeded(until) if len < until => false,
+                _ => searched.saturating_mul(SEARCH_COST) >= len,
+            }
     }
 
     /// Whether to build, from the counters of the document's `len` ops in
@@ -98,20 +131,21 @@ impl OpIdIndex {
             prev = counter;
         }
         let build = descents.saturating_mul(2) >= slabs;
+        *self.searched.get_mut() = 0;
         if !build {
-            self.0 = State::Unneeded(len.saturating_add(len / 8));
+            self.state = State::Unneeded(len.saturating_add(len / 8));
         }
         build
     }
 
     #[cfg(test)]
     fn is_built(&self) -> bool {
-        matches!(self.0, State::Built(_))
+        matches!(self.state, State::Built(_))
     }
 
     /// Index `ids`, the ids of the document's `len` ops in order.
     pub(crate) fn build(&mut self, len: usize, ids: impl Iterator<Item = OpId>) {
-        self.0 = State::Unknown;
+        self.state = State::Unknown;
         if u32::try_from(len).is_err() {
             return;
         }
@@ -141,7 +175,7 @@ impl OpIdIndex {
         for ops in &mut by_actor {
             ops.sort_unstable();
         }
-        self.0 = State::Built(Box::new(Built {
+        self.state = State::Built(Box::new(Built {
             len,
             by_actor,
             blocks: vec![0; (len + 1).div_ceil(BLOCK) + 1],
@@ -150,26 +184,28 @@ impl OpIdIndex {
         }));
     }
 
-    /// Forget everything; the next apply decides again.
+    /// Forget where ops are; the next apply builds anew if this was built.
     pub(crate) fn clear(&mut self) {
-        self.0 = State::Unknown;
+        if matches!(self.state, State::Built(_)) {
+            self.state = State::Dropped;
+        }
     }
 
     /// `ids` (in order) were spliced in at `at`.
     pub(crate) fn inserted(&mut self, at: usize, ids: impl Iterator<Item = OpId>) {
-        let State::Built(built) = &mut self.0 else {
+        let State::Built(built) = &mut self.state else {
             return;
         };
         let ids: Vec<OpId> = ids.collect();
         if !ids.is_empty() && built.insert(at, &ids).is_none() {
-            self.0 = State::Unknown;
+            self.state = State::Dropped;
         }
     }
 
     /// Where the op `id` is: `None` if nothing is indexed, `Some(None)` if
     /// the document does not hold it, else a position to check.
     pub(crate) fn find(&self, id: OpId) -> Option<Option<usize>> {
-        let State::Built(built) = &self.0 else {
+        let State::Built(built) = &self.state else {
             return None;
         };
         if let Some(&gap) = built.recent.get(&id) {
@@ -345,18 +381,34 @@ mod tests {
     }
 
     #[test]
-    fn only_scattered_counters_are_indexed() {
+    fn only_slow_searches_through_scattered_counters_are_indexed() {
         let mut index = OpIdIndex::default();
+        // Searches worth a build, but too few slabs to be slow.
+        index.searched(1_000);
         assert!(!index.wants_counters(1_000, MIN_SLABS - 1));
-        assert!(index.wants_counters(1_000, MIN_SLABS));
-        // Typed in order: look again once grown by an eighth.
+        // Enough slabs, but too few searches yet.
+        let mut index = OpIdIndex::default();
+        index.searched(MIN_SLABS);
+        assert!(!index.wants_counters(MIN_SLABS * SEARCH_COST * 2, MIN_SLABS));
+        index.searched(MIN_SLABS);
+        assert!(index.wants_counters(MIN_SLABS * SEARCH_COST * 2, MIN_SLABS));
+        // Typed in order: look again once grown by an eighth and searched
+        // as much again.
         assert!(!index.decide(1_000, MIN_SLABS, 1..1_001));
+        assert!(!index.wants_counters(1_125, MIN_SLABS));
+        index.searched(1_000);
         assert!(!index.wants_counters(1_124, MIN_SLABS));
         assert!(index.wants_counters(1_125, MIN_SLABS));
         assert_eq!(index.find(OpId::new(1, 0)), None);
         // A low counter after a high one in every other op.
         let scattered = (0..1_000u32).map(|i| if i % 2 == 0 { 5_000 - i } else { i });
         assert!(index.decide(1_000, MIN_SLABS, scattered));
+        index.build(1_000, (1..=1_000).map(|c| OpId::new(c, 0)));
+        assert!(index.is_built());
+        // Dropped, it is built again without waiting for searches.
+        index.clear();
+        assert!(!index.is_built());
+        assert!(index.wants_counters(1_000, MIN_SLABS));
     }
 
     #[test]

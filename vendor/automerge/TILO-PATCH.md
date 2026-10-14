@@ -245,14 +245,17 @@ when it was built, per actor sorted by counter (8 bytes per op), and
 follows the document from there: `OpSet::splice` records where each splice
 went, ops spliced in since sit in the gaps between the built ops, and a
 Fenwick tree over blocks of gaps counts them, so a lookup and a splice are
-O(log n). The first apply that takes changes into a document builds it
-(2.5 ms at 80,000 ops) if the search would be slow there: if the `id_ctr`
+O(log n). It is built only for a document whose searches have been slow:
+each search counts the slabs it may decode, and once those would have
+paid for building the index (a slab costs about as much as 16 ops of the
+build), the next apply builds it (2.5 ms at 80,000 ops) if the `id_ctr`
 column spans at least 64 slabs and at least half as many counters are
 lower than the one before them. A text typed in order has next to none
-and packs thousands of ops into a slab, so it is never indexed and holds
-nothing more (`patch_log_memory.rs` pins that); a document that is
-indexed already keeps several times 8 bytes per op in its columns (4.4 MB
-for the 80,000 ops above, plus 0.65 MB of index). A document found not
+and packs thousands of ops into a slab, and an import or a load searches
+little, so they hold nothing more (`patch_log_memory.rs` and
+`tilo-doc-codecs`' `import_memory.rs` pin that). A replica taking remote keystrokes
+into a scattered text builds it on the third: the 80,000-op document
+above holds 4.4 MB, and the index adds 0.65 MB. A document found not
 worth it is looked at again once it has grown by an eighth. The index is
 dropped, to be rebuilt by the next apply, when ops leave the document (a
 rolled back transaction), actors are renumbered, a gap grows past 4,096
