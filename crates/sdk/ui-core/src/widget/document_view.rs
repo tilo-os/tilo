@@ -393,6 +393,11 @@ where
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         crate::search::capability::search_providers(self.child.as_ref())
     }
+    fn search_provider_descriptors(
+        &self,
+    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+        crate::search::capability::search_provider_descriptors(self.child.as_ref())
+    }
     fn activate_search_result(
         &mut self,
         action_id: &str,
