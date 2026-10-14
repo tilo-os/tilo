@@ -117,6 +117,8 @@ struct Shared {
     /// Bumped whenever `presentation` changes. Unlike `revision` it never
     /// asks a host to save or share the tree.
     presented: u64,
+    /// Where the host confirms in passing what left nothing to see.
+    acknowledger: ui::widget::acknowledgement::Acknowledger,
 }
 
 impl Shared {
@@ -140,6 +142,13 @@ pub struct DesktopHandle {
 }
 
 impl DesktopHandle {
+    /// Confirm in passing an action that left nothing to see ("Link
+    /// copied"): a short-lived pill, said politely to screen readers,
+    /// never a notification. The host asks for a redraw.
+    pub fn acknowledge(&self, text: impl Into<String>) {
+        self.shared.borrow().acknowledger.say(text);
+    }
+
     pub fn revision(&self) -> u64 {
         self.shared.borrow().revision
     }
@@ -383,6 +392,9 @@ pub struct DesktopSurface {
     activity: Option<history::HistoryOverlay>,
     /// The banners and centre, when the host installed notifications.
     notices: Option<notices::NotificationLayer>,
+    /// What an action that leaves nothing to see confirms in passing
+    /// ("Link copied"), over everything else.
+    acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
     /// Where the host collects what controls emit, once it has bound this
     /// surface. A tab built after that (a launch, a record that arrived, a
     /// rebuilt row) is bound to it as it is built, or its registered
@@ -448,7 +460,9 @@ impl DesktopSurface {
             host_choices: Vec::new(),
             presentation: Presentation::default(),
             presented: 0,
+            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
         }));
+        let acknowledger = shared.borrow().acknowledger.clone();
         let mut surface = Self {
             shared: Rc::clone(&shared),
             tiles,
@@ -467,6 +481,7 @@ impl DesktopSurface {
             history: None,
             activity: None,
             notices: None,
+            acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer::new(acknowledger),
             controls: None,
         };
         surface.show_active_strip();
@@ -1683,13 +1698,16 @@ impl Widget for DesktopSurface {
             .notices
             .as_mut()
             .map(|layer| layer.build_layout(taffy, theme, node_map));
+        let acknowledgement = self.acknowledgement.build_layout(taffy, theme, node_map);
         // The row, when shown, is always the first child, then search, the
-        // history pane and the notifications, each when present.
+        // history pane and the notifications, each when present, and the
+        // acknowledgement last.
         let children: Vec<NodeId> = row
             .into_iter()
             .chain(search)
             .chain(activity)
             .chain(notices)
+            .chain(std::iter::once(acknowledgement))
             .collect();
         let style = Style {
             display: ui::taffy::Display::Flex,
@@ -1732,6 +1750,10 @@ impl Widget for DesktopSurface {
             && let Some(&notices) = nodes.get(next)
         {
             layer.apply_layout(taffy, notices, inner);
+        }
+        if let Some(&acknowledgement) = nodes.last() {
+            self.acknowledgement
+                .apply_layout(taffy, acknowledgement, inner);
         }
         let reveal = self.reveal.take();
         let shown = self.shown;
@@ -1860,6 +1882,7 @@ impl Widget for DesktopSurface {
             .chain(search)
             .chain(activity)
             .chain(notices)
+            .chain(std::iter::once(&self.acknowledgement as &dyn Widget))
             .collect()
     }
 
@@ -1892,10 +1915,12 @@ impl Widget for DesktopSurface {
         let search = open.then(|| self.search.palette_mut() as &mut (dyn Widget + '_));
         let activity = self.activity.as_mut().map(|o| o as &mut (dyn Widget + '_));
         let notices = self.notices.as_mut().map(|l| l as &mut (dyn Widget + '_));
+        let acknowledgement = &mut self.acknowledgement as &mut (dyn Widget + '_);
         row.into_iter()
             .chain(search)
             .chain(activity)
             .chain(notices)
+            .chain(std::iter::once(acknowledgement))
             .collect()
     }
 
@@ -1999,6 +2024,8 @@ impl DesktopSurface {
         if let Some(layer) = self.notices.as_mut() {
             layer.draw(scene, transform, text, theme, presence);
         }
+        self.acknowledgement
+            .draw(scene, transform, text, theme, presence);
     }
 
     /// Traversal reaches only active tabs; lifecycle must reach them all.
@@ -2082,6 +2109,35 @@ mod tests {
             .collect();
         let tree = seed_tree(&mut minter, "Desk", tabs);
         DesktopSurface::new(tree, 7, Box::new(Notices))
+    }
+
+    /// An acknowledgement is said politely over the desktop, wakes the host
+    /// for its fade and end, and is no notification.
+    #[test]
+    fn an_acknowledgement_passes_over_the_desktop_without_a_notification() {
+        let (mut surface, handle) = desktop(1);
+        let notifications = DesktopNotifications::default();
+        surface.set_notifications(notifications.clone());
+        let said = |surface: &DesktopSurface| {
+            surface
+                .children()
+                .last()
+                .and_then(|layer| layer.accessibility())
+                .and_then(|node| node.live.zip(node.value))
+        };
+        // Present and silent before anything is said.
+        assert_eq!(
+            said(&surface),
+            Some((ui::a11y::Politeness::Polite, String::new()))
+        );
+        handle.acknowledge("Link copied");
+        assert_eq!(
+            said(&surface),
+            Some((ui::a11y::Politeness::Polite, "Link copied".to_owned()))
+        );
+        assert!(surface.needs_redraw());
+        assert!(Widget::next_wake_deadline(&surface).is_some());
+        assert_eq!(notifications.counts(), (0, 0));
     }
 
     /// Each select a host sends applies in the frame its wake draws, in
