@@ -139,7 +139,7 @@ fn assert_effect(name: &str, h: &AbsorbHarness, actions: &Recorder, launches: &L
             assert!(h.host.qs_root.edit_mode());
         }
         "quick_settings_brightness" => {
-            assert!(wrote(actions, "brightness="), "{:?}", actions.calls())
+            assert!(wrote(actions, "brightness="), "{:?}", actions.calls());
         }
         "quick_settings_volume" => assert!(wrote(actions, "volume="), "{:?}", actions.calls()),
         "quick_settings_network" => assert!(wrote(actions, "wifi=false"), "{:?}", actions.calls()),
@@ -176,13 +176,13 @@ fn assert_effect(name: &str, h: &AbsorbHarness, actions: &Recorder, launches: &L
         }
         "quick_settings_do_not_disturb" => assert!(st.dnd()),
         "quick_settings_devices" => {
-            assert_eq!(st.quick_settings.current_level(), &QsLevel::Devices)
+            assert_eq!(st.quick_settings.current_level(), &QsLevel::Devices);
         }
         "quick_settings_clipboard" => {
             assert_eq!(st.quick_settings.current_level(), &QsLevel::Clipboard);
         }
         "quick_settings_power_profile" => {
-            assert!(wrote(actions, "power="), "{:?}", actions.calls())
+            assert!(wrote(actions, "power="), "{:?}", actions.calls());
         }
         other => panic!("no expectation for {other}"),
     }
