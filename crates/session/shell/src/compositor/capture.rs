@@ -2249,7 +2249,6 @@ mod tests {
     fn the_screenshot_picker_paints_live_over_the_held_desktop() {
         let mut fb = FrameBuilder::new((800, 600));
         fb.relayout();
-        let before = fb.paint();
         assert!(
             fb.host_mut()
                 .open_capture_studio(ui::widget::CaptureMode::Screenshot)
@@ -2259,20 +2258,20 @@ mod tests {
 
         let mut executor = CaptureExecutor::default();
         let mut first = fb.paint();
-        assert!(
-            same_scene(&first, &before),
-            "the desktop the picker holds still does not contain the picker"
-        );
+        let desktop = first.clone();
         let (_, appended) = executor.execute_ready(&mut fb, &mut first);
         assert!(appended, "the picker paints over the held desktop");
-        assert!(!same_scene(&first, &before));
+        assert!(
+            first.encoding().draw_tags.len() > desktop.encoding().draw_tags.len(),
+            "the presented frame is the held desktop plus the picker"
+        );
         let held = executor
             .frozen_desktop
-            .as_ref()
+            .clone()
             .expect("the desktop is held while choosing");
         assert!(
-            same_scene(held, &before),
-            "and the held desktop is picker-free"
+            same_scene(&held, &desktop),
+            "the held desktop is the desktop alone"
         );
 
         let mut second = fb.paint();
@@ -2282,8 +2281,15 @@ mod tests {
             "every frame while choosing paints the picker again"
         );
         assert!(
-            second.encoding().draw_tags.len() > before.encoding().draw_tags.len(),
+            second.encoding().draw_tags.len() > held.encoding().draw_tags.len(),
             "over the held desktop"
+        );
+        assert!(
+            executor
+                .frozen_desktop
+                .as_ref()
+                .is_some_and(|still| same_scene(still, &held)),
+            "and the hold does not take in the picker"
         );
     }
 

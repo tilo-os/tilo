@@ -929,8 +929,20 @@ fn the_position_indicators_show_while_navigating_and_fade_after() {
         "at rest the indicators stay out of the way"
     );
 
-    h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
-    h.tick();
+    // Step until focus actually moves along the strip (the first press can
+    // only settle keyboard focus on it, which moves nothing).
+    for _ in 0..3 {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+        h.tick();
+        if h.host.strip_rail_for_tests().focused != 0 {
+            break;
+        }
+    }
+    assert_ne!(
+        h.host.strip_rail_for_tests().focused,
+        0,
+        "fixture: focus moved"
+    );
     let stepped = Instant::now();
     assert_eq!(
         h.host.strip_indicator_alpha_at(stepped, false),
@@ -950,9 +962,20 @@ fn the_position_indicators_show_while_navigating_and_fade_after() {
         "and are gone within two seconds of the last move"
     );
 
-    // Once gone, a sideways scroll brings them back.
-    h.scroll_horizontally(120.0);
-    h.tick();
+    // Once gone, a sideways scroll that moves the strip brings them back.
+    let before = (h.host.strip_rail_for_tests().focused, h.scroll_x());
+    for rightward in [-120.0, 120.0] {
+        h.scroll_horizontally(rightward);
+        h.tick();
+        if (h.host.strip_rail_for_tests().focused, h.scroll_x()) != before {
+            break;
+        }
+    }
+    assert_ne!(
+        (h.host.strip_rail_for_tests().focused, h.scroll_x()),
+        before,
+        "fixture: the scroll moved along the strip"
+    );
     let later = stepped + Duration::from_secs(3);
     let scrolled = later.max(Instant::now());
     let moved = h.host.strip_indicator_alpha_at(scrolled, false);

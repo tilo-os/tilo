@@ -7184,7 +7184,7 @@ mod tests {
         let to = Point::new(idle[3].x1 + 40.0, y);
         let t0 = crate::time::now();
         // A sample per 8 ms frame at 3 px/ms, a brisk but ordinary sweep.
-        let steps = (1_u32..)
+        let steps = (1_u32..=1_000)
             .find(|n| f64::from(*n) * 24.0 >= to.x - from.x)
             .expect("a finite row");
         for (k, p) in path(from, to, steps).into_iter().enumerate() {
