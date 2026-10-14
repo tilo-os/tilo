@@ -7,16 +7,16 @@ use std::ops::RangeBounds;
 
 use crate::storage::BundleMetadata;
 use crate::{
-    Change, ChangeHash,
     author::Authors,
     clock::{Clock, SeqClock},
     error::AutomergeError,
-    op_set2::{ActorIdx, ValueMeta, change::BuildChangeMetadata},
-    storage::columns::BadColumnLayout,
+    op_set2::{change::BuildChangeMetadata, ActorIdx, ValueMeta},
     storage::columns::compression::Uncompressed,
+    storage::columns::BadColumnLayout,
     storage::document::ReconstructError as LoadError,
     storage::{Columns, Document, RawColumn, RawColumns},
     types::OpId,
+    Change, ChangeHash,
 };
 
 /// The graph of changes
@@ -1167,10 +1167,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        ActorId, AutoCommit, Automerge, ROOT, TextEncoding, make_rng,
-        op_set2::{OpSet, TxOp, change::build_change, op_set::ResolvedAction},
+        make_rng,
+        op_set2::{change::build_change, op_set::ResolvedAction, OpSet, TxOp},
         transaction::Transactable,
         types::{ObjMeta, OpId, OpType},
+        ActorId, AutoCommit, Automerge, TextEncoding, ROOT,
     };
     use rand::RngExt;
 
@@ -1702,8 +1703,8 @@ mod tests {
     /// order).
     #[test]
     fn bundle_size_is_independent_of_input_hash_order() {
-        use crate::ROOT;
         use crate::transaction::Transactable;
+        use crate::ROOT;
 
         let mut doc = Automerge::new();
         doc.set_actor(crate::ActorId::from(b"alice" as &[u8]));

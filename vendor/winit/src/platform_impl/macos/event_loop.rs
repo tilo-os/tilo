@@ -3,7 +3,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::os::raw::c_void;
-use std::panic::{RefUnwindSafe, UnwindSafe, catch_unwind, resume_unwind};
+use std::panic::{catch_unwind, resume_unwind, RefUnwindSafe, UnwindSafe};
 use std::ptr;
 use std::rc::{Rc, Weak};
 use std::sync::mpsc;
@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use core_foundation::base::{CFIndex, CFRelease};
 use core_foundation::runloop::{
-    CFRunLoopAddSource, CFRunLoopGetMain, CFRunLoopSourceContext, CFRunLoopSourceCreate,
-    CFRunLoopSourceRef, CFRunLoopSourceSignal, CFRunLoopWakeUp, kCFRunLoopCommonModes,
+    kCFRunLoopCommonModes, CFRunLoopAddSource, CFRunLoopGetMain, CFRunLoopSourceContext,
+    CFRunLoopSourceCreate, CFRunLoopSourceRef, CFRunLoopSourceSignal, CFRunLoopWakeUp,
 };
-use objc2::rc::{Retained, autoreleasepool};
+use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::ProtocolObject;
 use objc2::sel;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSWindow};

@@ -96,6 +96,7 @@ class PrepareTestShardScript(unittest.TestCase):
             stubs = {
                 tree / "tools/ensure-headless-audio.sh": "",
                 tree / "tools/ci/ensure-x11-bridge-tools.sh": "",
+                tree / "tools/ci/ensure-session-bus-tools.sh": "",
                 tree / "tools/ci/install-pdfium.sh": 'echo /usr/lib64/libpdfium.so\n',
                 tree / "tools/ci/require-pdf-sandbox.sh": "",
                 tree / "tools/ci/measure.sh": "",
@@ -133,6 +134,12 @@ class PrepareTestShardScript(unittest.TestCase):
     def test_shell_shards_get_the_x11_bridge(self) -> None:
         calls, _ = self.prepare("-p tilo-ui -p shell")
         self.assertIn("tools/ci/ensure-x11-bridge-tools.sh", self.tools(calls))
+
+    def test_secret_service_shards_get_the_session_bus_client(self) -> None:
+        calls, _ = self.prepare("-p tilo-secret-service")
+        self.assertIn("tools/ci/ensure-session-bus-tools.sh", self.tools(calls))
+        calls, _ = self.prepare("-p tilo-secret-service-extra")
+        self.assertNotIn("tools/ci/ensure-session-bus-tools.sh", self.tools(calls))
 
     def test_package_names_match_exactly(self) -> None:
         calls, _ = self.prepare("-p shell-extra -p example-imager -p tilo-app-cli")

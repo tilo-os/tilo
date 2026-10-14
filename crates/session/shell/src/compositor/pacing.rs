@@ -380,10 +380,18 @@ pub const MIN_LEAD: Duration = Duration::from_millis(1);
 /// the flip ioctl are not in the measured span, and a frame that misses its
 /// vblank is a dropped frame.
 pub const LEAD_MARGIN: Duration = Duration::from_millis(2);
-/// Frames whose cost the lead covers: about one second at 60 Hz, so one slow
-/// frame (a workspace switch's first, a texture upload) keeps the lead up for
-/// the frames that follow it rather than only for itself.
+/// Frames whose cost the lead covers: at most one second at 60 Hz of a busy
+/// desktop (see [`LEAD_MEMORY`] for a quiet one).
 const LEAD_WINDOW: usize = 64;
+/// How long one frame's cost keeps the lead up. Frames are not retired at a
+/// steady rate: typing paints a few sparse frames a second, so a count-only
+/// window stretches over a quarter minute, and a single repaint of the whole
+/// screen (a window opening, a texture upload) held the lead at a full
+/// interval for all of it. A frame built a whole interval ahead misses every
+/// later commit of the input it was built for, so each of those commits waits
+/// one more vblank. A second covers the frames that follow a slow one, the
+/// burst it belongs to; the newest frame's cost is always kept.
+pub const LEAD_MEMORY: Duration = Duration::from_millis(1000);
 
 /// The time from a frame's deadline to its queued page flip, over recent frames.
 ///
@@ -394,21 +402,30 @@ const LEAD_WINDOW: usize = 64;
 /// vblank itself.
 #[derive(Debug, Clone, Default)]
 pub struct FrameLead {
-    costs: VecDeque<Duration>,
+    costs: VecDeque<(Instant, Duration)>,
 }
 
 impl FrameLead {
-    /// Record one frame's deadline-to-flip cost.
-    pub fn observe(&mut self, cost: Duration) {
+    /// Record one frame's deadline-to-flip cost, seen at `at`.
+    pub fn observe(&mut self, at: Instant, cost: Duration) {
         if self.costs.len() == LEAD_WINDOW {
             self.costs.pop_front();
         }
-        self.costs.push_back(cost);
+        self.costs.push_back((at, cost));
+        // Older frames of a quiet stretch age out; the newest stays.
+        while self.costs.len() > 1
+            && self
+                .costs
+                .front()
+                .is_some_and(|(seen, _)| at.saturating_duration_since(*seen) > LEAD_MEMORY)
+        {
+            self.costs.pop_front();
+        }
     }
 
     /// The worst cost in the window, once any is known.
     pub fn worst(&self) -> Option<Duration> {
-        self.costs.iter().copied().max()
+        self.costs.iter().map(|(_, cost)| *cost).max()
     }
 
     /// How far ahead of its vblank a frame must be due, clamped to
@@ -559,7 +576,7 @@ impl VblankScheduler {
         }
         let paced = built.and_then(|built| PacedFrame::of(built, retired, clock.interval()));
         if let Some(frame) = paced {
-            self.lead.observe(frame.cost);
+            self.lead.observe(now, frame.cost);
         }
         clock.set_lead(self.lead.lead(clock.interval()));
         clock.note_retirement(retired.at, retired.display);
@@ -973,6 +990,8 @@ mod tests {
     #[test]
     fn the_lead_covers_the_worst_recent_frame_and_reports_a_render_bound_loop() {
         let interval = Duration::from_nanos(16_666_667);
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
         let mut lead = FrameLead::default();
         assert_eq!(
             lead.lead(interval),
@@ -980,21 +999,52 @@ mod tests {
             "with no cost known, a frame is due at the vblank itself"
         );
         assert!(!lead.render_bound(interval));
-        lead.observe(Duration::from_millis(3));
-        lead.observe(Duration::from_millis(5));
-        lead.observe(Duration::from_millis(2));
+        lead.observe(at(0), Duration::from_millis(3));
+        lead.observe(at(16), Duration::from_millis(5));
+        lead.observe(at(33), Duration::from_millis(2));
         assert_eq!(lead.lead(interval), Duration::from_millis(5) + LEAD_MARGIN);
-        lead.observe(Duration::ZERO);
+        lead.observe(at(50), Duration::ZERO);
         assert_eq!(lead.worst(), Some(Duration::from_millis(5)));
         // One slow frame covers the window after it, then ages out.
-        lead.observe(Duration::from_millis(15));
+        lead.observe(at(66), Duration::from_millis(15));
         assert!(lead.render_bound(interval));
         assert_eq!(lead.lead(interval), interval);
-        for _ in 0..LEAD_WINDOW {
-            lead.observe(Duration::from_millis(1));
+        for n in (0u64..).take(LEAD_WINDOW) {
+            lead.observe(at(83 + n), Duration::from_millis(1));
         }
         assert!(!lead.render_bound(interval));
         assert_eq!(lead.lead(interval), Duration::from_millis(1) + LEAD_MARGIN);
+    }
+
+    #[test]
+    fn a_slow_frame_stops_inflating_the_lead_once_the_burst_it_belongs_to_is_over() {
+        // Typing paints a few small frames a second. One repaint of the whole
+        // screen among them used to hold the lead at a full interval until 64
+        // more frames retired, about a quarter minute of typing, so every
+        // frame of it was built at the vblank before its own and missed the
+        // commits that followed its input.
+        let interval = Duration::from_nanos(16_666_667);
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut lead = FrameLead::default();
+        lead.observe(at(0), Duration::from_millis(7));
+        lead.observe(at(200), Duration::from_millis(33));
+        assert_eq!(lead.lead(interval), interval, "the burst keeps the lead up");
+        assert!(lead.render_bound(interval));
+        lead.observe(at(400), Duration::from_millis(7));
+        assert_eq!(lead.lead(interval), interval, "still inside its memory");
+        lead.observe(at(200 + 1001), Duration::from_millis(7));
+        assert_eq!(
+            lead.lead(interval),
+            Duration::from_millis(7) + LEAD_MARGIN,
+            "a second later the sparse frames set the lead again"
+        );
+        assert!(!lead.render_bound(interval));
+        // The newest frame's cost is kept however long ago it was.
+        let mut lone = FrameLead::default();
+        lone.observe(at(0), Duration::from_millis(9));
+        lone.observe(at(60_000), Duration::from_millis(4));
+        assert_eq!(lone.worst(), Some(Duration::from_millis(4)));
     }
 
     #[test]

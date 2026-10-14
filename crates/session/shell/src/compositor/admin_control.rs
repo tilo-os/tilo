@@ -174,7 +174,9 @@ impl PeerRefusal {
                 .to_string(),
             Self::LaunchedApp(package) => format!(
                 "`{package}` was launched by this session, and an app acts through its own \
-                 collaboration connection and grants, never with the device admin's authority"
+                 collaboration connection and grants, never with the device admin's authority; \
+                 an agent running inside it connects to the session's agent door instead \
+                 (`tilo-runtime-mcp --connect`), as an agent the person admits"
             ),
         }
     }

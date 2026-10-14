@@ -512,9 +512,7 @@ impl FrameHarness {
         };
         let verb = match verb {
             Action::SetValue(_) => Action::SetValue(
-                arguments
-                    .get(tilo_actions::PROMPTED_PARAM)
-                    .and_then(serde_json::Value::as_str)
+                tilo_actions::sole_text_argument(arguments)
                     .ok_or_else(|| tilo_actions::DoorError::MissingArgument(address.clone()))?
                     .to_owned(),
             ),

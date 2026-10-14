@@ -37,9 +37,22 @@ const APP_ID: &str = "so.tilo.linked-e2e";
 
 /// What the stand-in registry serves, by request path.
 #[derive(Clone, Default)]
-struct Served(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
+struct Served(
+    Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    Arc<Mutex<Vec<String>>>,
+);
 
 impl Served {
+    /// How many requests have asked for `path` so far.
+    fn hits(&self, path: &str) -> usize {
+        self.1
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|hit| *hit == path)
+            .count()
+    }
+
     fn put(&self, path: &str, bytes: Vec<u8>) {
         self.0.lock().unwrap().insert(path.to_string(), bytes);
     }
@@ -75,6 +88,7 @@ fn serve(mut stream: TcpStream, served: &Served) {
     }
     let path = request.split_whitespace().nth(1).unwrap_or("/");
     let path = path.split('?').next().unwrap_or(path);
+    served.1.lock().unwrap().push(path.to_string());
     let body = served.0.lock().unwrap().get(path).cloned();
     let (status, body) = match body {
         Some(body) => ("200 OK", body),
@@ -136,18 +150,27 @@ fn tapp(manifest: &str, payload: &Path) -> Vec<u8> {
 }
 
 fn app_tapp(root: &Path, runtime: &str) -> Vec<u8> {
-    let payload = root.join("app-payload");
+    app_tapp_pinning(root, APP_ID, runtime, None)
+}
+
+/// An app on `runtime` that also pins `optional` (an engine) by exact version.
+fn app_tapp_pinning(root: &Path, id: &str, runtime: &str, optional: Option<&str>) -> Vec<u8> {
+    let optional_line = optional.map_or_else(String::new, |engine| {
+        format!("optional-runtimes = [\"{engine}\"]")
+    });
+    let payload = root.join(format!("payload-{id}"));
     std::fs::create_dir_all(payload.join("bin")).unwrap();
     std::fs::write(payload.join("bin/app"), b"#!/bin/true\n").unwrap();
     tapp(
         &format!(
             r#"
 [package]
-id = "{APP_ID}"
+id = "{id}"
 version = "2.0.0"
 kind = "app"
 name = "Linked"
 runtime = "{runtime}"
+{optional_line}
 
 [package.isa]
 {isa}
@@ -176,11 +199,15 @@ type = "gui"
 }
 
 fn runtime_tapp(bundle: &Path, provides: &str, version: &str) -> Vec<u8> {
+    runtime_package_tapp(bundle, "so.tilo.runtime", provides, version)
+}
+
+fn runtime_package_tapp(bundle: &Path, id: &str, provides: &str, version: &str) -> Vec<u8> {
     tapp(
         &format!(
             r#"
 [package]
-id = "so.tilo.runtime"
+id = "{id}"
 version = "{version}"
 kind = "runtime"
 name = "Tilo runtime"
@@ -389,6 +416,15 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     );
     assert!(package_store::list_installed().unwrap().is_empty());
     assert!(!app_cli::runtime_installed(&needed));
+    let absent = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        .args(["runtime", "install", &needed, "--repo", "local"])
+        .output()
+        .unwrap();
+    assert!(
+        !absent.status.success(),
+        "unoffered runtime cannot be installed"
+    );
+    assert!(package_store::list_installed().unwrap().is_empty());
 
     // Phase `with_its_runtime_on_offer_the_runtime_is_fetched_first`.
     let runtime_full = runtime_tapp(&registry_bundle, &needed, "0.1.7");
@@ -420,18 +456,8 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     let second = snapshot(vec![app_entry, runtime_entry], &owner, Some(&first));
     served.put("/entries", serde_json::to_vec(&second).unwrap());
 
-    let archive = root.join("runtime.tapp");
-    std::fs::write(&archive, &thin).unwrap();
-    let publisher_hex = hex::encode(publisher().verifying_key().to_bytes());
-    let explicit = std::process::Command::new(&installer)
-        .arg("install")
-        .arg(&archive)
-        .args([
-            "--require-publisher",
-            &publisher_hex,
-            "--payload-from",
-            &base,
-        ])
+    let explicit = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        .args(["runtime", "install", &needed, "--repo", "local"])
         .output()
         .unwrap();
     assert!(
@@ -466,15 +492,8 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
             .unwrap()
             .is_intact()
     );
-    let repeat = std::process::Command::new(&installer)
-        .arg("install")
-        .arg(&archive)
-        .args([
-            "--require-publisher",
-            &publisher_hex,
-            "--payload-from",
-            &base,
-        ])
+    let repeat = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        .args(["runtime", "install", &needed, "--repo", "local"])
         .output()
         .unwrap();
     assert!(
@@ -497,6 +516,18 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         .into_iter()
         .find(|app| app.package_id == APP_ID)
         .unwrap();
+    // Finding the runtime's offer verifies one snapshot, however many runtime
+    // packages it lists; it is not downloaded again per package.
+    let entries_before = served.hits("/entries");
+    let found = app_cli::runtime_offer(&needed, "local")
+        .expect("the offer is found")
+        .expect("the registry offers the runtime");
+    assert_eq!(found.package_id, registry_types::NATIVE_RUNTIME_PACKAGE_ID);
+    assert_eq!(
+        served.hits("/entries") - entries_before,
+        1,
+        "the registry snapshot is fetched once to find the runtime"
+    );
     app_cli::install::install_app(&offer)
         .unwrap_or_else(|error| panic!("install must fetch the runtime: {}", error.user_message()));
     let fetched = runtimes.join(&registry_version);
@@ -518,6 +549,107 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         .expect("the app is installed");
     assert_eq!(linked.version, "2.0.0");
 
+    // Phase `an_app_pinning_an_engine_installs_with_it_or_not_at_all`.
+    // The Browser pins its engine runtime by exact version. Whatever installs
+    // the Browser brings that engine first; where the registry offers none,
+    // the install is refused and the working state stays.
+    let engine_id = "so.tilo.runtime.engine";
+    let browser_id = "so.tilo.engine-e2e";
+    let (engine_version, engine_bundle) =
+        runtime_bundle(root, "engine", b"the engine build", &identity_path);
+    let engine = format!("tilo-runtime/{engine_version}");
+    let browser = app_tapp_pinning(
+        root,
+        browser_id,
+        &format!("tilo-runtime/{device_version}"),
+        Some(&engine),
+    );
+    served.put("/browser.tapp", browser.clone());
+    let browser_entry = entry(
+        browser_id,
+        "2.0.0",
+        &format!("{base}/browser.tapp"),
+        &browser,
+        &format!("tilo-runtime/{device_version}"),
+    );
+    let current = &second;
+    let mut entries = current.entries.clone();
+    entries.push(browser_entry);
+    let third = snapshot(entries.clone(), &owner, Some(current));
+    served.put("/entries", serde_json::to_vec(&third).unwrap());
+    let offer = app_cli::available()
+        .apps
+        .into_iter()
+        .find(|app| app.package_id == browser_id)
+        .expect("the browser is offered");
+    let error = app_cli::install::install_app(&offer).expect_err("no engine on offer, no install");
+    assert!(
+        matches!(
+            error,
+            app_cli::install::InstallError::RuntimeUnavailable { .. }
+        ),
+        "{error:?}"
+    );
+    assert!(
+        error.user_message().contains(&engine),
+        "{}",
+        error.user_message()
+    );
+    assert!(
+        package_store::list_installed()
+            .unwrap()
+            .iter()
+            .all(|row| row.id != browser_id),
+        "a refused install leaves nothing behind"
+    );
+    assert!(!app_cli::runtime_installed(&engine));
+
+    // The registry offers the engine: installing the Browser fetches it first.
+    let engine_full = runtime_package_tapp(&engine_bundle, engine_id, &engine, "0.1.7");
+    let engine_objects = root.join("engine-objects");
+    std::fs::create_dir_all(&engine_objects).unwrap();
+    let split = tilo_app_package::chunks::split(engine_full.as_slice(), &engine_objects).unwrap();
+    let engine_thin = tilo_app_package::tapp::to_bytes(&split.meta, None).unwrap();
+    for object in std::fs::read_dir(&engine_objects).unwrap() {
+        let object = object.unwrap().path();
+        let name = object.file_name().unwrap().to_str().unwrap().to_string();
+        let served_as = name
+            .strip_suffix(".blob")
+            .map_or_else(|| format!("/blobs/{name}"), |hex| format!("/blobs/{hex}"));
+        served.put(&served_as, std::fs::read(&object).unwrap());
+    }
+    served.put("/engine.tapp", engine_thin.clone());
+    entries.push(entry(
+        engine_id,
+        "0.1.7",
+        &format!("{base}/engine.tapp"),
+        &engine_thin,
+        &engine,
+    ));
+    let fourth = snapshot(entries, &owner, Some(&third));
+    served.put("/entries", serde_json::to_vec(&fourth).unwrap());
+    let offer = app_cli::available()
+        .apps
+        .into_iter()
+        .find(|app| app.package_id == browser_id)
+        .unwrap();
+    app_cli::install::install_app(&offer).unwrap_or_else(|error| {
+        panic!(
+            "the Browser must bring its engine: {}",
+            error.user_message()
+        )
+    });
+    assert!(
+        app_cli::runtime_installed(&engine),
+        "the engine came with the Browser"
+    );
+    assert!(
+        package_store::list_installed()
+            .unwrap()
+            .iter()
+            .any(|row| row.id == browser_id)
+    );
+
     // A subsequent runtime package update must materialize its provided bundle,
     // not merely replace the package row while leaving its libraries absent.
     let (new_version, new_bundle) = runtime_bundle(root, "newer", b"new toolkit", &identity_path);
@@ -537,20 +669,11 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
             &new_needed,
         )],
         &owner,
-        Some(&second),
+        Some(&fourth),
     );
     served.put("/entries", serde_json::to_vec(&newer).unwrap());
-    let new_archive = root.join("new-runtime.tapp");
-    std::fs::write(&new_archive, &new_tapp).unwrap();
-    let update = std::process::Command::new(&installer)
-        .args([
-            "update",
-            registry_types::NATIVE_RUNTIME_PACKAGE_ID,
-            "--require-publisher",
-            &publisher_hex,
-            "--from",
-        ])
-        .arg(&new_archive)
+    let update = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        .args(["runtime", "install", &new_needed, "--repo", "local"])
         .output()
         .unwrap();
     assert!(
@@ -583,15 +706,8 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
         b"tampered",
     )
     .unwrap();
-    let damaged = std::process::Command::new(&installer)
-        .args([
-            "update",
-            registry_types::NATIVE_RUNTIME_PACKAGE_ID,
-            "--require-publisher",
-            &publisher_hex,
-            "--from",
-        ])
-        .arg(&new_archive)
+    let damaged = std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+        .args(["runtime", "install", &new_needed, "--repo", "local"])
         .output()
         .unwrap();
     assert!(

@@ -23,6 +23,11 @@ EXPECTED_COPIES = (
     "COPY os/scripts/install-components.py os/scripts/verify-elf-hardening.sh "
     "os/scripts/cargo-freshness.sh /build/os/scripts/",
     "COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env",
+    # crates/dev/tilo-vm-protocol embeds the device's input profiles.
+    "COPY os/hardware/profiles/lenovo-83ed/input/keyboard.json "
+    "os/hardware/profiles/lenovo-83ed/input/mouse.json "
+    "os/hardware/profiles/lenovo-83ed/input/touchpad.json "
+    "/build/os/hardware/profiles/lenovo-83ed/input/",
     "COPY tools/policy/app_portability_rules.toml "
     "/build/tools/policy/app_portability_rules.toml",
     "COPY tools/policy/app_capability_usage.toml "
