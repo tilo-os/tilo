@@ -2624,9 +2624,12 @@ impl ActorState {
                 session,
                 event,
             }) => {
+                // A room's governance answering this device is taken here:
+                // its caller waits off the thread other answers go to.
                 if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
                     std::sync::Weak::ptr_eq(&session, &Arc::downgrade(&runtime.session))
-                }) {
+                }) && !self.room_governance.takes(ws, &event)
+                {
                     self.handle_host_event(ws, peer, event).await;
                 }
             }
@@ -3189,13 +3192,6 @@ impl ActorState {
                 self.native_media.voice(ws, &event, session.as_deref());
                 None
             }
-            // A room's governance answering this device: its caller waits
-            // for it off the thread every other answer is delivered to.
-            HostEvent::Message {
-                author,
-                msg: NeighbourMsg::RemoteAction { ref frame },
-                ..
-            } if self.room_governance.answer(ws, author, frame) => None,
             HostEvent::Message {
                 author,
                 replayed: true,

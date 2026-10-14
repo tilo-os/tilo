@@ -74,7 +74,7 @@ pub(super) enum AdministeredRoom {
     /// Held here: asked through its governance actions.
     Held(HeldRoom),
     /// Not held here yet: asked at the relay's host door.
-    Unheld(UnheldRoom),
+    Unheld(Box<UnheldRoom>),
 }
 
 /// A relay-governed room this device holds: its governance answers on the
@@ -544,11 +544,11 @@ impl ShellNetwork {
         // This device does not hold the room until it redeems this
         // invitation, and the one the share is for is issued before then:
         // both at the host door.
-        let target = AdministeredRoom::Unheld(UnheldRoom {
+        let target = AdministeredRoom::Unheld(Box::new(UnheldRoom {
             relay: home.addr,
             room: summary.room,
             certificate,
-        });
+        }));
         let (own, _, _) = self.invite_to_relay_room(
             &target,
             InviteRole::Editor,
@@ -673,11 +673,11 @@ impl ShellNetwork {
                 room: summary.room.clone(),
             },
         )?;
-        let target = AdministeredRoom::Unheld(UnheldRoom {
+        let target = AdministeredRoom::Unheld(Box::new(UnheldRoom {
             relay: relay.clone(),
             room: summary.room.clone(),
             certificate: certificate.clone(),
-        });
+        }));
         let (own, _, _) = self.invite_to_relay_room(
             &target,
             InviteRole::Editor,
