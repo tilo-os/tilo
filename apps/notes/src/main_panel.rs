@@ -330,6 +330,9 @@ pub struct MainPanel {
     /// Rising-edge: a committed title edit that should rename the page. The
     /// host drains it via [`take_title_rename`](Self::take_title_rename).
     pending_rename: Option<String>,
+    /// The open title edit names a note just made: leaving it from the
+    /// keyboard puts the caret at the start of the body.
+    naming_new: bool,
     /// Durable tags assigned to the open page, rendered as quiet chips. The
     /// selection/filter around them belongs to the app and is intentionally
     /// local; this view only receives the document-derived labels.
@@ -428,11 +431,13 @@ impl MainPanel {
             tooltips_suppressed: false,
             title_label: EditableLabel::new("")
                 .with_text_role(TextRole::LargeTitle)
+                .with_placeholder(ui::i18n!("notes-title-placeholder"))
                 .with_id("note_title")
                 .with_accessible_name("Page title"),
             title_rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             pending_rename: None,
+            naming_new: false,
             pending_tag_open: None,
             header: NoteHeader::default(),
             header_node: None,
@@ -484,7 +489,20 @@ impl MainPanel {
         self.title_label
             .set_semantic_target(self.page_id.map(|page| format!("notes:page-title:{page}")));
         self.pending_rename = None;
+        self.naming_new = false;
         self.dirty = true;
+    }
+
+    /// End naming a new note: Enter or Escape goes on to the start of its
+    /// body; a click away leaves the caret where the click puts it.
+    fn finish_naming(&mut self, event: &WindowEvent) {
+        if std::mem::take(&mut self.naming_new)
+            && matches!(event, WindowEvent::KeyboardInput { .. })
+        {
+            self.editor
+                .editor_mut()
+                .focus_block(0, ui::widget::CursorPlacement::Start);
+        }
     }
 
     /// Rising-edge: a committed title edit that renames the current page. The
@@ -623,6 +641,10 @@ impl MainPanel {
     }
     pub(crate) fn title_focused(&self) -> bool {
         self.title_label.is_editing()
+    }
+    /// The title's layout node, the keyboard's target while it is edited.
+    pub(crate) fn title_node(&self) -> Option<NodeId> {
+        self.title_node
     }
     pub(crate) fn finish_local_focus(&mut self, focus: crate::local_view::NotesFocus) {
         self.title_label.cancel();
@@ -1031,6 +1053,18 @@ impl MainPanel {
         if self.page_id.is_some() {
             self.editor.set_focus(false);
             self.title_label.begin_edit();
+            self.naming_new = false;
+            self.dirty = true;
+        }
+    }
+
+    /// Name a note just made: its title opens empty, the placeholder showing,
+    /// so what is typed names it, and Enter goes on to the start of its body.
+    pub fn begin_new_title_edit(&mut self) {
+        if self.page_id.is_some() {
+            self.editor.set_focus(false);
+            self.title_label.begin_blank_edit();
+            self.naming_new = true;
             self.dirty = true;
         }
     }
@@ -1317,6 +1351,12 @@ impl MainPanel {
     #[doc(hidden)]
     pub fn title_is_editing_for_test(&self) -> bool {
         self.title_label.is_editing()
+    }
+
+    /// Test hook: what the title's field holds while it is edited.
+    #[doc(hidden)]
+    pub fn title_draft_for_test(&self) -> String {
+        self.title_label.current_text().to_owned()
     }
 
     /// Test hook: centre of the first-note call to action after a draw pass.
@@ -1963,10 +2003,12 @@ impl Widget for MainPanel {
                 EditOutcome::Committed(new) => {
                     self.pending_rename = Some(new);
                     self.editor.set_focus(true);
+                    self.finish_naming(event);
                     self.dirty = true;
                 }
                 EditOutcome::Cancelled => {
                     self.editor.set_focus(true);
+                    self.finish_naming(event);
                     self.dirty = true;
                 }
                 EditOutcome::None => {}
