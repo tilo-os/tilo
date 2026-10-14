@@ -542,6 +542,13 @@ pub fn paint_tilo_mark(scene: &mut Scene, transform: Affine, rect: Rect, theme: 
     }
 }
 
+/// How the bar's focus last arrived, which decides whether its ring shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FocusOrigin {
+    Keyboard,
+    Pointer,
+}
+
 /// `DesktopTree`, not `TopBar`, lets `build_tilo_root` stay a pure
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
@@ -665,10 +672,11 @@ pub struct TopBarChrome {
     /// currently selected inside it for keyboard and accessibility input.
     focused: bool,
     focused_control: Option<String>,
-    /// The bar's focus came from (or was last touched by) the pointer. Its
-    /// ring is for keyboard focus only: a click on the bar used to light the
-    /// overview button in your colour, which says nothing to a pointer user.
-    pointer_focus: bool,
+    /// Whether the bar's focus came from (or was last touched by) the
+    /// pointer. Its ring is for keyboard focus only: a click on the bar used
+    /// to light the overview button in your colour, which says nothing to a
+    /// pointer user.
+    focus_origin: FocusOrigin,
     /// When the time the bar shows next goes stale: the end of the current
     /// minute for the clock, second for the monitor, day for the calendar.
     /// Set when the bar draws and advanced by `update` once reached, so an
@@ -1003,7 +1011,7 @@ impl TopBarChrome {
             last_cursor: None,
             focused: false,
             focused_control: None,
-            pointer_focus: false,
+            focus_origin: FocusOrigin::Keyboard,
             time_wake: None,
             strips: strips::StripSwitcher::default(),
         };
@@ -4676,7 +4684,7 @@ impl TopBarChrome {
 
     /// Keyboard focus is shown; focus a click gave the bar is not.
     fn focus_ring_visible(&self) -> bool {
-        self.focused && !self.pointer_focus
+        self.focused && self.focus_origin == FocusOrigin::Keyboard
     }
 
     fn draw_focus_indicator(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
@@ -5883,11 +5891,11 @@ impl Widget for TopBarChrome {
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
                 ..
-            } => self.pointer_focus = true,
+            } => self.focus_origin = FocusOrigin::Pointer,
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == winit::event::ElementState::Pressed =>
             {
-                self.pointer_focus = false;
+                self.focus_origin = FocusOrigin::Keyboard;
             }
             _ => {}
         }
@@ -6320,7 +6328,7 @@ impl Widget for TopBarChrome {
         }
         self.focused = focused;
         if !focused {
-            self.pointer_focus = false;
+            self.focus_origin = FocusOrigin::Keyboard;
         }
         self.responsive.toolbar.set_focus(focused);
         if focused && self.focused_control.is_none() {

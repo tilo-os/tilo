@@ -56,12 +56,6 @@ impl HoverIntent {
         self.open
     }
 
-    /// Whether the open item is held only because the pointer is aiming at it.
-    #[cfg(test)]
-    pub(crate) fn aiming(&self) -> bool {
-        self.aim_confirmed_at.is_some()
-    }
-
     /// Test fixture: as if the pointer had dwelt on `idx` long enough.
     #[cfg(test)]
     pub(crate) fn force_open(&mut self, idx: Option<usize>) {
