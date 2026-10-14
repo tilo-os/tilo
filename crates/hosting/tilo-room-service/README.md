@@ -196,7 +196,7 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_LIVE_TLS_CERT`, `TILO_ROOMS_LIVE_TLS_KEY` | `/run/live-tls/tls.crt`, `/run/live-tls/tls.key` | its PEM certificate and key for the live origin's name; re-read within 30 s of a renewal, no restart |
 | `TILO_ROOMS_ROOT_FILE` | `/run/secrets/room-root` | 64 hex characters: the owner root |
 | `TILO_ROOMS_TRUSTED_PROXIES` | none | CIDRs whose `X-Forwarded-For` is believed |
-| `TILO_ROOMS_MAX_GUESTS` | `300` | people online at once (up to 10000) |
+| `TILO_ROOMS_MAX_GUESTS` | `300` | people online at once (up to 10000; one room admitted 100 with join p99 under 10 s and stopped admitting past about 250 in the last capacity sweep, `docs/benchmarks/room-host-capacity-2026-10.md`) |
 | `TILO_ROOMS_MAX_SPECTATORS` | `1000` | watching sessions at once |
 | `TILO_ROOMS_GUEST_JOINS_PER_10_MIN`, `TILO_ROOMS_GUEST_JOINS_PER_DAY` | `5`, `30` | guest joins one address may make (an IPv6 address counts by its /64); a visitor past them watches until the window frees up. Raise them where many visitors share an address: offices, schools, mobile carriers' NAT |
 | `TILO_ROOMS_SPECTATES_PER_10_MIN` | `30` | spectator certificates one address may take |
@@ -283,7 +283,9 @@ uses it with `PUBLIC_TILO_ROOMS_URL=http://localhost:8790`.
   which the Containerfile sets from the revision label; `unknown` outside an
   image), to compare with the revision of the pinned digest.
   `tilo_rooms_*`: rooms, online guests and
-  spectators, `joins_total`, `join_failures_total{reason}`, mode, browser
+  spectators, the persistent room's caps (`max_guests`, `max_spectators`, so
+  an alert divides by the running value rather than a copy of it),
+  `joins_total`, `join_failures_total{reason}`, mode, browser
   error counters, and the relay's own counters read from the snapshot each
   relay persists every second (`relay_up`, `relay_sessions`,
   `relay_live_drops_total`, `relay_records_total`, `relay_record_bytes_total`,
