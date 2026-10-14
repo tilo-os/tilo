@@ -57,7 +57,9 @@ def run_profile(path: Path, producer_args: list[str]) -> int:
         # directly. Do not change any producer argument, environment or exit.
         command = [sys.executable, str(Path(__file__).with_name("layer_artifacts.py")), *producer_args]
         status = subprocess.run(command, check=False).returncode
-        return status
+        # subprocess uses a negative signal number; shell commands report
+        # 128 + signal. Keep cancellation/failure status at that boundary.
+        return 128 - status if status < 0 else status
     finally:
         elapsed = time.monotonic() - started
         after = cache_snapshot()
@@ -69,7 +71,7 @@ def run_profile(path: Path, producer_args: list[str]) -> int:
             # Namespace identity only; never collect cache URLs, credentials,
             # arbitrary environment variables or compiler process arguments.
             "configured_namespace": os.environ.get("SCCACHE_GHA_VERSION"),
-            "cache_backend_enabled": os.environ.get("SCCACHE_GHA_ENABLED") == "on",
+            "gha_backend_enabled": os.environ.get("SCCACHE_GHA_ENABLED") == "on",
             "scope": "job-local server totals during the unchanged cohort producer; includes Rust and native compilers",
         }
         try:

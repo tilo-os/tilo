@@ -238,6 +238,16 @@ class HandoffTests(unittest.TestCase):
 
 
 class CacheObservationTests(unittest.TestCase):
+    def test_signal_exit_keeps_shell_status_and_raw_observation(self):
+        root = Path(__file__).resolve().parents[2] / "target/cohort-cache-tests"
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as directory:
+            output = Path(directory) / "observation.json"
+            with patch.object(profile, "cache_snapshot", return_value={"available": False}), \
+                 patch.object(profile.subprocess, "run", return_value=subprocess.CompletedProcess([], -15)):
+                self.assertEqual(profile.run_profile(output, ["produce"]), 143)
+            self.assertEqual(json.loads(output.read_text())["producer_exit_code"], -15)
+
     def test_totals_keep_rust_and_native_compilers(self):
         value = {"stats": {"cache_hits": {"counts": {"Rust": 8, "C/C++": 2}},
                            "cache_misses": {"counts": {"Rust": 3}}}}
