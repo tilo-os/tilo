@@ -917,8 +917,11 @@ mod tests {
             let nalus = vp9_unit(W, H);
 
             let mut view = vp9_view(PeerSurfaceMetrics::default());
-            let progressed = view.push_encoded(&nalus);
-            assert!(progressed, "decoder produced no frame from encoder output");
+            assert_eq!(
+                push_settled(&mut view, &nalus, None),
+                PushOutcome::Decoded,
+                "decoder produced no frame from encoder output"
+            );
             let latest = view.latest_frame().expect("frame stashed");
             assert_eq!(latest.width, W);
             assert_eq!(latest.height, H);
