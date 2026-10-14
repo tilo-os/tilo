@@ -104,8 +104,10 @@ export async function present({route, peer, surface, mountDesktop, diagnostics =
 /**
  * Boot an entry page. `deps` supplies the page host (`loadRuntime`,
  * `mountDesktop`) and the admission doors; the page wires the real ones.
+ * `onStep` hears the steps of getting in: `join` while a host's door is
+ * asked, `open` once admitted (until the desktop draws).
  */
-export async function boot({mode, window = globalThis, surface, status, deps, diagnostics = {}}) {
+export async function boot({mode, window = globalThis, surface, status, deps, diagnostics = {}, onStep = () => {}}) {
   const say = text => { if (status) status.textContent = text; };
   // The page's own loading note, which admission progress replaces only
   // while it lasts: once in, the note is back until the desktop draws.
@@ -125,11 +127,15 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const {peer} = await admit({
     scope: route.target.scope, secrets, tickets: entry.tickets,
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
-    onProgress: event => say(event.phase === 'pairing' ? 'Asking to pair this device…'
-      : event.phase === 'waiting' ? 'Waiting for the workspace owner to let you in…'
-      : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…'),
+    onProgress: event => {
+      onStep('join');
+      say(event.phase === 'pairing' ? 'Asking to pair this device…'
+        : event.phase === 'waiting' ? 'Waiting for the workspace owner to let you in…'
+        : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
+    },
   });
   say(loading);
+  onStep('open');
   if (peer && route.target.scope.kind === 'room' && !route.target.scope.room) {
     // The home workspace's room is known now: show its canonical link.
     route = {...route, target: {...route.target, scope: {...route.target.scope, room: peer.room}}};
