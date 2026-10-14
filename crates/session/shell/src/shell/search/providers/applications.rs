@@ -1499,13 +1499,13 @@ mod tests {
             &chrome,
             &ActionArgs::none(),
         );
-        // A launch the person can see opening is confirmed in passing, not
-        // with a notice: it is pending until its window appears. A refused
-        // launch still says why.
-        let launching = catalogue::take_pending_launch("so.tilo.terminal");
+        // Opening a Terminal into a group launches another instance: it is
+        // pending until its window appears. A launch the person can see is
+        // confirmed in passing rather than with a notice, so the pending
+        // launch is what tells it from a silent refocus of the open one.
         assert!(
-            launching || !chrome.borrow().notifications().is_empty(),
-            "a launch was attempted (still opening, or refused with a notice), not a silent refocus"
+            catalogue::take_pending_launch("so.tilo.terminal"),
+            "opening a Terminal into a group must launch another, not refocus the open one"
         );
         launcher::clear_pending_placements();
     }
