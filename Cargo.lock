@@ -7122,6 +7122,7 @@ version = "0.1.0"
 dependencies = [
  "app-registry",
  "clap",
+ "cli-shim",
  "ed25519-dalek 3.0.0",
  "fnv",
  "getrandom 0.4.3",
@@ -7129,7 +7130,6 @@ dependencies = [
  "package-store",
  "runtime-bundle",
  "semver",
- "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
