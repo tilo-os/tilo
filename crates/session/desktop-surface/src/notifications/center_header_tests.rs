@@ -37,9 +37,11 @@ fn wrapped_header_sizing_preserves_the_complete_row_and_pager_budget() {
                 .borrow_mut()
                 .retain(Notification::new("Recovery", "Try again."));
         }
-        let height = NotificationCenter::new().preferred_height_for_width(&host, metrics, 320.0);
-        let layout = CenterLayout::new(Rect::new(0.0, 0.0, 320.0, height), metrics);
-        assert_eq!(layout.visible_rows(total), rows.max(1));
+        let center = NotificationCenter::new();
+        let height = center.preferred_height_for_width(&host, &metrics, 320.0);
+        let layout = CenterLayout::new(Rect::new(0.0, 0.0, 320.0, height), &metrics);
+        let shapes = NotificationCenter::shapes(&host, &layout, &center.rows(&host));
+        assert_eq!(center.visible_rows(&host, &layout), rows.max(1));
         assert!(layout.title_rect().y0 >= layout.back().y1 + qs::RELATED_GAP);
         assert!(layout.title_rect().y1 + qs::RELATED_GAP <= layout.rows_top());
         if rows > 0 {
@@ -48,7 +50,7 @@ fn wrapped_header_sizing_preserves_the_complete_row_and_pager_budget() {
             } else {
                 height - qs::PANEL_PAD
             };
-            assert!((layout.row(rows.saturating_sub(1)).y1 - bottom).abs() < 1e-6);
+            assert!((layout.row_in(rows.saturating_sub(1), &shapes).y1 - bottom).abs() < 1e-6);
         }
     }
 }
@@ -58,7 +60,7 @@ fn normal_header_retains_its_single_band_geometry() {
     let theme = Theme::dark();
     let metrics = CenterLayout::metrics(&theme, &mut TextRenderer::new());
     let panel = Rect::new(0.0, 0.0, 400.0, 560.0);
-    let layout = CenterLayout::new(panel, metrics);
+    let layout = CenterLayout::new(panel, &metrics);
     assert!(!layout.wrapped_header());
     assert_eq!(
         layout.header_height(),
@@ -67,8 +69,8 @@ fn normal_header_retains_its_single_band_geometry() {
     let host = super::super::stack::tests::TestHost::default();
     let center = NotificationCenter::new();
     assert_eq!(
-        center.preferred_height_for_width(&host, metrics, 400.0),
-        center.preferred_height(&host, metrics)
+        center.preferred_height_for_width(&host, &metrics, 400.0),
+        center.preferred_height(&host, &metrics)
     );
 }
 
@@ -84,15 +86,15 @@ fn narrow_header_keeps_clear_undo_and_nested_back_journeys() {
             .retain(Notification::new("Recovery required", "Try again."));
         let mut center = NotificationCenter::new();
         for _ in 0..2 {
-            let height = center.preferred_height_for_width(&host, metrics, 320.0);
-            let layout = CenterLayout::new(Rect::new(0.0, 0.0, 320.0, height), metrics);
+            let height = center.preferred_height_for_width(&host, &metrics, 320.0);
+            let layout = CenterLayout::new(Rect::new(0.0, 0.0, 320.0, height), &metrics);
             assert_eq!(
                 center.click(&host, &layout, layout.clear().center()),
                 CenterOutcome::Handled
             );
             assert!(host.log().history().is_empty());
-            let height = center.preferred_height_for_width(&host, metrics, 320.0);
-            let cleared = CenterLayout::new(Rect::new(0.0, 0.0, 320.0, height), metrics);
+            let height = center.preferred_height_for_width(&host, &metrics, 320.0);
+            let cleared = CenterLayout::new(Rect::new(0.0, 0.0, 320.0, height), &metrics);
             assert!(center.focus_accessibility_path(&host, &[2]));
             assert_eq!(
                 center.key(&host, &cleared, &Key::Named(NamedKey::Enter)),
@@ -192,8 +194,8 @@ fn the_leading_control_closes_a_standalone_centre_and_goes_back_in_a_drill_in() 
     let theme = Theme::dark();
     let metrics = CenterLayout::metrics(&theme, &mut TextRenderer::new());
     let panel = Rect::new(0.0, 0.0, 360.0, 480.0);
-    let standalone = CenterLayout::new(panel, metrics);
-    let drill_in = CenterLayout::new(panel, metrics).drill_in();
+    let standalone = CenterLayout::new(panel, &metrics);
+    let drill_in = CenterLayout::new(panel, &metrics).drill_in();
     assert_eq!(
         super::leading_label(&standalone),
         t("notification-center-close")
@@ -210,4 +212,121 @@ fn the_leading_control_closes_a_standalone_centre_and_goes_back_in_a_drill_in() 
             .iter()
             .any(|n| n.name.as_deref() == Some(t("notification-center-close").as_str()))
     );
+}
+
+/// The painted rect of every visible row, newest first.
+fn row_rects(
+    center: &NotificationCenter,
+    host: &dyn NotificationHost,
+    layout: &CenterLayout,
+) -> Vec<Rect> {
+    center
+        .semantic_rects(host, layout, "")
+        .into_iter()
+        .filter(|(name, _)| name.starts_with("notification_row["))
+        .map(|(_, rect)| rect)
+        .collect()
+}
+
+#[test]
+fn a_row_is_as_tall_as_what_it_holds() {
+    let theme = Theme::dark();
+    let metrics = CenterLayout::metrics(&theme, &mut TextRenderer::new());
+    let host = super::super::stack::tests::TestHost::default();
+    // Retained oldest first; the centre lists newest first.
+    for notice in [
+        Notification::new(
+            "Backup couldn't finish",
+            "The backup disk was disconnected halfway through. Reconnect it and the next backup picks up where this one stopped.",
+        ),
+        Notification::new("Lena", "Pushed the floor plan"),
+        Notification::new("Update installed", ""),
+    ] {
+        host.log.borrow_mut().retain(notice);
+    }
+    let center = NotificationCenter::new();
+    let height = center.preferred_height_for_width(&host, &metrics, 360.0);
+    let layout = CenterLayout::new(Rect::new(0.0, 0.0, 360.0, height), &metrics);
+    let [bare, one_line, full] = row_rects(&center, &host, &layout)[..] else {
+        panic!("all three rows show");
+    };
+    let line = layout.caption_lh;
+    assert!(
+        (full.height() - layout.row_h()).abs() < 1e-6,
+        "a long body keeps the full preview"
+    );
+    assert!(
+        (one_line.height() - (full.height() - line)).abs() < 1e-6,
+        "a one-line body gets a one-line row, without an empty line under it"
+    );
+    assert!(
+        (bare.height() - (one_line.height() - line)).abs() < 1e-6,
+        "no body, no body line"
+    );
+    assert!(
+        (full.y1 + qs::PANEL_PAD - height).abs() < 1e-6,
+        "the panel ends on the padding under its last row"
+    );
+}
+
+#[test]
+fn a_rows_choices_sit_compact_and_trailing_like_its_banners() {
+    let theme = Theme::dark();
+    let metrics = CenterLayout::metrics(&theme, &mut TextRenderer::new());
+    let host = super::super::stack::tests::TestHost::default();
+    host.actions.replace(vec![
+        ("not-now".into(), "Not now".into()),
+        ("keep".into(), "Keep with passkey".into()),
+    ]);
+    host.log.borrow_mut().retain(Notification::new(
+        "Keep this identity?",
+        "A passkey brings you back as yourself on any browser.",
+    ));
+    let center = NotificationCenter::new();
+    let choices = |width: f64| {
+        let height = center.preferred_height_for_width(&host, &metrics, width);
+        let layout = CenterLayout::new(Rect::new(0.0, 0.0, width, height), &metrics);
+        let row = row_rects(&center, &host, &layout)
+            .first()
+            .copied()
+            .expect("the ask shows");
+        let targets = center.semantic_rects(&host, &layout, "");
+        let rect = |name: &str| {
+            targets
+                .iter()
+                .find(|(target, _)| target == name)
+                .expect(name)
+                .1
+        };
+        (
+            row,
+            rect("notification_action[0][0]"),
+            rect("notification_action[0][1]"),
+        )
+    };
+    let (row, not_now, keep) = choices(360.0);
+    let height = ui::widget::toast::choice_height(&theme);
+    assert!((keep.height() - height).abs() < 1e-6);
+    assert!((not_now.height() - height).abs() < 1e-6);
+    assert!(
+        height < metrics.height,
+        "the banner's compact controls, not the header's"
+    );
+    assert!(
+        (keep.x1 - (row.x1 - qs::CONTROL_INSET)).abs() < 1e-6,
+        "the answer ends the row"
+    );
+    assert!(
+        (keep.x0 - not_now.x1 - ui::widget::toast::choice_gap(&theme)).abs() < 1e-6,
+        "secondary then primary, one related step apart"
+    );
+    assert!(
+        not_now.x0 > row.x0 + qs::CONTROL_INSET + 1.0,
+        "at their own width, not a pair of slabs"
+    );
+    assert!((row.y1 - qs::CONTROL_PAD - keep.y1).abs() < 1e-6);
+    // Too narrow for both at their width: equal halves.
+    let (row, not_now, keep) = choices(200.0);
+    assert!((not_now.x0 - (row.x0 + qs::CONTROL_INSET)).abs() < 1e-6);
+    assert!((not_now.width() - keep.width()).abs() < 1e-6);
 }

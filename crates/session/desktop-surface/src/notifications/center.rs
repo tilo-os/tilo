@@ -93,7 +93,7 @@ fn preview_line(
 
 /// Measured shared action faces and typography, cached by the host for
 /// drawing, pointer hit-testing and accessibility between frames.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CenterMetrics {
     lines: (f64, f64),
     title_width: f64,
@@ -104,6 +104,15 @@ pub struct CenterMetrics {
     clear_width: f64,
     undo_width: f64,
     height: f64,
+    /// A notification's own choices: compact, as on its banner, a small
+    /// step under its text.
+    choice_height: f64,
+    choice_gap: f64,
+    choice_lead: f64,
+    /// The theme rows are measured in, so a row is as tall as its body
+    /// wraps to and its choices as wide as their labels. Without one (bare
+    /// line boxes) every row keeps room for the full preview.
+    theme: Option<std::sync::Arc<Theme>>,
 }
 
 impl From<(f64, f64)> for CenterMetrics {
@@ -117,7 +126,64 @@ impl From<(f64, f64)> for CenterMetrics {
             clear_width: 2.0 * qs::TARGET,
             undo_width: 2.0 * qs::TARGET,
             height: qs::TARGET,
+            choice_height: qs::TARGET,
+            choice_gap: qs::RELATED_GAP,
+            choice_lead: qs::RELATED_GAP,
+            theme: None,
         }
+    }
+}
+
+impl From<&CenterMetrics> for CenterMetrics {
+    fn from(metrics: &CenterMetrics) -> Self {
+        metrics.clone()
+    }
+}
+
+/// What sizes one row: the lines its body wraps to and the widths its own
+/// choices ask for, secondary then primary. A row is as tall as what it
+/// holds, so a one-line message is not followed by an empty line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowShape {
+    body_lines: usize,
+    choices: usize,
+    widths: (f64, f64),
+}
+
+impl Default for RowShape {
+    /// A row with the full preview and no choices.
+    fn default() -> Self {
+        Self {
+            body_lines: BODY_LINES,
+            choices: 0,
+            widths: (f64::INFINITY, f64::INFINITY),
+        }
+    }
+}
+
+impl RowShape {
+    /// A row whose body wraps to `body_lines` (at most [`BODY_LINES`]).
+    #[must_use]
+    pub fn new(body_lines: usize) -> Self {
+        Self {
+            body_lines: body_lines.min(BODY_LINES),
+            ..Self::default()
+        }
+    }
+    /// The same row carrying choices of these widths, secondary first.
+    #[must_use]
+    pub fn with_choices(mut self, widths: &[f64]) -> Self {
+        self.choices = widths.len().min(2);
+        self.widths = match widths {
+            [] => (f64::INFINITY, f64::INFINITY),
+            [primary] => (0.0, *primary),
+            [secondary, primary, ..] => (*secondary, *primary),
+        };
+        self
+    }
+    /// Lines of body the row shows.
+    pub fn body_lines(&self) -> usize {
+        self.body_lines
     }
 }
 
@@ -125,7 +191,7 @@ impl From<(f64, f64)> for CenterMetrics {
 /// hit-testing, the visible-row count and the preferred height read one
 /// oracle (HIG §7b: one rhythm). Every step is the drill-in panel's shared
 /// rhythm ([`crate::drill_in`]).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CenterLayout {
     panel: Rect,
     /// Line boxes of a caption and a label at the text scale.
@@ -223,6 +289,10 @@ impl CenterLayout {
             clear_width: width("notification-center-clear-all", ButtonRole::Plain, text),
             undo_width: width("notification-center-undo", ButtonRole::Secondary, text),
             height: ButtonFace::height(ControlSize::Regular, theme),
+            choice_height: ui::widget::toast::choice_height(theme),
+            choice_gap: ui::widget::toast::choice_gap(theme),
+            choice_lead: f64::from(theme.tokens.spacing.s1),
+            theme: Some(std::sync::Arc::new(theme.clone())),
         }
     }
 
@@ -351,54 +421,110 @@ impl CenterLayout {
     fn rows_top(&self) -> f64 {
         self.panel.y0 + self.header_height() + qs::RELATED_GAP
     }
-    /// One row: source/time, title and up to [`BODY_LINES`] lines of body
-    /// on the control padding, so a notification is read where it is listed.
+    /// One row with the full preview: source/time, title and
+    /// [`BODY_LINES`] lines of body on the control padding.
     pub fn row_h(&self) -> f64 {
+        self.text_extent(&RowShape::default())
+    }
+    /// A row's text on the control padding: source/time, title and the
+    /// lines its body wraps to.
+    fn text_extent(&self, shape: &RowShape) -> f64 {
         2.0 * qs::CONTROL_PAD
             + self.caption_lh
             + self.label_lh
-            + f64_of_usize(BODY_LINES) * self.caption_lh
+            + f64_of_usize(shape.body_lines) * self.caption_lh
     }
-    /// What a row carrying the notification's own actions adds under its
-    /// text: a related step and one band of buttons.
-    fn action_band(&self) -> f64 {
-        qs::RELATED_GAP + self.actions.height
-    }
-    fn row_extent(&self, with_actions: bool) -> f64 {
-        self.row_h()
-            + if with_actions {
-                self.action_band()
+    /// A row's height: its text, then its own choices a small step under
+    /// it, as on its banner.
+    fn row_extent(&self, shape: &RowShape) -> f64 {
+        self.text_extent(shape)
+            + if shape.choices > 0 {
+                self.actions.choice_lead + self.actions.choice_height
             } else {
                 0.0
             }
     }
-    /// The `index`th visible row of a list without actions.
+    /// The width a row's text wraps to; a grouped row sits one glyph in.
+    fn text_width(&self, grouped: bool) -> f64 {
+        self.panel.width()
+            - 2.0 * (qs::PANEL_PAD + qs::CONTROL_INSET)
+            - if grouped { qs::GLYPH } else { 0.0 }
+    }
+    /// Measure with the theme the rows are laid out in, when there is one.
+    fn measure<R>(&self, f: impl FnOnce(&Theme, &mut TextRenderer) -> R) -> Option<R> {
+        let theme = self.actions.theme.as_deref()?;
+        Some(ui::text_render::with_layout_renderer(
+            theme.text_scale,
+            |text| f(theme, text),
+        ))
+    }
+    /// The lines `body` wraps to in a row, at most [`BODY_LINES`]. Before
+    /// the panel has a width, or without a theme, the full preview.
+    pub fn body_lines(&self, body: &str, grouped: bool) -> usize {
+        let line = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            return 0;
+        }
+        let width = self.text_width(grouped);
+        if width <= 0.0 {
+            return BODY_LINES;
+        }
+        self.measure(|theme, text| {
+            let style = theme.text(TextRole::Caption);
+            let one = text.measure_style("Ag", None, &style).1;
+            let height = text.measure_style(&line, Some(f32_of_f64(width)), &style).1;
+            if one <= 0.0 {
+                return BODY_LINES;
+            }
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a positive count of wrapped lines, clamped to the preview"
+            )]
+            let lines = (height / one).round().max(1.0) as usize;
+            lines.min(BODY_LINES)
+        })
+        .unwrap_or(BODY_LINES)
+    }
+    /// The widths a row's choices ask for, as the banner sizes them.
+    pub fn choice_widths(&self, labels: &[(String, String)]) -> Vec<f64> {
+        labels
+            .iter()
+            .map(|(_, label)| {
+                self.measure(|theme, text| {
+                    ui::widget::toast::choice_width(text, theme, label, None)
+                })
+                .unwrap_or(f64::INFINITY)
+            })
+            .collect()
+    }
+    /// The `index`th visible row of a list of full-preview rows.
     pub fn row(&self, index: usize) -> Rect {
         self.row_in(index, &[])
     }
-    /// The `index`th visible row, where `with_actions` says which visible
-    /// rows (from the first) carry an action band; rows past its end carry
-    /// none.
-    pub fn row_in(&self, index: usize, with_actions: &[bool]) -> Rect {
-        let tall = |at: usize| with_actions.get(at).copied().unwrap_or(false);
+    /// The `index`th visible row, where `shapes` sizes the visible rows
+    /// from the first; rows past its end have the full preview and no
+    /// choices.
+    pub fn row_in(&self, index: usize, shapes: &[RowShape]) -> Rect {
+        let shape = |at: usize| shapes.get(at).copied().unwrap_or_default();
         let y0 = (0..index).fold(self.rows_top(), |y, at| {
-            y + self.row_extent(tall(at)) + qs::RELATED_GAP
+            y + self.row_extent(&shape(at)) + qs::RELATED_GAP
         });
         Rect::new(
             self.panel.x0 + qs::PANEL_PAD,
             y0,
             self.panel.x1 - qs::PANEL_PAD,
-            y0 + self.row_extent(tall(index)),
+            y0 + self.row_extent(&shape(index)),
         )
     }
-    /// How many of `with_actions`' rows fit, in order from the first row's
+    /// How many of `shapes`' rows fit, in order from the first row's
     /// place, above `bottom_reserve` at the panel's foot.
-    fn fitting(&self, with_actions: &[bool], bottom_reserve: f64) -> usize {
+    fn fitting(&self, shapes: &[RowShape], bottom_reserve: f64) -> usize {
         let limit = self.panel.y1 - bottom_reserve + 1e-6;
         let mut y = self.rows_top();
         let mut count = 0usize;
-        for tall in with_actions {
-            let bottom = y + self.row_extent(*tall);
+        for shape in shapes {
+            let bottom = y + self.row_extent(shape);
             if bottom > limit {
                 break;
             }
@@ -417,37 +543,37 @@ impl CenterLayout {
             p.y1 - qs::PANEL_PAD,
         )
     }
-    /// Complete rows the panel shows of `total` rows without actions.
+    /// Complete rows the panel shows of `total` full-preview rows.
     pub fn visible_rows(&self, total: usize) -> usize {
-        self.visible_rows_in(&vec![false; total], 0)
+        self.visible_rows_in(&vec![RowShape::default(); total], 0)
     }
-    /// Complete rows the panel shows from `start`, where `with_actions`
-    /// marks every row that carries an action band. A history that fits
+    /// Complete rows the panel shows from `start`, where `shapes` sizes
+    /// every row. A history that fits
     /// ends on the panel padding and has no pager; only one that overflows
     /// gives the pager band its room — the same rule
     /// [`Self::preferred_height`] sizes the panel by, so the two never leave
     /// a blank band or draw the pager over the last row.
-    pub fn visible_rows_in(&self, with_actions: &[bool], start: usize) -> usize {
-        if self.fitting(with_actions, qs::PANEL_PAD) >= with_actions.len() {
-            return with_actions.len().max(1);
+    pub fn visible_rows_in(&self, shapes: &[RowShape], start: usize) -> usize {
+        if self.fitting(shapes, qs::PANEL_PAD) >= shapes.len() {
+            return shapes.len().max(1);
         }
         self.fitting(
-            with_actions.get(start..).unwrap_or_default(),
+            shapes.get(start..).unwrap_or_default(),
             self.footer_reserve(),
         )
         .max(1)
     }
     /// The last first row worth scrolling to: from it, the rest of the list
     /// fills the panel above the pager.
-    fn max_start(&self, with_actions: &[bool]) -> usize {
-        let total = with_actions.len();
-        if self.fitting(with_actions, qs::PANEL_PAD) >= total {
+    fn max_start(&self, shapes: &[RowShape]) -> usize {
+        let total = shapes.len();
+        if self.fitting(shapes, qs::PANEL_PAD) >= total {
             return 0;
         }
         let mut start = total.saturating_sub(1);
         while let Some(earlier) = start.checked_sub(1)
             && self.fitting(
-                with_actions.get(earlier..).unwrap_or_default(),
+                shapes.get(earlier..).unwrap_or_default(),
                 self.footer_reserve(),
             ) >= total.saturating_sub(earlier)
         {
@@ -456,14 +582,12 @@ impl CenterLayout {
         start
     }
     /// The first row from `start` on that keeps row `index` in view.
-    fn start_showing(&self, with_actions: &[bool], start: usize, index: usize) -> usize {
+    fn start_showing(&self, shapes: &[RowShape], start: usize, index: usize) -> usize {
         if index < start {
             return index;
         }
         let mut first = start;
-        while first < index
-            && first.saturating_add(self.visible_rows_in(with_actions, first)) <= index
-        {
+        while first < index && first.saturating_add(self.visible_rows_in(shapes, first)) <= index {
             first = first.saturating_add(1);
         }
         first
@@ -472,21 +596,22 @@ impl CenterLayout {
     /// is reserved only when there is something to page to. An empty centre
     /// keeps the drill-in's one-row band for its message.
     pub fn preferred_height(rows: usize, total: usize, metrics: impl Into<CenterMetrics>) -> f64 {
-        let l = Self::new(Rect::ZERO, metrics);
-        if rows == 0 {
-            return DrillInList::list_height(l.header_height(), 0)
-                .max(l.rows_top() + l.caption_lh + qs::PANEL_PAD);
-        }
-        let foot = if total > rows {
-            l.footer_reserve()
+        Self::new(Rect::ZERO, metrics).height_showing(&vec![RowShape::default(); rows], total)
+    }
+    /// The height that shows `shown`, the first of `total` rows, from the
+    /// panel's top: the pager band is reserved only when there is something
+    /// to page to.
+    fn height_showing(&self, shown: &[RowShape], total: usize) -> f64 {
+        let Some(last) = shown.len().checked_sub(1) else {
+            return DrillInList::list_height(self.header_height(), 0)
+                .max(self.rows_top() - self.panel.y0 + self.caption_lh + qs::PANEL_PAD);
+        };
+        let foot = if total > shown.len() {
+            self.footer_reserve()
         } else {
             qs::PANEL_PAD
         };
-        l.rows_top()
-            + f64_of_usize(rows) * l.row_h()
-            // `rows` is non-zero past the early return, so this never saturates.
-            + f64_of_usize(rows.saturating_sub(1)) * qs::RELATED_GAP
-            + foot
+        self.row_in(last, shown).y1 - self.panel.y0 + foot
     }
     /// Where the reader's page scrolls: under the header, on the padding.
     pub(super) fn reading_viewport(&self) -> Rect {
@@ -514,21 +639,31 @@ impl CenterLayout {
         (dismiss, agent)
     }
 
-    /// The notification's own actions on the band under a row's text, in
-    /// the order the host gives them: two share the band in equal halves
-    /// with the primary (the last) on the trailing half, as on the banner;
-    /// a single one takes the trailing half.
-    pub fn row_actions(&self, row: Rect, count: usize) -> Vec<Rect> {
+    /// The notification's own choices under a row's text, laid out as on
+    /// its banner: compact, at the trailing edge at their own width,
+    /// secondary then primary, sharing the band in halves only when their
+    /// labels do not fit.
+    pub fn row_actions(&self, row: Rect, shape: &RowShape) -> Vec<Rect> {
         let y1 = row.y1 - qs::CONTROL_PAD;
-        let y0 = y1 - self.actions.height;
-        let x0 = row.x0 + qs::CONTROL_INSET;
-        let x1 = row.x1 - qs::CONTROL_INSET;
-        let half = ((x1 - x0 - qs::RELATED_GAP) / 2.0).max(0.0);
-        let trailing = Rect::new(x1 - half, y0, x1, y1);
-        match count {
+        let band = Rect::new(
+            row.x0 + qs::CONTROL_INSET,
+            y1 - self.actions.choice_height,
+            row.x1 - qs::CONTROL_INSET,
+            y1,
+        );
+        let (secondary, primary) = ui::widget::toast::choice_rects(
+            band,
+            self.actions.choice_gap,
+            shape.widths.0,
+            shape.widths.1,
+        );
+        match shape.choices {
             0 => Vec::new(),
-            1 => vec![trailing],
-            _ => vec![Rect::new(x0, y0, x0 + half, y1), trailing],
+            1 => {
+                let width = shape.widths.1.min(band.width());
+                vec![Rect::new(band.x1 - width, band.y0, band.x1, band.y1)]
+            }
+            _ => vec![secondary, primary],
         }
     }
 }
@@ -644,43 +779,49 @@ impl NotificationCenter {
         host.log().rows(&self.collapsed)
     }
 
-    /// Which of `rows` carry the notification's own actions, and so an
-    /// action band under their text.
-    fn with_actions(host: &dyn NotificationHost, rows: &[HistoryRow]) -> Vec<bool> {
+    /// What sizes each of `rows` in `layout`: the lines its body wraps to
+    /// and its own choices. A group header shows its newest title while
+    /// folded and nothing under its label while open.
+    fn shapes(
+        host: &dyn NotificationHost,
+        layout: &CenterLayout,
+        rows: &[HistoryRow],
+    ) -> Vec<RowShape> {
         let log = host.log();
         let history = log.history();
         rows.iter()
             .map(|row| match row {
-                HistoryRow::Item { index, .. } => history
-                    .get(*index)
-                    .is_some_and(|notification| !row_actions_of(host, notification).is_empty()),
-                HistoryRow::Group { .. } => false,
+                HistoryRow::Item { index, grouped } => {
+                    history
+                        .get(*index)
+                        .map_or_else(RowShape::default, |notification| {
+                            let body = if notification.show_preview {
+                                notification.body.as_str()
+                            } else {
+                                ""
+                            };
+                            RowShape::new(layout.body_lines(body, *grouped)).with_choices(
+                                &layout.choice_widths(&row_actions_of(host, notification)),
+                            )
+                        })
+                }
+                HistoryRow::Group { expanded, .. } => RowShape::new(usize::from(!*expanded)),
             })
             .collect()
     }
 
-    /// The panel height the centre asks for over `host`'s log at
-    /// `metrics`: up to [`PREFERRED_ROWS`] rows, each with its action band.
-    pub fn preferred_height(
-        &self,
-        host: &dyn NotificationHost,
-        metrics: impl Into<CenterMetrics>,
-    ) -> f64 {
-        let metrics = metrics.into();
-        let layout = CenterLayout::new(Rect::ZERO, metrics);
-        let (total, bands) = if self.is_reading() {
-            (PREFERRED_ROWS, 0)
+    /// The panel height the centre asks for over `host`'s log in `layout`:
+    /// up to [`PREFERRED_ROWS`] rows, each as tall as it holds.
+    fn preferred_height_in(&self, host: &dyn NotificationHost, layout: &CenterLayout) -> f64 {
+        let height = if self.is_reading() {
+            layout.height_showing(&[RowShape::default(); PREFERRED_ROWS], PREFERRED_ROWS)
         } else {
-            let rows = self.rows(host);
-            let bands = Self::with_actions(host, &rows)
-                .iter()
-                .take(PREFERRED_ROWS)
-                .filter(|tall| **tall)
-                .count();
-            (rows.len(), bands)
+            let shapes = Self::shapes(host, layout, &self.rows(host));
+            layout.height_showing(
+                shapes.get(..PREFERRED_ROWS).unwrap_or(&shapes),
+                shapes.len(),
+            )
         };
-        let height = CenterLayout::preferred_height(total.min(PREFERRED_ROWS), total, metrics)
-            + f64_of_usize(bands) * layout.action_band();
         if host.log().can_undo_clear() {
             height + layout.footer_reserve()
         } else {
@@ -688,17 +829,27 @@ impl NotificationCenter {
         }
     }
 
-    /// Resolve the existing history/Undo budget at the host's actual width.
+    /// The panel height the centre asks for over `host`'s log at
+    /// `metrics`, before the host knows its width: every row keeps room for
+    /// the full preview.
+    pub fn preferred_height(
+        &self,
+        host: &dyn NotificationHost,
+        metrics: impl Into<CenterMetrics>,
+    ) -> f64 {
+        self.preferred_height_in(host, &CenterLayout::new(Rect::ZERO, metrics))
+    }
+
+    /// The panel height the centre asks for at the host's actual width,
+    /// with rows sized to what they hold and room for Undo.
     pub fn preferred_height_for_width(
         &self,
         host: &dyn NotificationHost,
         metrics: impl Into<CenterMetrics>,
         width: f64,
     ) -> f64 {
-        let metrics = metrics.into();
         let layout = CenterLayout::new(Rect::new(0.0, 0.0, width, 0.0), metrics);
-        self.preferred_height(host, metrics) + layout.header_height()
-            - CenterLayout::new(Rect::ZERO, metrics).header_height()
+        self.preferred_height_in(host, &layout)
             + if host.log().can_undo_clear() {
                 layout.cleared_extra_height()
             } else {
@@ -718,17 +869,17 @@ impl NotificationCenter {
         max: f64,
     ) -> f64 {
         let metrics = metrics.into();
-        let wanted = self.preferred_height_for_width(host, metrics, width);
+        let wanted = self.preferred_height_for_width(host, metrics.clone(), width);
         if wanted <= max || self.is_reading() || host.log().can_undo_clear() {
             return wanted.min(max);
         }
         let layout = CenterLayout::new(Rect::new(0.0, 0.0, width, max), metrics);
-        let (_, tall, start, shown) = self.window(host, &layout);
+        let (_, shapes, start, shown) = self.window(host, &layout);
         let Some(last) = shown.checked_sub(1) else {
             return max;
         };
         let bottom = layout
-            .row_in(last, tall.get(start..).unwrap_or_default())
+            .row_in(last, shapes.get(start..).unwrap_or_default())
             .y1;
         (bottom + layout.footer_reserve()).min(max)
     }
@@ -746,8 +897,8 @@ impl NotificationCenter {
 
     /// Complete rows the panel shows now.
     pub fn visible_rows(&self, host: &dyn NotificationHost, layout: &CenterLayout) -> usize {
-        let tall = Self::with_actions(host, &self.rows(host));
-        layout.visible_rows_in(&tall, self.start.min(layout.max_start(&tall)))
+        let shapes = Self::shapes(host, layout, &self.rows(host));
+        layout.visible_rows_in(&shapes, self.start.min(layout.max_start(&shapes)))
     }
 
     fn selected_row(&self, rows: &[HistoryRow], history: &[Notification]) -> Option<usize> {
@@ -758,8 +909,8 @@ impl NotificationCenter {
 
     /// Keep the window valid when records expire, are cleared or the panel
     /// shrinks. Returns whether the position moved.
-    fn clamp_start(&mut self, layout: &CenterLayout, with_actions: &[bool]) -> bool {
-        let next = self.start.min(layout.max_start(with_actions));
+    fn clamp_start(&mut self, layout: &CenterLayout, shapes: &[RowShape]) -> bool {
+        let next = self.start.min(layout.max_start(shapes));
         let changed = next != self.start;
         self.start = next;
         changed
@@ -768,7 +919,7 @@ impl NotificationCenter {
     /// Move through the rows newest first. Positive movement reveals older
     /// rows. Row-based, so wheels and keys land identically.
     fn scroll(&mut self, host: &dyn NotificationHost, layout: &CenterLayout, movement: isize) {
-        let max_start = layout.max_start(&Self::with_actions(host, &self.rows(host)));
+        let max_start = layout.max_start(&Self::shapes(host, layout, &self.rows(host)));
         let current = self.start.min(max_start);
         let next = if movement.is_negative() {
             current.saturating_sub(movement.unsigned_abs())
@@ -834,10 +985,10 @@ impl NotificationCenter {
         self.selected = identity;
         self.back_focused = false;
         self.action_focus = None;
-        let tall = Self::with_actions(host, &rows);
+        let shapes = Self::shapes(host, layout, &rows);
         self.start = layout
-            .start_showing(&tall, self.start.min(layout.max_start(&tall)), index)
-            .min(layout.max_start(&tall));
+            .start_showing(&shapes, self.start.min(layout.max_start(&shapes)), index)
+            .min(layout.max_start(&shapes));
         host.changed();
     }
 
@@ -880,14 +1031,14 @@ impl NotificationCenter {
         &self,
         host: &dyn NotificationHost,
         layout: &CenterLayout,
-    ) -> (Vec<HistoryRow>, Vec<bool>, usize, usize) {
+    ) -> (Vec<HistoryRow>, Vec<RowShape>, usize, usize) {
         let rows = self.rows(host);
-        let tall = Self::with_actions(host, &rows);
-        let start = self.start.min(layout.max_start(&tall));
+        let shapes = Self::shapes(host, layout, &rows);
+        let start = self.start.min(layout.max_start(&shapes));
         let shown = layout
-            .visible_rows_in(&tall, start)
+            .visible_rows_in(&shapes, start)
             .min(rows.len().saturating_sub(start));
-        (rows, tall, start, shown)
+        (rows, shapes, start, shown)
     }
 
     /// The row (and control) under `p` among the visible rows. A row's icon
@@ -899,23 +1050,24 @@ impl NotificationCenter {
         layout: &CenterLayout,
         p: Point,
     ) -> Option<(usize, Option<RowControl>)> {
-        let (rows, tall, start, shown) = self.window(host, layout);
-        let bands = tall.get(start..).unwrap_or_default();
+        let (rows, shapes, start, shown) = self.window(host, layout);
+        let bands = shapes.get(start..).unwrap_or_default();
         for (offset, row) in rows.iter().enumerate().skip(start).take(shown) {
-            let rect = layout.row_in(offset.saturating_sub(start), bands);
+            let position = offset.saturating_sub(start);
+            let rect = layout.row_in(position, bands);
             if !rect.contains(p) {
                 continue;
             }
             let with_agent = Self::row_agent(host, row).is_some();
             let (dismiss, agent) = layout.row_controls(rect, with_agent);
-            let actions = Self::row_actions(host, row);
+            let shape = bands.get(position).copied().unwrap_or_default();
             let control = if dismiss.contains(p) {
                 Some(RowControl::Dismiss)
             } else if agent.is_some_and(|agent| agent.contains(p)) {
                 Some(RowControl::HandToAgent)
             } else {
                 layout
-                    .row_actions(rect, actions.len())
+                    .row_actions(rect, &shape)
                     .iter()
                     .position(|action| action.contains(p))
                     .map(RowControl::Action)
@@ -1275,8 +1427,8 @@ impl NotificationCenter {
             Key::Named(NamedKey::End) => self.scroll(host, layout, isize::MAX),
             _ => return CenterOutcome::Ignored,
         }
-        let tall = Self::with_actions(host, &self.rows(host));
-        let _ = self.clamp_start(layout, &tall);
+        let shapes = Self::shapes(host, layout, &self.rows(host));
+        let _ = self.clamp_start(layout, &shapes);
         outcome
     }
 
@@ -1297,14 +1449,15 @@ impl NotificationCenter {
                 ),
             ];
         }
-        let (rows, tall, start, shown) = self.window(host, layout);
-        let bands = tall.get(start..).unwrap_or_default();
+        let (rows, shapes, start, shown) = self.window(host, layout);
+        let bands = shapes.get(start..).unwrap_or_default();
         let mut out = vec![(format!("{prefix}notifications_back"), layout.back())];
         if !host.log().history().is_empty() {
             out.push((format!("{prefix}notifications_clear"), layout.clear()));
         }
         for (offset, row) in rows.iter().enumerate().skip(start).take(shown) {
-            let rect = layout.row_in(offset.saturating_sub(start), bands);
+            let position = offset.saturating_sub(start);
+            let rect = layout.row_in(position, bands);
             let agent = Self::row_agent(host, row);
             let (dismiss, agent_rect) = layout.row_controls(rect, agent.is_some());
             out.push((format!("{prefix}notification_row[{offset}]"), rect));
@@ -1312,8 +1465,8 @@ impl NotificationCenter {
             if let Some(agent_rect) = agent_rect {
                 out.push((format!("{prefix}notification_agent[{offset}]"), agent_rect));
             }
-            let actions = Self::row_actions(host, row);
-            for (at, action) in layout.row_actions(rect, actions.len()).iter().enumerate() {
+            let shape = bands.get(position).copied().unwrap_or_default();
+            for (at, action) in layout.row_actions(rect, &shape).iter().enumerate() {
                 out.push((
                     format!("{prefix}notification_action[{offset}][{at}]"),
                     *action,
@@ -1534,8 +1687,8 @@ impl NotificationCenter {
         layout: &CenterLayout,
         now: Instant,
     ) -> Vec<AccessNode> {
-        let (rows, tall, start, shown) = self.window(host, layout);
-        let bands = tall.get(start..).unwrap_or_default();
+        let (rows, shapes, start, shown) = self.window(host, layout);
+        let bands = shapes.get(start..).unwrap_or_default();
         let log = host.log();
         let history = log.history();
         let selected = self.selected_row(&rows, history);
@@ -1592,7 +1745,7 @@ impl NotificationCenter {
                         Some(notification) => self.item_node(
                             host,
                             layout,
-                            rect,
+                            (rect, bands.get(position).copied().unwrap_or_default()),
                             notification,
                             (*grouped, is_selected),
                             now,
@@ -1612,7 +1765,7 @@ impl NotificationCenter {
         &self,
         host: &dyn NotificationHost,
         layout: &CenterLayout,
-        rect: Rect,
+        (rect, shape): (Rect, RowShape),
         notification: &Notification,
         (grouped, is_selected): (bool, bool),
         now: Instant,
@@ -1650,7 +1803,7 @@ impl NotificationCenter {
         let actions = row_actions_of(host, notification);
         for (at, ((_, label), bounds)) in actions
             .iter()
-            .zip(layout.row_actions(rect, actions.len()))
+            .zip(layout.row_actions(rect, &shape))
             .enumerate()
         {
             controls.push(
@@ -1783,18 +1936,18 @@ impl NotificationCenter {
             return;
         }
 
-        let tall = Self::with_actions(host, &rows);
-        let _ = self.clamp_start(layout, &tall);
+        let shapes = Self::shapes(host, layout, &rows);
+        let _ = self.clamp_start(layout, &shapes);
         let selected = self.selected_row(&rows, history);
         // Resizing or growing text must keep the focused row/control visible.
         // Retain the same identity and control, and only move the viewport.
         if let Some(index) = selected {
-            self.start = layout.start_showing(&tall, self.start, index);
+            self.start = layout.start_showing(&shapes, self.start, index);
         }
         let start = self.start;
-        let visible_rows = layout.visible_rows_in(&tall, start);
+        let visible_rows = layout.visible_rows_in(&shapes, start);
         let shown = visible_rows.min(rows.len().saturating_sub(start));
-        let bands = tall.get(start..).unwrap_or_default();
+        let bands = shapes.get(start..).unwrap_or_default();
 
         Self::chip(
             scene,
@@ -1809,6 +1962,10 @@ impl NotificationCenter {
         let now = ui::time::now();
         let hovered = |r: Rect| cursor.is_some_and(|p| r.contains(p));
         for (offset, history_row) in rows.iter().enumerate().skip(start).take(shown) {
+            let shape = bands
+                .get(offset.saturating_sub(start))
+                .copied()
+                .unwrap_or_default();
             let row = layout.row_in(offset.saturating_sub(start), bands);
             let row_selected = selected == Some(offset);
             let focused_control = self.row_control.filter(|_| row_selected);
@@ -1886,7 +2043,7 @@ impl NotificationCenter {
                     row.x0,
                     row.y0 + qs::CONTROL_PAD,
                     row.x0 + 3.0,
-                    row.y0 + layout.row_h() - qs::CONTROL_PAD,
+                    row.y0 + layout.text_extent(&shape) - qs::CONTROL_PAD,
                 );
                 scene.fill(
                     Fill::NonZero,
@@ -1967,7 +2124,7 @@ impl NotificationCenter {
                     &notification.body,
                     body_width,
                     &caption_style,
-                    BODY_LINES,
+                    shape.body_lines().max(1),
                 );
                 text_renderer.draw_style(
                     scene,
@@ -1984,7 +2141,7 @@ impl NotificationCenter {
             let last = actions.len().saturating_sub(1);
             for (at, ((_, label), rect)) in actions
                 .iter()
-                .zip(layout.row_actions(row, actions.len()))
+                .zip(layout.row_actions(row, &shape))
                 .enumerate()
             {
                 Button::paint(
@@ -1993,6 +2150,7 @@ impl NotificationCenter {
                     text_renderer,
                     theme,
                     &ButtonFace::new(rect, label)
+                        .control_size(ControlSize::Small)
                         .role(if at == last {
                             ButtonRole::Primary
                         } else {
@@ -2499,7 +2657,7 @@ mod tests {
         assert_eq!(list.children[0].name.as_deref(), Some("two"));
         assert_eq!(
             center.accessibility_rect_for_path(&host, &layout, &[0, 1]),
-            Some(layout.row(1))
+            Some(layout.row_in(1, &[RowShape::new(0)]))
         );
         assert!(center.focus_accessibility_path(&host, &[0, 1, 0]));
         assert_eq!(center.row_control, Some(RowControl::Dismiss));
@@ -2566,15 +2724,21 @@ mod tests {
         host.log.borrow_mut().retain(ask);
         let layout = layout();
         let mut center = NotificationCenter::new();
-        let row = layout.row_in(0, &[true]);
+        let row = layout.row_in(
+            0,
+            &[RowShape::default().with_choices(&[f64::INFINITY, f64::INFINITY])],
+        );
         assert!(
             row.height() > layout.row_h(),
             "the actions get their own band"
         );
-        let plain = CenterLayout::preferred_height(1, 1, layout.actions);
-        let metrics = layout.actions;
+        let plain = CenterLayout::preferred_height(1, 1, layout.actions.clone());
         assert!(
-            (center.preferred_height(&host, metrics) - plain - layout.action_band()).abs() < 1e-6
+            (center.preferred_height(&host, layout.actions.clone())
+                - plain
+                - (row.height() - layout.row_h()))
+            .abs()
+                < 1e-6
         );
         let targets = center.semantic_rects(&host, &layout, "");
         let keep = targets
