@@ -16,7 +16,9 @@ crate-type = ["cdylib", "rlib"]
 # Browser-only, like the runtime it links. Native workspace builds compile an
 # empty library.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tilo-browser-runtime = { path = "../tilo-browser-runtime" }
+# The Activity pane loads as its own module (src/activity.rs).
+tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity"] }
+tilo-desktop-surface = { path = "../../session/desktop-surface" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 wasm-bindgen = "=0.2.108"
 # generated apps: begin (tools/web/generate_web_desktop.py)

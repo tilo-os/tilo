@@ -61,6 +61,10 @@ workspace = true
 
 [features]
 default = []
+# The bundling crate supplies the Activity pane's code through
+# `defer_activity_pane`, which the browser desktop fetches as its own module
+# the first time someone opens Activity. Without it the pane is linked in.
+deferred-activity = []
 
 [dependencies]
 
