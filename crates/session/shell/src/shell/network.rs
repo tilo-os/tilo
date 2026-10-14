@@ -7944,6 +7944,11 @@ mod tests {
                 .any(|candidate| candidate.id == tab),
             "the pushed change carries the new tab"
         );
+        assert_eq!(changes.len(), 1, "one incremental change, not a checkpoint");
+        eprintln!(
+            "room-push-work mutation-ticks=1 batches=1 changes={}",
+            changes.len()
+        );
 
         net.tick();
         assert!(
