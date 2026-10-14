@@ -17,7 +17,15 @@ use crate::prefs::NotificationPrefs;
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;
 use ui::vello::kurbo::Rect;
+use ui::lock::MutexRecover as _;
 use ui::widget::Widget;
+
+/// Held by every test that queues settings changes from a thread marked as
+/// the UI thread. The queue is the process's own
+/// ([`ui::storage::flush_settings_writes`]), and a write from any other
+/// thread stores it first, so another test's background or off-thread
+/// write would store this test's queued change before it looked.
+pub(crate) static SETTINGS_QUEUE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The first toggle in the content pane, right of the sidebar.
 fn first_toggle(w: &dyn Widget, content: Rect) -> Option<Rect> {
@@ -48,6 +56,7 @@ fn notifications(path: &std::path::Path) -> Option<Value> {
 
 #[test]
 fn a_setting_change_never_writes_the_settings_file_on_the_ui_thread() {
+    let _queue = SETTINGS_QUEUE.lock_recover();
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts");
     let path = app
@@ -100,6 +109,7 @@ fn a_setting_change_never_writes_the_settings_file_on_the_ui_thread() {
 
 #[test]
 fn queued_changes_are_stored_in_order_and_keep_what_others_stored() {
+    let _queue = SETTINGS_QUEUE.lock_recover();
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts");
     let path = app
