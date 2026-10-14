@@ -2157,6 +2157,30 @@ impl DocMut<'_> {
         }
     }
 
+    /// Mark `[start, end)` of a block living in `region` as written by `author`
+    /// ([`MARK_AUTHOR`](crate::schema::MARK_AUTHOR)), as
+    /// [`tilo_automerge::mark_text_author`] marks plain text: the mark covers exactly that text
+    /// and does not expand, so nothing inserted beside it later — by anyone — is taken in. Every
+    /// write names its own author.
+    ///
+    /// That also keeps typing cheap. An expanding end takes in the next key, so a mark per key
+    /// nests inside the one before and every earlier mark stays open at the caret: each key
+    /// would pay for all the keys typed before it.
+    pub fn mark_author_in(
+        &mut self,
+        region: Region,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        author: &str,
+    ) {
+        self.flush_bulk();
+        if let Some(tid) = self.region_text_obj(region, block_id) {
+            let mark = Mark::new(crate::schema::MARK_AUTHOR.to_owned(), author, start, end);
+            let _ = self.doc.mark(&tid, mark, ExpandMark::None);
+        }
+    }
+
     /// Clear the mark `name` over `[start, end)` of a block living in `region` (the region
     /// counterpart of [`Self::remove_mark`]).
     pub fn remove_mark_in(
