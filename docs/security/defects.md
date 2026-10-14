@@ -1013,6 +1013,18 @@ lifetime for nothing; app signatures come from the identity service.
 **Fix direction:** serve fd 15 from `runtime_identity::load_metadata_from_path`, which validates
 the record without contacting the secret provider.
 
+**Resolved in source.** `start_identity_broker` reads a store record through
+`runtime_identity::load_metadata_for_launch` (an explicit debug record through
+`load_metadata_from_path`) and serves it with `runtime_identity::broker::serve_metadata`, which
+answers metadata and refuses every `sign` with the same bytes. Neither contacts the secret
+provider; an unsecured store record still fails the launch, as does one naming a provider this
+session cannot resolve. The secret-loading `load_for_launch`, the identity-backed `broker::serve`
+and its dead local-signing arm are gone. Held by
+`crates/packaging/launcher/src/run.rs::identity_resolution_tests::a_launch_never_reads_the_identity_secret`
+(the secret is deleted from its provider before the launch),
+`crates/runtime/runtime-identity/src/unix.rs::tests::a_launch_reads_public_fields_without_the_secret_provider`
+and `crates/runtime/runtime-identity/src/broker.rs::tests::broker_answers_metadata_and_refuses_every_sign_over_pinned_bounded_frames`.
+
 ---
 
 ## Not defects, recorded to prevent regression
