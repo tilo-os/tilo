@@ -14,7 +14,7 @@ use super::refusal;
 mod macos_acl;
 
 fn effective_uid() -> u32 {
-    rustix::process::geteuid().as_raw()
+    tilo_process::effective_uid()
 }
 
 fn trusted_owner(uid: u32, current: u32) -> bool {

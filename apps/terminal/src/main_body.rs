@@ -6594,7 +6594,7 @@ pub(crate) fn login_shell_from_passwd() -> Option<String> {
     // before copying out). We null-check before dereferencing, and copy the
     // `pw_shell` C string into an owned `String` while the pointer is live.
     unsafe {
-        let uid = rustix::process::getuid().as_raw();
+        let uid = tilo_process::uid();
         let pw = libc::getpwuid(uid);
         if pw.is_null() {
             return None;

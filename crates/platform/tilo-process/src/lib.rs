@@ -63,6 +63,21 @@ pub fn id() -> Option<u32> {
     backend::id()
 }
 
+/// The real user id this process runs as.
+#[cfg(unix)]
+#[must_use]
+pub fn uid() -> u32 {
+    rustix::process::getuid().as_raw()
+}
+
+/// The effective user id this process acts with: the owner it creates files
+/// as and is checked against.
+#[cfg(unix)]
+#[must_use]
+pub fn effective_uid() -> u32 {
+    rustix::process::geteuid().as_raw()
+}
+
 /// How many files process `pid` has open, where the system says (Linux's
 /// `/proc/<pid>/fd`). `None` elsewhere, and when the process has exited or
 /// its table is not readable; never a made-up zero.

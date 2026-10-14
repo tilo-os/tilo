@@ -167,7 +167,7 @@ mod native {
     }
     fn security(file: &File, directory: bool, private: bool) -> Result<Security> {
         let m = file.metadata().map_err(io)?;
-        let uid = rustix::process::geteuid().as_raw();
+        let uid = tilo_process::effective_uid();
         require(
             if directory {
                 m.is_dir()
