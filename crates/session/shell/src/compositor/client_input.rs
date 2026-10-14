@@ -21,7 +21,7 @@ use smithay::input::keyboard::FilterResult;
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
     GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
-    GestureSwipeUpdateEvent,
+    GestureSwipeUpdateEvent, MotionEvent,
 };
 use smithay::input::touch::{
     DownEvent as TouchDownEvent, MotionEvent as TouchMotionEvent, UpEvent as TouchUpEvent,
@@ -560,18 +560,8 @@ impl State {
         self.set_selection_focus(selection_client);
         keyboard.set_focus(self, target.clone().map(|(_, s)| s), serial);
         self.tablet_pads_follow_keyboard(target.as_ref().map(|(_, surface)| surface));
-        if let Some((surface_id, surface)) = target {
+        if let Some((surface_id, _)) = target {
             record_activation_serial(self, serial, surface_id);
-            // The focused app's scope gets the foreground tier and the one it
-            // replaces is demoted. Queued to a worker thread: this is the
-            // compositor's input path and must never wait on systemd.
-            if let Some(pid) = surface.client().and_then(|client| {
-                client
-                    .get_data::<crate::compositor::state::ClientState>()
-                    .and_then(|state| state.pid)
-            }) {
-                ::launcher::priority::notify_focus(pid);
-            }
         }
     }
 
@@ -594,7 +584,8 @@ impl State {
         } else {
             KeyState::Released
         };
-        let observed_surface = crate::compositor::seat_lock::keyboard_focus(&keyboard)
+        let observed_surface = keyboard
+            .current_focus()
             .as_ref()
             .map(super::state::surface_id);
         let delivery_time_ns = (forward
@@ -686,7 +677,15 @@ impl State {
             .and_then(|_| target.map(|(_, origin)| origin));
         let serial = mint_serial(self);
         let time = event_time(self);
-        self.move_seat_pointer(&pointer, focus, global, (serial, time));
+        pointer.motion(
+            self,
+            focus,
+            &MotionEvent {
+                location: SmithayPoint::from(global),
+                serial,
+                time,
+            },
+        );
         pointer.frame(self);
         // `wl_pointer.motion` itself has no serial. Smithay uses this serial
         // only when the motion changes focus and emits `wl_pointer.enter`, so
@@ -705,7 +704,7 @@ impl State {
         let smithay_grabbed = self
             .seat
             .get_pointer()
-            .is_some_and(|pointer| crate::compositor::seat_lock::pointer_is_grabbed(&pointer));
+            .is_some_and(|pointer| pointer.is_grabbed());
         if self.client_input.pointer_focus.is_none()
             && self.selection.chrome_drag.is_none()
             && !smithay_grabbed
@@ -986,7 +985,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
         ));
     }
     if let Some((surface_id, rect)) = fb.transient_surface_hit((*x, *y))
@@ -994,7 +993,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
         ));
     }
     if let Some((surface_id, rect)) = fb.fullscreen_surface_hit((*x, *y))
@@ -1002,7 +1001,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
         ));
     }
     if let Some((surface_id, rect)) = fb.floating_surface_hit((*x, *y))
@@ -1010,7 +1009,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
     {
         return Some((
             surface_id,
-            crate::compositor::foreign::store().surface_origin(surface_id, rect, point),
+            crate::compositor::foreign::store().surface_origin(surface_id, rect),
         ));
     }
     let hit = {
@@ -1029,7 +1028,7 @@ fn surface_at(state: &State, fb: &FrameBuilder, point: (f64, f64)) -> Option<(u6
 /// over it. `None` when a modal sheet swallows the point.
 fn route_tile_point(root: u64, tile: Rect, (x, y): (f64, f64)) -> Option<(u64, (f64, f64))> {
     let store = crate::compositor::foreign::store();
-    let origin = store.surface_origin(root, tile, (x, y));
+    let origin = store.surface_origin(root, tile);
     match store.route_point(root, x - origin.0, y - origin.1) {
         crate::compositor::foreign::PointRoute::Root => Some((root, origin)),
         crate::compositor::foreign::PointRoute::Surface {
@@ -1133,12 +1132,6 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
         .or_else(|| state.floating_preedit_source_focus())
         .or_else(|| state.focused_output_presentation_surface())
         .or_else(|| state.headless_keyboard_focus())
-        .or_else(|| {
-            // A system-modal prompt owns the keyboard while it is shown.
-            state
-                .top_system_modal()
-                .filter(|id| fb.transient_surface_rect(*id).is_some())
-        })
         .or_else(|| state.floating_return_focus())
         .or(overlay_focus)
         .or_else(|| state.personal_keyboard_focus())
@@ -1448,10 +1441,9 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
             .collect::<Vec<_>>();
         let chrome_regions = foreign_tiles(&tree, fb.host())
             .iter()
-            .flat_map(|hit| {
+            .filter_map(|hit| {
                 fb.host()
-                    .group_resize_rects(hit.group)
-                    .into_iter()
+                    .group_resize_rect(hit.group)
                     .map(|rect| (hit.surface_id, rect))
             })
             .collect();
@@ -1491,34 +1483,18 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
     state.remote_input_firewall.publish_view(view);
 }
 
-/// Stop every peer from driving this seat, and say so on screen when there
-/// was anything to stop.
+/// Stop every peer from driving this seat, and say so on screen.
 ///
 /// Action half of the `Super+Esc` kill switch, split from the backend loop
 /// (a `-> !` function) so it can be driven from a test. Returns how many
-/// shares lost write access.
-///
-/// The chord always latches the firewall, but the toast is only for a
-/// person who just cut off someone who was connected (`other_control_live`
-/// covers a device-control session the registry does not see). With nobody
-/// connected, `Super+Esc` is just a stray chord (Esc to leave the palette
-/// with Super still held) and a "stopped" warning would report an event
-/// nobody saw start. When shown, the toast bypasses Do-Not-Disturb
-/// ([`Notification::bypassing_dnd`]) and is persistent.
-pub fn stop_remote_input(
-    state: &mut State,
-    fb: &mut FrameBuilder,
-    other_control_live: bool,
-) -> usize {
-    let ended = state.end_all_remote_input();
-    if ended.live == 0 && !other_control_live {
-        return ended.revoked;
-    }
+/// shares lost write access. The confirmation toast bypasses Do-Not-Disturb ([`Notification::bypassing_dnd`]) and is persistent.
+pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
+    let revoked = state.engage_remote_input_kill_switch();
     fb.with_chrome(|chrome| {
         chrome.push_notification_full(
             Notification::new(
                 crate::shell::i18n::t("notification-remote-input-stopped"),
-                match ended.revoked {
+                match revoked {
                     0 => crate::shell::i18n::t("notification-remote-input-stopped-sessions"),
                     n => crate::shell::i18n::t_args(
                         "notification-remote-input-stopped-shares",
@@ -1532,7 +1508,7 @@ pub fn stop_remote_input(
             .bypassing_dnd(),
         );
     });
-    ended.revoked
+    revoked
 }
 
 /// Route one backend input event. Returns `true` when consumed by a client
@@ -1693,7 +1669,7 @@ fn route_mouse_input(
             let smithay_grabbed = state
                 .seat
                 .get_pointer()
-                .is_some_and(|pointer| crate::compositor::seat_lock::pointer_is_grabbed(&pointer));
+                .is_some_and(|pointer| pointer.is_grabbed());
             if !smithay_grabbed {
                 state.client_input.grab = Some(match hit {
                     Some(h) => PointerOwner::Client(h.surface_id),
@@ -1713,7 +1689,7 @@ fn route_mouse_input(
     let smithay_grabbed = state
         .seat
         .get_pointer()
-        .is_some_and(|pointer| crate::compositor::seat_lock::pointer_is_grabbed(&pointer));
+        .is_some_and(|pointer| pointer.is_grabbed());
     let to_client = smithay_grabbed
         || (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
             && state.client_input.pointer_focus.is_some())
@@ -2539,10 +2515,9 @@ mod tests {
             .chrome_regions(
                 tiles
                     .iter()
-                    .flat_map(|hit| {
+                    .filter_map(|hit| {
                         fb.host()
-                            .group_resize_rects(hit.group)
-                            .into_iter()
+                            .group_resize_rect(hit.group)
                             .map(|rect| (hit.surface_id, rect))
                     })
                     .collect(),
@@ -3233,7 +3208,7 @@ mod tests {
 
             guest_motion(&mut state).expect("the guest is driving the seat to begin with");
 
-            let revoked = stop_remote_input(&mut state, &mut fb, false);
+            let revoked = stop_remote_input(&mut state, &mut fb);
             assert_eq!(
                 revoked, 1,
                 "the one writable share had to lose write access"
@@ -3269,7 +3244,7 @@ mod tests {
             let mut state = state_sharing(KILL_SURFACE);
             fb.with_chrome(|chrome| chrome.set_dnd(true));
 
-            stop_remote_input(&mut state, &mut fb, false);
+            stop_remote_input(&mut state, &mut fb);
 
             let chrome = fb.chrome();
             assert!(
@@ -3295,7 +3270,7 @@ mod tests {
                 }
             });
 
-            stop_remote_input(&mut state, &mut fb, false);
+            stop_remote_input(&mut state, &mut fb);
 
             let chrome = fb.chrome();
             assert!(
@@ -3306,33 +3281,6 @@ mod tests {
                 "a flood of app toasts buried the kill-switch confirmation",
             );
         }
-    }
-
-    #[test]
-    fn stopping_remote_input_with_nobody_connected_stays_silent() {
-        // A stray Super+Esc (leaving the palette with Super still held) must
-        // not warn about a session nobody saw start, but still latches.
-        let mut fb = FrameBuilder::new((1600, 900));
-        let mut state = state_sharing(KILL_SURFACE);
-        state.share_registry.clear();
-        assert_eq!(state.live_remote_input_participants(), 0);
-
-        assert_eq!(stop_remote_input(&mut state, &mut fb, false), 0);
-        assert!(
-            fb.chrome().notifications().is_empty(),
-            "a kill switch with nothing connected raised a toast"
-        );
-        assert!(state.remote_input_firewall.kill_switch_engaged());
-
-        // A device-control session outside the registry still counts.
-        let mut fb = FrameBuilder::new((1600, 900));
-        stop_remote_input(&mut state, &mut fb, true);
-        assert!(
-            fb.chrome()
-                .notifications()
-                .iter()
-                .any(|n| n.title == "Remote input stopped")
-        );
     }
 
     #[test]

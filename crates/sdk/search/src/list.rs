@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use crate::index::{Document, Page, SearchIndex};
 use crate::query::Matching;
-use crate::weight::{FieldWeight, Ranks};
+use crate::weight::FieldWeight;
 
 /// Ranks the rows of a list against a query, for surfaces that rebuild
 /// their rows on every query or change (commands, windows, actions).
@@ -15,7 +15,6 @@ use crate::weight::{FieldWeight, Ranks};
 /// again with the same rows only searches. Rows are identified by position.
 pub struct ListIndex {
     matching: Matching,
-    ranks: Option<Ranks>,
     cached: Mutex<Option<(u64, SearchIndex)>>,
 }
 
@@ -41,16 +40,8 @@ impl ListIndex {
     pub const fn new(matching: Matching) -> Self {
         Self {
             matching,
-            ranks: None,
             cached: Mutex::new(None),
         }
-    }
-
-    /// Rank tiers with `ranks` instead of [`MatchTier::rank_in`](crate::MatchTier::rank_in).
-    #[must_use]
-    pub fn with_ranks(mut self, ranks: Ranks) -> Self {
-        self.ranks = Some(ranks);
-        self
     }
 
     /// Each row's rank for `query`, or `None` where it does not match. An
@@ -75,9 +66,6 @@ impl ListIndex {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cached.as_ref().is_none_or(|(held, _)| *held != fingerprint) {
             let mut index = SearchIndex::new(self.matching);
-            if let Some(ranks) = self.ranks {
-                index = index.with_ranks(ranks);
-            }
             index.replace_all(rows.iter().enumerate().map(|(at, fields)| {
                 fields
                     .iter()

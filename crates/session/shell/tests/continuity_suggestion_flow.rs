@@ -45,7 +45,6 @@ fn desktop() -> WorkspaceTree {
             active_tab: TERMINAL,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         },
         WindowGroup {
             id: 2,
@@ -53,7 +52,6 @@ fn desktop() -> WorkspaceTree {
             active_tab: NOTES,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         },
     ];
     tree.desktop.active = workspace_id;

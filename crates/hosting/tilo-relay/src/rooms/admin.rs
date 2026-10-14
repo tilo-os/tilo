@@ -1,4 +1,5 @@
-//! Owner-only room administration and admitted members' self-attributed audit:
+//! Room administration, decided by each room's governance, and admitted
+//! members' self-attributed audit:
 //! the relay's side of
 //! [`ROOM_ADMIN_ALPN`](tilo_relay_session::rooms::ROOM_ADMIN_ALPN).
 //!
@@ -20,6 +21,8 @@ use tilo_user_identity::DeviceCert;
 use crate::auth::{self, AuthError, AuthenticatedPeer, HandshakeTrust};
 
 use super::Rooms;
+use super::authority::RoomOp;
+use crate::host_authority::HostOperation;
 
 const MAX_CONCURRENT_EXCHANGES: usize = 64;
 
@@ -76,8 +79,9 @@ impl RoomAdminProtocol {
 
     /// The caller's certificate, bound to the Iroh endpoint `remote` that
     /// QUIC already authenticated, valid and unrevoked. Who may run which
-    /// command is each command's own decision: the owner's devices
-    /// administer, and admitted members record their own receipts.
+    /// command is each command's own decision ([`Rooms::authorize`]): the
+    /// owner's devices administer, members as far as their room's governance
+    /// lets them, and admitted members record their own receipts.
     fn authenticate(
         &self,
         device: &DeviceCert,
@@ -101,11 +105,13 @@ impl RoomAdminProtocol {
     async fn execute(&self, device: &DeviceCert, command: RoomCommand) -> RoomReply {
         let result = match command {
             RoomCommand::Create { name } => {
-                match self
-                    .rooms
-                    .authorize(device, tilo_clock::unix_now_ns(), "room.create")
-                {
-                    Ok(()) => self
+                match self.rooms.authorize(
+                    device,
+                    None,
+                    RoomOp::Host(HostOperation::CreateRoom),
+                    tilo_clock::unix_now_ns(),
+                ) {
+                    Ok(_) => self
                         .rooms
                         .create(&name)
                         .await
@@ -115,11 +121,13 @@ impl RoomAdminProtocol {
                 }
             }
             RoomCommand::List => {
-                match self
-                    .rooms
-                    .authorize(device, tilo_clock::unix_now_ns(), "room.list")
-                {
-                    Ok(()) => Ok(RoomReply::Rooms(self.rooms.list().await)),
+                match self.rooms.authorize(
+                    device,
+                    None,
+                    RoomOp::Host(HostOperation::ListRooms),
+                    tilo_clock::unix_now_ns(),
+                ) {
+                    Ok(_) => Ok(RoomReply::Rooms(self.rooms.list().await)),
                     Err(error) => Err(error),
                 }
             }

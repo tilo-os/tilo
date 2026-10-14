@@ -1142,7 +1142,7 @@ impl crate::Device for super::Device {
             super::TextureMemory::Dedicated(memory) => unsafe {
                 self.shared.raw.free_memory(memory, None);
             },
-            super::TextureMemory::External | super::TextureMemory::ForeignExternal => {}
+            super::TextureMemory::External => {}
         }
 
         self.counters.textures.sub(1);

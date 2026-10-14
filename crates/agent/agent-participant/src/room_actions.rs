@@ -1475,7 +1475,6 @@ impl Worker {
             .iter()
             .find(|descriptor| descriptor.address == target.address)
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
-        let arguments = descriptor.bind_prompt_text(arguments);
         let confirmed = match (&descriptor.contract.confirmation, &request.confirmation) {
             (ConfirmationPolicy::Phrase { phrase }, Some(Confirmation::Phrase(given))) => {
                 phrase == given

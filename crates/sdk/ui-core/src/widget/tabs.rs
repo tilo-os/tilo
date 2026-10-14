@@ -263,9 +263,6 @@ pub struct TabBar {
     /// theme change invalidates rather than reusing a stale advance. Set from `draw`
     /// (the only pass with a [`TextRenderer`]) and read back by `apply_layout`.
     title_advance: HashMap<u64, (String, TextStyle, f64)>,
-    /// `draw` measured an advance that differs from the one the last layout
-    /// used for some pill, so the next layout must run to settle the row.
-    advance_changed: bool,
     /// Aligned 1:1 with `tabs`; `None` for a pinned, icon-only pill.
     visible_titles: Vec<Option<String>>,
     /// Peer faces each pill shows at its trailing edge, aligned 1:1 with
@@ -285,6 +282,10 @@ pub struct TabBar {
     hover_close_idx: Option<usize>,
     hover_max_idx: Option<usize>,
     hover_search_idx: Option<usize>,
+    /// Candidate pill and the instant its deliberate-hover dwell began.
+    hover_intent: Option<(usize, Instant)>,
+    /// Previous pointer sample used to reject fast transit across tabs.
+    hover_motion_sample: Option<(Point, Instant)>,
     hover_new_tab: bool,
     press_origin: Option<(usize, Point)>,
     /// Offset from the pressed pill's top-left to the cursor at press time; the
@@ -438,7 +439,6 @@ impl TabBar {
             search_rects: Vec::new(),
             new_tab_rect: Rect::ZERO,
             title_advance: HashMap::new(),
-            advance_changed: false,
             visible_titles: Vec::new(),
             pill_faces: Vec::new(),
             face_metrics: FaceMetrics::default(),
@@ -449,6 +449,8 @@ impl TabBar {
             hover_close_idx: None,
             hover_max_idx: None,
             hover_search_idx: None,
+            hover_intent: None,
+            hover_motion_sample: None,
             hover_new_tab: false,
             pinned_ids: HashSet::new(),
             accent_ids: HashMap::new(),
@@ -572,6 +574,8 @@ impl TabBar {
         self.hover_close_idx = None;
         self.hover_max_idx = None;
         self.hover_search_idx = None;
+        self.hover_intent = None;
+        self.hover_motion_sample = None;
         self.hover_new_tab = false;
         self.press_origin = None;
         self.pending_drag = None;
@@ -1441,10 +1445,12 @@ impl TabBar {
             return Reveal::None;
         }
         let pressed = self.press_origin.is_some_and(|(j, _)| j == i);
-        // Hovering the pill reveals its actions at once. They used to wait out
-        // a dwell and a pointer-speed gate; that made the chips appear late,
-        // and retract while the pointer was still travelling to one of them.
-        if Some(i) == self.hover_idx || pressed || self.keyboard_focus && t.id == self.active_id {
+        let hover_intended = self.hover_intent.is_some_and(|(idx, started)| {
+            idx == i && started.elapsed() >= Duration::from_millis(HOVER_INTENT_MS)
+        });
+        // Keyboard focus is explicit intent and must remain immediate. Pointer
+        // hover, by contrast, waits so crossing the tab row does not move it.
+        if hover_intended || pressed || self.keyboard_focus && t.id == self.active_id {
             // With the maximize chip withheld there is nothing above `Close` to
             // open into, and reserving `Full`'s width for a chip that will
             // never be placed would just push the title around for nothing.
@@ -1537,6 +1543,18 @@ impl TabBar {
         from
     }
 
+    /// Test/shot clock control for the pointer-intent dwell. Production input
+    /// still arms this exclusively through `on_cursor_moved`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn hold_hover_intent_at(&mut self, at: Duration) -> bool {
+        let Some((idx, _)) = self.hover_intent else {
+            return false;
+        };
+        let now = crate::time::now();
+        self.hover_intent = Some((idx, now.checked_sub(at).unwrap_or(now)));
+        true
+    }
+
     /// Hold every in-flight reveal curve `at` milliseconds along it. The curve runs
     /// on wall time and an offscreen frame costs more wall time than the whole
     /// curve lasts, so a capture that only steps frames would see just the
@@ -1579,20 +1597,18 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return 0.0;
         };
-        match self.title_advance.get(&t.id) {
-            Some((title, _, w)) if title == &t.title => *w,
-            // A retitled tab keeps the width it was drawn at until `draw`
-            // measures the new title. Guessing from the character count
-            // first made the pill jump wide, then narrow, on every title
-            // change a client makes (a terminal's running status, say).
-            Some((_, _, w)) => *w,
-            None => {
-                // Title lengths never approach `u32::MAX` chars, so this is
-                // lossless in practice; `f64::from` preserves the value.
-                let chars = u32::try_from(t.title.chars().count()).unwrap_or(u32::MAX);
-                f64::from(chars) * APPROX_CHAR_W
-            }
-        }
+        self.title_advance
+            .get(&t.id)
+            .filter(|(title, _, _)| title == &t.title)
+            .map_or_else(
+                || {
+                    // Title lengths never approach `u32::MAX` chars, so this is
+                    // lossless in practice; `f64::from` preserves the value.
+                    let chars = u32::try_from(t.title.chars().count()).unwrap_or(u32::MAX);
+                    f64::from(chars) * APPROX_CHAR_W
+                },
+                |(_, _, w)| *w,
+            )
     }
 
     fn leading_zone(&self, i: usize) -> f64 {
@@ -1654,13 +1670,8 @@ impl TabBar {
             None,
             &style.clone().with_weight(TextWeight::Semibold),
         );
-        let measured = f64::from(full_w);
-        let previous = self
-            .title_advance
-            .insert(id, (title.clone(), style.clone(), measured));
-        if previous.is_none_or(|(_, _, w)| (w - measured).abs() > 0.5) {
-            self.advance_changed = true;
-        }
+        self.title_advance
+            .insert(id, (title.clone(), style.clone(), f64::from(full_w)));
         let r = *self.tab_rects.get(i)?;
         let (zx0, zx1) = self.title_zone(i, r);
         // A pill's title zone is a few hundred px at most, well inside `f32`'s
@@ -2464,6 +2475,12 @@ const HOVER_GROWTH_PX: f64 = Reveal::Full.reserve() - Reveal::None.reserve();
 /// Matched to [`LAYOUT_ANIM_MS`] so a pill opening and neighbours sliding
 /// aside read as one motion.
 const REVEAL_ANIM_MS: u64 = LAYOUT_ANIM_MS;
+/// A pointer merely crossing the row must not reflow it. Secondary actions
+/// appear only after a short, deliberate hover.
+const HOVER_INTENT_MS: u64 = 200;
+/// Cursor travel faster than this is navigation, not intent.
+const HOVER_INTENT_MAX_SPEED_PX_PER_MS: f64 = 0.45;
+
 /// First-frame estimate before `draw` records the real advance into
 /// [`TabBar::title_advance`]. Deliberately an over-estimate: guessing wide is
 /// invisible by the next frame; guessing narrow elides the title, which is
@@ -2738,7 +2755,6 @@ impl Widget for TabBar {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-        self.advance_changed = false;
         self.face_demand_stale = false;
         self.tab_rects.clear();
         self.close_rects.clear();
@@ -3138,7 +3154,7 @@ impl Widget for TabBar {
     /// size change. Tab additions and removals are structural; peers arriving
     /// on or leaving a tab resize its pill for their faces.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO || self.advance_changed || self.face_demand_stale
+        self.rect == Rect::ZERO || self.face_demand_stale
     }
     fn is_focusable(&self) -> bool {
         !self.tabs.is_empty()
@@ -3196,6 +3212,9 @@ impl Widget for TabBar {
             && self
                 .drag_lifted_at
                 .is_some_and(|started| started.elapsed() < self.drag_lift_duration);
+        let hover_intent = self
+            .hover_intent
+            .is_some_and(|(_, started)| started.elapsed() < Duration::from_millis(HOVER_INTENT_MS));
         drop_zone
             || layout
             || insert_fade
@@ -3203,6 +3222,7 @@ impl Widget for TabBar {
             || hover_drop_fade
             || reveal
             || drag_lift
+            || hover_intent
             || busy
     }
 }
@@ -3649,6 +3669,16 @@ impl TabBar {
         handled: &mut bool,
     ) {
         let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+        let now = crate::time::now();
+        let speed = self.hover_motion_sample.map_or(0.0, |(previous, sampled)| {
+            let elapsed_ms = now.duration_since(sampled).as_secs_f64() * 1000.0;
+            if elapsed_ms <= f64::EPSILON {
+                f64::INFINITY
+            } else {
+                point_delta(p, previous).hypot() / elapsed_ms
+            }
+        });
+        self.hover_motion_sample = Some((p, now));
         self.last_cursor = p;
         // Pinned pills leave their close/max/search rects at `Rect::ZERO`;
         // skip them so a cursor crossing (0,0) doesn't latch a hover on a
@@ -3682,6 +3712,21 @@ impl TabBar {
             .filter(|&(_, chip)| chip == ActionChip::Search)
             .map(|(i, _)| i);
         self.hover_idx = self.tab_rects.iter().position(|r| r.contains(p));
+        let close_excluded = self.hover_close_idx.is_some();
+        self.hover_intent = match (self.hover_intent, self.hover_idx) {
+            (_, None) => None,
+            (_, Some(_)) if close_excluded => None,
+            (Some((candidate, started)), Some(idx))
+                if candidate == idx && speed <= HOVER_INTENT_MAX_SPEED_PX_PER_MS =>
+            {
+                Some((candidate, started))
+            }
+            // Entering quickly starts a fresh dwell instead of dropping the
+            // candidate. If the pointer stops here there is no later motion
+            // event to arm it; if transit continues, each event resets the
+            // timestamp and the reveal still cannot mature mid-flight.
+            (_, Some(idx)) => Some((idx, now)),
+        };
         self.hover_new_tab = self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(p);
         if let Some((idx, origin)) = self.press_origin
             && point_delta(p, origin).hypot() > DRAG_START_THRESHOLD_PX
@@ -4483,6 +4528,12 @@ mod tests {
                 }
                 if hover {
                     b.hover_idx = Some(1);
+                    b.hover_intent = Some((
+                        1,
+                        Instant::now()
+                            .checked_sub(Duration::from_millis(HOVER_INTENT_MS + 1))
+                            .expect("hover intent instant"),
+                    ));
                 }
 
                 let theme = Theme::dark();
@@ -5389,8 +5440,8 @@ mod tests {
             dispatch(&mut b, &release);
             assert_eq!(b.drop_zone_target(), None, "release clears target");
             assert!(
-                !b.needs_animation_frame(),
-                "at rest (no drag) the bar must not pump frames",
+                b.hover_intent.is_some() && b.needs_animation_frame(),
+                "release clears the drag target but preserves the stationary pill-hover dwell",
             );
         }
 
@@ -6161,6 +6212,12 @@ mod tests {
 
             // The affordance is reachable via hover, just not permanent.
             b.hover_idx = Some(1);
+            b.hover_intent = Some((
+                1,
+                Instant::now()
+                    .checked_sub(Duration::from_millis(HOVER_INTENT_MS + 1))
+                    .expect("hover intent instant"),
+            ));
             assert!(
                 b.close_affordance_visible_for_tests(1, &theme),
                 "a hovered pill has a lifted body to host the ×",
@@ -6172,6 +6229,7 @@ mod tests {
 
             // Pressing does the same, so the glyph never blinks out mid-click.
             b.hover_idx = None;
+            b.hover_intent = None;
             b.press_origin = Some((2, Point::ZERO));
             assert!(
                 b.close_affordance_visible_for_tests(2, &theme),
@@ -6708,32 +6766,6 @@ mod tests {
     }
 
     #[test]
-    fn a_retitled_pill_keeps_its_measured_width_until_the_new_title_is_measured() {
-        let theme = crate::theme::Theme::dark();
-        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
-        b.title_advance
-            .insert(1, ("Notes".into(), theme.text(TextRole::Label), 60.0));
-        lay_out_at_width(&mut b, 900.0);
-        let measured = b.tab_rects[0].width();
-        // A client retitles the window: the character-count guess for the
-        // new title would be far wider, and the pill must not jump to it.
-        b.tabs[0].title = "a considerably longer title than before".into();
-        lay_out_at_width(&mut b, 900.0);
-        assert!(
-            (b.tab_rects[0].width() - measured).abs() < 0.01,
-            "pill jumped from {measured} to {} before the new title was measured",
-            b.tab_rects[0].width()
-        );
-        // Once `draw` has measured a different advance, the bar asks for a
-        // layout instead of keeping the stale width.
-        assert!(!b.is_layout_dirty());
-        b.advance_changed = true;
-        assert!(b.is_layout_dirty());
-        lay_out_at_width(&mut b, 900.0);
-        assert!(!b.is_layout_dirty());
-    }
-
-    #[test]
     fn narrow_groups_keep_pills_and_chips_inside_the_bar() {
         // Case `pills_stay_inside_the_bar_when_the_group_is_narrow`.
         // The strip's clip is at the row, not the group, so nothing downstream
@@ -6913,6 +6945,7 @@ mod tests {
         let p = Point::new(r.x0 + r.width() * 0.25, r.center().y);
         let mut handled = false;
         dispatch_cursor(b, p, &mut handled);
+        assert!(b.hold_hover_intent_at(Duration::from_millis(HOVER_INTENT_MS.saturating_add(1))));
         lay_out_at_width_with(b, width, theme);
     }
 
@@ -6971,41 +7004,61 @@ mod tests {
         )
     }
 
-    /// Hovering a pill reveals its search/maximize chips at once, and they
-    /// stay put while the pointer travels (however fast) to one of them. A
-    /// dwell-and-speed gate once withheld them and re-armed on every fast
-    /// move, so the chips appeared late and retracted under a pointer that was
-    /// still heading for them.
     #[test]
-    fn pointer_reveal_is_immediate_and_survives_the_trip_to_a_chip() {
-        let theme = Theme::dark().with_reduce_motion(true);
-        let width = 900.0;
-        let mut b = four_tab_bar();
-        lay_out_at_width_with(&mut b, width, &theme);
-        let idle = b.tab_rects()[1].width();
-        assert!(b.max_rects()[1].area() == 0.0 && b.search_rects()[1].area() == 0.0);
+    fn pointer_reveal_waits_for_hover_intent() {
+        // Case `pointer_reveal_waits_for_hover_intent_timeout`.
+        {
+            let theme = Theme::dark().with_reduce_motion(true);
+            let width = 900.0;
+            let mut b = four_tab_bar();
+            lay_out_at_width_with(&mut b, width, &theme);
+            let idle = b.tab_rects()[1].width();
+            let p = Point::new(b.tab_rects()[1].x0 + 12.0, b.tab_rects()[1].center().y);
+            let mut handled = false;
+            dispatch_cursor(&mut b, p, &mut handled);
+            lay_out_at_width_with(&mut b, width, &theme);
+            assert!((b.tab_rects()[1].width() - idle).abs() < 0.01);
+            assert!(b.max_rects()[1].area() == 0.0 && b.search_rects()[1].area() == 0.0);
 
-        let r = b.tab_rects()[1];
-        let mut handled = false;
-        dispatch_cursor(&mut b, Point::new(r.x0 + 12.0, r.center().y), &mut handled);
-        lay_out_at_width_with(&mut b, width, &theme);
-        assert!(
-            b.tab_rects()[1].width() > idle + 1.0,
-            "no dwell before it opens"
-        );
-        assert!(b.max_rects()[1].area() > 0.0 && b.search_rects()[1].area() > 0.0);
+            assert!(
+                b.hold_hover_intent_at(Duration::from_millis(HOVER_INTENT_MS.saturating_add(1)))
+            );
+            lay_out_at_width_with(&mut b, width, &theme);
+            assert!(b.tab_rects()[1].width() > idle + 1.0);
+            assert!(b.max_rects()[1].area() > 0.0 && b.search_rects()[1].area() > 0.0);
+        }
 
-        // A fast jump onto the maximize chip keeps the pill open.
-        let chip = b.max_rects()[1].center();
-        dispatch_cursor(&mut b, chip, &mut handled);
-        lay_out_at_width_with(&mut b, width, &theme);
-        assert!(b.max_rects()[1].area() > 0.0 && b.search_rects()[1].area() > 0.0);
-        assert_eq!(b.hover_max_idx, Some(1));
+        // Case `leaving_or_hovering_close_cancels_hover_intent`.
+        {
+            let mut b = ghost_test_bar();
+            let mut handled = false;
+            dispatch_cursor(&mut b, Point::new(90.0, 20.0), &mut handled);
+            assert!(b.hover_intent.is_some());
+            dispatch_cursor(&mut b, Point::new(90.0, 50.0), &mut handled);
+            assert_eq!(b.hover_intent, None);
 
-        // Leaving the row closes it again.
-        dispatch_cursor(&mut b, Point::new(chip.x, 400.0), &mut handled);
-        lay_out_at_width_with(&mut b, width, &theme);
-        assert!((b.tab_rects()[1].width() - idle).abs() < 0.01);
+            b.hover_motion_sample = None;
+            dispatch_cursor(&mut b, Point::new(90.0, 20.0), &mut handled);
+            dispatch_cursor(&mut b, Point::new(150.0, 20.0), &mut handled);
+            assert_eq!(b.hover_close_idx, Some(1));
+            assert_eq!(b.hover_intent, None);
+        }
+
+        // Case `fast_transit_across_tabs_restarts_the_reveal_dwell`.
+        {
+            let mut b = ghost_test_bar();
+            let now = Instant::now();
+            b.hover_motion_sample = Some((Point::new(10.0, 20.0), now));
+            let mut handled = false;
+            dispatch_cursor(&mut b, Point::new(190.0, 20.0), &mut handled);
+            assert_eq!(b.hover_idx, Some(2));
+            let (candidate, started) = b.hover_intent.expect("destination dwell starts");
+            assert_eq!(candidate, 2);
+            assert!(
+                started.elapsed() < Duration::from_millis(HOVER_INTENT_MS),
+                "fast transit must not carry a mature reveal into its destination",
+            );
+        }
     }
 
     #[test]
