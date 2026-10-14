@@ -114,6 +114,30 @@ impl IpHasher {
     }
 }
 
+/// How many joins one address may make: in any 10 minutes and in any day.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JoinRates {
+    pub per_ten_minutes: usize,
+    pub per_day: usize,
+}
+
+impl JoinRates {
+    /// Guest joins, which mint a person each: 5 per 10 minutes and 30 per
+    /// day per address unless the operator sets otherwise.
+    pub const GUESTS: Self = Self {
+        per_ten_minutes: 5,
+        per_day: 30,
+    };
+
+    /// Spectator certificates, which mint nobody and last an hour: 30 per
+    /// 10 minutes per address, enough for a visitor reloading the homepage,
+    /// and no daily cap.
+    pub const SPECTATORS: Self = Self {
+        per_ten_minutes: 30,
+        per_day: usize::MAX,
+    };
+}
+
 /// Sliding windows of joins per address hash.
 pub struct JoinLimits {
     short_max: usize,
@@ -123,27 +147,15 @@ pub struct JoinLimits {
 
 impl Default for JoinLimits {
     fn default() -> Self {
-        Self::guests()
+        Self::new(JoinRates::GUESTS)
     }
 }
 
 impl JoinLimits {
-    /// Guest joins, which mint a person each: 5 per 10 minutes and 30 per
-    /// day per address.
-    pub fn guests() -> Self {
+    pub fn new(rates: JoinRates) -> Self {
         Self {
-            short_max: 5,
-            day_max: 30,
-            joins: HashMap::new(),
-        }
-    }
-
-    /// Spectator certificates, which mint nobody and last an hour: 30 per
-    /// 10 minutes per address, enough for a visitor reloading the homepage.
-    pub fn spectators() -> Self {
-        Self {
-            short_max: 30,
-            day_max: usize::MAX,
+            short_max: rates.per_ten_minutes,
+            day_max: rates.per_day,
             joins: HashMap::new(),
         }
     }
@@ -384,12 +396,12 @@ mod tests {
 
     #[test]
     fn spectators_get_thirty_per_ten_minutes_and_no_daily_cap() {
-        let mut limits = JoinLimits::spectators();
+        let mut limits = JoinLimits::new(JoinRates::SPECTATORS);
         for second in 0..30 {
             limits.check_and_record("h", second * 1_000).unwrap();
         }
         assert_eq!(limits.check_and_record("h", 30_000).unwrap_err(), 570);
-        let mut day = JoinLimits::spectators();
+        let mut day = JoinLimits::new(JoinRates::SPECTATORS);
         for index in 0..100 {
             day.check_and_record("h", index * 11 * 60_000).unwrap();
         }
