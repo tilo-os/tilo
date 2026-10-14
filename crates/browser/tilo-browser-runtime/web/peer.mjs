@@ -963,6 +963,19 @@ async function connect({
       if (!room || !peer) return Promise.resolve(false);
       return peer.legacyInput(room, publisher, surface, JSON.stringify(events));
     },
+    /** This person as their presence names them: `{label, color}`. */
+    get participant() {
+      return {label: (displayName || label).slice(0, 32), color: colorOf(custodyKeyHex())};
+    },
+    /** Post this person's name, the window they focus (tab id, hex, or
+     * null) and their own recent steps (`[{id, action, resource, app,
+     * at_ms}]`, titles only) to the host; resolves to who is here:
+     * `[{device, user, label, window, status, recent, sources, generated,
+     * updated_ms}]`. */
+    async here(window, actions = []) {
+      if (!room || !peer) return [];
+      return JSON.parse(await peer.here(room, (displayName || label).slice(0, 32), window ?? undefined, JSON.stringify(actions)));
+    },
     /** The device (hex) of the session the node runs beside the host (the
      * one that opens the node's legacy apps), or `null`. */
     async nodeSession() {
