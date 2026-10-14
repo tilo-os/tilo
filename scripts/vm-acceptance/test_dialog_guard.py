@@ -56,6 +56,7 @@ class ShellVm:
                          "collaborators": False, "room_activity": False, "power_menu": False}
         self.palette = False
         self.query = ""
+        self.preedit = ""
         self.composer = False
         self.review = False
         self.portal = None
@@ -95,7 +96,8 @@ class ShellVm:
     def targets(self):
         out = [{"name": n, "rect": list(r)} for n, r in CARDS.items()]
         if self.palette:
-            out.append({"name": "Palette/SearchField", "rect": list(SEARCH_FIELD)})
+            out.append({"name": "command_palette_input", "rect": [640, 180, 640, 460]})
+            out.append({"name": "command-palette:query", "rect": list(SEARCH_FIELD)})
         return out
 
     def actions(self, query=""):
@@ -136,8 +138,13 @@ class ShellVm:
         x, y = int(args[2]), int(args[3])
         self.osk_connected = True
         if self.osk_shown and inside(x, y, (KEYBOARD["x"], KEYBOARD["y"], KEYBOARD["w"], KEYBOARD["h"])):
-            self.commits += 1
-            self.query += "a"
+            # As in OskWidget: letters compose as preedit, Space commits.
+            if y >= KEYBOARD["y"] + KEYBOARD["h"] * 0.8:
+                self.commits += 1
+                self.query += self.preedit + " "
+                self.preedit = ""
+            else:
+                self.preedit += "a"
         elif self.palette and inside(x, y, SEARCH_FIELD):
             self.osk_shown = self.keyboard_for_search
         elif not self.palette and not self.composer and inside(x, y, CARDS["launchpad:invite"]):
@@ -156,6 +163,69 @@ class ShellVm:
         calls = [*self.calls, ("restart_session",)]
         self.__init__(keyboard_for_search=self.keyboard_for_search)
         self.calls = calls
+
+
+class ScratchpadVm(ShellVm):
+    """W19's app field: letters compose; only Space commits the word."""
+
+    def __init__(self):
+        super().__init__()
+        self.scratchpad = False
+        self.preedit = ""
+        self.text = ""
+        self.commits = 5  # W19 must observe a new commit, not an earlier one.
+        self.typed_shot = None
+
+    def invoke(self, provider, action):
+        self.calls.append(("invoke", provider, action))
+        if (provider, action) != ("applications", "so.tilo.scratchpad"):
+            raise AssertionError((provider, action))
+        self.scratchpad = True
+
+    def state(self):
+        st = super().state()
+        st["chrome"]["on_screen_keyboard"]["serves_shell_field"] = False
+        st["workspace_tree"]["workspaces"] = [{"id": 1, "strips": [{
+            "id": 1, "window_groups": [{"id": 1, "tabs": [{
+                "tile": {"Foreign": {"app_id": "so.tilo.scratchpad"}},
+            }]}] if self.scratchpad else [],
+        }]}]
+        return st
+
+    def targets(self):
+        if not self.scratchpad:
+            return []
+        return [{"name": "Strip/WindowGroup", "rect": [100, 100, 900, 700]},
+                {"name": "tab:scratchpad[1]", "rect": [100, 100, 900, 40]}]
+
+    def input(self, *args):
+        self.calls.append(("input", *args))
+        if args[:1] == ("type",):
+            self.text += args[1]
+            self.osk_shown = False
+            return ""
+        if args[:2] != ("touch", "tap"):
+            raise AssertionError(args)
+        x, y = int(args[2]), int(args[3])
+        connected = self.osk_connected
+        self.osk_connected = True
+        if self.osk_shown and inside(x, y, (480, 680, 960, 380)):
+            if inside(x, y, (768, 984, 384, 76)):  # Space in the wide bottom row.
+                self.text += self.preedit + " "
+                self.preedit = ""
+                self.commits += 1
+            elif inside(x, y, (480, 832, 960, 76)):
+                self.preedit += "a"
+            else:
+                raise AssertionError(f"unexpected keyboard tap at {x},{y}")
+        elif self.scratchpad and inside(x, y, (100, 140, 900, 660)):
+            self.osk_shown = connected  # First touch connects, second opens.
+        return ""
+
+    def shot(self, path):
+        if path.stem == "W19-typed":
+            self.typed_shot = (self.text, self.preedit, self.osk_shown, self.scratchpad)
+        return super().shot(path)
 
 
 def fast_wait_until(predicate, timeout, interval=0.5):
@@ -363,6 +433,57 @@ class ResetTest(GuardTest):
         self.assertFalse(vm.composer)
 
 
+class W19Test(GuardTest):
+    def run_w19(self, vm):
+        ctx = Context(vm, self.out, {})
+        w19 = next(c for c in core.REGISTRY if c.id == "W19")
+        return core.run_check(ctx, w19)
+
+    def test_w19_commits_preedit_before_the_typed_shot_and_physical_input(self):
+        vm = ScratchpadVm()
+        res = self.run_w19(vm)
+        self.assertEqual(res.status, "pass", res.detail)
+        self.assertEqual(res.metrics["commits"], 1)
+        self.assertEqual(vm.typed_shot, ("aaa ", "", True, True))
+        self.assertEqual(vm.text, "aaa x")
+        self.assertFalse(vm.osk_shown)
+        self.assertIn("shots/W19-keyboard.png", res.evidence)
+        self.assertIn("shots/W19-typed.png", res.evidence)
+        self.assertEqual(vm.calls.count(("input", "touch", "tap", "550", "555")), 2)
+
+    def test_w19_requires_a_new_commit_even_when_the_field_has_text(self):
+        vm = ScratchpadVm()
+        state = vm.state
+
+        def without_new_commit():
+            st = state()
+            st["chrome"]["on_screen_keyboard"]["commits"] = 5
+            return st
+
+        vm.state = without_new_commit
+        res = self.run_w19(vm)
+        self.assertEqual(res.status, "fail")
+        self.assertIn("text committed into the field by tapping keyboard keys", res.detail)
+        self.assertNotIn("shots/W19-typed.png", res.evidence)
+
+    def test_w19_still_requires_the_physical_keyboard_to_hide_the_osk(self):
+        vm = ScratchpadVm()
+        input_event = vm.input
+
+        def stays_shown(*args):
+            out = input_event(*args)
+            if args[:1] == ("type",):
+                vm.osk_shown = True
+            return out
+
+        vm.input = stays_shown
+        res = self.run_w19(vm)
+        self.assertEqual(res.status, "fail")
+        self.assertIn("the on-screen keyboard hidden after typing on the physical keyboard", res.detail)
+        self.assertEqual(res.metrics["commits"], 1)
+        self.assertIn("shots/W19-typed.png", res.evidence)
+
+
 class W20Test(GuardTest):
     def run_w20(self, vm):
         ctx = Context(vm, self.out, {})
@@ -386,7 +507,70 @@ class W20Test(GuardTest):
         self.assertEqual(res.metrics["first_touch"], list(first))
         self.assertFalse(vm.composer)
         self.assertFalse(vm.palette, "W20 left search open")
-        self.assertEqual(res.metrics["query"], "aaa")
+        self.assertEqual(res.metrics["query"], "aaa ")
+
+    def test_w20_taps_the_query_row_not_the_card_or_another_search_field(self):
+        vm = self.vm()
+        targets = vm.targets
+        vm.targets = lambda: targets() + [{"name": "OtherApp/SearchField", "rect": [0, 0, 1920, 1080]}]
+        res = self.run_w20(vm)
+        self.assertEqual(res.status, "pass", res.detail)
+        self.assertTrue(inside(*self.touches(vm)[1], SEARCH_FIELD))
+        self.assertEqual(res.metrics["query"], "aaa ")
+        self.assertGreater(res.metrics["commits"], 0)
+        self.assertIn("data/W20-search-targets.json", res.evidence)
+
+    def test_w20_commits_the_composing_word_with_a_space_tap(self):
+        vm = self.vm()
+        res = self.run_w20(vm)
+        self.assertEqual(res.status, "pass", res.detail)
+        self.assertEqual(res.metrics["query"], "aaa ")
+        self.assertEqual(res.metrics["commits"], 1)
+        self.assertEqual(vm.preedit, "")
+        self.assertEqual(self.touches(vm)[-1],
+                         (int(KEYBOARD["x"] + KEYBOARD["w"] * 0.5),
+                          int(KEYBOARD["y"] + KEYBOARD["h"] * 0.9)))
+        self.assertFalse(vm.palette)
+
+    def test_w20_requires_an_osk_commit_not_only_a_query_change(self):
+        vm = self.vm()
+        state = vm.state
+        def without_commit_count():
+            st = state()
+            st["chrome"]["on_screen_keyboard"]["commits"] = 0
+            return st
+        vm.state = without_commit_count
+        res = self.run_w20(vm)
+        self.assertEqual(res.status, "fail")
+        self.assertIn("the on-screen keyboard committed the typed word", res.detail)
+        self.assertFalse(vm.palette)
+
+    def test_w20_cannot_pass_if_only_space_reaches_search(self):
+        vm = self.vm()
+        input_event = vm.input
+        def no_letters(*args):
+            out = input_event(*args)
+            if vm.osk_shown:
+                vm.preedit = ""
+            return out
+        vm.input = no_letters
+        res = self.run_w20(vm)
+        self.assertEqual(res.status, "fail")
+        self.assertIn("the keyboard's keys typed into the search field", res.detail)
+        self.assertFalse(vm.palette)
+
+    def test_w20_fails_and_closes_search_without_its_query_target(self):
+        vm = self.vm()
+        targets = vm.targets
+        vm.targets = lambda: [t for t in targets() if t["name"] != "command-palette:query"]
+        res = self.run_w20(vm)
+        self.assertEqual(res.status, "fail")
+        self.assertTrue(res.unobservable)
+        self.assertIn("no command-palette:query target", res.detail)
+        self.assertEqual(len(self.touches(vm)), 1, "never guess the field's coordinates")
+        self.assertFalse(vm.palette)
+        self.assertNotIn(core.LEFT_OPEN, res.detail)
+        self.assertIn("data/W20-search-targets.json", res.evidence)
 
     def test_w20_closes_search_when_it_fails_midway(self):
         vm = self.vm(keyboard_for_search=False)

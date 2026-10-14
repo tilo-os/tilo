@@ -1338,7 +1338,13 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         })
         .unwrap();
     let mut a = driver(&f, 11, &checkout);
-    invoke(&mut a, 11, actions::page_resource_id(f.child), "outdent");
+    invoke(
+        &mut a,
+        11,
+        actions::page_resource_id(f.child),
+        "outdent",
+        None,
+    );
     assert_eq!(revision(&f, &checkout), 1);
     f.records
         .read(&checkout.id, |doc| {

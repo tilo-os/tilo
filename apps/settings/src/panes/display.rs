@@ -37,8 +37,7 @@ use crate::prefs::DisplayPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, SettingsSection, block, card, error_row, note, rows, setting_row, setting_row_described,
-    slider_row, value_row,
+    El, caption, card, error_row, rows, setting_row, setting_row_described, value_row,
 };
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
@@ -1951,7 +1950,7 @@ impl DisplayModel {
             cards.push(devices);
         }
         if let Some(notice) = &self.notice {
-            cards.push(card(&t("display-card-title"), rows(vec![note(notice)])));
+            cards.push(card(&t("display-card-title"), rows(vec![caption(notice)])));
         }
         for (index, output) in connected.iter().enumerate() {
             cards.push(self.build_output_card(index, output, &connected));
@@ -1966,7 +1965,7 @@ impl DisplayModel {
 
     /// Certified peer connectors at their observed shared logical positions.
     /// Observation alone never makes a screen movable or grants input access.
-    fn build_device_arrangement_card(&self) -> Option<SettingsSection> {
+    fn build_device_arrangement_card(&self) -> Option<El> {
         use super::display_arrangement::{
             ArrangedDisplay, DisplayArrangement, SharedDisplayState, placement::Placement,
         };
@@ -2052,12 +2051,12 @@ impl DisplayModel {
         Some(card(
             &t("display-devices-title"),
             rows(vec![
-                block(Box::new(DisplayArrangement::new(
+                Box::new(DisplayArrangement::new(
                     displays,
                     moves,
                     self.device_arrangement_drag.clone(),
-                ))),
-                note(&t("display-devices-arrange")),
+                )),
+                caption(&t("display-devices-arrange")),
             ]),
         ))
     }
@@ -2066,11 +2065,11 @@ impl DisplayModel {
     /// connected outputs with an Identify button, plus a caption about idle
     /// ports. See [`Self::connected_outputs`] for why disconnected ports
     /// aren't enumerated.
-    fn build_arrangement_card(&self, connected: &[&DisplayOutput]) -> SettingsSection {
+    fn build_arrangement_card(&self, connected: &[&DisplayOutput]) -> El {
         if connected.is_empty() {
             return card(
                 &t("display-card-title"),
-                rows(vec![note(&t("display-none"))]),
+                rows(vec![caption(&t("display-none"))]),
             );
         }
         let disconnected = self.outputs.len() - connected.len();
@@ -2088,15 +2087,13 @@ impl DisplayModel {
                 .map(|binding| (display.connector.clone(), binding))
             })
             .collect();
-        let mut out_rows: Vec<Item> = vec![
-            block(Box::new(
-                super::display_arrangement::DisplayArrangement::new(
-                    displays,
-                    moves,
-                    self.arrangement_drag.clone(),
-                ),
+        let mut out_rows: Vec<El> = vec![
+            Box::new(super::display_arrangement::DisplayArrangement::new(
+                displays,
+                moves,
+                self.arrangement_drag.clone(),
             )),
-            note(&crate::i18n::t("display-arrangement-hint")),
+            caption(&crate::i18n::t("display-arrangement-hint")),
             self.cx.row(crate::i18n::t("display-identify-row")).button(
                 "settings.display.identify",
                 &crate::i18n::t("display-identify"),
@@ -2104,7 +2101,7 @@ impl DisplayModel {
             ),
         ];
         // One honest line about the idle ports rather than a row each.
-        out_rows.push(note(&if connected.len() > 1 {
+        out_rows.push(caption(&if connected.len() > 1 {
             t("display-caption-switch")
         } else if disconnected == 0 {
             t("display-caption-second")
@@ -2188,7 +2185,7 @@ impl DisplayModel {
     }
 
     /// The brightness slider + night-light comfort preferences card.
-    fn build_brightness_card(&self) -> SettingsSection {
+    fn build_brightness_card(&self) -> El {
         let prefs = *self.prefs.get();
         let automatic_brightness = if self.ambient_sensor_available {
             self.cx
@@ -2215,7 +2212,6 @@ impl DisplayModel {
                     None => self
                         .cx
                         .row(t("display-brightness"))
-                        .stacked()
                         .id("display.brightness")
                         .slider_effect(
                             &LocalState::new(f64::from(self.brightness)),
@@ -2250,7 +2246,7 @@ impl DisplayModel {
                                 .ok_or_else(|| format!("`{label}` is not a Night Light warmth"))
                         },
                     ),
-                note(&t("display-night-light-caption")),
+                caption(&t("display-night-light-caption")),
             ]),
         )
     }
@@ -2262,7 +2258,7 @@ impl DisplayModel {
         index: usize,
         output: &DisplayOutput,
         connected: &[&DisplayOutput],
-    ) -> SettingsSection {
+    ) -> El {
         let config = self
             .pending_candidate
             .as_ref()
@@ -2277,7 +2273,7 @@ impl DisplayModel {
             });
         let mut output_rows = Vec::new();
         if self.output_brightness.contains_key(&output.connector) {
-            output_rows.push(slider_row(
+            output_rows.push(setting_row(
                 &t("display-brightness"),
                 Box::new(
                     self.slider(
@@ -2306,7 +2302,7 @@ impl DisplayModel {
         output: &DisplayOutput,
         connected: &[&DisplayOutput],
         config: &OutputConfig,
-    ) -> Vec<Item> {
+    ) -> Vec<El> {
         let scale_choices: Vec<String> = DISPLAY_SCALES
             .iter()
             .map(|(label, _)| (*label).into())
@@ -2387,7 +2383,7 @@ impl DisplayModel {
         &self,
         output: &DisplayOutput,
         config: &OutputConfig,
-    ) -> Vec<Item> {
+    ) -> Vec<El> {
         let mut out_rows = Vec::new();
         if output.modes.is_empty() {
             out_rows.push(value_row(
@@ -2436,7 +2432,7 @@ impl DisplayModel {
         &self,
         output: &DisplayOutput,
         config: &OutputConfig,
-    ) -> Vec<Item> {
+    ) -> Vec<El> {
         let mut out_rows = Vec::new();
 
         if output.hdr {
@@ -2528,7 +2524,7 @@ impl DisplayModel {
 
     /// The safety/apply-transaction card, driven by the on-disk
     /// [`DisplayTransaction`] state machine.
-    fn build_safety_card(&self) -> SettingsSection {
+    fn build_safety_card(&self) -> El {
         let transaction = self.transaction();
         match transaction.as_ref().map(|transaction| transaction.state) {
             Some(DisplayTransactionState::AwaitingConfirmation) => {
@@ -2543,7 +2539,7 @@ impl DisplayModel {
                 card(
                     &t("display-keep-title"),
                     rows(vec![
-                        note(&t_args(
+                        caption(&t_args(
                             "display-keep-caption",
                             &[("seconds", seconds.into())],
                         )),
@@ -2569,14 +2565,14 @@ impl DisplayModel {
                     .as_ref()
                     .and_then(|transaction| transaction.message.as_deref())
                     .map_or_else(|| t("display-applying-caption"), str::to_string);
-                card(&t("display-applying-title"), rows(vec![note(&applying)]))
+                card(&t("display-applying-title"), rows(vec![caption(&applying)]))
             }
             Some(DisplayTransactionState::Rejected) => {
                 let rejected = transaction
                     .as_ref()
                     .and_then(|transaction| transaction.message.as_deref())
                     .map_or_else(|| t("display-rejected-caption"), str::to_string);
-                let mut content = vec![note(&rejected)];
+                let mut content = vec![caption(&rejected)];
                 if self.pending_candidate.is_some() {
                     let try_again = t("display-try-again");
                     content.push(self.cx.row(t("display-retry")).button(
@@ -2592,7 +2588,7 @@ impl DisplayModel {
                 card(
                     &t("display-apply-title"),
                     rows(vec![
-                        note(&t("display-apply-caption")),
+                        caption(&t("display-apply-caption")),
                         self.cx.row(t("display-apply-row")).button(
                             "settings.display.apply",
                             &apply,
@@ -2603,14 +2599,14 @@ impl DisplayModel {
             }
             _ => card(
                 &t("display-config-title"),
-                rows(vec![note(&t("display-config-empty"))]),
+                rows(vec![caption(&t("display-config-empty"))]),
             ),
         }
     }
 
     /// Layout tools whose display changes are kept without asking, each
     /// with a way to be asked again. Absent while no tool is trusted.
-    fn build_trusted_tools_card(&self) -> Option<SettingsSection> {
+    fn build_trusted_tools_card(&self) -> Option<El> {
         if !self.of_device {
             return None;
         }
@@ -2618,7 +2614,7 @@ impl DisplayModel {
         if trusted.tools.is_empty() {
             return None;
         }
-        let mut content = vec![note(&crate::i18n::t("display-tools-caption"))];
+        let mut content = vec![caption(&crate::i18n::t("display-tools-caption"))];
         for tool in &trusted.tools {
             content.push(self.cx.row(tool.name()).button(
                 "settings.display.tool.forget",
@@ -4051,8 +4047,7 @@ mod tests {
             .build_device_arrangement_card()
             .expect("discovered peer has a real canvas");
         let mut names = Vec::new();
-        let arrangement = crate::widgets::cards(vec![card]);
-        accessible_names(arrangement.as_ref(), &mut names);
+        accessible_names(card.as_ref(), &mut names);
         assert!(
             names
                 .iter()

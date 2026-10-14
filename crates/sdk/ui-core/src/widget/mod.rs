@@ -1763,6 +1763,15 @@ pub trait Widget {
         None
     }
 
+    /// Whether [`Self::accessibility`] reports this subtree hidden, for a
+    /// host that asks it of every node to prune focus traversal. Widgets
+    /// whose node is costly to build (text values, per-block children) and is
+    /// never hidden answer without building it; any override must agree with
+    /// `accessibility()`.
+    fn accessibility_hidden(&self) -> bool {
+        self.accessibility().is_some_and(|node| node.state.hidden)
+    }
+
     /// Geometry for an immediate-mode semantic child from
     /// [`AccessNode::children`](crate::a11y::AccessNode::children). The path is
     /// its child-index path beneath this widget's accessibility node. Returning
@@ -2459,19 +2468,6 @@ pub trait Widget {
             }
         });
         !has_children || dirty
-    }
-
-    /// Whether this widget composes its children from the size it was last
-    /// allocated (it reads its own rect while building its layout: a compact
-    /// layout under a width, a count of columns, an inset from a drawer).
-    /// A window resize then needs a second composition against the new
-    /// allocation, as well as the re-solve every resize gets. Widgets that
-    /// compose independently of their allocation, or that report
-    /// `take_structure_dirty` themselves when a new allocation changes what
-    /// they show, keep the default: a resize re-solves the retained tree in
-    /// place instead of recomposing all of it.
-    fn composition_follows_allocation(&self) -> bool {
-        false
     }
 
     /// Whether a `layout_dirty` frame needs taffy to **re-solve** sizes

@@ -154,7 +154,9 @@ enum ApplicationEntry {
     /// keystroke does not copy the app's manifest view into each row.
     Installed(Arc<InstalledApp>),
     Dynamic(DynamicLauncherRecord),
-    Catalogue(CatalogueApp),
+    /// Boxed: a catalogue listing is several times the size of the other
+    /// entries, and the snapshot holds one entry per app.
+    Catalogue(Box<CatalogueApp>),
 }
 
 struct ApplicationsSnapshot {
@@ -261,7 +263,7 @@ impl ApplicationsProvider {
                         && !host_app_ids.contains(&package_id)
                         && seen_catalogue.insert(package_id)
                 })
-                .map(ApplicationEntry::Catalogue),
+                .map(|app| ApplicationEntry::Catalogue(Box::new(app))),
         );
         let index = index_entries(&entries);
         ApplicationsSnapshot {
@@ -898,14 +900,8 @@ fn launch_resolved_installed_app(
         return Ok(());
     }
     // If the room already has this app open, focus it rather than starting
-    // a second copy. See `peer_windows::opened_for_the_room`. A Terminal
-    // asked for into a group (the tab strip's "+", Super+T) is the explicit
-    // request for another shell, so it always launches.
-    let wants_another_terminal = package_id == crate::shell::window_actions::TERMINAL_PACKAGE
-        && matches!(chrome.borrow().open_target, OpenTarget::Here(_));
-    let already = if wants_another_terminal {
-        None
-    } else {
+    // a second copy. See `peer_windows::opened_for_the_room`.
+    let already = {
         let st = chrome.borrow();
         let tree = st.tree();
         let salt = tree.local_salt();
@@ -1152,7 +1148,7 @@ impl ApplicationsProvider {
             ),
             ApplicationEntry::Catalogue(app) => self.catalogue_results_for_membership(
                 ctx.needle,
-                vec![app.clone()],
+                vec![(**app).clone()],
                 &score,
                 &snapshot.installed_ids,
                 &snapshot.host_app_ids,
@@ -1411,7 +1407,6 @@ mod tests {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         });
         workspace.strips.push(strip);
         let mut tree = WorkspaceTree::default();
@@ -1448,62 +1443,6 @@ mod tests {
         );
     }
 
-    /// The group's "+" asks for a tab in that group: another Terminal opens
-    /// even while one is live, where the ordinary open only focuses it.
-    #[test]
-    #[serial_test::serial]
-    fn opening_a_terminal_into_a_group_launches_another_instead_of_focusing() {
-        use crate::shell::state::{
-            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-            next_id,
-        };
-        let tab_id = next_id();
-        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
-        let mut strip = Strip::new(StripId::from(next_id()), "Main");
-        let group_id = next_id();
-        strip.window_groups.push(WindowGroup {
-            id: group_id,
-            tabs: vec![Tab {
-                id: tab_id,
-                title: "Terminal".into(),
-                tile: TileContent::Foreign {
-                    app_id: "so.tilo.terminal".into(),
-                    surface_id: 7,
-                },
-            }],
-            active_tab: tab_id,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        });
-        workspace.strips.push(strip);
-        let mut tree = WorkspaceTree::default();
-        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
-        tree.desktop.active = workspace.id;
-        tree.desktop.workspaces = vec![workspace];
-        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
-        let chrome = ChromeState::new_with_handle(handle);
-        let rows = ApplicationsProvider::new().results_for(
-            "terminal",
-            vec![app("so.tilo.terminal", "Terminal")],
-            OpenTarget::Here(group_id),
-        );
-        chrome.borrow_mut().open_target = OpenTarget::Here(group_id);
-        let mut doc = AutoCommit::new();
-        let _ = (rows[0].on_open)(
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-            &chrome,
-            &ActionArgs::none(),
-        );
-        assert!(
-            !chrome.borrow().notifications().is_empty(),
-            "a launch was attempted (opening notice or refusal), not a silent refocus"
-        );
-        let _ = catalogue::take_pending_launch("so.tilo.terminal");
-        launcher::clear_pending_placements();
-    }
-
     #[test]
     fn opening_the_focused_failed_app_reuses_its_saved_window() {
         use crate::shell::state::{
@@ -1527,7 +1466,6 @@ mod tests {
             active_tab: tab,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         });
         workspace.strips.push(strip);
         let mut tree = WorkspaceTree::default();
@@ -2785,9 +2723,7 @@ impl SearchProvider for NativeApplicationsProvider {
                         let mut state = chrome.borrow_mut();
                         let destination = match state.open_target {
                             OpenTarget::Beside => crate::shell::window_actions::Destination::Search,
-                            OpenTarget::Here(group) => {
-                                crate::shell::window_actions::Destination::InGroup(group)
-                            }
+                            OpenTarget::Here(_) => crate::shell::window_actions::Destination::Here,
                         };
                         crate::shell::window_actions::open_hosted(
                             &mut state,

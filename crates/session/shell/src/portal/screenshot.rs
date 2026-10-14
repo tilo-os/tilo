@@ -28,23 +28,11 @@ impl ScreenshotBackend {
         Self { ctx, lifecycle }
     }
 }
-#[cfg(target_os = "linux")]
-fn bool_opt(options: &HashMap<String, OwnedValue>, key: &str, default: bool) -> bool {
-    options
-        .get(key)
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| bool::try_from(v).ok())
-        .unwrap_or(default)
-}
 fn target(
     options: &HashMap<String, OwnedValue>,
     available: u32,
 ) -> Result<Option<ScreenshotTarget>, ()> {
-    let Some(raw) = options
-        .get("target")
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| u32::try_from(v).ok())
-    else {
+    let Some(raw) = crate::portal::option::<u32>(options, "target") else {
         return Ok(None);
     };
     let target = match raw {
@@ -124,7 +112,7 @@ impl ScreenshotBackend {
                 request_handle: request_path.clone(),
                 caller: auth.caller.clone(),
                 app_id: auth.caller.app_id,
-                interactive: bool_opt(&options, "interactive", false),
+                interactive: crate::portal::option(&options, "interactive").unwrap_or(false),
                 target,
             }) {
             PortalResult::Success(uri) => {
