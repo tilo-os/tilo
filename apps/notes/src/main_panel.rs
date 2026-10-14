@@ -2389,6 +2389,13 @@ impl MainPanel {
             .map_or(self.rect, |overhang| self.rect.union(overhang))
     }
 
+    /// Whether `event` is a wheel notch that only moves the body: the panel
+    /// takes every vertical wheel over the body before the editor sees it
+    /// (`handle_event`), so what the note holds (pictures, lists, code,
+    /// tables) cannot change what a notch does. Asking the block kinds here
+    /// sent every note with anything but prose down the host's full path,
+    /// which syncs the whole tree and re-projects every block's resources on
+    /// each notch.
     pub(crate) fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         let delta = match event {
             WindowEvent::MouseWheel { delta, .. } => match delta {
@@ -2406,12 +2413,6 @@ impl MainPanel {
             && self.pending_rename.is_none()
             && self.pending_tag_open.is_none()
             && self.pending_backlink_open.is_none()
-            && self.editor.blocks().iter().all(|block| {
-                matches!(
-                    block.kind,
-                    ui::widget::BlockKind::Paragraph | ui::widget::BlockKind::Heading(_)
-                )
-            })
     }
 
     pub(crate) fn has_editor_popup(&self) -> bool {
