@@ -127,6 +127,14 @@ impl HistoryLog {
         Some((logged.hash, logged.deps.as_slice()))
     }
 
+    /// The change this log read just before the one behind `id`: the
+    /// frontier `id`'s [`Self::heads_for_entry`] extends by that change.
+    #[must_use]
+    pub fn previous(&self, id: &HistoryEntryId) -> Option<HistoryEntryId> {
+        let position = self.positions.get(id)?.checked_sub(1)?;
+        self.changes.get(position).map(|logged| logged.id)
+    }
+
     /// The document's heads as of the change behind `id`: what
     /// [`super::heads_for_entry`] answers for the document last read.
     #[must_use]
