@@ -463,21 +463,21 @@ impl ChannelEncryption {
         if !route.proves(&room.to_string(), channel) {
             return;
         }
-        let root = &self.config.root;
+        let state_root = &self.config.root;
         if let Some(entry) = self.stewards.get_mut(&channel)
             && entry.room == room
             && entry.route.is_none()
         {
             entry.route = Some(route.clone());
             entry.dirty = true;
-            save_route(&route_path(root, room, "steward", channel), route);
+            save_route(&route_path(state_root, room, "steward", channel), route);
         }
         if let Some(entry) = self.members.get_mut(&channel)
             && entry.room == room
             && entry.route.is_none()
         {
             entry.route = Some(route.clone());
-            save_route(&route_path(root, room, "member", channel), route);
+            save_route(&route_path(state_root, room, "member", channel), route);
         }
     }
 
@@ -2153,18 +2153,7 @@ mod tests {
         let unrouted = ChannelRoute::new("notes", "plan").channel(&room_name);
         laptop.service.access(room_id, unrouted, now);
         let forged = ChannelRoute::new("notes", "forged").channel(&room_name);
-        std::fs::create_dir_all(laptop_dir.path().join("forged")).unwrap();
-        let request = ChannelMember::open(
-            &laptop_dir.path().join("forged"),
-            forged,
-            public(2),
-            public(1),
-            &VaultKey::new([2; 32]),
-        )
-        .unwrap()
-        .access_request(&key(2), 1, &VaultKey::new([2; 32]))
-        .unwrap()
-        .unwrap();
+        let request = member_request(&laptop_dir.path().join("forged"), forged, 2, 1);
         owner
             .service
             .receive_request(room_id, request, Some(&routes[2]), 0);
@@ -2205,6 +2194,23 @@ mod tests {
                 epoch(&mut owner, channel, now)
             );
         }
+    }
+
+    /// The access request device `seed` makes for `channel` of steward
+    /// `steward`, with its member state under `dir`.
+    fn member_request(dir: &Path, channel: ChannelId, seed: u8, steward: u8) -> MlsAccessRequestV1 {
+        std::fs::create_dir_all(dir).unwrap();
+        ChannelMember::open(
+            dir,
+            channel,
+            public(seed),
+            public(steward),
+            &VaultKey::new([2; 32]),
+        )
+        .unwrap()
+        .access_request(&key(seed), 1, &VaultKey::new([2; 32]))
+        .unwrap()
+        .unwrap()
     }
 
     /// Run every device's protocol for `seconds` of simulated time the way
