@@ -1031,10 +1031,10 @@ fn paint_card_actions(
 /// macOS lifts its banners: by its shadow and a surface a step off the
 /// desktop, not by an outline. The token's wide shadow, a little larger
 /// and stronger for a card that must stand off busy windows, reads as
-/// distance; a tight contact shadow gives the edge definition the outline
-/// used to. Where the declared floating surface does not separate from the
-/// desktop (high contrast, forced colours) the theme's panel ground and its
-/// full border do the work instead.
+/// distance; a tight contact shadow defines the edge, and a faint hairline
+/// only keeps it registering over a window of the same tone. Under forced
+/// colours the theme's panel ground and its full border do the work
+/// instead.
 fn paint_card_surface(scene: &mut Scene, transform: Affine, rect: Rect, alpha: f32, theme: &Theme) {
     paint_surface(scene, transform, rect, card_radius(theme), alpha, theme);
 }
@@ -1067,13 +1067,8 @@ pub fn paint_surface(
         blur: floating.blur * CARD_SHADOW_REACH,
         color: floating.color.multiply_alpha(CARD_SHADOW_STRENGTH),
     };
-    let contact = crate::tokens::Shadow {
-        offset_y: 1.0,
-        blur: 3.0,
-        color: vello::peniko::Color::BLACK.with_alpha(CARD_CONTACT_ALPHA * elevation.shadow_scale),
-    };
     crate::surface::shadow(scene, transform, rect, radius, &ambient);
-    crate::surface::shadow(scene, transform, rect, radius, &contact);
+    crate::surface::shadow(scene, transform, rect, radius, &elevation.contact);
     let shape = RoundedRect::from_rect(rect, radius);
     let (ground, border) = card_ground(theme);
     crate::backdrop::fill_with_ground(
@@ -1084,15 +1079,13 @@ pub fn paint_surface(
         theme,
         ground,
     );
-    if let Some(border) = border {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            border,
-            None,
-            &crate::surface::edge_outline(rect, radius),
-        );
-    }
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        border,
+        None,
+        &crate::surface::edge_outline(rect, radius),
+    );
     if faded {
         scene.pop_layer();
     }
@@ -1103,33 +1096,24 @@ pub fn paint_surface(
 const CARD_SHADOW_REACH: f32 = 1.5;
 /// How much stronger a card's ambient shadow is than the floating token's.
 const CARD_SHADOW_STRENGTH: f32 = 1.6;
-/// The contact shadow's strength on a dark material, scaled down on a light
-/// one by its elevation's `shadow_scale`.
-const CARD_CONTACT_ALPHA: f32 = 0.28;
-/// How much of the panel border a light card keeps as its hairline: just
-/// enough to hold a white card's edge over a white window.
-const CARD_LIGHT_HAIRLINE: f32 = 0.45;
+/// How much of the panel border a card keeps as its hairline: enough for
+/// its edge to register against its own fill and over a window of the same
+/// tone, faint enough that the shadow, not a line, is what lifts it.
+const CARD_HAIRLINE: f32 = 0.45;
 
-/// A card's ground and the edge it needs: the declared floating surface,
-/// a step off the desktop, with a faint hairline only on a light one (where
-/// a white card may sit over a white window). Under high contrast and
-/// forced colours, where surfaces are declared equal and an edge is what
-/// separates them (the high-contrast theme forces colours too), the panel
-/// ground and its full border.
+/// A card's ground and its edge: the declared floating surface, a step off
+/// the desktop, with a faint hairline. Under forced colours (which the
+/// high-contrast theme also sets), where surfaces are declared equal and an
+/// edge is what separates them, the panel ground and its full border.
 #[must_use]
-pub fn card_ground(theme: &Theme) -> (vello::peniko::Color, Option<vello::peniko::Color>) {
-    use crate::a11y::relative_luminance;
+pub fn card_ground(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color) {
+    let border = crate::chrome::panel_border(theme);
     if theme.forced_colors {
-        return (
-            crate::chrome::panel_ground(theme),
-            Some(crate::chrome::panel_border(theme)),
-        );
+        return (crate::chrome::panel_ground(theme), border);
     }
-    let declared = theme.tokens.colors.surfaces.overlay;
-    let light = relative_luminance(declared) > 0.5;
     (
-        declared,
-        light.then(|| crate::chrome::panel_border(theme).multiply_alpha(CARD_LIGHT_HAIRLINE)),
+        theme.tokens.colors.surfaces.overlay,
+        border.multiply_alpha(CARD_HAIRLINE),
     )
 }
 
