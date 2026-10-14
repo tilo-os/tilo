@@ -7373,6 +7373,17 @@ impl ShellOverlayHost {
         true
     }
 
+    /// `group` was just focused by a click or touch on what it shows: keep
+    /// the strip where it is, as a click on its chrome does. The person
+    /// aimed at something on screen; panning to frame the whole window would
+    /// slide it out from under the pointer, and the strip would seem to move
+    /// on its own.
+    pub fn keep_clicked_group_in_place(&mut self, strip: StripId, group: u64) {
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.keep_clicked_group_in_place(strip, group);
+        }
+    }
+
     /// Pan `strip` at once, without easing, so `group` is wholly on screen,
     /// and keep it framed there. For an agent acting in one window: it sees
     /// and aims at the whole window on this command, not after an animation.
