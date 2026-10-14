@@ -92,7 +92,7 @@ Each adapter reads what a benchmark already prints and emits records through
   report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
   one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
   frame interval and frame's runtime CPU is a sample, and each round's idle
-  frame rate one. The report must name the env's renderer, commit and profile,
+  frame rate one; the demo's two only when the run had the demo. The report must name the env's renderer, commit and profile,
   and an unthrottled page.
 
 Usage:
@@ -555,6 +555,8 @@ BROWSER_KPIS = {
     "demo_work_ms": ("browser.demo.frame_work", "ms"),
     "idle_per_s": ("browser.idle.presented_per_s", "per_s"),
 }
+# Reported only by a run with the demo workload (`--demo-seconds` above 0).
+BROWSER_DEMO_FIELDS = frozenset({"demo_interval_ms", "demo_work_ms"})
 
 
 def browser_qualification(report: dict[str, Any], env: dict[str, Any],
@@ -566,7 +568,8 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
     commit in the env's profile, clean unless `require_clean=False` (the A/B
     lane, whose output directory sits untracked in the checkout it builds),
     and its page CPU unthrottled: a throttled run stands in for older
-    hardware and is never this series.
+    hardware and is never this series. The demo's KPIs come from a run with
+    the demo and only from one.
     """
     if report.get("schema") != 1:
         raise ValueError(f"browser qualification report schema {report.get('schema')!r}, not 1")
@@ -581,9 +584,13 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
     if workload.get("cpuThrottle", 1) != 1:
         raise ValueError(f"the page's CPU was throttled {workload['cpuThrottle']}x")
     samples = report["samples"]
-    missing = [field for field in BROWSER_KPIS if not samples.get(field)]
+    demo = float(workload.get("demoSeconds", 0)) > 0
+    fields = [field for field in BROWSER_KPIS if demo or field not in BROWSER_DEMO_FIELDS]
+    missing = [field for field in fields if not samples.get(field)]
     if missing:
         raise ValueError(f"the report has no samples for {missing}")
+    if not demo and any(samples.get(field) for field in BROWSER_DEMO_FIELDS):
+        raise ValueError("the report has demo samples from a run without the demo")
     adapter = report.get("adapter") or {}
     meta = {**env.get("meta", {}), "bundle_digest": bundle["digest"], "runtime_sha256": bundle["runtimeSha256"],
             "browser": report["browser"]["product"],
@@ -592,8 +599,7 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
             "rounds": str(workload["rounds"]), "apps": ",".join(workload["apps"]),
             "input_hz": str(workload["inputHz"])}
     base = {name: value for name, value in env.items() if name != "meta"}
-    return [record.from_samples(kpi, unit, samples[field], meta=meta, **base)
-            for field, (kpi, unit) in BROWSER_KPIS.items()]
+    return [record.from_samples(*BROWSER_KPIS[field], samples[field], meta=meta, **base) for field in fields]
 
 
 def main(argv: list[str] | None = None) -> int:

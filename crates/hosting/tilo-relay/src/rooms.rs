@@ -103,13 +103,24 @@ struct RoomRecord {
     collaboration: collaboration::CollaborationState,
 }
 
-/// The devices governance lets read a room's channels.
-fn readers(access: &GovernedAccess) -> std::collections::BTreeSet<collab_types::Ed25519PublicKey> {
-    access
-        .member_devices
-        .iter()
-        .map(|device| collab_types::Ed25519PublicKey::from_bytes(*device))
-        .collect()
+/// The devices governance lets read a room's channels: the room's governed
+/// member devices (`access`, as `peer` derived it at `now`), each record's
+/// channel less the devices a Read Deny on that record withholds.
+fn readers(
+    peer: &StatePeer,
+    access: &GovernedAccess,
+    now: SystemTime,
+) -> Result<stewardship::Readers, String> {
+    let key = |device: [u8; 32]| collab_types::Ed25519PublicKey::from_bytes(device);
+    let withheld = peer
+        .withheld_record_readers(now)?
+        .into_iter()
+        .map(|(channel, devices)| (channel, devices.into_iter().map(key).collect()))
+        .collect();
+    Ok(stewardship::Readers::new(
+        access.member_devices.iter().copied().map(key).collect(),
+        withheld,
+    ))
 }
 
 /// The stewards of `room`'s channels, under `dir`, when `authority` (this
@@ -1113,12 +1124,17 @@ impl Rooms {
                     .remove(room);
                 return Ok(());
             };
-            (
+            let now = SystemTime::now();
+            let room_readers =
+                readers(governed.peer(), &governed.peer().governed_access(now)?, now)?;
+            let taken = (
                 governed.workspace_id(),
                 governed.record.generation,
-                readers(&governed.peer().governed_access(SystemTime::now())?),
+                room_readers,
                 steward,
-            )
+            );
+            drop(governed);
+            taken
         };
         {
             let mut stewardship = steward.channels.lock().await;
@@ -1238,8 +1254,9 @@ impl Rooms {
     /// host queued before them).
     async fn settle(&self, room: &mut GovernedRoom) -> Result<(), String> {
         let host = &self.inner.host;
-        let access: GovernedAccess = room.peer().governed_access(SystemTime::now())?;
-        let readers = readers(&access);
+        let now = SystemTime::now();
+        let access: GovernedAccess = room.peer().governed_access(now)?;
+        let readers = readers(room.peer(), &access, now)?;
         host.access
             .replace(room.workspace_id(), true, access)
             .await

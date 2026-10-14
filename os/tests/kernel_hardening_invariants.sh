@@ -909,6 +909,32 @@ grep -Fqx 'SELinuxContext=system_u:system_r:tilo_fs_t:s0' "$fs_selinux" \
   || bad 'collaborative filesystem SELinux transition still fails open'
 [ "$fail" -ne 0 ] || ok 'root FUSE daemon has a fail-closed bounded execution context'
 
+# How fs.service stops under that context. systemd checks an Exec line's
+# binary while its child is still init_t, which may not execute
+# fusermount_exec_t, so an ExecStop= naming fusermount3 ends every stop in
+# 203/EXEC. The daemon ends its own mount on SIGTERM; on FUSE fusermount3's
+# auto_unmount helper (which fs keeps requesting) detaches it lazily when the
+# daemon lets go or dies, and ExecStopPost's lazy umount (mount_exec_t, which
+# init_t may execute) covers a SIGKILL. Granting init_t fusermount_exec_t to
+# make the old line run would widen the always-enforcing init domain.
+fs_stop_fail=0
+fs_unit_active="$(cat "$fs_unit" "$repo"/os/usr/lib/systemd/system/fs.service.d/*.conf | sed '/^[[:space:]]*#/d')"
+if grep -Eq '^ExecStop=.*fusermount' <<<"$fs_unit_active"; then
+  bad 'fs.service stops through fusermount3, which init_t may not execute (203/EXEC)'
+  fs_stop_fail=1
+fi
+if [ "$(grep -Fxc 'ExecStopPost=-/usr/bin/umount --lazy /var/workspace' <<<"$fs_unit_active")" -ne 1 ]; then
+  bad 'fs.service lost its lazy-umount backstop for a killed daemon'
+  fs_stop_fail=1
+fi
+grep -Fq 'config.mount_options.push(MountOption::AutoUnmount);' "$repo/crates/system/fs/src/main.rs" \
+  || { bad 'fs no longer mounts with auto_unmount, so a stopped daemon can leave /var/workspace attached'; fs_stop_fail=1; }
+if sed 's/;.*//' "$repo/os/usr/share/tilo/selinux/tilo-base.cil" | grep -Eq '\(allow init_t fusermount_exec_t'; then
+  bad 'tilo-base.cil lets init_t execute fusermount3; stop fs.service without it'
+  fs_stop_fail=1
+fi
+[ "$fs_stop_fail" -ne 0 ] || ok 'fs.service stops through the daemon and a lazy umount, not fusermount3 under init_t'
+
 # The daemon's domain enforces: a permissive tilo_fs_t only logs, leaving a
 # compromised root daemon boxed by its unit sandbox alone. Its allow-set names
 # the types fs uses; a rule on a whole attribute or the `all` permission set

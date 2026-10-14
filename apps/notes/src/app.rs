@@ -567,12 +567,51 @@ impl NotesApp {
     }
 
     fn project_workspace(doc: &AutoCommit, selected: Option<PageId>) -> Result<Workspace, String> {
-        let mut workspace = Workspace::of(&read_notebook(doc)?, &Workspace::default());
+        let notebook =
+            ui::tilo_resource::profiling::measure("read_notebook", || read_notebook(doc))?;
+        Ok(Self::select_in(
+            Workspace::of(&notebook, &Workspace::default()),
+            selected,
+        ))
+    }
+
+    /// The workspace a restored view shows of `doc`, after the one the
+    /// window shows: notes that did not change keep what it read of them.
+    /// Hosted, the framework read the notebook when it opened the record and
+    /// follows `doc` since: the restore takes that state, reading only what
+    /// changed after it, rather than every note a second time. A peer's
+    /// change that arrived in between is in it, because the live notebook is
+    /// synced to `doc` first.
+    fn project_restored(
+        &self,
+        doc: &AutoCommit,
+        selected: Option<PageId>,
+    ) -> Result<Workspace, String> {
+        let live = self
+            .live
+            .as_ref()
+            .filter(|live| live.unreadable().is_none());
+        let workspace = if let Some(live) = live {
+            ui::tilo_resource::profiling::measure("live_projection", || {
+                live.sync(doc).map_err(|error| error.to_string())?;
+                Ok::<_, String>(Workspace::of(&live.get(), &self.workspace))
+            })?
+        } else {
+            let notebook =
+                ui::tilo_resource::profiling::measure("read_notebook", || read_notebook(doc))?;
+            Workspace::of(&notebook, &self.workspace)
+        };
+        Ok(Self::select_in(workspace, selected))
+    }
+
+    /// `workspace` showing `selected` when it holds that note, else its first
+    /// top-level note.
+    fn select_in(mut workspace: Workspace, selected: Option<PageId>) -> Workspace {
         let selected = selected
             .filter(|page| workspace.get(*page).is_some())
             .or_else(|| workspace.children_of(None).first().map(|page| page.id));
         workspace.set_selected(selected);
-        Ok(workspace)
+        workspace
     }
 
     fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
@@ -2240,7 +2279,8 @@ impl ui::application_view::ApplicationViewState for NotesApp {
     ) -> Result<ui::application_view::ApplicationFocusRestore, ui::view::ThawError> {
         use crate::local_view::{NotesLocalViewV1, PreparedFocus};
         let local = NotesLocalViewV1::decode(local)?;
-        let workspace = Self::project_workspace(doc, local.selected_page)
+        let workspace = self
+            .project_restored(doc, local.selected_page)
             .map_err(ui::view::ThawError::State)?;
         let mut main = self
             .main
@@ -2268,7 +2308,9 @@ impl ui::application_view::ApplicationViewState for NotesApp {
             .filter(|id| workspace.tags().iter().any(|tag| tag.id == *id));
         // All validation/projection above precedes the first saved local change.
         self.main = main;
-        self.workspace = workspace;
+        // The notes that changed since the window last showed the notebook
+        // are indexed again for search and links.
+        self.adopt(workspace);
         self.sidebar = sidebar;
         self.active_tag_filter = active_tag;
         self.bound_page = self.workspace.selected();

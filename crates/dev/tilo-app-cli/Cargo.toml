@@ -62,6 +62,9 @@ workspace-hack = { version = "0.1" }
 serde_yaml = "0.9"
 tempfile.workspace = true
 tilo-test-env = { path = "../test-env" }
+# The outside-repository journey publishes into a real registry on loopback.
+registry-server = { path = "../../packaging/registry-server" }
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true
