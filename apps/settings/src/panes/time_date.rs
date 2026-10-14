@@ -191,36 +191,63 @@ const MAP_NORTH: f64 = *MAP_LATITUDES.end();
 /// the caption's share.
 const MAP_ASPECT: f32 = 2.2;
 
-/// The land masses, as closed rings of (longitude, latitude) in degrees,
-/// from Natural Earth's 1:110m land polygons (`data/world-land.json`,
-/// provenance in `data/README.md`). tzdata publishes where each zone's city
-/// is, but nothing installed describes the coastlines the cities sit on.
-fn world_land() -> &'static [Vec<(f64, f64)>] {
-    static LAND: std::sync::LazyLock<Vec<Vec<(f64, f64)>>> = std::sync::LazyLock::new(|| {
-        parse_world_land(include_str!("../../data/world-land.json")).unwrap_or_default()
-    });
-    &LAND
+/// The land masses, from Natural Earth's 1:110m land polygons
+/// (`data/world-land.b64`, format and provenance in `data/README.md`).
+/// tzdata publishes where each zone's city is, but nothing installed
+/// describes the coastlines the cities sit on.
+const WORLD_LAND: &str = include_str!("../../data/world-land.b64");
+
+/// The bytes of standard, padded base64 `text`; line breaks are skipped.
+fn decode_base64(text: &str) -> Vec<u8> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => Some(c.wrapping_sub(b'A')),
+        b'a'..=b'z' => Some(c.wrapping_sub(b'a').wrapping_add(26)),
+        b'0'..=b'9' => Some(c.wrapping_sub(b'0').wrapping_add(52)),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let sextets: Vec<u8> = text.bytes().filter_map(value).collect();
+    let mut bytes = Vec::with_capacity(sextets.len());
+    for quad in sextets.chunks(4) {
+        let bits = quad
+            .iter()
+            .zip([18_u32, 12, 6, 0])
+            .fold(0_u32, |bits, (&sextet, shift)| {
+                bits | (u32::from(sextet) << shift)
+            });
+        let [_, b0, b1, b2] = bits.to_be_bytes();
+        let whole = [b0, b1, b2];
+        bytes.extend_from_slice(whole.get(..quad.len().saturating_sub(1)).unwrap_or(&whole));
+    }
+    bytes
 }
 
-/// Parse `data/world-land.json`: an array of rings, each a flat array of
-/// alternating longitude and latitude in tenths of a degree.
-fn parse_world_land(json: &str) -> Option<Vec<Vec<(f64, f64)>>> {
-    let rings: Vec<Vec<i16>> = serde_json::from_str(json).ok()?;
-    Some(
-        rings
-            .iter()
-            .map(|ring| {
-                ring.chunks_exact(2)
-                    .filter_map(|pair| match *pair {
-                        [longitude, latitude] => {
-                            Some((f64::from(longitude) / 10.0, f64::from(latitude) / 10.0))
-                        }
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .collect(),
-    )
+/// Walk [`WORLD_LAND`]: each ring is a little-endian `u16` point count, its
+/// first point as two `i16` (longitude, latitude) in tenths of a degree,
+/// then one `i8` pair per further point, the step from the point before.
+/// `visit` gets each point in degrees and whether it starts a ring.
+fn walk_world_land(mut visit: impl FnMut(f64, f64, bool)) {
+    let decoded = decode_base64(WORLD_LAND);
+    let mut bytes = decoded.as_slice();
+    while let [n0, n1, x0, x1, y0, y1, rest @ ..] = bytes {
+        let count = usize::from(u16::from_le_bytes([*n0, *n1]));
+        let mut longitude = i32::from(i16::from_le_bytes([*x0, *x1]));
+        let mut latitude = i32::from(i16::from_le_bytes([*y0, *y1]));
+        let tenths = |value: i32| f64::from(value) / 10.0;
+        visit(tenths(longitude), tenths(latitude), true);
+        let steps = rest
+            .get(..count.saturating_sub(1).saturating_mul(2))
+            .unwrap_or(rest);
+        for step in steps.chunks_exact(2) {
+            if let [dx, dy] = *step {
+                longitude = longitude.saturating_add(i32::from(i8::from_le_bytes([dx])));
+                latitude = latitude.saturating_add(i32::from(i8::from_le_bytes([dy])));
+                visit(tenths(longitude), tenths(latitude), false);
+            }
+        }
+        bytes = rest.get(steps.len()..).unwrap_or_default();
+    }
 }
 
 impl TimeZoneMap {
@@ -289,29 +316,28 @@ impl TimeZoneMap {
             .is_some_and(|point| MAP_LATITUDES.contains(&point.latitude()))
     }
 
-    /// The coastlines of [`world_land`] in plot coordinates. Rebuilt only
+    /// The coastlines of [`WORLD_LAND`] in plot coordinates. Rebuilt only
     /// when the plot moves or resizes, not every frame.
     fn land(&mut self) -> &BezPath {
         let plot = self.plot_rect();
         if self.land_plot != plot {
             self.land_plot = plot;
             let mut path = BezPath::new();
-            // Antarctica lies wholly south of the plot and is left out; any
-            // other ring is pinned inside it, so nothing draws over the well.
-            let drawn = world_land()
-                .iter()
-                .filter(|ring| ring.iter().any(|&(_, latitude)| latitude > MAP_SOUTH));
-            for ring in drawn {
-                let mut points = ring.iter().map(|&(longitude, latitude)| {
-                    Self::project(plot, longitude, latitude.clamp(MAP_SOUTH, MAP_NORTH))
-                });
-                if let Some(first) = points.next() {
-                    path.move_to(first);
-                    for point in points {
-                        path.line_to(point);
+            // The data leaves out Antarctica, south of the plot; any other
+            // point is pinned inside it, so nothing draws over the well.
+            walk_world_land(|longitude, latitude, starts| {
+                let point = Self::project(plot, longitude, latitude.clamp(MAP_SOUTH, MAP_NORTH));
+                if starts {
+                    if !path.elements().is_empty() {
+                        path.close_path();
                     }
-                    path.close_path();
+                    path.move_to(point);
+                } else {
+                    path.line_to(point);
                 }
+            });
+            if !path.elements().is_empty() {
+                path.close_path();
             }
             self.land_path = path;
         }
@@ -1285,6 +1311,23 @@ mod tests {
              US\t+404251-0740023\tAmerica/New_York\n\
              GB\t+513030-0000731\tEurope/London\n",
         )
+    }
+
+    /// The packed land data decodes whole: every ring, every point on the
+    /// globe, nothing south of the map.
+    #[test]
+    fn the_packed_land_decodes_to_rings_on_the_globe() {
+        let (mut rings, mut points, mut northmost) = (0, 0, f64::MIN);
+        walk_world_land(|longitude, latitude, starts| {
+            rings += usize::from(starts);
+            points += 1;
+            assert!((-180.0..=180.0).contains(&longitude), "{longitude}");
+            assert!((-90.0..=90.0).contains(&latitude), "{latitude}");
+            northmost = northmost.max(latitude);
+        });
+        assert_eq!(rings, 119);
+        assert_eq!(points, 4_412);
+        assert!(northmost > 83.0, "Greenland's north coast is there");
     }
 
     /// A zone merged out of zone1970.tab (Amsterdam, only in zone.tab) still
