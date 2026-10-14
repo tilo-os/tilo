@@ -26,6 +26,9 @@ RuntimeDirectory=tilo-node/%i
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
 ExecStart=/usr/bin/tilo-relay --config /usr/lib/tilo/node-relay.toml run --web 0.0.0.0:9443 --install-token-file /etc/tilo/node/install-token --session-device ${TILO_NODE_SESSION_DEVICE} --session-identity-root /var/lib/tilo-node/%i/session --session-env-out /run/tilo-node/%i/session-host.env $TILO_NODE_WEB_ARGS
+# Until the person's page installs it, the relay waits for its certificate
+# and only then reports ready: that wait has no deadline.
+TimeoutStartSec=infinity
 Restart=on-failure
 RestartSec=5
 LimitCORE=0
