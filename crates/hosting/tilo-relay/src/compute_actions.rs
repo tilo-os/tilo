@@ -39,7 +39,8 @@ use tilo_actions::{
 use crate::app_serving::AppServingPlane;
 use crate::host_authority::HostOperation;
 use crate::peer::WorkspaceRegistry;
-use crate::placement::{ComputeRequirements, PlacementCandidate};
+use crate::placement::{ComputeRequirements, NoEligibleWorker, Placement, PlacementCandidate};
+use crate::workspace::SharedWorkspace;
 
 /// The provider compute placement is answered under. It is the host's, not
 /// an app's, so a caller may name it without reading a catalogue first.
@@ -200,6 +201,29 @@ impl ComputeActions {
         }
     }
 
+    /// Workspace `workspace_id`, when this relay carries it. The registry
+    /// is released before the workspace is locked.
+    async fn workspace(&self, workspace_id: u64) -> Option<SharedWorkspace> {
+        self.shared
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned()
+    }
+
+    /// Where a job with `needs` should run among its workspace's workers.
+    async fn placed(&self, needs: &ComputeRequirements<'_>) -> Result<Placement, NoEligibleWorker> {
+        match self.workspace(needs.workspace_id).await {
+            Some(workspace) => workspace
+                .lock()
+                .await
+                .compute
+                .place(needs, tilo_clock::unix_now_ms()),
+            None => crate::placement::place_compute_job(needs, []),
+        }
+    }
+
     /// The placement for a job of `app` (needing a GPU when `gpu`) asked by
     /// `requester` in `workspace_id`, as the action answers it.
     async fn place(&self, workspace_id: u64, requester: [u8; 32], app: &str, gpu: bool) -> Value {
@@ -209,19 +233,7 @@ impl ComputeActions {
             app_id: app,
             gpu,
         };
-        let registry = self.shared.workspaces.lock().await;
-        let workspace = registry.get(&workspace_id).cloned();
-        drop(registry);
-        let placed = match workspace {
-            Some(workspace) => {
-                let runtime = workspace.lock().await;
-                let placed = runtime.compute.place(&needs, tilo_clock::unix_now_ms());
-                drop(runtime);
-                placed
-            }
-            None => crate::placement::place_compute_job(&needs, []),
-        };
-        match placed {
+        match self.placed(&needs).await {
             Ok(placement) => {
                 tracing::info!(workspace_id, app, gpu, %placement, "placed compute job");
                 json!({
