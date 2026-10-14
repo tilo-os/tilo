@@ -169,7 +169,7 @@ impl Widget for DiskRow {
         let name_style = theme.tokens.typography.style(TextRole::Body);
         let detail_style = theme.tokens.typography.style(TextRole::Caption);
         let padding = f64::from(theme.tokens.spacing.s3);
-        let width = (self.rect.width() - 2.0 * padding).max(0.0) as f32;
+        let width = ui::num::f32_of_f64((self.rect.width() - 2.0 * padding).max(0.0));
         let model = self.disk.model.trim();
         let size_width = text_renderer
             .measure_style(&self.disk.size, None, &name_style)
