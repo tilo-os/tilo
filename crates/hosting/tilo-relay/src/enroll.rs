@@ -2223,7 +2223,9 @@ fn handle_solicitation(
         let mut nonce = [0_u8; 16];
         UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let now = now_ns()?;
-        let issued_at_ns = validity_start_ns(now);
+        // Backdated for the joining device's clock, but never to before this
+        // device was certified: redemption checks the issuer at that instant.
+        let issued_at_ns = validity_start_ns(now).max(identity.issuer_cert.issued_at_ns);
         let expires_at_ns = now.saturating_add(5 * 60 * 1_000_000_000);
         let token = mint_enrollment_token(
             identity.user_public_key,
