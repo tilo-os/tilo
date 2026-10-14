@@ -47,11 +47,6 @@ impl StreamCodec {
         StreamCodec::Av1,
     ];
 
-    /// The order negotiation prefers SDR codecs in when both ends can run
-    /// them in hardware: AV1, then VP9, then H.264.
-    pub const SDR_PREFERENCE: [StreamCodec; 3] =
-        [StreamCodec::Av1, StreamCodec::Vp9, StreamCodec::H264];
-
     /// The label carried on the wire.
     pub fn wire_label(self) -> &'static str {
         match self {

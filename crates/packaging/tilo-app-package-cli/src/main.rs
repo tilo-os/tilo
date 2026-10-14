@@ -1206,10 +1206,7 @@ fn reconcile_entry_history(
             .registry_owner_pubkey
             .as_deref()
             .context("runtime catalogue requires an existing registry owner pin")?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .context("clock precedes Unix epoch")?
-            .as_secs();
+        let now = tilo_clock::try_unix_now().context("clock precedes Unix epoch")?;
         registry_types::verify_snapshot(&catalogue, owner, now)
             .context("verify runtime catalogue against registry owner")?;
         let dropped = registry_client::runtime_history::reconcile(

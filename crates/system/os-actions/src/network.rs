@@ -1189,15 +1189,7 @@ fn parse_saved_profiles(out: &str) -> Vec<SavedNetworkProfile> {
 }
 
 pub(crate) fn validate_uuid(uuid: &str) -> Result<(), String> {
-    let valid = uuid.len() == 36
-        && uuid.bytes().enumerate().all(|(i, b)| {
-            if matches!(i, 8 | 13 | 18 | 23) {
-                b == b'-'
-            } else {
-                b.is_ascii_hexdigit()
-            }
-        });
-    valid
+    (uuid.len() == 36 && uuid::Uuid::try_parse(uuid).is_ok())
         .then_some(())
         .ok_or_else(|| "invalid NetworkManager profile UUID".into())
 }

@@ -49,7 +49,7 @@ mod search;
 
 pub use history::{ActivityPane, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
-pub use search::{HostAction, HostActionSource};
+pub use search::{HostAction, HostActionSource, is_host_offer};
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -2742,5 +2742,25 @@ mod tests {
             "a mouse's sideways wheel click steps like the shell's"
         );
         assert_eq!(focused(&mut surface, &handle), 1);
+    }
+
+    #[test]
+    fn host_actions_no_longer_offered_are_reported_for_withdrawal() {
+        let (_surface, handle) = desktop(1);
+        let action = |id: &str| HostAction {
+            id: id.into(),
+            title: id.into(),
+            subtitle: None,
+            source: None,
+        };
+        assert!(
+            handle
+                .set_host_actions(vec![action("keep"), action("pair")])
+                .is_empty()
+        );
+        assert_eq!(
+            handle.set_host_actions(vec![action("pair"), action("recover")]),
+            ["keep"]
+        );
     }
 }
