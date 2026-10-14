@@ -40,9 +40,9 @@ from ci import suites as path_suites
 
 
 # Preserve the existing wire/document/package contract suites, including
-# pkg/tests/{app_manifests,verify_attest} and qdoc-codecs/tests/{convergence,office_roundtrip}.
+# tilo-app-package/tests/{app_manifests,verify_attest} and tilo-doc-codecs/tests/{convergence,office_roundtrip}.
 # These catch repository contracts outside a changed crate's dependency edges.
-ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc", "qdoc-codecs"}
+ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-codecs"}
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
 # Snapshot pins CI publishes and signs (kernel only; RPM snapshots resolve by
 # fingerprint). A pull request that changes only these changes no code:
@@ -152,6 +152,7 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/tests/test_ci_check_aggregate.py",
         "tools/tests/test_ci_queue_relief.py",
         "tools/tests/test_ci_receipt.sh",
+        "tools/tests/test_ci_test_shard_environment.py",
         "tools/tests/test_resolve_ci_builder.py",
     ),
     ".forgejo/workflows/ci-legacy-apps.yml": (
@@ -182,12 +183,12 @@ HEAVY_PACKAGES = {
     "browser",
     "ebook",
     "tilo-media",
-    "qdoc-pdf",
+    "tilo-doc-pdf",
     "shell",
     "slides",
     "tube",
     "typst-editor",
-    "ui",
+    "tilo-ui",
     "video-editor",
     "word-processor",
 }
@@ -204,7 +205,7 @@ MAX_DEVELOPER_SHARDS = 2
 # long as together they cost no more than one shard. That covers the direct
 # consumers of almost every package (138 of 149 at the time of writing,
 # including tilo-ui's six). The dependants of foundation crates such as
-# tilo-actions, tilo-app, runtime-dylib or qdoc would add 20-60% of the whole
+# tilo-actions, tilo-app, runtime-dylib or tilo-doc would add 20-60% of the whole
 # workspace to every such change; they stay type-checked here and are
 # tested nightly on both architectures.
 REVERSE_TEST_COST_BUDGET = SHARD_COST_BUDGET

@@ -111,10 +111,7 @@ impl InhibitBackend {
                 "unknown inhibit flags".into(),
             ));
         }
-        let reason = options
-            .get("reason")
-            .and_then(|value| value.try_clone().ok())
-            .and_then(|value| String::try_from(value).ok())
+        let reason = crate::portal::option::<String>(&options, "reason")
             .filter(|value| valid_reason(value))
             .unwrap_or_else(|| format!("{} is active", auth.caller.app_id));
         let key = handle.to_string();

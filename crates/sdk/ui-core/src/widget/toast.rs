@@ -721,7 +721,7 @@ pub fn minimum_card_height(
         })
         + 2.0 * pad_y;
     if !card.secondary_action.is_empty() && !card.primary_action.is_empty() {
-        height += control_height + pad_y + f64::from(theme.tokens.spacing.s2);
+        height += control_height + pad_y + choice_lead(theme);
     }
     height.ceil()
 }
@@ -953,38 +953,27 @@ fn paint_card_actions(
     if card.secondary_action.is_empty() || card.primary_action.is_empty() {
         return None;
     }
-    let (pad_x, pad_y) = card_pad(theme);
+    let (pad_x, _) = card_pad(theme);
     let left = rect.x0 + pad_x;
     let right = rect.x1 - pad_x;
-    let gap = f64::from(theme.tokens.spacing.rhythm.related);
-    let y1 = rect.y1 - pad_y;
-    let height = ButtonFace::height(crate::widget::ControlSize::Small, theme);
-    let y0 = y1 - height;
-    // The choices sit at the trailing edge at their own width, the answer
-    // last, as a dialog's do: the card reads as a sentence that ends in its
-    // choices rather than a pair of slabs. Equal halves only when the labels
-    // cannot both fit at their width.
-    let mut width = |label: &str, icon: Option<crate::icons::Icon>| {
-        let mut face =
-            ButtonFace::new(Rect::ZERO, label).control_size(crate::widget::ControlSize::Small);
-        if let Some(icon) = icon {
-            face = face.icon(icon);
-        }
-        face.intrinsic_width(text_renderer, theme).max(height * 2.0)
-    };
-    let primary_w = width(card.primary_action, card.primary_action_icon);
-    let secondary_w = width(card.secondary_action, card.secondary_action_icon);
-    let (secondary, primary) = if primary_w + gap + secondary_w <= right - left {
-        let primary = Rect::new(right - primary_w, y0, right, y1);
-        let x1 = primary.x0 - gap;
-        (Rect::new(x1 - secondary_w, y0, x1, y1), primary)
-    } else {
-        let mid = (left + right - gap) / 2.0;
-        (
-            Rect::new(left, y0, mid, y1),
-            Rect::new(mid + gap, y0, right, y1),
-        )
-    };
+    let y1 = rect.y1 - choice_foot(theme);
+    let y0 = y1 - choice_height(theme);
+    let (secondary, primary) = choice_rects(
+        Rect::new(left, y0, right, y1),
+        choice_gap(theme),
+        choice_width(
+            text_renderer,
+            theme,
+            card.secondary_action,
+            card.secondary_action_icon,
+        ),
+        choice_width(
+            text_renderer,
+            theme,
+            card.primary_action,
+            card.primary_action_icon,
+        ),
+    );
     hit.secondary_action_rect = secondary;
     hit.primary_action_rect = primary;
 
@@ -1021,7 +1010,65 @@ fn paint_card_actions(
     if faded {
         scene.pop_layer();
     }
-    Some(y0 - f64::from(theme.tokens.spacing.s2))
+    Some(y0 - choice_lead(theme))
+}
+
+/// The height of a card's choices: compact controls, so a card reads as
+/// its message first.
+pub fn choice_height(theme: &Theme) -> f64 {
+    ButtonFace::height(crate::widget::ControlSize::Small, theme)
+}
+
+/// The step between a card's text and its choices: a full related step,
+/// so the choices read as the message's answer rather than part of it.
+pub fn choice_lead(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s2)
+}
+
+/// The padding under a card's choices: the card's own vertical padding.
+pub fn choice_foot(theme: &Theme) -> f64 {
+    card_pad(theme).1
+}
+
+/// The space between a card's two choices.
+pub fn choice_gap(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.rhythm.related)
+}
+
+/// The width a card's choice asks for: its label (and icon) on a compact
+/// face, never narrower than a comfortable target.
+pub fn choice_width(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    label: &str,
+    icon: Option<crate::icons::Icon>,
+) -> f64 {
+    let mut face =
+        ButtonFace::new(Rect::ZERO, label).control_size(crate::widget::ControlSize::Small);
+    if let Some(icon) = icon {
+        face = face.icon(icon);
+    }
+    face.intrinsic_width(text_renderer, theme)
+        .max(2.0 * choice_height(theme))
+}
+
+/// Where a pair of choices sits on `band` given the widths they ask for:
+/// at the trailing edge at their own width, the answer last, as a dialog's
+/// do, so the card reads as a sentence that ends in its choices rather than
+/// a pair of slabs. Equal halves only when both cannot fit at their width.
+/// Returns `(secondary, primary)`.
+pub fn choice_rects(band: Rect, gap: f64, secondary: f64, primary: f64) -> (Rect, Rect) {
+    if primary + gap + secondary <= band.width() {
+        let primary = Rect::new(band.x1 - primary, band.y0, band.x1, band.y1);
+        let x1 = primary.x0 - gap;
+        (Rect::new(x1 - secondary, band.y0, x1, band.y1), primary)
+    } else {
+        let mid = (band.x0 + band.x1 - gap) / 2.0;
+        (
+            Rect::new(band.x0, band.y0, mid, band.y1),
+            Rect::new(mid + gap, band.y0, band.x1, band.y1),
+        )
+    }
 }
 
 /// The card's body: a raised floating surface lifted by two shadows, at

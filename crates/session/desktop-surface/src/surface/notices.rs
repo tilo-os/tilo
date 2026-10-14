@@ -533,13 +533,18 @@ impl NotificationLayer {
         let r = self.rect;
         let width = PANEL_WIDTH.min(r.width() - 2.0 * PANEL_INSET).max(0.0);
         let y0 = r.y0 + PANEL_INSET;
-        let wanted =
-            center.preferred_height_for_width(&self.notifications.log(), self.type_lines, width);
-        let height = wanted.min(r.y1 - PANEL_INSET - y0).max(0.0);
+        let height = center
+            .fitted_height(
+                self.notifications.host(),
+                &self.type_lines,
+                width,
+                r.y1 - PANEL_INSET - y0,
+            )
+            .max(0.0);
         let x1 = r.x1 - PANEL_INSET;
         Some(CenterLayout::new(
             Rect::new(x1 - width, y0, x1, y0 + height),
-            self.type_lines,
+            &self.type_lines,
         ))
     }
 
@@ -1076,12 +1081,15 @@ mod tests {
     #[test]
     fn portable_notification_reader_returns_to_history_before_closing() {
         use ui::winit::keyboard::NamedKey;
-        let (mut layer, notifications) = layer_with(1);
-        let id = notifications.log().active()[0].id;
+        let (mut layer, notifications) = layer_with(0);
+        // Nothing to open and no app to go to: the row opens the reader.
+        let id = notifications.post(Notification::new(
+            "Backup couldn't finish",
+            "Reconnect the disk and the next backup picks up where this one stopped.",
+        ));
         notifications.host().dismiss(id);
         notifications.take_outcomes();
         layer.set_center_open(true);
-        assert!(layer.route(&reader_key_event(NamedKey::Tab), 1.0));
         assert!(layer.route(&reader_key_event(NamedKey::Tab), 1.0));
         assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
         assert!(layer.center.as_ref().unwrap().is_reading());
@@ -1109,6 +1117,7 @@ mod tests {
             id: "keep-identity".into(),
             title: "Keep with passkey".into(),
             subtitle: None,
+            source: None,
         }
         .notice(
             "Keep this identity?",

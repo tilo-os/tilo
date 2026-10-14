@@ -10,9 +10,9 @@
 //! Two summary strategies, in order of preference: **structural**, which
 //! materialises the window with [`tilo_doc::snapshot::series`] and
 //! diffs snapshots for real per-paragraph insert/delete counts on
-//! documents carrying the `qdoc` schema; and **patch**, the fallback that
+//! documents carrying the `tilo-doc` schema; and **patch**, the fallback that
 //! reads the change's own patch set via `AutoCommit::diff`, weaker only in
-//! that it can't see qdoc-level concepts like comments or block moves.
+//! that it can't see tilo-doc-level concepts like comments or block moves.
 //! Neither path guesses — an indescribable change gets
 //! `"no visible change"` rather than an invented summary.
 //!
@@ -107,11 +107,11 @@ pub fn committed_heads(doc: &AutoCommit) -> Vec<ChangeHash> {
     doc.base_heads()
 }
 
-/// Materialize a committed qdoc history entry without committing live edits.
+/// Materialize a committed tilo-doc history entry without committing live edits.
 /// An ID from another document returns `Ok(None)`.
 ///
 /// # Errors
-/// Returns the qdoc error if the selected version cannot be materialized.
+/// Returns the tilo-doc error if the selected version cannot be materialized.
 pub fn materialize_entry(
     doc: &mut AutoCommit,
     id: &HistoryEntryId,
@@ -443,7 +443,7 @@ pub fn change_summary(doc: &mut AutoCommit, from: &[ChangeHash], to: &[ChangeHas
 }
 
 /// Describe a change by reading its own patch set. The fallback for documents
-/// that don't carry the qdoc schema. With `paths`, edited fields are named by
+/// that don't carry the tilo-doc schema. With `paths`, edited fields are named by
 /// their document paths; without, counted.
 fn patch_summary(
     doc: &mut AutoCommit,

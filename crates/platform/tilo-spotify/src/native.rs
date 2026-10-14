@@ -580,14 +580,16 @@ async fn playback_metadata(session: &Session, uri: &str) -> Result<SpotifyUri, S
 }
 
 fn playback_metadata_error(error: &librespot::core::Error) -> String {
-    // Only the typed HTTP status is public. Other error sources can contain
-    // request headers, URLs or credentials and must never reach app state.
-    if let Some(librespot::core::http_client::HttpClientError::StatusCode(status)) =
-        error.error.downcast_ref()
-    {
+    // Only the typed status and transport-allowlisted fixed reason are public.
+    // Other sources may contain credentials and must never reach app state.
+    if let Some(source) = error.error.downcast_ref() {
+        let source: &librespot::core::http_client::HttpClientError = source;
+        let reason = source
+            .reason()
+            .map_or(String::new(), |reason| format!(", {reason}"));
         return format!(
-            "Spotify refused the playback metadata request (HTTP {})",
-            status.as_u16()
+            "Spotify refused the playback metadata request (HTTP {}{reason})",
+            source.status().as_u16()
         );
     }
     if let Some(source) = error.error.downcast_ref::<std::io::Error>() {
@@ -811,6 +813,53 @@ impl Drop for PcmSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spotify_metadata_refusal_classifies_only_bounded_provider_codes() {
+        use librespot::core::http_client::HttpClientError;
+        let status = "403".parse().unwrap();
+        for (body, expected) in [
+            (
+                br#"{"error":"insufficient_scope","error_description":"fixture-private-token"}"#
+                    .as_slice(),
+                "insufficient_scope",
+            ),
+            (
+                br#"{"error":{"reason":"PREMIUM_REQUIRED","message":"fixture-private-token"}}"#
+                    .as_slice(),
+                "PREMIUM_REQUIRED",
+            ),
+            (
+                br#"{"error":"fixture-private-token","access_token":"fixture-private-token"}"#
+                    .as_slice(),
+                "unclassified-json",
+            ),
+            (
+                br#"{"error":{"message":"fixture-private-token"}}"#.as_slice(),
+                "unclassified-json",
+            ),
+            (
+                b"<html>fixture-private-token</html>".as_slice(),
+                "non-json-body",
+            ),
+            (b"".as_slice(), "empty-body"),
+        ] {
+            let source = HttpClientError::from_status_body(status, body);
+            assert_eq!(source.reason(), Some(expected));
+            let error: librespot::core::Error = source.into();
+            assert_eq!(
+                error.kind,
+                librespot::core::error::ErrorKind::PermissionDenied
+            );
+            let public = playback_metadata_error(&error);
+            assert!(public.contains(expected));
+            assert!(public.contains("HTTP 403"));
+            assert!(!format!("{error:?} {error} {public}").contains("fixture-private-token"));
+        }
+        let oversized = vec![b'x'; 8193];
+        let error = HttpClientError::from_status_body(status, &oversized);
+        assert_eq!(error.reason(), Some("body-limit-exceeded"));
+    }
 
     #[test]
     fn playback_metadata_failure_preserves_provider_status_without_secret_sources() {

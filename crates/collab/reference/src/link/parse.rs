@@ -15,7 +15,7 @@ use super::{
 use crate::{Span, SpanUnit};
 
 /// Parameters in their only order. `chars` and `bytes` share a slot: a span has one unit.
-const PARAMS: [(&str, u8); 7] = [
+const PARAMS: [(&str, u8); 8] = [
     ("view", 0),
     ("chars", 1),
     ("bytes", 1),
@@ -23,6 +23,7 @@ const PARAMS: [(&str, u8); 7] = [
     ("ticket", 3),
     ("token", 4),
     ("pair", 5),
+    ("install", 6),
 ];
 
 #[derive(Clone, Copy)]
@@ -260,7 +261,8 @@ fn parse_route(route: &str, context: Context<'_>) -> Result<(LinkTarget, LinkSec
                 "invite" => secrets.invite = Some(Secret::new(value)?),
                 "ticket" => secrets.ticket = Some(Secret::new(value)?),
                 "token" => secrets.token = Some(Secret::new(value)?),
-                _ => secrets.pair = Some(Secret::new(value)?),
+                "pair" => secrets.pair = Some(Secret::new(value)?),
+                _ => secrets.install = Some(Secret::new(value)?),
             }
         }
         if let Some(span) = span {

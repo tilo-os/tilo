@@ -76,6 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 id: "keep-identity".into(),
                 title: "Keep with passkey".into(),
                 subtitle: None,
+                source: None,
             }
             .notice(
                 "Keep this identity?",

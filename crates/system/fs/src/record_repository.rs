@@ -3002,7 +3002,7 @@ mod tests {
                 let fixture = Fixture::new();
                 let repository = RecordRepository::open(&fixture.root).unwrap();
                 let (transaction, parent, base, current, other, conflict) =
-                    merge_transaction(&fixture, ConflictMergeCodecV1::QdocAutomergeV1);
+                    merge_transaction(&fixture, ConflictMergeCodecV1::TiloDocAutomergeV1);
                 let proposed = transaction.manifest.participants[0].clone();
                 let binding = FileBindingV1 {
                     schema_version: FILE_BINDING_VERSION,
@@ -3271,7 +3271,7 @@ mod tests {
         {
             for codec in [
                 ConflictMergeCodecV1::PlainUtf8ThreeWayV1,
-                ConflictMergeCodecV1::QdocAutomergeV1,
+                ConflictMergeCodecV1::TiloDocAutomergeV1,
             ] {
                 let fixture = Fixture::new();
                 let (transaction, parent, base, current, other, conflict) =

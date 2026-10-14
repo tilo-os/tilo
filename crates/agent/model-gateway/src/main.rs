@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use accounts::{AccountId, Secret, SecretVault};
 use agent_provider_config::{
     EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol, ReasoningParam,
+    transform as provider_transform,
 };
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
@@ -2178,74 +2179,26 @@ fn transform_body(
     model_id: &str,
     ask: &TransformAsk,
 ) -> serde_json::Value {
-    match protocol {
-        ProviderProtocol::Anthropic => serde_json::json!({
-            "model": model_id,
-            "max_tokens": ask.max_output_tokens,
-            "temperature": 0,
-            "system": ask.instructions,
-            "messages": [{ "role": "user", "content": ask.input }]
-        }),
-        ProviderProtocol::OpenAiCompatible => serde_json::json!({
-            "model": model_id,
-            "max_tokens": ask.max_output_tokens,
-            "temperature": 0,
-            "response_format": { "type": "json_object" },
-            "messages": [
-                { "role": "system", "content": ask.instructions },
-                { "role": "user", "content": ask.input }
-            ]
-        }),
-    }
+    provider_transform::body(
+        protocol,
+        &provider_transform::Ask {
+            model: model_id,
+            instructions: &ask.instructions,
+            input: &ask.input,
+            max_tokens: ask.max_output_tokens,
+            sampling: provider_transform::Sampling::Deterministic,
+        },
+    )
 }
 
-/// The answer text out of a provider response. A refusal or a cut-off answer
-/// is an error rather than text: the caller would otherwise validate half an
-/// answer.
+/// The answer text out of a provider response, within the published output
+/// bound.
 fn transform_answer(protocol: ProviderProtocol, body: &str) -> Result<String, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(body).map_err(|_| "provider response was unreadable".to_string())?;
-    let text = match protocol {
-        ProviderProtocol::Anthropic => {
-            match value.get("stop_reason").and_then(serde_json::Value::as_str) {
-                Some("refusal") => return Err("the model declined the transform".into()),
-                Some("max_tokens") => return Err("the model's answer was cut off".into()),
-                _ => {}
-            }
-            value
-                .get("content")
-                .and_then(serde_json::Value::as_array)
-                .and_then(|blocks| {
-                    blocks.iter().find(|block| {
-                        block.get("type").and_then(serde_json::Value::as_str) == Some("text")
-                    })
-                })
-                .and_then(|block| block.get("text"))
-                .and_then(serde_json::Value::as_str)
-        }
-        ProviderProtocol::OpenAiCompatible => {
-            let choice = value
-                .get("choices")
-                .and_then(serde_json::Value::as_array)
-                .and_then(|choices| choices.first());
-            if choice
-                .and_then(|choice| choice.get("finish_reason"))
-                .and_then(serde_json::Value::as_str)
-                == Some("length")
-            {
-                return Err("the model's answer was cut off".into());
-            }
-            choice
-                .and_then(|choice| choice.get("message"))
-                .and_then(|message| message.get("content"))
-                .and_then(serde_json::Value::as_str)
-        }
-    }
-    .ok_or_else(|| "provider response carried no answer text".to_string())?;
-    if text.len() > tilo_model_gateway::MAX_TRANSFORM_OUTPUT_BYTES {
-        return Err("the model's answer exceeds the 256 KiB limit".into());
-    }
-    Ok(text.to_string())
+    provider_transform::answer(
+        protocol,
+        body,
+        tilo_model_gateway::MAX_TRANSFORM_OUTPUT_BYTES,
+    )
 }
 
 async fn transform(
@@ -2533,26 +2486,19 @@ async fn send_provider(
         .post(endpoint)
         .timeout(budget)
         .header("content-type", "application/json");
-    match profile.protocol {
-        ProviderProtocol::Anthropic => {
-            let Some(secret) = secret else {
-                return Err(ProviderFailure {
-                    why: "Anthropic requests require a configured credential".into(),
-                    again: Again::Never,
-                    outcome_unknown: false,
-                    unprocessed: false,
-                    status: None,
-                });
-            };
-            request = request
-                .header("anthropic-version", "2023-06-01")
-                .header("x-api-key", secret);
-        }
-        ProviderProtocol::OpenAiCompatible => {
-            if let Some(secret) = secret {
-                request = request.bearer_auth(secret);
-            }
-        }
+    let refused = |why: String| ProviderFailure {
+        why,
+        again: Again::Never,
+        outcome_unknown: false,
+        unprocessed: false,
+        status: None,
+    };
+    for header in provider_transform::headers(profile.protocol, secret).map_err(refused)? {
+        let mut value = reqwest::header::HeaderValue::from_str(header.value.as_str())
+            // As before: a key that cannot be a header fails before any send.
+            .map_err(|_| refused("provider transport failed".into()))?;
+        value.set_sensitive(header.secret);
+        request = request.header(header.name, value);
     }
     let response = request
         .json(&bounded_body)
@@ -2826,13 +2772,7 @@ where
 }
 
 fn provider_url(profile: &ProviderProfile) -> String {
-    let base = profile.endpoint.trim_end_matches('/');
-    match profile.protocol {
-        ProviderProtocol::Anthropic if base.ends_with("/v1/messages") => base.into(),
-        ProviderProtocol::Anthropic => format!("{base}/v1/messages"),
-        ProviderProtocol::OpenAiCompatible if base.ends_with("/chat/completions") => base.into(),
-        ProviderProtocol::OpenAiCompatible => format!("{base}/chat/completions"),
-    }
+    provider_transform::url(profile.protocol, &profile.endpoint)
 }
 
 /// Whether the peer's `SO_PEERCRED` uid is this process's effective uid.

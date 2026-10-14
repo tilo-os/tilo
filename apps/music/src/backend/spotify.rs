@@ -767,6 +767,199 @@ mod tests {
         assert_eq!(oauth.refreshes(), 0);
     }
 
+    fn account_status_fixture(
+        origin: &str,
+        oauth: &tilo_oauth::fake::FakeAuthorizationServer,
+    ) -> (SpotifyBackend, tempfile::TempDir) {
+        let (backend, root) = fixture(origin, oauth);
+        for (account, access_token, scope) in [
+            (
+                ACCOUNT,
+                "initial-test",
+                "user-read-private user-library-read",
+            ),
+            (
+                tilo_spotify::STREAMING_ACCOUNT,
+                "stream-test",
+                "streaming user-read-private",
+            ),
+        ] {
+            backend
+                .custody
+                .seal_oauth(
+                    &AccountId::from(account.to_string()),
+                    &account_custody::TokenSet {
+                        access_token: access_token.into(),
+                        refresh_token: "refresh-test".into(),
+                        scope: Some(scope.into()),
+                        expires_in: 3600,
+                        ..Default::default()
+                    }
+                    .stamp_now(),
+                )
+                .unwrap();
+        }
+        (backend, root)
+    }
+
+    #[test]
+    fn spotify_account_status_reads_both_existing_grants_without_profile_leakage() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        use ui::tilo_resource::Effect as _;
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        for (catalogue, streaming, expected) in [
+            (
+                serde_json::json!({"id":"private-account", "account_id":"private-stable", "product":"premium", "email":"private-email", "display_name":"private-name"}),
+                serde_json::json!({"id":"private-account", "account_id":"private-stable", "product":"premium"}),
+                serde_json::json!({"catalogue_product":"premium","streaming_product":"premium","account_match":true}),
+            ),
+            (
+                serde_json::json!({"id":"private-account", "product":"free"}),
+                serde_json::json!({"id":"other-private-account", "product":"open"}),
+                serde_json::json!({"catalogue_product":"free","streaming_product":"open","account_match":false}),
+            ),
+            (
+                serde_json::json!({"id":"private-account"}),
+                serde_json::json!({"id":"private-account", "product":"private-unrecognized-product"}),
+                serde_json::json!({"catalogue_product":"unknown","streaming_product":"unknown","account_match":true}),
+            ),
+            (
+                serde_json::json!({"id":"private-account", "account_id":"private-stable", "product":"premium"}),
+                serde_json::json!({"id":"private-account", "account_id":"other-private-stable", "product":"premium"}),
+                serde_json::json!({"catalogue_product":"premium","streaming_product":"premium","account_match":false}),
+            ),
+            (
+                serde_json::json!({"product":"premium"}),
+                serde_json::json!({"product":"premium"}),
+                serde_json::json!({"catalogue_product":"premium","streaming_product":"premium","account_match":false}),
+            ),
+        ] {
+            let api = Responder::start(vec![
+                Reply::status(200).body(serde_json::to_vec(&catalogue).unwrap()),
+                Reply::status(200).body(serde_json::to_vec(&streaming).unwrap()),
+            ]);
+            let (backend, _root) = account_status_fixture(&api.url(), &oauth);
+            let reply = backend.operation(&SpotifyOperation::AccountStatus).unwrap();
+            assert_eq!(reply.state, expected);
+            assert!(reply.devices.is_empty());
+            crate::actions::MusicEffect::SpotifyAccountStatus
+                .bound()
+                .contract
+                .result
+                .validate(&tilo_actions::ActionOutput {
+                    value: Some(reply.state.clone()),
+                    resources: Vec::new(),
+                })
+                .expect("the real provider result must satisfy the published diagnostic contract");
+            let text = reply.state.to_string();
+            for forbidden in [
+                "private-account",
+                "private-stable",
+                "private-email",
+                "private-name",
+                "private-unrecognized-product",
+                "initial-test",
+                "stream-test",
+                "refresh-test",
+            ] {
+                assert!(!text.contains(forbidden));
+            }
+            for bearer in ["Bearer initial-test", "Bearer stream-test"] {
+                let request = api.next_request();
+                assert_eq!(request.method, "GET");
+                assert_eq!(request.target, "/me");
+                assert!(request.body.is_empty());
+                assert_eq!(request.header("Authorization"), Some(bearer));
+            }
+        }
+        assert_eq!(oauth.refreshes(), 0);
+        assert!(oauth.requests().is_empty());
+    }
+
+    #[test]
+    fn spotify_account_status_refusal_never_exposes_provider_body_or_retries() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let api = Responder::start(vec![
+            Reply::status(200).body(br#"{"id":"private-account","product":"premium"}"#.to_vec()),
+            Reply::status(403)
+                .body(br#"{"error":"private-secret-refusal","email":"private-email"}"#.to_vec()),
+        ]);
+        let (backend, _root) = account_status_fixture(&api.url(), &oauth);
+        let error = backend
+            .operation(&SpotifyOperation::AccountStatus)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("denied"));
+        for forbidden in [
+            "private-secret",
+            "private-email",
+            "private-account",
+            "initial-test",
+            "stream-test",
+            "refresh-test",
+        ] {
+            assert!(!error.contains(forbidden));
+        }
+        for bearer in ["Bearer initial-test", "Bearer stream-test"] {
+            let request = api.next_request();
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.target, "/me");
+            assert_eq!(request.header("Authorization"), Some(bearer));
+        }
+        assert_eq!(oauth.refreshes(), 0);
+        assert!(oauth.requests().is_empty());
+    }
+
+    #[test]
+    fn spotify_account_status_missing_grant_or_scope_never_starts_sign_in() {
+        use crate::backend::SpotifyOperation;
+        use test_http::Responder;
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let api = Responder::start(Vec::new());
+        let (backend, _root) = account_status_fixture(&api.url(), &oauth);
+        backend
+            .custody
+            .forget_oauth(&AccountId::from(
+                tilo_spotify::STREAMING_ACCOUNT.to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            backend
+                .operation(&SpotifyOperation::AccountStatus)
+                .unwrap_err()
+                .to_string(),
+            "Spotify account diagnostic authorization is unavailable"
+        );
+        for scope in [None, Some("user-read-private".into())] {
+            backend
+                .custody
+                .seal_oauth(
+                    &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
+                    &account_custody::TokenSet {
+                        access_token: "stream-test".into(),
+                        refresh_token: "refresh-test".into(),
+                        expires_in: 3600,
+                        scope,
+                        ..Default::default()
+                    }
+                    .stamp_now(),
+                )
+                .unwrap();
+            let error = backend
+                .operation(&SpotifyOperation::AccountStatus)
+                .unwrap_err()
+                .to_string();
+            assert!(error.starts_with("Spotify account diagnostic permissions"));
+            assert!(!error.contains("stream-test"));
+        }
+        assert_eq!(oauth.refreshes(), 0);
+        assert!(oauth.requests().is_empty());
+        api.assert_untouched();
+    }
+
     #[test]
     fn spotify_connect_confirms_provider_state_and_rejects_acknowledgement_only() {
         use crate::backend::SpotifyOperation;

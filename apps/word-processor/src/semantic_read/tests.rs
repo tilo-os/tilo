@@ -29,7 +29,7 @@ fn limits(items: usize) -> Limits {
 }
 
 #[test]
-fn semantic_read_pages_requested_capacity_in_literal_qdoc_order() {
+fn semantic_read_pages_requested_capacity_in_literal_tilo_doc_order() {
     let mut doc = fixture(&["third", "first", "second"]);
     let c = crate::model::open(&doc).unwrap();
     let ids = tilo_doc::model::blocks_in_order(&doc, &c);

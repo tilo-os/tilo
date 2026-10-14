@@ -8,15 +8,10 @@
 //! goes to the empty workspace and Super+Page Up comes back, as
 //! vm-acceptance W16 does once. The frame loop's own trace
 //! (`TILO_FRAME_TRACE`) gives each tick's thread CPU and its phases; the gate
-//! is the median of five switch-backs' costliest ticks. Each sample includes
-//! the entire switch, so a consistently costly remount still fails, without
-//! letting a single unrelated service/control wake set the frame budget.
-//!
-//! The gate is relative to the same run: the costliest tick may take a fixed
-//! multiple of an ordinary animation tick of the same switches, the frame
-//! loop's steady cost on this machine at this moment. A slow or contended
-//! runner slows both, so it cannot fail the gate; a switch back that does
-//! more work than putting kept content back still does.
+//! is the worst tick across five complete switch-backs. Each sample includes
+//! the entire switch, so one expensive painted transition fails the budget.
+//! The relative median-peak check also compares the same switches with their
+//! ordinary animation ticks; it diagnoses costly remounts across runners.
 //!
 //! Coming back used to build the workspace again from nothing: both apps were
 //! mounted afresh (their records opened, their first sync and update) and every
@@ -29,23 +24,23 @@ use std::time::Duration;
 
 use crate::idle_wakeups::{Desktop, notes_desktop};
 
-/// Most thread CPU the costliest tick of a switch back may take, as a multiple
-/// of the median animation tick of the same switches back (a tick painted
-/// for the transition's animation alone, the frame loop's steady cost).
+/// Most thread CPU one tick of a switch back may take, in milliseconds: two
+/// refresh intervals at 60 Hz, W16's `frame_cpu_ms_max`, held here in a debug
+/// build.
 ///
-/// Measured on a shared x86-64 build host (headless, llvmpipe, debug build). Putting
-/// the kept content back: a costliest tick of 6.3–9 animation ticks.
+/// Measured on CI's shared x86-64 runner (headless, llvmpipe, debug build).
 /// Rebuilding the workspace, as every switch back did before its content was
-/// kept: 22.6–22.8 animation ticks. On CI's shared x86-64 runner the kept
-/// content's costliest tick ran 19.5–35.6 ms, which an absolute budget of
-/// 33.4 ms (W16's `frame_cpu_ms_max`) failed on a slow runner.
+/// kept: 90–108 ms in each switch back (scene 78–97 ms). Putting the kept
+/// content back: the costliest tick of four timed switch backs 19.5–19.9 ms.
+const SWITCH_BACK_TICK_CPU_BUDGET_MS: f64 = 33.4;
+
+/// Maximum median switch-back peak relative to an ordinary animation tick
+/// measured on the same runner. This supplements the absolute W16 budget.
 const SWITCH_BACK_PEAK_PER_ANIMATION_TICK: f64 = 14.0;
 
 /// Fixed independent observations, not retries: every round is measured and
-/// reported, even if it exceeds the budget. Shared-runner cache contention and
-/// periodic service work can inflate a single tick's actual thread CPU, not
-/// just wall time. Gate the typical peak, never the median animation tick
-/// (which would hide a consistently expensive first frame).
+/// reported, even if it exceeds the budget. W16 limits the worst loop-thread
+/// tick, so one over-budget observation must fail here too.
 const SWITCH_ROUNDS: usize = 5;
 
 /// The frame loop writes its trace a tick at least this long after the last
@@ -54,7 +49,14 @@ const TRACE_FLUSH: Duration = Duration::from_millis(1_050);
 
 /// A switch's frame run is 400 ms; anything it brought in after that (an
 /// app's next frame) lands well inside this.
+const SWITCH_WINDOW: Duration = Duration::from_millis(1_000);
+
+/// How long a switch is left alone before the harness asks the loop anything
+/// again. Longer than [`SWITCH_WINDOW`], so the requests that flush the trace
+/// afterwards (and whatever deferred app work their wake runs) start after the
+/// measured window has closed and are never read as the switch's.
 const SWITCH_SETTLE: Duration = Duration::from_millis(1_500);
+const _: () = assert!(SWITCH_WINDOW.as_millis() + 250 <= SWITCH_SETTLE.as_millis());
 
 /// How long the apps must go without painting before the switches start.
 const APPS_QUIET: Duration = Duration::from_secs(2);
@@ -78,6 +80,8 @@ fn ms(us: u64) -> f64 {
 #[derive(Debug)]
 struct Tick {
     seq: u64,
+    /// When the tick began, in microseconds on the loop's own clock.
+    start_us: u64,
     painted: bool,
     /// Wall time of each of [`PHASES`], in microseconds.
     phases: Vec<u64>,
@@ -127,8 +131,9 @@ fn read_trace(path: &Path) -> Vec<Tick> {
             .position(|column| *column == name)
             .unwrap_or_else(|| panic!("the frame trace has no {name} column: {header}"))
     };
-    let (seq, painted, cpu, step, reasons) = (
+    let (seq, start, painted, cpu, step, reasons) = (
         at("seq"),
+        at("start_us"),
         at("painted"),
         at("cpu_us"),
         at("input_step"),
@@ -142,6 +147,7 @@ fn read_trace(path: &Path) -> Vec<Tick> {
             let number = |index: usize| field(index).parse::<u64>().ok();
             Some(Tick {
                 seq: number(seq)?,
+                start_us: number(start)?,
                 painted: field(painted) == "1",
                 phases: phases
                     .iter()
@@ -216,7 +222,7 @@ fn switch(desktop: &Desktop, trace: &Path, key: &str, to: &serde_json::Value) ->
     // Nothing else is asked of the loop until the switch is over.
     std::thread::sleep(SWITCH_SETTLE);
     sync_trace(desktop);
-    let ticks = read_trace(trace)
+    let ticks: Vec<Tick> = read_trace(trace)
         .into_iter()
         .filter(|tick| mark.is_none_or(|mark| tick.seq > mark))
         .collect();
@@ -226,7 +232,42 @@ fn switch(desktop: &Desktop, trace: &Path, key: &str, to: &serde_json::Value) ->
         "Super+{key} did not switch to workspace {to}. Log:\n{}",
         desktop.log_tail()
     );
-    ticks
+    switch_window(ticks).unwrap_or_else(|ticks| {
+        panic!(
+            "Super+{key} produced no transition frame:\n{}",
+            table(&ticks)
+        )
+    })
+}
+
+/// The ticks that belong to one switch, out of everything traced between the
+/// harness's requests: from its first transition frame for [`SWITCH_WINDOW`].
+///
+/// The preceding modifier and key requests are synthetic control-socket
+/// setup. Begin at the first compositor transition frame, which includes the
+/// switch's structural update and first app paint, and keep every tick that
+/// starts within the window, painted or not, including service work while the
+/// switch settles. The harness's own trace-flushing requests come
+/// [`SWITCH_SETTLE`] after the key, past the window; the ticks that answer
+/// them (and the deferred app work their wake runs) are the measurement's,
+/// not the switch's. Without a transition frame, returns every tick.
+fn switch_window(ticks: Vec<Tick>) -> Result<Vec<Tick>, Vec<Tick>> {
+    let Some(first) = ticks.iter().position(|tick| {
+        tick.painted
+            && tick
+                .paint_reasons
+                .split('+')
+                .any(|reason| reason == "transition")
+    }) else {
+        return Err(ticks);
+    };
+    let window_us = u64::try_from(SWITCH_WINDOW.as_micros()).unwrap_or(u64::MAX);
+    let end_us = ticks[first].start_us.saturating_add(window_us);
+    Ok(ticks
+        .into_iter()
+        .skip(first)
+        .take_while(|tick| tick.start_us < end_us)
+        .collect())
 }
 
 fn table(ticks: &[Tick]) -> String {
@@ -281,10 +322,41 @@ fn median_peak<'a>(rounds: &[&'a [Tick]]) -> &'a Tick {
     peaks[SWITCH_ROUNDS / 2]
 }
 
+/// Require CPU on every tick so an incomplete trace cannot silently select a
+/// cheaper peak. The maximum spans every tick of every complete switch-back.
+fn worst_tick<'a>(rounds: &[&'a [Tick]]) -> &'a Tick {
+    assert_eq!(rounds.len(), SWITCH_ROUNDS);
+    for ticks in rounds {
+        assert!(
+            ticks.iter().any(|tick| tick.painted),
+            "no switch frame observed"
+        );
+        assert!(
+            ticks.iter().all(|tick| tick.cpu_us.is_some()),
+            "thread CPU missing from the switch trace"
+        );
+    }
+    rounds
+        .iter()
+        .flat_map(|ticks| ticks.iter())
+        .max_by_key(|tick| tick.cpu_us)
+        .expect("a painted tick exists")
+}
+
+fn assert_switch_back_budget(peak: &Tick, report: &str) {
+    let cpu = peak.cpu_ms().expect("every observed tick has thread CPU");
+    assert!(
+        cpu <= SWITCH_BACK_TICK_CPU_BUDGET_MS,
+        "switching back to the workspace with Notes and a Terminal spent a worst tick of {cpu:.2} ms of the loop thread's CPU, over its budget of {SWITCH_BACK_TICK_CPU_BUDGET_MS} ms ({}):\n{report}",
+        peak.describe()
+    );
+}
+
 #[test]
 fn sampling_keeps_a_repeated_expensive_first_tick_but_not_one_outlier() {
     let make = |cpu_us, reasons: &str| Tick {
         seq: 0,
+        start_us: 0,
         painted: true,
         phases: vec![0; PHASES.len()],
         cpu_us: Some(cpu_us),
@@ -312,13 +384,14 @@ fn sampling_keeps_a_repeated_expensive_first_tick_but_not_one_outlier() {
     );
 }
 
-/// The same switches on a runner three times slower pass as they did; the
-/// same slowdown in the switch-back tick alone does not.
+/// The relative guard follows a runner slowdown; the absolute W16 budget
+/// remains independently enforced on the worst tick.
 #[test]
-fn the_gate_follows_the_runner_not_an_absolute_budget() {
+fn relative_gate_tracks_runner_speed_as_a_supplement() {
     let round = |peak_us, animation_us| {
         let mut ticks = vec![Tick {
             seq: 0,
+            start_us: 0,
             painted: true,
             phases: vec![0; PHASES.len()],
             cpu_us: Some(peak_us),
@@ -327,6 +400,7 @@ fn the_gate_follows_the_runner_not_an_absolute_budget() {
         }];
         ticks.extend((0..20).map(|seq| Tick {
             seq,
+            start_us: 0,
             painted: true,
             phases: vec![0; PHASES.len()],
             cpu_us: Some(animation_us),
@@ -346,6 +420,103 @@ fn the_gate_follows_the_runner_not_an_absolute_budget() {
     assert!(within(12_000, 2_000));
     assert!(within(36_000, 6_000));
     assert!(!within(36_000, 2_000));
+}
+
+#[test]
+#[should_panic(expected = "spent a worst tick of 36.00 ms")]
+fn a_uniformly_slow_switch_fails_the_absolute_budget_even_if_relative_passes() {
+    let round = vec![
+        Tick {
+            seq: 0,
+            start_us: 0,
+            painted: true,
+            phases: vec![0; PHASES.len()],
+            cpu_us: Some(36_000),
+            input_step: "services".into(),
+            paint_reasons: "session+transition".into(),
+        },
+        Tick {
+            seq: 1,
+            start_us: 0,
+            painted: true,
+            phases: vec![0; PHASES.len()],
+            cpu_us: Some(6_000),
+            input_step: "services".into(),
+            paint_reasons: "animation".into(),
+        },
+    ];
+    let rounds = [&round, &round, &round, &round, &round].map(Vec::as_slice);
+    let ratio = median_peak(&rounds).cpu_ms().unwrap() / animation_tick_ms(&rounds);
+    assert!(ratio <= SWITCH_BACK_PEAK_PER_ANIMATION_TICK);
+    assert_switch_back_budget(worst_tick(&rounds), "uniformly slow frame");
+}
+
+#[test]
+#[should_panic(expected = "spent a worst tick of 79.76 ms")]
+fn one_painted_outlier_fails_the_switch_back_budget() {
+    let make = |cpu_us| Tick {
+        seq: 0,
+        start_us: 0,
+        painted: true,
+        phases: vec![0; PHASES.len()],
+        cpu_us: Some(cpu_us),
+        input_step: "services".into(),
+        paint_reasons: "session".into(),
+    };
+    let ordinary = vec![make(19_900), make(2_000), make(2_000)];
+    // The painted transition recorded by CI run 103401: pump 25.76 ms,
+    // scene 39.16 ms, loop-thread CPU 79.76 ms. It must fail even when four
+    // other complete switch-backs stay under budget.
+    let mut observed = make(79_760);
+    observed.phases[1] = 25_760;
+    observed.phases[3] = 39_160;
+    observed.input_step = "launches".into();
+    observed.paint_reasons = "session+revision+animation+transition+apps".into();
+    let remounted = vec![observed, make(2_000), make(2_000)];
+    let peak = worst_tick(&[&ordinary, &ordinary, &remounted, &ordinary, &ordinary]);
+    assert_switch_back_budget(peak, "one painted outlier");
+}
+
+/// The harness's trace-flushing requests after a switch are not the switch:
+/// CI run 108721 failed on such a tick (45.44 ms, pump 36.43 ms, control
+/// 7.63 ms, not painted), 1.5 s after the key. Every tick of the switch itself
+/// still counts, so a slow animation frame inside the window still fails.
+#[test]
+fn the_window_ends_before_the_harness_asks_again_but_keeps_the_whole_switch() {
+    let tick = |seq, start_ms: u64, cpu_us, reasons: &str| Tick {
+        seq,
+        start_us: start_ms * 1_000,
+        painted: !reasons.is_empty(),
+        phases: vec![0; PHASES.len()],
+        cpu_us: Some(cpu_us),
+        input_step: "services".into(),
+        paint_reasons: reasons.into(),
+    };
+    let traced = vec![
+        // The modifier request before the key.
+        tick(380, 0, 3_000, ""),
+        tick(381, 5, 21_830, "session+animation+transition+apps"),
+        tick(382, 300, 36_610, "animation"),
+        tick(383, 410, 9_000, "animation"),
+        // Service work while the switch settles, unpainted, still the switch's.
+        tick(384, 900, 12_000, ""),
+        // The harness's first trace-flushing request and the frame it causes.
+        tick(403, 1_520, 45_440, ""),
+        tick(404, 1_540, 24_440, "session"),
+    ];
+    let window = switch_window(traced).expect("a transition frame");
+    assert_eq!(
+        window.iter().map(|tick| tick.seq).collect::<Vec<_>>(),
+        [381, 382, 383, 384]
+    );
+    let rounds = [window.as_slice(); SWITCH_ROUNDS];
+    let worst = worst_tick(&rounds);
+    assert_eq!(worst.cpu_us, Some(36_610));
+    assert!(
+        worst.cpu_ms().unwrap() > SWITCH_BACK_TICK_CPU_BUDGET_MS,
+        "a slow frame inside the switch must still be over the budget"
+    );
+    assert!(switch_window(vec![tick(1, 0, 1_000, "animation")]).is_err());
 }
 
 #[test]
@@ -387,10 +558,8 @@ fn switching_back_to_a_workspace_with_apps_stays_within_its_cpu_budget() {
         .unwrap_or_else(|| panic!("the desktop has no second workspace: {tree}"));
 
     // A first visit to the other workspace, untimed, as W16 runs after W10
-    // made and visited it: it builds the empty workspace, and both apps here
-    // took wakes while hidden whose frames (their own, 11–15 ms each in this
-    // build) the first switch back then ran in its tick. Then five times there
-    // and back, timed.
+    // made and visited it. It builds the empty workspace and lets the hosted
+    // apps settle before five complete, timed switches there and back.
     switch(&desktop, &trace, "PageDown", &elsewhere);
     switch(&desktop, &trace, "PageUp", &home);
     wait_for_quiet_apps(&desktop, &trace);
@@ -413,10 +582,6 @@ fn switching_back_to_a_workspace_with_apps_stays_within_its_cpu_budget() {
         .join("\n");
     eprintln!("{report}");
     let backs: Vec<&[Tick]> = rounds.iter().map(|(_, back)| back.as_slice()).collect();
-    let peak = median_peak(&backs);
-    let cpu = peak.cpu_ms().expect("every observed tick has thread CPU");
-    let animation = animation_tick_ms(&backs);
-    let ratio = cpu / animation;
     assert!(
         rounds
             .iter()
@@ -430,13 +595,22 @@ fn switching_back_to_a_workspace_with_apps_stays_within_its_cpu_budget() {
         "the compositor under test did not own its state file's writer. Log:\n{}",
         desktop.log_tail()
     );
-    // One machine-readable line for a scheduled lane.
+    let peak = worst_tick(&backs);
+    // Both checks use the same complete switch-back observations. The worst
+    // tick is the VM W16 contract; the median ratio retains main's runner-
+    // normalized remount signal without masking a single slow frame.
+    let median = median_peak(&backs);
+    let cpu = peak.cpu_ms().expect("every observed tick has thread CPU");
+    let median_cpu = median.cpu_ms().expect("every observed tick has thread CPU");
+    let animation = animation_tick_ms(&backs);
+    let ratio = median_cpu / animation;
     println!(
-        "WORKSPACE-SWITCH-BACK tick_cpu_ms={cpu:.2} animation_tick_cpu_ms={animation:.2} ratio={ratio:.2}"
+        "WORKSPACE-SWITCH-BACK tick_cpu_ms={cpu:.2} median_peak_cpu_ms={median_cpu:.2} animation_tick_cpu_ms={animation:.2} ratio={ratio:.2}"
     );
+    assert_switch_back_budget(peak, &report);
     assert!(
         ratio <= SWITCH_BACK_PEAK_PER_ANIMATION_TICK,
-        "switching back to the workspace with Notes and a Terminal spent a median peak of {cpu:.2} ms of the loop thread's CPU, {ratio:.1} times an animation tick of the same switches ({animation:.2} ms), over its limit of {SWITCH_BACK_PEAK_PER_ANIMATION_TICK} ({}):\n{report}",
-        peak.describe()
+        "switching back to the workspace with Notes and a Terminal spent a median peak of {median_cpu:.2} ms of the loop thread's CPU, {ratio:.1} times an animation tick of the same switches ({animation:.2} ms), over its limit of {SWITCH_BACK_PEAK_PER_ANIMATION_TICK} ({}):\n{report}",
+        median.describe()
     );
 }

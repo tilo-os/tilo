@@ -51,6 +51,30 @@ pub struct HostAction {
     pub title: String,
     #[serde(default)]
     pub subtitle: Option<String>,
+    /// What the action is about, named as the source of the notices that
+    /// offer it.
+    #[serde(default)]
+    pub source: Option<HostActionSource>,
+}
+
+/// The part of the system a host action belongs to, in the desktop's
+/// language: the source line of a notice that offers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostActionSource {
+    /// Who the person is: keeping, recovering or naming their identity.
+    Identity,
+    /// The person's other devices: pairing one.
+    Devices,
+}
+
+impl HostActionSource {
+    fn label(self) -> String {
+        crate::i18n::t(match self {
+            Self::Identity => "host-action-source-identity",
+            Self::Devices => "host-action-source-devices",
+        })
+    }
 }
 
 impl HostAction {
@@ -75,6 +99,7 @@ impl HostAction {
                 crate::i18n::t("notification-not-now"),
             ),
         ];
+        notice.app_name = self.source.map(HostActionSource::label);
         notice.dismiss_after = crate::notifications::PERSISTENT_DISMISS;
         // What a host asks is on the person's behalf: who they are and
         // which devices are theirs.
@@ -505,6 +530,24 @@ mod tests {
 
     fn mods(state: ModifiersState) -> Modifiers {
         Modifiers::from(state)
+    }
+
+    #[test]
+    fn a_host_actions_notice_names_what_it_is_about() {
+        let pair: HostAction = serde_json::from_str(
+            r#"{"id":"pair-device","title":"Pair a new device","source":"devices"}"#,
+        )
+        .unwrap();
+        let notice = pair.notice("Pair “Phone”?", "");
+        assert_eq!(
+            crate::notifications::source_label(&notice),
+            Some(crate::i18n::t("host-action-source-devices"))
+        );
+        let plain: HostAction = serde_json::from_str(r#"{"id":"x","title":"X"}"#).unwrap();
+        assert_eq!(
+            crate::notifications::source_label(&plain.notice("X", "")),
+            None
+        );
     }
 
     #[test]

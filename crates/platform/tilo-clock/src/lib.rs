@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use imp::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(any(not(target_family = "wasm"), tilo_no_js))]
 mod imp {
     pub use std::time::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
 
@@ -39,7 +39,7 @@ mod imp {
     }
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(all(target_family = "wasm", not(tilo_no_js)))]
 mod imp {
     pub use web_time::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
 

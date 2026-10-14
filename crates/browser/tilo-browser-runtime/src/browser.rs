@@ -45,6 +45,9 @@ thread_local! {
     static GPU_SETUPS: RefCell<std::collections::VecDeque<GpuSetup>> =
         const { RefCell::new(std::collections::VecDeque::new()) };
     static GPU_SETUP_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The device and renderer `prepare_gpu` opens before any mount asks for
+    /// one; the first `shared_gpu` takes it.
+    static PREPARED_GPU: RefCell<Option<PreparedGpu>> = const { RefCell::new(None) };
     /// Mounts presenting a desktop, which applications' notifications wake.
     static DESKTOPS: RefCell<std::collections::BTreeSet<u64>> =
         const { RefCell::new(std::collections::BTreeSet::new()) };
@@ -109,6 +112,14 @@ struct Config {
     /// The name a desktop seeded for this mount gives its workspace.
     #[serde(default)]
     workspace_name: Option<String>,
+    /// The host of the room shown (`example.org`), which the bar names
+    /// beside the workspace; absent on the person's own desktop.
+    #[serde(default)]
+    host: Option<String>,
+    /// The deployment's About links (`{notify, source, community}`, from
+    /// the web host's `entry.json`); one left empty is not offered.
+    #[serde(default)]
+    about: tilo_desktop::about::AboutLinks,
 }
 
 impl Config {
@@ -255,9 +266,30 @@ struct Desktop {
     generation: String,
     /// What the desktop asked of the page since its last status.
     requests: crate::shell::HostRequests,
+    /// Who is here and what they are doing, as the page reports it.
+    here: tilo_desktop::here::Here,
+    /// Who this page writes as, to find their own steps.
+    author: String,
 }
 
 impl Mount {
+    /// Put who is here on the windows they are in. Remote carets clear a
+    /// member's registrations as they move, so this runs after each.
+    fn apply_here(&mut self) {
+        let Some(desktop) = &self.desktop else {
+            return;
+        };
+        let tree = desktop.handle.read(Clone::clone);
+        let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
+        desktop
+            .here
+            .borrow_mut()
+            .register_windows(&people, self.frame.presence_mut());
+        self.frame.relayout();
+        self.pending = true;
+        self.window.request_redraw();
+    }
+
     fn service_owner_models(&mut self) {
         self.feedback_retry = None;
         if let Some(desktop) = &self.desktop
@@ -921,6 +953,7 @@ fn present_desktop(
     DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
     let generation = format!("mount-{id}");
     let requests = crate::shell::HostRequests::default();
+    let here = tilo_desktop::here::Here::default();
     let wake = proxy()?;
     let shell = crate::shell::BrowserShell::new(
         surface,
@@ -929,8 +962,12 @@ fn present_desktop(
         crate::shell::HostOffers {
             invite: config.invite,
             mac: config.mac,
+            host: config.host.clone(),
+            about: config.about.clone(),
         },
         Rc::clone(&requests),
+        Rc::clone(&here),
+        shared.clone(),
         Arc::new(move || {
             let _ = wake.send_event(id);
         }),
@@ -946,6 +983,8 @@ fn present_desktop(
             persistence,
             generation,
             requests,
+            here,
+            author: config.author(),
         }),
     })
 }
@@ -1267,7 +1306,88 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>, caps: SurfaceCa
     });
 }
 
-/// The shared device and renderer, created with the first surface.
+/// A device opened, and vello's pipelines compiled on it, ahead of the first
+/// surface.
+enum PreparedGpu {
+    /// Opening; the promise resolves once `Ready` replaced this.
+    Opening(js_sys::Promise),
+    Ready(Box<Result<(ui::gpu::RenderContext, vello::Renderer), String>>),
+}
+
+/// Open the WebGPU device and compile the renderer's pipelines now, while the
+/// page still joins its room and opens the workspace, rather than once the
+/// first mount's canvas exists: the first surface then only configures its
+/// canvas on a device that is ready. Without a mount nothing else happens;
+/// the first mount takes what this opened, and one that comes before it is
+/// done waits for it. Does nothing once a device exists or is being opened.
+///
+/// The page calls this right after the module is instantiated, unless the
+/// browser takes the conservative GPU profile (Safari), whose renderer starts
+/// only once the page's own load settled.
+#[wasm_bindgen]
+pub fn prepare_gpu() {
+    let busy = PREPARED_GPU.with_borrow(Option::is_some)
+        || SHARED_GPU.with_borrow(Option::is_some)
+        || GPU_SETUP_RUNNING.get();
+    if busy || crate::crash::stopped() {
+        return;
+    }
+    let mut resolve = None;
+    let opened = js_sys::Promise::new(&mut |done, _| resolve = Some(done));
+    PREPARED_GPU.set(Some(PreparedGpu::Opening(opened)));
+    wasm_bindgen_futures::spawn_local(async move {
+        let ready = open_gpu().await;
+        PREPARED_GPU.set(Some(PreparedGpu::Ready(Box::new(ready))));
+        if let Some(done) = resolve {
+            let _ = done.call0(&JsValue::NULL);
+        }
+    });
+}
+
+async fn open_gpu() -> Result<(ui::gpu::RenderContext, vello::Renderer), String> {
+    let mut cx = ui::gpu::RenderContext::new();
+    let index = cx.device(None).await.ok_or("no WebGPU device")?;
+    let handle = cx.devices.get(index).ok_or("WebGPU device missing")?;
+    let renderer = new_renderer(&handle.device).await?;
+    Ok((cx, renderer))
+}
+
+/// What `prepare_gpu` opened, once it is done; `None` when it was never
+/// called or its device was already taken.
+async fn take_prepared_gpu() -> Option<Result<(ui::gpu::RenderContext, vello::Renderer), String>> {
+    let opening = PREPARED_GPU.with_borrow(|prepared| match prepared {
+        Some(PreparedGpu::Opening(opened)) => Some(opened.clone()),
+        _ => None,
+    });
+    if let Some(opened) = opening {
+        let _ = wasm_bindgen_futures::JsFuture::from(opened).await;
+    }
+    match PREPARED_GPU.take()? {
+        PreparedGpu::Ready(ready) => Some(*ready),
+        // Only the GPU setup queue takes it, one setup at a time.
+        PreparedGpu::Opening(_) => None,
+    }
+}
+
+/// Asynchronous pipeline creation: the browser compiles vello's pipelines in
+/// parallel off its GPU process's main thread. Created synchronously they
+/// hold that thread for the whole compile (seconds each under a software
+/// rasteriser), and a page waiting on the GPU process (one tearing down its
+/// previous WebGPU context, a frame, a screenshot) waits with it.
+async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
+    vello::Renderer::new_async(
+        device,
+        vello::RendererOptions {
+            antialiasing_support: vello::AaSupport::area_only(),
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// The shared device and renderer, created with the first surface (or taken
+/// from `prepare_gpu`).
 async fn shared_gpu(
     window: &Arc<Window>,
     size: Viewport,
@@ -1293,7 +1413,12 @@ async fn shared_gpu(
         };
         return Ok((shared, surface));
     }
-    let mut cx = ui::gpu::RenderContext::new();
+    // A preparation that failed is tried again here, so its error is this
+    // surface's.
+    let (mut cx, prepared) = match take_prepared_gpu().await {
+        Some(Ok((cx, renderer))) => (cx, Some(renderer)),
+        Some(Err(_)) | None => (ui::gpu::RenderContext::new(), None),
+    };
     let surface = cx
         .create_surface(
             Arc::clone(window),
@@ -1307,20 +1432,12 @@ async fn shared_gpu(
         .devices
         .get(surface.dev_id)
         .ok_or("WebGPU device missing")?;
-    // Asynchronous pipeline creation: the browser compiles vello's pipelines
-    // in parallel off its GPU process's main thread. Created synchronously
-    // they hold that thread for the whole compile (seconds each under a
-    // software rasteriser), and a page waiting on the GPU process (one tearing
-    // down its previous WebGPU context, a frame, a screenshot) waits with it.
-    let mut renderer = vello::Renderer::new_async(
-        &handle.device,
-        vello::RendererOptions {
-            antialiasing_support: vello::AaSupport::area_only(),
-            ..Default::default()
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let mut renderer = match prepared {
+        // Prepared on the context's first device, which presents to any
+        // canvas on WebGPU.
+        Some(renderer) if surface.dev_id == 0 => renderer,
+        _ => new_renderer(&handle.device).await?,
+    };
     if caps == SurfaceCaps::CONSERVATIVE {
         renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);
         renderer.set_bump_budget_grow_once(true);
@@ -1798,6 +1915,8 @@ impl Mount {
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
+            // The page titles its tab after it.
+            "workspaceName": self.desktop.as_ref().and_then(|d| d.handle.read(|tree| tree.active_workspace().map(|w| w.name.clone()))),
             "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
             "ime": ime,
         });
@@ -2320,6 +2439,25 @@ pub fn desktop_offer_host_action(id: u64, offer: &str) -> Result<(), JsValue> {
     })
 }
 
+/// Confirm in passing what the page just did out of sight ("Link copied"):
+/// a short-lived pill over the desktop, never a notification.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_acknowledge(id: u64, text: &str) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?
+            .handle
+            .acknowledge(text);
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
 /// The node applications the person asked to open since the last call (a
 /// JSON array of their ids): the page asks the node to open each, and its
 /// window arrives as a legacy window.
@@ -2624,10 +2762,140 @@ pub fn remote_presence(
             }
             None => presence.unregister_peer(publisher),
         }
+        m.apply_here();
         m.frame.relayout();
         m.pending = true;
         m.window.request_redraw();
         Ok(())
+    })
+}
+
+/// Who is in the room's live layer now: `{own: {publisher, label, color},
+/// members: [{publisher, kind, label, color, focus, activity}] | null}`,
+/// `members` null while the layer is not live. The bar, the People popover
+/// and the windows show them; nothing is written to the room.
+///
+/// # Errors
+///
+/// Rejects malformed JSON or a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
+    #[derive(serde::Deserialize)]
+    struct People {
+        own: Option<tilo_desktop::here::LiveMember>,
+        members: Option<Vec<tilo_desktop::here::LiveMember>>,
+    }
+    let people: People = serde_json::from_str(people).map_err(error)?;
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        if desktop
+            .here
+            .borrow_mut()
+            .set_members(people.own, people.members)
+        {
+            m.apply_here();
+        }
+        Ok(())
+    })
+}
+
+/// The host's answer to `/here` (`peer.here`): each person's line.
+///
+/// # Errors
+///
+/// Rejects malformed JSON or a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_here(id: u64, lines: &str) -> Result<(), JsValue> {
+    let lines: Vec<tilo_desktop::here::HostLine> = serde_json::from_str(lines).map_err(error)?;
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        if desktop
+            .here
+            .borrow_mut()
+            .set_lines(lines, crate::shell::now_ms())
+        {
+            m.apply_here();
+        }
+        Ok(())
+    })
+}
+
+/// How many spectators follow the room without taking part.
+///
+/// # Errors
+///
+/// Rejects a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_watching(id: u64, watching: u32) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        if desktop.here.borrow_mut().set_watching(watching) {
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
+    })
+}
+
+/// What this page's person is doing, for the page to post to `/here`:
+/// `{window: hex | null, share, actions: [{id, action, resource, app,
+/// at_ms}]}`. `window` is the focused window's tab id; `actions` are their own steps in the active workspace's records since
+/// `since_ms` (titles only), and empty unless they share an automatic
+/// status (`share`).
+///
+/// # Errors
+///
+/// Rejects a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let tree = desktop.handle.read(Clone::clone);
+        let focused = tree.active_workspace().and_then(|workspace| {
+            // A person who has not moved yet is shown the first strip, as
+            // the composition draws it.
+            let strip = tree
+                .active_strip
+                .get(&workspace.id)
+                .and_then(|id| workspace.strips.iter().find(|s| s.id == *id))
+                .or_else(|| workspace.strips.first())?;
+            let group = tree
+                .active_group_for(strip.id)
+                .and_then(|g| strip.window_groups.iter().find(|w| w.id == g))
+                .or_else(|| strip.window_groups.first())?;
+            group.tabs.iter().find(|tab| tab.id == group.active_tab)
+        });
+        let window = focused.map(|tab| format!("{:x}", tab.id));
+        let share = desktop.here.borrow().sharing() == ui::StatusSharing::Automatic;
+        let actions = if share {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a page clock in milliseconds; negative clamps to zero"
+            )]
+            let since = since_ms.max(0.0) as u64;
+            crate::history::own_recent_actions(&desktop.shared, &tree, &desktop.author, since)
+        } else {
+            Vec::new()
+        };
+        serde_json::to_string(&serde_json::json!({
+            "window": window,
+            "share": share,
+            "actions": actions,
+        }))
+        .map_err(error)
     })
 }
 
@@ -2640,6 +2908,7 @@ pub fn remote_presence(
 pub fn remote_presence_gone(id: u64, publisher: &str) -> Result<(), JsValue> {
     with_mount(id, |m| {
         m.frame.presence_mut().unregister_peer(publisher);
+        m.apply_here();
         m.frame.relayout();
         m.pending = true;
         m.window.request_redraw();

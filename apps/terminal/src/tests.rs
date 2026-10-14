@@ -820,6 +820,7 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
                 next_link_id: &mut next_link_id,
                 current_link_id: 0,
                 title_out: &mut title_out,
+                allow_osc52_clipboard: true,
                 responses: &mut responses,
                 print_buf: None,
             };
@@ -3825,19 +3826,28 @@ fn osc_sequences_update_title_and_hyperlinks() {
 #[cfg(target_os = "linux")]
 #[serial_test::serial]
 fn osc_52_writes_clipboard_from_base64() {
-    // OSC 52 ; c ; <base64> sets the clipboard. Read back through the
-    // production paste entry point rather than a concrete backend — the
-    // copy resolves to an in-process buffer in a windowless test, so
-    // asking arboard reported the host's real clipboard instead. No
-    // skip: the round trip is always observable, so an OSC 52 that
-    // decoded nothing fails here rather than passing quietly.
+    // OSC 52 ; c ; <base64> sets the clipboard — only once the person has
+    // allowed programs to. Read back through the production paste entry
+    // point rather than a concrete backend — the copy resolves to an
+    // in-process buffer in a windowless test, so asking arboard reported
+    // the host's real clipboard instead. No skip: the round trip is always
+    // observable, so an OSC 52 that decoded nothing fails here rather than
+    // passing quietly.
     let (mut w, _) = build_test_widget();
+    ui::text_selection::clipboard_copy("untouched");
     // base64("tilo-osc52") = dGlsby1vc2M1Mg==
     w.feed(b"\x1b]52;c;dGlsby1vc2M1Mg==\x07");
     assert_eq!(
         ui::text_selection::clipboard_paste().as_deref(),
+        Some("untouched"),
+        "by default, program output must not replace the clipboard"
+    );
+    w.set_allow_osc52_clipboard(true);
+    w.feed(b"\x1b]52;c;dGlsby1vc2M1Mg==\x07");
+    assert_eq!(
+        ui::text_selection::clipboard_paste().as_deref(),
         Some("tilo-osc52"),
-        "OSC 52 decodes base64 into the clipboard"
+        "once allowed, OSC 52 decodes base64 into the clipboard"
     );
 }
 

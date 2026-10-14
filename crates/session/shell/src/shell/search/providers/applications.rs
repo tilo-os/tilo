@@ -566,7 +566,7 @@ impl ApplicationsProvider {
                     // catalogue installation is still running. Keep one
                     // in-flight operation and one acknowledgement; replacing
                     // the pending id would strand the first card forever.
-                    if catalogue::pending_notice(&package_id).is_some() {
+                    if catalogue::pending_launch(&package_id) {
                         return Ok(());
                     }
                     // Captured now, not re-read at launch: the window may be
@@ -764,11 +764,11 @@ pub(crate) fn launch_installed_app(
     display_name: &str,
 ) -> Result<(), ActionError> {
     // An activation already accepted for this package owns the single launch
-    // worker and opening card. Check that transaction before consulting the
+    // worker. Check that transaction before consulting the
     // registry: the package can disappear while its queued worker is still
     // resolving, but a repeated click must not turn that existing launch into
     // an unrelated "not installed" error.
-    if catalogue::pending_notice(package_id).is_some() {
+    if catalogue::pending_launch(package_id) {
         return Ok(());
     }
     let app = launcher::installed_apps().and_then(|apps| {
@@ -793,7 +793,7 @@ pub(crate) fn launch_installed_app(
 /// from Quick Settings, the palette or anywhere else, focuses that window.
 const SETTINGS_PACKAGE_ID: &str = "so.tilo.settings";
 
-/// Surface a launch that failed before spawn: retire its opening card, post
+/// Surface a launch that failed before spawn: settle its pending launch, post
 /// the failure notification, and describe it for callers that cannot see
 /// the screen.
 fn report_refused_launch(
@@ -815,11 +815,8 @@ fn report_refused_launch(
     );
     {
         let mut st = chrome.borrow_mut();
-        // Claimed back rather than left to expire, or the next window
-        // to paint would retire somebody else's notice.
-        if let Some(id) = catalogue::take_pending_notice(package_id) {
-            st.dismiss_notification(id);
-        }
+        // Settled now, or the app could never be opened again this session.
+        catalogue::take_pending_launch(package_id);
         st.push_notification_full(
             Notification::new(
                 launcher::launch_failure_title(display_name),
@@ -914,27 +911,15 @@ fn launch_resolved_installed_app(
         return Ok(());
     }
     // The app is already being installed/launched. Repeated activation should
-    // be idempotent: one worker, one pending notice, one eventual window.
-    if catalogue::pending_notice(package_id).is_some() {
+    // be idempotent: one worker, one eventual window.
+    if catalogue::pending_launch(package_id) {
         return Ok(());
     }
-    // Say the app is opening before the work starts, so the
-    // acknowledgement lands on the same frame as the keystroke. Retired by
-    // the window appearing (`retire_notices_for_opened_windows`), not a timer.
-    let notice = {
-        let mut st = chrome.borrow_mut();
-        let id = st.push_notification_full(
-            Notification::new(
-                t_args("search-apps-opening", &[("app", display_name.into())]),
-                t("search-apps-opening-body"),
-            )
-            .with_app_name(t("host-source-applications"))
-            .with_dismiss_after(std::time::Duration::from_secs(120)),
-        );
-        st.bump();
-        id
-    };
-    catalogue::note_pending_notice(package_id, notice);
+    // No "Opening…" notification: the person just asked for this app, and
+    // its place on the strip (the placeholder card, then its first frame)
+    // is the feedback. Settled by the window appearing
+    // (`settle_launches_of_opened_windows`) or by the launch failing.
+    catalogue::note_pending_launch(package_id);
     // Scoped so the borrow is released before the error branch below
     // takes a mutable one.
     {
@@ -1512,6 +1497,7 @@ mod tests {
             version: "0.1.0".to_string(),
             registry: "Tilo main".to_string(),
             trust: "verified".to_string(),
+            ..Default::default()
         }
     }
 
@@ -1537,19 +1523,14 @@ mod tests {
         {
             let chrome = chrome_rc();
             let package_id = "so.tilo.repeated-open-fixture";
-            let notice = chrome
-                .borrow_mut()
-                .push_notification("Opening Fixture", "Loading…");
-            catalogue::note_pending_notice(package_id, notice);
+            catalogue::note_pending_launch(package_id);
 
             assert!(launch_installed_app(&chrome, package_id, "Fixture").is_ok());
-            assert_eq!(
-                chrome.borrow().notifications().len(),
-                1,
-                "a second activation must not create another worker or opening card"
+            assert!(
+                chrome.borrow().notifications().is_empty(),
+                "a second activation must not start another worker or say anything"
             );
-            assert_eq!(catalogue::take_pending_notice(package_id), Some(notice));
-            chrome.borrow_mut().dismiss_notification(notice);
+            assert!(catalogue::take_pending_launch(package_id));
         }
 
         // Phase `activating_with_no_workspace_reports_it_the_same_way`.
@@ -2516,11 +2497,10 @@ mod tests {
                     } else {
                         "common source app".into()
                     },
-                    description: String::new(),
-                    category: None,
                     version: "1".into(),
                     registry: "fixture".into(),
                     trust: "verified".into(),
+                    ..Default::default()
                 })
                 .collect(),
             Vec::new(),

@@ -430,6 +430,11 @@ pub struct LinkSecrets {
     /// The person (their user root, hex) whose new device this browser asks
     /// to become: one of their devices that holds the root approves it.
     pub pair: Option<Secret>,
+    /// A machine waiting for its owner (its HTTPS origin, device key and
+    /// install token; `web/machine-setup.mjs`): the root this browser holds
+    /// certifies it and the page installs the certificate, once the person
+    /// confirms.
+    pub install: Option<Secret>,
 }
 
 impl LinkSecrets {
@@ -439,6 +444,7 @@ impl LinkSecrets {
             && self.ticket.is_none()
             && self.token.is_none()
             && self.pair.is_none()
+            && self.install.is_none()
     }
 }
 
@@ -576,6 +582,7 @@ impl LinkTarget {
             ("ticket", &secrets.ticket),
             ("token", &secrets.token),
             ("pair", &secrets.pair),
+            ("install", &secrets.install),
         ] {
             if let Some(secret) = secret {
                 params.push(format!("{name}={}", secret.expose()));
@@ -850,6 +857,7 @@ mod tests {
                 ticket: None,
                 token: Some(Secret::new("SECRETtoken").unwrap()),
                 pair: None,
+                install: None,
             },
         };
         let printed = format!(

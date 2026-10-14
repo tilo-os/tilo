@@ -5,6 +5,63 @@ use reqwest::Method;
 use serde_json::{Value, json};
 
 impl SpotifyBackend {
+    fn account_status(&self) -> Result<Value, BackendError> {
+        use crate::backend::{SpotifyAccountStatus, SpotifyProduct};
+        use tilo_spotify::{STREAMING_ACCOUNT, STREAMING_USE};
+
+        for (account, required) in [
+            (ACCOUNT, &["user-read-private"][..]),
+            (STREAMING_ACCOUNT, &["streaming", "user-read-private"][..]),
+        ] {
+            let scopes = self
+                .custody
+                .oauth_scopes(&super::AccountId::from(account.to_string()))
+                .map_err(|_| {
+                    BackendError("Spotify account diagnostic authorization is unavailable".into())
+                })?
+                .ok_or_else(|| {
+                    BackendError("Spotify account diagnostic permissions are unknown".into())
+                })?;
+            if !required
+                .iter()
+                .all(|required| scopes.split_whitespace().any(|scope| scope == *required))
+            {
+                return Err(BackendError(
+                    "Spotify account diagnostic permissions have not been granted".into(),
+                ));
+            }
+        }
+        let catalogue = self.get_for(USE, ACCOUNT, "me", &[])?;
+        let streaming = self.get_for(STREAMING_USE, STREAMING_ACCOUNT, "me", &[])?;
+        let product = |profile: &Value| match profile.get("product").and_then(Value::as_str) {
+            Some("premium") => SpotifyProduct::Premium,
+            Some("free") => SpotifyProduct::Free,
+            Some("open") => SpotifyProduct::Open,
+            _ => SpotifyProduct::Unknown,
+        };
+        let identity = |profile: &Value, key| {
+            profile
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        };
+        let account_match = identity(&catalogue, "id")
+            .is_some_and(|id| Some(id) == identity(&streaming, "id"))
+            && match (catalogue.get("account_id"), streaming.get("account_id")) {
+                (None, None) => true,
+                (Some(_), Some(_)) => identity(&catalogue, "account_id")
+                    .is_some_and(|id| Some(id) == identity(&streaming, "account_id")),
+                _ => false,
+            };
+        serde_json::to_value(SpotifyAccountStatus {
+            catalogue_product: product(&catalogue),
+            streaming_product: product(&streaming),
+            account_match,
+        })
+        .map_err(|_| BackendError("Spotify account diagnostic result is unavailable".into()))
+    }
+
     pub(crate) fn operation(
         &self,
         operation: &SpotifyOperation,
@@ -14,6 +71,7 @@ impl SpotifyBackend {
             self.require_scope(required)?;
         }
         let state = match operation {
+            Op::AccountStatus => self.account_status()?,
             Op::Queue => self.read_remote_queue()?,
             Op::LibraryPage {
                 offset,
@@ -449,7 +507,8 @@ fn operation_scope(operation: &SpotifyOperation) -> Option<&'static str> {
             Some("user-modify-playback-state")
         }
         // Playlist edits inspect the playlist visibility before choosing a scope.
-        Op::LibraryPage { .. }
+        Op::AccountStatus
+        | Op::LibraryPage { .. }
         | Op::RenamePlaylist { .. }
         | Op::PlaylistAdd { .. }
         | Op::PlaylistRemove { .. } => None,

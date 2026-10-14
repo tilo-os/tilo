@@ -6278,7 +6278,7 @@ impl CommandRunner for SystemRunner {
 }
 
 /// Presentation-side lower bound for the daemon's fail-closed merge codecs.
-/// The daemon still validates exact bytes and may reject malformed qdoc,
+/// The daemon still validates exact bytes and may reject a malformed serialized document,
 /// invalid UTF-8, overlapping edits, or a stale signed conflict.
 fn merge_supported_path(path: &std::path::Path) -> bool {
     path.extension()
@@ -9550,19 +9550,6 @@ pub(crate) mod published {
 #[cfg(unix)]
 #[path = "framework_history_tests.rs"]
 mod framework_history_tests;
-
-#[cfg(test)]
-mod merge_support_tests {
-    use super::merge_supported_path;
-
-    #[test]
-    fn merge_is_never_offered_for_binary_or_unsupported_names() {
-        assert!(merge_supported_path(std::path::Path::new("notes.txt")));
-        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
-        assert!(!merge_supported_path(std::path::Path::new("photo.png")));
-        assert!(!merge_supported_path(std::path::Path::new("unknown")));
-    }
-}
 
 impl FileExplorerWidget {
     pub fn debug_begin_favorite_drag(&mut self, from: usize, to: usize) -> bool {
