@@ -181,7 +181,7 @@ pub fn load() -> Map<String, Value> {
 }
 
 /// Identifies one version of the settings document, for readers that cache it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SettingsStamp {
     /// The settings file's modification time.
     Modified(std::time::SystemTime),

@@ -38,7 +38,9 @@ mod index;
 mod list;
 mod query;
 mod tokenizer;
+mod usage;
 mod weight;
+mod words;
 
 #[cfg(feature = "disk")]
 pub use disk::{DiskHit, DiskIndex, DiskWriter};
@@ -50,9 +52,12 @@ pub use query::Matching;
 /// The engine's error, for callers opening a [`DiskIndex`].
 pub use tantivy::TantivyError;
 pub use tokenizer::{GRAM_WIDTH, GramTokenizer, WordTokenizer};
+pub use usage::Frecency;
 pub use weight::{
-    FUZZY_RANK, FieldWeight, INDEXED_WEIGHTS, MAX_FIELD_RANK, MatchTier, Ranks, SPANNING_RANK,
+    FUZZY_RANK, FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MAX_FIELD_RANK, MatchTier, Ranks,
+    SPANNING_RANK,
 };
+pub use words::initials;
 
 #[cfg(test)]
 mod tests;

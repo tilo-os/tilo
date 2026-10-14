@@ -59,20 +59,6 @@ const QUEUED_ACTIONS: [QueuedAction; 5] = [
     ),
 ];
 
-/// The other words people type for each action, by action id. Like the
-/// ids, they are the stable English vocabulary scripts use too.
-fn synonyms(id: &str) -> &'static str {
-    match id {
-        "lock" => "lock screen",
-        "switch-user" => "switch account",
-        "suspend" => "sleep",
-        "restart" => "reboot",
-        "shut-down" => "shutdown power off turn off",
-        LOGOUT_ID => "log out logout sign out",
-        _ => "",
-    }
-}
-
 /// One admission path for every shell-owned session lifecycle entry point.
 ///
 /// The visual power menu and typed action provider must not disagree about a
@@ -225,14 +211,45 @@ pub struct SessionActionsProvider {
     policy: SessionActionPolicy,
     /// The rows' searchable text, indexed while it stays the same.
     ranker: ui::search::ListIndex,
+    /// Each row's shortcut, read from the settings document it was read
+    /// from: a keystroke checks the document's stamp, not its contents.
+    shortcuts: RefCell<Option<ShortcutTexts>>,
 }
+
+/// The settings document's stamp, and each row's shortcut as read from it.
+type ShortcutTexts = (Option<settings_store::SettingsStamp>, Vec<(String, String)>);
 
 impl SessionActionsProvider {
     pub fn new(policy: SessionActionPolicy) -> Self {
         Self {
             policy,
             ranker: ui::search::ListIndex::default(),
+            shortcuts: RefCell::default(),
         }
+    }
+
+    /// The shortcut shown beside the session action `id`, if it has one.
+    fn shortcut(&self, id: &str) -> Option<String> {
+        let stamp = settings_store::stamp();
+        let mut cached = self.shortcuts.borrow_mut();
+        if cached.as_ref().is_none_or(|(held, _)| *held != stamp) {
+            let config = settings_store::hardware::ShortcutConfig::load();
+            let texts = QUEUED_ACTIONS
+                .iter()
+                .map(|(id, ..)| *id)
+                .chain([LOGOUT_ID])
+                .filter_map(|id| {
+                    super::actions::action_shortcut(&config, id).map(|text| (id.to_owned(), text))
+                })
+                .collect();
+            *cached = Some((stamp, texts));
+        }
+        cached
+            .as_ref()?
+            .1
+            .iter()
+            .find(|(held, _)| held == id)
+            .map(|(_, text)| text.clone())
     }
 }
 
@@ -263,18 +280,32 @@ impl SearchProvider for SessionActionsProvider {
             .map(|&entry| self.queued_result(entry))
             .collect();
         rows.insert(1.min(rows.len()), self.logout_result());
+        for row in &mut rows {
+            row.shortcut = self.shortcut(&row.id);
+        }
         let fields: Vec<_> = rows
             .iter()
             .map(|row| {
-                vec![
-                    (row.title.clone(), FieldWeight::TITLE),
+                let mut fields = vec![
+                    (row.title.to_lowercase(), FieldWeight::TITLE),
                     (row.id.clone(), FieldWeight::IDENTITY),
-                    (synonyms(&row.id).to_owned(), FieldWeight::IDENTITY),
                     (
-                        row.subtitle.clone().unwrap_or_default(),
+                        row.subtitle.clone().unwrap_or_default().to_lowercase(),
                         FieldWeight::SUBTITLE,
                     ),
-                ]
+                ];
+                // Lock, restart, shut down: the other words for each, in
+                // every language.
+                fields.extend(
+                    crate::shell::i18n::words_in_every_locale(&format!(
+                        "{}session-{}",
+                        crate::shell::i18n::KEYWORD_PREFIX,
+                        row.id
+                    ))
+                    .into_iter()
+                    .map(|word| (word, FieldWeight::KEYWORD)),
+                );
+                fields
             })
             .collect();
         crate::shell::search::rank_rows(&self.ranker, ctx.needle.trim(), rows, &fields)
@@ -300,6 +331,7 @@ impl SessionActionsProvider {
         let contract = queued_contract(id, action);
         let policy = self.policy.clone();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
@@ -326,6 +358,7 @@ impl SessionActionsProvider {
         let contract = logout_contract();
         let policy = self.policy.clone();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),

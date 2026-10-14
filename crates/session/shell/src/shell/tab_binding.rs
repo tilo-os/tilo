@@ -2762,6 +2762,7 @@ mod tests {
                     package_id: "so.tilo.adoptfixture".into(),
                     display_name: "Adopt Fixture".into(),
                     localized_names: BTreeMap::default(),
+                    keywords: Vec::new(),
                     category: None,
                     version: "0.1.0".into(),
                     manifest_path: std::path::PathBuf::new(),

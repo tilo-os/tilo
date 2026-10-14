@@ -16,7 +16,7 @@ use tantivy::{Score, Term};
 
 use crate::index::{Fields, RECORD_SEGMENT};
 use crate::tokenizer::{GRAM_WIDTH, VALUE_END, VALUE_START, WORD_END, WORD_START, marked, words};
-use crate::weight::{FieldWeight, INDEXED_WEIGHTS, MatchTier, Ranks};
+use crate::weight::{FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MatchTier, Ranks};
 
 /// Score of a record whose fields match at rank 0; body-only matches score
 /// below it.
@@ -176,6 +176,37 @@ impl Matching {
     };
 }
 
+/// Every word of the query within a small edit distance of a title's words,
+/// and of a keyword's one rank lower: a typo in a name outranks the same typo
+/// in a keyword, so "terminl" is the Terminal before it is a calendar's
+/// "termin".
+fn typo_queries(
+    fields: &Fields,
+    used: Used,
+    ranks: Ranks,
+    query_words: &[String],
+) -> Vec<BoxQuery> {
+    let Some(last) = query_words.len().checked_sub(1) else {
+        return Vec::new();
+    };
+    [
+        (0, fields.title_words, FieldWeight::TITLE),
+        (KEYWORD_SLOT, fields.keyword_words, FieldWeight::KEYWORD),
+    ]
+    .into_iter()
+    .filter(|(slot, ..)| used.slots.get(*slot).copied().unwrap_or(false))
+    .filter_map(|(_, field, weight)| {
+        let rank = ranks(MatchTier::Typo, weight)?;
+        let every = query_words
+            .iter()
+            .enumerate()
+            .map(|(at, word)| fuzzy_word(field, word, at == last))
+            .collect();
+        Some(constant(all_of(every), rank))
+    })
+    .collect()
+}
+
 /// The query for typed `text`, or `None` when nothing can match. An empty
 /// query browses every record.
 pub(crate) fn compile(
@@ -240,17 +271,8 @@ pub(crate) fn compile(
         }
     }
     let query_words = words(text);
-    if matching.typos
-        && used.slots.first().copied().unwrap_or(false)
-        && let Some(rank) = ranks(MatchTier::Typo, FieldWeight::TITLE)
-        && let Some(last) = query_words.len().checked_sub(1)
-    {
-        let every = query_words
-            .iter()
-            .enumerate()
-            .map(|(at, word)| fuzzy_word(fields.title_words, word, at == last))
-            .collect();
-        ranked.push(constant(all_of(every), rank));
+    if matching.typos {
+        ranked.extend(typo_queries(fields, used, ranks, &query_words));
     }
     let mut parts = Vec::new();
     if !ranked.is_empty() {

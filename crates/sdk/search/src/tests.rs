@@ -290,6 +290,21 @@ fn loose_matching_finds_spread_words_and_typos_below_substrings() {
 }
 
 #[test]
+fn a_typo_in_a_name_outranks_the_same_typo_in_a_keyword() {
+    let loose = committed(
+        Matching::LOOSE,
+        [
+            Document::new(0)
+                .field("Calendar", FieldWeight::TITLE)
+                .field("termin", FieldWeight::KEYWORD),
+            Document::new(1).field("Terminal", FieldWeight::TITLE),
+        ],
+    );
+    assert_eq!(keys(&loose, "terminl"), [1, 0]);
+    assert!(rank(&loose, "terminl").unwrap() <= FUZZY_RANK);
+}
+
+#[test]
 fn many_records_find_a_late_one() {
     let mut index = SearchIndex::default();
     for key in 0..20_000 {
@@ -341,4 +356,38 @@ fn custom_ranks_and_scores_reorder_hits() {
     });
     let order: Vec<_> = scored.hits.iter().map(|hit| (hit.key, hit.score)).collect();
     assert_eq!(order, [(2, 101), (1, 47), (0, 43)]);
+}
+
+#[test]
+fn keywords_find_a_record_below_its_name_and_by_typo() {
+    let documents = [
+        Document::new(0)
+            .field("Tube", FieldWeight::TITLE)
+            .field("youtube", FieldWeight::KEYWORD)
+            .field("videos", FieldWeight::KEYWORD),
+        Document::new(1).field("Youtube Notes", FieldWeight::TITLE),
+        Document::new(2)
+            .field("Mail", FieldWeight::TITLE)
+            .field("email", FieldWeight::KEYWORD)
+            .field("posteingang", FieldWeight::KEYWORD),
+    ];
+    let loose = committed(Matching::LOOSE, documents);
+    // The keyword is an exact hit, ranked below a title prefix.
+    assert_eq!(keys(&loose, "youtube"), [1, 0]);
+    assert_eq!(
+        rank(&loose, "youtube"),
+        MatchTier::PrefixWord.rank_in(FieldWeight::TITLE)
+    );
+    // Only the keyword names Mail, and a typo in it still finds it.
+    assert_eq!(keys(&loose, "email"), [2]);
+    assert_eq!(keys(&loose, "posteingnag"), [2]);
+    assert_eq!(
+        keys(&loose, "yotube"),
+        [1, 0],
+        "a typo in a name leads one in a keyword"
+    );
+    assert!(
+        rank(&loose, "email").unwrap() > rank(&loose, "emial").unwrap(),
+        "an exact keyword outranks a misspelt one"
+    );
 }
