@@ -83,3 +83,5 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 
 #[cfg(test)]
 mod cpu_profile;
+#[cfg(test)]
+mod scroll_tests;
