@@ -20,6 +20,10 @@ path = "src/lib.rs"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_Com", "Win32_UI_Shell"] }
 
+[target.'cfg(unix)'.dependencies]
+# The effective uid naming logind's runtime directory.
+rustix = { workspace = true, features = ["process"] }
+
 [lints]
 workspace = true
 
