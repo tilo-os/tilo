@@ -6559,7 +6559,8 @@ fn serve_locally(
             "this host does not serve apps",
         ));
     }
-    let Some(reply) = plane.serve(workspace_id, &caller, request.message) else {
+    let Some(reply) = plane.serve_certified(workspace_id, &caller, &peer.cert, request.message)
+    else {
         return Ok(None);
     };
     let outbound = session.outbound.clone();

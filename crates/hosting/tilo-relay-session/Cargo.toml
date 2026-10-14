@@ -13,10 +13,10 @@ license = "MIT OR Apache-2.0"
 # not rebuild them. Keep it free of the daemon's native stack: no launcher,
 # package store, environments, filesystem or tokio "full".
 #
-# getrandom 0.3 is a feature-only edge that selects JS entropy for transitive
-# WASM cryptography.
+# getrandom (0.4 and 0.3) are feature-only edges that select JS entropy for
+# transitive WASM cryptography.
 [package.metadata.cargo-machete]
-ignored = ["getrandom03"]
+ignored = ["getrandom", "getrandom03"]
 
 [dependencies]
 # Handshake, wire messages and live frames shared with the daemon.
@@ -40,7 +40,6 @@ serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
-getrandom.workspace = true
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true
