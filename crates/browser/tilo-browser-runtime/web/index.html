@@ -44,7 +44,7 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
     .tilo-entry-card .tilo-entry-error { margin: 0; color: #ff8a80; }
     /* Arrival: until the desktop draws its first frame, the page is the
        desktop's own ground with Tilo's mark, its three dots (as in the
-       imager's icon and the boot splash), breathing slowly. Below, from the
+       desktop's top bar, `paint_tilo_mark`), breathing slowly. Below, from the
        first second on, one rotating line (a joke or a tip) over a thin bar,
        the one sign of progress, moved by the real steps of getting in
        (arrival.mjs). The step notes in #status stay for screen readers
@@ -54,8 +54,8 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
        and the desktop is under it. Steps come from entry-page.mjs
        (`data-arrival`). */
     #arrival { position: fixed; inset: 0; z-index: 1; display: grid; place-content: center; justify-items: center; background: #121214; transition: opacity 360ms ease-out, visibility 0s linear 360ms; }
-    #arrival > i { display: flex; gap: 6px; animation: tilo-breathe 5s ease-in-out infinite; }
-    #arrival b { width: 10px; height: 10px; border-radius: 50%; }
+    #arrival > i { display: flex; gap: 2px; animation: tilo-breathe 5s ease-in-out infinite; }
+    #arrival b { width: 12px; height: 12px; border-radius: 50%; }
     #arrival b:nth-child(1) { background: #7c5cff; }
     #arrival b:nth-child(2) { background: #5394dd; }
     #arrival b:nth-child(3) { background: #31c6b5; }
