@@ -62,7 +62,9 @@ pub struct WebArgs {
     #[arg(long, default_value = "dev", value_name = "SOURCE")]
     pub tls: TlsArg,
     /// The host name browsers reach this listener by (the certificate's
-    /// name), for `--tls files:…` on an unspecified address.
+    /// name), on an unspecified address: the origin the host announces, and
+    /// with `--tls dev` the development certificate's first name (a node
+    /// reached by its LAN address).
     #[arg(long = "public-host", value_name = "NAME")]
     pub public_host: Option<String>,
     /// Also serve the HTTPS routes as plain HTTP at this loopback address,
@@ -264,7 +266,12 @@ pub async fn start_relay(
 pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfig {
     let tls = match &args.tls {
         TlsArg::Dev => TlsSource::Development {
-            hosts: vec!["localhost".into(), listen.ip().to_string()],
+            hosts: args
+                .public_host
+                .iter()
+                .cloned()
+                .chain(["localhost".into(), listen.ip().to_string()])
+                .collect(),
             store: Some(state_root.join("web-dev-identity")),
         },
         TlsArg::Files { chain, key } => TlsSource::Files {
