@@ -168,6 +168,31 @@ Every peer checks every incoming change before merging it.
 - In an MLS-sealed room the relay sees the envelope (author, action key,
   units) but not the change; replay happens on devices, which hold the keys.
 
+### 5.3 Reading
+
+Read is a kind like any other, so a member can be denied Read on one app or
+one record of a room they read: "Finance: Deny Read; Finance › summary: Allow
+Read" hides every finance record but the summary. Every read decision asks the
+same function: the room peer's record read check
+(`StatePeer::check_document_read`) and the joined room's document reads
+through it. A device whose person is denied any record is refused the room's
+whole legacy delivery rather than given a filtered one, because an automerge
+change graph cannot be served in part ([rooms.md](rooms.md)).
+
+What carries a read decision to the bytes is the record's channel key, and
+channel stewards admit devices per room: a device whose person may read the
+room node receives the key of every record channel in it
+(`ChannelDirectory::allowed_devices`). A Deny below the room therefore binds
+every honest device and every door, but it is not yet a confidentiality
+boundary against a member's own modified client, which holds the key of the
+record it was denied. Until stewards admit per record, the room is that
+boundary: to keep a record from someone, keep it in a room they are not in
+([rooms.md](rooms.md), "Rooms hold references, not copies").
+
+The sandbox's capabilities ([security.md](security.md)) keep the opposite
+rule: there `Read` is the floor, and a restriction makes a path, device, host
+or record read-only without hiding it.
+
 ## 6. What an app does
 
 Nothing. An app does not declare permissions, roles or verbs. It publishes its
