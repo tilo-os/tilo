@@ -456,6 +456,28 @@ def run_search(ctx: RunContext) -> list[record.Record]:
 RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "shell", "--bin", "shell",
                  "--features", "dev-overrides")
 
+
+def run_browser(ctx: RunContext) -> list[record.Record]:
+    report = ctx.dir / "browser.json"
+    call(["node", "scripts/perf/browser_qualification.mjs", ctx.bins["browser-bundle"], "--out", report,
+          "--renderer", ctx.env["renderer"], "--expect-revision", ctx.env["commit"]],
+         ctx.dir / "bench.log", ctx.repo)
+    return adapters.browser_qualification(json.loads(report.read_text(encoding="utf-8")), ctx.env,
+                                          require_clean=False)
+
+
+# The release desktop bundle as web-entry.yml builds it: the shipped profile,
+# not the A/B job's thin-LTO release environment, which the wasm profiles
+# would inherit. build.sh records the tree dirty when `git status` lists
+# anything; ab.py refuses tracked changes, and the untracked A/B output in
+# the checkout is not the source, so status leaves untracked files out.
+BROWSER_BUNDLE = "target/perf-browser-bundle"
+BROWSER_BUILD = ("bash", "-c",
+                 f'rm -rf "$PWD/{BROWSER_BUNDLE}" && env -u CARGO_PROFILE_RELEASE_LTO '
+                 "-u CARGO_PROFILE_RELEASE_CODEGEN_UNITS GIT_CONFIG_COUNT=1 "
+                 "GIT_CONFIG_KEY_0=status.showUntrackedFiles GIT_CONFIG_VALUE_0=no "
+                 f'crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/{BROWSER_BUNDLE}" --bundle desktop')
+
 # The groups of perf-scheduled.yml that measure a build of the repository.
 # `footprint` measures published artifacts, so it has no A/B.
 GROUPS: dict[str, Group] = {group.name: group for group in (
@@ -490,6 +512,8 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
     Group("search", "dev", "none", (),
           {}, {"shell-lib": (("cargo", "test", "--locked", "-p", "shell", "--lib", "--no-run"), "shell")},
           {}, run_search),
+    Group("browser", "release", "swiftshader", (BROWSER_BUILD,),
+          {"browser-bundle": BROWSER_BUNDLE}, {}, {}, run_browser),
 )}
 
 
@@ -539,7 +563,11 @@ def build_side(groups: list[Group], side: str, commit: str, repo: Path, out: Pat
             shutil.copy2(executable, directory / name)
             cwd[name] = str(package)
         for name, path in group.binaries.items():
-            shutil.copy2(repo / path, directory / name)
+            # A directory artifact (the browser bundle) is kept whole.
+            if (repo / path).is_dir():
+                shutil.copytree(repo / path, directory / name)
+            else:
+                shutil.copy2(repo / path, directory / name)
         for name, (source, command, path) in group.optional.items():
             if not (repo / source).is_file():
                 print(f"== {side} {commit[:10]} has no {source}; {name} is not built", flush=True)
