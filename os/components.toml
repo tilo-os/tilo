@@ -415,6 +415,8 @@ name = "relay"
 kind = "userspace"
 scope = "vm"
 packages = ["tilo-relay"]
+# As the image builds it: the relay serves browsers (`run --web`, a node).
+features = ["tilo-relay/web"]
 bins = ["tilo-relay", "tilo-relay-admin", "tilo-enroll", "tilo-home-peer-control"]
 units = ["tilo-relay.service"]
 layer = "desktop-binaries"
@@ -423,6 +425,12 @@ files = [
   { from = "tilo-relay-admin", to = "/usr/bin/tilo-relay-admin", mode = "0755" },
   { from = "tilo-enroll", to = "/usr/bin/tilo-enroll", mode = "0755" },
   { from = "tilo-home-peer-control", to = "/usr/libexec/tilo-home-peer-control", mode = "0755" },
+  # A node (docs/node-machine.md).
+  { from = "@manifest/usr/lib/tilo/node-relay.toml", to = "/usr/lib/tilo/node-relay.toml", mode = "0644" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-relay@.service", to = "/usr/lib/systemd/system/tilo-node-relay@.service", mode = "0644" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-session-key@.service", to = "/usr/lib/systemd/system/tilo-node-session-key@.service", mode = "0644" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.service", to = "/usr/lib/systemd/system/tilo-node-session@.service", mode = "0644" },
+  { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.path", to = "/usr/lib/systemd/system/tilo-node-session@.path", mode = "0644" },
 ]
 
 [[component]]
