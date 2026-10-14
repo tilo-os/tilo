@@ -553,8 +553,9 @@ use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// High-16-bit peer salt for every id `next_id` mints. Default `0`
-/// keeps tests on `0x0001, 0x0002, …`; the hosted entry point overwrites
-/// it at startup with a hash of the local Iroh key. `Relaxed`: written
+/// keeps tests on `0x0001, 0x0002, …`; session bootstrap
+/// (`compositor::session_bootstrap::load_session_tree`) overwrites it at
+/// startup with the salt stored beside the state file. `Relaxed`: written
 /// once at boot, nothing piggy-backs on visibility.
 pub(crate) static NEXT_ID_PEER_SALT: AtomicU16 = AtomicU16::new(0);
 
