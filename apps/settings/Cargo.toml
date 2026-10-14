@@ -55,6 +55,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
 os-actions = { path = "../../crates/system/os-actions" }
+tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
 # Public identity summaries + active selector. The secret share never enters
 # Settings state; switching writes only the non-secret active id.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
