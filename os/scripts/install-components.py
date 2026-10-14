@@ -409,9 +409,30 @@ def native_cosign(manifest_dir: Path, copied: Path | None = None) -> Path:
     return candidate
 
 
+def source_shell_fonts(entry: FileEntry, build_root: Path | None) -> bool:
+    return (build_root is None and entry.component == "shell"
+            and entry.source == "/usr/share/fonts/tilo/")
+
+
+def font_catalog_command(*args: str) -> str:
+    """Use the source's canonical verifier, including its offline artifact cache."""
+    tool = Path(__file__).resolve().parents[2] / "tools/font-catalog.py"
+    try:
+        result = subprocess.run([sys.executable, str(tool), *args],
+                                capture_output=True, text=True, timeout=600, check=True)
+    except subprocess.CalledProcessError as error:
+        raise ManifestError(f"mandatory shell font catalog: {error.stderr.strip()}") from error
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ManifestError(f"mandatory shell font catalog: {error}") from error
+    return result.stdout.strip()
+
+
 def resolve_source(entry: FileEntry, from_dirs: list[Path], build_root: Path | None) -> Path | None:
     assert entry.source is not None
     relative = entry.source.rstrip("/")
+    if source_shell_fonts(entry, build_root):
+        fonts = Path(__file__).resolve().parents[2] / "crates/sdk/ui-core/assets/fonts"
+        return Path(font_catalog_command("root", str(fonts), "--scope", "os"))
     if relative == "@asset/cosign-v2.5.2":
         assert entry.manifest_dir is not None
         return native_cosign(entry.manifest_dir)
@@ -489,7 +510,12 @@ def install(entries: list[FileEntry], from_dirs: list[Path], build_root: Path | 
         if entry.tree:
             if not source.is_dir():
                 raise ManifestError(f"component {entry.component!r}: {source} is not a directory")
-            shutil.copytree(source, target, symlinks=True, dirs_exist_ok=True)
+            if source_shell_fonts(entry, build_root):
+                # Stage only admitted faces and notices, and verify copied bytes.
+                # A shell layer must never depend on the guest's older catalog.
+                font_catalog_command("stage", str(source), str(target), "--scope", "os")
+            else:
+                shutil.copytree(source, target, symlinks=True, dirs_exist_ok=True)
         else:
             if source.is_dir():
                 raise ManifestError(f"component {entry.component!r}: {source} is a directory; mark the entry `tree = true`")
