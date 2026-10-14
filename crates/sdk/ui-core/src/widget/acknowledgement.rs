@@ -211,7 +211,7 @@ impl Acknowledgement {
 
 /// Where acknowledgements are raised from: cheap to clone, handed to
 /// whatever confirms an action (a host's page, a search action).
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Acknowledger {
     current: Rc<RefCell<Option<Acknowledgement>>>,
     raised: Rc<Cell<u64>>,
