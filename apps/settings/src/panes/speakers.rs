@@ -41,8 +41,8 @@ use crate::speaker_setup::{
     member_status_text, playback_text, role_answer, role_text,
 };
 use crate::widgets::{
-    Item, SettingsSection, StatusTone, block, card, cards, note, row, rows, semantic_status_pill,
-    setting_row, setting_row_described, slider_row, value_row,
+    Item, SettingsSection, StatusTone, block, card, cards, item_row, note, row, rows,
+    semantic_status_pill, setting_row, setting_row_described, slider_row, value_row,
 };
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -915,7 +915,7 @@ impl SpeakersModel {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let mut actions = ui::widget::Row::new().push(semantic_status_pill(
+        let mut status = vec![semantic_status_pill(
             &t_args(
                 "speakers-ready-count",
                 &[
@@ -928,9 +928,9 @@ impl SpeakersModel {
             } else {
                 StatusTone::Warning
             },
-        ));
+        )];
         if let Some(playback) = &group.playback {
-            actions = actions.push(semantic_status_pill(
+            status.push(semantic_status_pill(
                 &playback_text(playback),
                 match playback {
                     ui::collaboration::SpeakerPlaybackInfo::Playing => StatusTone::Success,
@@ -942,29 +942,29 @@ impl SpeakersModel {
                 },
             ));
         }
+        let mut actions = Vec::new();
         if group.led_here {
-            actions = actions
-                .push(Box::new(self.cx.bind_invocation(
+            actions.push(self.cx.bind_invocation(
+                Button::new(
+                    &format!("speakers.group.{}.calibrate", group.id),
+                    &t("speakers-calibrate-button"),
+                ),
+                SpeakerFlow::OpenCalibration {
+                    group: group.id.clone(),
+                },
+            ));
+            actions.push(
+                self.cx.bind_invocation(
                     Button::new(
-                        &format!("speakers.group.{}.calibrate", group.id),
-                        &t("speakers-calibrate-button"),
-                    ),
-                    SpeakerFlow::OpenCalibration {
+                        &format!("speakers.group.{}.delete", group.id),
+                        &t("speakers-delete"),
+                    )
+                    .role(ui::widget::ButtonRole::Destructive),
+                    SpeakerEffect::DeleteSpeakerSet {
                         group: group.id.clone(),
                     },
-                )))
-                .push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            &format!("speakers.group.{}.delete", group.id),
-                            &t("speakers-delete"),
-                        )
-                        .role(ui::widget::ButtonRole::Destructive),
-                        SpeakerEffect::DeleteSpeakerSet {
-                            group: group.id.clone(),
-                        },
-                    ),
-                ));
+                ),
+            );
         }
         let mut description = if group.led_here {
             summary
@@ -988,7 +988,11 @@ impl SpeakersModel {
                 ],
             );
         }
-        setting_row_described(&group.name, &description, Box::new(actions))
+        // A saved set is an entry of a list, laid out like every other
+        // (printers, users): its marks beside the name, the members below,
+        // its actions under the text, so nothing floats beside a wrapped
+        // description in a narrow window.
+        item_row(&group.name, status, &[description], actions)
     }
 
     fn build_overview(&self) -> Vec<SettingsSection> {
@@ -1005,15 +1009,11 @@ impl SpeakersModel {
         let mut body = group_rows;
         body.extend(self.message_rows());
         body.push(row(Box::new(
-            ui::widget::Row::new()
-                .push(Box::new(ui::widget::Spacer::new()))
-                .push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new("speakers.begin", &t("speakers-begin"))
-                            .role(ui::widget::ButtonRole::Primary),
-                        SpeakerFlow::BeginSpeakerSetup,
-                    ),
-                )),
+            self.cx.bind_invocation(
+                Button::new("speakers.begin", &t("speakers-begin"))
+                    .role(ui::widget::ButtonRole::Primary),
+                SpeakerFlow::BeginSpeakerSetup,
+            ),
         )));
         sections.push(card(&t("speakers-overview-title"), rows(body)));
         sections
