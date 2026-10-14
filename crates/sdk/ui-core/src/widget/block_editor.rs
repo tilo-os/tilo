@@ -662,6 +662,8 @@ pub struct BlockEditor {
     /// The span last formatted from typed markdown, which an immediate
     /// Backspace turns back into the markdown.
     inline_conversion: Option<inline_markdown::InlineConversion>,
+    /// What the last keystroke left to do once it is written.
+    typing_to_settle: Option<inline_markdown::TypingToSettle>,
     last_mouse_pos: Point,
     /// `(block_idx, byte)` start of an in-flight cross-block selection
     /// drag. While set, `CursorMoved` paints selection bands across every
@@ -895,6 +897,7 @@ impl BlockEditor {
             edit_scope: EditScope::Anywhere,
             commit_pending: false,
             inline_conversion: None,
+            typing_to_settle: None,
             last_mouse_pos: Point::ZERO,
             cross_block_drag_start: None,
             cross_block_drag_touched: None,
@@ -8445,6 +8448,15 @@ impl BlockEditor {
 impl Widget for BlockEditor {
     crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
+    /// The frame after a keystroke makes what it left to do (formatting the
+    /// markdown it closed, the correction its word boundary asked for).
+    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, path: &ObjId) {
+        self.settle_typing();
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = crate::doc::document_ref(state, path);
         self.refresh_image_attachments();
@@ -11320,6 +11332,9 @@ impl BlockEditor {
         reason = "the focused index is validated before it is used"
     )]
     fn route_event_to_focused_block(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        // Input that arrives before the host settled the last keystroke
+        // finds its formatting or correction made.
+        self.settle_typing();
         if self.revert_inline_conversion(event, ctx) {
             return;
         }
@@ -11426,9 +11441,7 @@ impl BlockEditor {
                 }
             }
         }
-        if let Some(origin) = typed_markdown {
-            self.format_typed_markdown(&origin);
-        }
+        self.note_typing_to_settle(focused_idx, typed_markdown);
     }
 }
 

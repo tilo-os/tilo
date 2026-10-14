@@ -915,6 +915,10 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     /// An edit made outside an input event (a programmatic change of the
     /// editor, a find-and-replace asked for) is written here.
     fn settle(&mut self, edits: &mut Edits<'_>, path: &ui::automerge::ObjId) {
+        // What the last keystroke left to do (formatting the markdown it
+        // closed, correcting the word it ended) is written now, after the
+        // keystroke itself: an undo step of its own.
+        self.editor.settle_typing();
         self.commit(edits);
         self.drain_find_replace(edits);
         self.editor.settle(edits, path);
@@ -944,6 +948,11 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             self.move_selected_blocks(&mut ctx.edits(), up);
             *ctx.handled = true;
             return;
+        }
+        // Input that arrives before the frame settled the last keystroke
+        // writes what that keystroke left to do first.
+        if self.editor.settle_typing() {
+            self.commit(&mut ctx.edits());
         }
         self.editor.handle_event(event, ctx);
         let mut edits = ctx.edits();

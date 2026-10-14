@@ -7,13 +7,19 @@
 //! writes two deletions and a mark: the content keeps its identity in the
 //! document. A Backspace right after the conversion puts the markdown back
 //! as typed, the way it reverts an autocorrection.
+//!
+//! The conversion, like an autocorrection, is made after the keystroke that
+//! asked for it: the keystroke is written as typed, and the editor makes
+//! the change when the host settles the frame ([`BlockEditor::settle_typing`]),
+//! so it is an undo step of its own. Undo right after gives back exactly
+//! what was typed.
 
 use std::ops::Range;
 
 use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use super::{BlockEditor, BlockKind};
+use super::{BlockEditor, BlockKind, EditScope};
 use crate::widget::EventCtx;
 use crate::widget::markdown_input::{self, InlineKind};
 use crate::widget::marks::{self, Mark, MarkSpan};
@@ -39,12 +45,19 @@ pub(super) struct InlineConversion {
 
 /// The focused block before an event that may type a closing delimiter.
 pub(super) struct TypedMarkdownOrigin {
-    index: usize,
     block_id: String,
-    text: String,
     /// What the event types.
     typed: String,
     in_code: bool,
+}
+
+/// What a keystroke left to do once it is written: format the markdown it
+/// closed, make the correction its word boundary asked for.
+pub(super) struct TypingToSettle {
+    index: usize,
+    block_id: String,
+    /// The closing delimiter typed, and whether it was typed in code.
+    markdown: Option<(String, bool)>,
 }
 
 fn mark_for(kind: InlineKind) -> Mark {
@@ -94,57 +107,100 @@ impl BlockEditor {
             return None;
         }
         Some(TypedMarkdownOrigin {
-            index,
             block_id: block.id.clone(),
-            text: block.text().to_owned(),
             typed: typed.to_owned(),
             in_code: block.line.caret_in_code(),
         })
     }
 
-    /// Format the span the event that started at `origin` completed: the
-    /// delimiters leave the text and the content is marked.
-    pub(super) fn format_typed_markdown(&mut self, origin: &TypedMarkdownOrigin) {
-        if origin.in_code {
-            return;
-        }
-        let Some(block) = self
-            .blocks
-            .get_mut(origin.index)
-            .filter(|block| block.id == origin.block_id)
-        else {
+    /// Remember what the keystroke just routed to block `index` left to
+    /// do; [`Self::settle_typing`] does it once the keystroke is written.
+    pub(super) fn note_typing_to_settle(
+        &mut self,
+        index: usize,
+        markdown: Option<TypedMarkdownOrigin>,
+    ) {
+        let Some(block) = self.blocks.get(index) else {
             return;
         };
+        let markdown = markdown
+            .filter(|origin| origin.block_id == block.id)
+            .map(|origin| (origin.typed, origin.in_code));
+        if markdown.is_some() || block.line.has_pending_autocorrection() {
+            self.typing_to_settle = Some(TypingToSettle {
+                index,
+                block_id: block.id.clone(),
+                markdown,
+            });
+        }
+    }
+
+    /// Make the change the last keystroke asked for once it is written: the
+    /// correction its word boundary made, the formatting of the markdown it
+    /// closed. The host calls this when it settles the frame after the
+    /// keystroke (and before the next input), so the change is an undo step
+    /// of its own. Whether anything changed.
+    pub fn settle_typing(&mut self) -> bool {
+        let Some(pending) = self.typing_to_settle.take() else {
+            return false;
+        };
+        let Some(block) = self
+            .blocks
+            .get_mut(pending.index)
+            .filter(|block| block.id == pending.block_id)
+        else {
+            return false;
+        };
+        let mut changed = block.line.apply_pending_autocorrection();
+        if let Some((typed, in_code)) = &pending.markdown {
+            changed |= self.format_typed_markdown(pending.index, typed, *in_code);
+        }
+        if changed {
+            self.edit_scope.widen(EditScope::Blocks(
+                pending.index.saturating_sub(1)..pending.index.saturating_add(2),
+            ));
+            self.edit_pending = true;
+            self.dirty = true;
+        }
+        changed
+    }
+
+    /// Format the span the delimiter `typed` right before the caret of
+    /// block `index` completed: the delimiters leave the text and the
+    /// content is marked.
+    fn format_typed_markdown(&mut self, index: usize, typed: &str, in_code: bool) -> bool {
+        if in_code {
+            return false;
+        }
+        let Some(block) = self.blocks.get_mut(index) else {
+            return false;
+        };
+        let block_id = block.id.clone();
         let line = &mut block.line;
         let now = line.value();
         let caret = line.cursor_pos();
-        // The event typed the delimiter right before the caret (the word
-        // before it may also have been autocorrected).
-        let Some(head) = now
-            .get(..caret)
-            .filter(|head| now != origin.text && head.ends_with(origin.typed.as_str()))
-        else {
-            return;
+        let Some(head) = now.get(..caret).filter(|head| head.ends_with(typed)) else {
+            return false;
         };
         if line.selection_range().is_some() {
-            return;
+            return false;
         }
         let Some(found) = markdown_input::detect_inline(head) else {
-            return;
+            return false;
         };
         // A delimiter inside inline code is code.
         if line.marks().iter().any(|span| {
             matches!(span.mark, Mark::Code)
                 && (overlaps(&span.range, &found.open) || overlaps(&span.range, &found.close))
         }) {
-            return;
+            return false;
         }
         let (Some(head), Some(content), Some(tail)) = (
             now.get(..found.open.start),
             now.get(found.content.clone()),
             now.get(found.close.end..),
         ) else {
-            return;
+            return false;
         };
         let typed = LineState {
             text: now.to_owned(),
@@ -172,12 +228,11 @@ impl BlockEditor {
         // plain, though the document would carry the mark on over it.
         line.close_marks_at(formatted.caret, vec![mark_for(found.kind)]);
         self.inline_conversion = Some(InlineConversion {
-            block_id: origin.block_id.clone(),
+            block_id,
             typed,
             formatted,
         });
-        self.edit_pending = true;
-        self.dirty = true;
+        true
     }
 
     /// Backspace right after a conversion puts the markdown back as typed.
@@ -273,6 +328,8 @@ mod tests {
         Dispatch::new()
             .doc(doc)
             .send(editor, &crate::synthetic_input::keyboard_input(event));
+        // The frame after the keystroke, as a host runs it.
+        editor.settle(&mut crate::widget::Edits::lend(doc), &ROOT);
         editor.sync(doc, &ROOT);
     }
 
