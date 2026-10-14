@@ -17,6 +17,7 @@
 //! protocol, and a page over HTTPS, where someone the room lets invite then
 //! admits it.
 
+mod actions;
 mod admin;
 mod admissions;
 #[cfg(feature = "agents")]
@@ -50,6 +51,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
+pub(crate) use actions::{GovernedPlane, HostRoomActions};
 pub use admin::RoomAdminProtocol;
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{
