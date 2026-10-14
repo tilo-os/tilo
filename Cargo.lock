@@ -10767,6 +10767,7 @@ dependencies = [
  "tilo-history",
  "tilo-input-context",
  "tilo-keyboard-map",
+ "tilo-spellcheck",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",

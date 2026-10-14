@@ -398,4 +398,39 @@ mod tests {
             ("i".to_owned(), vec![MarkSpan::new(0..1, Mark::Italic)])
         );
     }
+
+    #[test]
+    fn contractions_are_corrected_at_the_word_boundary_except_in_code() {
+        let (editor, _) = typed_into(Block::paragraph(""), "it doesnt work");
+        assert_eq!(shown(&editor).0, "it doesn't work");
+
+        let (editor, _) = typed_into(Block::paragraph(""), "I cant ");
+        assert_eq!(shown(&editor).0, "I cant ", "a word of its own stays");
+
+        let (editor, _) = typed_into(Block::code_block(None, ""), "it doesnt work");
+        assert_eq!(
+            shown(&editor).0,
+            "it doesnt work",
+            "code is never corrected"
+        );
+
+        let (editor, _) = typed_into(Block::paragraph(""), "`doesnt` ok");
+        assert_eq!(
+            shown(&editor),
+            (
+                "doesnt ok".to_owned(),
+                vec![MarkSpan::new(0..6, Mark::Code)]
+            ),
+            "inline code is never corrected"
+        );
+
+        let (mut editor, mut doc) = typed_into(Block::paragraph(""), "it doesnt ");
+        assert_eq!(shown(&editor).0, "it doesn't ");
+        press(&mut editor, &mut doc, Key::Named(NamedKey::Backspace));
+        assert_eq!(
+            shown(&editor).0,
+            "it doesnt",
+            "Backspace right after a correction reverts it"
+        );
+    }
 }

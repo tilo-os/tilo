@@ -895,6 +895,12 @@ impl TextInput {
         self
     }
 
+    /// [`Self::with_autocorrect`] on a live field; `None` follows the
+    /// user-wide setting again.
+    pub fn set_autocorrect(&mut self, on: Option<bool>) {
+        self.autocorrect = on;
+    }
+
     pub fn autocorrect_enabled(&self) -> bool {
         self.field_allows_spelling()
             && self
