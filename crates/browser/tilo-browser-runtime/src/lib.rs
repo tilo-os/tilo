@@ -49,6 +49,8 @@ mod frame_metrics;
 #[cfg(target_arch = "wasm32")]
 mod history;
 #[cfg(target_arch = "wasm32")]
+pub use history::{LoadActivity, defer_activity_pane};
+#[cfg(target_arch = "wasm32")]
 mod host_services;
 #[cfg(target_arch = "wasm32")]
 mod link;
