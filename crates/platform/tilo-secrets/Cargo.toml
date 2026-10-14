@@ -26,6 +26,7 @@ hex.workspace = true
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 sha2.workspace = true
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 # The freedesktop Secret Service, spoken directly: no `secret-tool` process.
 [target.'cfg(target_os = "linux")'.dependencies]

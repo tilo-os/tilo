@@ -758,102 +758,42 @@ fn render_quick_settings_open(
     (collect_solid_colors(&scene).len(), chrome)
 }
 
+/// The concept tinted the system monitor's labels green, blue and amber.
+/// Those are status hues (HIG 9.4: status only, never decoration) and made a
+/// resting readout the most colourful thing in the bar, so the labels and
+/// the sparkline are secondary ink: the drawn bar paints the ink and none of
+/// the status hues.
 #[test]
-fn topbar_system_monitor_labels_and_sparkline_take_their_theme_colours() {
-    // Phase `topbar_system_monitor_cpu_label_takes_the_themes_success_colour`.
-    // Audit `concept-coverage.md:23,163-166` (`TopBarWidgets.tsx:120-124`):
-    // concept's CPU label is emerald-400 (#4ade80), ours indigo `accent[5]`.
-    // Text glyphs emit colour-paint commands per run, so this is detectable.
-    {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let mut chrome = TopBarChrome::from_tree(&tree.desktop);
-        chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
+fn topbar_system_monitor_labels_and_sparkline_are_ink_not_status_colour() {
+    let tree = WorkspaceTree::bootstrap_demo();
+    let mut chrome = TopBarChrome::from_tree(&tree.desktop);
+    chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
 
-        let theme = Theme::dark();
-        lay_out(&mut chrome, 1280.0, 48.0);
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    let theme = Theme::dark();
+    lay_out(&mut chrome, 1280.0, 48.0);
+    let mut tr = TextRenderer::new();
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-        let fills = collect_solid_colors(&scene);
-        let expected = theme.tokens.colors.semantic.success.to_rgba8();
+    let fills = collect_solid_colors(&scene);
+    let rgb = |c: vello::peniko::Color| {
+        let c = c.to_rgba8();
+        (c.r, c.g, c.b)
+    };
+    let colors = &theme.tokens.colors;
+    assert!(
+        contains_color_close(&fills, rgb(colors.text_dim), 4),
+        "the metric labels paint in secondary ink; observed fills: {fills:?}"
+    );
+    for (name, hue) in [
+        ("success", colors.semantic.success),
+        ("info", colors.semantic.info),
+        ("warning", colors.semantic.warning),
+    ] {
         assert!(
-            contains_color_close(&fills, (expected.r, expected.g, expected.b), 4),
-            "TopBar SystemMonitor CPU label must render in the theme's \
-             `semantic.success`, keeping the per-metric colour cue. Expected \
-             ({}, {}, {}); observed fills: {fills:?}.",
-            expected.r,
-            expected.g,
-            expected.b
-        );
-    }
-
-    // Phase `topbar_system_monitor_ram_label_takes_the_themes_info_colour`.
-    // Audit row: `concept-coverage.md:23,163-166` — same line as #10 but
-    // asserts the RAM label colour. blue-400 = #60a5fa = (96, 165, 250).
-    {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let mut chrome = TopBarChrome::from_tree(&tree.desktop);
-        chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
-
-        let theme = Theme::dark();
-        lay_out(&mut chrome, 1280.0, 48.0);
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        let fills = collect_solid_colors(&scene);
-        let expected = theme.tokens.colors.semantic.info.to_rgba8();
-        assert!(
-            contains_color_close(&fills, (expected.r, expected.g, expected.b), 4),
-            "TopBar SystemMonitor RAM label must render in the theme's \
-             `semantic.info`, keeping the per-metric colour cue. Expected \
-             ({}, {}, {}); observed fills: {fills:?}.",
-            expected.r,
-            expected.g,
-            expected.b
-        );
-    }
-
-    // Phase `topbar_system_monitor_sparkline_takes_the_cpu_metric_colour`.
-    // Audit `concept-coverage.md:23,160-162` (`TopBarWidgets.tsx:120-124`):
-    // concept's sparkline bars are emerald-500 at 30% alpha, ours indigo
-    // `accent_primary`. With #10/#11 this pins the per-metric colour cue.
-    {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let mut chrome = TopBarChrome::from_tree(&tree.desktop);
-        chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
-
-        let theme = Theme::dark();
-        lay_out(&mut chrome, 1280.0, 48.0);
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        let fills = collect_solid_colors(&scene);
-        // Accept nominal or alpha-premultiplied emerald — both are evidence the
-        // bars took the CPU colour rather than the accent.
-        let cpu = theme.tokens.colors.semantic.success.to_rgba8();
-        let a = 0.30_f32;
-        let premul = (
-            washed_channel(cpu.r, a),
-            washed_channel(cpu.g, a),
-            washed_channel(cpu.b, a),
-        );
-
-        assert!(
-            contains_color_close(&fills, (cpu.r, cpu.g, cpu.b), 4)
-                || contains_color_close(&fills, premul, 4),
-            "TopBar SystemMonitor sparkline bars must render in the CPU \
-             metric's colour (the theme's `semantic.success`), nominal \
-             ({}, {}, {}) or premultiplied {premul:?}. Observed fills: \
-             {fills:?}.",
-            cpu.r,
-            cpu.g,
-            cpu.b
+            !contains_color_close(&fills, rgb(hue), 4),
+            "the system monitor paints the status hue `{name}`; observed fills: {fills:?}"
         );
     }
 }

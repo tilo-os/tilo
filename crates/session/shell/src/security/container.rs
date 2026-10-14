@@ -313,7 +313,7 @@ mod tests {
             assert_eq!(mode(&path), 0o600);
             let metadata = std::fs::symlink_metadata(&path).unwrap();
             assert!(metadata.is_file());
-            assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+            assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
         }
         // Phase `a_symlink_planted_at_the_log_path_is_not_followed`.
