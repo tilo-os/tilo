@@ -23,7 +23,11 @@ COPY assets/ /srv/tilo-room-assets/
 # Bot programs a room installs by path (TILO_ROOMS_BOTS).
 COPY bots/ /usr/local/share/tilo/bots/
 USER 10001
-ENV TILO_ROOMS_ASSETS=/srv/tilo-room-assets \
+# TILO_SOURCE_REVISION repeats the revision label for the running process:
+# /metrics (tilo_rooms_build_info) and GET /mode report it, so the pod's
+# build can be compared with the digest the deployment pins.
+ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
+    TILO_ROOMS_ASSETS=/srv/tilo-room-assets \
     TILO_ROOMS_RELAY_BIN=/usr/local/bin/tilo-relay \
     TILO_ROOMS_STATE=/run/tilo-rooms \
     TILO_SECRETS_DIR=/run/tilo-rooms/secrets
