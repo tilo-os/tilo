@@ -5090,6 +5090,21 @@ pub(crate) fn has_unclaimed_launch(app_id: &str) -> bool {
         .any(|note| note.matches(app_id) && note.claimed_by.is_none())
 }
 
+/// Whether any launch bound to a saved tab still waits for its window.
+/// Session restore starts the next saved window only after this clears:
+/// cold starts that run together compete for CPU, disk and memory, so
+/// every one of them comes up late. The same failure and expiry paths as
+/// [`has_unclaimed_launch`] retire a note that never maps.
+pub(crate) fn has_unclaimed_restore_launch() -> bool {
+    lock(&LaunchSession::current().pending).iter().any(|note| {
+        note.claimed_by.is_none()
+            && matches!(
+                note.placement,
+                crate::shell::tab_binding::Placement::IntoTab(_)
+            )
+    })
+}
+
 /// Saved tabs with a live placement in this session. A mapped note stays
 /// valid through the existing claim grace; no deadline or placement is changed.
 pub(crate) fn pending_restore_tabs() -> std::collections::HashSet<u64> {
