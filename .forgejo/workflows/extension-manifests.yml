@@ -263,7 +263,7 @@ jobs:
             public_key=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tilo-extension-public-key.XXXXXX")
             trap 'rm -f -- "$public_key"' EXIT
             if ! cosign public-key --key "$COSIGN_KEY_REF" > "$public_key"; then
-              echo '::error::could not retrieve the KMS extension-manifest public key; see the Cosign identity/KMS error above'
+              echo '::error::could not retrieve the KMS extension-manifest public key; see the Cosign identity/KMS error above (STS InvalidIdentityToken: no IAM OIDC provider accepts the issuer and audience printed above; AccessDenied: the signer role trust policy rejects the subject)'
               exit 1
             fi
             cmp --silent keys/extensions.pub "$public_key" \
