@@ -6532,6 +6532,12 @@ fn serve_locally(
         }
         None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
     };
+    if !plane.answers(&caller, &request.message) {
+        return Err((
+            UnavailableReason::UnsupportedPeer,
+            "this host does not serve apps",
+        ));
+    }
     let Some(reply) = plane.serve(workspace_id, &caller, request.message) else {
         return Ok(None);
     };
