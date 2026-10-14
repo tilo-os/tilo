@@ -1466,11 +1466,7 @@ mod tests {
             _theme: &Theme,
             nodes: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let style = taffy::Style {
-                size: taffy::Size::from_percent(1.0, 1.0),
-                ..taffy::Style::default()
-            };
-            taffy.widget_leaf(style, nodes, self)
+            taffy.fill_leaf(nodes, self)
         }
         crate::rect_geometry!();
         fn draw(

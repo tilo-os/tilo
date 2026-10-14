@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-arrival="load">
 <head>
   <meta charset="utf-8">
   <meta name="referrer" content="no-referrer">
@@ -8,14 +8,14 @@
 <script>
 (()=>{
 // The entry pages' first script, inlined verbatim into each so it runs
-// before any module loads: a link's secrets (invite, ticket, token, pair) leave
-// the address bar here, so copying the URL, a crash report or a later
-// share-link never sees them. They stay in page memory for admission to
-// read once. This only splits off the four known keys; the Rust parser
+// before any module loads: a link's secrets (invite, ticket, token, pair,
+// install) leave the address bar here, so copying the URL, a crash report
+// or a later share-link never sees them. They stay in page memory for admission to
+// read once. This only splits off the five known keys; the Rust parser
 // reads everything else. Secrets that are not the trailing parameters in
 // grammar order are still removed, and flagged, so admission refuses the
 // link instead of acting on one Tilo did not write.
-var hash=location.hash,mark=hash.indexOf('?'),found={},order=['invite','ticket','token','pair'],last=-1,bad=false;
+var hash=location.hash,mark=hash.indexOf('?'),found={},order=['invite','ticket','token','pair','install'],last=-1,bad=false;
 if(mark>=0){
  var keep=[],parts=hash.slice(mark+1).split('&');
  for(var i=0;i<parts.length;i++){
@@ -42,11 +42,48 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
     .tilo-entry-card label { display: grid; gap: 6px; }
     .tilo-entry-card input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #3a3d44; background: #14161a; color: inherit; }
     .tilo-entry-card .tilo-entry-error { margin: 0; color: #ff8a80; }
+    /* Arrival: until the desktop draws its first frame, the page is the
+       desktop's own ground with Tilo's three dots, one per stage of getting
+       in: Tilo itself (`load`), the workspace (`join` through a host's door,
+       then `open`), the screen (`draw`: the GPU set up and the first frame).
+       Reached stages are lit, the rest dim; the stage under way sends out a
+       ripple. Below, from the first second on, one rotating line (a joke
+       or a tip) over a thin bar moved by the real steps (arrival.mjs). The
+       step notes in #status stay for screen readers only; anything else
+       said there (a pairing code, a failure) takes the line's place, as
+       does a note when the network is slow. Then the screen fades and the
+       desktop is under it. Steps come from entry-page.mjs (`data-arrival`). */
+    #arrival { position: fixed; inset: 0; z-index: 1; display: grid; place-content: center; justify-items: center; background: #121214; transition: opacity 360ms ease-out, visibility 0s linear 360ms; }
+    #arrival > i { display: flex; gap: 12px; }
+    #arrival b { position: relative; width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .22; transition: opacity 240ms ease-out; }
+    #arrival b:nth-child(1) { color: #7c5cff; }
+    #arrival b:nth-child(2) { color: #5394dd; }
+    #arrival b:nth-child(3) { color: #31c6b5; }
+    [data-arrival=load] #arrival b:nth-child(1), [data-arrival=join] #arrival b:nth-child(-n+2), [data-arrival=open] #arrival b:nth-child(-n+2), [data-arrival=draw] #arrival b { opacity: 1; }
+    [data-arrival=load] #arrival b:nth-child(1)::after, [data-arrival=join] #arrival b:nth-child(2)::after, [data-arrival=open] #arrival b:nth-child(2)::after, [data-arrival=draw] #arrival b:nth-child(3)::after { content: ""; position: absolute; inset: 0; border-radius: 50%; box-shadow: 0 0 0 1.5px currentColor; animation: tilo-arrival 1.8s ease-out infinite; }
+    @keyframes tilo-arrival { from { transform: scale(1); opacity: .8; } to { transform: scale(3); opacity: 0; } }
+    [data-arrival=done] #arrival { opacity: 0; visibility: hidden; }
+    #arrival > p, #arrival-note, html:not([data-arrival=done]) #status { position: fixed; z-index: 2; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); width: min(36em, calc(100% - 48px)); margin: 0; text-align: center; line-height: 1.5; color: #c4c4cc; }
+    #arrival > p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity 240ms ease-out; }
+    #arrival > p.shown { opacity: 1; }
+    #arrival-bar { position: fixed; left: 50%; top: calc(50% + 58px); width: 96px; margin-left: -48px; height: 2px; border-radius: 1px; background: rgba(255, 255, 255, .08); overflow: hidden; }
+    #arrival-bar > span { display: block; height: 100%; background: #6c6c76; transform-origin: left; transform: scaleX(var(--progress, 0)); transition: transform 200ms linear; }
+    html:not([data-arrival=done]):not([data-arrival=stopped]):not([data-arrival-status]) #status { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    #bar { overflow: hidden; }
+    [data-arrival=done] #status { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .tilo-entry-card { z-index: 3; }
+    @media (prefers-reduced-motion: reduce) {
+      #arrival { transition: none; }
+      #arrival b::after { animation: none !important; transform: scale(2); opacity: .4; }
+      #arrival > p, #arrival-bar > span { transition: none; }
+    }
   </style>
 </head>
 <body>
   <div id="surface"></div>
-  <div id="bar"><span id="status">Loading…</span><a id="other-mode" hidden>Open in its own tab</a></div>
+  <div id="arrival" aria-hidden="true"><i><b></b><b></b><b></b></i><p id="arrival-line"></p><span id="arrival-bar" hidden><span></span></span></div>
+  <p id="arrival-note" role="status" hidden></p>
+  <div id="bar"><span id="status" role="status">Loading Tilo…</span><a id="other-mode" hidden>Open in its own tab</a></div>
   <script type="module">
     // A Tilo link under this entry: desktop mode. The route is in the
     // fragment and never reaches the server; see docs/architecture/web-routing.md.

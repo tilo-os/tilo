@@ -552,7 +552,8 @@ export function createLiveLayer(peer, runtime, room, {
  *                               vault (`channel-vault.mjs`); defaults to the
  *                               device custody's IndexedDB
  * @param options.displayName    the person's name for history and presence
- * @param options.runtime        the wasm module (`certifyDevice`, `WasmPeer`, live codec)
+ * @param options.runtime        the wasm module (`certifyDevice`, `WasmPeer`, live codec);
+ *                               defaults to the page host's (`desktop`'s)
  * @param options.fetch          defaults to `globalThis.fetch`
  * @param options.liveCarriers   defaults to WebTransport with HTTPS fallback
  * @param options.desktop        `{mountDesktop(target, options)}`; defaults to `host.mjs`
@@ -561,9 +562,8 @@ export function createLiveLayer(peer, runtime, room, {
  * @param options.identity       an unlocked root (`root-identity.mjs`): the
  *                               page certifies its own device with it, no
  *                               approver; `userPublicKey` defaults to its key,
- *                               `profile` to one per identity, `custody` to
- *                               that profile's device key and `runtime` to
- *                               the page host's
+ *                               `profile` to one per identity and `custody` to
+ *                               that profile's device key
  *                               (without one, `custody` defaults to `profile`'s
  *                               device key, certified by an approver)
  * @param options.deviceCertificate  `{cert, hostCert}` JSON this device was
@@ -618,8 +618,9 @@ async function connect({
   if (identity) {
     if (!store) profile ??= identityProfile(identity, origin);
     custody ??= await openDeviceCustody({profile: profile ?? identityProfile(identity, origin), storage: idbStorage()});
-    runtime ??= await pageRuntime(desktop);
   }
+  // A page may start connecting while its runtime still loads.
+  runtime ??= await pageRuntime(desktop);
   if (!origin || !userPublicKey || !custody || !(store || profile) || !runtime) {
     throw new TypeError('origin, userPublicKey, custody, store or profile, and runtime are required');
   }

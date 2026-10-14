@@ -3,7 +3,7 @@
 use std::io;
 use std::path::Path;
 
-use tilo_files::{Kind, blocking};
+use tilo_files::blocking;
 
 fn at(path: &Path) -> io::Result<(tilo_files::Dir, tilo_files::VPath)> {
     tilo_files::file_at(path).map_err(io::Error::other)
@@ -12,12 +12,7 @@ fn at(path: &Path) -> io::Result<(tilo_files::Dir, tilo_files::VPath)> {
 /// A regular file, whole, when it is at most `limit` bytes.
 pub(crate) fn read_bounded(path: &Path, limit: usize) -> Option<Vec<u8>> {
     let (dir, name) = at(path).ok()?;
-    let meta = blocking::metadata(&dir, &name).ok()?;
-    if meta.kind != Kind::File || meta.len > limit as u64 {
-        return None;
-    }
-    let bytes = blocking::read(&dir, &name).ok()?;
-    (bytes.len() <= limit).then_some(bytes)
+    blocking::read_bounded(&dir, &name, limit).ok()?
 }
 
 /// Replace (or create) the file atomically, creating its folders.

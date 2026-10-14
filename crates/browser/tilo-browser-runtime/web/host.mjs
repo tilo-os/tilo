@@ -53,6 +53,14 @@ const data=createDataLoader({baseURL:import.meta.url,runtime});
  * `flush()` resolves when writes are durable; call `release()` once. */
 /** The wasm runtime module, once loaded (the peer's codec and certificates). */
 export async function loadRuntime(){await ready();return runtime;}
+/** Open the WebGPU device and compile the renderer once the module is in,
+ * while the page joins and opens the workspace; the first mount takes it.
+ * Skipped where mounting would refuse WebGPU, and on WebKit, whose renderer
+ * starts only once the page's load settled (`settleBeforeGpu`). */
+export function prepareGpu(){
+  if(!navigator.gpu||webgpuRefusal()||isWebKit(navigator))return;
+  void ready().then(()=>runtime.prepare_gpu()).catch(()=>{});
+}
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
@@ -419,6 +427,8 @@ export async function mountDesktop(target,options={}) {
       // Host actions (`[{id, title, subtitle?}]`) in place of earlier ones, and a banner offering one (`{action, title, body}`).
       setHostActions:actions=>{if(active()&&runtime.desktop_set_host_actions)runtime.desktop_set_host_actions(id,JSON.stringify(actions));},
       offerHostAction:offer=>{if(active()&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
+      // What the page just did out of sight, said in passing ("Link copied").
+      acknowledge:text=>{if(active()&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
 
       durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args),
