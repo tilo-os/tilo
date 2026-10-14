@@ -81,3 +81,11 @@ test('the WebKit fallback flag refuses before any adapter is asked for', async (
   assert.deepEqual(await rendererUnavailable(refused), {reason: WEBKIT_WEBGPU_REFUSAL, steps: []});
   assert.equal(asked.length, 0);
 });
+
+test('the check takes the adapter the entry page asked for while its modules loaded', async () => {
+  const asked = [];
+  const early = {...withGpu(CHROME_LINUX, {requestAdapter: async () => { asked.push(1); return {}; }}), __tiloAdapter: Promise.resolve(null)};
+  assert.match((await rendererUnavailable(early)).reason, /no graphics adapter/);
+  assert.equal(await rendererUnavailable({...early, __tiloAdapter: Promise.resolve({})}), undefined);
+  assert.equal(asked.length, 0);
+});
