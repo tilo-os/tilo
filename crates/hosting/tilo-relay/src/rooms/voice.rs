@@ -77,6 +77,28 @@ struct State {
 }
 
 impl State {
+    #[cfg(feature = "web")]
+    fn permits(&self, id: &[u8; 32], direction: Direction, namespace: &str) -> bool {
+        let Some(own) = self.participations.get(id) else {
+            return false;
+        };
+        match direction {
+            Direction::Publish => {
+                own.directions.publish && namespace == protocol::namespace(&own.call, id)
+            }
+            Direction::Subscribe => {
+                let Some(publisher) = parse_namespace(&own.call, namespace) else {
+                    return false;
+                };
+                own.directions.subscribe
+                    && self
+                        .participations
+                        .get(&publisher)
+                        .is_some_and(|other| other.call == own.call && other.directions.publish)
+            }
+        }
+    }
+
     fn in_call(&self, call: &[u8; 32]) -> impl Iterator<Item = (&[u8; 32], &Participation)> {
         self.participations
             .iter()
@@ -250,38 +272,20 @@ impl Calls {
 
     /// The participation, call and publishing of an unexpired `token`.
     #[cfg(feature = "web")]
-    fn admission(&self, token: &[u8; 32]) -> Option<([u8; 32], [u8; 32], bool)> {
+    fn admission(&self, token: &[u8; 32]) -> Option<([u8; 32], [u8; 32], Directions)> {
         let state = self.state();
         let id = *state.tokens.get(token)?;
         state
             .participations
             .get(&id)
             .filter(|participation| Instant::now() < participation.token_expires)
-            .map(|participation| (id, participation.call, participation.directions.publish))
+            .map(|participation| (id, participation.call, participation.directions))
     }
 
     /// Whether participation `id` may use `direction` on `namespace` now.
     #[cfg(feature = "web")]
     fn permits(&self, id: &[u8; 32], direction: Direction, namespace: &str) -> bool {
-        let state = self.state();
-        let Some(own) = state.participations.get(id) else {
-            return false;
-        };
-        match direction {
-            Direction::Publish => {
-                own.directions.publish && namespace == protocol::namespace(&own.call, id)
-            }
-            Direction::Subscribe => {
-                let Some(publisher) = parse_namespace(&own.call, namespace) else {
-                    return false;
-                };
-                own.directions.subscribe
-                    && state
-                        .participations
-                        .get(&publisher)
-                        .is_some_and(|other| other.call == own.call && other.directions.publish)
-            }
-        }
+        self.state().permits(id, direction, namespace)
     }
 }
 
@@ -517,7 +521,28 @@ struct Session {
     calls: std::sync::Weak<Calls>,
     participation: [u8; 32],
     publication: Option<String>,
-    prefix: String,
+    prefix: Option<String>,
+    #[cfg(test)]
+    after_status: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+#[cfg(feature = "web")]
+impl Session {
+    fn status(&self, state: &State) -> AuthorizationStatus {
+        let Some(own) = state.participations.get(&self.participation) else {
+            return AuthorizationStatus::Denied;
+        };
+        let subscribes = self.prefix.is_none() || own.directions.subscribe;
+        let publishes = self
+            .publication
+            .as_deref()
+            .is_none_or(|name| state.permits(&self.participation, Direction::Publish, name));
+        if subscribes && publishes {
+            AuthorizationStatus::Current
+        } else {
+            AuthorizationStatus::Denied
+        }
+    }
 }
 
 #[cfg(feature = "web")]
@@ -531,7 +556,7 @@ impl SessionAuthorization for Session {
     }
 
     fn subscription_prefix(&self) -> Option<&str> {
-        Some(&self.prefix)
+        self.prefix.as_deref()
     }
 
     fn current(&self, direction: Direction, namespace: &str) -> bool {
@@ -544,31 +569,31 @@ impl SessionAuthorization for Session {
         let Some(calls) = self.calls.upgrade() else {
             return AuthorizationStatus::Denied;
         };
-        let current = calls
-            .state()
-            .participations
-            .contains_key(&self.participation);
-        let publishes = self
-            .publication
-            .as_deref()
-            .is_none_or(|name| calls.permits(&self.participation, Direction::Publish, name));
-        if current && publishes {
-            AuthorizationStatus::Current
-        } else {
-            AuthorizationStatus::Denied
-        }
+        self.status(&calls.state())
     }
 
     fn status_offered(&self, offered: &[&str], lapsed: &mut Vec<String>) -> AuthorizationStatus {
-        let status = self.status_all();
+        let Some(calls) = self.calls.upgrade() else {
+            return AuthorizationStatus::Denied;
+        };
+        // Subscription denial can mean either participant lost authority. Keep
+        // one snapshot so removing this subscriber cannot revoke a publisher
+        // that remained admitted after our own status was checked.
+        let state = calls.state();
+        let status = self.status(&state);
+        #[cfg(test)]
+        if let Some(after_status) = &self.after_status {
+            after_status();
+        }
         if matches!(status, AuthorizationStatus::Current) {
             lapsed.extend(
                 offered
                     .iter()
-                    .filter(|name| !self.current(Direction::Subscribe, name))
+                    .filter(|name| !state.permits(&self.participation, Direction::Subscribe, name))
                     .map(|name| (*name).to_owned()),
             );
         }
+        drop(state);
         status
     }
 }
@@ -582,12 +607,14 @@ impl RelayAuthority for Authority {
     fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let calls = self.0.upgrade().ok_or(Denied)?;
         let token: [u8; 32] = proof.try_into().map_err(|_| Denied)?;
-        let (id, call, publishes) = calls.admission(&token).ok_or(Denied)?;
+        let (id, call, directions) = calls.admission(&token).ok_or(Denied)?;
         Ok(Arc::new(Session {
             calls: Arc::downgrade(&calls),
             participation: id,
-            publication: publishes.then(|| protocol::namespace(&call, &id)),
-            prefix: hex::encode(call),
+            publication: directions.publish.then(|| protocol::namespace(&call, &id)),
+            prefix: directions.subscribe.then(|| hex::encode(call)),
+            #[cfg(test)]
+            after_status: None,
         }))
     }
 }
@@ -868,6 +895,196 @@ impl Rooms {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "web")]
+    fn authorization_fixture() -> (Arc<Calls>, Session, Session) {
+        let calls = Arc::new(Calls::default());
+        let call = [3; 32];
+        let session = |id| Session {
+            calls: Arc::downgrade(&calls),
+            participation: id,
+            publication: Some(protocol::namespace(&call, &id)),
+            prefix: Some(hex::encode(call)),
+            after_status: None,
+        };
+        for id in [[4; 32], [5; 32]] {
+            let (outbound, _) = mpsc::channel(1);
+            calls.state().participations.insert(
+                id,
+                Participation {
+                    room: "authorization-test".into(),
+                    workspace_id: 1,
+                    call,
+                    epoch: 1,
+                    device: id,
+                    user: id,
+                    directions: Directions {
+                        publish: true,
+                        subscribe: true,
+                    },
+                    seen: Instant::now(),
+                    outbound,
+                    token: id,
+                    token_expires: Instant::now().checked_add(GRANT_TTL).unwrap(),
+                    token_expires_ns: 0,
+                },
+            );
+            calls.state().tokens.insert(id, id);
+        }
+        let first = session([4; 32]);
+        let second = session([5; 32]);
+        (calls, first, second)
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn removing_an_observed_subscriber_never_revokes_its_publisher() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let (calls, mut subscriber, publisher) = authorization_fixture();
+        let observations = Arc::new(AtomicUsize::new(0));
+        let during_observation = observations.clone();
+        let changing = calls.clone();
+        let removed = subscriber.participation;
+        subscriber.after_status = Some(Box::new(move || {
+            during_observation.fetch_add(1, Ordering::SeqCst);
+            // Force removal in the gap between checking our own authority
+            // and classifying offered publishers, if that gap is unlocked.
+            // With a single snapshot, removal must serialize after observation.
+            match changing.state.try_lock() {
+                Ok(mut state) => {
+                    state.remove(&removed);
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {}
+                Err(error) => panic!("voice state poisoned: {error}"),
+            }
+        }));
+        let mut lapsed = Vec::new();
+        let status = subscriber.status_offered(&[publisher.publication().unwrap()], &mut lapsed);
+        assert!(matches!(status, AuthorizationStatus::Current));
+        assert_eq!(observations.load(Ordering::SeqCst), 1);
+        assert!(
+            lapsed.is_empty(),
+            "subscriber removal must not revoke an admitted publisher: {lapsed:?}"
+        );
+
+        calls.state().remove(&removed);
+        assert!(matches!(
+            subscriber.status_offered(&[publisher.publication().unwrap()], &mut lapsed),
+            AuthorizationStatus::Denied
+        ));
+        assert!(lapsed.is_empty());
+        assert!(matches!(
+            publisher.status_all(),
+            AuthorizationStatus::Current
+        ));
+        assert!(publisher.current(Direction::Publish, publisher.publication().unwrap()));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn only_a_removed_publisher_is_reported_as_lapsed() {
+        let (calls, subscriber, publisher) = authorization_fixture();
+        let name = publisher.publication().unwrap();
+        let mut lapsed = Vec::new();
+        calls.state().remove(&publisher.participation);
+        assert!(matches!(
+            subscriber.status_offered(&[name], &mut lapsed),
+            AuthorizationStatus::Current
+        ));
+        assert_eq!(lapsed, [name]);
+        assert!(subscriber.current(Direction::Publish, subscriber.publication().unwrap()));
+        assert!(matches!(
+            publisher.status_all(),
+            AuthorizationStatus::Denied
+        ));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn losing_own_authority_does_not_revoke_publishers() {
+        for (publish, subscribe) in [(true, false), (false, true), (false, false)] {
+            let (calls, subscriber, publisher) = authorization_fixture();
+            calls
+                .state()
+                .participations
+                .get_mut(&subscriber.participation)
+                .unwrap()
+                .directions = Directions { publish, subscribe };
+            let mut lapsed = Vec::new();
+            assert!(matches!(
+                subscriber.status_offered(&[publisher.publication().unwrap()], &mut lapsed),
+                AuthorizationStatus::Denied
+            ));
+            assert!(lapsed.is_empty());
+            assert!(matches!(
+                publisher.status_all(),
+                AuthorizationStatus::Current
+            ));
+        }
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn publishing_only_admission_has_no_subscription_scope() {
+        let (calls, subscriber, _) = authorization_fixture();
+        calls
+            .state()
+            .participations
+            .get_mut(&subscriber.participation)
+            .unwrap()
+            .directions
+            .subscribe = false;
+        let authority = Authority(Arc::downgrade(&calls));
+        let token = subscriber.participation;
+        let admitted = authority.admit(&token).unwrap();
+        assert!(admitted.subscription_prefix().is_none());
+        assert!(admitted.subscriptions().is_empty());
+        assert_eq!(admitted.publication(), subscriber.publication());
+        assert!(matches!(
+            admitted.status_all(),
+            AuthorizationStatus::Current
+        ));
+        assert!(admitted.current(Direction::Publish, subscriber.publication().unwrap()));
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn subscribing_only_admission_checks_its_own_direction() {
+        let (calls, subscriber, publisher) = authorization_fixture();
+        calls
+            .state()
+            .participations
+            .get_mut(&subscriber.participation)
+            .unwrap()
+            .directions
+            .publish = false;
+        let authority = Authority(Arc::downgrade(&calls));
+        let admitted = authority.admit(&subscriber.participation).unwrap();
+        assert!(admitted.publication().is_none());
+        assert_eq!(
+            admitted.subscription_prefix(),
+            subscriber.subscription_prefix()
+        );
+        let mut lapsed = Vec::new();
+        assert!(matches!(
+            admitted.status_offered(&[publisher.publication().unwrap()], &mut lapsed),
+            AuthorizationStatus::Current
+        ));
+        assert!(lapsed.is_empty());
+        calls
+            .state()
+            .participations
+            .get_mut(&subscriber.participation)
+            .unwrap()
+            .directions
+            .subscribe = false;
+        assert!(matches!(
+            admitted.status_offered(&[publisher.publication().unwrap()], &mut lapsed),
+            AuthorizationStatus::Denied
+        ));
+        assert!(lapsed.is_empty());
+    }
 
     #[test]
     fn namespaces_name_their_call_and_participation() {
