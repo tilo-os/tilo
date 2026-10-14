@@ -1241,6 +1241,10 @@ impl Widget for RichTextLine {
         Widget::accessibility(&self.inner)
     }
 
+    fn accessibility_hidden(&self) -> bool {
+        Widget::accessibility_hidden(&self.inner)
+    }
+
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
