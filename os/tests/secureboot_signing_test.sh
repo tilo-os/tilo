@@ -9,6 +9,13 @@ grep -Fq 'tilo-crypto durable-rename "$signed_output" "$a"' "$secureboot"
 grep -Fq 'esp_install_signed "$signed_output" "${a#"$ESP"/}"' "$secureboot"
 grep -Fq 'tilo-crypto durable-rename "$temporary" "$output"' "$secureboot"
 grep -Fq 'exec 8<"$ESP"' "$secureboot"
+# A staged UKI must be signed before the reboot that boots it. `bootc upgrade`
+# stages it in EFI/Linux/bootc, which the signer scans, and a path watch is not
+# recursive, so the path unit must name that directory itself.
+sign_path="$repo/os/usr/lib/systemd/system/tilo-secureboot-sign.path"
+grep -Fq 'find "$ESP/EFI/Linux/bootc" -maxdepth 1' "$secureboot"
+grep -Fxq 'PathChanged=/boot/EFI/Linux/bootc' "$sign_path"
+grep -Fxq 'PathModified=/boot/EFI/Linux/bootc' "$sign_path"
 if grep -Eq '^[[:space:]]*sync([[:space:]]|$)' "$secureboot"; then
   printf 'Secure Boot signing still performs a system-wide sync\n' >&2
   exit 1

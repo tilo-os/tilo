@@ -1250,9 +1250,9 @@ pub(crate) struct SessionLaunches {
     /// Autostart entries with `X-GNOME-AutoRestart=true`: how to start each
     /// again, and when it last started.
     restartable_helpers: Mutex<HashMap<String, RestartableHelper>>,
-    /// The "Opening…" notification of each package still on its way, so the
-    /// frame thread can retire it when the app starts.
-    pub(crate) opening_notices: Mutex<Vec<(String, u64)>>,
+    /// Each package still on its way, so a repeated activation does not
+    /// start it twice; the frame thread settles it when its window appears.
+    pub(crate) opening_launches: Mutex<Vec<String>>,
     /// The documents open in this session, and the windows showing them.
     pub(crate) open_documents: Mutex<Vec<crate::shell::doc_open::OpenDocument>>,
     /// Launches held until the session's services are up.
@@ -1277,7 +1277,7 @@ impl Default for SessionLaunches {
             unresolved_owners: Mutex::default(),
             session_helpers: Mutex::default(),
             restartable_helpers: Mutex::default(),
-            opening_notices: Mutex::default(),
+            opening_launches: Mutex::default(),
             open_documents: Mutex::default(),
             #[cfg(any(test, target_os = "linux"))]
             gate: Mutex::new(Gate::open_with_capacity(
@@ -6185,6 +6185,7 @@ mod tests {
                 package_id: "so.tilo.hello".into(),
                 display_name: "Hello".into(),
                 localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
@@ -6233,6 +6234,7 @@ mod tests {
                 package_id: "so.tilo.hello".into(),
                 display_name: "Hello".into(),
                 localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
@@ -6335,6 +6337,7 @@ mod tests {
                 package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
                 display_name: "Agent".into(),
                 localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/agent/manifest.toml"),
@@ -6628,6 +6631,7 @@ mod tests {
                 package_id: "so.tilo.matchfixture".into(),
                 display_name: "Match Fixture".into(),
                 localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::new(),
@@ -6666,6 +6670,7 @@ mod tests {
             package_id: package_id.to_string(),
             display_name: display_name_for_package_id(package_id),
             localized_names: BTreeMap::default(),
+            keywords: Vec::new(),
             category: None,
             version: "0.1.0".into(),
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),

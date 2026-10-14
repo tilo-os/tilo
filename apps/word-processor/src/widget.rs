@@ -1,5 +1,5 @@
 //! `WordProcessorWidget` — the `ui::Widget` for the word processor. Renders the
-//! `qdoc` document as a centered page (à la `LibreOffice` Writer) using the
+//! `tilo-doc` document as a centered page (à la `LibreOffice` Writer) using the
 //! `RichTextLayout` primitive: word-wrapped paragraphs, headings, list bullets,
 //! inline **bold**/*italic*/underline, a selection highlight, and a caret. Maps
 //! pointer + keyboard onto the editing model (selection, formatting, save).
@@ -543,7 +543,7 @@ fn style_pick_menu(choice: &std::rc::Rc<std::cell::Cell<Option<String>>>) -> ui:
         .with_accessible_name(t("panel-style"))
 }
 
-/// The toggleable inline mark a qdoc mark name denotes (Ctrl+B/I/U, toolbar,
+/// The toggleable inline mark a tilo-doc mark name denotes (Ctrl+B/I/U, toolbar,
 /// super/sub), for routing through `editing::toggle_mark`.
 fn inline_mark(name: &str) -> Option<crate::actions::editing::InlineMark> {
     use crate::actions::editing::InlineMark;
@@ -1057,7 +1057,7 @@ pub struct WordProcessorWidget {
     image_cache: std::collections::HashMap<String, Option<ui::widget::Image>>,
     blocks: Vec<BlockView>,
     /// Canonical body order for a large document. This is intentionally ids
-    /// only: offscreen rich text/marks/attrs stay in qdoc until its viewport
+    /// only: offscreen rich text/marks/attrs stay in tilo-doc until its viewport
     /// window asks for them.
     body_order: std::rc::Rc<tilo_document::BodyOrder>,
     /// Start offset into `body_order` represented by `blocks`.
@@ -3303,7 +3303,6 @@ impl WordProcessorWidget {
                         },
                     )?;
                     self.save_error = None;
-                    self.toast.show(t("toast-saved"), ToastKind::Success);
                     self.note_file_written(path, &bytes);
                 }
                 Err(e) => {
@@ -3502,7 +3501,7 @@ impl WordProcessorWidget {
     }
 
     /// Materialize the body only when its CRDT heads change, or when scrolling
-    /// moves a large document's bounded working set. qdoc's requested-block API
+    /// moves a large document's bounded working set. tilo-doc's requested-block API
     /// preserves the canonical id order without doing a whole-region traversal.
     fn refresh_blocks(&mut self, state: &AutoCommit) {
         self.refresh_blocks_after_text_edit(state, None);
@@ -5214,17 +5213,12 @@ impl WordProcessorWidget {
             self.lifecycle.dirty = true;
             return;
         }
-        let n = entries.len();
         self.perform_action(state, &crate::actions::generate_toc_action(entries));
         self.refresh_blocks(state);
         self.lifecycle.dirty = true;
-        // Scroll the freshly-inserted TOC (always at the document top) into view
-        // and surface a confirmation toast, so the action has a visible result.
+        // Scroll the freshly-inserted TOC (always at the document top) into
+        // view: the table itself is the visible result.
         self.scroll_y = 0.0;
-        self.toast.show(
-            t_args("toast-toc-updated", &[arg("n", num::i64_of_usize(n))]),
-            ToastKind::Success,
-        );
     }
 
     /// Draw the transient confirmation through the shared toast-card renderer.
@@ -12224,8 +12218,6 @@ impl WordProcessorWidget {
                 if self.sheet.remove(&id) {
                     self.persist_stylesheet_via_actions(state);
                     self.refresh_blocks(state);
-                    self.toast
-                        .show(t("toast-style-deleted"), ToastKind::Success);
                 }
             }
             StyleMenuAction::Duplicate(id) => {
@@ -12237,8 +12229,6 @@ impl WordProcessorWidget {
                     // Apply the copy to the caret block so the panel focuses it.
                     self.dispatch_apply_named_style(state, &new_id);
                     self.refresh_blocks(state);
-                    self.toast
-                        .show(t("toast-style-duplicated"), ToastKind::Success);
                 }
             }
         }

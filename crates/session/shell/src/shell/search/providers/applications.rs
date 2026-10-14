@@ -10,8 +10,9 @@ use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::Ref;
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::Arc;
 #[cfg(test)]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use super::background_index::BackgroundIndex;
 use crate::portal::desktop_services::DynamicLauncherRecord;
@@ -33,13 +34,20 @@ pub const APPLICATIONS_KIND: &str = "Applications";
 
 /// Penalty for an app the machine does not have yet, against one it does —
 /// enough to break a tie without dragging a better match below a worse one
-/// (every tier of [`application_fields`] is at least five points apart).
+/// (every tier of [`searchable_fields`] is at least five points apart).
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
 const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
+/// The provider's own id, which also keys what was chosen from it.
+const PROVIDER_ID: &str = "applications";
+
 fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
     if needle.is_empty() {
+        // The apps used most lead the empty list within the order the
+        // product gives it.
         ui::search::system::starting_point_rank(package_id)
+            .saturating_add(crate::shell::search::usage::boost(PROVIDER_ID, package_id))
+            .min(provider_score(100))
     } else {
         match_score
     }
@@ -88,7 +96,7 @@ type ApplicationsTestState = (
 );
 
 #[cfg(test)]
-struct ApplicationsTestSource {
+pub(crate) struct ApplicationsTestSource {
     generation: std::sync::atomic::AtomicU64,
     state: Mutex<ApplicationsTestState>,
     materializations: std::sync::atomic::AtomicUsize,
@@ -96,7 +104,7 @@ struct ApplicationsTestSource {
 
 #[cfg(test)]
 impl ApplicationsTestSource {
-    fn new(
+    pub(crate) fn new(
         installed: Vec<InstalledApp>,
         catalogue: Vec<CatalogueApp>,
         host_apps: Vec<crate::shell::host_apps::HostApp>,
@@ -142,9 +150,13 @@ impl ApplicationsTestSource {
 }
 
 enum ApplicationEntry {
-    Installed(InstalledApp),
+    /// Shared with the launch callback of every row built for it, so a
+    /// keystroke does not copy the app's manifest view into each row.
+    Installed(Arc<InstalledApp>),
     Dynamic(DynamicLauncherRecord),
-    Catalogue(CatalogueApp),
+    /// Boxed: a catalogue listing is several times the size of the other
+    /// entries, and the snapshot holds one entry per app.
+    Catalogue(Box<CatalogueApp>),
 }
 
 struct ApplicationsSnapshot {
@@ -169,7 +181,7 @@ impl ApplicationsProvider {
     }
 
     #[cfg(test)]
-    fn with_test_source(source: Arc<ApplicationsTestSource>) -> Self {
+    pub(crate) fn with_test_source(source: Arc<ApplicationsTestSource>) -> Self {
         Self {
             source: Some(source),
             ..Self::new()
@@ -239,7 +251,7 @@ impl ApplicationsProvider {
         let mut entries = installed
             .iter()
             .cloned()
-            .map(ApplicationEntry::Installed)
+            .map(|app| ApplicationEntry::Installed(Arc::new(app)))
             .collect::<Vec<_>>();
         entries.extend(dynamic.into_iter().map(ApplicationEntry::Dynamic));
         entries.extend(
@@ -251,7 +263,7 @@ impl ApplicationsProvider {
                         && !host_app_ids.contains(&package_id)
                         && seen_catalogue.insert(package_id)
                 })
-                .map(ApplicationEntry::Catalogue),
+                .map(|app| ApplicationEntry::Catalogue(Box::new(app))),
         );
         let index = index_entries(&entries);
         ApplicationsSnapshot {
@@ -291,7 +303,12 @@ impl ApplicationsProvider {
         open_target: OpenTarget,
     ) -> Vec<SearchResult> {
         let scores = test_scores(needle, apps.iter().map(installed_fields));
-        self.installed_rows(needle, apps, &scores, open_target)
+        self.installed_rows(
+            needle,
+            apps.into_iter().map(Arc::new).collect(),
+            &scores,
+            open_target,
+        )
     }
 
     /// Launch rows for the `apps` with a score in `scores`. `open_target`
@@ -301,7 +318,7 @@ impl ApplicationsProvider {
     fn installed_rows(
         &self,
         needle: &str,
-        apps: Vec<InstalledApp>,
+        apps: Vec<Arc<InstalledApp>>,
         scores: &[Option<i32>],
         open_target: OpenTarget,
     ) -> Vec<SearchResult> {
@@ -311,7 +328,7 @@ impl ApplicationsProvider {
             let Some(score) = *score else {
                 continue;
             };
-            let launch_app = app.clone();
+            let launch_app = Arc::clone(&app);
             // A declared category is a more useful second line than the version.
             let detail = app_detail(
                 needle,
@@ -369,7 +386,7 @@ impl ApplicationsProvider {
             needle,
             records
                 .iter()
-                .map(|record| application_fields(&record.name, &record.id, None, None)),
+                .map(|record| searchable_fields(&record.name, &record.id, None, None, [], &[])),
         );
         self.dynamic_results_for_membership(records, &scores, &installed_gui, open_target)
     }
@@ -487,11 +504,13 @@ impl ApplicationsProvider {
         let scores = test_scores(
             needle,
             apps.iter().map(|app| {
-                application_fields(
+                searchable_fields(
                     &app.display_name,
                     &app.package_id,
                     app.category.as_deref(),
                     Some(&app.description),
+                    [],
+                    &[],
                 )
             }),
         );
@@ -549,6 +568,7 @@ impl ApplicationsProvider {
                 &[("trust", trust.into()), ("detail", detail.into())],
             );
             out.push(SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Application,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: self.id().to_string(),
@@ -566,7 +586,7 @@ impl ApplicationsProvider {
                     // catalogue installation is still running. Keep one
                     // in-flight operation and one acknowledgement; replacing
                     // the pending id would strand the first card forever.
-                    if catalogue::pending_notice(&package_id).is_some() {
+                    if catalogue::pending_launch(&package_id) {
                         return Ok(());
                     }
                     // Captured now, not re-read at launch: the window may be
@@ -764,11 +784,11 @@ pub(crate) fn launch_installed_app(
     display_name: &str,
 ) -> Result<(), ActionError> {
     // An activation already accepted for this package owns the single launch
-    // worker and opening card. Check that transaction before consulting the
+    // worker. Check that transaction before consulting the
     // registry: the package can disappear while its queued worker is still
     // resolving, but a repeated click must not turn that existing launch into
     // an unrelated "not installed" error.
-    if catalogue::pending_notice(package_id).is_some() {
+    if catalogue::pending_launch(package_id) {
         return Ok(());
     }
     let app = launcher::installed_apps().and_then(|apps| {
@@ -793,7 +813,7 @@ pub(crate) fn launch_installed_app(
 /// from Quick Settings, the palette or anywhere else, focuses that window.
 const SETTINGS_PACKAGE_ID: &str = "so.tilo.settings";
 
-/// Surface a launch that failed before spawn: retire its opening card, post
+/// Surface a launch that failed before spawn: settle its pending launch, post
 /// the failure notification, and describe it for callers that cannot see
 /// the screen.
 fn report_refused_launch(
@@ -815,11 +835,8 @@ fn report_refused_launch(
     );
     {
         let mut st = chrome.borrow_mut();
-        // Claimed back rather than left to expire, or the next window
-        // to paint would retire somebody else's notice.
-        if let Some(id) = catalogue::take_pending_notice(package_id) {
-            st.dismiss_notification(id);
-        }
+        // Settled now, or the app could never be opened again this session.
+        catalogue::take_pending_launch(package_id);
         st.push_notification_full(
             Notification::new(
                 launcher::launch_failure_title(display_name),
@@ -914,27 +931,15 @@ fn launch_resolved_installed_app(
         return Ok(());
     }
     // The app is already being installed/launched. Repeated activation should
-    // be idempotent: one worker, one pending notice, one eventual window.
-    if catalogue::pending_notice(package_id).is_some() {
+    // be idempotent: one worker, one eventual window.
+    if catalogue::pending_launch(package_id) {
         return Ok(());
     }
-    // Say the app is opening before the work starts, so the
-    // acknowledgement lands on the same frame as the keystroke. Retired by
-    // the window appearing (`retire_notices_for_opened_windows`), not a timer.
-    let notice = {
-        let mut st = chrome.borrow_mut();
-        let id = st.push_notification_full(
-            Notification::new(
-                t_args("search-apps-opening", &[("app", display_name.into())]),
-                t("search-apps-opening-body"),
-            )
-            .with_app_name(t("host-source-applications"))
-            .with_dismiss_after(std::time::Duration::from_secs(120)),
-        );
-        st.bump();
-        id
-    };
-    catalogue::note_pending_notice(package_id, notice);
+    // No "Opening…" notification: the person just asked for this app, and
+    // its place on the strip (the placeholder card, then its first frame)
+    // is the feedback. Settled by the window appearing
+    // (`settle_launches_of_opened_windows`) or by the launch failing.
+    catalogue::note_pending_launch(package_id);
     // Scoped so the borrow is released before the error branch below
     // takes a mutable one.
     {
@@ -987,7 +992,7 @@ impl Default for ApplicationsProvider {
 
 impl SearchProvider for ApplicationsProvider {
     fn id(&self) -> &'static str {
-        "applications"
+        PROVIDER_ID
     }
     fn name(&self) -> &str {
         APPLICATIONS_KIND
@@ -1026,6 +1031,12 @@ impl SearchProvider for ApplicationsProvider {
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         self.index
             .refresh(|| self.source_generation(), self.builder());
+    }
+
+    /// The build runs off the keystroke; until its snapshot for the current
+    /// sources lands, an answer from here is empty rather than complete.
+    fn index_settling(&self, _ctx: &SearchContext<'_>) -> bool {
+        self.snapshot().is_none()
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
@@ -1073,7 +1084,7 @@ impl SearchProvider for ApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        crate::shell::search::index_page(
+        let mut page = crate::shell::search::index_page(
             revision,
             cursor,
             ctx.needle,
@@ -1086,7 +1097,14 @@ impl SearchProvider for ApplicationsProvider {
                 let score = provider_score(hit.rank.unwrap_or(0));
                 self.entry_row(&ctx, &snapshot, entry, score)
             },
-        )
+        );
+        // Equal matches: what is opened most, and most lately, comes first.
+        // Then the order the product gives apps: "apps" names the Store and
+        // "Windows Apps" alike, and the Store is what people mean.
+        crate::shell::search::usage::order_ties_by(&mut page.results, |row| {
+            ui::search::system::starting_point_rank(row.id.strip_prefix("app:").unwrap_or(&row.id))
+        });
+        page
     }
 }
 
@@ -1118,7 +1136,7 @@ impl ApplicationsProvider {
         let mut rows = match entry {
             ApplicationEntry::Installed(app) => self.installed_rows(
                 ctx.needle,
-                vec![app.clone()],
+                vec![Arc::clone(app)],
                 &score,
                 ctx.chrome.open_target,
             ),
@@ -1130,7 +1148,7 @@ impl ApplicationsProvider {
             ),
             ApplicationEntry::Catalogue(app) => self.catalogue_results_for_membership(
                 ctx.needle,
-                vec![app.clone()],
+                vec![(**app).clone()],
                 &score,
                 &snapshot.installed_ids,
                 &snapshot.host_app_ids,
@@ -1150,7 +1168,7 @@ impl ApplicationsProvider {
     }
 }
 
-pub(crate) use ui::search::system::{PACKAGE_ID_WEIGHT, application_fields};
+pub(crate) use ui::search::system::PACKAGE_ID_WEIGHT;
 
 /// Applications match words spread over their fields, and typos in names.
 const APPLICATION_MATCHING: Matching = Matching::LOOSE;
@@ -1158,37 +1176,65 @@ const APPLICATION_MATCHING: Matching = Matching::LOOSE;
 /// Each app's provider score for `needle`, for tests building rows from a
 /// bare list.
 #[cfg(test)]
-fn test_scores<'a, Fields>(needle: &str, apps: impl Iterator<Item = Fields>) -> Vec<Option<i32>>
-where
-    Fields: IntoIterator<Item = (&'a str, tilo_search::FieldWeight)>,
-{
+fn test_scores(
+    needle: &str,
+    apps: impl Iterator<Item = Vec<(String, tilo_search::FieldWeight)>>,
+) -> Vec<Option<i32>> {
+    let apps: Vec<_> = apps.collect();
     ui::search::ListIndex::new(APPLICATION_MATCHING)
-        .ranks(needle, apps)
+        .ranks(
+            needle,
+            apps.iter()
+                .map(|row| row.iter().map(|(text, weight)| (text.as_str(), *weight))),
+        )
         .into_iter()
         .map(|rank| rank.map(provider_score))
         .collect()
 }
 
-/// An installed app's [`application_fields`], plus its name in every
+/// An app's searchable fields: [`ui::search::system::application_fields`] plus every other word
+/// it is known by — the keywords its manifest declares and the ones the
+/// generated first-party registry knows for its id (an app the store offers
+/// but this machine does not have yet declares none locally) — and the
+/// initials of its name.
+fn searchable_fields(
+    name: &str,
+    package_id: &str,
+    category: Option<&str>,
+    description: Option<&str>,
+    other_names: impl IntoIterator<Item = String>,
+    keywords: &[String],
+) -> Vec<(String, tilo_search::FieldWeight)> {
+    let other_names: Vec<String> = other_names.into_iter().collect();
+    let registry = tilo_desktop_search::availability::keywords_for(package_id);
+    ui::search::system::application_search_fields(
+        name,
+        package_id,
+        category,
+        description,
+        other_names.iter().map(String::as_str),
+        keywords
+            .iter()
+            .map(String::as_str)
+            .chain(registry.iter().copied()),
+    )
+}
+
+/// An installed app's [`searchable_fields`], plus its name in every
 /// language its manifest gives one, each weighed as the name itself: a
 /// German desktop types "Dateien", an English habit types "Files".
-fn installed_fields(app: &InstalledApp) -> Vec<(&str, tilo_search::FieldWeight)> {
-    let mut fields = application_fields(
+fn installed_fields(app: &InstalledApp) -> Vec<(String, tilo_search::FieldWeight)> {
+    searchable_fields(
         &app.display_name,
         &app.package_id,
         app.category.as_deref(),
         None,
+        app.localized_names.values().cloned(),
+        &app.keywords,
     )
-    .to_vec();
-    fields.extend(
-        app.localized_names
-            .values()
-            .map(|name| (name.as_str(), tilo_search::FieldWeight::TITLE)),
-    );
-    fields
 }
 
-/// Index each entry's [`application_fields`], keyed by position.
+/// Index each entry's [`searchable_fields`], keyed by position.
 fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
     fn app_fields(
         document: Document,
@@ -1197,13 +1243,14 @@ fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
         category: Option<&str>,
         description: Option<&str>,
     ) -> Document {
-        application_fields(name, package_id, category, description)
+        searchable_fields(name, package_id, category, description, [], &[])
             .into_iter()
             .fold(document, |document, (text, weight)| {
                 document.field(text, weight)
             })
     }
-    let mut index = SearchIndex::new(APPLICATION_MATCHING);
+    let mut index =
+        SearchIndex::new(APPLICATION_MATCHING).with_ranks(ui::search::system::application_ranks);
     index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
         let document = Document::new(at as u64);
         match entry {
@@ -1512,6 +1559,7 @@ mod tests {
             version: "0.1.0".to_string(),
             registry: "Tilo main".to_string(),
             trust: "verified".to_string(),
+            ..Default::default()
         }
     }
 
@@ -1520,6 +1568,7 @@ mod tests {
             package_id: package_id.to_string(),
             display_name: display_name.to_string(),
             localized_names: BTreeMap::default(),
+            keywords: Vec::new(),
             category: category.map(str::to_string),
             version: "0.1.0".to_string(),
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),
@@ -1537,19 +1586,14 @@ mod tests {
         {
             let chrome = chrome_rc();
             let package_id = "so.tilo.repeated-open-fixture";
-            let notice = chrome
-                .borrow_mut()
-                .push_notification("Opening Fixture", "Loading…");
-            catalogue::note_pending_notice(package_id, notice);
+            catalogue::note_pending_launch(package_id);
 
             assert!(launch_installed_app(&chrome, package_id, "Fixture").is_ok());
-            assert_eq!(
-                chrome.borrow().notifications().len(),
-                1,
-                "a second activation must not create another worker or opening card"
+            assert!(
+                chrome.borrow().notifications().is_empty(),
+                "a second activation must not start another worker or say anything"
             );
-            assert_eq!(catalogue::take_pending_notice(package_id), Some(notice));
-            chrome.borrow_mut().dismiss_notification(notice);
+            assert!(catalogue::take_pending_launch(package_id));
         }
 
         // Phase `activating_with_no_workspace_reports_it_the_same_way`.
@@ -1731,16 +1775,20 @@ mod tests {
             let out = p.results_for(
                 "system",
                 vec![
-                    app_in("so.tilo.monitor", "Monitor", Some("System")),
-                    app_in("so.tilo.sysinfo", "System Info", Some("Utility")),
+                    app_in("so.example.monitor", "Monitor", Some("System")),
+                    app_in("so.example.sysinfo", "System Info", Some("Utility")),
                 ],
                 OpenTarget::Beside,
             );
             assert_eq!(out.len(), 2);
             let score = |id: &str| out.iter().find(|r| r.id == id).unwrap().score;
-            assert_eq!(score("so.tilo.sysinfo"), 100, "prefix on the display name");
-            assert_eq!(score("so.tilo.monitor"), 34, "category-only match");
-            assert!(score("so.tilo.sysinfo") > score("so.tilo.monitor"));
+            assert_eq!(
+                score("so.example.sysinfo"),
+                100,
+                "prefix on the display name"
+            );
+            assert_eq!(score("so.example.monitor"), 34, "category-only match");
+            assert!(score("so.example.sysinfo") > score("so.example.monitor"));
         }
 
         // Phase `package_id_matches_score_below_name_matches`.
@@ -2302,7 +2350,7 @@ mod tests {
         ));
         let entries = (0..=4_000)
             .map(|index| {
-                ApplicationEntry::Installed(app_in(
+                ApplicationEntry::Installed(Arc::new(app_in(
                     &format!("so.tilo.fixture-{index}"),
                     if index == 4_000 {
                         "unique-tail"
@@ -2310,7 +2358,7 @@ mod tests {
                         "common app"
                     },
                     None,
-                ))
+                )))
             })
             .collect::<Vec<_>>();
         let index = index_entries(&entries);
@@ -2516,11 +2564,10 @@ mod tests {
                     } else {
                         "common source app".into()
                     },
-                    description: String::new(),
-                    category: None,
                     version: "1".into(),
                     registry: "fixture".into(),
                     trust: "verified".into(),
+                    ..Default::default()
                 })
                 .collect(),
             Vec::new(),
@@ -2606,10 +2653,18 @@ mod tests {
 
 /// Tiny session-owned catalog of apps the native host can actually construct.
 /// It shares application visibility policy and action dispatch with package apps.
-#[derive(Default)]
 pub struct NativeApplicationsProvider {
-    /// The apps' names and ids, indexed while they stay the same.
+    /// The apps' names, ids and keywords, indexed while they stay the same.
     ranker: ui::search::ListIndex,
+}
+
+impl Default for NativeApplicationsProvider {
+    fn default() -> Self {
+        Self {
+            ranker: ui::search::ListIndex::new(APPLICATION_MATCHING)
+                .with_ranks(ui::search::system::application_ranks),
+        }
+    }
 }
 
 impl SearchProvider for NativeApplicationsProvider {
@@ -2630,10 +2685,15 @@ impl SearchProvider for NativeApplicationsProvider {
             return Vec::new();
         }
         let apps = ctx.chrome.hosted_inputs.native_apps();
+        let fields: Vec<_> = apps
+            .iter()
+            .map(|app| searchable_fields(app.display_name, app.package_id, None, None, [], &[]))
+            .collect();
         let ranks = self.ranker.ranks(
             ctx.needle,
-            apps.iter()
-                .map(|app| application_fields(app.display_name, app.package_id, None, None)),
+            fields
+                .iter()
+                .map(|row| row.iter().map(|(text, weight)| (text.as_str(), *weight))),
         );
         apps.iter()
             .zip(ranks)

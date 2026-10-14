@@ -14,6 +14,7 @@
 
 mod navigation;
 
+pub mod about;
 pub mod authority;
 pub mod backdrop;
 pub mod chrome;
@@ -21,6 +22,7 @@ pub mod collaborators;
 pub mod composition;
 pub mod emoji_picker;
 pub mod feedback;
+pub mod here;
 pub mod intents;
 pub mod launchpad;
 pub mod overview;

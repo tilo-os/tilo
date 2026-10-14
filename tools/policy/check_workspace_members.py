@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Validate that the root Cargo workspace has one entry per repository crate."""
+"""Validate that the root Cargo workspace has one entry per repository crate.
+
+Every member is also on the workspace's one edition, ``EDITION``: a crate on an
+older edition compiles, so nothing else would notice it.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,8 @@ import tomllib
 from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
+
+EDITION = "2024"
 
 
 class WorkspaceInventory(NamedTuple):
@@ -49,6 +55,15 @@ def discover_crates(root: Path, excluded: frozenset[str]) -> frozenset[str]:
     return frozenset(crates)
 
 
+def member_edition(root: Path, member: str) -> str:
+    """The edition a member's manifest declares, inherited or not; Cargo's default is 2015."""
+    edition = load_manifest(root / member / "Cargo.toml").get("package", {}).get("edition", "2015")
+    if isinstance(edition, dict) and edition.get("workspace") is True:
+        workspace = load_manifest(root / "Cargo.toml").get("workspace", {})
+        edition = workspace.get("package", {}).get("edition", "2015")
+    return str(edition)
+
+
 def inventory(root: Path) -> WorkspaceInventory:
     document = load_manifest(root / "Cargo.toml")
     members = string_list(document, "members")
@@ -73,6 +88,10 @@ def violations(root: Path, state: WorkspaceInventory) -> list[str]:
     for member in sorted(declared):
         if not (root / member / "Cargo.toml").is_file():
             errors.append(f"workspace member has no Cargo.toml: {member}")
+        elif (edition := member_edition(root, member)) != EDITION:
+            errors.append(
+                f"workspace member is on edition {edition}, not {EDITION}: {member}"
+            )
     for member in sorted(declared & state.excluded):
         errors.append(f"path is both a workspace member and excluded: {member}")
     return errors
@@ -92,7 +111,10 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         for error in errors:
             print(f"  {error}", file=sys.stderr)
-        print("FAIL: repair [workspace].members in Cargo.toml", file=sys.stderr)
+        print(
+            f"FAIL: repair [workspace].members in Cargo.toml; every member is edition {EDITION}",
+            file=sys.stderr,
+        )
         return 1
     print(
         "workspace membership OK "

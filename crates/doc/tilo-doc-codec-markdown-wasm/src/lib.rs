@@ -1,4 +1,4 @@
-//! Format-provider build of the qdoc Markdown codec.
+//! Format-provider build of the tilo-doc Markdown codec.
 //!
 //! Built with `build.sh` (`--target wasm32-unknown-unknown --release`). The
 //! output is a core WebAssembly module speaking the ABI defined in

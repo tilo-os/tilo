@@ -13,6 +13,8 @@ use std::num::NonZeroU16;
 
 use serde::{Deserialize, Serialize};
 
+pub mod snapshot;
+
 /// One accelerator the trusted hardware probe observed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Accelerator {

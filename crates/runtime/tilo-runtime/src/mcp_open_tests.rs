@@ -106,7 +106,7 @@ impl Writer {
                 row(
                     "",
                     RICH,
-                    "qdoc.rich-text",
+                    "tilo.rich-text",
                     "apply",
                     vec![
                         ActionParam::required("action", ParamType::Object, "An edit")
@@ -586,7 +586,7 @@ fn opening_an_app_with_a_file_opens_it_through_the_apps_own_action() {
             resource(&reply["directory"], "word_processor.style")["actions"]["toggle-bold"]
                 .is_string()
         );
-        assert!(resource(&reply["directory"], "qdoc.rich-text")["actions"]["apply"].is_string());
+        assert!(resource(&reply["directory"], "tilo.rich-text")["actions"]["apply"].is_string());
         assert!(reply["directory"].get("truncated").is_none(), "{reply}");
         assert!(reply["directory"].to_string().len() < DIRECTORY_BYTES);
     });
@@ -873,7 +873,7 @@ fn a_handle_in_a_resource_argument_is_expanded_and_text_is_not_replayed() {
             .as_str()
             .unwrap()
             .to_owned();
-        let style = resource(&page, "qdoc.rich-text")["resource"]
+        let style = resource(&page, "tilo.rich-text")["resource"]
             .as_str()
             .unwrap()
             .to_owned();
@@ -1017,7 +1017,7 @@ fn a_failed_call_with_an_unexpanded_handle_is_not_rerun() {
         let page = call(&server, "tilo_query", json!({"peer_id": 1}))
             .await
             .unwrap();
-        let handle = resource(&page, "qdoc.rich-text")["resource"]
+        let handle = resource(&page, "tilo.rich-text")["resource"]
             .as_str()
             .unwrap();
         assert_ne!(handle, RICH);
@@ -1056,7 +1056,7 @@ fn an_admission_refusal_with_a_text_handle_is_not_an_execution_failure() {
         let page = call(&server, "tilo_query", json!({"peer_id": 1}))
             .await
             .unwrap();
-        let handle = resource(&page, "qdoc.rich-text")["resource"]
+        let handle = resource(&page, "tilo.rich-text")["resource"]
             .as_str()
             .unwrap();
         let refusal = call(
@@ -1108,7 +1108,7 @@ fn the_http_bridge_does_not_readmit_a_failed_text_handle_mutation() {
         assert_eq!(listed.status(), StatusCode::OK);
         let bytes = listed.into_body().collect().await.unwrap().to_bytes();
         let page: Value = serde_json::from_slice(&bytes).unwrap();
-        let handle = resource(&page["result"]["structuredContent"], "qdoc.rich-text")["resource"]
+        let handle = resource(&page["result"]["structuredContent"], "tilo.rich-text")["resource"]
             .as_str()
             .unwrap();
         assert_ne!(handle, RICH);
@@ -1161,7 +1161,7 @@ fn handles_stand_for_long_ids_and_full_ids_keep_working() {
         let page = call(&server, "tilo_query", json!({"peer_id": 1}))
             .await
             .unwrap();
-        let rich = resource(&page, "qdoc.rich-text")["resource"]
+        let rich = resource(&page, "tilo.rich-text")["resource"]
             .as_str()
             .unwrap()
             .to_owned();

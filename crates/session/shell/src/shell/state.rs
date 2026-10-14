@@ -553,8 +553,9 @@ use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// High-16-bit peer salt for every id `next_id` mints. Default `0`
-/// keeps tests on `0x0001, 0x0002, …`; the hosted entry point overwrites
-/// it at startup with a hash of the local Iroh key. `Relaxed`: written
+/// keeps tests on `0x0001, 0x0002, …`; session bootstrap
+/// (`compositor::session_bootstrap::load_session_tree`) overwrites it at
+/// startup with the salt stored beside the state file. `Relaxed`: written
 /// once at boot, nothing piggy-backs on visibility.
 pub(crate) static NEXT_ID_PEER_SALT: AtomicU16 = AtomicU16::new(0);
 
@@ -2267,6 +2268,55 @@ impl WorkspaceTree {
         }
     }
 
+    /// True (and logs a warning) if `candidate` adds or changes a shortcut
+    /// that claims to have been saved by the person this device acts for,
+    /// while `from` is not one of that person's authenticated devices.
+    ///
+    /// `saved_by` is what arms a shortcut's triggers on this machine and
+    /// what lets an unattended run honour the shortcut's advance consents,
+    /// so it is authority, not metadata: a peer with write access to the room
+    /// must not be able to assert it for someone else. Echoes of a shortcut
+    /// this machine already holds are not writes.
+    fn shortcut_authorship_refused(
+        &self,
+        room: RoomId,
+        candidate: &AutoCommit,
+        from: &PeerOrigin,
+    ) -> bool {
+        let Some(local) = self.local_person else {
+            return false;
+        };
+        if self.authenticated_persons.get(from) == Some(&local) {
+            return false;
+        }
+        let Some(local_id) = person_id_of(local) else {
+            return false;
+        };
+        let held = self
+            .room_docs
+            .get(&room)
+            .map_or_else(Vec::new, projection::workspace_shortcuts_of);
+        let forged = projection::workspace_shortcuts_of(candidate)
+            .into_iter()
+            .find(|shortcut| {
+                shortcut.saved_by.as_deref() == Some(local_id.as_str()) && !held.contains(shortcut)
+            });
+        match forged {
+            Some(shortcut) => {
+                tracing::warn!(
+                    target: "shell::state",
+                    room = %room,
+                    from = %from,
+                    shortcut = %shortcut.id,
+                    "room sync refused: a peer wrote a shortcut as if this \
+                     device's person had saved it",
+                );
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Who may write `room`'s governance — its owner and capability list,
     /// which together control the whole security policy — for a batch from
     /// `from`. Only what this machine pinned from an invite, its own minting
@@ -2523,6 +2573,9 @@ impl WorkspaceTree {
         }
         let media_changed = tilo_peer_state::room::media::governed_value(self.room_docs.get(&room))
             != tilo_peer_state::room::media::governed_value(Some(&candidate));
+        if self.shortcut_authorship_refused(room, &candidate, from) {
+            return Ok(false);
+        }
 
         let (name, mut policy) = tilo_peer_state::room::extract_governed_fields(&candidate);
         let mut sandbox = projection::room_sandbox_of(&candidate);
@@ -6007,6 +6060,67 @@ mod automerge_foundation_tests {
         assert!(guest.pin_room_authority(room, PeerOrigin::hub(1)));
         guest.adopt_ownerless_workspaces(&"bob".to_string());
         (host, guest, room)
+    }
+
+    #[test]
+    fn a_peer_cannot_save_a_shortcut_on_the_local_persons_behalf() {
+        // `saved_by` arms triggers and unlocks advance consents on the
+        // device of the person it names, so a room member must not be able
+        // to write it for someone else: only that person's own devices may.
+        let (mut host, mut guest, room) = two_in_a_room();
+        let person = [7u8; 32];
+        guest.local_person = Some(person);
+        let person_id = person_id_of(person).expect("a person id");
+        let forged = tilo_automation::Shortcut {
+            id: "nightly".into(),
+            name: "Forged".into(),
+            inputs: Vec::new(),
+            steps: Vec::new(),
+            output: None,
+            grant: Vec::new(),
+            triggers: Vec::new(),
+            saved_by: Some(person_id),
+        };
+        host.desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.room == room)
+            .expect("the host is in the room")
+            .shortcuts
+            .push(forged.clone());
+        let changes = host
+            .export_room_changes_since(room, &[])
+            .expect("the host is in the room");
+        let guest_shortcuts = |guest: &WorkspaceTree| {
+            guest
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.room == room)
+                .expect("the guest is in the room")
+                .shortcuts
+                .clone()
+        };
+
+        // Phase `an_unrelated_peer_is_refused_outright`.
+        assert!(
+            !guest
+                .apply_room_changes(room, &changes, &PeerOrigin::hub(1))
+                .expect("a refusal is not an error"),
+            "a batch asserting the local person's authorship must be refused"
+        );
+        assert!(guest_shortcuts(&guest).is_empty());
+
+        // Phase `the_persons_own_device_may_save_it`.
+        guest
+            .authenticated_persons
+            .insert(PeerOrigin::hub(1), person);
+        assert!(
+            guest
+                .apply_room_changes(room, &changes, &PeerOrigin::hub(1))
+                .expect("the person's own device merges")
+        );
+        assert_eq!(guest_shortcuts(&guest), vec![forged]);
     }
 
     #[test]

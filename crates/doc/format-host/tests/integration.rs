@@ -123,7 +123,7 @@ fn markdown_registry(wasm: &std::path::Path) -> String {
         r#"
 [[provider]]
 mime     = "text/markdown"
-package  = "so.tilo.qdoc-md"
+package  = "so.tilo.markdown"
 wasm     = "{}"
 version  = "1.0.0"
 priority = "builtin"
@@ -141,7 +141,7 @@ async fn import_as(client: &format_router::Client, bytes: &[u8]) -> Vec<u8> {
     {
         let mut p = imp.get();
         p.set_bytes(bytes);
-        p.set_provider_id("so.tilo.qdoc-md");
+        p.set_provider_id("so.tilo.markdown");
     }
     let response = imp.send().promise.await.unwrap();
     response.get().unwrap().get_canonical().unwrap().to_vec()
@@ -156,7 +156,7 @@ async fn export_as(client: &format_router::Client, canonical: &[u8]) -> Vec<u8> 
     {
         let mut p = exp.get();
         p.set_canonical(canonical);
-        p.set_provider_id("so.tilo.qdoc-md");
+        p.set_provider_id("so.tilo.markdown");
     }
     let response = exp.send().promise.await.unwrap();
     response.get().unwrap().get_bytes().unwrap().to_vec()
@@ -184,7 +184,7 @@ fn single_provider_round_trip() {
             .map(|i| providers.get(i).unwrap().to_string().unwrap())
             .collect();
         assert!(
-            names.contains(&"so.tilo.qdoc-md".to_string()),
+            names.contains(&"so.tilo.markdown".to_string()),
             "got {names:?}"
         );
 
@@ -200,10 +200,10 @@ fn single_provider_round_trip() {
         assert!(detected.get_confidence().unwrap().get_tier() >= 1);
         assert_eq!(
             detected.get_provider_id().unwrap().to_str().unwrap(),
-            "so.tilo.qdoc-md"
+            "so.tilo.markdown"
         );
 
-        // import → export round trip. Exported markdown is idempotent (qdoc
+        // import → export round trip. Exported markdown is idempotent (tilo-doc
         // tests prove this); after one round trip the same source re-imports
         // to identical bytes.
         let canonical_a = import_as(&client, REAL_DOC).await;
@@ -307,7 +307,7 @@ fn registry_hot_reload() {
             let providers = response.get().unwrap().get_providers().unwrap();
             if !providers.is_empty() {
                 let name = providers.get(0).unwrap().to_string().unwrap();
-                assert_eq!(name, "so.tilo.qdoc-md");
+                assert_eq!(name, "so.tilo.markdown");
                 return;
             }
         }

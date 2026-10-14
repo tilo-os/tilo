@@ -655,6 +655,12 @@ pub struct TerminalWidget {
     /// system clipboard, not just the primary selection. Off by default;
     /// the primary selection is always set so middle-click paste works.
     select_to_copy: bool,
+    /// Whether a program may set the clipboard through OSC 52. Off by
+    /// default: anything that writes to the PTY — a `cat` of a hostile file,
+    /// a remote host, a container shell — would otherwise replace what the
+    /// person pastes next, while every other clipboard effect of this
+    /// terminal is admitted through the host.
+    allow_osc52_clipboard: bool,
     /// Right-click context menu (Copy / Paste), reusing the shared toolkit
     /// `ContextMenu` primitive so the terminal never draws its own menu chrome.
     /// The menu's `Arc<dyn Fn>` callbacks can't reach the PTY, so we dispatch on
@@ -662,6 +668,7 @@ pub struct TerminalWidget {
     context_menu: ContextMenu,
     find_menu_index: Option<usize>,
     copy_on_select_menu_index: Option<usize>,
+    osc52_menu_index: Option<usize>,
     menu_paste_index: Option<usize>,
     /// What each effect row of the open menu asks for.
     menu_effects: HashMap<usize, crate::resource::TerminalEffect>,
@@ -888,9 +895,11 @@ impl TerminalWidget {
             drag_granularity: Granularity::Char,
             drag_anchor_span: None,
             select_to_copy: false,
+            allow_osc52_clipboard: false,
             context_menu: ContextMenu::new(),
             find_menu_index: None,
             copy_on_select_menu_index: None,
+            osc52_menu_index: None,
             menu_paste_index: None,
             menu_effects: HashMap::new(),
             last_cursor_pos: Point::ZERO,
@@ -1423,6 +1432,11 @@ impl TerminalWidget {
     pub fn set_select_to_copy(&mut self, on: bool) {
         self.select_to_copy = on;
     }
+    /// Allow (or refuse, the default) programs to write the clipboard through
+    /// OSC 52.
+    pub fn set_allow_osc52_clipboard(&mut self, on: bool) {
+        self.allow_osc52_clipboard = on;
+    }
     /// Set (or clear) the selection programmatically over buffer-absolute
     /// cells. Host/demo API — e.g. "select all", or a screenshot scenario
     /// that highlights a range. Coordinates are absolute grid rows/columns
@@ -1656,8 +1670,9 @@ impl TerminalWidget {
         self.banner_rect
     }
 
-    /// Tee subsequent PTY writes so a compositor-path test can see them.
-    #[cfg(any(test, debug_assertions))]
+    /// Tee subsequent PTY writes so a compositor-path test can see them, in
+    /// any profile it is built in (`test-support`).
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn attach_input_probe(&self) -> std::sync::mpsc::Receiver<Vec<u8>> {
         struct ProbeWriter {
             inner: Box<dyn Write + Send>,
@@ -1973,6 +1988,7 @@ impl TerminalWidget {
             title_out: &mut title_out,
             responses: &mut responses,
             print_buf: None,
+            allow_osc52_clipboard: self.allow_osc52_clipboard,
         };
         // vte deliberately discards APC payloads, while Kitty graphics uses
         // APC (`ESC _ G … ESC \\`). A tiny streaming pre-parser extracts only
@@ -4935,10 +4951,16 @@ impl TerminalWidget {
         // row plus separator; its keyboard shortcut and desktop-sized menu
         // still expose the toggle.
         self.copy_on_select_menu_index = None;
+        self.osc52_menu_index = None;
         if self.rect.height() >= 180.0 {
             menu.push(MenuItem::separator());
             self.copy_on_select_menu_index = Some(menu.items().len());
             menu.push(MenuItem::action("Copy on select", || {}).with_checked(self.select_to_copy));
+            self.osc52_menu_index = Some(menu.items().len());
+            menu.push(
+                MenuItem::action("Let programs set the clipboard", || {})
+                    .with_checked(self.allow_osc52_clipboard),
+            );
         }
         // Keep the shared popup aware of the terminal's real viewport. The
         // popup refreshes its geometry when the current theme applies an
@@ -4993,6 +5015,9 @@ impl TerminalWidget {
         }
         if self.copy_on_select_menu_index == Some(index) {
             self.select_to_copy = !self.select_to_copy;
+        }
+        if self.osc52_menu_index == Some(index) {
+            self.allow_osc52_clipboard = !self.allow_osc52_clipboard;
         }
     }
 
@@ -5271,6 +5296,9 @@ pub struct TerminalPerformer<'a> {
     /// from blocking for 10s on a Primary Device Attributes query that never
     /// gets answered.
     pub responses: &'a mut Vec<u8>,
+    /// Whether OSC 52 may write the clipboard this feed (the widget's
+    /// `allow_osc52_clipboard`).
+    pub allow_osc52_clipboard: bool,
     /// Batches consecutive `print`s to the same line so a run of characters
     /// replaces the line once rather than once per cell, which keeps a
     /// screenful of output linear. Any non-`print` action flushes the buffer
@@ -5522,6 +5550,9 @@ impl Perform for TerminalPerformer<'_> {
             // `?` query would need to write back to the PTY, which the parser
             // can't do, so it's ignored.
             52 => {
+                if !self.allow_osc52_clipboard {
+                    return;
+                }
                 let targets = params.get(1).copied().unwrap_or(b"");
                 let data = params.get(2).copied().unwrap_or(b"");
                 if data == b"?" || data.is_empty() {

@@ -25,8 +25,8 @@ one grammar; it reuses their checks, not their encodings.
 
 | Mechanism | Where | What it does | What changes |
 |---|---|---|---|
-| Version-one resource link | `web/resource-link.mjs`, `web/resource.html`, `web/resource-page.mjs`; minted natively by `apps/chat/src/shared_resources.rs` (`copy-resource-link`, `open-resource-link`) | `resource.html#resource=<percent-encoded JSON {version, origin, room, hostDevice, provider, action, reference}>`; opened after account choice, admission and a fresh catalogue read | Its address becomes the readable route below; its validation and resolution (`resourceLinkAddress`, `openResourceLink`, `resolveResourceReference`, `openResourceReference`) are the resolver. The JSON fragment and `resource.html` go away |
-| Locator | `ResourceViewLocator` in `crates/collab/actions/src/remote/catalogue.rs`, filled by `tilo-relay` from `resource_browser_page` | Host-issued `{origin, room, hostDevice, provider, browserPage}` on a catalogue page | `browserPage` becomes the host's web entry base (§3.1); the rest is unchanged |
+| Version-one resource link | Was `web/resource-link.mjs`, `web/resource.html`, `web/resource-page.mjs`, minted natively by Chat's `copy-resource-link`/`open-resource-link` as `resource.html#resource=<percent-encoded JSON {version, origin, room, hostDevice, provider, action, reference}>` | Removed. Its checks live on as the resolver (`resolveResourceReference`, `openResourceReference` in `web/resource-reference.mjs`); links use the grammar below and enter through `index.html` or `app/index.html`. No web host serves `resource.html`, and Cloud's `/qos-runtime/resource.html` entry is not part of any release |
+| Locator | `ResourceViewLocator` in `crates/collab/actions/src/remote/catalogue.rs`, filled by `tilo-relay` from its `web_entry` setting (`--web-entry`, `TILO_ROOMS_WEB_ENTRY`) | Host-issued `{origin, room, hostDevice, provider, webEntry}` on a catalogue page | Was `browserPage`; `webEntry` is the host's web entry base (§3.1); the rest is unchanged |
 | Diagnostic and dev entry | `web/index.html` (`?app=`, `?room=`, `?workspace=`), `tilo-app build --platform web` (`index.html?app=<id>`), `tilo-web-desktop/scripts/smoke.mjs` | Mounts one app or the desktop from query parameters | Same grammar under the `app/` entry (§3.3); query strings carry diagnostics only |
 | Room service join link | `crates/hosting/tilo-room-service` (`guest_link`, `entry.json`), `web/rooms.mjs` (`createInvitation`) | Was `/app/join.html#origin=…&user=…&room=…&ticket=…&admit=…[&record=…]` | Now `/open/app/#/@<relay>/w/<room>/so.tilo.word-processor[/<record>]?ticket=…`: app mode with a `ticket` secret (§6), redeemed at the door `entry.json` names |
 | Invitations | `peer.createInvitation`, `inspectInvitation`, `joinWorkspace` (browser-runtime.md, "JS API Cloud targets"); `/join` steps in `crates/hosting/tilo-relay-protocol/src/rooms.rs`; capability tokens in `crates/collab/collab-types/src/invite.rs` | Base64url invitation text redeemed by a device; the owner admits, or a pre-admission token admits at once | Carried as the `invite` fragment secret (§6) |
@@ -88,7 +88,7 @@ and actions, not a second launcher" ([README.md](README.md)).
 A web entry is an HTTPS base URL ending in `/`, served by a web host:
 `https://tilo.so/`, a Cloud console's runtime path, a relay serving its own
 bundle (`https://machine.example:8443/`). A host's catalogue locator
-announces its entry (`ResourceViewLocator.browserPage`, configured by the
+announces its entry (`ResourceViewLocator.webEntry`, configured by the
 operator); minting uses the entry the host announced, never one guessed from
 the API origin.
 
@@ -378,7 +378,7 @@ the page.
    a bare entry the web host's home workspace (whose room is learned on
    admission).
 4. **Identity.** A browser account for that host (`web/browser-accounts.mjs`)
-   is offered as `resource.html` offers it today. Without one: an invitation,
+   is offered first; the picker reads Settings' personal accounts record. Without one: an invitation,
    a ticket or a host with an admission door lets this browser join as the
    person it has, or a new one made on the spot (`joinWorkspace`, `joinRoom`); otherwise the page offers
    the usual sign-in and keeps the link to continue afterwards.
@@ -440,9 +440,8 @@ machine waiting for its owner, §6.3). Rules:
   them. It is the one JavaScript parser, and it only splits off the five
   known keys; the corpus tests (§9) hold it to the Rust parser's split.
 - Secrets are read once by admission and dropped after use.
-- Entry pages set `<meta name="referrer" content="no-referrer">` (as
-  `resource.html` does) and load no third-party script that could read
-  `location`.
+- Entry pages set `<meta name="referrer" content="no-referrer">` and load
+  no third-party script that could read `location`.
 - Logs, diagnostics, history entries and the native opener use
   `Link::public()`; `LinkSecrets` redacts in `Debug` and `Display`.
 - Room service links no longer carry the room's user key or admit endpoint:
@@ -580,14 +579,42 @@ replaces the address with the workspace's full link. The home is listed
 first among the person's workspaces; the runtime lists no workspace of its
 own.
 
+A person invited to several workspaces, on one host or several, returns
+to them from any of them. The page remembers each room it entered as a
+member (an invitation redeemed, an account it holds, a device it paired;
+not the home's door, and not a guest ticket) in the browser, and desktop
+search offers "Open <workspace>" for the home and each of those rooms,
+beside the desktop's own commands, so a person, a script and an agent
+switch through the same host action. Switching saves what is pending in
+the room in front, closes its desktop and its peer, then loads the other
+room's link: the next room is admitted afresh, through its own door, in a
+new page, so nothing of one room's state or pending work reaches the
+other. Back and Forward across a switch load the room anew, never inside
+the previous room's desktop. A bare desktop entry under a home reopens
+the room the person last chose (choosing the home goes back to it); never
+in an embed. A remembered room whose admission fails is offered as "did
+not open last time" and is no longer reopened by a bare entry, and the
+failure page offers the person's other workspaces. Remembering grants
+nothing: every room still decides at its own door.
+
 The `web-entry` image (`crates/browser/tilo-browser-runtime/container/`)
 is the runtime's desktop bundle as static files. Its `entry.json` is
 written from the environment when the container starts:
 `TILO_WEB_HOME_HOST` (the workspace host's name), `TILO_WEB_HOME_NAME`
 (required with a host) and `TILO_WEB_HOME_APP` (optional) make that host's
 workspace the home; without them a bare visit opens the person's own
-desktop. The bundle lives under `v/<content hash>/` and is cached as
-immutable; only the entry pages and `entry.json` revalidate.
+desktop. `TILO_WEB_ABOUT_NOTIFY`, `TILO_WEB_ABOUT_SOURCE` and
+`TILO_WEB_ABOUT_COMMUNITY` (https URLs) become `about`, the links the
+About sheet behind the top bar's Tilo mark offers; an unset one is not
+offered. The bundle lives under `v/<content hash>/` and is cached as
+immutable; only the entry pages, `entry.json` and `version.json`
+revalidate. An image serves one version, so a page opened before a deploy
+finds its version's app modules gone the first time it opens an app it had
+not loaded: the loader announces the missing module, the page reads
+`version.json`, and when another version is served it offers to reload
+(`web/bundle-update.mjs`). The reloaded page runs the new version only and
+reopens the same windows from this browser's storage, the one that failed
+included; a page never loads another version's files into its own.
 
 `?embed=1` on an entry page is the page inside another site (the
 homepage's live preview): a workspace whose host has an admission door is

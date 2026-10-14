@@ -34,6 +34,8 @@ export interface RuntimeStatus {
   /** Native semantic command receipt lifecycle; signed room state owns rendering. */
   desktopCommand?: { invocation: string; state: string; terminal: boolean; error: string | null };
   desktopErrors?: string[];
+  /** A desktop mount's active workspace, as its top bar names it. */
+  workspaceName?: string | null;
   document?: unknown;
   heads?: string[];
   [diagnostic: string]: unknown;
@@ -75,6 +77,17 @@ export interface MountOptions {
   onHostAction?: (id: string) => void;
   /** The workspace name a desktop this mount seeds starts with. */
   workspaceName?: string;
+  /**
+   * The host of the room shown (`example.org`), which the top bar names in
+   * a quiet pill beside the workspace; leave it out on the person's own
+   * desktop.
+   */
+  host?: string;
+  /**
+   * The links the desktop's About sheet (behind the Tilo mark in its top
+   * bar) offers; an empty or missing one is not offered.
+   */
+  about?: {notify?: string; source?: string; community?: string};
 }
 /** Which window of a desktop an action call addresses. */
 export interface WindowOption {
@@ -186,4 +199,6 @@ export interface HostAction {
   id: string;
   title: string;
   subtitle?: string;
+  /** What the action is about, shown as the source of a banner offering it. */
+  source?: 'identity' | 'devices';
 }

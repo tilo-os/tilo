@@ -1,5 +1,13 @@
 # os/CHANGELOG
 
+## 2026-10-14 — `--mode hosted` removed
+
+- `shell --mode hosted` (and `--mode=hosted`) now exits with status 2 and
+  names its replacement, `--backend winit`. The hosted loop kept its own copy
+  of session bootstrap that had drifted from the shipped session's; that
+  bootstrap now lives once in `compositor::session_bootstrap`. No unit in the
+  image passed the flag.
+
 ## 2026-05-22 — native-mode boot + portal/sandbox/peer-sync wiring
 
 Brings the OS image in line with what's landed across the compositor
