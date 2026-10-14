@@ -606,6 +606,59 @@ impl AnimationSettle {
     }
 }
 
+/// Who a painted tick's motion belongs to, for the frame trace
+/// ([`metrics::FrameSample::paint_animations`]). Naming a content widget
+/// walks the widget tree, so the label is worked out when the set of
+/// animating sources (or the chrome) changes and kept while it does not:
+/// it names the owners as of the start of that run of motion, which is the
+/// run an idle desktop that keeps painting is stuck in.
+#[derive(Default)]
+struct AnimationTraceLabel {
+    key: Option<(crate::shell::frame::AnimationDemand, bool, u64)>,
+    label: &'static str,
+}
+
+impl AnimationTraceLabel {
+    fn label(
+        &mut self,
+        key: (crate::shell::frame::AnimationDemand, bool, u64),
+        owners: impl FnOnce() -> Vec<String>,
+    ) -> &'static str {
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.label = metrics::intern_animations(&animation_trace_label(&owners(), key.1));
+        }
+        self.label
+    }
+}
+
+/// [`AnimationTraceLabel`]'s text: each owner once, a widget path without
+/// its geometry (which moves with the motion and would make every frame a
+/// new label), `transition` for a compositor transition's frame run, and
+/// `resting-frame` when nothing animates any more and the tick is the one
+/// frame [`AnimationSettle`] owes after motion. Commas would split the CSV
+/// cell, so none survive.
+fn animation_trace_label(owners: &[String], transition: bool) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for owner in owners {
+        let path = owner
+            .split('@')
+            .next()
+            .unwrap_or_default()
+            .replace(',', ";");
+        if !path.is_empty() && !names.contains(&path) {
+            names.push(path);
+        }
+    }
+    if transition {
+        names.push("transition".to_string());
+    }
+    if names.is_empty() {
+        names.push("resting-frame".to_string());
+    }
+    names.join("+")
+}
+
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
 
@@ -10051,6 +10104,7 @@ pub fn run() {
     let mut content_owed = false;
     let mut force_first_paint = true;
     let mut animation_settle = AnimationSettle::default();
+    let mut animation_trace = AnimationTraceLabel::default();
     // When the frame being made was first wanted, for its trace lateness.
     let mut demand_onset = metrics::DemandOnset::default();
     // Each foreign surface's frame counter at the last traced paint, so a
@@ -13021,6 +13075,13 @@ pub fn run() {
                 redraw_reasons.paint_reason_bits(session.is_locked(), transition_run),
                 clients,
             );
+            if animating && !session.is_locked() {
+                let owners = animation_trace
+                    .label((animation_demand, transition_run, revision), || {
+                        frame_builder.animation_owners()
+                    });
+                metrics.mark_paint_animations(owners);
+            }
         }
         if should_paint {
             frame_builder.with_chrome(
@@ -14631,6 +14692,53 @@ mod tests {
             "",
             "each report covers its own window"
         );
+    }
+
+    /// An idle desktop that keeps painting "animation" must say whose motion
+    /// it is in the frame trace, the one record an acceptance run keeps of
+    /// its idle window. The label stays one per owner set, not one per frame.
+    #[test]
+    fn a_traced_animation_names_its_owner_without_its_geometry() {
+        let owners = vec![
+            "notification".to_string(),
+            "content/DesktopSurface/GroupRow/WindowGroup/TileHost@1748,92 1051x976".to_string(),
+            "content/DesktopSurface/GroupRow/WindowGroup/TileHost@20,92 600x976".to_string(),
+        ];
+        assert_eq!(
+            animation_trace_label(&owners, false),
+            "notification+content/DesktopSurface/GroupRow/WindowGroup/TileHost"
+        );
+        assert_eq!(
+            animation_trace_label(&[], true),
+            "transition",
+            "a compositor transition's frame run is named"
+        );
+        assert_eq!(
+            animation_trace_label(&[], false),
+            "resting-frame",
+            "the frame owed after motion ended is named, never blank"
+        );
+        assert!(!animation_trace_label(&["a,b".to_string()], false).contains(','));
+
+        let mut trace = AnimationTraceLabel::default();
+        let demand = crate::shell::frame::AnimationDemand {
+            osk: true,
+            ..Default::default()
+        };
+        let mut walks = 0;
+        for _ in 0..3 {
+            let label = trace.label((demand, false, 7), || {
+                walks += 1;
+                vec!["osk".to_string()]
+            });
+            assert_eq!(label, "osk");
+        }
+        assert_eq!(walks, 1, "the owners are looked up once per set of sources");
+        let _ = trace.label((demand, false, 8), || {
+            walks += 1;
+            vec!["osk".to_string()]
+        });
+        assert_eq!(walks, 2, "a chrome change looks them up again");
     }
 
     #[test]
