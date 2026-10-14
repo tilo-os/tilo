@@ -474,6 +474,20 @@ files = [
   { link = "_tilo", to = "/usr/share/zsh/site-functions/_system", layer = "desktop-binaries" },
 ]
 
+# The one writer of the read-only ESP, started on demand as
+# tilo-esp-write@CALLER.service by the boot-entry and Secure Boot units, at
+# boot and on the way down; a swap takes effect at its next start.
+[[component]]
+name = "esp-write"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-esp-write"]
+bins = ["tilo-esp-write"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-esp-write", to = "/usr/libexec/tilo-esp-write", mode = "0755" },
+]
+
 [[component]]
 name = "rollback"
 kind = "boot"
