@@ -411,7 +411,16 @@ fn reached(
             node.name.as_deref() == Some("Reference 28") && node.bounds.is_some()
         }),
         Some("status") => observed(driver, |node| node.name.as_deref() == Some("Saved")),
-        Some("saving") => observed(driver, |node| node.name.as_deref() == Some("Saving…")),
+        Some("saving" | "save_retrying") => {
+            observed(driver, |node| node.name.as_deref() == Some("Saving…"))
+        }
+        Some("save_not_saved") => observed(driver, |node| {
+            node.name.as_deref() == Some("Not saved")
+                && node
+                    .children
+                    .iter()
+                    .any(|child| child.name.as_deref() == Some("Try again"))
+        }),
         Some("save_error") => observed(driver, |node| node.name.as_deref() == Some("Save failed")),
         Some("import_success") => {
             !blocks.iter().any(|block| {

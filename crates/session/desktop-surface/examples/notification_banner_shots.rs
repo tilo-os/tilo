@@ -19,8 +19,8 @@ impl NotificationHost for Fixture {
         self.0.borrow()
     }
     fn actions_for(&self, notice: &Notification) -> Vec<(String, String)> {
-        if notice.severity == NotificationSeverity::Error {
-            return Vec::new();
+        if notice.severity == NotificationSeverity::Error || !notice.actions.is_empty() {
+            return notice.actions.clone();
         }
         vec![
             ("dismiss".into(), "Dismiss".into()),
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         PathBuf::from,
     );
     std::fs::create_dir_all(&out)?;
-    let error = std::env::args().nth(2).as_deref() == Some("error");
+    let variant = std::env::args().nth(2);
     for (name, theme, width) in [
         ("dark", Theme::dark(), 440_u32),
         ("light", Theme::light(), 440),
@@ -62,12 +62,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ] {
         let theme = theme.with_reduce_motion(true);
         let host = Fixture::default();
-        let notice = if error {
-            Notification::new("Couldn't open Notes", "Try again from Search.")
+        let notice = match variant.as_deref() {
+            Some("error") => Notification::new("Couldn't open Notes", "Try again from Search.")
                 .with_app_name("Applications")
-                .with_severity(NotificationSeverity::Error)
-        } else {
-            Notification::new("Meeting begins", "Join your workspace").with_app_name("Calendar")
+                .with_severity(NotificationSeverity::Error),
+            // As the desktop shows a note's save that gave up out of sight:
+            // its activation is the one choice, named by the app.
+            Some("not-saved") => {
+                let mut notice = Notification::new(
+                    ui::i18n!("save-status-not-saved"),
+                    ui::i18n!("save-status-not-saved-detail"),
+                )
+                .with_app_name("Notes");
+                notice.actions = vec![("default".into(), ui::i18n!("save-status-retry"))];
+                notice
+            }
+            _ => {
+                Notification::new("Meeting begins", "Join your workspace").with_app_name("Calendar")
+            }
         };
         if !host.0.borrow_mut().show(notice).is_empty() {
             return Err("single capture notice unexpectedly evicted".into());

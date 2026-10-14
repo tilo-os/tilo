@@ -149,7 +149,7 @@ pub mod offscreen {
         );
         let mut first_paint_seen = false;
         for name in scenes {
-            let mut driver = ShellDriver::new(viewport);
+            let mut driver = ShellDriver::for_scene(name, viewport);
             if let Some(outputs) = outputs {
                 driver.set_outputs(outputs);
             }

@@ -256,6 +256,36 @@ impl HostedTileInputs {
         self.fixture.is_some()
     }
 
+    /// An owned fixture whose apps reach the session's broker at
+    /// `collab`, as a session's do: a capture of a room whose session
+    /// service is gone points it at a socket nobody serves.
+    /// # Errors
+    /// Returns an error if these inputs belong to a live host.
+    pub fn with_session_broker_at(
+        self,
+        collab: std::path::PathBuf,
+        identity: std::path::PathBuf,
+    ) -> std::io::Result<Self> {
+        if !self.is_fixture() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "A fixture broker requires owned fixture inputs",
+            ));
+        }
+        if let Some(apps) = &self.in_process {
+            apps.borrow_mut()
+                .reach_broker(std::rc::Rc::new(move |app, room| {
+                    super::in_process::session_connector(
+                        collab.clone(),
+                        identity.clone(),
+                        app,
+                        room,
+                    )
+                }));
+        }
+        Ok(self)
+    }
+
     /// Give an owned fixture a stable clock, without changing the live source.
     /// # Errors
     /// Returns an error if these inputs belong to a live host.

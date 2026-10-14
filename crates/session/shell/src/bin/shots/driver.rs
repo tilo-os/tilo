@@ -82,8 +82,31 @@ impl ShellDriver {
         Self::with_tree(WorkspaceTree::bootstrap_demo(), viewport)
     }
 
+    /// [`Self::new`] for scene `name`. `offline` shows the session whose
+    /// collaboration service went away: its apps reach for the session's
+    /// broker at a socket nobody serves, so a room's documents lose their
+    /// route as they do when the service stops.
+    pub fn for_scene(name: &str, viewport: (u32, u32)) -> Self {
+        let broker = (name == "offline").then(|| {
+            let gone =
+                std::env::temp_dir().join(format!("tilo-shots-gone-{}", uuid::Uuid::new_v4()));
+            (gone.join("collab.sock"), gone.join("identity.sock"))
+        });
+        Self::build(WorkspaceTree::bootstrap_demo(), viewport, broker)
+    }
+
     /// Build a driver around the provided workspace tree at `viewport` size.
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
+        Self::build(tree, viewport, None)
+    }
+
+    /// [`Self::with_tree`], its apps reaching the session broker at
+    /// `broker`'s collaboration and identity sockets, when given.
+    fn build(
+        tree: WorkspaceTree,
+        viewport: (u32, u32),
+        broker: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    ) -> Self {
         // Boot adopts every ownerless workspace before the session ever
         // paints (`compositor::session_bootstrap`), so a room you made is a room
         // you own; skipping it renders "no members" for rooms that on a
@@ -101,7 +124,10 @@ impl ShellDriver {
         // shows the time it reads.
         let mut fb = match shell::shell::hosted_inputs::HostedTileInputs::fixture()
             .and_then(|inputs| inputs.with_fixture_clock(shots_clock()))
-        {
+            .and_then(|inputs| match broker {
+                Some((collab, identity)) => inputs.with_session_broker_at(collab, identity),
+                None => Ok(inputs),
+            }) {
             Ok(inputs) => FrameBuilder::with_tree_and_inputs(&tree, viewport, inputs),
             Err(error) => {
                 eprintln!(
@@ -1428,7 +1454,7 @@ impl ShellDriver {
     /// catalogue) — a one-shot mutation; call on a fresh driver per scene.
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
-            "desktop" => Self::scene_desktop(),
+            "desktop" | "offline" => Self::scene_desktop(),
             "overview" => self.scene_overview(),
             "overview-shared" => self.scene_overview_shared(),
             "palette" => self.scene_palette(),
@@ -2659,6 +2685,7 @@ impl ShellDriver {
     /// legacy `--scenes` flag for default expansion + validation.
     pub const ALL_SCENES: &'static [&'static str] = &[
         "desktop",
+        "offline",
         "multi-group",
         "multi-strip",
         "maximized",
