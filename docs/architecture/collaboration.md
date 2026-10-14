@@ -265,7 +265,9 @@ ALPN before subscribing.
 
 Devices talk to a host through `crates/hosting/tilo-relay-session`: the
 session client (`RelayClient`), the co-edit session (`RelayCoeditSession`),
-anti-entropy, room administration (`RoomAdminClient`) and the workspace join
+anti-entropy, a room host's administration door (`RoomAdminClient`, for host
+operations and rooms a device does not hold yet; a held room is administered
+through its `tilo.workspace` governance actions) and the workspace join
 client (`WorkspaceJoinClient`). The shell, the action broker, joined rooms and
 the runtime depend on that crate alone; `tilo-relay` is the daemon, depends on
 the session crate and re-exports it under its historic paths, and appears in

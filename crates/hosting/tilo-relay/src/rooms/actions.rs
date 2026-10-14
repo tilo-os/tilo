@@ -6,8 +6,9 @@
 //! a script, the palette or a screen reader invites, lists and cancels
 //! invitations, admits and declines join requests, sets roles, restricts and
 //! unbans members and runs calls over `Envelope::RemoteAction`, without the
-//! `tilo-room-admin/1` and `/rooms` doors those callers cannot speak. Those
-//! doors keep working as they were.
+//! `tilo-room-admin/1` and `/rooms` doors those callers cannot speak. The
+//! desktop administers the rooms it holds this way too; those doors keep
+//! working as they were.
 //!
 //! Nothing here decides who may. Every invocation calls the [`Rooms`] method
 //! its wire door calls, and with it [`Rooms::authorize`]; the catalogue asks
@@ -69,6 +70,7 @@ const DEFAULT_INVITATION_HOURS: u64 = 7 * 24;
 /// How long a restriction lasts when the caller does not say.
 const DEFAULT_RESTRICTION_MINUTES: u64 = 60;
 const HOUR_NS: u64 = 3_600 * 1_000_000_000;
+const SECOND_NS: u64 = 1_000_000_000;
 const MINUTE_MS: u64 = 60 * 1_000;
 
 /// Derives each invocation's idempotency key, so a retry of one invocation
@@ -215,6 +217,11 @@ fn invite_params() -> Vec<ActionParam> {
             "expires_in_hours",
             ParamType::Integer,
             "How long it stays redeemable: 168 hours (7 days) when omitted, at most 720.",
+        ),
+        ActionParam::optional(
+            "expires_in_seconds",
+            ParamType::Integer,
+            "How long it stays redeemable, in seconds, when finer than hours; takes precedence over expires_in_hours. At most 30 days.",
         ),
     ]
 }
@@ -666,9 +673,13 @@ impl Rooms {
         let now = tilo_clock::unix_now_ns();
         match action {
             governance::INVITE => {
-                let hours = args
-                    .integer("expires_in_hours")?
-                    .unwrap_or(DEFAULT_INVITATION_HOURS);
+                let lifetime_ns = match args.integer("expires_in_seconds")? {
+                    Some(seconds) => seconds.saturating_mul(SECOND_NS),
+                    None => args
+                        .integer("expires_in_hours")?
+                        .unwrap_or(DEFAULT_INVITATION_HOURS)
+                        .saturating_mul(HOUR_NS),
+                };
                 let issued = self
                     .issue(
                         room,
@@ -678,7 +689,7 @@ impl Rooms {
                             role: args.role()?,
                             recipient_user_public_key: args.key("recipient")?,
                             invitee_name: args.text("invitee_name")?.map(str::to_owned),
-                            expires_at_ns: now.saturating_add(hours.saturating_mul(HOUR_NS)),
+                            expires_at_ns: now.saturating_add(lifetime_ns),
                             inviter_name: args.text("inviter_name")?.map(str::to_owned),
                         },
                     )
