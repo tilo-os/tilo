@@ -406,7 +406,7 @@ async fn fsync_makes_the_name_durable_with_the_bytes_and_reports_when_it_cannot(
         fs.ns()
             .lookup(
                 crate::namespace::ROOT_INO,
-                &unsaved_copy_name(b"wal.db", b"committed transaction")
+                unsaved_copy_name(b"wal.db", b"committed transaction")
             )
             .is_none(),
         "the synced bytes went back into their file, not into a copy beside it"
