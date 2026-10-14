@@ -1412,6 +1412,29 @@ impl ActionSpec {
         self
     }
 
+    /// Declare this action as the one that opens the file its `path`
+    /// parameter names in this app instance, of any type when `extensions`
+    /// is empty, else of those (lowercase, no dot). Recorded as
+    /// [`OPENS_PATH_TAG`](crate::OPENS_PATH_TAG), so a caller that launches
+    /// the app with a file opens it here, and never through an action
+    /// that only happens to take a `path`. Call after
+    /// [`with_contract`](Self::with_contract), which replaces the tags.
+    #[must_use]
+    pub fn opens_path(mut self, extensions: &[&str]) -> Self {
+        push_tag(&mut self.contract, crate::contract::OPENS_PATH_TAG);
+        for extension in extensions {
+            push_tag(
+                &mut self.contract,
+                &format!(
+                    "{}{}",
+                    crate::contract::OPENS_PATH_EXTENSION_PREFIX,
+                    extension.to_ascii_lowercase()
+                ),
+            );
+        }
+        self
+    }
+
     /// Whether this action is offered only to programmatic callers. See
     /// [`programmatic`](Self::programmatic).
     pub fn is_programmatic(&self) -> bool {
@@ -2235,6 +2258,35 @@ mod tests {
         let second = ContinuationKey::new("scope", [b"a".as_slice(), b"bc".as_slice()]);
         assert_ne!(first, second);
         assert_eq!(first, first.clone());
+    }
+
+    /// An action declares that it opens the file its `path` names, for any
+    /// file or for the extensions it names; one that only takes a `path`
+    /// declares nothing.
+    #[test]
+    fn a_path_opener_is_declared_not_named() {
+        let action = |id: &str| {
+            ActionSpec::typed_operation(
+                id,
+                "Import",
+                "",
+                OperationKind::Effect,
+                "sheets.import",
+                vec![ActionParam::optional("path", ParamType::Text, "File")],
+                |_| EncodedAction::encode_operation("sheets.import", &()).unwrap(),
+            )
+        };
+        let csv = action("import-csv").opens_path(&["CSV"]);
+        assert!(csv.contract.opens_path());
+        assert_eq!(
+            csv.contract.opened_extensions().collect::<Vec<_>>(),
+            ["csv"]
+        );
+        let any = action("open").opens_path(&[]);
+        assert!(any.contract.opens_path());
+        assert_eq!(any.contract.opened_extensions().count(), 0);
+        let iso = action("import-iso");
+        assert!(!iso.contract.opens_path());
     }
 }
 

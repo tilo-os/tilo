@@ -101,8 +101,10 @@ pub mod action;
 mod apply_cache;
 pub mod batch;
 pub mod child;
+mod chunk_map;
 pub mod collection;
 pub mod content;
+mod cow;
 #[cfg(feature = "chrono")]
 mod dates;
 pub mod delta;

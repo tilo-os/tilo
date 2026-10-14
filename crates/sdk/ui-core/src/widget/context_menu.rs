@@ -1131,6 +1131,13 @@ impl Widget for ContextMenu {
         taffy.widget_leaf(style, node_map, self)
     }
 
+    /// Both lengths are fixed when the node is built and it measures
+    /// nothing: there is never a size for the layout solver to re-solve,
+    /// open or closed.
+    fn layout_needs_measure(&self) -> bool {
+        false
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         if self.bounds.is_some() {
             self.layout_at_position();

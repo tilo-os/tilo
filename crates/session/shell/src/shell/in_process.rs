@@ -1548,9 +1548,8 @@ mod tests {
                     );
                     break;
                 }
-                Err(tilo_actions::remote::ActionHostError::InvalidRequest { reason })
-                    if reason.contains("list it again") && std::time::Instant::now() < deadline => {
-                }
+                Err(tilo_actions::remote::ActionHostError::StaleRevision)
+                    if std::time::Instant::now() < deadline => {}
                 Err(error) => panic!("the new note was refused: {error:?}"),
             }
         }

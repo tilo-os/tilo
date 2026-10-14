@@ -10,8 +10,9 @@
 //! decision, so a member it admits can subscribe at once and a member it
 //! removes is cut off.
 //!
-//! Rooms are administered over [`ROOM_ADMIN_ALPN`] or, from a page, over
-//! HTTPS: by devices of the relay's own user, and by other members as far as
+//! Rooms are administered as their own `tilo.workspace` governance actions
+//! (`actions`), over [`ROOM_ADMIN_ALPN`] or, from a page, over HTTPS: by
+//! devices of the relay's own user, and by other members as far as
 //! the room's governance lets them (`authority`, one decision for every
 //! door). Any device redeems an invitation over the shared workspace-join
 //! protocol, and a page over HTTPS, where someone the room lets invite then
@@ -907,9 +908,13 @@ impl Rooms {
         let workspace_id = room.workspace_id();
         let open = host.workspaces.lock().await.contains_key(&workspace_id);
         if !open {
-            let store =
-                crate::store::WorkspaceStore::open(host.access.state_root(), workspace_id, true)
-                    .map_err(|error| error.to_string())?;
+            let store = crate::store::WorkspaceStore::open_with_payloads(
+                host.access.state_root(),
+                workspace_id,
+                true,
+                host.access.shell_payloads().clone(),
+            )
+            .map_err(|error| error.to_string())?;
             if store
                 .load_snapshot()
                 .map_err(|error| error.to_string())?
@@ -929,6 +934,7 @@ impl Rooms {
         let workspace = crate::workspace_io::get_or_initialize(
             &host.workspaces,
             host.access.state_root().to_path_buf(),
+            host.access.shell_payloads(),
             workspace_id,
             true,
             crate::room_access::AdmissionMode::Governed,

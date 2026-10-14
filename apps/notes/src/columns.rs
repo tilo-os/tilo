@@ -54,6 +54,7 @@ impl ColumnPlace {
         ColumnSlot {
             place: self.clone(),
             rect: Rect::ZERO,
+            laid_out: false,
         }
     }
 }
@@ -63,6 +64,7 @@ impl ColumnPlace {
 pub(crate) struct ColumnSlot {
     place: ColumnPlace,
     rect: Rect,
+    laid_out: bool,
 }
 
 impl Widget for ColumnSlot {
@@ -84,10 +86,19 @@ impl Widget for ColumnSlot {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.place.rect.set(self.rect);
+        self.laid_out = true;
     }
 
     fn name(&self) -> &'static str {
         "NotesColumn"
+    }
+
+    /// It takes the size the shell gives its column and holds nothing that
+    /// could change it, so once laid out it has nothing to measure; the
+    /// column hung under it reports its own. (A leaf's default would have
+    /// every frame of the window re-solve sizes, a strip pan included.)
+    fn is_layout_dirty(&self) -> bool {
+        !self.laid_out
     }
 
     /// It paints nothing, so it never has anything to repaint: the page tree

@@ -93,6 +93,9 @@ pub struct Button {
     cached: vello::Scene,
     dirty: bool,
     layout_dirty: bool,
+    /// Whether the layout solver has ever placed it. A button only its host
+    /// places ([`Self::apply_layout_external`]) has no node to measure.
+    solver_placed: bool,
     i18n_revision: u64,
     interaction: crate::interaction::InteractionEnvironment,
     /// Compared *by size* to the current rect — pure translation is
@@ -172,6 +175,7 @@ impl Button {
             cached: vello::Scene::new(),
             dirty: true,
             layout_dirty: false,
+            solver_placed: false,
             i18n_revision: crate::i18n::I18nManager::revision(),
             interaction: crate::interaction::InteractionEnvironment::default(),
             cache_rect: Rect::ZERO,
@@ -1485,6 +1489,7 @@ impl Widget for Button {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.solver_placed = true;
         // Bitwise: this asks whether the cached size is stale at all, not
         // whether it drifted by more than some tolerance.
         let size_changed = self.rect.width().to_bits() != self.cache_rect.width().to_bits()
@@ -1594,9 +1599,11 @@ impl Widget for Button {
     /// The `Rect::ZERO` sentinel keeps the first frame's
     /// `compute_layout` running so `apply_layout` can populate the rect;
     /// after that it stays clean (pure translation handled via the
-    /// cache's append transform, no taffy involvement).
+    /// cache's append transform, no taffy involvement). The sentinel is the
+    /// laid-out rect, not the paint cache's: a button that is not drawn
+    /// (scrolled or panned out of view) has nothing new to measure.
     fn is_layout_dirty(&self) -> bool {
-        self.cache_rect == Rect::ZERO
+        self.rect == Rect::ZERO
             || self.layout_dirty
             || self.i18n_revision != crate::i18n::I18nManager::revision()
     }
@@ -1604,9 +1611,12 @@ impl Widget for Button {
     fn layout_needs_measure(&self) -> bool {
         // A missing paint cache asks for drawing, not another intrinsic
         // measurement. Geometry is available as soon as layout is applied.
-        self.rect == Rect::ZERO
-            || self.layout_dirty
-            || self.i18n_revision != crate::i18n::I18nManager::revision()
+        // A button only its host places has no node for the solver to
+        // measure: the host sizes it, however hidden or unplaced it is.
+        self.solver_placed
+            && (self.rect == Rect::ZERO
+                || self.layout_dirty
+                || self.i18n_revision != crate::i18n::I18nManager::revision())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -2566,6 +2576,43 @@ mod tests {
                 theme.name
             );
         }
+    }
+
+    /// Only a node the layout solver placed can be measured again: a button
+    /// its host places never asks for a measure, placed or hidden, while one
+    /// in the solver's tree asks when what it shows may change its width.
+    #[test]
+    fn a_host_placed_button_never_asks_the_solver_for_a_measure() {
+        let mut hosted = Button::new("history", "History");
+        for rect in [Rect::ZERO, Rect::new(0.0, 0.0, 32.0, 32.0), Rect::ZERO] {
+            hosted.apply_layout_external(rect);
+            assert!(!hosted.layout_needs_measure(), "placed at {rect:?}");
+        }
+
+        let mut laid_out = Button::new("save", "Save");
+        let mut tree = TaffyTree::new();
+        let node = laid_out.build_layout(
+            &mut tree,
+            &Theme::dark(),
+            &mut std::collections::HashMap::new(),
+        );
+        tree.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::MaxContent,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+        )
+        .unwrap();
+        laid_out.apply_layout(&tree, node, Point::ZERO);
+        assert!(!laid_out.layout_needs_measure(), "laid out and unchanged");
+        laid_out.set_interaction_environment(
+            crate::interaction::InteractionEnvironment::default().with_touch_modality(),
+        );
+        assert!(
+            laid_out.layout_needs_measure(),
+            "a touch target may be wider"
+        );
     }
 
     #[test]

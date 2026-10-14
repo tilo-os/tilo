@@ -1431,9 +1431,7 @@ impl Worker {
             .as_ref()
             .is_some_and(|revision| *revision != state.revision.to_string())
         {
-            return Err(Outcome::Rejected(ActionHostError::Refused {
-                reason: "the room changed since that revision".into(),
-            }));
+            return Err(Outcome::Rejected(ActionHostError::StaleRevision));
         }
         let room = state.room.clone();
         let target = &request.target;

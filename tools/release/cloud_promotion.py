@@ -116,12 +116,29 @@ class Response:
 Transport = Callable[[str, str, Mapping[str, str], bytes | None], Response]
 
 
+class SameHostAuthorization(urllib.request.HTTPRedirectHandler):
+    """Follows redirects, but sends credentials only to the host they were meant for.
+
+    The in-region registry answers blob reads with a redirect to a presigned
+    storage URL, which refuses a request carrying a second credential.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        follow = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if follow is not None and urllib.parse.urlsplit(newurl).netloc != urllib.parse.urlsplit(req.full_url).netloc:
+            follow.remove_header("Authorization")
+        return follow
+
+
+OPENER = urllib.request.build_opener(SameHostAuthorization)
+
+
 def urllib_transport(method: str, url: str, headers: Mapping[str, str], body: bytes | None) -> Response:
     # The edge in front of the public endpoints refuses urllib's default agent.
     request = urllib.request.Request(url, data=body, method=method,
                                      headers={"User-Agent": "tilo-cloud-promotion/1", **headers})
     try:
-        with urllib.request.urlopen(request, timeout=30) as reply:
+        with OPENER.open(request, timeout=30) as reply:
             return Response(reply.status, {k.lower(): v for k, v in reply.headers.items()}, reply.read())
     except urllib.error.HTTPError as error:
         return Response(error.code, {k.lower(): v for k, v in error.headers.items()}, error.read())
@@ -144,21 +161,59 @@ class Image:
 
 
 class Registry:
-    """The public, anonymous side of the image registry."""
+    """The image registry, read anonymously.
+
+    From the internet the name reaches a public read-only mirror that needs
+    no credentials. Inside the CI network the same name reaches the
+    token-authenticated registry, whose token service grants anonymous
+    callers `pull`: a 401 with a Bearer challenge is answered by fetching
+    such a token and asking again.
+    """
 
     def __init__(self, transport: Transport, host: str = REGISTRY):
         self.transport = transport
         self.base = f"https://{host}"
+        self.tokens: dict[str, str] = {}
 
-    def get(self, path: str, accept: Iterable[str] = ()) -> Response:
+    def get(self, repository: str, path: str, accept: Iterable[str] = ()) -> Response:
+        url = urllib.parse.urljoin(self.base, path)
         headers = {"Accept": ", ".join(accept)} if accept else {}
-        return self.transport("GET", urllib.parse.urljoin(self.base, path), headers, None)
+        if repository in self.tokens:
+            headers["Authorization"] = f"Bearer {self.tokens[repository]}"
+        reply = self.transport("GET", url, headers, None)
+        if reply.status == 401 and repository not in self.tokens:
+            token = self.pull_token(repository, reply.headers.get("www-authenticate", ""))
+            if token:
+                self.tokens[repository] = token
+                reply = self.transport("GET", url, {**headers, "Authorization": f"Bearer {token}"}, None)
+        return reply
+
+    def pull_token(self, repository: str, challenge: str) -> str | None:
+        """An anonymous pull token from the challenge's token service."""
+        match = re.match(r"\s*Bearer\s+(.*)", challenge, re.IGNORECASE)
+        if not match:
+            return None
+        params = dict(re.findall(r'(\w+)="([^"]*)"', match.group(1)))
+        realm = params.get("realm", "")
+        if urllib.parse.urlsplit(realm).scheme != "https":
+            raise PromotionError(f"{repository}: the registry's token service {realm!r} is not HTTPS")
+        query = {"scope": params.get("scope") or f"repository:{repository}:pull"}
+        if params.get("service"):
+            query["service"] = params["service"]
+        reply = self.transport("GET", f"{realm}?{urllib.parse.urlencode(query)}", {}, None)
+        if reply.status != 200:
+            raise PromotionError(f"{repository}: the registry's token service answered HTTP {reply.status}")
+        document = reply.json()
+        token = document.get("token") or document.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise PromotionError(f"{repository}: the registry's token service returned no token")
+        return token
 
     def tags(self, repository: str) -> set[str]:
         tags: set[str] = set()
         path: str | None = f"/v2/{repository}/tags/list?n=1000"
         while path:
-            reply = self.get(path)
+            reply = self.get(repository, path)
             if reply.status != 200:
                 raise PromotionError(f"{repository}: listing tags answered HTTP {reply.status}")
             tags.update(reply.json().get("tags") or [])
@@ -168,7 +223,8 @@ class Registry:
 
     def image(self, service: Service, reference: str) -> Image:
         """The single-platform image behind a tag or digest, verified by content."""
-        reply = self.get(f"/v2/{service.repository}/manifests/{reference}", MANIFEST_TYPES + INDEX_TYPES)
+        reply = self.get(service.repository, f"/v2/{service.repository}/manifests/{reference}",
+                         MANIFEST_TYPES + INDEX_TYPES)
         if reply.status == 404:
             raise PromotionError(f"{service.image}:{reference} does not exist")
         if reply.status != 200:
@@ -184,7 +240,7 @@ class Registry:
         config_digest = manifest.get("config", {}).get("digest", "")
         if not DIGEST.fullmatch(config_digest):
             raise PromotionError(f"{service.image}@{digest} has no image config")
-        config = self.get(f"/v2/{service.repository}/blobs/{config_digest}")
+        config = self.get(service.repository, f"/v2/{service.repository}/blobs/{config_digest}")
         if config.status != 200 or "sha256:" + hashlib.sha256(config.body).hexdigest() != config_digest:
             raise PromotionError(f"{service.image}@{digest}: its config blob is missing or altered")
         document = config.json()

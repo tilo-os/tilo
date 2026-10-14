@@ -52,8 +52,6 @@ use std::os::fd::{FromRawFd, OwnedFd};
 pub type RawFd = i32;
 
 #[cfg(feature = "rpc")]
-use capnp::capability::Promise;
-#[cfg(feature = "rpc")]
 use capnp_rpc::twoparty;
 #[cfg(feature = "rpc")]
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp};
@@ -349,11 +347,6 @@ where
     let client = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
     Ok(client.bootstrap::<C>())
 }
-
-#[cfg(feature = "rpc")]
-/// `Promise` made return-friendly for `Result<_, capnp::Error>`, so wrappers
-/// can write `let p: Promise<_, _> = ...` without importing capnp.
-pub type RpcPromise<T> = Promise<T, capnp::Error>;
 
 #[cfg(test)]
 mod tests {

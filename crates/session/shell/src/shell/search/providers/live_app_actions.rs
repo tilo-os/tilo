@@ -99,6 +99,7 @@ fn invalidates_directory_cache(error: &ActionHostError) -> bool {
         error,
         ActionHostError::UnknownAction
             | ActionHostError::InvalidRequest { .. }
+            | ActionHostError::StaleRevision
             | ActionHostError::Unavailable { .. }
     )
 }
@@ -3918,6 +3919,7 @@ mod tests {
                 ActionHostError::InvalidRequest {
                     reason: "stale revision".into(),
                 },
+                ActionHostError::StaleRevision,
                 ActionHostError::Unavailable {
                     reason: "owner left".into(),
                 },

@@ -21,8 +21,13 @@ pub(crate) struct Evidence {
     digest: [u8; 32],
 }
 impl Evidence {
-    /// The caller must freshly authorize this source before accepting its input.
-    pub(crate) fn authenticated(envelope: &Envelope, peer: &AuthenticatedPeer) -> Option<Self> {
+    /// The caller must freshly authorize this source before accepting its
+    /// input. `payloads` reads the checkpoint body.
+    pub(crate) fn authenticated(
+        payloads: &dyn crate::payloads::ShellPayloads,
+        envelope: &Envelope,
+        peer: &AuthenticatedPeer,
+    ) -> Option<Self> {
         let Envelope::Delta {
             workspace_id,
             delta,
@@ -39,18 +44,22 @@ impl Evidence {
             return None;
         };
         let bytes = crate::transport::encode(envelope).ok()?;
-        let evidence = Self::decode(&bytes, *workspace_id)?;
+        let evidence = Self::decode(payloads, &bytes, *workspace_id)?;
         (evidence.author == peer.device_public_key && evidence.user == peer.user_public_key)
             .then_some(evidence)
     }
-    fn decode(bytes: &[u8], workspace: u64) -> Option<Self> {
+    fn decode(
+        payloads: &dyn crate::payloads::ShellPayloads,
+        bytes: &[u8],
+        workspace: u64,
+    ) -> Option<Self> {
         let (author, crate::coedit::CoeditPayload::Checkpoint { channel, body }) =
             super::retained::payload(bytes, workspace)?
         else {
             return None;
         };
         let crate::payloads::CheckpointKind::Continuity { user } =
-            crate::payloads::shell().checkpoint(&channel, &body)?.kind
+            payloads.checkpoint(&channel, &body)?.kind
         else {
             return None;
         };
@@ -91,7 +100,8 @@ impl Receipt {
         self.sequence != 0
             && self.evidence.workspace == store.workspace_id
             && self.evidence.digest == *blake3::hash(bytes).as_bytes()
-            && Evidence::decode(bytes, store.workspace_id).as_ref() == Some(&self.evidence)
+            && Evidence::decode(&**store.payloads(), bytes, store.workspace_id).as_ref()
+                == Some(&self.evidence)
     }
 }
 
@@ -205,7 +215,7 @@ fn association(
         return Ok(None);
     };
     super::bounded::increment(&mut stats.preparation_reads)?;
-    account_validation(stats, bytes.len());
+    account_validation(&**store.payloads(), stats, bytes.len());
     if !association.receipt.validates(store, &bytes) {
         return Ok(None);
     }
@@ -214,10 +224,14 @@ fn association(
 // Exact validation owns at most the framed input plus two decoded byte-vector
 // copies at a time. Each growable decode vector has capacity below twice its
 // logical length. Reserve that overlap conservatively, including enum storage.
-pub(super) fn account_validation(stats: &mut super::bounded::WorkStats, len: usize) {
+pub(super) fn account_validation(
+    payloads: &dyn crate::payloads::ShellPayloads,
+    stats: &mut super::bounded::WorkStats,
+    len: usize,
+) {
     let overhead = std::mem::size_of::<Envelope>()
         .saturating_add(std::mem::size_of::<crate::coedit::CoeditPayload>())
-        .saturating_add(crate::payloads::shell().decoded_overhead());
+        .saturating_add(payloads.decoded_overhead());
     stats.peak_frame_bytes = stats
         .peak_frame_bytes
         .max(len.saturating_mul(5).saturating_add(overhead));
@@ -313,7 +327,7 @@ fn copy_inner(
     let bytes = super::replay::frame_bytes(destination)?
         .ok_or_else(|| invalid("invalid continuity copy frame"))?;
     super::bounded::increment(&mut stats.preparation_reads)?;
-    account_validation(stats, bytes.len());
+    account_validation(&**store.payloads(), stats, bytes.len());
     write(store, destination, &bytes, &association.receipt)?;
     if destination
         .extension()
@@ -462,9 +476,10 @@ mod tests {
                 .encode()
                 .unwrap(),
             };
-            let receipt = Evidence::authenticated(&envelope, &self.peer)
-                .unwrap()
-                .accept(time);
+            let receipt =
+                Evidence::authenticated(&crate::payloads::NeighbourPayloads, &envelope, &self.peer)
+                    .unwrap()
+                    .accept(time);
             let bytes = crate::transport::encode(&envelope).unwrap();
             (channel, envelope, bytes, receipt)
         }
@@ -556,10 +571,17 @@ mod tests {
         // encoded frame, owned envelope delta and owned co-edit body.
         let previous = tilo_automerge::heap::allocated_by(|| {
             let raw = crate::transport::encode(&envelope).unwrap();
-            assert!(Evidence::decode(&raw, 7).is_none());
+            assert!(Evidence::decode(&crate::payloads::NeighbourPayloads, &raw, 7).is_none());
         });
         let current = tilo_automerge::heap::allocated_by(|| {
-            assert!(Evidence::authenticated(&envelope, &fixture.peer).is_none());
+            assert!(
+                Evidence::authenticated(
+                    &crate::payloads::NeighbourPayloads,
+                    &envelope,
+                    &fixture.peer
+                )
+                .is_none()
+            );
         });
         eprintln!(
             "ordinary {SIZE}-byte body: previous {previous}, authenticated {current} allocated bytes"
@@ -606,7 +628,14 @@ mod tests {
                 unreachable!()
             };
             *delta = encoded;
-            assert!(Evidence::authenticated(&changed, &fixture.peer).is_none());
+            assert!(
+                Evidence::authenticated(
+                    &crate::payloads::NeighbourPayloads,
+                    &changed,
+                    &fixture.peer
+                )
+                .is_none()
+            );
         }
     }
 
@@ -615,7 +644,11 @@ mod tests {
         let fixture = Fixture::new();
         let (_, original, raw, receipt) = fixture.frame(vec![1; 128], 1);
         assert_eq!(
-            Evidence::authenticated(&original, &fixture.peer),
+            Evidence::authenticated(
+                &crate::payloads::NeighbourPayloads,
+                &original,
+                &fixture.peer
+            ),
             Some(receipt.evidence)
         );
         let Envelope::Delta { delta, .. } = &original else {
@@ -628,22 +661,43 @@ mod tests {
             };
             *changed = delta[..end].to_vec();
             assert!(
-                Evidence::authenticated(&truncated, &fixture.peer).is_none(),
+                Evidence::authenticated(
+                    &crate::payloads::NeighbourPayloads,
+                    &truncated,
+                    &fixture.peer
+                )
+                .is_none(),
                 "truncated co-edit payload at {end} gained evidence"
             );
         }
         for end in 0..raw.len() {
-            assert!(Evidence::decode(&raw[..end], 7).is_none());
+            assert!(
+                Evidence::decode(&crate::payloads::NeighbourPayloads, &raw[..end], 7).is_none()
+            );
         }
-        assert!(Evidence::decode(&raw, 8).is_none());
-        assert!(Evidence::authenticated(&original, &Fixture::new().peer).is_none());
+        assert!(Evidence::decode(&crate::payloads::NeighbourPayloads, &raw, 8).is_none());
+        assert!(
+            Evidence::authenticated(
+                &crate::payloads::NeighbourPayloads,
+                &original,
+                &Fixture::new().peer
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn receipt_evidence_requires_complete_wrappers_and_authenticated_group() {
         let fixture = Fixture::new();
         let (_, original, raw, _) = fixture.frame(vec![1], 1);
-        assert!(Evidence::authenticated(&original, &fixture.peer).is_some());
+        assert!(
+            Evidence::authenticated(
+                &crate::payloads::NeighbourPayloads,
+                &original,
+                &fixture.peer
+            )
+            .is_some()
+        );
         for case in ["outer-suffix", "body-suffix", "channel", "root", "author"] {
             let mut changed = original.clone();
             let Envelope::Delta {
@@ -686,7 +740,12 @@ mod tests {
                 delta.push(0);
             }
             assert!(
-                Evidence::authenticated(&changed, &fixture.peer).is_none(),
+                Evidence::authenticated(
+                    &crate::payloads::NeighbourPayloads,
+                    &changed,
+                    &fixture.peer
+                )
+                .is_none(),
                 "{case} gained evidence"
             );
         }
@@ -695,7 +754,7 @@ mod tests {
         let len = u32::try_from(suffixed.len() - 4).unwrap();
         suffixed[..4].copy_from_slice(&len.to_le_bytes());
         assert!(
-            Evidence::decode(&suffixed, 7).is_none(),
+            Evidence::decode(&crate::payloads::NeighbourPayloads, &suffixed, 7).is_none(),
             "transport suffix gained evidence"
         );
     }
