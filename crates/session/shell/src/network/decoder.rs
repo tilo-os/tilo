@@ -12,6 +12,7 @@
 //! every receiver advertised (see `media::realtime::negotiate`).
 
 use media::realtime::{DecodeOutput, DecoderConfig, RealtimeDecoder, StreamColor};
+use media::{DecodedPicture, RealtimeError};
 use media::{FramePayload, PlanarFormat, StreamCodec};
 
 use crate::collab::colorimetry::{
@@ -170,7 +171,8 @@ impl VideoDecoder {
 
     /// Push one access unit; returns the decoded frame if a picture is
     /// ready. `None` covers "waiting for a keyframe", corrupt input and "no
-    /// decoder for this codec here" alike — callers log the packet as dropped.
+    /// decoder for this codec here" alike — callers log the packet as dropped
+    /// — unless [`Self::picture_pending`] says the unit is still decoding.
     pub fn decode(&mut self, unit: &[u8]) -> Option<DecodedFrame> {
         if unit.is_empty() || self.failed {
             return None;
@@ -193,7 +195,37 @@ impl VideoDecoder {
                 }
             }
         }
-        let picture = match self.inner.as_mut()?.decode(unit, None) {
+        let picture = self.inner.as_mut()?.decode(unit, None);
+        self.frame_from(picture)
+    }
+
+    /// Whether an accepted unit's picture is still being decoded: it took
+    /// longer than the decoder's wait and arrives with a later
+    /// [`Self::decode`] or [`Self::take_late_frame`]. A slow picture, not a
+    /// rejected unit.
+    pub fn picture_pending(&self) -> bool {
+        !self.failed
+            && self
+                .inner
+                .as_ref()
+                .is_some_and(RealtimeDecoder::picture_pending)
+    }
+
+    /// The newest picture that finished after its `decode` returned, without
+    /// waiting or decoding anything new.
+    pub fn take_late_frame(&mut self) -> Option<DecodedFrame> {
+        if !self.picture_pending() {
+            return None;
+        }
+        let picture = self.inner.as_mut()?.take_late_picture();
+        self.frame_from(picture)
+    }
+
+    fn frame_from(
+        &mut self,
+        picture: Result<Option<DecodedPicture>, RealtimeError>,
+    ) -> Option<DecodedFrame> {
+        let picture = match picture {
             Ok(p) => p?,
             Err(e) => {
                 tracing::warn!(
