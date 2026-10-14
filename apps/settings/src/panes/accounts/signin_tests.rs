@@ -44,6 +44,164 @@ impl BrowserOpener for FakeBrowser {
     }
 }
 
+#[test]
+fn live_second_account_refusal_restores_already_published_metadata() {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    let record = app.person::<accounts::person::PersonAccounts>().unwrap();
+    let (_dir, root) = scratch_root();
+    let root = root.with_person(record.clone());
+    let mut existing = accounts::Account::new("a-drive", "google-drive");
+    existing.config = serde_json::json!({"kept": true});
+    let mut original = accounts::AccountStore::new();
+    original.upsert(existing.clone());
+    root.save_store(&original).unwrap();
+    let old_secret = accounts::Secret::password("old-credential");
+    let mut vault = root.vault();
+    vault.put(&existing.id, &old_secret);
+    vault.try_save().unwrap();
+    existing.display_name = "Updated before refusal".into();
+    let invalid = accounts::Account::new("z-mail", "");
+    let replacement = accounts::Secret::password("replacement");
+    let error = AccountsPane::commit_accounts(
+        &root,
+        vec![
+            (existing, Some(&replacement)),
+            (invalid, Some(&replacement)),
+        ],
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("an account needs an id and a type"),
+        "{error}"
+    );
+    assert_eq!(
+        record.get().store().get(&"a-drive".into()),
+        original.get(&"a-drive".into())
+    );
+    assert_eq!(record.get().store().len(), 1);
+    assert_eq!(root.vault().get(&"a-drive".into()), Some(old_secret));
+    assert!(root.vault().get(&"z-mail".into()).is_none());
+    assert!(!root.mutation_pending());
+}
+
+#[test]
+fn live_pair_projection_failure_restores_person_metadata_and_keeps_recovery_intent() {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    let record = app.person::<accounts::person::PersonAccounts>().unwrap();
+    let (dir, root) = scratch_root();
+    let root = root.with_person(record.clone());
+    let first = accounts::Account::new("drive", "google-drive");
+    let second = accounts::Account::new("ada@example.org", "email");
+    // The live record accepts both edits; only its device projection fails.
+    std::fs::create_dir_all(dir.path().join("tilo/accounts/store.json")).unwrap();
+    let secret = accounts::Secret::password("sealed-credential");
+    let error =
+        AccountsPane::commit_accounts(&root, vec![(first, Some(&secret)), (second, Some(&secret))])
+            .unwrap_err();
+    assert!(error.contains("metadata rollback also failed"), "{error}");
+    assert!(
+        record.get().store().is_empty(),
+        "published live metadata must be restored even when projection is still blocked"
+    );
+    assert!(root.vault().get(&"drive".into()).is_none());
+    assert!(root.vault().get(&"ada@example.org".into()).is_none());
+    assert!(root.mutation_pending());
+    std::fs::remove_dir(dir.path().join("tilo/accounts/store.json")).unwrap();
+    root.recover_mutation().unwrap();
+    assert!(!root.mutation_pending());
+    assert!(record.get().store().is_empty());
+    assert!(accounts::AccountStore::load_in(&dir.path().join("tilo")).is_empty());
+}
+
+#[test]
+fn published_google_mail_reauth_uses_browser_and_preserves_the_mailbox() {
+    for identity in ["ada@example.org", "other@example.org"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = AccountRoot::at(dir.path());
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        let record = app.person::<accounts::person::PersonAccounts>().unwrap();
+        let root = root.with_person(record);
+        let mut account = accounts::Account::new("stable-mail-id", "email");
+        account.set_config(&accounts::email::AccountConfig {
+            email: "ada@example.org".into(),
+            imap_host: "imap.gmail.com".into(),
+            auth: accounts::email::AuthMethod::OAuth,
+            ..Default::default()
+        });
+        let mut store = accounts::AccountStore::new();
+        store.upsert(account.clone());
+        root.save_store(&store).unwrap();
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let gmail = Responder::start(vec![
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(format!(r#"{{"emailAddress":"{identity}"}}"#)),
+        ]);
+        let browser = FakeBrowser::new(true);
+        let mut clients = account_custody::ClientTable::defaults().clone();
+        // Gmail reauthentication must work even when Drive is disabled in this build.
+        clients.google.scopes.files.clear();
+        let pane = AccountsPane::in_root(root.clone())
+            .with_custodian(
+                root.custodian()
+                    .with_client_table(clients)
+                    .with_issuer_endpoints(account_custody::OAuthIssuer::Google, oauth.provider())
+                    .with_gmail_profile_endpoint(format!("{}/profile", gmail.url())),
+            )
+            .with_browser_opener(browser.clone());
+        app.surface::<crate::SettingsApp, _>(|settings| {
+            *settings.accounts().model().borrow_mut() = pane;
+        })
+        .unwrap();
+        app.settle();
+        app.call_on(
+            "settings.account:stable-mail-id",
+            "sign-in-again",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        app.call_on("settings.root", "save-account-form", serde_json::json!({}))
+            .unwrap();
+        app.surface::<crate::SettingsApp, _>(|settings| {
+            let shared = settings.accounts().model();
+            let mut pane = shared.borrow_mut();
+            assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
+            if identity == "ada@example.org" {
+                assert!(
+                    !pane.sign_in_open(),
+                    "{:?}",
+                    pane.sign_in_message_for_test()
+                );
+            } else {
+                assert!(
+                    pane.sign_in_message_for_test()
+                        .unwrap()
+                        .contains("different mailbox")
+                );
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            root.store().len(),
+            1,
+            "standalone mail reauth must not create Drive"
+        );
+        assert_eq!(
+            root.store().get(&account.id).unwrap().config["email"],
+            "ada@example.org"
+        );
+        assert_eq!(
+            root.vault().get(&account.id).is_some(),
+            identity == "ada@example.org"
+        );
+        let urls = browser.opened.lock().unwrap();
+        assert!(urls[0].contains("mail.google.com"));
+        assert!(!urls[0].contains("auth%2Fdrive"));
+        drop(urls);
+    }
+}
+
 fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
     let dir = tempfile::tempdir().expect("scratch config root");
     let root = AccountRoot::at(dir.path().join("tilo"));

@@ -4924,6 +4924,90 @@ mod tests {
     use crate::resource::TestMail;
     use automerge::ReadDoc;
 
+    #[cfg(feature = "live")]
+    #[test]
+    fn already_open_mail_adopts_settings_google_consent_on_sync() {
+        use account_custody::{ClientTable, OAuthIssuer};
+        use settings::accounts::{AccountKind, AccountRoot};
+        use settings::panes::accounts::{AccountViewCommand, AccountsPane, BrowserOpener};
+        use test_http::{Reply, Responder};
+        use tilo_oauth::fake::{FakeAuthorizationServer, browse};
+
+        struct Browser;
+        impl BrowserOpener for Browser {
+            fn open(&self, url: &str) -> ui::portal::LaunchChannel {
+                let url = url.to_string();
+                std::thread::spawn(move || browse(&url).unwrap());
+                let (sender, receiver) = std::sync::mpsc::channel();
+                sender.send(ui::portal::LaunchOutcome::Opened).unwrap();
+                receiver
+            }
+        }
+
+        let mut host =
+            ui::framework::testing::TestApp::<settings::resource::SettingsShell>::new().unwrap();
+        let record = host.person::<PersonAccounts>().unwrap();
+        // No mail engine or remote avatars; the account projection and vault
+        // are confined to this window's private temporary profile.
+        let mut mail = MailApp::new_first_run();
+        let root =
+            AccountRoot::at(mail.accounts_persist_root().unwrap()).with_person(record.clone());
+        mail.follow_person_accounts(record.clone());
+        let doc = TestMail::doc();
+        mail.sync(&doc, &automerge::ROOT);
+        assert!(mail.shared.borrow().accounts.is_empty());
+        assert!(mail.is_first_run());
+        assert!(mail.engine.is_none());
+
+        let oauth = FakeAuthorizationServer::start();
+        let registration = ClientTable::defaults()
+            .client_registration(OAuthIssuer::Google)
+            .unwrap();
+        oauth.require_client_secret(registration.secret().unwrap());
+        let gmail = Responder::start(vec![
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(r#"{"emailAddress":"ada@example.org"}"#),
+        ]);
+        let custody = root
+            .custodian()
+            .with_issuer_endpoints(OAuthIssuer::Google, oauth.provider())
+            .with_gmail_profile_endpoint(format!("{}/profile", gmail.url()));
+        let mut pane = AccountsPane::in_root(root.clone())
+            .with_custodian(custody)
+            .with_browser_opener(std::sync::Arc::new(Browser));
+        pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
+        pane.command(AccountViewCommand::SubmitGoogleMail);
+        assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
+        assert!(
+            !pane.sign_in_open(),
+            "{:?}",
+            pane.sign_in_message_for_test()
+        );
+        assert_eq!(gmail.next_request().target, "/profile");
+        let published = AccountStore::load_in(root.explicit().unwrap());
+        assert_eq!(published.accounts.len(), 1);
+        assert_eq!(record.get().store().len(), 2);
+        assert!(mail.shared.borrow().accounts.is_empty());
+
+        // The same already-open widget observes Settings' shared-record edit
+        // through the production sync path, without reopening or re-following.
+        mail.sync(&doc, &automerge::ROOT);
+        let shown = mail.shared.borrow();
+        assert_eq!(shown.accounts.accounts.len(), 1);
+        let account = shown.accounts.active_account().unwrap();
+        assert_eq!(account.id, published.accounts[0].id);
+        assert_eq!(account.config.email, "ada@example.org");
+        assert_eq!(account.config.imap_host, "imap.gmail.com");
+        assert_eq!(account.config.smtp_host, "smtp.gmail.com");
+        assert_eq!(account.config.smtp_port, 587);
+        assert_eq!(account.config.auth, accounts::email::AuthMethod::OAuth);
+        assert!(account.config.password.is_empty());
+        drop(shown);
+        assert!(!mail.is_first_run());
+        assert!(mail.engine.is_none());
+    }
+
     fn cursor_at(p: Point) -> WindowEvent {
         ui::synthetic_input::cursor_moved(p.x, p.y)
     }
