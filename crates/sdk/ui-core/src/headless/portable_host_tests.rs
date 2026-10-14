@@ -420,6 +420,68 @@ fn portable_review_modal_enter_leave_restores_semantic_focus() {
     frame.relayout();
     assert!(focused(&frame, "background"));
 }
+
+/// Counts every time the focus-order walk asks whether it takes focus.
+struct FocusAsked {
+    asked: Rc<Cell<usize>>,
+}
+impl Widget for FocusAsked {
+    crate::testing::inert_widget_methods!(leaf_layout, name = "focus-asked");
+    fn is_focusable(&self) -> bool {
+        self.asked.set(self.asked.get() + 1);
+        false
+    }
+}
+
+#[test]
+fn untrapped_frames_skip_the_focus_walk_and_a_trap_still_engages_at_once() {
+    let asked = Rc::new(Cell::new(0));
+    let open = Rc::new(Cell::new(false));
+    let gate = Gate {
+        content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
+        open: open.clone(),
+        traps: true,
+        delivered: Rc::default(),
+    };
+    let mut frame = frame(Box::new(
+        Column::new()
+            .push(Box::new(Button::new("background", "Background")))
+            .push(Box::new(FocusAsked {
+                asked: asked.clone(),
+            }))
+            .push(Box::new(gate)),
+    ));
+    frame
+        .perform_named("background", &crate::a11y::Action::Focus)
+        .unwrap();
+    frame.relayout();
+    asked.set(0);
+    let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
+    for _ in 0..5 {
+        frame.relayout();
+        frame.dispatch_to_root(&wheel);
+        frame.relayout();
+    }
+    assert_eq!(
+        asked.get(),
+        0,
+        "untrapped idle and scroll frames walk no focus order, as the live App between rebuilds"
+    );
+    // The gate opens without a structure change, so no rebuild announces it.
+    open.set(true);
+    frame.relayout();
+    assert!(
+        focused(&frame, "inside"),
+        "a trap engages the frame it appears"
+    );
+    assert!(!focused(&frame, "background"));
+    open.set(false);
+    frame.relayout();
+    assert!(
+        focused(&frame, "background"),
+        "closing the trap restores the focus it saved"
+    );
+}
 #[test]
 fn portable_review_modal_owning_keyboard_receives_tab_and_alt_arrow() {
     let delivered = Rc::new(Cell::new(0));
