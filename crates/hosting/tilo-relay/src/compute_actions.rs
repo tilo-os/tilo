@@ -209,13 +209,9 @@ impl ComputeActions {
             app_id: app,
             gpu,
         };
-        let workspace = self
-            .shared
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned();
+        let registry = self.shared.workspaces.lock().await;
+        let workspace = registry.get(&workspace_id).cloned();
+        drop(registry);
         let placed = match workspace {
             Some(workspace) => {
                 let runtime = workspace.lock().await;

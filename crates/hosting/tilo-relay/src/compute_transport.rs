@@ -739,13 +739,13 @@ mod tests {
                 .all(|candidate| candidate.verdict == Err(crate::placement::Ineligible::NoGpu)),
             "{refused}"
         );
-        let stale = state.place(&needs.requirements(), 10_000).unwrap_err();
+        let expired = state.place(&needs.requirements(), 10_000).unwrap_err();
         assert!(
-            stale
+            expired
                 .considered
                 .iter()
                 .all(|candidate| candidate.verdict == Err(crate::placement::Ineligible::Offline)),
-            "{stale}"
+            "{expired}"
         );
     }
 
