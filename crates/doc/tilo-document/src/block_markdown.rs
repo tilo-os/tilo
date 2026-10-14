@@ -65,9 +65,10 @@ const CALLOUT_ATTR: &str = "alert";
 
 /// The callout named `name`, in any case.
 pub(crate) fn callout_named(name: &str) -> Option<&'static str> {
-    CALLOUTS
-        .into_iter()
-        .find(|callout| callout.eq_ignore_ascii_case(name.trim()))
+    // Lower-cased once, then compared exactly: a case-insensitive comparison
+    // per callout is unrolled into a loop for each name.
+    let name = name.trim().to_ascii_lowercase();
+    CALLOUTS.into_iter().find(|callout| *callout == name)
 }
 
 /// What to do with one stored attribute when a block takes a shape.

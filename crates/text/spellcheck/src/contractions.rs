@@ -4,7 +4,8 @@
 /// apostrophes, so a corrector resolves these before any edit-distance
 /// search, which would pick a spelling neighbour ("dont" -> "done"). Bare
 /// forms that are words in their own right ("cant", "wont", "ill", "its",
-/// "well", "were", "shell") are absent.
+/// "well", "were", "shell") are absent. Sorted by bare form, which
+/// [`contraction`] searches by halves.
 const CONTRACTIONS: &[(&str, &str)] = &[
     ("arent", "aren't"),
     ("couldnt", "couldn't"),
@@ -34,9 +35,12 @@ const CONTRACTIONS: &[(&str, &str)] = &[
 /// `"doesnt"` gives `"doesn't"`, `"im"` gives `"I'm"`.
 #[must_use]
 pub fn contraction(bare: &str) -> Option<&'static str> {
+    // A search by halves stays one small loop; a scan of the table is
+    // unrolled into a comparison per entry.
     CONTRACTIONS
-        .iter()
-        .find(|(typed, _)| *typed == bare)
+        .binary_search_by(|(typed, _)| (*typed).cmp(bare))
+        .ok()
+        .and_then(|at| CONTRACTIONS.get(at))
         .map(|&(_, full)| full)
 }
 
@@ -52,6 +56,19 @@ mod tests {
             "cant", "wont", "ill", "its", "well", "were", "shell", "done",
         ] {
             assert_eq!(contraction(word), None, "{word}");
+        }
+    }
+
+    #[test]
+    fn every_contraction_is_found() {
+        assert!(
+            CONTRACTIONS
+                .windows(2)
+                .all(|pair| matches!(pair, [a, b] if a.0 < b.0)),
+            "the table is sorted by bare form, without repeats"
+        );
+        for (bare, full) in CONTRACTIONS {
+            assert_eq!(contraction(bare), Some(*full), "{bare}");
         }
     }
 
