@@ -49,7 +49,7 @@ mod search;
 
 pub use history::HistorySource;
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
-pub use search::HostAction;
+pub use search::{HostAction, HostActionSource};
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
