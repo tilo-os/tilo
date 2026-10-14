@@ -108,8 +108,7 @@ pub(crate) fn persist_unsaved() {
 
 fn read_bounded(file: &Path) -> Option<Vec<u8>> {
     let (dir, name) = tilo_files::file_at(file).ok()?;
-    let bytes = tilo_files::blocking::read_prefix(&dir, &name, LIMIT + 1).ok()?;
-    (bytes.len() <= LIMIT).then_some(bytes)
+    tilo_files::blocking::read_bounded(&dir, &name, LIMIT).ok()?
 }
 
 /// The pipeline cache a window's renderer builds with, and where to keep it.

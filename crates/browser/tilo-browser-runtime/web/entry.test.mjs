@@ -151,11 +151,15 @@ test('the home workspace opens through its host door under its listed name, and 
     get textContent() { return this.text; },
     set textContent(text) { shown.push(text); this.text = text; },
   };
-  const page = await boot({mode: 'desktop', window, status, deps});
+  const steps = [];
+  const page = await boot({mode: 'desktop', window, status, deps, onStep: step => steps.push(step)});
   assert.deepEqual(entered, [home]);
   // Progress while joining, then the loading note again, which the first drawn frame clears.
   assert.ok(shown.includes('Joining…'), shown.join(' | '));
   assert.equal(status.text, 'Loading…');
+  // The page hears it is joining through the door, then opening once admitted.
+  assert.deepEqual([...new Set(steps)], ['join', 'open']);
+  assert.equal(steps.at(-1), 'open');
   assert.deepEqual(formatted[0], {mode: 'desktop', target: {scope: {kind: 'room', host: 'https://rooms.example', room: 'ROOM'}}});
   assert.equal(replaced[0], 'https://rooms.example/open/#/@rooms.example/w/ROOM');
   assert.equal(mounts[0].workspaceName, 'Commons');

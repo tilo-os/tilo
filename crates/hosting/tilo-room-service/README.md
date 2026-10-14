@@ -211,6 +211,28 @@ is guests plus spectators plus 64, `TILO_RELAY_MAX_HANDSHAKES` 1024,
 per session. Any of them set in the environment wins. The child also runs
 with `MALLOC_ARENA_MAX=2` unless set, which halves its memory under load.
 
+**Who is here.** Members' pages post their own recent actions (titles only)
+to the relay's `/peer/v1/here` and show everyone's one-line status. The relay
+always answers a deterministic line. Optionally it asks a model provider for
+a short prose line, which is shown only while it cites actions the person
+still has; otherwise the deterministic line stays. The child relay inherits
+these variables. Without an endpoint, no model is asked. An invalid setting
+logs a warning and leaves the lines deterministic; the room keeps serving.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TILO_RELAY_SUMMARY_ENDPOINT` | unset: off | the provider's base URL, e.g. `https://api.anthropic.com` |
+| `TILO_RELAY_SUMMARY_PROTOCOL` | `anthropic` | `anthropic` or `openai-compatible` |
+| `TILO_RELAY_SUMMARY_MODEL` | `claude-haiku-5-5` | the model id |
+| `TILO_RELAY_SUMMARY_KEY_FILE` | unset | a file holding the API key, read once at start; required for `anthropic` |
+| `TILO_RELAY_SUMMARY_MAX_TOKENS` | `200` | output tokens per call, 1–512 |
+| `TILO_RELAY_SUMMARY_PER_HOUR` | `120` | calls in any rolling hour across the relay, 1–3600; after that lines stay deterministic until the hour rolls on |
+| `TILO_RELAY_SUMMARY_MIN_INTERVAL_SECS` | `60` | least time between two calls for one person, 10–3600 |
+
+A call is made only when a person's set of actions changed. Each person has
+at most one call in flight, and the relay has at most two. A call that takes
+longer than 15 s is dropped. Calls never hold up a reply.
+
 ## Build and run
 
 The image is built by `.forgejo/workflows/room-service-image.yml`: the CI
