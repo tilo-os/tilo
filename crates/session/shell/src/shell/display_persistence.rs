@@ -55,25 +55,10 @@ impl PendingLayout {
     }
 }
 
-/// Prepare a whole-desktop layout; see [`stage_plan`].
-pub(crate) fn stage_layout(
-    mode: settings_store::display_mode::DisplayLayoutMode,
-) -> std::io::Result<PendingLayout> {
-    stage_plan(|snapshot, previous| {
-        settings_store::display_mode::plan_layout(mode, &snapshot.outputs, previous)
-            .map_err(std::io::Error::other)
-    })
-}
-
 /// Prepare against one committed profile view and the native capabilities;
 /// only an actual conditional persistence receipt makes this request effective.
-/// `plan` turns the compositor's published displays and the committed layout
-/// into the candidate, or says why it cannot.
-pub(crate) fn stage_plan(
-    plan: impl FnOnce(
-        &settings_store::hardware::DisplayHardwareSnapshot,
-        &settings_store::hardware::DisplayConfig,
-    ) -> std::io::Result<settings_store::hardware::DisplayConfig>,
+pub(crate) fn stage_layout(
+    mode: settings_store::display_mode::DisplayLayoutMode,
 ) -> std::io::Result<PendingLayout> {
     use settings_store::hardware::{DisplayHardwareSnapshot, DisplayProfiles};
     let source = settings_store::installed_source();
@@ -94,7 +79,8 @@ pub(crate) fn stage_plan(
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
     let previous = profiles.layout_for(&set).unwrap_or_default();
-    let candidate = plan(&snapshot, &previous)?;
+    let candidate = settings_store::display_mode::plan_layout(mode, &snapshot.outputs, &previous)
+        .map_err(std::io::Error::other)?;
     let mut transaction = DisplayTransaction::prepare_request(set, candidate)?;
     transaction.previous = previous;
     let update = settings_store::DisplayUpdate::new(&document, section(&transaction)?, None);

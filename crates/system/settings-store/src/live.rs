@@ -532,46 +532,6 @@ mod tests {
         assert!(follower.changed_sections(&live).is_empty());
     }
 
-    /// The compositor's chain for a hand edit of settings.json: the
-    /// session takes the copy in (the host's watch, or the view's own poll of
-    /// the copy), the live document and the host view both carry it, and the keyboard
-    /// settings read after the change type the new layout.
-    #[test]
-    fn a_hand_edited_keyboard_layout_reaches_the_live_document_and_its_readers() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = crate::SessionPaths::beside(dir.path().join("settings.json"));
-        let session = Arc::new(crate::SessionSettings::open(paths.clone()).unwrap());
-        // No copy watch in this test: the view polls the copy itself, as a
-        // host that could not watch it does.
-        let view = session
-            .host_view_polling_copy(std::time::Duration::from_millis(50))
-            .unwrap();
-        let live = LiveSettings::start_from(Arc::clone(&view), || {});
-        let mut follower = SectionFollower::new(&live);
-
-        let mut input = Map::new();
-        input.insert("keyboard_layout".into(), serde_json::json!("de"));
-        input.insert("keyboard_layouts".into(), serde_json::json!(["de"]));
-        crate::update_section_at(&paths.copy, "input", input).unwrap();
-        let snapshot = live.wait_for_change(0, tilo_test_env::hang_bound());
-
-        assert_eq!(
-            follower.changed_sections(&live),
-            BTreeSet::from(["input".to_string()])
-        );
-        let section = |document: &Map<String, Value>| match document.get("input") {
-            Some(Value::Object(section)) => section.clone(),
-            _ => Map::new(),
-        };
-        for document in [snapshot.document.clone(), view.load()] {
-            let config = crate::hardware::RichInputConfig::from_section(&section(&document));
-            let effective =
-                crate::keyboard_sources::effective(&config, crate::keyboard_sources::ALL);
-            assert_eq!(effective.keyboard_layouts, ["de"]);
-            assert_eq!(effective.keyboard_layout, "de");
-        }
-    }
-
     #[test]
     fn a_missing_file_reads_as_empty_and_its_creation_is_a_change() {
         let root = crate::tests::tmpdir();

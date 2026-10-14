@@ -56,7 +56,6 @@ fn a_derived_record_lists_its_stored_fields() {
             schema: <String as tilo_resource::Model>::value_schema,
             text: tilo_resource::stored_text::<String>,
             absent: tilo_resource::absent_scalar::<String>,
-            resource: None,
         },
         FieldShape {
             key: "limit",
@@ -74,7 +73,6 @@ fn a_derived_record_lists_its_stored_fields() {
             schema: <String as tilo_resource::Model>::value_schema,
             text: tilo_resource::stored_text::<String>,
             absent: tilo_resource::absent_scalar::<String>,
-            resource: None,
         },
     ]);
     const META: Shape = Shape::Record(&[FieldShape {
@@ -93,7 +91,6 @@ fn a_derived_record_lists_its_stored_fields() {
         schema: <String as tilo_resource::Model>::value_schema,
         text: tilo_resource::stored_text::<String>,
         absent: tilo_resource::absent_scalar::<String>,
-        resource: None,
     }]);
     assert_eq!(
         Board::shape(),
@@ -114,7 +111,6 @@ fn a_derived_record_lists_its_stored_fields() {
                 schema: <String as tilo_resource::Model>::value_schema,
                 text: tilo_resource::stored_text::<String>,
                 absent: tilo_resource::absent_scalar::<String>,
-                resource: None,
             },
             FieldShape {
                 key: "cols",
@@ -132,7 +128,6 @@ fn a_derived_record_lists_its_stored_fields() {
                 schema: <String as tilo_resource::Model>::value_schema,
                 text: tilo_resource::stored_text::<String>,
                 absent: tilo_resource::absent_scalar::<String>,
-                resource: None,
             },
             FieldShape {
                 key: "archived",
@@ -150,7 +145,6 @@ fn a_derived_record_lists_its_stored_fields() {
                 schema: <String as tilo_resource::Model>::value_schema,
                 text: tilo_resource::stored_text::<String>,
                 absent: tilo_resource::absent_scalar::<String>,
-                resource: None,
             },
             FieldShape {
                 key: "filter",
@@ -168,7 +162,6 @@ fn a_derived_record_lists_its_stored_fields() {
                 schema: <String as tilo_resource::Model>::value_schema,
                 text: tilo_resource::stored_text::<String>,
                 absent: tilo_resource::absent_scalar::<String>,
-                resource: None,
             },
         ])),
     );

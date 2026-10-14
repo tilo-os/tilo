@@ -2054,23 +2054,14 @@ fn read_apply(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built
     {
         return Err(format!("{id}: {error}"));
     }
-    // Group members refer to this schema instead of copying it into the
-    // group's parameter. Validate here as well as at the direct apply door,
-    // including constraints stricter than the action's serde representation.
-    if let Some(schema) = apply_param(vocabulary).schema {
-        tilo_actions::validate_json_schema(&value, &schema)?;
-    }
     (vocabulary.read)(value)
 }
 
 /// The parameter of [`GROUP`](crate::GROUP): invocations of the resource's
 /// declared actions and of [`APPLY`]. A declared member's arguments are
 /// checked against its own action's schema when the group is built, so this
-/// names those actions rather than repeating their schemas. An `apply`
-/// member is read exactly as [`APPLY`] reads its value when the group is
-/// built, so it refers to `apply`'s schema rather than copying it: a
-/// resource with a large action vocabulary (rich text's) published that
-/// schema twice in every surface.
+/// names those actions rather than repeating their schemas; an `apply`
+/// member carries `apply`'s schema, without its descriptions.
 pub(crate) fn group_param(vocabulary: &Vocabulary) -> ActionParam {
     let schema = per_type(vocabulary, TypeSchema::Group, &|| {
         let declarations = vocabulary.declarations();
@@ -2078,7 +2069,8 @@ pub(crate) fn group_param(vocabulary: &Vocabulary) -> ActionParam {
         for decl in declarations.iter() {
             ids.push(decl.id);
         }
-        Some(group_schema(&ids, vocabulary.edits))
+        let apply = apply_param(vocabulary).schema;
+        Some(group_schema(&ids, apply.as_deref(), vocabulary.edits))
     })
     .unwrap_or_else(|| Arc::new(serde_json::json!({"type": "array"})));
     ActionParam::required_owned(
@@ -2092,14 +2084,10 @@ pub(crate) fn group_param(vocabulary: &Vocabulary) -> ActionParam {
     .with_shared_schema(schema)
 }
 
-/// What the value of an `apply` member of a group is: the schema it is
-/// checked against is published once, on `apply` itself.
-pub const APPLY_MEMBER: &str =
-    "One action value, as the `apply` action's `apply` parameter describes it";
-
-/// The schema of a group of the actions `ids`, `apply`, and field edits when
-/// `edits`: one function for every resource.
-fn group_schema(ids: &[&str], edits: bool) -> serde_json::Value {
+/// The schema of a group of the actions `ids`, `apply` with the action
+/// schema `apply`, and field edits when `edits`: one function for every
+/// resource.
+fn group_schema(ids: &[&str], apply: Option<&serde_json::Value>, edits: bool) -> serde_json::Value {
     use crate::schema::{
         array, constant, describe, nullable, object, one_of, string_enum, undescribed,
     };
@@ -2117,7 +2105,7 @@ fn group_schema(ids: &[&str], edits: bool) -> serde_json::Value {
             "A named action, args as it takes them",
         ));
     }
-    let action = describe(serde_json::json!({"type": "object"}), APPLY_MEMBER);
+    let action = apply.map_or_else(|| serde_json::json!({"type": "object"}), undescribed);
     if edits {
         members.push(describe(
             object(vec![
@@ -2254,7 +2242,7 @@ pub(crate) fn group_need(needs: impl IntoIterator<Item = ActionNeed>) -> ActionN
 
 /// The encoded group of the built `members`, of the resource `vocabulary`:
 /// what [`ActionGroup`](crate::ActionGroup) of them encodes as.
-pub(crate) fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> EncodedAction {
+fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> EncodedAction {
     let mut payload = Vec::with_capacity(128);
     payload.push(b'[');
     for (index, member) in members.iter().enumerate() {

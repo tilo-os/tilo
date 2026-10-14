@@ -32,8 +32,7 @@ impl ViewporterState {
         surface: &WlSurface,
         queue_handle: &QueueHandle<WinitState>,
     ) -> WpViewport {
-        self.viewporter
-            .get_viewport(surface, queue_handle, GlobalData)
+        self.viewporter.get_viewport(surface, queue_handle, GlobalData)
     }
 }
 

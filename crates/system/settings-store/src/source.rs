@@ -7,7 +7,7 @@
 //! has no config directory, installs a [`HostDocument`]. Every other process
 //! reads and writes `settings.json`.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use serde_json::{Map, Value};
@@ -173,18 +173,6 @@ pub trait SettingsSource: Send + Sync {
         self.update_section_by(name, change(&current), origin)
     }
 
-    /// Write every change this source accepted but has not made durable yet
-    /// (see [`defer_writes_on_this_thread`]). Sources whose writes are
-    /// durable when they return have nothing to do.
-    fn flush_pending(&self) {}
-
-    /// The failures of writes this source accepted before they were made
-    /// durable, each once, oldest first: the changes were reverted in the
-    /// document.
-    fn take_deferred_failures(&self) -> Vec<DeferredFailure> {
-        Vec::new()
-    }
-
     /// Preserve the storage owner's explicit durable/copy-repair receipt.
     /// Ordinary sources report only successful writes; errors stay errors.
     ///
@@ -307,80 +295,6 @@ impl ChangeSignal {
 }
 
 static SOURCE: RwLock<Option<Arc<dyn SettingsSource>>> = RwLock::new(None);
-
-thread_local! {
-    static DEFER_WRITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Make the writes this thread makes to the installed source non-blocking.
-///
-/// A write is durable only after a lock, several syncs and a rename, and on a
-/// busy disk that took hundreds of milliseconds. A thread that must keep
-/// answering input (the compositor's loop) calls this once: its writes then
-/// update the document readers see at once, return, and reach the records on
-/// the source's own thread. A failed write is reverted there and reported
-/// through [`take_deferred_failures`]; it cannot be returned to a caller that
-/// has gone on. Writes that return a receipt ([`SettingsSource::update_section_report`],
-/// the compare-and-update calls) stay durable on return whatever thread makes
-/// them. [`flush_pending_writes`] waits for everything accepted so far.
-///
-/// Readers inside the process read the installed source, which shows an
-/// accepted write at once. Readers of the file (other processes, the portal
-/// appearance monitor, the theme refresh) are woken by the watch on the copy,
-/// which the worker writes last in its batch, by rename: they see the whole
-/// change or none of it, and a reader not woken by the watch reads a copy that
-/// lags by one worker pass, a few milliseconds.
-pub fn defer_writes_on_this_thread() {
-    DEFER_WRITES.with(|flag| flag.set(true));
-}
-
-/// Whether [`defer_writes_on_this_thread`] was called on this thread.
-#[must_use]
-pub fn writes_deferred_on_this_thread() -> bool {
-    DEFER_WRITES.with(std::cell::Cell::get)
-}
-
-/// Make durable every write the installed source accepted without waiting
-/// for the disk. Called before the session ends or sleeps.
-pub fn flush_pending_writes() {
-    if let Some(source) = installed_source() {
-        source.flush_pending();
-    }
-}
-
-/// A deferred write that could not be stored: the sections it changed and why.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeferredFailure {
-    /// The sections the reverted writes changed, in the order first written.
-    pub sections: Vec<String>,
-    /// What the disk said.
-    pub error: String,
-}
-
-/// Set when a source stores a [`DeferredFailure`], cleared when they are taken.
-static DEFERRED_FAILED: AtomicBool = AtomicBool::new(false);
-
-/// A source records that a deferred write failed and was reverted.
-pub(crate) fn note_deferred_failure() {
-    DEFERRED_FAILED.store(true, Ordering::Release);
-}
-
-/// Whether a deferred write failed since the failures were last taken: one
-/// atomic load, for a loop that checks every tick.
-#[must_use]
-pub fn deferred_failure_pending() -> bool {
-    DEFERRED_FAILED.load(Ordering::Acquire)
-}
-
-/// The failures of deferred writes since the last call, each once
-/// ([`SettingsSource::take_deferred_failures`]).
-#[must_use]
-pub fn take_deferred_failures() -> Vec<DeferredFailure> {
-    if !DEFERRED_FAILED.swap(false, Ordering::AcqRel) {
-        return Vec::new();
-    }
-    installed_source().map_or_else(Vec::new, |source| source.take_deferred_failures())
-}
 
 /// Make `source` the settings document of this process, or restore the
 /// local file with `None`.

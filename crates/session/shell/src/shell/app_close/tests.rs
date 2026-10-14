@@ -27,7 +27,6 @@ fn closing_an_app_closes_each_of_its_tabs_in_that_workspace_only() {
             active_tab: 1,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         },
         WindowGroup {
             id: 200,
@@ -35,7 +34,6 @@ fn closing_an_app_closes_each_of_its_tabs_in_that_workspace_only() {
             active_tab: 3,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         },
     ];
     tree.seed_doc_from_cache();

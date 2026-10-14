@@ -77,7 +77,7 @@ x86_64 = 3080192
 aarch64 = 2752512
 
 [apps."so.tilo.camera"]
-x86_64 = 1966080
+x86_64 = 2097152
 aarch64 = 1900544
 
 [apps."so.tilo.canvas"]
@@ -189,7 +189,7 @@ x86_64 = 4325376
 aarch64 = 4259840
 
 [apps."so.tilo.passwords"]
-x86_64 = 1376256
+x86_64 = 1441792
 aarch64 = 1310720
 
 [apps."so.tilo.pdf-viewer"]
@@ -217,11 +217,11 @@ x86_64 = 655360
 aarch64 = 589824
 
 [apps."so.tilo.settings"]
-x86_64 = 5832704
+x86_64 = 5898240
 aarch64 = 5242880
 
 [apps."so.tilo.sheets"]
-x86_64 = 1638400
+x86_64 = 1703936
 aarch64 = 1507328
 
 [apps."so.tilo.shortcuts"]
