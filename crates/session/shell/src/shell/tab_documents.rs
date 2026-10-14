@@ -154,7 +154,9 @@ mod tests {
             widget.for_each_child(&mut |child| descriptions(child, out));
         }
         for (phase, detail) in [
-            ("opening", crate::shell::peer_windows::OPENING.to_string()),
+            // The opening card: the app's name over the moving indicator,
+            // which a screen reader hears as "Opening…".
+            ("opening", crate::shell::i18n::t("shell-window-opening")),
             ("failed", crate::shell::i18n::t("launch-failed-stopped")),
             (
                 "timeout",
@@ -174,7 +176,7 @@ mod tests {
                 group.tabs[0].tile = StateTile::LocalApp {
                     app_id: "so.tilo.browser".into(),
                     label: "Browser".into(),
-                    note: if phase == "interrupted" {
+                    note: if phase == "interrupted" || phase == "opening" {
                         crate::shell::peer_windows::OPENING.into()
                     } else {
                         detail.clone()

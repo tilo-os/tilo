@@ -77,6 +77,44 @@ pub(crate) fn settle_install(tree: &mut WorkspaceTree, package_id: &str, detail:
     changed
 }
 
+/// Visual review: a peer's window whose app is being fetched from the
+/// registry here, without starting a real install — the card a slow
+/// fetch shows, at the placement a launch would get.
+pub fn show_install_under_way_for_shots(
+    tree: &mut WorkspaceTree,
+    app_id: &str,
+    label: &str,
+) -> TabId {
+    let placement = crate::shell::placement::placement_for(
+        tree,
+        tilo_desktop_model::commands::OpenIntent::Launch,
+        None,
+    );
+    let tab = crate::shell::tab_binding::place_tab(
+        tree,
+        crate::shell::state::Tab {
+            id: crate::shell::state::next_id(),
+            title: label.to_owned(),
+            tile: TileContent::PeerWindow {
+                app_id: app_id.to_owned(),
+                label: label.to_owned(),
+                note: crate::shell::i18n::t_args(
+                    "peer-window-installing",
+                    &[("app", label.to_owned().into())],
+                ),
+                missing: None,
+            },
+        },
+        placement,
+    );
+    INSTALLING.with(|installing| {
+        installing
+            .borrow_mut()
+            .insert(tab, (app_id.to_owned(), label.to_owned()));
+    });
+    tab
+}
+
 /// Tabs whose card's install button was pressed, drained by [`examine`].
 #[cfg(not(test))]
 static INSTALL_REQUESTS: std::sync::Mutex<Vec<TabId>> = std::sync::Mutex::new(Vec::new());
