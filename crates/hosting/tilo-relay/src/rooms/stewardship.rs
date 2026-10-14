@@ -737,7 +737,7 @@ mod tests {
         assert_eq!(steward.routes(), vec![payroll.clone()]);
         drop(steward);
 
-        assert_eq!(open().routes(), vec![payroll.clone()]);
+        assert_eq!(open().routes(), vec![payroll]);
         // A file swapped for another channel's route proves nothing.
         let budget = ChannelRoute::new("finance", "budget");
         std::fs::write(
