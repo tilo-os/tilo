@@ -598,8 +598,11 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
                 .into_iter()
                 .next()
                 .ok_or("status edit target missing")?;
+            // A space after the line's last word: an edit the note saves
+            // that reads as nothing in the capture.
             driver.click_at(first.x0 + first.width() * 0.8, first.center().y);
-            driver.type_text("!");
+            driver.key("End");
+            driver.type_text(" ");
         }
         _ => {}
     }
