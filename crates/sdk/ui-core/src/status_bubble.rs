@@ -39,6 +39,9 @@ pub struct StatusBubble {
     /// `None` while the pointer pins the bubble open.
     shown_at: Option<Instant>,
     hovered: bool,
+    /// Pinned open by its owner until it says something else
+    /// ([`Self::hold`]): a status still in progress.
+    held: bool,
     /// What the bubble says; [`Self::show`] pokes when it changes.
     text: String,
 }
@@ -55,6 +58,7 @@ impl StatusBubble {
             linger: DEFAULT_LINGER,
             shown_at: None,
             hovered: false,
+            held: false,
             text: String::new(),
         }
     }
@@ -93,7 +97,7 @@ impl StatusBubble {
     /// Fully opaque while hovered or fresh, ramping to zero across the
     /// final `FADE` of the linger.
     pub fn alpha(&self, now: Instant) -> f32 {
-        if self.hovered {
+        if self.hovered || self.held {
             return 1.0;
         }
         let Some(t) = self.shown_at else { return 0.0 };
@@ -118,11 +122,31 @@ impl StatusBubble {
     /// linger); the same text again does nothing, so calling this every
     /// frame is fine. Returns whether visibility changed.
     pub fn show(&mut self, text: &str, now: Instant) -> bool {
-        if self.text == text {
+        if self.text == text && !self.held {
             return false;
         }
+        let was = self.is_visible(now);
+        self.held = false;
         text.clone_into(&mut self.text);
-        self.poke(now)
+        self.shown_at = Some(now);
+        !was
+    }
+
+    /// Say `text` and stay open until the owner says something else
+    /// ([`Self::show`], [`Self::hold`]) or [`Self::hide`]s it: a status that
+    /// is still in progress. Returns whether visibility changed.
+    pub fn hold(&mut self, text: &str, now: Instant) -> bool {
+        let was = self.is_visible(now);
+        text.clone_into(&mut self.text);
+        self.held = true;
+        !was
+    }
+
+    /// Take the bubble away at once, with nothing left to say.
+    pub fn hide(&mut self) {
+        self.text.clear();
+        self.held = false;
+        self.shown_at = None;
     }
 
     /// Change what the bubble says without showing it: a count that follows
@@ -211,6 +235,7 @@ impl StatusBubble {
     /// Hovered/hidden states need no frames.
     pub fn needs_frame(&self, now: Instant) -> bool {
         !self.hovered
+            && !self.held
             && self
                 .shown_at
                 .is_some_and(|t| now.saturating_duration_since(t) < self.linger)
@@ -305,46 +330,80 @@ impl From<&crate::record::RecordSaveStatus> for SaveState {
 /// What a person did on the save status surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SaveAction {
-    /// "Try again" on a failed save.
+    /// "Try again" on a save that failed or gave up waiting.
     Retry,
     /// Dismissed the failure.
     Dismiss,
 }
 
+/// How long a save may take before the surface says "Saving…". A save
+/// that lands sooner passes without a word: under a second the person is
+/// still with what they were doing and has no reason to wonder, so neither
+/// "Saving…" nor "Saved" would tell them anything.
+pub const SAVE_NOTICEABLE: Duration = Duration::from_secs(1);
 /// How long "Saving…" may wait for the store to confirm before the surface
 /// says so in plain words and asks the host to submit the changes again.
 pub const SAVE_STALL: Duration = Duration::from_secs(10);
 /// How long a save may stay unconfirmed before the surface stops waiting
-/// and asks the person to try again.
-pub const SAVE_GIVE_UP: Duration = Duration::from_secs(30);
+/// and asks the person to try again: the first submission's
+/// [`SAVE_STALL`], then as long again for the retry it asked for, so the
+/// retry gets the same chance before the person is asked.
+pub const SAVE_GIVE_UP: Duration = Duration::from_secs(20);
+/// How long a save that gave up may go unpainted before the surface takes
+/// it that nobody sees the document: a window in view paints in the frame
+/// its wake asks for, far sooner.
+const UNSEEN_GRACE: Duration = Duration::from_secs(1);
 
-/// How far an unconfirmed save has gone past "Saving…".
+/// How far an unconfirmed save has gone.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-enum Stall {
+enum Stage {
+    /// Not long enough to mention.
     #[default]
-    None,
+    Quiet,
+    /// Past [`SAVE_NOTICEABLE`]: "Saving…".
+    Saving,
     /// Past [`SAVE_STALL`]: "Couldn't save yet. Retrying…".
     Retrying,
     /// Past [`SAVE_GIVE_UP`]: "Not saved" with "Try again".
     NotSaved,
 }
 
-/// A document's save status, on the framework's status surfaces (HIG §7c):
-/// "Saving…" and "Saved" are a change worth noticing once, so they show in
-/// the transient [`StatusBubble`]; a failed save is an error the person must
-/// act on, so it is an error toast (danger icon, the reason, a "Try again"
-/// action and a close button) that stays until the save succeeds or it is
-/// dismissed. An app reports the state and routes clicks; it never pins a
-/// bubble open or paints its own save pill.
+/// What to tell a person who cannot see a document whose save gave up:
+/// post it as a notification whose action is "Try again", and route that
+/// action to [`SaveStatusSurface::retry_from_notice`]. See
+/// [`SaveStatusSurface::take_notice`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveNotice {
+    pub title: String,
+    pub body: String,
+    pub action: String,
+}
+
+/// A document's save status, on the framework's status surfaces (HIG §7c).
 ///
-/// A save the store has not confirmed after [`SAVE_STALL`] reads "Couldn't
-/// save yet. Retrying…" and the surface asks for one more submission
-/// ([`Self::take_retry`]); after [`SAVE_GIVE_UP`] it is a "Not saved" toast
-/// with "Try again", like a failed save.
+/// A save that lands within [`SAVE_NOTICEABLE`] says nothing: a document
+/// that is saving as it should needs no status. One that takes longer says
+/// "Saving…" in the transient [`StatusBubble`] for as long as it waits,
+/// then "Saved" for [`ACKNOWLEDGEMENT_HOLD`], the time a passing
+/// acknowledgement holds. Unconfirmed after [`SAVE_STALL`], the bubble says
+/// "Couldn't save yet. Retrying…" and the surface asks for one more
+/// submission ([`Self::take_retry`]); after [`SAVE_GIVE_UP`] it says "Not
+/// saved" with a "Try again" button, in place, because the person is
+/// looking at the document. If nobody paints it then (the document is out
+/// of sight), the surface asks the host to raise a notification
+/// ([`Self::take_notice`]), since the person could lose work they cannot
+/// see.
+///
+/// A save that failed with a reason is an error toast (danger icon, the
+/// reason, "Try again" and a close button) that stays until the save
+/// succeeds or it is dismissed. An app reports the state and routes clicks;
+/// it never pins a bubble open or paints its own save pill.
 ///
 /// Both float in the bottom-trailing corner of the area they report on,
 /// clear of its scroll bar gutter.
-#[derive(Clone, Debug, Default)]
+///
+/// [`ACKNOWLEDGEMENT_HOLD`]: crate::widget::acknowledgement::ACKNOWLEDGEMENT_HOLD
+#[derive(Clone, Debug)]
 pub struct SaveStatusSurface {
     bubble: StatusBubble,
     state: Option<SaveState>,
@@ -352,14 +411,41 @@ pub struct SaveStatusSurface {
     detail: Option<String>,
     dismissed: bool,
     hit: crate::widget::toast::ToastCardHit,
+    /// "Try again" in the bubble of a save that gave up.
+    retry_rect: Rect,
     hover: Option<Point>,
-    /// When the current "Saving…" began.
+    /// When the current save began waiting.
     saving_since: Option<Instant>,
-    stall: Stall,
-    /// What the "Not saved" toast says, once a save gave up waiting.
-    not_saved: Option<String>,
+    stage: Stage,
     /// A submission the surface asked for, not yet taken by the host.
     retry: bool,
+    /// When a save gave up without being painted since.
+    unseen_since: Option<Instant>,
+    /// Whether a notification about this save is up.
+    notified: bool,
+    /// A notification to take down, not yet taken by the host.
+    withdraw: bool,
+}
+
+impl Default for SaveStatusSurface {
+    fn default() -> Self {
+        Self {
+            bubble: StatusBubble::new()
+                .with_linger(crate::widget::acknowledgement::ACKNOWLEDGEMENT_HOLD),
+            state: None,
+            detail: None,
+            dismissed: false,
+            hit: crate::widget::toast::ToastCardHit::default(),
+            retry_rect: Rect::ZERO,
+            hover: None,
+            saving_since: None,
+            stage: Stage::Quiet,
+            retry: false,
+            unseen_since: None,
+            notified: false,
+            withdraw: false,
+        }
+    }
 }
 
 impl SaveStatusSurface {
@@ -375,28 +461,42 @@ impl SaveStatusSurface {
         if self.state.as_ref() == Some(&state) {
             return false;
         }
-        let was_failed = self.failure().is_some();
+        let shown = |surface: &Self| {
+            (
+                surface.is_visible(now),
+                surface.bubble.text().to_owned(),
+                surface.failure().map(str::to_owned),
+            )
+        };
+        let before = shown(self);
+        let noticed = self.stage > Stage::Quiet;
         self.dismissed = false;
         self.saving_since = (state == SaveState::Saving).then_some(now);
-        self.stall = Stall::None;
-        self.not_saved = None;
+        self.stage = Stage::Quiet;
+        self.unseen_since = None;
+        self.withdraw |= self.notified;
+        self.notified = false;
+        self.retry_rect = Rect::ZERO;
         self.state = Some(state);
-        let text = self.bubble_label();
-        if !text.is_empty() {
-            self.bubble.show(&text, now);
+        match &self.state {
+            // Only a save the person saw waiting is worth confirming.
+            Some(SaveState::Saved) if noticed => {
+                let text = self.bubble_label();
+                self.bubble.show(&text, now);
+            }
+            _ => self.bubble.hide(),
         }
-        was_failed != self.failure().is_some() || !text.is_empty()
+        before != shown(self)
     }
 
-    /// What the bubble says for the current state: the state, and after
-    /// "Saved" the document's [`Self::set_detail`].
+    /// What the bubble says for the current state: the stage of a save
+    /// that waits, and after "Saved" the document's [`Self::set_detail`].
     fn bubble_label(&self) -> String {
-        match &self.state {
-            Some(SaveState::Saving) if self.stall == Stall::Retrying => {
-                crate::i18n!("save-status-stalled")
-            }
-            Some(SaveState::Saving) => crate::i18n!("save-status-saving"),
-            Some(SaveState::Saved) => match &self.detail {
+        match (&self.state, self.stage) {
+            (Some(SaveState::Saving), Stage::Saving) => crate::i18n!("save-status-saving"),
+            (Some(SaveState::Saving), Stage::Retrying) => crate::i18n!("save-status-stalled"),
+            (Some(SaveState::Saving), Stage::NotSaved) => crate::i18n!("save-status-not-saved"),
+            (Some(SaveState::Saved), _) => match &self.detail {
                 Some(detail) => format!("{}, {detail}", crate::i18n!("save-status-saved")),
                 None => crate::i18n!("save-status-saved"),
             },
@@ -412,48 +512,45 @@ impl SaveStatusSurface {
             return;
         }
         self.detail = detail;
-        let text = self.bubble_label();
-        if !text.is_empty() {
+        if self.state == Some(SaveState::Saved) && !self.bubble.text().is_empty() {
+            let text = self.bubble_label();
             self.bubble.set_text(&text);
         }
     }
 
-    /// Move an unconfirmed save along at `now`: past [`SAVE_STALL`] it says
-    /// it is retrying and asks for a submission, past [`SAVE_GIVE_UP`] it
-    /// asks the person. [`Self::paint`] calls this; a host calls it where
-    /// it needs the surface current without painting. Returns whether what
-    /// is shown changed.
+    /// Move an unconfirmed save along at `now`: "Saving…" once it is
+    /// noticeable, "Retrying…" (asking for a submission) past
+    /// [`SAVE_STALL`], "Not saved" past [`SAVE_GIVE_UP`]. [`Self::paint`]
+    /// calls this; a host calls it where it needs the surface current
+    /// without painting. Returns whether what is shown changed.
     pub fn advance(&mut self, now: Instant) -> bool {
-        if self.saving_since.is_none() && self.state == Some(SaveState::Saving) {
-            self.saving_since = Some(now);
-            let text = self.bubble_label();
-            self.bubble.show(&text, now);
-            return true;
-        }
-        let Some(since) = self.saving_since else {
+        if self.state != Some(SaveState::Saving) {
             return false;
-        };
+        }
+        let since = *self.saving_since.get_or_insert(now);
         let waited = now.saturating_duration_since(since);
-        let stall = if waited >= SAVE_GIVE_UP {
-            Stall::NotSaved
+        let stage = if waited >= SAVE_GIVE_UP {
+            Stage::NotSaved
         } else if waited >= SAVE_STALL {
-            Stall::Retrying
+            Stage::Retrying
+        } else if waited >= SAVE_NOTICEABLE {
+            Stage::Saving
         } else {
-            Stall::None
+            Stage::Quiet
         };
-        if stall <= self.stall {
+        if stage <= self.stage {
             return false;
         }
-        if self.stall == Stall::None {
+        if self.stage < Stage::Retrying && stage >= Stage::Retrying {
             self.retry = true;
         }
-        self.stall = stall;
-        if stall == Stall::Retrying {
-            let text = self.bubble_label();
-            self.bubble.show(&text, now);
-        } else {
-            self.not_saved = Some(crate::i18n!("save-status-not-saved-detail"));
+        if stage == Stage::NotSaved {
+            // Seen only once a frame paints it.
+            self.unseen_since = Some(now);
         }
+        self.stage = stage;
+        let text = self.bubble_label();
+        self.bubble.hold(&text, now);
         true
     }
 
@@ -464,24 +561,35 @@ impl SaveStatusSurface {
         std::mem::take(&mut self.retry)
     }
 
-    /// What the failure toast says: its title and the reason under it.
-    fn failure_text(&self) -> Option<(String, &str)> {
-        let reason = self.failure()?;
-        let title = if self.not_saved.is_some() {
-            crate::i18n!("save-status-not-saved")
-        } else {
-            crate::i18n!("save-status-failed")
-        };
-        Some((title, reason))
+    /// A notification to raise about a save that gave up while nobody
+    /// painted the document, once, at `now`. The host posts it and routes
+    /// its action to [`Self::retry_from_notice`]; [`Self::take_withdrawal`]
+    /// says when to take it down.
+    pub fn take_notice(&mut self, now: Instant) -> Option<SaveNotice> {
+        self.advance(now);
+        let unseen = self.unseen_since?;
+        if self.notified || now.saturating_duration_since(unseen) < UNSEEN_GRACE {
+            return None;
+        }
+        self.notified = true;
+        Some(SaveNotice {
+            title: crate::i18n!("save-status-not-saved"),
+            body: crate::i18n!("save-status-not-saved-detail"),
+            action: crate::i18n!("save-status-retry"),
+        })
     }
 
-    /// Show the bubble again (another document opened under it). A
-    /// showing failure needs no reminder.
-    pub fn poke(&mut self, now: Instant) -> bool {
-        if self.failure().is_some() || self.bubble.text().is_empty() {
-            return false;
-        }
-        self.bubble.poke(now)
+    /// Whether a notification [`Self::take_notice`] raised should come
+    /// down (the save landed or failed differently, the person tried again,
+    /// or the document is in view again and says it in place), once.
+    pub fn take_withdrawal(&mut self) -> bool {
+        std::mem::take(&mut self.withdraw)
+    }
+
+    /// The text of the failure toast: its title and the reason under it.
+    fn failure_text(&self) -> Option<(String, &str)> {
+        let reason = self.failure()?;
+        Some((crate::i18n!("save-status-failed"), reason))
     }
 
     /// The pointer moved to `p` over `area`: resting on the bubble's corner
@@ -502,19 +610,30 @@ impl SaveStatusSurface {
         self.bubble.pointer_moved(corner, p, tr, theme, now)
     }
 
-    /// The surface for assistive technology while a failure shows: the
-    /// reason, announced, with "Try again" and "Dismiss" buttons whose
-    /// action targets are `{target}.retry` and `{target}.dismiss`.
+    /// The surface for assistive technology while a failure or a save that
+    /// gave up shows: what happened, announced, with "Try again" (and for a
+    /// failure "Dismiss") whose action targets are `{target}.retry` and
+    /// `{target}.dismiss`.
     #[must_use]
     pub fn accessibility(&self, target: &str) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Politeness, Role};
-        let (title, reason) = self.failure_text()?;
         let button = |name: String, part: &str, rect: Rect| {
             AccessNode::new(Role::Button)
                 .with_name(name)
                 .with_action_target(format!("{target}.{part}"))
                 .with_bounds(rect)
         };
+        let retry = |rect| button(crate::i18n!("save-status-retry"), "retry", rect);
+        if self.gave_up() {
+            return Some(
+                AccessNode::new(Role::Group)
+                    .with_name(crate::i18n!("save-status-not-saved"))
+                    .with_description(crate::i18n!("save-status-not-saved-detail"))
+                    .with_live(Politeness::Assertive)
+                    .with_children(vec![retry(self.retry_rect)]),
+            );
+        }
+        let (title, reason) = self.failure_text()?;
         Some(
             AccessNode::new(Role::Group)
                 .with_name(title)
@@ -522,11 +641,7 @@ impl SaveStatusSurface {
                 .with_live(Politeness::Assertive)
                 .with_bounds(self.hit.card_rect)
                 .with_children(vec![
-                    button(
-                        crate::i18n!("save-status-retry"),
-                        "retry",
-                        self.hit.primary_action_rect,
-                    ),
+                    retry(self.hit.primary_action_rect),
                     button(
                         crate::i18n!("save-status-dismiss"),
                         "dismiss",
@@ -539,11 +654,13 @@ impl SaveStatusSurface {
     /// Assistive technology activated `action_target` (one of
     /// [`Self::accessibility`]'s buttons under `target`): the action it is.
     pub fn perform(&mut self, target: &str, action_target: &str) -> Option<SaveAction> {
-        self.failure()?;
+        if self.failure().is_none() && !self.gave_up() {
+            return None;
+        }
         let part = action_target.strip_prefix(target)?.strip_prefix('.')?;
         let action = match part {
             "retry" => SaveAction::Retry,
-            "dismiss" => SaveAction::Dismiss,
+            "dismiss" if !self.gave_up() => SaveAction::Dismiss,
             _ => return None,
         };
         self.acted(action);
@@ -551,27 +668,47 @@ impl SaveStatusSurface {
     }
 
     /// Dismissing hides the failure until the state changes; trying a save
-    /// that gave up waiting again starts its wait over, "Saving…" first.
+    /// that gave up again starts its wait over, quietly at first.
     fn acted(&mut self, action: SaveAction) {
         match action {
             SaveAction::Dismiss => self.dismissed = true,
-            SaveAction::Retry if self.not_saved.is_some() => {
-                // The next [`Self::advance`] starts the wait at its `now`.
-                self.saving_since = None;
-                self.stall = Stall::None;
-                self.not_saved = None;
-            }
+            SaveAction::Retry if self.gave_up() => self.wait_again(),
             SaveAction::Retry => {}
         }
+    }
+
+    /// Start an unconfirmed save's wait over: the person (or the
+    /// notification's action) asked to try again.
+    fn wait_again(&mut self) {
+        // The next [`Self::advance`] starts the wait at its `now`.
+        self.saving_since = None;
+        self.stage = Stage::Quiet;
+        self.unseen_since = None;
+        self.withdraw |= self.notified;
+        self.notified = false;
+        self.retry_rect = Rect::ZERO;
+        self.bubble.hide();
+    }
+
+    /// "Try again" from the notification [`Self::take_notice`] raised: the
+    /// host submits the changes again and the wait starts over.
+    pub fn retry_from_notice(&mut self) {
+        if self.gave_up() {
+            self.wait_again();
+        }
+    }
+
+    /// Whether the current save gave up waiting and asks the person.
+    #[must_use]
+    pub fn gave_up(&self) -> bool {
+        self.state == Some(SaveState::Saving) && self.stage == Stage::NotSaved
     }
 
     /// The reason of a failed save that is showing, if any.
     #[must_use]
     pub fn failure(&self) -> Option<&str> {
         match &self.state {
-            _ if self.dismissed => None,
-            Some(SaveState::Failed(reason)) => Some(reason.as_str()),
-            Some(SaveState::Saving) => self.not_saved.as_deref(),
+            Some(SaveState::Failed(reason)) if !self.dismissed => Some(reason.as_str()),
             _ => None,
         }
     }
@@ -582,29 +719,42 @@ impl SaveStatusSurface {
         self.failure().is_some() || self.bubble.is_visible(now)
     }
 
+    /// What the bubble says, empty when it has nothing to say.
+    #[must_use]
+    pub fn bubble_text(&self) -> &str {
+        self.bubble.text()
+    }
+
     /// Frames are needed only while the bubble lingers or fades.
     #[must_use]
     pub fn needs_frame(&self, now: Instant) -> bool {
         self.failure().is_none() && self.bubble.needs_frame(now)
     }
 
-    /// Wake once to remove a transient, including when reduced motion disables fades.
-    /// Keep an overdue deadline until paint consumes it, so a parked host sees it.
+    /// Wake once to remove a transient, including when reduced motion
+    /// disables fades, and when an unconfirmed save next moves along. Keep
+    /// an overdue deadline until paint consumes it, so a parked host sees
+    /// it.
     #[must_use]
     pub fn next_wake_deadline(&self) -> Option<Instant> {
         if self.failure().is_some() {
             return None;
         }
-        // An unconfirmed save wakes the window when it next escalates.
-        let stall = self.saving_since.and_then(|since| match self.stall {
-            Stall::None => since.checked_add(SAVE_STALL),
-            Stall::Retrying => since.checked_add(SAVE_GIVE_UP),
-            Stall::NotSaved => None,
-        });
-        let fade = (!self.bubble.hovered && !self.bubble.text.is_empty())
+        let since = self.saving_since;
+        let stage = match self.stage {
+            _ if self.state != Some(SaveState::Saving) => None,
+            Stage::Quiet => since.and_then(|t| t.checked_add(SAVE_NOTICEABLE)),
+            Stage::Saving => since.and_then(|t| t.checked_add(SAVE_STALL)),
+            Stage::Retrying => since.and_then(|t| t.checked_add(SAVE_GIVE_UP)),
+            Stage::NotSaved => self
+                .unseen_since
+                .filter(|_| !self.notified)
+                .and_then(|t| t.checked_add(UNSEEN_GRACE)),
+        };
+        let fade = (!self.bubble.hovered && !self.bubble.held && !self.bubble.text.is_empty())
             .then(|| self.bubble.shown_at?.checked_add(self.bubble.linger))
             .flatten();
-        match (fade, stall) {
+        match (fade, stage) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         }
@@ -619,6 +769,9 @@ impl SaveStatusSurface {
 
     fn hovered_action(&self) -> Option<SaveAction> {
         let p = self.hover?;
+        if self.gave_up() {
+            return self.retry_rect.contains(p).then_some(SaveAction::Retry);
+        }
         self.failure()?;
         if self.hit.primary_action_rect.contains(p) {
             Some(SaveAction::Retry)
@@ -629,8 +782,9 @@ impl SaveStatusSurface {
         }
     }
 
-    /// A click at `p`: the action it hits on a showing failure. Dismissing
-    /// hides the failure until the state changes again.
+    /// A click at `p`: the action it hits on a showing failure or a save
+    /// that gave up. Dismissing hides the failure until the state changes
+    /// again.
     pub fn click(&mut self, p: Point) -> Option<SaveAction> {
         self.hover = Some(p);
         let action = self.hovered_action()?;
@@ -638,9 +792,13 @@ impl SaveStatusSurface {
         Some(action)
     }
 
-    /// Whether `p` is on the failure card (so a host keeps the click).
+    /// Whether `p` is on something the surface acts on (the failure card,
+    /// a save's "Try again"), so a host keeps the click.
     #[must_use]
     pub fn contains(&self, p: Point) -> bool {
+        if self.gave_up() {
+            return self.retry_rect.contains(p);
+        }
         self.failure().is_some() && self.hit.card_rect.contains(p)
     }
 
@@ -678,7 +836,17 @@ impl SaveStatusSurface {
         now: Instant,
     ) -> Option<Rect> {
         self.advance(now);
+        if self.unseen_since.take().is_some() {
+            // The person sees it here; a notification would only repeat it.
+            self.withdraw |= self.notified;
+            self.notified = false;
+        }
         let corner = Self::corner(area, theme);
+        if self.gave_up() {
+            self.hit = crate::widget::toast::ToastCardHit::default();
+            return Some(self.paint_gave_up(scene, transform, tr, theme, corner));
+        }
+        self.retry_rect = Rect::ZERO;
         let Some((title, reason)) = self
             .failure_text()
             .map(|(title, reason)| (title, reason.to_owned()))
@@ -709,6 +877,77 @@ impl SaveStatusSurface {
             return None;
         }
         (!self.hit.card_rect.is_zero_area()).then_some(self.hit.card_rect)
+    }
+
+    /// "Not saved" with a compact "Try again" button, in the bubble where
+    /// the save's progress showed: the person is looking at the document,
+    /// so the answer stays where they read the question.
+    fn paint_gave_up(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        corner: Rect,
+    ) -> Rect {
+        use crate::widget::{Button, ButtonFace, ControlSize};
+        let label = self.bubble.text().to_owned();
+        let retry = crate::i18n!("save-status-retry");
+        let style = pill_style(theme);
+        let (label_w, label_h) = tr.measure_style(&label, None, &style);
+        let face = |rect: Rect| {
+            ButtonFace::new(rect, &retry)
+                .control_size(ControlSize::Small)
+                .icon(crate::icons::Icon::RotateCw)
+        };
+        let button_w = face(Rect::ZERO).intrinsic_width(tr, theme);
+        let button_h = ButtonFace::height(ControlSize::Small, theme);
+        let s = &theme.tokens.spacing;
+        let inset = f64::from(s.s1);
+        let pad_x = f64::from(s.s3);
+        let gap = f64::from(s.s2);
+        let width = pad_x + f64::from(label_w) + gap + button_w + inset;
+        let height = pill_height(theme).max(button_h + 2.0 * inset);
+        let gutter = f64::from(s.s4);
+        let x1 = corner.x1 - gutter;
+        let y1 = corner.y1 - gutter;
+        let rect = Rect::new(
+            (x1 - width).max(corner.x0),
+            (y1 - height).max(corner.y0),
+            x1,
+            y1,
+        );
+        crate::widget::floating_surface::paint(scene, transform, rect, theme);
+        let ink = theme
+            .on_ground(crate::chrome::panel_ground(theme))
+            .tokens
+            .colors
+            .text_primary;
+        let ty = centered_text_top(rect.y0, rect.height(), f64::from(label_h));
+        tr.draw_style(
+            scene,
+            &label,
+            ink,
+            transform.pre_translate(Vec2::new(rect.x0 + pad_x, ty)),
+            None,
+            &style,
+        );
+        let button_y0 = rect.y0 + (rect.height() - button_h) / 2.0;
+        self.retry_rect = Rect::new(
+            rect.x1 - inset - button_w,
+            button_y0,
+            rect.x1 - inset,
+            button_y0 + button_h,
+        );
+        let hovered = self.hovered_action() == Some(SaveAction::Retry);
+        Button::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            &face(self.retry_rect).hovered(hovered),
+        );
+        rect
     }
 }
 
@@ -845,14 +1084,25 @@ mod tests {
         }
     }
 
+    use crate::widget::acknowledgement::ACKNOWLEDGEMENT_HOLD;
+
+    /// A surface whose save has waited long enough to be noticed at `t0`.
+    fn noticed_save(t0: Instant) -> SaveStatusSurface {
+        let mut surface = SaveStatusSurface::new();
+        surface.set(SaveState::Saving, t0);
+        surface.advance(t0 + SAVE_NOTICEABLE);
+        surface
+    }
+
     #[test]
     fn reduced_motion_expiry_wakes_once_and_is_consumed_by_paint() {
         crate::i18n::I18nManager::init("en-US");
         let theme = Theme::dark().with_reduce_motion(true);
         let mut tr = TextRenderer::new();
         let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let now = Instant::now();
-        let mut surface = SaveStatusSurface::new();
+        let t0 = Instant::now();
+        let now = t0 + SAVE_NOTICEABLE;
+        let mut surface = noticed_save(t0);
         surface.set(SaveState::Saved, now);
         let deadline = surface.next_wake_deadline().expect("saved must expire");
         let mut scene = Scene::new();
@@ -890,6 +1140,77 @@ mod tests {
         );
     }
 
+    /// A save that lands before anyone could wonder says nothing; one that
+    /// took noticeable time says "Saving…" while it waits and "Saved" for
+    /// an acknowledgement's hold, then goes.
+    #[test]
+    fn saved_shows_briefly_and_only_after_a_save_that_took_noticeable_time() {
+        crate::i18n::I18nManager::init("en-US");
+        let t0 = Instant::now();
+        let mut surface = SaveStatusSurface::new();
+        surface.set(SaveState::Saving, t0);
+        assert!(!surface.is_visible(t0), "a save just begun says nothing");
+        assert_eq!(surface.next_wake_deadline(), Some(t0 + SAVE_NOTICEABLE));
+        let quick = t0 + Duration::from_millis(80);
+        surface.advance(quick);
+        surface.set(SaveState::Saved, quick);
+        assert!(!surface.is_visible(quick), "a quick save is not confirmed");
+        assert_eq!(surface.next_wake_deadline(), None, "and wakes nobody");
+
+        let t1 = quick + Duration::from_secs(5);
+        surface.set(SaveState::Saving, t1);
+        let noticed = t1 + SAVE_NOTICEABLE;
+        assert!(surface.advance(noticed));
+        assert_eq!(surface.bubble_text(), "Saving…");
+        assert!(
+            surface.is_visible(noticed + Duration::from_secs(5)),
+            "\"Saving…\" stays while the save waits"
+        );
+        let landed = noticed + Duration::from_secs(5);
+        surface.set(SaveState::Saved, landed);
+        assert_eq!(surface.bubble_text(), "Saved");
+        assert!(surface.is_visible(landed));
+        assert_eq!(
+            surface.next_wake_deadline(),
+            Some(landed + ACKNOWLEDGEMENT_HOLD)
+        );
+        assert!(
+            !surface.is_visible(landed + ACKNOWLEDGEMENT_HOLD),
+            "\"Saved\" holds as long as an acknowledgement, then goes"
+        );
+    }
+
+    /// An empty document that never changed has nothing to say about
+    /// saving, at any time.
+    #[test]
+    fn a_document_that_never_changed_shows_no_save_state() {
+        crate::i18n::I18nManager::init("en-US");
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let t0 = Instant::now();
+        let mut surface = SaveStatusSurface::new();
+        surface.set(SaveState::Idle, t0);
+        let mut scene = Scene::new();
+        for later in [Duration::ZERO, SAVE_NOTICEABLE, SAVE_GIVE_UP * 2] {
+            assert!(
+                surface
+                    .paint(
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut tr,
+                        &theme,
+                        area,
+                        t0 + later
+                    )
+                    .is_none()
+            );
+        }
+        assert!(scene.encoding().is_empty(), "nothing painted");
+        assert_eq!(surface.next_wake_deadline(), None);
+        assert!(surface.accessibility("save").is_none());
+    }
+
     /// Saving and saved are transient bubble text; a failure is an error
     /// card with "Try again" that stays until the save succeeds or it is
     /// dismissed, painted in danger and never as the bubble.
@@ -900,10 +1221,11 @@ mod tests {
         let mut tr = TextRenderer::new();
         let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let t0 = Instant::now();
-        let mut surface = SaveStatusSurface::new();
-        assert!(surface.set(SaveState::Saved, t0));
-        assert!(surface.failure().is_none() && surface.is_visible(t0));
-        let later = t0 + DEFAULT_LINGER + Duration::from_millis(10);
+        let now = t0 + SAVE_NOTICEABLE;
+        let mut surface = noticed_save(t0);
+        assert!(surface.set(SaveState::Saved, now));
+        assert!(surface.failure().is_none() && surface.is_visible(now));
+        let later = now + ACKNOWLEDGEMENT_HOLD + Duration::from_millis(10);
         assert!(!surface.is_visible(later), "saved fades by itself");
 
         assert!(surface.set(SaveState::Failed("Disk full".into()), later));
@@ -937,12 +1259,17 @@ mod tests {
         let dismiss = surface.hit.secondary_action_rect;
         assert_eq!(surface.click(dismiss.center()), Some(SaveAction::Dismiss));
         assert!(surface.failure().is_none(), "dismissed");
-        assert!(surface.set(SaveState::Saving, much_later));
-        assert!(surface.is_visible(much_later));
+        surface.set(SaveState::Saving, much_later);
+        assert!(surface.advance(much_later + SAVE_NOTICEABLE));
+        assert!(surface.is_visible(much_later + SAVE_NOTICEABLE));
     }
 
+    /// On a fake clock: "Saving…", then at ten seconds "Couldn't save yet.
+    /// Retrying…" with one more submission, then "Not saved" with "Try
+    /// again" in the bubble itself while the document is in view, and no
+    /// notification.
     #[test]
-    fn an_unconfirmed_save_retries_then_asks_the_person() {
+    fn an_unconfirmed_save_retries_then_asks_in_place_while_in_view() {
         crate::i18n::I18nManager::init("en-US");
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -953,14 +1280,10 @@ mod tests {
         };
         let t0 = Instant::now();
         let mut surface = SaveStatusSurface::new();
-        assert!(surface.set(SaveState::Saving, t0));
-        assert_eq!(surface.bubble.text(), "Saving…");
-        assert_eq!(
-            surface.next_wake_deadline(),
-            Some(t0 + DEFAULT_LINGER),
-            "the bubble's fade comes first"
-        );
-        paint(&mut surface, t0 + DEFAULT_LINGER);
+        surface.set(SaveState::Saving, t0);
+        assert!(paint(&mut surface, t0).is_none(), "quiet at first");
+        paint(&mut surface, t0 + SAVE_NOTICEABLE).expect("then \"Saving…\"");
+        assert_eq!(surface.bubble_text(), "Saving…");
         assert_eq!(
             surface.next_wake_deadline(),
             Some(t0 + SAVE_STALL),
@@ -971,79 +1294,139 @@ mod tests {
         assert!(!surface.take_retry(), "nothing to retry yet");
 
         let stalled = t0 + SAVE_STALL;
-        assert!(paint(&mut surface, stalled).is_some(), "it shows again");
-        assert_eq!(surface.bubble.text(), "Couldn't save yet. Retrying…");
+        assert_eq!(SAVE_STALL, Duration::from_secs(10));
+        assert!(paint(&mut surface, stalled).is_some());
+        assert_eq!(surface.bubble_text(), "Couldn't save yet. Retrying…");
         assert!(
             surface.take_retry(),
             "and the host submits the changes again"
         );
         assert!(!surface.take_retry(), "once");
-        assert!(surface.failure().is_none(), "not an error yet");
+        assert!(surface.accessibility("save").is_none(), "nothing to do yet");
         assert!(
             !surface.set(SaveState::Saving, stalled),
             "the host reporting the same state does not restart the wait"
         );
-        assert_eq!(surface.next_wake_deadline(), Some(stalled + DEFAULT_LINGER));
-        paint(&mut surface, stalled + DEFAULT_LINGER);
+        assert!(
+            surface.is_visible(stalled + Duration::from_secs(5)),
+            "it stays while it retries"
+        );
         assert_eq!(surface.next_wake_deadline(), Some(t0 + SAVE_GIVE_UP));
 
         let given_up = t0 + SAVE_GIVE_UP;
-        paint(&mut surface, given_up).expect("the toast is painted");
-        assert_eq!(
-            surface.failure(),
-            Some("Your changes are still here. Try again to save them.")
+        // The frame the wake asks for: the host's own tick first, then paint.
+        assert_eq!(surface.take_notice(given_up), None);
+        let bubble = paint(&mut surface, given_up).expect("the bubble is painted");
+        assert!(surface.gave_up());
+        assert_eq!(surface.bubble_text(), "Not saved");
+        assert!(surface.failure().is_none(), "not a toast");
+        assert_eq!(surface.hit.card_rect, Rect::ZERO, "no toast was painted");
+        let retry = surface.retry_rect;
+        assert!(
+            bubble.contains(retry.center()),
+            "Try again is inside the bubble"
         );
         let node = surface.accessibility("save").unwrap();
         assert_eq!(node.name.as_deref(), Some("Not saved"));
         assert_eq!(node.children[0].name.as_deref(), Some("Try again"));
+        assert_eq!(
+            surface.take_notice(given_up + UNSEEN_GRACE * 5),
+            None,
+            "in view, the bubble says it and nothing is notified"
+        );
+        assert!(!surface.take_withdrawal());
         assert!(!surface.take_retry(), "the person decides now");
         assert_eq!(surface.next_wake_deadline(), None, "and nothing times out");
 
-        let retry = surface.hit.primary_action_rect;
+        assert!(surface.contains(retry.center()));
         assert_eq!(surface.click(retry.center()), Some(SaveAction::Retry));
-        assert!(surface.failure().is_none(), "trying again waits afresh");
+        assert!(!surface.gave_up(), "trying again waits afresh");
         let again = given_up + Duration::from_secs(1);
-        paint(&mut surface, again);
-        assert_eq!(surface.bubble.text(), "Saving…");
-        assert_eq!(surface.next_wake_deadline(), Some(again + DEFAULT_LINGER));
-        assert!(!surface.advance(again + SAVE_STALL - Duration::from_millis(1)));
-        assert!(surface.advance(again + SAVE_STALL));
+        assert!(paint(&mut surface, again).is_none(), "quietly at first");
+        assert!(surface.advance(again + SAVE_NOTICEABLE));
+        assert_eq!(surface.bubble_text(), "Saving…");
 
         assert!(surface.set(SaveState::Saved, again + SAVE_STALL));
-        assert_eq!(surface.bubble.text(), "Saved");
+        assert_eq!(surface.bubble_text(), "Saved");
         assert!(
             !surface.advance(again + SAVE_GIVE_UP),
             "a confirmed save is done"
         );
-        assert!(surface.failure().is_none());
+        assert!(!surface.gave_up());
+    }
+
+    /// A save that gives up while nothing paints the document raises a
+    /// notification with "Try again"; it comes down once the document says
+    /// it in place, or the save lands.
+    #[test]
+    fn a_save_that_gives_up_out_of_sight_raises_a_notification() {
+        crate::i18n::I18nManager::init("en-US");
+        let t0 = Instant::now();
+        let mut surface = SaveStatusSurface::new();
+        surface.set(SaveState::Saving, t0);
+        // Out of sight: only the host's tick runs, never paint.
+        assert_eq!(surface.take_notice(t0 + SAVE_STALL), None);
+        assert!(
+            surface.take_retry(),
+            "the retry is asked for out of sight too"
+        );
+        let given_up = t0 + SAVE_GIVE_UP;
+        assert_eq!(surface.take_notice(given_up), None, "a frame may yet come");
+        assert_eq!(surface.next_wake_deadline(), Some(given_up + UNSEEN_GRACE));
+        let notice = surface
+            .take_notice(given_up + UNSEEN_GRACE)
+            .expect("nobody painted it: notify");
+        assert_eq!(notice.title, "Not saved");
+        assert_eq!(
+            notice.body,
+            "Your changes are still here. Try again to save them."
+        );
+        assert_eq!(notice.action, "Try again");
+        assert_eq!(
+            surface.take_notice(given_up + UNSEEN_GRACE * 3),
+            None,
+            "once"
+        );
+        assert_eq!(surface.next_wake_deadline(), None);
+
+        surface.retry_from_notice();
+        assert!(surface.take_withdrawal(), "trying again takes it down");
+        assert!(!surface.gave_up(), "and waits afresh");
+
+        let t1 = given_up + Duration::from_secs(5);
+        surface.advance(t1);
+        let given_up = t1 + SAVE_GIVE_UP;
+        surface.take_notice(given_up);
+        assert!(surface.take_notice(given_up + UNSEEN_GRACE).is_some());
+        surface.set(SaveState::Saved, given_up + UNSEEN_GRACE * 2);
+        assert!(surface.take_withdrawal(), "a save that lands takes it down");
     }
 
     #[test]
     fn the_saved_bubble_carries_a_quiet_detail_and_the_failure_its_actions() {
         crate::i18n::I18nManager::init("en-US");
         let t0 = Instant::now();
-        let mut surface = SaveStatusSurface::new();
+        let now = t0 + SAVE_NOTICEABLE;
+        let mut surface = noticed_save(t0);
         surface.set_detail(Some("3 words".into()));
-        surface.set(SaveState::Saved, t0);
-        assert!(surface.bubble.text().ends_with(", 3 words"));
-        let later = t0 + DEFAULT_LINGER + Duration::from_millis(10);
+        surface.set(SaveState::Saved, now);
+        assert!(surface.bubble_text().ends_with(", 3 words"));
+        let later = now + ACKNOWLEDGEMENT_HOLD + Duration::from_millis(10);
         surface.set_detail(Some("4 words".into()));
         assert!(
-            surface.bubble.text().ends_with(", 4 words"),
+            surface.bubble_text().ends_with(", 4 words"),
             "reads current"
         );
         assert!(
             !surface.is_visible(later),
             "but a new count does not reopen it"
         );
-        assert!(surface.poke(later), "another page does");
 
         assert!(
             surface.accessibility("doc.save").is_none(),
             "nothing to act on"
         );
         surface.set(SaveState::Failed("Disk full".into()), later);
-        assert!(!surface.poke(later), "a showing failure needs no reminder");
         let node = surface.accessibility("doc.save").expect("the failure");
         assert_eq!(node.description.as_deref(), Some("Disk full"));
         let targets: Vec<_> = node

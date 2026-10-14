@@ -48,6 +48,7 @@ pub mod note_header;
 pub mod notebook;
 pub mod read;
 pub mod resource;
+mod save_notice;
 pub use ui::num;
 pub mod scenario;
 pub mod search;

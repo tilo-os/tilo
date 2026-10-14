@@ -53,6 +53,8 @@ pub const SCENARIOS: &[&str] = &[
     "image_edit",
     "status",
     "saving",
+    "save_retrying",
+    "save_not_saved",
     "save_error",
     "import_success",
     "presence",

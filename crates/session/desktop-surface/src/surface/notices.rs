@@ -394,8 +394,10 @@ impl AppInbox {
                         shown.source_workspace = workspace;
                     }
                     if let Some(uri) = notification.activation {
-                        shown.actions =
-                            vec![("default".into(), crate::i18n::t("notification-action-open"))];
+                        let label = notification
+                            .action
+                            .unwrap_or_else(|| crate::i18n::t("notification-action-open"));
+                        shown.actions = vec![("default".into(), label)];
                         self.activations.insert(shown.id, uri);
                     }
                     self.shown.insert(key, notifications.post(shown));
@@ -945,7 +947,8 @@ mod tests {
             notifier
                 .show(
                     &ui::notify::Notification::new("alarm", "Alarm", "07:00")
-                        .with_activation("tilo-clocks:alarm/1"),
+                        .with_activation("tilo-clocks:alarm/1")
+                        .with_action("Stop"),
                 )
                 .unwrap();
         }
@@ -957,6 +960,10 @@ mod tests {
         );
         let alarm = notifications.log().active()[1].clone();
         assert_eq!(alarm.default_action_key().as_deref(), Some("default"));
+        assert_eq!(
+            alarm.actions[0].1, "Stop",
+            "the button says what choosing it does"
+        );
         assert_eq!(
             inbox.take_activation(alarm.id).as_deref(),
             Some("tilo-clocks:alarm/1")

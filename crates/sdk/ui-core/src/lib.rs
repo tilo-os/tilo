@@ -470,7 +470,10 @@ pub use history_source::runs::{
     AgentRun, RunStep, forget_run, read_runs, record_run, record_run_with_details, run_starting_at,
 };
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
-pub use status_bubble::{SaveAction, SaveState, SaveStatusSurface, StatusBubble};
+pub use status_bubble::{
+    SAVE_GIVE_UP, SAVE_NOTICEABLE, SAVE_STALL, SaveAction, SaveNotice, SaveState,
+    SaveStatusSurface, StatusBubble,
+};
 pub use text_edit::{
     CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TypingRun,
     delete_last_grapheme, word_at_caret,
