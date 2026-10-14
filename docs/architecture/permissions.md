@@ -172,10 +172,11 @@ Every peer checks every incoming change before merging it.
 
 Read is a kind like any other, so a member can be denied Read on one app or
 one record of a room they read: "Finance: Deny Read; Finance › summary: Allow
-Read" hides every finance record but the summary. Every read decision asks the
-same function: the room peer's record read check
+Read" hides every finance record but the summary. Every per-record read
+decision asks the same function: the room peer's record read check
 (`StatePeer::check_document_read`) and the joined room's document reads
-through it. A device whose person is denied any record is refused the room's
+through it. Channel admission, below, is the exception: it asks Read once, on
+the room node, through the workspace tree (`shell::channel_policy`). A device whose person is denied any record is refused the room's
 whole legacy delivery rather than given a filtered one, because an automerge
 change graph cannot be served in part ([rooms.md](rooms.md)).
 

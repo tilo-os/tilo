@@ -626,7 +626,7 @@ From an ARM64 host, run:
 
 ```powershell
 cargo test -p imager --lib --features host-media-writer --target aarch64-pc-windows-msvc --locked
-cargo test -p ui --test hosted-platform --target aarch64-pc-windows-msvc --locked
+cargo test -p tilo-ui --test hosted-platform --target aarch64-pc-windows-msvc --locked
 ```
 
 Use `x86_64-pc-windows-msvc` on an x64 host. Keep the target explicit: an
@@ -642,7 +642,7 @@ workspace root:
 
 ```bash
 brew install pkgconf gstreamer
-cargo run -p video_editor
+cargo run -p video-editor
 ```
 
 The editor enables GStreamer playback and export by default. Homebrew's
@@ -1106,7 +1106,7 @@ $gstPrefix = 'C:/msys64/clangarm64' # Replace with your installation.
 $env:PATH = "$gstPrefix/bin;$env:PATH"
 $env:PKG_CONFIG = "$gstPrefix/bin/pkgconf.exe"
 $env:PKG_CONFIG_PATH = "$gstPrefix/lib/pkgconfig"
-cargo test --locked -p media --features decode,encode --lib
+cargo test --locked -p tilo-media --features decode,encode --lib
 cargo check --locked -p video-player --tests
 cargo test --locked -p video-player --test real_decode
 ```
