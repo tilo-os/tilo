@@ -303,6 +303,9 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: /tmp/tilo-sccache-canary-target
       SCCACHE_IGNORE_SERVER_IO_ERROR: "0"
+      # The canary measures the cache, so a cache that will not start fails
+      # here (after bounded retries and a debug start log), never silently.
+      TILO_SCCACHE_REQUIRED: "1"
       CANDIDATE_ARCH: ${{ matrix.arch }}
       CANDIDATE_IMAGE: ${{ matrix.image }}
     steps:
@@ -349,6 +352,9 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: /tmp/tilo-sccache-canary-target
       SCCACHE_IGNORE_SERVER_IO_ERROR: "0"
+      # The canary measures the cache, so a cache that will not start fails
+      # here (after bounded retries and a debug start log), never silently.
+      TILO_SCCACHE_REQUIRED: "1"
       CANDIDATE_ARCH: ${{ matrix.arch }}
       CANDIDATE_IMAGE: ${{ matrix.image }}
     steps:
