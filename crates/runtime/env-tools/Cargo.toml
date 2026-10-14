@@ -30,7 +30,6 @@ blake3.workspace = true
 clap.workspace = true
 hex.workspace = true
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -49,3 +48,6 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

@@ -47,7 +47,6 @@ iroh.workspace = true
 # its binary builds every Linux app sandbox.
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
 package-store = { path = "../../packaging/package-store" }
 postcard = { workspace = true, features = ["alloc"] }
 rand_core.workspace = true
@@ -126,3 +125,6 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

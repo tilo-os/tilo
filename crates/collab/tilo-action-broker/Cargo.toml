@@ -27,7 +27,6 @@ ed25519-dalek.workspace = true
 hex.workspace = true
 blake3.workspace = true
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
 tokio-util.workspace = true
 
 capnp.workspace = true
@@ -75,3 +74,6 @@ tilo-automerge.workspace = true
 tilo-automerge-isolate.workspace = true
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

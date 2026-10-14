@@ -10,7 +10,6 @@ publish = false
 [dependencies]
 tilo-ntfs-protocol = { path = "../tilo-ntfs-protocol" }
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 hex.workspace = true
@@ -35,3 +34,6 @@ path = "src/main.rs"
 [[bin]]
 name = "tilo-ntfs-image-test"
 path = "src/bin/image_test.rs"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
