@@ -139,26 +139,21 @@ where
     if len > max_bytes {
         return Err(ContentFetchError::TooLarge);
     }
-    let len = usize::try_from(len).map_err(|_| ContentFetchError::TooLarge)?;
-    let mut bytes = Vec::with_capacity(len.min(CONTENT_CHUNK_BYTES));
-    let mut hasher = blake3::Hasher::new();
-    let mut chunk = vec![0; CONTENT_CHUNK_BYTES];
-    while bytes.len() < len {
-        let want = (len - bytes.len()).min(CONTENT_CHUNK_BYTES);
-        let read = receive
-            .read(&mut chunk[..want])
-            .await
-            .map_err(|error| ContentFetchError::Stream(error.to_string()))?;
-        if read == 0 {
-            return Err(ContentFetchError::Stream("content ended early".into()));
-        }
-        hasher.update(&chunk[..read]);
-        bytes.extend_from_slice(&chunk[..read]);
+    let expected = usize::try_from(len).map_err(|_| ContentFetchError::TooLarge)?;
+    let mut bytes = Vec::with_capacity(expected.min(CONTENT_CHUNK_BYTES));
+    (&mut *receive)
+        .take(len)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|error| ContentFetchError::Stream(error.to_string()))?;
+    if bytes.len() < expected {
+        return Err(ContentFetchError::Stream("content ended early".into()));
     }
-    if hasher.finalize().as_bytes() != &digest {
-        return Err(ContentFetchError::Integrity);
+    if blake3::hash(&bytes).as_bytes() == &digest {
+        Ok(bytes)
+    } else {
+        Err(ContentFetchError::Integrity)
     }
-    Ok(bytes)
 }
 
 /// Answer a [`WorkerStreamOpen::ComputeContent`] from what the local store
@@ -191,7 +186,12 @@ where
     Ok(())
 }
 
-async fn refuse<W>(send: &mut W, code: &str) -> Result<(), EnvironmentStreamError>
+/// Refuse a content stream with `code`.
+///
+/// # Errors
+///
+/// Returns an error when the stream fails.
+pub(crate) async fn refuse<W>(send: &mut W, code: &str) -> Result<(), EnvironmentStreamError>
 where
     W: AsyncWrite + Unpin + Send,
 {
@@ -215,9 +215,13 @@ struct ContentRoute {
 pub(crate) async fn route_content(
     context: &RoutingContext,
     peer: &AuthenticatedPeer,
+    version: u16,
     (workspace_id, job_id, digest): (u64, [u8; 16], [u8; 32]),
     send: &mut SendStream,
 ) -> Result<(), EnvironmentStreamError> {
+    if version != ENVIRONMENT_PROTOCOL_VERSION {
+        return refuse(send, "unsupported_version").await;
+    }
     let route = match choose_source(context, peer, workspace_id, job_id, digest).await {
         Ok(route) => route,
         Err(code) => return refuse(send, code).await,
@@ -259,20 +263,20 @@ pub(crate) async fn route_content(
     }
     write_message(send, &ContentReply::Found { len }).await?;
     let forwarded = forward(&mut source_receive, send, len).await?;
-    if forwarded.as_bytes() != &digest {
+    if forwarded.as_bytes() == &digest {
+        tracing::debug!(
+            source = %hex::encode(route.source),
+            job = %hex::encode(job_id),
+            bytes = len,
+            "compute content forwarded"
+        );
+    } else {
         // The asker checks too; ending the stream abnormally tells it now.
         let _ = send.reset(1u32.into());
         tracing::warn!(
             source = %hex::encode(route.source),
             job = %hex::encode(job_id),
             "compute content did not match its digest; not forwarded"
-        );
-    } else {
-        tracing::debug!(
-            source = %hex::encode(route.source),
-            job = %hex::encode(job_id),
-            bytes = len,
-            "compute content forwarded"
         );
     }
     Ok(())
@@ -290,18 +294,20 @@ where
 {
     let mut hasher = blake3::Hasher::new();
     let mut chunk = vec![0; CONTENT_CHUNK_BYTES];
-    let mut remaining = len;
-    while remaining > 0 {
-        let want = usize::try_from(remaining)
-            .unwrap_or(usize::MAX)
-            .min(CONTENT_CHUNK_BYTES);
-        let read = from.read(&mut chunk[..want]).await?;
+    let mut limited = (&mut *from).take(len);
+    let mut copied = 0_u64;
+    loop {
+        let read = limited.read(&mut chunk).await?;
         if read == 0 {
-            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+            break;
         }
-        hasher.update(&chunk[..read]);
-        to.write_all(&chunk[..read]).await?;
-        remaining = remaining.saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
+        let piece = chunk.get(..read).unwrap_or_default();
+        hasher.update(piece);
+        to.write_all(piece).await?;
+        copied = copied.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+    }
+    if copied < len {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
     }
     Ok(hasher.finalize())
 }
@@ -318,12 +324,33 @@ async fn choose_source(
     if !HostOperation::ComputeControl.permits(&context.own_user_public_key, &peer.user_public_key) {
         return Err("not_authorised");
     }
-    let workspace = context
-        .workspace(workspace_id)
-        .await
-        .ok_or("not_authorised")?;
-    let workspace = workspace.lock().await;
-    if !room_access::decide(&workspace, &context.trust(), peer, RoomOperation::Compute).admitted() {
+    let Some(workspace) = context.workspace(workspace_id).await else {
+        return Err("not_authorised");
+    };
+    let (source, max_bytes, connection) = job_source(
+        &*workspace.lock().await,
+        &context.trust(),
+        peer,
+        job_id,
+        digest,
+    )?;
+    Ok(ContentRoute {
+        source,
+        connection: connection.ok_or("source_offline")?,
+        max_bytes,
+    })
+}
+
+/// [`choose_source`] under the workspace lock: the peer's admission, the
+/// job's record, and the live connection of the end holding the bytes.
+fn job_source(
+    workspace: &crate::workspace::WorkspaceRuntime,
+    trust: &room_access::RelayTrust<'_>,
+    peer: &AuthenticatedPeer,
+    job_id: [u8; 16],
+    digest: [u8; 32],
+) -> Result<(DeviceKey, u64, Option<Connection>), &'static str> {
+    if !room_access::decide(workspace, trust, peer, RoomOperation::Compute).admitted() {
         return Err("not_authorised");
     }
     let record = workspace
@@ -337,16 +364,11 @@ async fn choose_source(
         peer.device_public_key,
         digest,
     )?;
-    let connection = workspace
-        .compute
-        .worker_connection(&source)
-        .ok_or("source_offline")?;
-    drop(workspace);
-    Ok(ContentRoute {
+    Ok((
         source,
-        connection,
         max_bytes,
-    })
+        workspace.compute.worker_connection(&source),
+    ))
 }
 
 /// The job's rule: the worker may have a listed input while the job runs,
@@ -474,7 +496,7 @@ mod tests {
             Err(ContentFetchError::Integrity)
         );
         // A truncated body is an error, not a short read.
-        let cut = &wire[..wire.len() - 1];
+        let cut = &wire[..wire.len().saturating_sub(1)];
         assert!(matches!(
             receive_content(&mut &cut[..], digest, 1024).await,
             Err(ContentFetchError::Stream(_))

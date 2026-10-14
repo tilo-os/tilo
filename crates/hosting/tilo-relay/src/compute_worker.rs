@@ -398,18 +398,7 @@ pub async fn run_production_compute_worker(
         config.revocations.clone(),
     )
     .await?;
-    for workspace in &config.workspaces {
-        client.attach(*workspace).await?;
-        let delivery = client.receive().await?;
-        if !matches!(
-            delivery.envelope,
-            ComputeEnvelope::Ready { workspace_id, .. } if workspace_id == *workspace
-        ) {
-            return Err(ComputeWorkerError::Health(
-                "relay rejected compute worker workspace attachment".into(),
-            ));
-        }
-    }
+    attach_workspaces(&mut client, &config.workspaces).await?;
 
     advertise_all(&mut client, &config, &health, 0).await?;
     config.readiness.store(true, Ordering::Release);
@@ -440,20 +429,7 @@ pub async fn run_production_compute_worker(
                     .map_err(|error| ComputeSessionError::Connection(error.to_string()))?;
                 spawn_worker_stream(config.environments.clone(), Some(Arc::clone(&outputs)), stream);
             }
-            _ = prune_tick.tick() => {
-                let execution = config.state_root.join("execution");
-                let content = config.state_root.join("content");
-                tokio::task::spawn_blocking(move || {
-                    if let Err(error) = prune_retained_outputs(
-                        &execution,
-                        &content,
-                        std::time::SystemTime::now(),
-                        OUTPUT_RETENTION,
-                    ) {
-                        tracing::warn!(%error, "pruning retained compute outputs failed");
-                    }
-                });
-            }
+            _ = prune_tick.tick() => spawn_output_prune(&config.state_root),
             delivery = client.receive() => {
                 let delivery = delivery?;
                 handle_delivery(
@@ -485,6 +461,43 @@ pub async fn run_production_compute_worker(
             }
         }
     }
+}
+
+/// Attach the worker session to each configured workspace, failing when the
+/// relay refuses any of them.
+async fn attach_workspaces(
+    client: &mut ComputeClient,
+    workspaces: &BTreeSet<u64>,
+) -> Result<(), ComputeWorkerError> {
+    for workspace in workspaces {
+        client.attach(*workspace).await?;
+        let delivery = client.receive().await?;
+        if !matches!(
+            delivery.envelope,
+            ComputeEnvelope::Ready { workspace_id, .. } if workspace_id == *workspace
+        ) {
+            return Err(ComputeWorkerError::Health(
+                "relay rejected compute worker workspace attachment".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Prune retained outputs under `state_root` off the async runtime.
+fn spawn_output_prune(state_root: &Path) {
+    let execution = state_root.join("execution");
+    let content = state_root.join("content");
+    tokio::task::spawn_blocking(move || {
+        if let Err(error) = prune_retained_outputs(
+            &execution,
+            &content,
+            std::time::SystemTime::now(),
+            OUTPUT_RETENTION,
+        ) {
+            tracing::warn!(%error, "pruning retained compute outputs failed");
+        }
+    });
 }
 
 struct ActiveJob {
