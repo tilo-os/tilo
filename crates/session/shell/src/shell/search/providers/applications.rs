@@ -1499,11 +1499,14 @@ mod tests {
             &chrome,
             &ActionArgs::none(),
         );
+        // A launch the person can see opening is confirmed in passing, not
+        // with a notice: it is pending until its window appears. A refused
+        // launch still says why.
+        let launching = catalogue::take_pending_launch("so.tilo.terminal");
         assert!(
-            !chrome.borrow().notifications().is_empty(),
-            "a launch was attempted (opening notice or refusal), not a silent refocus"
+            launching || !chrome.borrow().notifications().is_empty(),
+            "a launch was attempted (still opening, or refused with a notice), not a silent refocus"
         );
-        let _ = catalogue::take_pending_launch("so.tilo.terminal");
         launcher::clear_pending_placements();
     }
 
