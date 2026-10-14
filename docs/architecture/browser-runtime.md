@@ -469,7 +469,11 @@ other server.
 
 In the desktop this is **Pair a new device** (`identity-actions.mjs`). It
 copies a link that opens the current workspace with a `pair` link secret
-naming the person (`web-routing.md` §6.2). The new device asks for a
+naming the person (`web-routing.md` §6.2), and says "Link copied" in
+passing. When the clipboard refuses, a banner holds the link with **Copy
+link**, whose click may be allowed where the search choice was not; refused
+again, the page shows the link selected in a read-only field to copy by
+hand. Once copied, the banner is withdrawn. The new device asks for a
 certificate and shows its pairing code. The person's device then offers a
 banner that names the code, and choosing the banner approves the device.
 In a governed room the certificate alone admits no device. So where the

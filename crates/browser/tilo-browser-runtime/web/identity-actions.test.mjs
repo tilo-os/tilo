@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, NAME, PAIR, RECOVERY, SIGN_IN, syncProfile,
+  ACTION_GAP_MS, ASK_AFTER_ACTIONS, COPY_PAIR, createIdentityActions, KEEP, NAME, PAIR, RECOVERY, SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
 import {browserIdentity, IdentityError, unlockIdentity} from './root-identity.mjs';
 import {fakeAuthenticator} from './testing/fake-authenticator.mjs';
@@ -227,17 +227,58 @@ test('a device takes the name its person keeps on their hosts, and a root holder
   assert.equal(published.length, 2, 'a name nobody chose is not published');
 });
 
-test('pairing shows the link in a banner only when it could not be copied', async () => {
+const PAIR_LINK = 'https://tilo.example/#/@rooms.example/w/ROOM?pair=ab';
+
+test('a link the clipboard refused is shown in a banner that can copy it again', async () => {
   const identity = await browserIdentity({storage: memoryStorage(), persist: null});
   const mount = fakeMount();
-  const actions = createIdentityActions({identity, copy: async () => { throw new Error('denied'); },
-    every: () => () => {},
-    pairing: {link: () => 'https://tilo.example/#/@rooms.example/w/ROOM?pair=ab', pending: async () => [], answer: async () => {}}});
+  let clipboard = 'refuse';
+  const revealed = [];
+  const actions = createIdentityActions({identity, every: () => () => {},
+    copy: async () => { if (clipboard === 'refuse') throw new Error('denied'); },
+    revealLink: (link, copied) => revealed.push({link, copied}),
+    pairing: {link: () => PAIR_LINK, pending: async () => [], answer: async () => {}}});
   await actions.attach(mount);
   await actions.perform(PAIR.id);
-  assert.deepEqual(mount.offers, [PAIR.id]);
-  assert.equal(mount.said[0].body, 'https://tilo.example/#/@rooms.example/w/ROOM?pair=ab');
+  assert.deepEqual(mount.offers, [COPY_PAIR.id], 'the banner offers Copy link');
+  assert.equal(mount.said[0].action.title, 'Copy link');
+  assert.equal(mount.said[0].body, PAIR_LINK);
+  assert.ok(mount.actions.includes(COPY_PAIR.id), 'offered while the link is not copied');
   assert.deepEqual(mount.acknowledged, [], 'nothing was copied to acknowledge');
+
+  // Refused again: the banner stays and the link goes where it can be copied by hand.
+  await actions.perform(COPY_PAIR.id);
+  assert.ok(mount.actions.includes(COPY_PAIR.id), 'the banner stays');
+  assert.deepEqual(mount.acknowledged, []);
+  assert.deepEqual(revealed.map(r => r.link), [PAIR_LINK]);
+
+  // Copied by hand from there: acknowledged, and no longer offered.
+  revealed[0].copied();
+  assert.deepEqual(mount.acknowledged, ['Link copied: open it on the new device']);
+  assert.ok(!mount.actions.includes(COPY_PAIR.id), 'withdrawn');
+  revealed[0].copied();
+  assert.equal(mount.acknowledged.length, 1, 'acknowledged once');
+});
+
+test('Copy link with a working clipboard acknowledges once and withdraws the banner', async () => {
+  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const mount = fakeMount();
+  let refuse = true;
+  const copied = [];
+  const revealed = [];
+  const actions = createIdentityActions({identity, every: () => () => {},
+    copy: async text => { if (refuse) throw new Error('denied'); copied.push(text); },
+    revealLink: link => revealed.push(link),
+    pairing: {link: () => PAIR_LINK, pending: async () => [], answer: async () => {}}});
+  await actions.attach(mount);
+  await actions.perform(PAIR.id);
+  refuse = false;
+  await actions.perform(COPY_PAIR.id);
+  assert.deepEqual(copied, [PAIR_LINK]);
+  assert.deepEqual(mount.acknowledged, ['Link copied: open it on the new device']);
+  assert.ok(!mount.actions.includes(COPY_PAIR.id), 'no longer offered, so its banner is withdrawn');
+  assert.deepEqual(revealed, []);
+  assert.deepEqual(mount.offers, [COPY_PAIR.id], 'no second banner');
 });
 
 test('pairing copies a link, then offers each waiting device for approval and approves the one chosen', async () => {
