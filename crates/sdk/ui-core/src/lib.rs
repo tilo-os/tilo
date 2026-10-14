@@ -419,6 +419,12 @@ pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
 pub use action_palette::ActionPalette;
 pub use tilo_actions;
+
+/// The word-boundary corrections every text field applies, for an input
+/// method that commits whole words itself (the on-screen keyboard).
+pub mod autocorrect {
+    pub use spellcheck::contraction;
+}
 pub use widget::ModelView;
 pub use widget::command_palette::{
     ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
