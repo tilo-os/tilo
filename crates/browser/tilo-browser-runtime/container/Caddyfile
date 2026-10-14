@@ -13,6 +13,12 @@
 
 :8080 {
 	header {
+		# The page holds the visitor's identity, so a first visit typed as
+		# http:// must never be answerable by whoever sits on the path:
+		# browsers keep to HTTPS for this host once they have seen this over
+		# HTTPS (over plain HTTP they ignore it). This host only, not its
+		# subdomains, which are workspace hosts with their own operators.
+		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
 		-Server
