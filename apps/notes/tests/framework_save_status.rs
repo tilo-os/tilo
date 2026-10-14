@@ -53,7 +53,18 @@ fn a_hosted_note_reports_saved_and_survives_a_reopen() {
             .collect::<Vec<_>>()
     });
     assert_eq!(titles, ["Groceries"], "the note is durable");
-    assert_eq!(save_labels(&mut app), ["Saved"]);
+    // Bytes that were only read count as durable once the store's thread has
+    // synced them, so a reopened note can read "Saving…" for a moment. It
+    // must turn "Saved" by itself: run frames only as the live host would
+    // (the status's own wake deadline) until it does.
+    let saved = idle(&mut app, std::time::Duration::from_secs(10), |app| {
+        save_labels(app) == ["Saved"]
+    });
+    assert!(
+        saved,
+        "a reopened note reads Saved without input: {:?}",
+        save_labels(&mut app)
+    );
 }
 
 /// Run frames only when the live host would: for queued work, an animation
