@@ -891,16 +891,15 @@ pub fn content() -> tilo_content::ContentStore {
     ui::tilo_resource::content::current().unwrap_or_else(tilo_content::ContentStore::memory)
 }
 
-/// The pictures of `notebook` whose bytes are readable now, by the `asset:`
+/// The pictures of a notebook's `images` whose bytes are readable now, by the `asset:`
 /// source their bodies name them by. A picture a collaborator added may
 /// still be on its way from their device; it is absent until it arrives.
 #[must_use]
 pub fn image_snapshot(
-    notebook: &Notebook,
+    images: &BTreeMap<String, Bytes>,
     read: impl Fn(&str) -> Option<Vec<u8>>,
 ) -> HashMap<String, Vec<u8>> {
-    notebook
-        .images
+    images
         .iter()
         .filter_map(|(digest, stored)| {
             let bytes = match stored.inline() {

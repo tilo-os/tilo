@@ -823,7 +823,7 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 
 ## Where to read first
 
-- `crates/session/shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
+- `crates/session/shell/src/compositor/{mod.rs, state.rs, native.rs, session_bootstrap.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
 - `crates/session/shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
 - `crates/session/shell/tests/{compositor_test.rs, interaction_test.rs, control_socket_test.rs}` — the integration coverage.
 - `crates/session/shell/examples/drm_backend_boot.rs` — the DRM backend's hardware probe, run from a free TTY; it fails rather than skips when it cannot claim the seat.

@@ -187,7 +187,7 @@ proven in the actual Forgejo runner environment.
 
 ### Verified evidence in this checkout
 
-- `cargo test --locked -p fs --tests -- --test-threads=1`: 403 tests passed
+- `cargo test --locked -p tilo-fs --tests -- --test-threads=1`: 403 tests passed
   with no failures: 346 library, 20 daemon binary, 4 release-matrix, 5
   corruption-matrix, 1 exact-share process/FUSE, 26 real-FUSE integration and
   1 performance-gate test. Byte-name migration, replication and

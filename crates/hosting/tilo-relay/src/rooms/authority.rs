@@ -15,8 +15,9 @@
 //!    checked against the room's policy, read under the room's lock so a
 //!    role change and an administration call cannot race. A Moderator
 //!    removes and bans those ranked below; a member the owner granted
-//!    `invite` invites, never above their own role; an Editor by role alone
-//!    governs nothing.
+//!    `invite` invites, never above their own role; an administrator holds
+//!    every governance action and is still bounded by their Editor role; an
+//!    Editor by role alone governs nothing.
 
 use tilo_action_policy::{Change, Context, Role, roles};
 use tilo_user_identity::DeviceCert;
