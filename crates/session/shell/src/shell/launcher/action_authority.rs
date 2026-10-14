@@ -614,6 +614,7 @@ mod tests {
             package_id: "so.tilo.authority-probe".into(),
             display_name: "Authority probe".into(),
             localized_names: BTreeMap::default(),
+            keywords: Vec::new(),
             category: None,
             version: "1".into(),
             manifest_path: "/unused/manifest".into(),
