@@ -2270,8 +2270,8 @@ mod tests {
                 .map(String::as_str),
             Some("tilo.content:md")
         );
-        running.produced.truncate(0);
-        running.produced_by.truncate(0);
+        running.produced.clear();
+        running.produced_by.clear();
         running.produced.push("tilo.content:own".into());
         running.produced_by.push("so.tilo.slides".into());
         assert_eq!(

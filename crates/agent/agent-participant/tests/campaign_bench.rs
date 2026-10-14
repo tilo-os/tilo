@@ -1057,6 +1057,7 @@ async fn campaign_bench() {
                     "apps": task.as_ref().map(|t| t.steps.iter().map(|s| s.app.clone()).collect::<Vec<_>>()),
                     "resources": task.as_ref().map(|t| t.steps.iter().map(|s| s.resource.clone()).collect::<Vec<_>>()),
                     "content": task.as_ref().map(|t| t.steps.iter().flat_map(|s| s.content.clone()).collect::<Vec<_>>()),
+                    "content_actions": task.as_ref().map(|t| t.steps.iter().flat_map(|s| s.content.iter().map(|_| s.action.clone())).collect::<Vec<_>>()),
                     "restarted": one.restarted,
                     "step_seen_unix_ms": one.seen_ms,
                     "launched_at_unix_ms": one.launched_ms,
@@ -1073,14 +1074,26 @@ async fn campaign_bench() {
         }
     }
     let finished = std::time::SystemTime::now();
-    // The last content each output's task produced.
+    // The last content each output's task exported, else the last it produced: a
+    // `look` after the export is the agent viewing its work, not the file it was asked for.
     let produced = |step: &str, agent: &str| {
         log.iter()
             .filter(|row| row["step"] == step && row["agent"] == agent)
             .filter_map(|row| {
-                row["content"]
-                    .as_array()?
-                    .last()?
+                let content = row["content"].as_array()?;
+                let actions = row["content_actions"].as_array();
+                let exported = actions.and_then(|actions| {
+                    actions
+                        .iter()
+                        .zip(content)
+                        .filter(|(action, _)| {
+                            action.as_str().is_some_and(|a| a.starts_with("export"))
+                        })
+                        .map(|(_, address)| address)
+                        .next_back()
+                });
+                exported
+                    .or_else(|| content.last())?
                     .as_str()
                     .map(str::to_owned)
             })
