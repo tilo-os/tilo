@@ -396,8 +396,7 @@ pub fn spawn(tree: WorkspaceTreeHandle) -> Result<WindowsCompatHandle, String> {
     let render_node = crate::compositor::render_node::resolved()
         .map(std::path::Path::to_path_buf)
         .ok_or_else(|| "the compositor has no safe render node to delegate".to_string())?;
-    // SAFETY: `geteuid` has no preconditions and does not mutate memory.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     let session = HostSession {
         uid,
         wayland_socket,

@@ -53,7 +53,7 @@ pub use authors::{
     local_identity_author, participant_display_label, set_room_agents, short_id, stable_hue,
 };
 pub use compare::{CompareError, HistoryComparison, compare_entries};
-pub use detail::{HistoryResourceTarget, HistorySelectionDetail};
+pub use detail::{HistoryResourceTarget, HistorySelectionDetail, contains_opaque_id, human_label};
 pub use digest::{ActivityBrief, ActivityBriefAction, ActivityDigest};
 pub use facets::HistoryFacetIndex;
 pub use groups::{

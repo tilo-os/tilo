@@ -20,6 +20,7 @@ use crate::{
 };
 use tilo_user_identity::{RevocationList, UserIdentity};
 
+mod presence_cost;
 mod recovery;
 
 struct Fixture {

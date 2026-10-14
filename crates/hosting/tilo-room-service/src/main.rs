@@ -794,7 +794,13 @@ async fn main() -> Result<()> {
         }
         None => Mode::Normal,
     };
-    ops::install(config.state.clone(), initial);
+    let ops = ops::install(config.state.clone(), initial);
+    if let Some(settings) = &config.persistent {
+        ops.set_caps(
+            u64::try_from(config.max_guests).unwrap_or(u64::MAX),
+            u64::try_from(settings.max_spectators).unwrap_or(u64::MAX),
+        );
+    }
     let identity = tls::HostIdentity::generate()?;
     let api = TcpListener::bind(config.api).await?;
     let persistent = match &config.persistent {

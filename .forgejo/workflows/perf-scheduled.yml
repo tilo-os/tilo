@@ -567,11 +567,9 @@ jobs:
           path: perf/
           if-no-files-found: warn
 
-  # Idle wakeups: the shell integration gate
-  # crates/session/shell/tests/idle_wakeups.rs, which pull requests run with
-  # a 10 s window whenever shell changes, here three times with a 60 s window
-  # through adapters.py idle-wakeups. A debug `it` build with check.yml's
-  # Cargo environment, so the compiler cache its test shards fill serves it.
+  # Idle wakeups: the explicit examples/idle-wakeups.rs benchmark, never a
+  # PR test. Three samples with a 60 s window through adapters.py idle-wakeups.
+  # Build it and the production shell explicitly in the dev profile.
   wakeups:
     needs: [plan, builder]
     if: needs.plan.outputs.wakeups == 'true'
@@ -596,10 +594,12 @@ jobs:
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
 
-      - name: Build the shell integration tests
-        run: >-
-          bash scripts/ci-run.sh "idle wakeup gate build" --
-          cargo test --locked -p shell --test it --no-run
+      - name: Build the idle benchmark and shell
+        run: |
+          bash scripts/ci-run.sh "idle wakeup benchmark build" -- \
+            cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark
+          bash scripts/ci-run.sh "idle wakeup shell build" -- \
+            cargo build --locked -p shell --bin shell
 
       - name: Count an idle desktop's wakeups three times and record them
         run: |
@@ -608,9 +608,9 @@ jobs:
           mkdir -p perf
           status=0
           for run in 1 2 3; do
-            bash tools/test-env.sh cargo test --locked -p shell --test it \
-              idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget \
-              -- --exact --nocapture > "perf/idle-$run.log" 2>&1 || status=$?
+            TILO_IDLE_SHELL_BIN="$PWD/target/debug/shell" \
+              bash tools/test-env.sh target/debug/examples/idle-wakeups \
+              > "perf/idle-$run.log" 2>&1 || status=$?
             grep -A40 '^idle wakeups over' "perf/idle-$run.log" || true
           done
           python3 tools/perf/record.py env --profile dev --renderer lavapipe \
@@ -756,6 +756,61 @@ jobs:
         if: always()
         with:
           name: perf-hosting
+          path: perf/
+          if-no-files-found: warn
+
+  # A public room host at 100 guests (crates/dev/room-load), three runs:
+  # every guest joins through /join, holds a browser session, moves a cursor
+  # on the live plane and chats. Records the guests' p99 join and chat
+  # delivery and the host's peak memory and CPU (adapters.py room-load):
+  # the largest room docs/benchmarks/room-host-capacity-2026-10.md measured
+  # admitting every guest, and the cap it sizes eu1 to.
+  # Built as the room service image builds its relay (thin LTO, the agents
+  # feature); run on the class the write-up measured, with production's
+  # MALLOC_ARENA_MAX=2.
+  hosting-room:
+    needs: [plan, builder]
+    if: needs.plan.outputs.hosting == 'true'
+    runs-on: runner-large
+    timeout-minutes: 75
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Build the room load bench
+        run: >-
+          bash scripts/ci-run.sh "room load bench release build" --
+          cargo build --locked --release -p tilo-room-load --features tilo-relay/agents
+
+      - name: Load a room host with 100 guests and record
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          python3 tools/perf/record.py env --profile release --renderer none \
+            --virtualization kvm --runner runner-large > perf/env.json
+          for run in 1 2 3; do
+            target/release/tilo-room-load bench --guests 100 --malloc-arenas 2 --hold 60 \
+              > "perf/room-load-$run.json" 2> "perf/room-load-$run.log"
+          done
+          python3 tools/perf/adapters.py room-load --env-json perf/env.json perf/room-load-*.json \
+            > perf/hosting-room.jsonl
+          cat perf/hosting-room.jsonl
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: perf-hosting-room
           path: perf/
           if-no-files-found: warn
 
@@ -923,7 +978,7 @@ jobs:
           if-no-files-found: warn
 
   compare:
-    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, search, hosting, browser]
+    needs: [plan, fs, footprint, footprint-image, agent, latency, render, wakeups, search, hosting, hosting-room, browser]
     if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.mode != 'ab' }}
     runs-on: runner-quality
     timeout-minutes: 15
@@ -957,6 +1012,7 @@ jobs:
           WAKEUPS_RESULT: ${{ needs.wakeups.result }}
           SEARCH_RESULT: ${{ needs.search.result }}
           HOSTING_RESULT: ${{ needs.hosting.result }}
+          HOSTING_ROOM_RESULT: ${{ needs.hosting-room.result }}
           BROWSER_RESULT: ${{ needs.browser.result }}
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
@@ -964,7 +1020,7 @@ jobs:
           shopt -s nullglob
           owner=${GITHUB_REPOSITORY%%/*}
           status=0
-          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "search:$SEARCH_RESULT" "hosting:$HOSTING_RESULT" "browser:$BROWSER_RESULT"; do
+          for job in "fs:$FS_RESULT" "footprint:$FOOTPRINT_RESULT" "footprint-image:$FOOTPRINT_IMAGE_RESULT" "agent:$AGENT_RESULT" "latency:$LATENCY_RESULT" "render:$RENDER_RESULT" "wakeups:$WAKEUPS_RESULT" "search:$SEARCH_RESULT" "hosting:$HOSTING_RESULT" "hosting-room:$HOSTING_ROOM_RESULT" "browser:$BROWSER_RESULT"; do
             case ${job#*:} in
               success|skipped) ;;
               *) echo "::error::benchmark job ${job%%:*} ended ${job#*:}"; status=1 ;;
