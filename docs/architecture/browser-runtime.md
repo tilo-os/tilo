@@ -583,6 +583,7 @@ peer.membership.list(): Promise<{room, name, generation,
   members: [{userPublicKey, name, role, owner, removed}],
   waiting: [{requestId, userPublicKey, devicePublicKey, name, role, requestedAtMs}],
   invitations: [{inviteId, role, expiresAtMs}]}>;
+peer.membership.requests(): Promise<[{requestId, userPublicKey, devicePublicKey, name, role, requestedAtMs}]>;  // waiting only, one request
 peer.membership.admit(requestId) / decline(requestId) / setRole(userPublicKey, role)
   / remove(userPublicKey) / cancelInvitation(inviteId);
 // The rooms the host governs, before the peer is in one (connect again with `room`):
@@ -641,6 +642,8 @@ web desktop offers it to the person as "Set up a machine", typed in or
 filled in from an `install` link (`web/machine-setup.mjs`;
 web-routing.md §6.3). The node must allow the page's origin
 (`--allowed-origin`) for the page to reach its install route.
+The web desktop then makes workspaces on it, invites people into them and
+lets in who asks (`web/workspace-actions.mjs`; web-routing.md §6.4).
 
 Browsers accept a device as a room's governor when its certificate owns
 workspaces (`can_own_workspaces`), so such a node governs and stewards the
