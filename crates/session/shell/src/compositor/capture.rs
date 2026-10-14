@@ -2042,11 +2042,7 @@ mod tests {
             _theme: &ui::theme::Theme,
             node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
-            let style = taffy::Style {
-                size: taffy::Size::from_percent(1.0, 1.0),
-                ..taffy::Style::default()
-            };
-            taffy.widget_leaf(style, node_map, self)
+            taffy.fill_leaf(node_map, self)
         }
 
         fn apply_layout(
