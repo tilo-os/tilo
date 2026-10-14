@@ -1,0 +1,7 @@
+# A node's relay (tilo-node-relay@.service): the person's rooms for their web
+# pages, beside the session that runs their apps. Its identity is its own,
+# installed by the person's page through /peer/v1/install.
+identity_root = "/var/lib/tilo-node/relay/identity"
+state_root = "/var/lib/tilo-node/relay/state"
+full_replica_status = "/var/lib/tilo-node/relay/full-replica-status.json"
+home_peer_bundle = "/var/lib/tilo-node/relay/home-peer-bundle"

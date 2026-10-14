@@ -42,6 +42,11 @@ pub struct SessionDevice {
     pub public_key: [u8; 32],
     /// Where its certificate is written, in its canonical encoding.
     pub cert_out: std::path::PathBuf,
+    /// Where the person's user key is written beside it, when the session's
+    /// identity tree is named: the session then starts as an enrolled device
+    /// of that person, not as a new person of its own. Only public halves
+    /// are written; the session's private key is never read.
+    pub user_key_out: Option<std::path::PathBuf>,
 }
 
 struct Waiting {
@@ -401,7 +406,7 @@ fn session_certificate(
     waiting: &Waiting,
     node: &DeviceCert,
     offered: Option<DeviceCert>,
-) -> Result<Option<(DeviceCert, std::path::PathBuf)>, String> {
+) -> Result<Option<(DeviceCert, SessionDevice)>, String> {
     let (Some((session, _)), Some(cert)) = (&waiting.session, offered) else {
         return Ok(None);
     };
@@ -416,7 +421,32 @@ fn session_certificate(
     }
     tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns())
         .map_err(|error| error.to_string())?;
-    Ok(Some((cert, session.cert_out.clone())))
+    Ok(Some((cert, session.clone())))
+}
+
+/// Write the person's user key into the session's identity tree, refusing
+/// a tree that already belongs to another person.
+fn write_session_user_key(
+    path: &std::path::Path,
+    user_public_key: &[u8; 32],
+) -> Result<(), tilo_user_identity::persist::PersistError> {
+    if path.is_file() {
+        let held = tilo_user_identity::persist::read_public_key(path)?;
+        if &held != user_public_key {
+            return Err(tilo_user_identity::persist::PersistError::Io(
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "the session already belongs to another identity",
+                ),
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    tilo_user_identity::persist::write_public_key(path, user_public_key)?;
+    Ok(())
 }
 
 async fn install(
@@ -447,8 +477,11 @@ async fn install(
     let written = cert.clone();
     tokio::task::spawn_blocking(move || {
         tilo_user_identity::install_device_cert(&paths, &written, tilo_clock::unix_now_ns())?;
-        if let Some((session, path)) = session {
-            tilo_user_identity::persist::write_device_cert(&path, &session)?;
+        if let Some((cert, session)) = session {
+            if let Some(user_key) = &session.user_key_out {
+                write_session_user_key(user_key, &cert.user_public_key)?;
+            }
+            tilo_user_identity::persist::write_device_cert(&session.cert_out, &cert)?;
         }
         Ok::<_, tilo_user_identity::persist::PersistError>(())
     })

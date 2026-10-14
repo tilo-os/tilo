@@ -1,0 +1,11 @@
+# Starts %i's node session once the node is installed: only a certified
+# session joins the person's rooms, so it never starts as a person of its own.
+[Unit]
+Description=Start %i's Tilo node session once it is certified
+
+[Path]
+PathExists=/var/lib/tilo-node/%i/session/device/cert.bin
+Unit=tilo-node-session@%i.service
+
+[Install]
+WantedBy=multi-user.target
