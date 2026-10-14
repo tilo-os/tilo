@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+pub use registry_types::catalogue::{CatalogueApp, CatalogueListing};
 
 use crate::shell::launcher::{self, LaunchEvent, LaunchEventKind};
 use crate::shell::state::RoomId;
@@ -41,40 +41,6 @@ fn safe_diagnostic(bytes: &[u8]) -> String {
         .collect::<String>()
         .trim()
         .to_owned()
-}
-
-/// **Wire contract.** These field names are what `app list
-/// --json` prints; the crate that prints them pins the same names in
-/// its own test, so changing one without the other fails loudly
-/// instead of silently producing an empty catalogue.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct CatalogueApp {
-    pub package_id: String,
-    pub display_name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub category: Option<String>,
-    pub version: String,
-    /// Which configured registry offered it.
-    pub registry: String,
-    #[serde(default)]
-    pub trust: String,
-}
-
-/// The envelope `app list --json` prints.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct CatalogueListing {
-    #[serde(default)]
-    pub apps: Vec<CatalogueApp>,
-    #[serde(default)]
-    pub unreachable: Vec<UnreachableRegistry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct UnreachableRegistry {
-    pub name: String,
-    pub detail: String,
 }
 
 // ---------------------------------------------------------------------
@@ -462,7 +428,10 @@ fn push_failure(package_id: &str, display_name: &str, detail: String) {
         display_name: display_name.to_string(),
         managed_agent_id: None,
         managed_workspace_id: None,
-        kind: LaunchEventKind::SpawnFailed { detail },
+        kind: LaunchEventKind::SpawnFailed {
+            reason: launcher::LaunchFailure::Other,
+            detail,
+        },
     });
 }
 
@@ -472,8 +441,7 @@ mod tests {
 
     #[test]
     fn catalogue_listing_parses_strictly_and_seeds_the_palette() {
-        /// Pinned against the exact JSON `app` prints;
-        /// `app-cli`'s own test pins the other half.
+        /// The exact JSON `app` prints.
         fn the_listing_envelope_parses_the_binarys_field_names() {
             let json = r#"{"apps":[{"package_id":"so.tilo.sheets","display_name":"Sheets",
                 "description":"a spreadsheet","category":"Office","version":"2.0.0",
@@ -514,7 +482,8 @@ mod tests {
             std::fs::write(
                 &path,
                 r#"{"apps":[{"package_id":"so.tilo.remote","display_name":"Remote",
-                    "version":"1.0.0","registry":"team","trust":"verified"}]}"#,
+                    "version":"1.0.0","registry":"team","download_url":"https://x/y.tapp",
+                    "trust":"verified"}]}"#,
             )
             .unwrap();
             let listing = read_cached_listing(&path).expect("cached listing should parse");

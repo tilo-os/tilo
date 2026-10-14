@@ -1,4 +1,0 @@
-bytes = 1048576
-measured = 93244637
-run = 75670
-reason = "Explained Music library suggestions and reversible CRDT feedback (#3133): shared themed preference controls, canonical actions/resources, and assistive widget dispatch. App SDK run 75670 measured the merged release desktop module at 93244637 bytes, 52445 above its existing budget. This total includes intervening main changes and is not an exclusive measurement of Music's feature cost. The receipt uses the existing ratchet's standard 1% headroom rounded to 64 KiB; no size checks or functionality are removed."

@@ -203,6 +203,9 @@ pub struct DesktopChromeSnapshot {
     /// The active workspace's strips as named places with who is in each;
     /// `None` keeps the bar from showing a strip switcher.
     pub strip_places: Option<StripPlaces>,
+    /// People following the room without taking part (spectators). The bar
+    /// counts them beside the avatars so an audience is never invisible.
+    pub watching: u32,
 }
 
 /// Which people are on which strip of the active workspace.
@@ -281,6 +284,10 @@ pub enum ChromeIntent {
     AddStrip {
         name: String,
     },
+    /// Open or close the menu behind the bar's Tilo mark
+    /// ([`crate::topbar::TopBarChrome::with_tilo_mark`]), under
+    /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].
+    ToggleTiloMenu,
     /// Deliver a click to a running application's tray item.
     AppTray {
         key: String,

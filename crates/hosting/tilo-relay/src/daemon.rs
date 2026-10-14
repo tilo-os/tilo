@@ -2508,8 +2508,8 @@ async fn handle_conn(
     mut recv: RecvStream,
 ) -> Result<(), RelayError> {
     ctx.metrics.inc_conns_accepted();
-    // 1. The handshake, under the live policy: the owner and every user the
-    // relay currently admits.
+    // 1. The bounded shared handshake, under the live policy: the owner and
+    // every user the relay currently admits.
     let client_peer = match ctx
         .identity
         .authenticate(

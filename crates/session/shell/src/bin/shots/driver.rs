@@ -83,7 +83,7 @@ impl ShellDriver {
     /// Build a driver around the provided workspace tree at `viewport` size.
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
         // Boot adopts every ownerless workspace before the session ever
-        // paints (`compositor::hosted`), so a room you made is a room
+        // paints (`compositor::session_bootstrap`), so a room you made is a room
         // you own; skipping it renders "no members" for rooms that on a
         // real machine are yours.
         // The driver then acts as that same owner in every room: the
@@ -2455,6 +2455,7 @@ impl ShellDriver {
                         active_tab: tid,
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     };
                     strip.window_groups.push(group);
                 }
@@ -2540,6 +2541,7 @@ impl ShellDriver {
                     active_tab: tid,
                     width: half,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
                 strip_id = Some(strip.id);
                 sibling = Some(gid);
@@ -2601,6 +2603,7 @@ impl ShellDriver {
                             active_tab: tid,
                             width: WindowWidth::Normal,
                             maximized: false,
+                            focus_history: Vec::new(),
                         });
                         ws.strips.push(strip);
                     }

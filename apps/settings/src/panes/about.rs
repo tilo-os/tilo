@@ -24,7 +24,7 @@ use crate::host::PaneCx;
 use crate::i18n::t;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, hero, rows, value_row};
+use crate::widgets::{block_section, card, hero, note, row, rows, value_row};
 
 /// What About offers to do with this device's identity.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -193,7 +193,7 @@ pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
 
 pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
     // A device-identity hero: the machine's name in the accent, the OS beneath.
-    let hero_block = Box::new(
+    let hero_block = block_section(Box::new(
         ui::widget::Column::new()
             .with_no_padding()
             .push(hero(ui::icons::Icon::Monitor, &info.hostname))
@@ -201,7 +201,7 @@ pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
                 ui::widget::Text::new(&info.pretty_name)
                     .with_role(ui::tokens::typography::TextRole::Body),
             )),
-    );
+    ));
 
     let person = info
         .identity_name
@@ -219,22 +219,22 @@ pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
         rows(vec![
             value_row(&t("settings-about-person"), &person),
             value_row(&t("settings-about-identity"), &info.fingerprint()),
-            caption(&t("settings-about-identity-caption")),
+            note(&t("settings-about-identity-caption")),
         ]),
     );
 
     let backup = card(
         &t("settings-about-backup-card"),
         rows(vec![
-            caption(&t("settings-about-backup-caption")),
-            Box::new(
+            note(&t("settings-about-backup-caption")),
+            row(Box::new(
                 Row::new()
                     .push(Box::new(cx.bind_invocation(
                         Button::new(PORTABLE_BACKUP_BUTTON, &backup_label),
                         AboutEffect::BackUpIdentity,
                     )))
                     .push(Box::new(Spacer::new())),
-            ),
+            )),
         ]),
     );
 

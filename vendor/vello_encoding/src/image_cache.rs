@@ -324,6 +324,26 @@ impl ImageCache {
         evicted
     }
 
+    /// Evict every resident the current pass has not drawn, however recently
+    /// an earlier pass did. The last resort once the atlas cannot grow: a
+    /// client's superseded frame is a resident of its own, and an image over
+    /// half the atlas's side cannot be allocated beside it, so waiting out
+    /// [`EVICT_AFTER_GENERATIONS`] omits the frame that replaced it. Returns
+    /// how many went.
+    pub(crate) fn evict_superseded(&mut self) -> usize {
+        let mut evicted = 0;
+        for (_id, resident) in self
+            .map
+            .extract_if(|_, resident| resident.last_used_generation != self.generation)
+        {
+            self.atlas.deallocate(resident.alloc_id);
+            evicted += 1;
+        }
+        self.evicted_in_resolve += evicted;
+        self.evicted_total = self.evicted_total.saturating_add(evicted as u64);
+        evicted
+    }
+
     pub(crate) fn mark_dirty(&mut self, image: &ImageData) {
         if let Some(resident) = self.map.get_mut(&image.data.id()) {
             resident.dirty = true;
@@ -764,5 +784,27 @@ mod tests {
         assert_eq!(cache.atlas.size().width, 16);
         assert_eq!(cache.get_or_insert(&image), Some(xy));
         assert_eq!(cache.map.len(), 1);
+    }
+
+    #[test]
+    fn a_superseded_frame_makes_room_when_the_atlas_cannot_grow() {
+        // The atlas is full at its maximum: a replacement frame more than
+        // half its side cannot sit beside the frame it replaces.
+        let mut cache = ImageCache::new_with_sizes(16, 16);
+        cache.begin_resolve();
+        assert!(cache.get_or_insert(&image(1, 12, 12)).is_some());
+        cache.finish_resolve();
+        cache.begin_resolve();
+        let next = image(2, 12, 12);
+        assert!(
+            cache.get_or_insert(&next).is_none(),
+            "no room beside the old frame"
+        );
+        assert!(!cache.evict_stale_entries(), "one pass is not stale");
+        assert!(!cache.bump_size(), "already at the maximum");
+        assert_eq!(cache.evict_superseded(), 1);
+        assert!(cache.get_or_insert(&next).is_some());
+        // What this pass drew stays.
+        assert_eq!(cache.evict_superseded(), 0);
     }
 }

@@ -48,6 +48,7 @@ fn workspace_with_group() -> Workspace {
             active_tab: 30,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
             tabs: [30, 31]
                 .into_iter()
                 .map(|id| Tab {
@@ -141,6 +142,7 @@ fn open_app_beside_an_actors_group_lands_right_after_it() {
             active_tab: 41,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
             tabs: vec![Tab {
                 id: 41,
                 title: "Notes".into(),

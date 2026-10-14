@@ -119,6 +119,30 @@ renderer; frame-timing checks gated to real display hardware report that. The re
 job summary, and the job fails unless every check passes.
 
 
+### Agent door (M01-M04) and input fidelity (I01-I07)
+
+M01-M04 (`checks/agent.py`) run `guest/mcp_client.py` in the guest, as Claude Code would run
+`tilo-runtime-mcp --connect`: the person's consent is answered through the control socket's
+`permission-prompts` actions, `tilo_list_apps` must list the desktop's live apps (Notes is
+open), a Notes `new-page` is read back through the desktop, and refusals must reach the agent
+as `isError` / a JSON-RPC error. Until the image serves `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
+(fix/agent-door) they report **xfail** with that reason: an expected failure does not fail the
+run (`core.ExpectedFailure`), is listed in the report, and becomes an ordinary check when the
+socket appears.
+
+I01-I07 (`checks/input_devices.py`) plug uinput devices copied from the Lenovo Yoga Slim 7x
+(`os/hardware/profiles/lenovo-83ed/input/*.json`: I2C bus, 048D:8987 keyboard, 0488:1054
+touchpad; `tilo-vm input device plug lenovo-83ed-keyboard`) and check German keysyms,
+layout state over hotplug, no stuck modifiers after a lock, and touchpad tap/click/scroll and
+disable-while-typing. I05-I07 are `calibrating`: their observables come from the compositor's
+code and have not yet been seen in a CI run, so a failure is **xfail** (with its reason) until
+the marker is removed. hwdb `KEYBOARD_KEY_` remaps need the real driver and are not covered.
+Capture a new profile from a device's `/sys/class/input/eventN/device/capabilities/*` and HID
+report descriptor (see `crates/dev/tilo-vm-protocol/src/profile.rs`).
+
+Pull requests touching the input path, tilo-vm(d), the profiles or the agent door run only
+these areas (`ci_select.py`).
+
 ### Startup and GPU (A14, R05)
 
 A14 opens Files before anything else in the run does and times it from the app's own
@@ -173,7 +197,8 @@ run here on every full run instead, on the dev disk under KVM:
   endpoint within `boot_to_greeter_s` (20 s), with the image's boot contract. It reads the
   VM's boot timestamps, so where it runs in the order does not matter. Every run also
   writes where the boot's time went (`R06-boot-analysis.txt`: `systemd-analyze time`,
-  `critical-chain` of greetd and of graphical.target, `blame`; and `R06-boot-plot.svg`),
+  `critical-chain` of greetd and of graphical.target, `blame`; `R06-boot-plot.svg`; and
+  the whole kernel log with the journal's boot list, `R06-dmesg.txt`),
   holds userspace start to greetd active to `userspace_to_greeter_s` (10 s), and fails
   when the network (NetworkManager, firewalld, `network.target`) is on greetd's critical
   chain: greetd waits for `systemd-user-sessions.service`, which upstream orders after
@@ -238,6 +263,8 @@ the store (docs/measurements/performance.md) and publishes the nightly run's.
 |---|---|---|---|
 | `boot.to_greeter_s`, `boot.{kernel,initrd,userspace}_s` | s | R06 | kernel+userspace to a usable greeter, and its phases |
 | `boot.greeter_s`, `boot.userspace_to_greeter_s` | s | R06 | kernel start, and userspace start, to greetd.service active |
+| `boot.kernel_meminit_s` | s | R06 | the kernel log's silence ending at `SLUB: HWalign`, while the boot CPU alone frees all RAM to the page allocator (from `R06-dmesg.txt`) |
+| `boot.first_boot` | count | R06 | 1 when this boot is the only one the persistent journal holds: fresh host pages and first-boot units, so not comparable with a reboot |
 | `session.sign_in_{first,again}.{shell,first_frame,usable}_s` | s | R08 | greeter sign-in request to the compositor process, its first presented frame, and a usable desktop |
 | `idle.shell_cpu_pct`, `idle.session_cpu_pct` | percent | R01 | compositor and whole session CPU over the idle window |
 | `idle.gpu_driver_cpu_pct` | percent | R01 | the part of `idle.shell_cpu_pct` on threads the GPU driver started (`llvmpipe-N`, and `tilo-gpu-driver`, the name the compositor gives threads started while it opens the device). On lavapipe this is the window's frames rasterised, a GPU's work on real hardware, so R01 and R02 judge a software renderer's compositor CPU without it; with no frame painted it must stay under `idle_software_raster_cpu_pct` |

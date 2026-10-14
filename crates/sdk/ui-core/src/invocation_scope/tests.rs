@@ -551,3 +551,18 @@ fn invoker_scope_nests_and_gates_remote_view_operations() {
     }
     assert_eq!(super::current_invoker(), None);
 }
+
+/// Reading a document changes nobody's view: an admitted agent may run the
+/// app's declared read, though not another View operation.
+#[test]
+fn a_declared_document_read_is_no_view_move_for_a_remote_actor() {
+    use tilo_actions::ActionContract;
+    let mut read = ActionContract::view();
+    read.tags.push(tilo_actions::DOCUMENT_READ_TAG.to_owned());
+    assert!(super::view_operation_permitted("agent:a", "me", &read));
+    assert!(!super::view_operation_permitted(
+        "agent:a",
+        "me",
+        &ActionContract::view()
+    ));
+}

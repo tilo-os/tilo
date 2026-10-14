@@ -233,7 +233,8 @@ class BootOrdering(unittest.TestCase):
     def test_extension_activation_starts_only_when_the_helper_has_work(self):
         # It sits before the greeter, and its Python start alone cost 0.4-1.4 s per
         # boot. The unit's triggering conditions are the helper's own
-        # early return: nothing turned on and no part left in /var/lib/extensions.
+        # early return: nothing turned on and no part (directory or sysext image)
+        # left in /var/lib/extensions.
         unit = parse(shipped_units()["tilo-extension-activate.service"])
         self.assertEqual(unit["Unit"]["ConditionPathExistsGlob"], ["|/var/lib/tilo/extensions/*/enabled"])
         self.assertEqual(unit["Unit"]["ConditionDirectoryNotEmpty"], ["|/var/lib/extensions"])
@@ -241,8 +242,10 @@ class BootOrdering(unittest.TestCase):
         self.assertIn('return self.at("/var/lib/tilo/extensions")', helper)
         self.assertIn('return self.state(ident) / "enabled"', helper)
         self.assertIn('return self.at("/var/lib/extensions")', helper)
+        self.assertIn("    return (layout.extensions / name).exists() or raw_path(layout, name).exists()\n", helper)
+        self.assertIn('    return layout.extensions / f"{name}{RAW_SUFFIX}"\n', helper)
         self.assertIn("    if not any(layout.desired(c.id).exists() for c in catalogues) \\\n"
-                      "            and not any((layout.extensions / name).exists() for name in ours):\n"
+                      "            and not any(live_exists(layout, name) for name in ours):\n"
                       "        return 0\n", helper)
 
     def test_nothing_before_tmpfiles_setup_is_ordered_after_it(self):

@@ -8,14 +8,17 @@ pub const WIDTH_NARROW_PERMILLE: u16 = 333;
 pub const WIDTH_NORMAL_PERMILLE: u16 = 667;
 pub const WIDTH_WIDE_PERMILLE: u16 = 1000;
 
-/// Narrowest and widest fraction a group may take.
-pub const WIDTH_MIN_PERMILLE: u16 = 150;
-pub const WIDTH_MAX_PERMILLE: u16 = 1000;
+/// Bounds of what a width can *store*, not of what a person may choose: a
+/// group may be a sliver of a share up to several strips wide, the strip
+/// scrolls. Windows' own minimum and maximum sizes are the client's to
+/// state (`xdg_toplevel` hints are honoured when it is configured); the
+/// only limit of ours is [`WIDTH_FLOOR_PX`].
+pub const WIDTH_MIN_PERMILLE: u16 = 1;
+pub const WIDTH_MAX_PERMILLE: u16 = 10_000;
 
-/// A pure fraction has no floor — 15% of an 800px strip is 120px, too
-/// narrow for a tab pill or scrollbar — so resolved width clamps up to
-/// this (and back down to the strip width if that's narrower still).
-pub const WIDTH_FLOOR_PX: f64 = 240.0;
+/// The one sane minimum: enough for a tab pill, its controls and a
+/// scrollbar. A fraction below it resolves up to it.
+pub const WIDTH_FLOOR_PX: f64 = 160.0;
 
 /// Narrowest a group may resolve to on a strip of `strip_usable_px`.
 pub fn min_group_px(strip_usable_px: f64) -> f64 {
@@ -25,9 +28,10 @@ pub fn min_group_px(strip_usable_px: f64) -> f64 {
         .min(usable)
 }
 
-/// Widest a group may resolve to on a strip of `strip_usable_px`.
+/// Widest a group may resolve to on a strip of `strip_usable_px`: the
+/// widest width that can be stored. Far past the display; the strip scrolls.
 pub fn max_group_px(strip_usable_px: f64) -> f64 {
-    strip_usable_px.max(1.0)
+    strip_usable_px.max(1.0) * f64::from(WIDTH_MAX_PERMILLE) / 1000.0
 }
 
 /// Inverse of [`WindowWidth::resolve`]: how a pointer drag (pixels)
@@ -130,8 +134,19 @@ mod tests {
         }
         // Phase `out_of_range_fraction_is_clamped_on_load`.
         {
-            let width: WindowWidth = serde_json::from_str(r#"{"Fraction":5}"#).unwrap();
+            let width: WindowWidth = serde_json::from_str(r#"{"Fraction":0}"#).unwrap();
             assert_eq!(width, WindowWidth::Fraction(WIDTH_MIN_PERMILLE));
+            let width: WindowWidth = serde_json::from_str(r#"{"Fraction":65000}"#).unwrap();
+            assert_eq!(width, WindowWidth::Fraction(WIDTH_MAX_PERMILLE));
+        }
+        // Phase `no_artificial_limits_beyond_the_floor_and_the_storable_range`.
+        {
+            // A 10% window on a 3840 px strip is 384 px: no share floor.
+            assert!((WindowWidth::Fraction(100).resolve(3840.0) - 384.0).abs() < 1.0);
+            // Narrower than the floor resolves to the floor, nothing more.
+            assert!((WindowWidth::Fraction(10).resolve(1472.0) - WIDTH_FLOOR_PX).abs() < 1e-9);
+            // Wider than the strip is allowed.
+            assert!((WindowWidth::Fraction(2500).resolve(1000.0) - 2500.0).abs() < 1e-9);
         }
         // Phase `resolve_respects_the_pixel_floor`.
         {

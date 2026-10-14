@@ -383,7 +383,7 @@ by `tilo-secureboot sign`. What it does **not** cover:
   firmware certainly does not.
 - **The command line.** It lives in a Boot Loader Specification entry, an
   editable text file next to the kernel. Every hardening karg
-  (`lockdown=integrity`, `init_on_free=1`, …) can be removed by anything that can
+  (`lockdown=integrity`, `init_on_alloc=1`, …) can be removed by anything that can
   write the ESP or `/boot`.
 
 So owner-enrolled Secure Boot here buys a verified *kernel*, and that is worth

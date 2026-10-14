@@ -154,7 +154,12 @@ impl XConnection {
         // Get PropertyNotify events from the XSETTINGS window.
         // TODO: The XSETTINGS window here can change. In the future, listen for DestroyNotify on
         // this window in order to accommodate for a changed window here.
-        let selector_window = xcb.get_selection_owner(xsettings_screen).ok()?.reply().ok()?.owner;
+        let selector_window = xcb
+            .get_selection_owner(xsettings_screen)
+            .ok()?
+            .reply()
+            .ok()?
+            .owner;
 
         xcb.change_window_attributes(
             selector_window,
@@ -187,7 +192,9 @@ impl XConnection {
     /// Get the underlying XCB connection.
     #[inline]
     pub fn xcb_connection(&self) -> &XCBConnection {
-        self.xcb.as_ref().expect("xcb_connection somehow called after drop?")
+        self.xcb
+            .as_ref()
+            .expect("xcb_connection somehow called after drop?")
     }
 
     /// Get the list of atoms.

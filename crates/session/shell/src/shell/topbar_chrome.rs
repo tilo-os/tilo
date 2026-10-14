@@ -226,6 +226,8 @@ impl DesktopChromeSource for NativeChrome {
                 overlay: activity.overlay,
             }),
             active_exposures: state.active_exposures().to_vec(),
+            // Native presence has no spectator role yet.
+            watching: 0,
             topbar_widgets: Some(self.widgets.borrow().clone()),
             // The strip ribbon already places strips on this desktop.
             strip_places: None,
@@ -259,8 +261,6 @@ impl DesktopChromeSource for NativeChrome {
             }
             ChromeIntent::HideClock => state.overlays.clock = false,
             ChromeIntent::SwitchStrip(strip) => return state.focus_strip(strip),
-            // Strips are added from the ribbon and workspace settings here.
-            ChromeIntent::AddStrip { .. } => return false,
             ChromeIntent::ClockCommand {
                 command,
                 activity_id,
@@ -296,6 +296,10 @@ impl DesktopChromeSource for NativeChrome {
                 }
                 return true;
             }
+            // Strips are added from the ribbon and workspace settings here,
+            // and the native bar carries no Tilo mark: its About is in
+            // Settings.
+            ChromeIntent::AddStrip { .. } | ChromeIntent::ToggleTiloMenu => return false,
             ChromeIntent::SetTopBarWidgets(widgets) => {
                 let widgets = widgets.normalised();
                 save_widgets(&widgets);

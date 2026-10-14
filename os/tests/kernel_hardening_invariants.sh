@@ -642,13 +642,19 @@ grep -Fq -- "-path '*/fs/ext4/ext4.ko*'" "$initramfs_recipe" \
 for required in \
   '"lockdown=integrity"' \
   '"init_on_alloc=1"' \
-  '"init_on_free=1"' \
   '"slab_nomerge"' \
   '"page_alloc.shuffle=1"' \
   '"randomize_kstack_offset=on"' \
   '"vsyscall=none"'; do
   grep -Fq "$required" "$kargs" || bad "required kernel argument missing: $required"
 done
+# init_on_free=1 zeroes all of RAM on the boot CPU at every cold boot and turns
+# init_on_alloc's zeroing off; 01-hardening.toml records why it is left out.
+# Bringing it back is a decision for that comment, not a drive-by edit.
+grep -rEq '"init_on_free=' "$repo/os/usr/lib/bootc/kargs.d" \
+  && bad 'init_on_free is set: it zeroes all RAM single-threaded at boot and disables init_on_alloc'
+grep -Fq 'init_on_free=1 is deliberately NOT set' "$kargs" \
+  || bad 'the hardening kargs no longer record why init_on_free is left out'
 # Firmware OEM strings, fw_cfg and boot-loader drop-ins must not become
 # systemd credentials of a sealed boot; the unsealed dev image removes the file.
 grep -Fxq 'kargs = ["systemd.import_credentials=no"]' "$repo/os/usr/lib/bootc/kargs.d/05-credentials.toml" \

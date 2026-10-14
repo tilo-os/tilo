@@ -41,6 +41,7 @@ fn single_tab_group(id: GroupId, tab: Tab) -> WindowGroup {
         tabs: vec![tab],
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 
@@ -351,6 +352,10 @@ impl DesktopTree {
                 maximized: old_groups
                     .get(&live.id)
                     .is_some_and(|group| group.maximized),
+                focus_history: old_groups
+                    .get(&live.id)
+                    .map(|group| group.focus_history.clone())
+                    .unwrap_or_default(),
             });
         }
         let unchanged = rebuilt.len() == strip.window_groups.len()
@@ -390,6 +395,19 @@ impl DesktopTree {
     /// the last one) takes over. `None`, with nothing changed, when no group
     /// holds the tab.
     pub fn remove_tab(&mut self, tab_id: TabId) -> Option<RemovedTab> {
+        self.remove_tab_choosing(tab_id, false)
+    }
+
+    /// [`Self::remove_tab`] for a tab the person closed (its window went
+    /// away): if it was in front, the group goes back to the tab that was in
+    /// front before it, most recent first, and only without such history takes
+    /// the tab now at its index. Restructuring that removes and re-adds tabs
+    /// keeps using [`Self::remove_tab`].
+    pub fn close_tab(&mut self, tab_id: TabId) -> Option<RemovedTab> {
+        self.remove_tab_choosing(tab_id, true)
+    }
+
+    fn remove_tab_choosing(&mut self, tab_id: TabId, back_to_previous: bool) -> Option<RemovedTab> {
         let (ws_idx, strip_idx, group_idx, tab_idx) =
             self.workspaces.iter().enumerate().find_map(|(wi, ws)| {
                 ws.strips.iter().enumerate().find_map(|(si, strip)| {
@@ -411,12 +429,18 @@ impl DesktopTree {
         let group = strip.window_groups.get_mut(group_idx)?;
         let group_id = group.id;
         let tab = group.tabs.remove(tab_idx);
+        group.focus_history.retain(|candidate| *candidate != tab_id);
         if group.active_tab == tab_id {
-            group.active_tab = group
-                .tabs
-                .get(tab_idx)
-                .or_else(|| group.tabs.last())
-                .map_or(0, |tab| tab.id);
+            let came_from = back_to_previous
+                .then(|| group.previously_active(tab_id))
+                .flatten();
+            group.active_tab = came_from.unwrap_or_else(|| {
+                group
+                    .tabs
+                    .get(tab_idx)
+                    .or_else(|| group.tabs.last())
+                    .map_or(0, |tab| tab.id)
+            });
         }
         let group_removed = group.tabs.is_empty();
         if group_removed {
