@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub mod local;
+/// Single-shot model calls in either provider dialect.
+pub mod transform;
 
 /// The `settings.json` section owned by this crate.
 pub const SETTINGS_SECTION: &str = "agent_providers";
