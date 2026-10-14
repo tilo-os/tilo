@@ -376,6 +376,7 @@ fn scenario(desktop: &Desktop) {
     // tiles are laid out again by the frame after the unlock, so ask for them
     // to be painted rather than reading them in the same instant.
     sweep_edges(desktop);
+    assert_unlocked_onto_the_clients_workspace(desktop);
     desktop.wait_for_with(
         "both clients to be painted again after the unlock",
         || {
@@ -387,6 +388,23 @@ fn scenario(desktop: &Desktop) {
             )
         },
         || painted_clients(desktop).len() == 2,
+    );
+}
+
+/// The windows checked after an unlock are those of the active workspace
+/// (`foreign_frames` lists no other), so the unlock must land on the one the
+/// clients are in. Every "blank windows after unlock" this smoke reported was
+/// a third workspace switch, not unpainted windows: a click had landed on a
+/// card of the overview the pointer sweep opened and selected another
+/// workspace, and the clients were simply not on the one shown. Say so if
+/// that happens again rather than waiting for paint that cannot come.
+#[track_caller]
+fn assert_unlocked_onto_the_clients_workspace(desktop: &Desktop) {
+    assert_eq!(
+        desktop.active_workspace(),
+        "Smoke desktop",
+        "the session unlocked onto another workspace than the clients'; their windows \
+         are not blank, just not shown"
     );
 }
 
@@ -550,15 +568,21 @@ mod burst {
 }
 
 // Windows must come back after the session unlocks: a screen that unlocks onto
-// blank windows is a desktop the person cannot use. One lock cycle failed to
-// bring the clients back about one run in fifteen, so this repeats it.
+// blank windows is a desktop the person cannot use. The smoke's one lock cycle
+// once failed to find the clients about one run in five; each of those runs
+// had switched workspace a third time (an overview click), so the clients were
+// not on the workspace shown. This repeats the cycle with nothing else going
+// on, so a real failure to repaint after an unlock is told apart from that.
 mod lock_cycle {
     use std::path::Path;
     use std::time::Duration;
 
     use serde_json::json;
 
-    use super::{CLIENT, CLIENT_APP_ID, SCREEN, UNLOCK_PASSWORD, painted_clients, smoke_tree};
+    use super::{
+        CLIENT, CLIENT_APP_ID, SCREEN, UNLOCK_PASSWORD, assert_unlocked_onto_the_clients_workspace,
+        painted_clients, smoke_tree,
+    };
     use crate::support::desktop::Desktop;
 
     #[test]
@@ -584,6 +608,7 @@ mod lock_cycle {
             desktop.wait_for("the session to unlock", || {
                 desktop.chrome()["session_locked"].as_bool() == Some(false)
             });
+            assert_unlocked_onto_the_clients_workspace(&desktop);
             desktop.wait_for_with(
                 &format!("both clients to be painted again after unlock {cycle}"),
                 || {
