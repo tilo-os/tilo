@@ -2519,9 +2519,18 @@ impl TextInput {
             self.text_to_layout_position(self.caret_position())
         };
         let caret_byte = caret_position.byte;
+        // Only a focused field whose caret moved scrolls to it. Resolving the
+        // caret walks the shaped rows' grapheme stops, so every other line of
+        // a document (and every unchanged frame) skips it.
+        let scrolls_to_caret = self.is_focused && self.last_scroll_caret != Some(self.core.caret());
         let Some((caret_top, caret_height, layout_height)) =
             self.single_layout.as_ref().map(|layout| {
-                let (_, top, height) = layout.caret_geometry_at(caret_position);
+                let (top, height) = if scrolls_to_caret {
+                    let (_, top, height) = layout.caret_geometry_at(caret_position);
+                    (top, height)
+                } else {
+                    (0.0, 0.0)
+                };
                 (top, height, layout.height())
             })
         else {
