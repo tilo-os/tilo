@@ -58,8 +58,20 @@ class Fake:
     def serve(self, url, document, status=200):
         self.routes[url] = promotion.Response(status, {}, json.dumps(document).encode())
 
+    # The in-region registry: every read needs a token, which anonymous callers get.
+    token_required = False
+    TOKEN_SERVICE = f"https://{promotion.REGISTRY}/token"
+
     def __call__(self, method, url, headers, body):
         self.calls.append((method, url, json.loads(body) if body else None))
+        if self.token_required and url.startswith(self.TOKEN_SERVICE + "?"):
+            return promotion.Response(200, {}, b'{"token": "anonymous-pull"}')
+        if (self.token_required and url.startswith(f"https://{promotion.REGISTRY}/v2/")
+                and headers.get("Authorization") != "Bearer anonymous-pull"):
+            repository = url.split("/v2/", 1)[1].rsplit("/", 2)[0]
+            challenge = (f'Bearer realm="{self.TOKEN_SERVICE}",service="{promotion.REGISTRY}",'
+                         f'scope="repository:{repository}:pull"')
+            return promotion.Response(401, {"www-authenticate": challenge}, b"{}")
         if method == "POST" and url.endswith("/contents"):
             return promotion.Response(201, {}, b"{}")
         if method == "POST" and url.endswith("/pulls"):
@@ -227,6 +239,25 @@ class CloudPromotionTests(unittest.TestCase):
         code, _, err = self.run_tool("plan", "--infra", str(self.infra(self.deployed)), *receipts)
         self.assertEqual(code, 1)
         self.assertIn("served content hashing to", err)
+
+    def test_the_in_region_registry_is_read_with_an_anonymous_pull_token(self):
+        self.fake.token_required = True
+        code, out, err = self.run_tool("plan", "--infra", str(self.infra(self.deployed)))
+        self.assertEqual(code, 0, err)
+        self.assertIn(self.fake.digests[("room-service", self.target)], out)
+        token_requests = [url for _, url, _ in self.fake.calls if url.startswith(Fake.TOKEN_SERVICE)]
+        self.assertEqual(sorted(token_requests), sorted(
+            f"{Fake.TOKEN_SERVICE}?scope=repository%3A{service.repository.replace('/', '%2F')}%3Apull"
+            f"&service={promotion.REGISTRY}" for service in promotion.SERVICES))
+
+    def test_credentials_stay_with_the_host_they_were_sent_to_across_redirects(self):
+        handler = promotion.SameHostAuthorization()
+        registry = f"https://{promotion.REGISTRY}/v2/tilo/web-entry/blobs/sha256:{'0' * 64}"
+        for target, kept in ((f"https://{promotion.REGISTRY}/v2/tilo/web-entry/blobs/other", True),
+                             ("https://bucket.s3.us-west-2.amazonaws.com/blob?X-Amz-Signature=x", False)):
+            request = promotion.urllib.request.Request(registry, headers={"Authorization": "Bearer t"})
+            follow = handler.redirect_request(request, None, 307, "Temporary Redirect", {}, target)
+            self.assertEqual(follow.has_header("Authorization"), kept, target)
 
     def test_an_image_for_another_platform_is_refused(self):
         self.fake.publish(ROOM, self.newest, architecture="arm64")
