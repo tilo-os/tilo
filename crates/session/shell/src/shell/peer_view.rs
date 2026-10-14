@@ -1070,6 +1070,27 @@ mod tests {
         assert_eq!(view.next_wake_deadline(), None);
     }
 
+    /// Push `unit` until a push returns before its picture is out, and
+    /// return how many pushes before it came back with their picture. On a
+    /// quiet machine the first push does: a decode takes milliseconds, the
+    /// push microseconds. On a loaded one the decoder's thread can finish a
+    /// tiny picture before the pushing thread runs again, so a few are
+    /// tried. A push that waited for its picture never returns before it, so
+    /// this fails then.
+    fn push_until_pending(view: &mut PeerView, unit: &[u8], latency_ns: Option<u64>) -> usize {
+        const ATTEMPTS: usize = 50;
+        for decoded in 0..ATTEMPTS {
+            match view.push_encoded_with_latency(unit, latency_ns) {
+                PushOutcome::Pending => return decoded,
+                outcome => {
+                    assert_eq!(outcome, PushOutcome::Decoded, "push {decoded}");
+                    view.mark_drawn();
+                }
+            }
+        }
+        panic!("none of {ATTEMPTS} pushes returned before its picture: pushes wait");
+    }
+
     /// A push on the compositor loop hands the unit over and returns without
     /// waiting for its picture; the decoder's wake brings the loop back the
     /// moment the picture is out, and the picture's latency counts the time
@@ -1088,6 +1109,7 @@ mod tests {
             view.push_encoded_with_latency(&nalus, None),
             PushOutcome::Decoded
         );
+        view.mark_drawn();
 
         let wakes = Arc::new(AtomicUsize::new(0));
         view.set_picture_wake(Some({
@@ -1097,23 +1119,25 @@ mod tests {
             })
         }));
         let latency_ns = 1_000_000;
-        // A unit's decode takes milliseconds; the push returns before it.
-        assert_eq!(
-            view.push_encoded_with_latency(&nalus, Some(latency_ns)),
-            PushOutcome::Pending,
-            "the push does not wait for its picture"
-        );
+        let decoded = push_until_pending(&mut view, &nalus, Some(latency_ns));
         assert!(view.picture_pending(), "a pending push is still decoding");
         assert_eq!(
             view.next_wake_deadline(),
             None,
             "the decoder's wake brings the loop back, not a poll"
         );
+        // One picture per push: those that came back with theirs, then the
+        // pending one. Each wakes the loop once it is ready to collect.
+        let pictures = decoded.saturating_add(1);
         let deadline = tilo_test_env::hang_deadline();
-        while wakes.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        while wakes.load(Ordering::SeqCst) < pictures && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert_eq!(wakes.load(Ordering::SeqCst), 1, "the picture woke the loop");
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            pictures,
+            "each picture woke the loop once"
+        );
         assert_eq!(view.collect_late_picture(), Some(PushOutcome::Decoded));
         assert!(!view.picture_pending());
         assert!(
@@ -1124,10 +1148,8 @@ mod tests {
 
         // Without a wake, a picture still decoding is polled for.
         view.set_picture_wake(None);
-        assert_eq!(
-            view.push_encoded_with_latency(&nalus, None),
-            PushOutcome::Pending
-        );
+        view.mark_drawn();
+        push_until_pending(&mut view, &nalus, None);
         assert!(view.next_wake_deadline().is_some(), "polled while pending");
     }
 
