@@ -445,6 +445,7 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
         // host's numbers are the driver's limit, not the host's.
         "session_mib_received": shared.relay.received.load(std::sync::atomic::Ordering::Relaxed) / (1024 * 1024),
         "driver_cpu_cores_avg": procfs::process_cpu(std::process::id()).map_or(0.0, |cpu| cpu / begun.elapsed().as_secs_f64()),
+        "driver_mib": procfs::proportional_bytes(std::process::id()).unwrap_or_default() / (1024 * 1024),
         "machine_cores": std::thread::available_parallelism().map_or(0, std::num::NonZero::get),
     });
     if let Some(fields) = summary.as_object_mut() {

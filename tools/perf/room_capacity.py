@@ -28,15 +28,22 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
+import signal
 import subprocess
 import sys
+import threading
+import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 PRICES = Path(__file__).with_name("prices.toml")
+CGROUP = Path("/sys/fs/cgroup")
+# The share of the job's memory a run may take before it is stopped.
+MEMORY_GUARD = 0.8
 # What every run shares: production's allocator setting (the room service
 # starts its relay with MALLOC_ARENA_MAX=2) and a minute of steady state.
 COMMON = ("--malloc-arenas", "2", "--hold", "60")
@@ -88,6 +95,52 @@ def plan(which: str) -> list[Run]:
     return runs
 
 
+def cgroup_memory() -> tuple[int, int] | None:
+    """The job's memory use and limit (cgroup v2), or None outside one."""
+    try:
+        current = int(CGROUP.joinpath("memory.current").read_text())
+        limit = CGROUP.joinpath("memory.max").read_text().strip()
+    except (OSError, ValueError):
+        return None
+    return (current, int(limit)) if limit.isdigit() else None
+
+
+def bench(command: list[str], log: Path, timeout_s: float) -> tuple[int | None, str, str | None]:
+    """Run one bench in its own process group. It is stopped, and the stop
+    named, when it outlives `timeout_s` or the job's memory passes
+    MEMORY_GUARD of its limit: a run that would take the runner down with it
+    is a failure point to record, not a lost sweep."""
+    with log.open("w", encoding="utf-8") as stderr:
+        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr, text=True, start_new_session=True)
+        output: list[str] = []
+        reader = threading.Thread(target=lambda: output.append(child.stdout.read() if child.stdout else ""))
+        reader.start()
+        began = time.monotonic()
+        stopped = None
+        while child.poll() is None:
+            memory = cgroup_memory()
+            if memory and memory[0] > MEMORY_GUARD * memory[1]:
+                stopped = f"stopped at {memory[0] / 2**30:.1f} GiB of the job's {memory[1] / 2**30:.1f} GiB"
+            elif time.monotonic() - began > timeout_s:
+                stopped = f"stopped after {timeout_s:.0f} s"
+            if stopped:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.wait()
+                break
+            time.sleep(1)
+        reader.join()
+    return (None if stopped else child.returncode), "".join(output), stopped
+
+
+def run_seconds(run: Run) -> float:
+    """How long a run may take: its ramps, the hold and the join timeout,
+    and five minutes to spare."""
+    args = dict(zip(run.args[::2], run.args[1::2]))
+    guests = float(args.get("--guests", "50")) / float(args.get("--ramp", "20"))
+    spectators = float(args.get("--spectators", "0")) / 50.0
+    return max(guests, spectators) + 60 + float(args.get("--join-timeout", "60")) + 300
+
+
 def sweep(binary: Path, out: Path, which: str) -> int:
     """Run the plan; a run that fails is kept as a failure, not a stop."""
     out.mkdir(parents=True, exist_ok=True)
@@ -95,15 +148,15 @@ def sweep(binary: Path, out: Path, which: str) -> int:
     for run in plan(which):
         command = [str(binary), "bench", *COMMON, *run.args]
         print(f"== {run.name}: {' '.join(command)}", flush=True)
-        with (out / f"{run.name}.log").open("w", encoding="utf-8") as log:
-            done = subprocess.run(command, stdout=subprocess.PIPE, stderr=log, text=True, check=False)
+        code, stdout, stopped = bench(command, out / f"{run.name}.log", run_seconds(run))
+        report = json.loads(stdout) if code == 0 else None
         (out / f"{run.name}.json").write_text(
-            json.dumps({"name": run.name, "kind": run.kind, "args": list(run.args), "exit": done.returncode,
-                        "report": json.loads(done.stdout) if done.returncode == 0 else None}, indent=2),
+            json.dumps({"name": run.name, "kind": run.kind, "args": list(run.args), "exit": code,
+                        "stopped": stopped, "report": report}, indent=2),
             encoding="utf-8")
-        if done.returncode != 0:
+        if report is None:
             failed.append(run.name)
-            print(f"   {run.name} exited {done.returncode}; see {run.name}.log", flush=True)
+            print(f"   {run.name}: {stopped or f'exited {code}'}; see {run.name}.log", flush=True)
     if failed:
         print(f"failed runs: {', '.join(failed)}", file=sys.stderr)
     return 1 if failed else 0
@@ -221,7 +274,9 @@ def summarize(runs: list[dict[str, Any]], prices: dict[str, Any]) -> dict[str, A
     costs = {name: node_cost(node, prices, per_guest, idle)
              for name, node in sorted(prices.get("room_node", {}).items())} if cores_per_guest > 0 else {}
     return {"prices_checked": prices.get("room_node_checked", prices["checked"]), "rows": rows,
-            "failed_runs": failed, "derived": derived, "cost": costs}
+            "failed_runs": failed,
+            "stopped_runs": {run["name"]: run["stopped"] for run in runs if run.get("stopped")},
+            "derived": derived, "cost": costs}
 
 
 def markdown(summary: dict[str, Any]) -> str:
@@ -261,6 +316,7 @@ def markdown(summary: dict[str, Any]) -> str:
                          f"| {cost['usd_per_month_per_100_guests']:.2f} | {cost['usd_per_guest_hour']:.6f} |")
     if summary["failed_runs"]:
         lines += ["", f"Runs that did not finish: {', '.join(summary['failed_runs'])}"]
+        lines += [f"- {name}: {why}" for name, why in summary.get("stopped_runs", {}).items()]
     return "\n".join(lines) + "\n"
 
 

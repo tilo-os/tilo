@@ -22,6 +22,8 @@ pub struct Stats {
     join_ms: Mutex<Vec<f64>>,
     /// The admission part of each join: `/join` and the redemptions.
     admit_ms: Mutex<Vec<f64>>,
+    /// `/join`'s answer alone (the service pre-admitting), in arrival order.
+    service_ms: Mutex<Vec<f64>>,
     /// Delivery of messages sent while their receiver was in the room, with
     /// when each was sent (ms into the run).
     chat_ms: Mutex<Vec<(u64, f64)>>,
@@ -59,6 +61,10 @@ impl Stats {
         lock(&self.admit_ms).push(admit_ms);
     }
 
+    pub fn service(&self, ms: f64) {
+        lock(&self.service_ms).push(ms);
+    }
+
     pub fn full(&self, ms: f64) {
         lock(&self.full_ms).push(ms);
     }
@@ -81,6 +87,7 @@ impl Stats {
     pub fn summary(&self) -> serde_json::Value {
         let mut join = lock(&self.join_ms).clone();
         let mut admit = lock(&self.admit_ms).clone();
+        let mut service = lock(&self.service_ms).clone();
         // In arrival order: whether joining slows as the room fills.
         let by_tenth = |values: &[f64]| -> Vec<f64> {
             values
@@ -90,6 +97,7 @@ impl Stats {
         };
         let join_by_tenth = by_tenth(&join);
         let admit_by_tenth = by_tenth(&admit);
+        let service_by_tenth = by_tenth(&service);
         let delivered = lock(&self.chat_ms).clone();
         // By when each message was sent: whether delivery slows while guests
         // are still joining.
@@ -121,6 +129,11 @@ impl Stats {
                 "p95": quantile(&mut admit, 0.95),
             },
             "admit_ms_mean_by_tenth": admit_by_tenth,
+            "service_ms": {
+                "p50": quantile(&mut service, 0.5),
+                "p95": quantile(&mut service, 0.95),
+            },
+            "service_ms_mean_by_tenth": service_by_tenth,
             "full": {
                 "count": full.len(),
                 "p95_ms": quantile(&mut full, 0.95),

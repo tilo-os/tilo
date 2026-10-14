@@ -62,6 +62,15 @@ pub const FULL: &str = "the room is full";
 /// What it tells a spectator past the spectator cap.
 pub const WATCHING_FULL: &str = "too many people are watching";
 
+/// Guests' measurements for `/join`, spectators' for `/spectate`.
+fn stats_for<'a>(shared: &'a Shared, path: &str) -> &'a Stats {
+    if path == "/spectate" {
+        &shared.spectator_stats
+    } else {
+        &shared.stats
+    }
+}
+
 pub fn now_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
@@ -75,6 +84,7 @@ pub async fn admit(
     request: serde_json::Value,
     name: &str,
 ) -> Result<(SigningKey, DeviceCert, Vec<JoinedRoom>), String> {
+    let asked = Instant::now();
     let (status, body) = shared
         .service
         .post_with(
@@ -99,6 +109,7 @@ pub async fn admit(
     if status != 200 {
         return Err(format!("{path}: status {status}"));
     }
+    stats_for(shared, path).service(asked.elapsed().as_secs_f64() * 1000.0);
     let joined: Joined = serde_json::from_slice(&body).map_err(|error| error.to_string())?;
     let root = SigningKey::generate(&mut UnwrapErr(SysRng));
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
