@@ -131,6 +131,8 @@ class LiveCmdlineTests(unittest.TestCase):
                            ' loglevel=3', ' systemd.show_status=auto', ' rd.udev.log_level=3',
                            ' vt.global_cursor_default=0', ' root=tilo-auto', ' unknown',
                            ' rd.luks.options=tpm2-device=auto,fido2-device=auto',
+                           # A karg the live hardening set leaves out (01-hardening.toml).
+                           ' init_on_free=1',
                            # The unlock slots the live UKI no longer carries.
                            ' tilo.luks=' + '0'*45, ' tilo.unlock=' + '0'*75):
                 with self.subTest(change=change):
