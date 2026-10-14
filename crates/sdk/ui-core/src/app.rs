@@ -986,6 +986,7 @@ impl App {
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.mark_semantic_tree_stale();
         self.retire_semantic_root();
         self.control_domain.close();
         self.actions.bound_record_sync = None;
@@ -1038,6 +1039,7 @@ impl App {
         node: NodeId,
         callback: impl FnOnce(&mut dyn Widget) -> R,
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        self.mark_semantic_tree_stale();
         // SAFETY: exclusive App access prevents overlapping target references/rebuild.
         unsafe {
             crate::bound_dispatch::mutate_bound_node(
@@ -1054,6 +1056,7 @@ impl App {
         action: &crate::a11y::Action,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
     ) -> Result<R, String> {
+        self.mark_semantic_tree_stale();
         let author = self.collaboration.local_author.clone();
         // SAFETY: the runner exclusively owns the unchanged admitted tree.
         unsafe {
@@ -1076,6 +1079,7 @@ impl App {
         node: NodeId,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        self.mark_semantic_tree_stale();
         // SAFETY: exclusive App owns both maps and this stable tree.
         unsafe {
             crate::bound_dispatch::invoke_bound_node(

@@ -593,6 +593,8 @@ fn run_layout_pass(
     if !app.layout.layout_dirty && !viewport_changed {
         return Some((false, 0, 0));
     }
+    // Bounds, and what the widgets lay out, may move.
+    app.mark_semantic_tree_stale();
     // A relayout that moves nothing leaves every pixel outside the dirty
     // widgets as it was, so their damage is the whole change. Typing into a
     // fixed-size field relayouts on every key; repainting the whole window
