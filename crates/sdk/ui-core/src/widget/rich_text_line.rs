@@ -176,6 +176,9 @@ impl RichTextLine {
         // Block-editor cells render as document copy, not a form field.
         let mut inner = TextInput::local().with_plain_chrome();
         inner.keep_document_inset();
+        // The block editor writes an autocorrection after the keystroke
+        // that typed its word boundary, as an undo step of its own.
+        inner.set_deferred_autocorrection(true);
         Self {
             inner,
             signal: None,
@@ -578,6 +581,28 @@ impl RichTextLine {
     #[doc(hidden)]
     pub fn transient_colors(&self) -> &[TransientColorSpan] {
         &self.transient_colors
+    }
+
+    /// Whether the last typed word boundary left a correction to apply.
+    pub fn has_pending_autocorrection(&self) -> bool {
+        self.inner.has_pending_autocorrection()
+    }
+
+    /// Make the correction the last typed word boundary left pending (see
+    /// [`TextInput::apply_pending_autocorrection`]), carrying the marks over
+    /// it as typing does.
+    pub fn apply_pending_autocorrection(&mut self) -> bool {
+        if !self.inner.apply_pending_autocorrection() {
+            return false;
+        }
+        let new_text = self.inner.value().to_string();
+        if new_text != self.prev_text {
+            self.reconcile_marks_after_edit(&new_text);
+            self.prev_text = new_text;
+            self.refresh_attributes();
+        }
+        self.prev_cursor = self.inner.cursor_pos();
+        true
     }
 
     /// Text typed next at byte `at` does not continue `marks`, though a

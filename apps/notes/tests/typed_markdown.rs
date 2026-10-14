@@ -63,14 +63,51 @@ fn undo_or_backspace_after_formatting_brings_the_markdown_back() {
     );
     assert!(blocks[0].marks.is_empty(), "{:?}", blocks[0].marks);
 
+    // The formatting is an undo step of its own after the keystroke that
+    // asked for it: undo gives back exactly what was typed, caret after it,
+    // and the next undo takes back the typing (a word at a time).
     let (mut app, page) = with_note("Undo markdown", "");
     type_in_body(&mut app, "a **b**");
     assert!(app.undo());
     let blocks = app.read_document(|doc| read::page_blocks(doc, page));
-    assert!(
-        blocks[0].text.starts_with("a **b*") && blocks[0].marks.is_empty(),
-        "undo brings the delimiters back unformatted: {blocks:?}"
+    assert_eq!(blocks[0].text, "a **b**", "{blocks:?}");
+    assert!(blocks[0].marks.is_empty(), "{:?}", blocks[0].marks);
+    app.harness().key("x");
+    let blocks = app.read_document(|doc| read::page_blocks(doc, page));
+    assert_eq!(
+        blocks[0].text, "a **b**x",
+        "the caret is back after what was typed"
     );
+    assert!(blocks[0].marks.is_empty(), "{:?}", blocks[0].marks);
+
+    let (mut app, page) = with_note("Undo typing", "");
+    type_in_body(&mut app, "a **b**");
+    assert!(app.undo());
+    assert!(app.undo());
+    assert_eq!(
+        app.read_document(|doc| read::page_blocks(doc, page))[0].text,
+        "a "
+    );
+}
+
+#[test]
+fn undo_after_an_autocorrection_gives_back_the_word_as_typed() {
+    let (mut app, page) = with_note("Undo correction", "");
+    type_in_body(&mut app, "it doesnt ");
+    let text = |app: &App| {
+        app.read_document(|doc| read::page_blocks(doc, page))[0]
+            .text
+            .clone()
+    };
+    assert_eq!(text(&app), "it doesn't ");
+    assert!(app.undo());
+    assert_eq!(
+        text(&app),
+        "it doesnt ",
+        "the correction is its own undo step"
+    );
+    assert!(app.undo());
+    assert_eq!(text(&app), "it ", "the next undo takes back the typed word");
 }
 
 #[test]
