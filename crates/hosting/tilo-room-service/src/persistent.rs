@@ -159,10 +159,6 @@ pub struct Persistent {
     waiters: std::sync::Mutex<Waiters>,
 }
 
-fn now_ms() -> u64 {
-    tilo_clock::unix_now_ms()
-}
-
 fn token_digest(token: &str) -> String {
     use sha2::Digest as _;
     hex::encode(sha2::Sha256::digest(token.as_bytes()))
@@ -500,7 +496,7 @@ impl Persistent {
                         .guests
                         .lock()
                         .map_err(|_| anyhow::anyhow!("guest ledger poisoned"))?
-                        .removed(&user_public_key, now_ms())?;
+                        .removed(&user_public_key, tilo_clock::unix_now_ms())?;
                     eprintln!(
                         "tilo-room-service: a guest was {}; their address {}",
                         if banned { "banned" } else { "removed" },
@@ -620,7 +616,7 @@ impl Persistent {
         seats: &std::sync::Mutex<Seats>,
     ) -> std::result::Result<String, JoinRefusal> {
         let ip_hash = self.shared.hasher.hash(ip);
-        let now = now_ms();
+        let now = tilo_clock::unix_now_ms();
         if self
             .shared
             .guests
@@ -690,7 +686,11 @@ impl Persistent {
             return Err(JoinRefusal::Unavailable);
         };
         if let Ok(mut guests) = self.shared.guests.lock()
-            && let Err(error) = guests.record_join(&request.user_public_key, &ip_hash, now_ms())
+            && let Err(error) = guests.record_join(
+                &request.user_public_key,
+                &ip_hash,
+                tilo_clock::unix_now_ms(),
+            )
         {
             eprintln!("tilo-room-service: could not record a join: {error:#}");
         }

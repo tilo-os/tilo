@@ -158,7 +158,7 @@ pub(crate) fn here_people(
 
 /// Unix milliseconds.
 pub(crate) fn now_ms() -> u64 {
-    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default()
+    ui::time::unix_now_ms()
 }
 
 /// One person as the People popover lists them.
@@ -188,7 +188,7 @@ fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
 
 /// The wall clock's minute, which the bar shows.
 fn minute() -> i64 {
-    chrono::Utc::now().timestamp().div_euclid(60)
+    ui::time::unix_now_i64().div_euclid(60)
 }
 
 /// The page's wall clock as the bar shows it.
@@ -550,7 +550,7 @@ impl BrowserShell {
         let host = PageOverview {
             user: ui::collaboration::local_user_id().0,
         };
-        let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or_default();
+        let now = ui::time::unix_now();
         self.handle.read(|tree| room_cards(tree, &host, now))
     }
 
@@ -1033,7 +1033,7 @@ impl Widget for BrowserShell {
 
     /// The next minute, for the bar's clock, unless something wakes sooner.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        let seconds = chrono::Utc::now().timestamp().rem_euclid(60);
+        let seconds = ui::time::unix_now_i64().rem_euclid(60);
         let clock = ui::time::Instant::now()
             + ui::time::Duration::from_secs(u64::try_from(60 - seconds).unwrap_or(60));
         [
