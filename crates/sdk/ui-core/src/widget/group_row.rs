@@ -1889,6 +1889,13 @@ impl GroupRow {
     /// How far the row is panned. On a partitioned strip, the leading
     /// lane's pan — the one the wheel disc rides along with; see
     /// [`Self::output_pan`] for any other display.
+    /// The farthest a direct pan can pull the strip past either end: the
+    /// rubber band's reach. Anything drawn beside the strip's ends and moved
+    /// with it (the docked wheel) has to cover this much more.
+    pub fn overpull_reach(&self) -> f64 {
+        self.leading_pan().viewport.width().max(1.0) * STRIP_OVERSCROLL_REACH_FRAC
+    }
+
     pub fn scroll_x(&self) -> f64 {
         self.leading_pan().scroll_x
     }

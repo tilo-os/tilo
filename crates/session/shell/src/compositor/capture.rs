@@ -128,6 +128,11 @@ pub struct CaptureExecutor {
     /// whatever clients drew meanwhile. Held through the frame that confirms
     /// or cancels, then released.
     frozen_desktop: Option<Scene>,
+    /// The client frames [`Self::frozen_desktop`] draws. A GPU client frame
+    /// is drawn by id from a texture that lives only while something holds
+    /// it, so without these a window that committed a new buffer while the
+    /// picker was up dropped out of the held desktop (and the screenshot).
+    frozen_pins: crate::shell::gpu_frames::FramePins,
     /// Live window previews for the switcher and the overview, rendered
     /// here because this is where live geometry and a GPU meet.
     window_previews: super::window_previews::WindowPreviewRenderer,
@@ -439,9 +444,16 @@ impl CaptureExecutor {
             self.execute_ready_frame(frame_builder, clean_screen_scene);
         // The confirming (or cancelling) frame has now read the held scene.
         if !frame_builder.capture_choosing_screenshot() {
-            self.frozen_desktop = None;
+            self.release_held_desktop();
         }
         (outcomes, overlays_appended || frozen_swapped)
+    }
+
+    /// End the hold: the live desktop shows again and the client frames the
+    /// held one drew go back to their clients.
+    fn release_held_desktop(&mut self) {
+        self.frozen_desktop = None;
+        self.frozen_pins = crate::shell::gpu_frames::FramePins::default();
     }
 
     /// Freeze the desktop while the screenshot picker is choosing: the first
@@ -451,6 +463,9 @@ impl CaptureExecutor {
     /// must treat as a full repaint.
     fn hold_desktop_while_choosing(&mut self, choosing: bool, clean: &mut Scene) -> bool {
         if choosing && self.frozen_desktop.is_none() {
+            let mut pins = crate::shell::gpu_frames::FramePins::default();
+            pins.add_scene(clean);
+            self.frozen_pins = pins;
             self.frozen_desktop = Some(clean.clone());
             return false;
         }
@@ -2223,6 +2238,101 @@ mod tests {
         let mut clean = after.clone();
         assert!(!executor.hold_desktop_while_choosing(false, &mut clean));
         assert!(same_scene(&clean, &after));
+    }
+
+    /// The screenshot picker is not part of the desktop held still under
+    /// it: it paints over the held desktop on every frame, so its hover,
+    /// selection and tooltips reach the screen, and it never reaches the
+    /// screenshot. Drawn into the desktop scene it was held still with it,
+    /// on its first, transparent frame.
+    #[test]
+    fn the_screenshot_picker_paints_live_over_the_held_desktop() {
+        let mut fb = FrameBuilder::new((800, 600));
+        fb.relayout();
+        let before = fb.paint();
+        assert!(
+            fb.host_mut()
+                .open_capture_studio(ui::widget::CaptureMode::Screenshot)
+        );
+        fb.relayout();
+        assert!(fb.capture_choosing_screenshot());
+
+        let mut executor = CaptureExecutor::default();
+        let mut first = fb.paint();
+        assert!(
+            same_scene(&first, &before),
+            "the desktop the picker holds still does not contain the picker"
+        );
+        let (_, appended) = executor.execute_ready(&mut fb, &mut first);
+        assert!(appended, "the picker paints over the held desktop");
+        assert!(!same_scene(&first, &before));
+        let held = executor
+            .frozen_desktop
+            .as_ref()
+            .expect("the desktop is held while choosing");
+        assert!(
+            same_scene(held, &before),
+            "and the held desktop is picker-free"
+        );
+
+        let mut second = fb.paint();
+        let (_, appended) = executor.execute_ready(&mut fb, &mut second);
+        assert!(
+            appended,
+            "every frame while choosing paints the picker again"
+        );
+        assert!(
+            second.encoding().draw_tags.len() > before.encoding().draw_tags.len(),
+            "over the held desktop"
+        );
+    }
+
+    /// A GPU window that keeps drawing while the picker chooses stays in
+    /// the held desktop: the frame it showed when the picker opened lives
+    /// as long as the hold, though the client has moved on to a new buffer,
+    /// and is let go with it.
+    #[test]
+    fn the_held_desktop_keeps_the_gpu_frames_it_draws_until_released() {
+        let mut context = ui::gpu::RenderContext::new();
+        let Some(id) = pollster::block_on(context.device(None)) else {
+            eprintln!("no wgpu adapter; skipping");
+            return;
+        };
+        let handle = context.devices.get(id).expect("the device just made");
+        let frame = crate::shell::gpu_frames::frame_for_test(
+            &handle.device,
+            &handle.queue,
+            0,
+            (3, 2),
+            [10, 200, 30, 255],
+            0x5c_0001,
+        );
+        let image = frame.image((0, 0, 3, 2));
+        let mut clean = Scene::new();
+        clean.fill(
+            vello::peniko::Fill::NonZero,
+            vello::kurbo::Affine::IDENTITY,
+            &vello::peniko::ImageBrush::new(image),
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, 3.0, 2.0),
+        );
+        let mut executor = CaptureExecutor::default();
+        assert!(!executor.hold_desktop_while_choosing(true, &mut clean));
+
+        // The client commits a new buffer: nothing else holds the old frame.
+        let shown = std::sync::Arc::downgrade(&frame);
+        drop(frame);
+        assert!(
+            shown.upgrade().is_some(),
+            "the held desktop still draws the frame the person saw"
+        );
+
+        // The confirming frame reads the hold, and then it is released.
+        let mut confirming = Scene::new();
+        assert!(executor.hold_desktop_while_choosing(false, &mut confirming));
+        executor.release_held_desktop();
+        assert!(shown.upgrade().is_none(), "released with the hold");
+        crate::shell::gpu_frames::forget_surface(0x5c_0001);
     }
 
     #[test]
