@@ -68,12 +68,12 @@ use std::time::{Duration, Instant};
 
 use shell::collab::flatpak_share::SharedFlatpakSession;
 use shell::config::{EncoderChoice, FlatpakShareConfig};
-use shell::network::decoder::{DecodedFrame, VideoDecoder};
 use shell::network::protocol::{PeerId, SurfaceId};
 use shell::network::streaming::{InputEvent, RemoteInputSink};
 use shell::network::surface_stream::{
     ReceiverEvent, SurfaceFrame as StreamFrame, SurfaceStreamReceiver,
 };
+use tilo_callstream::surface_decoder::{DecodedFrame, VideoDecoder};
 
 /// Decode one substream frame, following the codec it names.
 fn decode_frame(decoder: &mut VideoDecoder, frame: &StreamFrame) -> Option<DecodedFrame> {
