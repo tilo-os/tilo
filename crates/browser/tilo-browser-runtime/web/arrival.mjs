@@ -100,6 +100,7 @@ export function arrivalLines(messages, {mode = 'desktop', mac = false, hostname 
  * The lines of one visit, in random order and none twice: two jokes, then
  * a tip, opening with a joke. A pool that runs out leaves its turns to the
  * other; once both are spent, `next()` is `null` and the last line stays.
+ * Each line is `{kind: 'joke' | 'tip', text}`.
  */
 export function createRotation({jokes, tips}, random = Math.random) {
   const shuffled = list => {
@@ -110,7 +111,8 @@ export function createRotation({jokes, tips}, random = Math.random) {
     }
     return out;
   };
-  const pools = {joke: shuffled(jokes), tip: shuffled(tips)};
+  const pools = {joke: shuffled(jokes).map(text => ({kind: 'joke', text})),
+    tip: shuffled(tips).map(text => ({kind: 'tip', text}))};
   let turn = 0;
   return {
     next() {
@@ -178,6 +180,37 @@ export function createArrival({lines = {jokes: [], tips: []}, random = Math.rand
   };
 }
 
+/** How a line reads on screen: a tip after its dim label, a joke bare. */
+export function lineParts(line, tipLabel = 'Tip') {
+  return {label: line?.kind === 'tip' ? tipLabel : null, text: line?.text ?? ''};
+}
+
+/** Said when the desktop stops drawing; the cause goes to the console. */
+export const STOPPED_DRAWING = 'The desktop stopped working. Try again to start it.';
+
+/** Whether `error` is the network failing: a fetch that never answered, a
+ * host's door that refused or failed, a connection that dropped. */
+function unreachable(error) {
+  if (error?.name === 'HostAdmissionError') return true;
+  return /fetch|network|connect|timed? ?out|websocket|offline|HTTP \d{3}|load failed/i
+    .test(String(error?.message ?? error ?? ''));
+}
+
+/**
+ * What a page that could not get in says, in plain words, beside its Try
+ * again button. A refusal says itself (it is written for people); the
+ * network failing names the workspace where the page knows it (else Tilo,
+ * while Tilo itself was still loading); anything else stays general, its
+ * cause left to the console.
+ */
+export function failureMessage(error, {workspace = null, loaded = true} = {}) {
+  if (error?.name === 'AdmissionError') return error.message;
+  if (error?.name === 'HostAdmissionError' && error.code === 'invitation-only') return error.message;
+  const name = workspace || (loaded ? 'the workspace' : 'Tilo');
+  if (unreachable(error)) return `Can’t reach ${name} right now. Check your connection, then try again.`;
+  return `Something went wrong opening ${name}. Try again, or come back later.`;
+}
+
 /** The locale whose lines this browser gets: German for German, else English. */
 export function arrivalLocale(languages = globalThis.navigator?.languages ?? []) {
   return languages.find(language => /^(de|en)\b/i.test(language))?.toLowerCase().startsWith('de') ? 'de-DE' : 'en-US';
@@ -186,7 +219,8 @@ export function arrivalLocale(languages = globalThis.navigator?.languages ?? [])
 /**
  * Run the arrival screen on the page: reads `data-arrival` and `#status`,
  * writes the line (`#arrival-line`), the bar (`#arrival-bar`) and a slow
- * network's note (`#arrival-note`). Stops once the desktop is shown.
+ * network's note (`#arrival-note`). Stops once the desktop is shown. Try
+ * again (`#arrival-retry`, shown by index.html on a failure) reloads.
  */
 export function startArrival({mode = 'desktop', document = globalThis.document, window = globalThis} = {}) {
   const root = document.documentElement;
@@ -195,10 +229,13 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
   const noteView = document.getElementById('arrival-note');
   const status = document.getElementById('status');
   if (!lineView || !barView || !noteView || !status) return null;
+  const retry = document.getElementById('arrival-retry');
+  retry?.addEventListener('click', () => window.location.reload());
   const reducedMotion = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
   const locale = arrivalLocale(window.navigator?.languages);
   const mac = /Mac/.test(window.navigator?.platform ?? '');
   const slowNotes = {};
+  let tipLabel = 'Tip';
   const arrival = createArrival({reducedMotion, slowNotes});
   const now = () => window.performance.now();
   let wasmFetched = false;
@@ -214,6 +251,7 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
     .then(text => {
       const messages = parseMessages(text);
       arrival.setLines(arrivalLines(messages, {mode, mac, hostname: window.location?.hostname}));
+      tipLabel = messages.get('arrival-label-tip') ?? tipLabel;
       for (const [segment, [id]] of Object.entries(SLOW_NOTES)) {
         if (messages.has(id)) slowNotes[segment] = messages.get(id);
       }
@@ -240,15 +278,30 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
     if (view.line !== shownLine) {
       shownLine = view.line;
       clearTimeout(swap);
+      const show = () => {
+        const {label, text} = lineParts(shownLine, tipLabel);
+        const words = document.createTextNode(text);
+        if (label) {
+          const tag = document.createElement('span');
+          tag.className = 'label';
+          tag.textContent = label;
+          lineView.replaceChildren(tag, words);
+        } else {
+          lineView.replaceChildren(words);
+        }
+        lineView.classList.toggle('shown', shownLine !== null);
+      };
       if (reducedMotion || !lineView.textContent || view.line === null) {
-        lineView.textContent = view.line ?? '';
-        lineView.classList.toggle('shown', view.line !== null);
+        show();
       } else {
         // A crossfade: out, the new words, back in.
         lineView.classList.remove('shown');
-        swap = setTimeout(() => { lineView.textContent = shownLine ?? ''; lineView.classList.toggle('shown', shownLine !== null); }, 240);
+        swap = setTimeout(show, 240);
       }
     }
+    // A failure's one control takes the keyboard, unless the page holds it elsewhere.
+    if (step === 'stopped' && retry && window.getComputedStyle?.(retry).display !== 'none'
+      && [document.body, null].includes(document.activeElement)) retry.focus();
     if (step === 'done' || step === 'stopped') stop();
   };
   const timer = setInterval(tick, reducedMotion ? 250 : 120);

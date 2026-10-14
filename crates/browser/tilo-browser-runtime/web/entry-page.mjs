@@ -15,7 +15,7 @@
  * has no seat for watches live instead and is let in once a seat frees up.
  */
 import {AdmissionError} from './admission.mjs';
-import {startArrival} from './arrival.mjs';
+import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';
 import {boot} from './entry.mjs';
 import {loadRuntime, mountDesktop, prepareGpu} from './host.mjs';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} from './peer.mjs';
@@ -285,6 +285,8 @@ export async function startEntryPage({mode}) {
   /** Setting up a machine (`machine-setup.mjs`), once the page is open. */
   let setUp = null;
   let displayName;
+  /** The workspace this page is getting into, by name, once it knows it. */
+  let workspaceName = query.get('workspace') || null;
   const diagnostics = {
     onHostAction: id => { if (id === SET_UP.id) void setUp?.(); else void identityActions?.perform(id); },
     ...(query.get('room') ? {room: query.get('room')} : {}),
@@ -303,7 +305,9 @@ export async function startEntryPage({mode}) {
       if (debug) {
         status.textContent = `${state.phase}${state.error ? `: ${state.error}` : ''} · frames ${state.frames ?? 0}${state.persistence ? ` · ${state.persistence}` : ''}`;
       } else if (['failed', 'crashed'].includes(state.phase)) {
-        status.textContent = `The desktop stopped drawing${state.error ? `: ${state.error}` : ''}. Reload the page to start it again.`;
+        // The cause is for the console; the person gets what to do.
+        if (state.error) console.warn('desktop:', state.error);
+        status.textContent = STOPPED_DRAWING;
       } else if (state.phase === 'presented' && [loading, opening, drawing].includes(status.textContent)) {
         // Only the page's own loading note: a visit message stays.
         status.textContent = '';
@@ -321,6 +325,7 @@ export async function startEntryPage({mode}) {
     mountDesktop,
     enterViaHost: async ({workspace}) => {
       reportErrors(workspace.admission);
+      workspaceName = workspace.name || workspaceName;
       const watch = async () => spectate({workspace, runtime});
       if (embed && !joinNow && !keptMembership(workspace)) {
         entered = 'watching';
@@ -343,9 +348,11 @@ export async function startEntryPage({mode}) {
       }
     },
     inspectInvitation: (origin, invitation) => inspectInvitation(origin, invitation, {runtime}),
-    confirmInvitation: offer => card(
-      `${offer.inviter?.name ?? 'Someone'} invites you to “${offer.workspaceName}” as ${offer.role}.`,
-      [['Join', true], ['Not now', false]]),
+    confirmInvitation: offer => {
+      workspaceName = offer.workspaceName || workspaceName;
+      return card(`${offer.inviter?.name ?? 'Someone'} invites you to “${offer.workspaceName}” as ${offer.role}.`,
+        [['Join', true], ['Not now', false]]);
+    },
     joinWorkspace: async options => {
       return joinWorkspace({...options, identity: await browserPerson(), runtime});
     },
@@ -368,7 +375,7 @@ export async function startEntryPage({mode}) {
         onPairingCode: async pairingCode => {
           const response = await fetch(admit, {method: 'POST', headers: {'content-type': 'application/json'},
             body: JSON.stringify({ticket, pairingCode})});
-          if (!response.ok) status.textContent = (await response.json().catch(() => ({}))).error ?? 'The room refused this device';
+          if (!response.ok) status.textContent = (await response.json().catch(() => ({}))).error ?? 'The workspace did not let this device in';
         }});
     },
     connectMember: async ({origin, room, account}) => {
@@ -440,7 +447,9 @@ export async function startEntryPage({mode}) {
     if (entered || embed) tell(error instanceof HostAdmissionError && error.code === 'full' ? 'full' : 'unavailable');
     arrive('stopped');
     document.documentElement.dataset.entry = error instanceof AdmissionError ? 'refused' : 'failed';
-    status.textContent = error instanceof AdmissionError ? error.message : `Failed: ${error?.message ?? error}`;
+    // Plain words and a way to try again (index.html); the cause, thrown
+    // on, reaches the console and the host's error report.
+    status.textContent = failureMessage(error, {workspace: workspaceName, loaded: Boolean(runtime)});
     throw error;
   }
 }
