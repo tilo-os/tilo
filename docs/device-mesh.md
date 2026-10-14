@@ -57,9 +57,23 @@ same target-side authorization path.
 
 Hosts are chosen by configuration, not ranked: a relay serves the workspaces
 bound in its `relay.toml`, and a client reaches the home peers it registered.
-There is no placement function choosing among candidate servers yet; one should
-arrive together with a producer of live load and latency advertisements, not
-ahead of it.
+
+Compute workers are ranked. `tilo_relay_protocol::placement::place_compute_job`
+chooses among the workers advertising in a workspace: only those that pass the
+same eligibility rule admission enforces
+(`ServerAdvertisement::compute_ineligibility`), then operator priority, power
+(external, charging, unknown, battery), load as a fraction of capacity,
+advertised latency and finally the device key, so equal candidates always
+resolve alike. Every passed-over candidate carries its reason
+(`critical_battery`, `no_gpu`, `at_capacity`, …). The relay answers it as the
+action `compute.place` of provider `tilo.compute` on the workspace's
+`workspace.compute:<workspace id>` resource, to the relay owner's own devices
+acting as themselves (the principal the compute control stream admits) and to
+no agent, bot or other person; it logs each choice and its reason. The action
+only chooses: the requester still binds its job to that exact worker, and the
+relay re-admits it against the worker's live advertisement. Workers advertise
+no latency yet (the relay reports `0`), so ranking is by power and load until a
+live round-trip producer exists.
 
 The first workloads are workspace replication, content residency, inbound
 collaboration/chat relay and remote-control relay. Sandboxed compute uses a
@@ -84,9 +98,10 @@ digest that the requester cannot retrieve.
   A workspace relay fans out to every member, so it is reported as the reason
   control is unavailable and never carries input. Relayed exact-target control
   is future work.
-- The requester names the compute worker. `admit_compute_job` checks that
-  worker's `ServerAdvertisement` (service, workspace, app, accelerator,
-  capacity, energy saver and `PowerAvailability::is_critically_constrained`).
+- A compute job names its worker, usually the one `compute.place` chose.
+  `admit_compute_job` checks that worker's `ServerAdvertisement` (service,
+  workspace, app, accelerator, capacity, energy saver and
+  `PowerAvailability::is_critically_constrained`) by the rule placement uses.
   The worker executes only verified tapp catalogue entrypoints, and retains
   exact requester/worker/workspace binding, bounded diagnostics, cancellation
   and monotonic result attribution.

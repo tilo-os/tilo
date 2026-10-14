@@ -9,12 +9,16 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[path = "accessibility_publication.rs"]
+mod accessibility_publication;
 #[path = "click_link_navigates.rs"]
 mod click_link_navigates;
 #[path = "cold_start.rs"]
 mod cold_start;
 #[path = "complete_capture.rs"]
 mod complete_capture;
+#[path = "document_actions.rs"]
+mod document_actions;
 #[path = "e2e_smoke.rs"]
 mod e2e_smoke;
 #[path = "effects.rs"]
@@ -51,8 +55,12 @@ mod paste_image;
 mod read_content;
 #[path = "responsive_drawer.rs"]
 mod responsive_drawer;
+#[path = "room_notebook.rs"]
+mod room_notebook;
 #[path = "scroll_damage.rs"]
 mod scroll_damage;
+#[path = "scroll_stability.rs"]
+mod scroll_stability;
 #[path = "sidebar_collab_growth.rs"]
 mod sidebar_collab_growth;
 #[path = "sidebar_dnd.rs"]
@@ -136,3 +144,6 @@ mod slash_text_input;
 
 #[path = "paragraph_damage.rs"]
 mod paragraph_damage;
+
+#[path = "perf_scroll.rs"]
+mod perf_scroll;

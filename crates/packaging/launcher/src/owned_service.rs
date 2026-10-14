@@ -244,8 +244,7 @@ impl ServiceEndpoint {
         }
         let metadata = std::fs::symlink_metadata(&self.path)?;
         if !metadata.file_type().is_socket()
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.mode() & 0o077 != 0
+            || !tilo_files::native::private::private_to_me(&metadata)
         {
             return Err(io::ErrorKind::PermissionDenied.into());
         }

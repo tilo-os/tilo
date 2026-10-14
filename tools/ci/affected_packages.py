@@ -43,6 +43,16 @@ from ci import suites as path_suites
 # tilo-app-package/tests/{app_manifests,verify_attest} and tilo-doc-codecs/tests/{convergence,office_roundtrip}.
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-codecs"}
+# The desktop smoke (crates/session/shell/tests/desktop_smoke.rs) drives a real
+# headless compositor through a whole session and fails when its main loop stops
+# turning. Whatever the change, if it can alter the desktop (the package is in
+# the checked closure), the smoke runs: with the package's whole test run when
+# that is scheduled anyway, otherwise as just this filter. The shell test target
+# is already built for the former, so the gate costs a build only for changes
+# that reach the shell through a foundation crate.
+DESKTOP_GATE = {
+    "shell": path_suites.ReaderScope((), "it", "binary(it) and test(desktop_smoke::)"),
+}
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
 # Snapshot pins CI publishes and signs (kernel only; RPM snapshots resolve by
 # fingerprint). A pull request that changes only these changes no code:
@@ -61,6 +71,7 @@ NON_COMPILING_DOCS = {
     "tools/dev/remote-source-prepare.md",
     "docs/ci-emergency-relief.md",
     "docs/headless-testing.md",
+    "docs/policies.md",
 }
 # These orchestration/validation helpers are exercised by the mandatory quality
 # job's tools/policy/run.sh unittest discovery. They are not Rust build
@@ -94,6 +105,9 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/suites.py": "tools/tests/test_suites.py",
     "tools/ci/suites.toml": "tools/tests/test_suites.py",
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
+    "tools/policy/added_line_policy.py": "tools/tests/test_added_line_policy.py",
+    "tools/policy/check_commit_policy.py": "tools/tests/test_commit_hooks.py",
+    "scripts/scan-secrets.sh": "tools/tests/test_added_line_policy.py",
     "tools/policy/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/policy/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
     "tools/policy/check_workflow_actions.py": "tools/tests/test_workflow_actions.py",
@@ -806,6 +820,18 @@ def make_plan(
         reason += "; re-check limited to what the base branch changed since the last green run"
     scoped_tests = {name: scope for name, scope in reader_scopes.items()
                     if scope is not None and name in selected and name not in tested}
+    for name, gate in DESKTOP_GATE.items():
+        if name not in selected or name in tested:
+            continue
+        reading = scoped_tests.get(name)
+        if reading is None:
+            scoped_tests[name] = gate
+        elif reading.test == gate.test:
+            scoped_tests[name] = path_suites.ReaderScope(
+                reading.inputs, reading.test, f"({reading.filter}) or ({gate.filter})")
+        else:
+            raise ValueError(f"{name}: a scope on test target {reading.test!r} cannot be "
+                             f"combined with the desktop gate on {gate.test!r}")
     shard_limit = (shard_count if force_full else
                    min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
     effective_shards = useful_shard_count(selected, packages, shard_limit)

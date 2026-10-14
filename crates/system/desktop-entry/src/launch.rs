@@ -215,15 +215,38 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
         id: entry.id.clone(),
     })?;
 
+    let program = PathBuf::from(program);
+    let mut arguments: Vec<String> = argv.collect();
+    grant_flatpak_x11(&program, &mut arguments, env);
+
     Ok(HostLaunch {
         desktop_id: entry.id.clone(),
         display_name: entry.name.clone(),
-        program: PathBuf::from(program),
-        args: argv.collect(),
+        program,
+        args: arguments,
         env: build_env(env),
         window_identities: entry.window_identities(),
         source: entry.source.clone(),
     })
+}
+
+/// Let a Flatpak reach the workspace's X11 bridge.
+///
+/// With a Wayland socket in its environment, `flatpak run` leaves X11 out of
+/// the sandbox for an app that lists `fallback-x11`, DISPLAY unset, even
+/// when the same app also lists `x11`. Apps that are Wayland windows with an
+/// X11 clipboard (1Password's Rust core opens the X server for it) then fail
+/// every copy. Asking for the socket explicitly exposes the display (and a
+/// matching Xauthority) that `build_env` names.
+fn grant_flatpak_x11(program: &std::path::Path, args: &mut Vec<String>, env: &LaunchEnv) {
+    let is_flatpak = program.file_name().is_some_and(|name| name == "flatpak");
+    if is_flatpak
+        && env.x11_display.is_some()
+        && env.x11_authority.is_some()
+        && args.first().is_some_and(|arg| arg == "run")
+    {
+        args.insert(1, "--socket=x11".to_string());
+    }
 }
 
 /// `Exec=` split and field-code expanded for `env`'s files and URLs.
@@ -425,6 +448,34 @@ mod tests {
              StartupWMClass=spotify\nX-Flatpak=com.spotify.Client\n",
             "com.spotify.Client",
         )
+    }
+
+    /// `flatpak run` drops X11 for a `fallback-x11` app when a Wayland socket
+    /// is set, so 1Password's X11 clipboard had no server to open. The plan
+    /// asks for the socket whenever there is a workspace display to give.
+    #[test]
+    fn a_flatpak_is_given_the_x11_bridge_it_would_otherwise_drop() {
+        let bridged = LaunchEnv {
+            wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
+            x11_display: Some(":13625".into()),
+            x11_authority: Some(PathBuf::from("/run/user/1000/tilo-session/Xauthority")),
+            ..Default::default()
+        };
+        let launch = plan(&spotify(), &bridged).expect("plans");
+        assert_eq!(
+            launch.args,
+            vec![
+                "run",
+                "--socket=x11",
+                "--file-forwarding",
+                "com.spotify.Client"
+            ]
+        );
+        let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
+        assert!(
+            !launch.args.iter().any(|arg| arg.starts_with("--socket")),
+            "no bridge, no socket request"
+        );
     }
 
     #[test]

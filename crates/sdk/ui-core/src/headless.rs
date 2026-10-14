@@ -396,6 +396,11 @@ pub struct FrameHarness {
     profiler: Option<crate::profiling::FrameProfiler>,
     /// Whether the latest `send_host_event` was inert pointer motion that skipped relayout.
     last_send_skipped_relayout: bool,
+    /// Opt-in: a wheel event's frame is left to the host's next frame
+    /// ([`Self::set_coalesce_wheel_frames`]).
+    coalesce_wheel_frames: bool,
+    /// A coalesced wheel event was dispatched since the last frame.
+    wheel_frame_pending: bool,
     /// Opt-in diagnostics: dirty widget paths observed when pointer motion still demanded a frame.
     pointer_redraw_diagnostics: bool,
     pointer_redraw_sources: Vec<String>,
@@ -1469,6 +1474,8 @@ impl FrameHarness {
             invocation_results: None,
             profiler: None,
             last_send_skipped_relayout: false,
+            coalesce_wheel_frames: false,
+            wheel_frame_pending: false,
             pointer_redraw_diagnostics: false,
             pointer_redraw_sources: Vec::new(),
             layout_built: false,
@@ -2100,6 +2107,7 @@ impl FrameHarness {
     pub fn frame_schedule(&self) -> FrameSchedule {
         self.drain_component_wakes();
         let queued_work = self.layout_requested
+            || self.wheel_frame_pending
             || self.owner_service_layout_retired
             || self
                 .owner_wake_queue
@@ -2190,6 +2198,40 @@ impl FrameHarness {
             }
             out
         })
+    }
+
+    /// The widgets that make a retained frame re-solve sizes rather than
+    /// only re-apply positions: each widget reporting `layout_needs_measure`
+    /// that none of its children explains, as the path of widget names from
+    /// the root (a test id in brackets). Empty when the next retained frame
+    /// would solve no size.
+    ///
+    /// A diagnostic, like [`Self::frame_requesters`]: a host names what made
+    /// a frame measure, so a widget that claims a size change it did not
+    /// make (on a pan, a hover) can be found. It walks only the asking
+    /// branches.
+    pub fn layout_measure_requesters(&self) -> Vec<String> {
+        fn visit(widget: &dyn Widget, path: &mut Vec<String>, out: &mut Vec<String>) {
+            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+                return;
+            };
+            if !widget.layout_needs_measure() {
+                return;
+            }
+            path.push(match widget.test_id() {
+                Some(id) => format!("{}[{id}]", widget.name()),
+                None => widget.name().to_owned(),
+            });
+            let before = out.len();
+            widget.for_each_child(&mut |child| visit(child, path, out));
+            if out.len() == before {
+                out.push(path.join("/"));
+            }
+            path.pop();
+        }
+        let mut out = Vec::new();
+        visit(self.root.as_ref(), &mut Vec::new(), &mut out);
+        out
     }
 
     /// Drain optional canonical font assets demanded by the most recent
@@ -2593,6 +2635,7 @@ impl FrameHarness {
             self.try_relayout_content()
         };
         if result.is_ok() {
+            self.wheel_frame_pending = false;
             self.pending_app_activation = None;
             self.owner_service_layout_retired = false;
             // This exclusive &mut frame completed the entire original
@@ -2753,9 +2796,17 @@ impl FrameHarness {
         // just re-apply positions. `TILO_UI_FULL_RELAYOUT` forces the
         // rebuild path on every frame.
         let history_width = f64::from(self.viewport.0);
+        // A resize re-solves the retained tree against the new window size.
+        // Only a tree with a widget that composes from its allocation is
+        // composed again for it.
+        // History's own chrome picks its presentation from the window's width.
+        let recompose_for_viewport = viewport_changed
+            && (self.history_chrome_enabled
+                || self.history.is_some()
+                || crate::widget::layout::tree_composition_follows_allocation(self.root.as_ref()));
         let structure = self.full_relayout_forced_now()
             || !self.layout_built
-            || viewport_changed
+            || recompose_for_viewport
             || structure_changed
             || history_invalidated
             || standalone_history_topology_changed
@@ -2766,12 +2817,14 @@ impl FrameHarness {
                 history_width,
                 None,
             );
-        let must_compute =
-            structure || standalone_history_changed || self.root.layout_needs_measure();
+        let must_compute = structure
+            || viewport_changed
+            || standalone_history_changed
+            || self.root.layout_needs_measure();
         let mut stats = RelayoutStats::default();
         // Captured lazily, immediately before a build replaces controls.
         let mut view = None;
-        settle_widget_composition(viewport_changed, |rebuild| {
+        settle_widget_composition(recompose_for_viewport, |rebuild| {
             let t_build = self.profiler.as_ref().map(|_| crate::time::now());
             let mut rebuilt_this_pass = false;
             if structure || rebuild {
@@ -2897,6 +2950,25 @@ impl FrameHarness {
                 return Ok((None, true));
             }
             if rebuilt_this_pass || must_compute || self.pending_app_activation.is_some() {
+                if !rebuilt_this_pass && viewport_changed {
+                    // The retained root still carries the old window size in
+                    // its style; a resize moves it in place.
+                    let (w, h) = self.viewport;
+                    self.taffy.set_style(
+                        self.root_node,
+                        Style {
+                            size: Size {
+                                width: Dimension::length(w as f32),
+                                height: if self.host.content_height {
+                                    Dimension::auto()
+                                } else {
+                                    Dimension::length(h as f32)
+                                },
+                            },
+                            ..self.host.style.clone()
+                        },
+                    )?;
+                }
                 if !rebuilt_this_pass {
                     // Taffy caches every node's measurement; a retained tree
                     // re-measures exactly the widgets that report a possible
@@ -3523,17 +3595,50 @@ impl FrameHarness {
                 (
                     allowed && widget.is_focusable() && widget.is_enabled(),
                     allowed && widget.traps_focus(),
-                    widget.accessibility().is_some_and(|node| node.state.hidden),
+                    widget.accessibility_hidden(),
                 )
             })
             .unwrap_or((false, false, false))
         })
     }
 
+    /// Whether the walk in [`Self::update_focus_trap`] could find a trap: History
+    /// review is open, or a widget it would inspect traps focus. `false` is
+    /// exact — that walk would conclude "untrapped" — while `true` may still
+    /// end there (a trap under a hidden or denied ancestor).
+    fn focus_trap_possible(&self) -> bool {
+        let _profile = tilo_resource::profiling::Phase::start("ui.focus_trap_probe");
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.review_is_open())
+        {
+            return true;
+        }
+        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        {
+            // The mapped walk inspects composed nodes, some of which are not
+            // Widget children of the root; every one it can inspect is mapped.
+            self.node_map.keys().any(|&node| {
+                self.inspect_node(node, |widget| widget.traps_focus())
+                    .unwrap_or(false)
+            })
+        } else {
+            crate::focus_navigation::any_trap(self.root.as_ref())
+        }
+    }
+
     fn update_focus_trap(
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,
     ) {
+        // Untrapped and nothing asking to trap: the walk below could only
+        // conclude that again, which leaves focus alone. Skip it, as the live
+        // App does between rebuilds, so headless frames cost what live ones
+        // do; a trap that appears without a rebuild still engages this frame.
+        if !self.focus_trap_active && !self.focus_trap_possible() {
+            return;
+        }
         let _profile = tilo_resource::profiling::Phase::start("ui.focus_order");
         let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
             self.root.as_ref(),
@@ -4189,6 +4294,21 @@ impl FrameHarness {
             1.0,
         )
         .nodes
+    }
+
+    /// The whole accessibility tree as one update, as the native runner hands
+    /// it to a platform adapter after a frame. The ordinary tree only: no
+    /// History presentation and no palette.
+    #[doc(hidden)]
+    pub fn a11y_tree_update(&self) -> accesskit::TreeUpdate {
+        self.drain_component_wakes();
+        let exported = self.bindings.exported_nodes(&self.node_map);
+        build_tree_update_bound(
+            self.root.as_ref(),
+            &exported.nodes,
+            exported.focus(self.focused),
+            1.0,
+        )
     }
 
     /// The id of the exported accessibility node whose accessible name is
@@ -5663,7 +5783,15 @@ impl FrameHarness {
             self.pointer_redraw_sources = self.redraw_sources();
         }
         self.last_send_skipped_relayout = inert;
-        if !inert {
+        // A host on its own frame clock takes a wheel event's frame there:
+        // wheels arrive faster than frames, and each frame composed here
+        // would be replaced unseen by the next.
+        let coalesced = self.coalesce_wheel_frames
+            && !history_input
+            && matches!(event, WindowEvent::MouseWheel { .. });
+        if coalesced {
+            self.wheel_frame_pending = true;
+        } else if !inert {
             self.relayout();
         }
         // Frames restore the thread-wide flag they captured, so they must
@@ -5674,6 +5802,17 @@ impl FrameHarness {
             let _framework_frame = FrameworkInputFrame::new(&self.framework_input, true);
             self.relayout();
         }
+    }
+
+    /// Leave the frame a wheel event asks for to the host's next
+    /// [`Self::poll_frame`] instead of composing, laying out and drawing it
+    /// inside [`Self::send_host_event`]. For a host that presents on its own
+    /// frame clock, as a browser page does on animation frames: a trackpad
+    /// sends wheel events faster than frames, so every frame but the last
+    /// would be replaced unseen. The event is still dispatched at once,
+    /// against the last frame's layout, as a native window dispatches it.
+    pub fn set_coalesce_wheel_frames(&mut self, coalesce: bool) {
+        self.coalesce_wheel_frames = coalesce;
     }
 
     fn frame_schedule_demands_frame(&self) -> bool {
@@ -13580,6 +13719,7 @@ mod framed_tests {
         rect: Rect,
         syncs: usize,
         presses: usize,
+        follows: std::cell::Cell<bool>,
     }
 
     impl Probe {
@@ -13587,6 +13727,7 @@ mod framed_tests {
             Self {
                 width,
                 rect: Rect::ZERO,
+                follows: std::cell::Cell::new(false),
                 syncs: 0,
                 presses: 0,
             }
@@ -13629,6 +13770,10 @@ mod framed_tests {
         fn name(&self) -> &'static str {
             "Probe"
         }
+
+        fn composition_follows_allocation(&self) -> bool {
+            self.follows.get()
+        }
     }
 
     use crate::synthetic_input::mouse_press;
@@ -13649,6 +13794,31 @@ mod framed_tests {
         Framed::harness_mut(&mut probe).relayout();
         assert!(Framed::harness(&probe).last_relayout().rebuilt);
         assert!((probe.rect.width() - 200.0).abs() < f64::EPSILON);
+    }
+
+    /// A resize re-solves the retained tree against the new window size and
+    /// composes nothing again, unless a widget composes from its allocation.
+    #[test]
+    fn a_resize_recomposes_only_for_widgets_that_compose_from_their_allocation() {
+        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
+        let ids = Framed::harness(&probe).layout_node_ids();
+        let frames = Framed::harness(&probe).rebuilt_frames();
+        Framed::harness_mut(&mut probe).resize((360, 180)).unwrap();
+        let harness = Framed::harness(&probe);
+        assert!(
+            !harness.last_relayout().rebuilt,
+            "resize recomposed the tree"
+        );
+        assert!(harness.last_relayout().measured, "resize re-solved sizes");
+        assert_eq!(harness.layout_node_ids(), ids, "the taffy tree was kept");
+        assert_eq!(harness.rebuilt_frames(), frames);
+
+        probe.follows.set(true);
+        Framed::harness_mut(&mut probe).resize((320, 160)).unwrap();
+        assert!(
+            Framed::harness(&probe).last_relayout().rebuilt,
+            "a widget that composes from its allocation is composed again"
+        );
     }
 
     #[test]

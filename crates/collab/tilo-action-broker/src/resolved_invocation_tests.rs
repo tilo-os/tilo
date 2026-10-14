@@ -643,11 +643,7 @@ async fn a_revisionless_invoke_an_owner_cannot_bind_is_refused() {
             let request = directory_request(&fixture, None, None);
             let refused = admit_directory_invoke(&fixture, &request).await;
             assert!(
-                matches!(
-                    &refused,
-                    Err(ActionHostError::InvalidRequest { reason })
-                        if reason.contains("changed since that revision")
-                ),
+                matches!(&refused, Err(ActionHostError::StaleRevision)),
                 "{refused:?}"
             );
             assert!(
@@ -714,6 +710,118 @@ async fn confirmed_directory_action_needs_a_revision() {
                     .all(|record| record["intent"]["revision"] == "directory-r1"),
                 "every directory admission is bound to a revision: {snapshot}"
             );
+        })
+        .await;
+}
+
+// A surface sent as deltas of shared catalogue entries installs exactly the
+// surface a full publication would, and a delta that does not apply changes
+// nothing, so every reader of the surface sees no difference.
+#[tokio::test(flavor = "current_thread")]
+async fn a_surface_delta_installs_the_same_surface_as_a_full_publication() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            use runtime_collab::{SHAPE_ID_BYTES, SurfaceDelta, SurfaceResource};
+            use signed_worker::{OriginalRoom, directory_state};
+            let room =
+                OriginalRoom::new(tilo_user_identity::DeviceCapabilities::host(), None, None);
+            let (worker, _authorize) = room.join_worker(905).await;
+            let handle = &worker.handle;
+            let app = room.route.app_id.clone();
+            let mut base = directory_state("original-r1")
+                .borrow()
+                .row()
+                .descriptor
+                .unwrap();
+            base.view = None;
+            let (shape_id, template) = ([5; SHAPE_ID_BYTES], [6; SHAPE_ID_BYTES]);
+            let resources = ["workspace:a", "workspace:b", "workspace:c"];
+            let expanded = |resource: &str, label: &str| runtime_collab::ExportedAction {
+                resource: resource.into(),
+                resource_label: label.into(),
+                semantic_identity: None,
+                ..base.clone()
+            };
+            let resource =
+                |name: &str, label: &str, template: [u8; SHAPE_ID_BYTES]| SurfaceResource {
+                    resource: name.into(),
+                    fields: runtime_collab::ResourceFields {
+                        resource_label: label.into(),
+                        semantic_identity: None,
+                        ..base.resource_fields()
+                    },
+                    template,
+                };
+            let surface = || {
+                room.state
+                    .surfaces
+                    .lock()
+                    .unwrap()
+                    .get(&905)
+                    .map(|surface| surface.actions.clone())
+            };
+
+            let first = SurfaceDelta {
+                reset: true,
+                shapes: vec![(shape_id, base.shape())],
+                templates: vec![(template, vec![shape_id])],
+                resources: resources
+                    .iter()
+                    .map(|r| resource(r, "Page", template))
+                    .collect(),
+                removed: Vec::new(),
+            };
+            handle.publish_action_surface(&app, &first).await.unwrap();
+            assert_eq!(
+                surface().unwrap(),
+                resources
+                    .iter()
+                    .map(|r| expanded(r, "Page"))
+                    .collect::<Vec<_>>()
+            );
+
+            // A later delta names only what changed; the catalogue is not
+            // sent again.
+            let edit = SurfaceDelta {
+                resources: vec![resource("workspace:b", "Renamed", template)],
+                removed: vec!["workspace:c".into()],
+                ..SurfaceDelta::default()
+            };
+            handle.publish_action_surface(&app, &edit).await.unwrap();
+            assert_eq!(
+                surface().unwrap(),
+                vec![
+                    expanded("workspace:a", "Page"),
+                    expanded("workspace:b", "Renamed")
+                ]
+            );
+
+            // A delta that does not apply is refused and changes nothing.
+            let unknown = SurfaceDelta {
+                resources: vec![resource("workspace:z", "Z", [9; SHAPE_ID_BYTES])],
+                ..SurfaceDelta::default()
+            };
+            assert!(handle.publish_action_surface(&app, &unknown).await.is_err());
+            let invalid = SurfaceDelta {
+                reset: true,
+                shapes: vec![(shape_id, base.shape())],
+                templates: vec![(template, vec![shape_id])],
+                resources: vec![resource("workspace:a", " ", template)],
+                removed: Vec::new(),
+            };
+            assert!(handle.publish_action_surface(&app, &invalid).await.is_err());
+            assert_eq!(surface().unwrap().len(), 2);
+
+            // A whole-surface publication supersedes the delta state: a delta
+            // that leans on an earlier template is refused, a reset is
+            // accepted.
+            handle
+                .publish_actions(&app, &[expanded("workspace:only", "Only")])
+                .await
+                .unwrap();
+            assert!(handle.publish_action_surface(&app, &edit).await.is_err());
+            handle.publish_action_surface(&app, &first).await.unwrap();
+            assert_eq!(surface().unwrap().len(), 3);
         })
         .await;
 }

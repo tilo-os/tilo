@@ -29,16 +29,6 @@ use tilo_desktop::drill_in::{
 use ui::TextRole;
 use ui::widget::ButtonRole;
 
-fn f32v(value: f64) -> f32 {
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "quick-settings geometry is bounded to desktop pixel dimensions representable as f32"
-    )]
-    {
-        value as f32
-    }
-}
-
 #[derive(Default)]
 pub struct QuickSettingsWifiPane {
     list: DrillInList,
@@ -652,12 +642,22 @@ impl QuickSettingsWifiPane {
             } else {
                 cursor
             };
+            let status = if state.wifi_joining.as_deref() == Some(network.ssid.as_str()) {
+                Some(t("qs-connecting"))
+            } else if network.connected {
+                Some(t("qs-connected"))
+            } else {
+                None
+            };
             let glyph = DrillInList::draw_discovery_row(
                 &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
                 *row,
                 row_cursor,
                 100.0,
                 &network.ssid,
+                status
+                    .as_deref()
+                    .map(|status| (status, colors.intent.inverted)),
             );
             if self.keyboard_focus == Some(Self::NETWORK_FOCUS_START.saturating_add(index)) {
                 Button::paint(
@@ -670,25 +670,6 @@ impl QuickSettingsWifiPane {
                         .focused(true)
                         .disabled(network.connected || busy)
                         .accessible_name(&network.ssid),
-                );
-            }
-            if state.wifi_joining.as_deref() == Some(network.ssid.as_str()) {
-                text.draw_style(
-                    scene,
-                    &t("qs-connecting"),
-                    colors.intent.inverted,
-                    transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
-                    Some(f32v((row.width() - 120.0).max(1.0))),
-                    &theme.text(TextRole::Caption),
-                );
-            } else if network.connected {
-                text.draw_style(
-                    scene,
-                    &t("qs-connected"),
-                    colors.intent.inverted,
-                    transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
-                    Some(f32v((row.width() - 120.0).max(1.0))),
-                    &theme.text(TextRole::Caption),
                 );
             }
             ui::icons::draw_icon(

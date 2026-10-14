@@ -381,8 +381,9 @@ pub struct HereAction {
 }
 
 /// A person's own recent semantic actions in one workspace (titles of
-/// actions and records only; never keystrokes or bodies). Empty `actions`
-/// only fetches.
+/// actions and records only; never keystrokes or bodies). Each post is the
+/// poster's whole current set, so empty `actions` lists them where they are
+/// with no line.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HereRequest {
     /// The workspace, which the session's person must be admitted to.

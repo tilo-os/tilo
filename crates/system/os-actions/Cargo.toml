@@ -16,6 +16,7 @@ path = "src/lib.rs"
 # crate docstring in `src/lib.rs` for the design intent.
 
 [dependencies]
+uuid.workspace = true
 bounded-command = { path = "../bounded-command" }
 libc.workspace = true
 rustix = { workspace = true, features = ["fs"] }

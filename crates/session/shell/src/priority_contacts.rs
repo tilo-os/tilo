@@ -190,7 +190,7 @@ impl PriorityContactRegistry {
 
 fn read_record(path: &Path) -> std::io::Result<DiskRecord> {
     use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -198,8 +198,7 @@ fn read_record(path: &Path) -> std::io::Result<DiskRecord> {
     let metadata = file.metadata()?;
     if !metadata.file_type().is_file()
         || metadata.len() > MAX_RECORD_BYTES
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
+        || !tilo_files::native::private::private_to_me(&metadata)
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,

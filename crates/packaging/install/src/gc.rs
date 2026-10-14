@@ -238,6 +238,96 @@ fn version_of(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// The laptop's case: the image (or a swapped userspace) ships the
+    /// Browser, which pins one engine build, while the per-user runtime
+    /// directory still holds the engines of every earlier Browser. Nothing
+    /// installed through `tilo-install` changed, so only the system store's
+    /// rows say which build is still wanted.
+    #[test]
+    fn engine_builds_no_installed_app_pins_are_collected() {
+        const ENGINE: &str = "2026.10.9-chromium";
+        const NATIVE: &str = "2026.07+native.00000000000000000000000000000000";
+        let tmp = tempfile::tempdir().unwrap();
+        let system = tmp.path().join("system");
+        let payload = system.join("payloads/so.tilo.browser");
+        std::fs::create_dir_all(&payload).unwrap();
+        let manifest = payload.join("manifest.toml");
+        std::fs::write(
+            &manifest,
+            format!(
+                "[package]\nid = \"so.tilo.browser\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+                 runtime = \"tilo-runtime/{NATIVE}\"\n\
+                 optional-runtimes = [\"tilo-runtime/{ENGINE}\"]\n\
+                 [publisher]\nidentity = \"ed25519:{key}\"\nsignature = \"\"\n\
+                 [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+                 [sandbox.net]\nmode = \"off\"\n[entrypoint]\nbin = \"bin/app\"\n",
+                key = "00".repeat(32)
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            system.join("registry.toml"),
+            format!(
+                "[[entry]]\nid = 'so.tilo.browser'\nruntime = 'tilo-runtime/{NATIVE}'\n\
+                 payload_root = {:?}\nmanifest_path = {:?}\n",
+                payload.display().to_string(),
+                manifest.display().to_string()
+            ),
+        )
+        .unwrap();
+        let user = tmp.path().join("user");
+        let catalog = Catalog::at(
+            &user,
+            Some(package_store::SystemStore {
+                data_dir: system.clone(),
+                payload_dir: system.join("payloads"),
+                interfaces: None,
+            }),
+        );
+        let store = PackageStore::at(&user);
+        let bundles = tmp.path().join("runtimes");
+        let versions = [
+            "2026.10.1-chromium",
+            "2026.10.2-chromium",
+            "2026.10.4-chromium",
+            ENGINE,
+            NATIVE,
+        ];
+        for version in versions {
+            std::fs::create_dir_all(bundles.join(version)).unwrap();
+            std::fs::write(bundles.join(version).join("bundle.toml"), "").unwrap();
+        }
+        let report = collect(
+            &store,
+            &catalog,
+            &BundleRoot::new(&bundles),
+            Request {
+                max_store_bytes: 0,
+                grace_secs: 0,
+                now: tilo_clock::unix_now(),
+                dry_run: false,
+            },
+        )
+        .unwrap();
+        let removed: Vec<&str> = report
+            .runtimes
+            .removed
+            .iter()
+            .map(|(version, _)| version.as_str())
+            .collect();
+        assert_eq!(
+            removed,
+            [
+                "2026.10.1-chromium",
+                "2026.10.2-chromium",
+                "2026.10.4-chromium"
+            ]
+        );
+        assert!(bundles.join(ENGINE).join("bundle.toml").exists());
+        assert!(bundles.join(NATIVE).join("bundle.toml").exists());
+        assert!(!bundles.join("2026.10.1-chromium").exists());
+    }
+
     #[test]
     fn a_runtime_reference_names_its_version() {
         assert_eq!(

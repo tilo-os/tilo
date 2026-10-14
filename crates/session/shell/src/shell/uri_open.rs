@@ -77,6 +77,12 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<UriOpened, UriOpe
     let resource = resource_for_uri(uri)?;
     // Host `x-scheme-handler` entries (a mail client, a chat app) take the
     // URI when the person chose one or no Tilo package claims the scheme.
+    // Captured now, as the person asked: a window the "+" of a group
+    // summoned lands in that group however late it maps.
+    let explicit = {
+        let state = chrome.borrow();
+        crate::shell::placement::explicit_group_placement(&state.tree(), state.open_target)
+    };
     let (host, portal_workspace_id) = {
         let state = chrome.borrow();
         let tree = state.tree();
@@ -92,12 +98,20 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<UriOpened, UriOpe
         (host, workspace.map(|workspace| workspace.room.to_string()))
     };
     if let Some(host) = host {
+        if let Some(placement) = explicit {
+            crate::shell::host_apps::note_placement(&host, placement);
+        }
         return crate::shell::host_apps::launch_with_url(
             &host.desktop_id,
             uri,
             portal_workspace_id,
         )
         .map(UriOpened::Host)
+        .inspect_err(|_| {
+            if explicit.is_some() {
+                crate::shell::launcher::clear_pending_placement(&host.desktop_id);
+            }
+        })
         .map_err(UriOpenError::Launch);
     }
     // The guard's only use is the borrow passed into
@@ -139,8 +153,21 @@ pub fn open_in_workspace(uri: &str, chrome: &Chrome) -> Result<UriOpened, UriOpe
             workspace.launch_grants(tilo_clock::unix_now()),
         )
     };
-    launcher::launch_uri_in_room(&app.package_id, room, capabilities, uri)
-        .map(UriOpened::Package)
+    // Placement is noted before queueing, as the person asked, so the window
+    // lands in the group whose "+" summoned it however late it maps. Queued:
+    // the launch's file work runs on the preflight worker, not on this (the
+    // compositor) thread. A refusal arrives as a launch event, which retires
+    // the note.
+    if let Some(placement) = explicit {
+        launcher::set_pending_placement(&app.package_id, placement);
+    }
+    launcher::queue_uri_in_room(app.clone(), room, capabilities, uri.to_owned())
+        .map(|()| UriOpened::Package(app.clone()))
+        .inspect_err(|_| {
+            if explicit.is_some() {
+                launcher::clear_pending_placement(&app.package_id);
+            }
+        })
         .map_err(UriOpenError::Launch)
 }
 

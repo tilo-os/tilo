@@ -65,6 +65,11 @@ struct SplitParts {
 /// with the bodies it does not keep left out, and some headroom.
 const COPY_BYTES_PER_INPUT_BYTE: u64 = 8;
 
+/// The least code a group of functions the same split modules share needs
+/// to be a chunk of its own; smaller groups share one chunk, so a module
+/// does not fetch hundreds of tiny files.
+const MIN_CHUNK_BYTES: usize = 64 * 1024;
+
 /// Bytes this process can still allocate: what its cgroup's memory limit
 /// leaves, or the system's available memory, whichever is less. `None` when
 /// neither can be read.
@@ -148,7 +153,7 @@ impl<'a> Splitter<'a> {
         };
 
         module.build_call_graph()?;
-        module.build_split_chunks();
+        module.build_split_chunks()?;
 
         Ok(module)
     }
@@ -252,7 +257,7 @@ impl<'a> Splitter<'a> {
         self.prune_main_symbols(&mut out, &unused_symbols)?;
 
         // 3. Change the functions called from split modules to be local functions that call the indirect function
-        self.create_ifunc_table(&mut out);
+        self.create_ifunc_table(&mut out, &unused_symbols);
 
         // 4. Re-export the memories, globals, and other stuff
         self.re_export_items(&mut out);
@@ -420,16 +425,19 @@ impl<'a> Splitter<'a> {
     fn split_chunk_parts(&self, idx: usize) -> SplitParts {
         let unique_symbols = &self.chunks[idx];
 
-        // The functions we'll need to import
+        // What the chunk's functions call outside it: the start module's
+        // functions and other chunks', all reached through the table.
         let symbols_to_import: HashSet<_> = unique_symbols
-            .intersection(&self.main_graph)
-            .cloned()
+            .iter()
+            .flat_map(|node| self.call_graph.get(node).into_iter().flatten())
+            .filter(|node| matches!(node, Node::Function(_)) && !unique_symbols.contains(node))
+            .copied()
             .collect();
 
-        // Delete everything except the symbols that are reachable from this module
+        // The start module's functions it does not call.
         let symbols_to_delete: HashSet<_> = self
             .main_graph
-            .difference(unique_symbols)
+            .difference(&symbols_to_import)
             .cloned()
             .collect();
 
@@ -494,6 +502,31 @@ impl<'a> Splitter<'a> {
             .unwrap();
 
         self.convert_shared_to_imports(&mut out, segment_start, &shared_funcs, &symbols_to_import);
+
+        // Fill the slots of this chunk's functions that others call.
+        let mut slot = segment_start + self.split_points.len();
+        let mut own = Vec::new();
+        for node in &shared_funcs {
+            if let Node::Function(id) = node {
+                if unique_symbols.contains(node) {
+                    own.push((slot, *id));
+                }
+                slot += 1;
+            }
+        }
+        for (slot, id) in own {
+            let element = out.elements.add(
+                ElementKind::Active {
+                    table: ifunc_table_id,
+                    offset: ConstExpr::Value(ir::Value::I32(slot as i32)),
+                },
+                ElementItems::Functions(vec![id]),
+            );
+            out.tables
+                .get_mut(ifunc_table_id)
+                .elem_segments
+                .insert(element);
+        }
 
         // Make sure we haven't deleted anything important....
         self.delete_main_funcs_from_split(&mut out, &symbols_to_delete);
@@ -629,7 +662,7 @@ impl<'a> Splitter<'a> {
     /// This is because these imports are going to be delayed until the split module is loaded
     /// and loading in the main module these as imports won't be possible since the imports won't
     /// be resolved until the split module is loaded.
-    fn create_ifunc_table(&self, out: &mut Module) {
+    fn create_ifunc_table(&self, out: &mut Module, unused_symbols: &HashSet<Node>) {
         let ifunc_table = self.load_funcref_table(out);
         let dummy_func = self.make_dummy_func(out);
 
@@ -671,12 +704,16 @@ impl<'a> Splitter<'a> {
         }
 
         // Add the stub functions to the ifunc table
-        // The callers of these functions will call the stub instead of the import
-        let mut _idx = 0;
+        // The callers of these functions will call the stub instead of the import.
+        // A shared chunk's function, which this module no longer has, gets a
+        // hole the chunk fills when it loads.
         for func in self.shared_symbols.iter() {
             if let Node::Function(id) = func {
-                ifuncs.push(*id);
-                _idx += 1;
+                ifuncs.push(if unused_symbols.contains(func) {
+                    dummy_func
+                } else {
+                    *id
+                });
             }
         }
 
@@ -1051,29 +1088,80 @@ impl<'a> Splitter<'a> {
         }
     }
 
-    /// Accumulate any shared funcs between multiple chunks into a single residual chunk.
-    /// This prevents duplicates from being downloaded.
-    /// Eventually we need to group the chunks into smarter "communities" - ie the Louvain algorithm
+    /// Group the code several split modules reach, and the start module does
+    /// not, into shared chunks, so each copy is downloaded once instead of
+    /// with every module that needs it. Functions are grouped by exactly
+    /// which split modules reach them; a group of at least
+    /// [`MIN_CHUNK_BYTES`] of code is a chunk of its own, loaded only by
+    /// those modules, and the smaller groups share one chunk. A module loads
+    /// every chunk holding a function it reaches.
     ///
-    /// Todo: we could chunk up the main module itself! Not going to now but it would enable parallel downloads of the main chunk
-    fn build_split_chunks(&mut self) {
-        // create a single chunk that contains all functions used by multiple modules
-        let mut funcs_used_by_chunks: HashMap<Node, HashSet<usize>> = HashMap::new();
-        for split in self.split_points.iter() {
+    /// A chunk's functions that code outside the chunk calls or takes the
+    /// address of get a slot in the function table, like the start module's
+    /// functions split modules call: callers go through the slot, which the
+    /// chunk fills when it loads.
+    fn build_split_chunks(&mut self) -> Result<()> {
+        let mut users: HashMap<Node, Vec<usize>> = HashMap::new();
+        for (index, split) in self.split_points.iter().enumerate() {
             for item in split.reachable_graph.iter() {
-                if self.main_graph.contains(item) {
-                    continue;
+                if matches!(item, Node::Function(_)) && !self.main_graph.contains(item) {
+                    users.entry(*item).or_default().push(index);
                 }
             }
         }
+        users.retain(|_, splits| splits.len() > 1);
 
-        // Only consider funcs that are used by multiple modules - otherwise they can just stay in their respective module
-        funcs_used_by_chunks.retain(|_, v| v.len() > 1);
+        let imported = self
+            .source_module
+            .funcs
+            .iter()
+            .filter(|f| matches!(f.kind, FunctionKind::Import(_)))
+            .count();
+        let bodies = code_section(self.bindgened)?
+            .map(|code| code.bodies)
+            .unwrap_or_default();
+        let size = |node: &Node| match node {
+            Node::Function(id) => self
+                .fns_to_ids
+                .get(id)
+                .and_then(|index| index.checked_sub(imported))
+                .and_then(|index| bodies.get(index))
+                .map_or(0, ExactSizeIterator::len),
+            Node::DataSymbol(_) => 0,
+        };
 
-        // todo: break down this chunk if it exceeds a certain size (100kb?) by identifying different groups
-
+        let mut groups: BTreeMap<Vec<usize>, Vec<Node>> = BTreeMap::new();
+        for (node, mut splits) in users {
+            splits.sort_unstable();
+            groups.entry(splits).or_default().push(node);
+        }
+        let mut small = HashSet::new();
+        for nodes in groups.into_values() {
+            if nodes.iter().map(size).sum::<usize>() >= MIN_CHUNK_BYTES {
+                self.chunks.push(nodes.into_iter().collect());
+            } else {
+                small.extend(nodes);
+            }
+        }
+        if !small.is_empty() {
+            self.chunks.push(small);
+        }
+        // Largest first, so the file names are stable for one program.
         self.chunks
-            .push(funcs_used_by_chunks.keys().cloned().collect());
+            .sort_by_cached_key(|chunk| std::cmp::Reverse(chunk.iter().map(size).sum::<usize>()));
+
+        for chunk in &self.chunks {
+            for node in chunk {
+                let called_from_outside = self
+                    .parent_graph
+                    .get(node)
+                    .is_some_and(|parents| parents.iter().any(|parent| !chunk.contains(parent)));
+                if called_from_outside {
+                    self.shared_symbols.insert(*node);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn unused_main_symbols(&self) -> HashSet<Node> {

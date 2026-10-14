@@ -29,6 +29,7 @@ tokio-websockets = { version = "0.13.3", default-features = false, features = ["
 url.workspace = true
 zeroize.workspace = true
 workspace-hack = { version = "0.1" }
+tilo-clock = { path = "../../../crates/platform/tilo-clock" }
 
 [dev-dependencies]
 fake-discord = { path = "../../../crates/dev/fake-discord" }

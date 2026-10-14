@@ -1976,6 +1976,10 @@ impl FileExplorerWidget {
                 self.invoke_open_with(&entry, &app, always.unwrap_or(false))?;
                 None
             }
+            FilesEffect::ImportOnce { entry, folder } => {
+                self.import_once(&entry, &folder)?;
+                None
+            }
             FilesEffect::CopyTo { entry, folder } => {
                 self.copy_into_folder(&entry, &folder)?;
                 None
@@ -2267,6 +2271,51 @@ impl FileExplorerWidget {
     fn account_named(&self, id: &str) -> Result<crate::remote_accounts::RemoteAccount, String> {
         self.remote_account(id)
             .ok_or_else(|| "remote account is no longer available".to_string())
+    }
+
+    fn importable_cloud_entry(&self, path: &Path) -> bool {
+        self.remote_account_snapshot().iter().any(|account| {
+            matches!(
+                account.kind,
+                crate::remote_accounts::RemoteAccountKind::GoogleDrive
+                    | crate::remote_accounts::RemoteAccountKind::Dropbox
+            ) && account.health != crate::remote_accounts::RemoteAccountHealth::Disabled
+                && account
+                    .mount
+                    .as_ref()
+                    .is_some_and(|mount| path.starts_with(mount))
+        })
+    }
+
+    /// Import uses the ordinary queued copy path: kernel reads hydrate the
+    /// mounted source, while the destination contains independent local bytes.
+    /// No credential, mount, pin or sync relationship is created here.
+    fn import_once(&mut self, entry: &str, folder: &str) -> Result<(), String> {
+        let source = self
+            .visible_entry_path(entry)
+            .ok_or_else(|| "file entry is no longer visible".to_string())?;
+        if !self.importable_cloud_entry(&source) {
+            return Err(t("files-import-source-unavailable"));
+        }
+        let folder = Path::new(folder);
+        // Validate the submitted spelling before canonicalization makes even a
+        // relative path absolute. Retain the validated target, not its alias,
+        // when the document outbox executes the copy on a later frame.
+        if !folder.is_absolute() || !folder.is_dir() {
+            return Err(format!("{} is not an existing folder.", folder.display()));
+        }
+        let destination = std::fs::canonicalize(folder).map_err(|e| e.to_string())?;
+        if self
+            .remote_account_snapshot()
+            .iter()
+            .filter_map(|account| account.mount.as_ref())
+            .any(|mount| {
+                std::fs::canonicalize(mount).is_ok_and(|mount| destination.starts_with(mount))
+            })
+        {
+            return Err(t("files-import-local-destination"));
+        }
+        self.copy_into_folder(entry, &destination.to_string_lossy())
     }
 
     /// Copy the entry `entry` names into `folder`, keeping its name: a
@@ -4366,6 +4415,27 @@ impl FileExplorerWidget {
             FileCommand::UndoLastTrash => self.apply_undo_last_trash(),
             FileCommand::RestoreFromTrash => self.request_restore_from_trash(),
             FileCommand::EmptyTrash => self.request_empty_trash_confirmation(),
+            FileCommand::ImportOnceToDownloads => {
+                let entry = self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned());
+                if let (Some(entry), Some(home)) = (entry, self.home_path.as_ref()) {
+                    self.perform(crate::effects::FilesEffect::ImportOnce {
+                        entry: Self::entry_resource_id(&entry),
+                        folder: self
+                            .user_dirs
+                            .downloads
+                            .clone()
+                            .unwrap_or_else(|| home.join("Downloads"))
+                            .display()
+                            .to_string(),
+                    });
+                    true
+                } else {
+                    false
+                }
+            }
             FileCommand::Copy => self.apply_copy(),
             FileCommand::Cut => self.apply_cut(),
             FileCommand::Paste => {
@@ -6503,6 +6573,18 @@ impl FileExplorerWidget {
             spec.push((String::new(), None));
             spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
             spec.push((t("files-menu-copy"), Some(FileCommand::Copy)));
+            if single
+                && self
+                    .selection
+                    .primary()
+                    .and_then(|index| self.displayed_entries().get(index).cloned())
+                    .is_some_and(|entry| self.importable_cloud_entry(&entry.path))
+            {
+                spec.push((
+                    t("files-import-once-downloads"),
+                    Some(FileCommand::ImportOnceToDownloads),
+                ));
+            }
             if can_paste {
                 spec.push((t("files-menu-paste"), Some(FileCommand::Paste)));
             }
@@ -8431,6 +8513,15 @@ impl FileExplorerWidget {
             .bound_asking(&["folder"]);
             copy_to.label = "Copy to folder…".into();
             resource.actions.push(copy_to);
+            if self.importable_cloud_entry(&entry.path) {
+                let mut import = FilesEffect::ImportOnce {
+                    entry: id(),
+                    folder: String::new(),
+                }
+                .bound_asking(&["folder"]);
+                import.label = t("files-import-once");
+                resource.actions.push(import);
+            }
             resource.actions.push(row_action(
                 &FilesEffect::SendNearby { entry: id() },
                 "send-nearby",
@@ -8880,7 +8971,8 @@ impl Widget for FileExplorerWidget {
         let changed_directory = (self.directory_changed && !read_deferred).then(|| {
             self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
         });
-        Some(self.nearby_send.next_poll())
+        self.nearby_send
+            .next_poll()
             .into_iter()
             .chain(self.next_metadata_refresh)
             .chain(changed_directory)

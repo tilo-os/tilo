@@ -15,6 +15,42 @@ pub(crate) fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
     AutoCommit::load_with_options(bytes, strict()).map_err(|e| Rejected::Invalid(e.to_string()))
 }
 
+/// [`load`] of bytes a worker has already loaded, taking each change's hash
+/// from that worker rather than rebuilding and hashing every change, which is
+/// about half the cost of loading a large document. `hashes` are what
+/// [`document_change_hashes`] gave for exactly these bytes in the worker;
+/// none (or any Automerge finds unfit) loads as [`load`] does.
+///
+/// The document is the one [`load`] builds: Automerge uses the hashes only
+/// in place of the ones it would compute, and only if they are one per
+/// change, distinct, and have the document's stored heads as the changes
+/// nothing depends on, heads the worker's [`load`] checked against the
+/// changes themselves.
+#[cfg(target_os = "linux")]
+pub(crate) fn load_validated(bytes: &[u8], hashes: &[ChangeHash]) -> Result<AutoCommit, Rejected> {
+    if hashes.is_empty() {
+        return load(bytes);
+    }
+    AutoCommit::load_with_options(bytes, strict().known_change_hashes(hashes))
+        .map_err(|e| Rejected::Invalid(e.to_string()))
+}
+
+/// The hash of every change of `doc`, which [`load`] built from `bytes`, in
+/// the order [`load_validated`] takes them: only when `bytes` is a single
+/// document chunk, whose changes are then exactly the document's, listed in
+/// the chunk's order. Otherwise none.
+#[cfg(target_os = "linux")]
+pub(crate) fn document_change_hashes(bytes: &[u8], doc: &mut AutoCommit) -> Vec<ChangeHash> {
+    let mut chunks = crate::precheck::chunks(bytes);
+    let single_document = chunks.next().is_some_and(|chunk| {
+        chunk.kind == crate::precheck::DOCUMENT && chunk.bytes.len() == bytes.len()
+    }) && chunks.next().is_none();
+    if !single_document {
+        return Vec::new();
+    }
+    doc.document().change_hashes().to_vec()
+}
+
 /// Apply `incoming` to `doc` as the caller will.
 ///
 /// `load_incremental` keeps the chunks before a malformed one, so every

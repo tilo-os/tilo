@@ -623,10 +623,22 @@ impl Rooms {
         caller: &AuthenticatedPeer,
         operation: &CallOperation,
     ) -> Result<CallState, String> {
+        self.voice_call_as(room, &caller.cert, operation).await
+    }
+
+    /// [`Self::voice_call`] for the device `caller` certifies, however it
+    /// reached the relay: the envelope and the room's `call` action share
+    /// it, and with it the one authorization.
+    pub(super) async fn voice_call_as(
+        &self,
+        room: &str,
+        caller: &tilo_user_identity::DeviceCert,
+        operation: &CallOperation,
+    ) -> Result<CallState, String> {
         let room = self.room(room).await.map_err(|error| error.to_string())?;
         let mut room = room.lock().await;
         self.authorize(
-            &caller.cert,
+            caller,
             Some(&room),
             RoomOp::Govern(governance::CALL),
             tilo_clock::unix_now_ns(),

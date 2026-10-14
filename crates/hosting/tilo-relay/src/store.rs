@@ -249,6 +249,9 @@ pub struct WorkspaceStore {
     shell_authority: Option<tilo_peer_state::retained_proof::RetentionAuthority>,
     /// Shared by every handle on `root`; see `shell_selection::tail_cache`.
     tail_cache: shell_selection::tail_cache::SharedTailCache,
+    /// Classifies retained co-edit bodies: checkpoint replacement and
+    /// continuity evidence.
+    payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
 }
 
 /// One server-local projection of the native room governor. Both sets share a
@@ -324,6 +327,27 @@ impl WorkspaceStore {
     /// Returns an error if any of the workspace's on-disk directories
     /// can't be created.
     pub fn open(state_root: &Path, workspace_id: u64, pinned: bool) -> Result<Self, StoreError> {
+        Self::open_with_payloads(
+            state_root,
+            workspace_id,
+            pinned,
+            crate::payloads::neighbour(),
+        )
+    }
+
+    /// [`Self::open`], classifying retained co-edit bodies with `payloads`.
+    /// A host opens every store with the one adapter it was started with:
+    /// retained data must be judged the same way on every open.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::open`].
+    pub fn open_with_payloads(
+        state_root: &Path,
+        workspace_id: u64,
+        pinned: bool,
+        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
+    ) -> Result<Self, StoreError> {
         let root = state_root.join("workspaces").join(workspace_id.to_string());
         #[cfg(test)]
         test_barrier::pause(&root, "open");
@@ -339,7 +363,13 @@ impl WorkspaceStore {
             workspace_id,
             pinned,
             shell_authority: None,
+            payloads,
         })
+    }
+
+    /// The adapter this store classifies retained co-edit bodies with.
+    pub fn payloads(&self) -> &std::sync::Arc<dyn crate::payloads::ShellPayloads> {
+        &self.payloads
     }
 
     /// Root directory for this workspace's state.

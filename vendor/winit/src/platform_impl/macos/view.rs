@@ -5,7 +5,7 @@ use std::ptr;
 
 use objc2::rc::{Retained, WeakId};
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability, sel};
+use objc2::{declare_class, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_app_kit::{
     NSApplication, NSCursor, NSEvent, NSEventPhase, NSResponder, NSTextInputClient,
     NSTrackingRectTag, NSView, NSViewFrameDidChangeNotification,
@@ -16,14 +16,14 @@ use objc2_foundation::{
     NSPoint, NSRange, NSRect, NSSize, NSString, NSUInteger,
 };
 
-use super::DEVICE_ID;
 use super::app_state::ApplicationDelegate;
 use super::cursor::{default_cursor, invisible_cursor};
 use super::event::{
-    KeyEventExtra, code_to_key, code_to_location, create_key_event, event_mods, lalt_pressed,
-    ralt_pressed, scancode_to_physicalkey,
+    code_to_key, code_to_location, create_key_event, event_mods, lalt_pressed, ralt_pressed,
+    scancode_to_physicalkey, KeyEventExtra,
 };
 use super::window::WinitWindow;
+use super::DEVICE_ID;
 use crate::dpi::{LogicalPosition, LogicalSize};
 use crate::event::{
     DeviceEvent, ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, TouchPhase,

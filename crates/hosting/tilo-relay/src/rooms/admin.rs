@@ -9,6 +9,14 @@
 //! ([`auth::authenticate_endpoint_bound`]).
 //! The wire vocabulary and the device's `RoomAdminClient` live in
 //! `tilo_relay_session::rooms`.
+//!
+//! A room's own governance is also served as `tilo.workspace` actions
+//! (`super::actions`), and the desktop administers the rooms it holds that
+//! way. What still needs this door: the host operations (create, list,
+//! enter), invitations to a room the device does not hold yet, a member's
+//! own namespace claim and effect receipt, and removing a member, which
+//! the actions do not run until the person's own confirmation can be asked
+//! for. Desktops that predate the actions use the rest.
 
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use tilo_relay_session::rooms::{
@@ -179,6 +187,13 @@ impl RoomAdminProtocol {
             } => self
                 .rooms
                 .record_member_effect_receipt(&room, device, invocation, &redacted)
+                .await
+                .map(|done| RoomReply::Governance {
+                    generation: done.generation,
+                }),
+            RoomCommand::GrantAppAuthorship { room, request } => self
+                .rooms
+                .grant_app_authorship(&room, device, request)
                 .await
                 .map(|done| RoomReply::Governance {
                     generation: done.generation,

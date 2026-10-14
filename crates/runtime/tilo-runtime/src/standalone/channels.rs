@@ -166,8 +166,14 @@ impl ChannelDirectory for Directory {
     }
 
     /// Only the steward asks; this device stewards only its own room, which
-    /// it alone reads.
-    fn allowed_devices(&self, room: RoomId, _now: u64) -> BTreeSet<Ed25519PublicKey> {
+    /// it alone reads, every record of it: no other person is in it to be
+    /// denied one.
+    fn allowed_devices(
+        &self,
+        room: RoomId,
+        _channel: collab_types::ChannelId,
+        _now: u64,
+    ) -> BTreeSet<Ed25519PublicKey> {
         if room == self.own_room {
             BTreeSet::from([self.device])
         } else {

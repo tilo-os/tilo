@@ -935,15 +935,18 @@ pub fn compositor_owns(store: &SharedSelection, target: Target) -> bool {
     store.lock().is_ok_and(|s| s.slot(target).compositor_owned)
 }
 
-/// A selection change seen but not yet mirrored. smithay raises
-/// [`SelectionHandler::new_selection`] *before* installing the new source, so
-/// pulling inline would read the previous owner's data; parked here and
-/// drained by [`State::pump_selection`] once the seat holds the new source.
+/// A selection change already recorded in the mirror but not yet pulled.
+/// smithay raises [`SelectionHandler::new_selection`] *before* installing the
+/// new source, so pulling inline would read the previous owner's data; the
+/// reads are parked here and drained by [`State::pump_selection`] once the
+/// seat holds the new source.
 #[derive(Debug, Clone)]
 #[cfg(target_os = "linux")]
 pub struct PendingMirrorPull {
     /// Which selection changed hands.
     pub target: Target,
+    /// The mirror generation [`begin_client_selection`] gave the new owner.
+    pub generation: u64,
     /// The mime types the new owner offered, or `None` when the selection was
     /// cleared (`set_selection(null)`).
     pub mime_types: Option<Vec<String>>,
@@ -1380,9 +1383,13 @@ impl State {
     /// Per-tick selection work: publish chrome's pending copy, pull any
     /// client-owned change into the mirror. Allocation-free when nothing changed.
     pub fn pump_selection(&mut self) {
+        // Dispatch may already have installed a newer client source while
+        // the previous mirror's last transfer completed. Incorporate that
+        // ownership edge first: adopting the old mirror would overwrite the
+        // new source before its formats can even be pulled.
+        self.drain_pending_pulls();
         adopt_complete_client_selection(&self.selection.store, unix_now_ms());
         self.publish_chrome_selection();
-        self.drain_pending_pulls();
     }
 
     /// Turn a pending chrome copy into a compositor-owned Wayland selection.
@@ -1442,13 +1449,12 @@ impl State {
         });
         pending.reverse();
         for pull in pending {
+            // A release (`None`) has nothing to read; the mirror already
+            // dropped the old owner when it was announced.
             let Some(mimes) = pull.mime_types else {
-                // The owner released the selection without replacing it.
-                begin_client_selection(&self.selection.store, pull.target, None);
                 continue;
             };
-            let generation =
-                begin_client_selection(&self.selection.store, pull.target, Some(mimes.clone()));
+            let generation = pull.generation;
             // Each request is a non-blocking calloop transfer. Pull all
             // bounded offered formats, except GTK's clipboard-manager
             // operation SAVE_TARGETS. It has no data payload; requesting it
@@ -1485,14 +1491,21 @@ impl State {
                     }
                 };
                 match requested {
-                    Ok(()) => read_into_mirror(
-                        &self.loop_handle,
-                        Arc::clone(&self.selection.store),
-                        pull.target,
-                        generation,
-                        mime,
-                        read_fd,
-                    ),
+                    Ok(()) => {
+                        tracing::debug!(
+                            target: "shell::selection",
+                            target_selection = ?pull.target, mime = %mime, generation,
+                            "asked the client selection owner for a format"
+                        );
+                        read_into_mirror(
+                            &self.loop_handle,
+                            Arc::clone(&self.selection.store),
+                            pull.target,
+                            generation,
+                            mime,
+                            read_fd,
+                        );
+                    }
                     Err(e) => {
                         // `ServerSideSelection` is normal when Tilo owns the
                         // source; it already has the bytes in the mirror.
@@ -1611,11 +1624,18 @@ impl SelectionHandler for State {
         _seat: Seat<Self>,
     ) {
         let target = Target::from(ty);
-        // Park the pull — inline would read the *previous* owner, since smithay
+        // The mirror follows the new owner now: until its bytes arrive it
+        // must not be taken over as the previous owner's complete copy (that
+        // would install the older copy over this one), nor serve the older
+        // copy to chrome.
+        let mime_types = source.map(|s| s.mime_types());
+        let generation = begin_client_selection(&self.selection.store, target, mime_types.clone());
+        // Park the reads — inline would read the *previous* owner, since smithay
         // calls this before installing the new source.
         self.selection.pending_pulls.push(PendingMirrorPull {
             target,
-            mime_types: source.map(|s| s.mime_types()),
+            generation,
+            mime_types,
         });
     }
 
@@ -2761,6 +2781,37 @@ mod tests {
         // The next selection replaces and clears it.
         client_copy(&s, Target::Clipboard, &[TEXT_MIME], "next");
         assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("next"));
+    }
+
+    /// The owner announces its next selection on the tick its previous copy
+    /// finished mirroring. The take-over must follow the newer owner, not
+    /// install the older, complete copy over it (a text copy replacing the
+    /// image copied right after it, or a cleared clipboard coming back).
+    #[test]
+    fn a_complete_copy_is_not_taken_over_once_its_owner_announced_another() {
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+        use smithay::wayland::selection::SelectionTarget;
+
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let s = state.selection_store();
+        client_copy(&s, Target::Clipboard, &[TEXT_MIME], "older copy");
+
+        let seat = state.seat.clone();
+        SelectionHandler::new_selection(&mut state, SelectionTarget::Clipboard, None, seat);
+        state.pump_selection();
+
+        assert!(
+            smithay::wayland::selection::data_device::current_data_device_selection_userdata(
+                &state.seat
+            )
+            .is_none(),
+            "the seat serves the older copy after its owner replaced it"
+        );
+        assert!(!compositor_owns(&s, Target::Clipboard));
+        assert_eq!(mirror_text(&s, Target::Clipboard), None);
     }
 
     #[test]

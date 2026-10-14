@@ -10,13 +10,15 @@
 //! decision, so a member it admits can subscribe at once and a member it
 //! removes is cut off.
 //!
-//! Rooms are administered over [`ROOM_ADMIN_ALPN`] or, from a page, over
-//! HTTPS: by devices of the relay's own user, and by other members as far as
+//! Rooms are administered as their own `tilo.workspace` governance actions
+//! (`actions`), over [`ROOM_ADMIN_ALPN`] or, from a page, over HTTPS: by
+//! devices of the relay's own user, and by other members as far as
 //! the room's governance lets them (`authority`, one decision for every
 //! door). Any device redeems an invitation over the shared workspace-join
 //! protocol, and a page over HTTPS, where someone the room lets invite then
 //! admits it.
 
+mod actions;
 mod admin;
 mod admissions;
 #[cfg(feature = "agents")]
@@ -50,18 +52,17 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
+pub(crate) use actions::{GovernedPlane, HostRoomActions};
 pub use admin::RoomAdminProtocol;
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
-pub use collaboration::{
-    CollaborationError, GovernanceCompletion, GrantAppAuthorshipRequest, RoomJoinService,
-};
+pub use collaboration::{CollaborationError, GovernanceCompletion, RoomJoinService};
 pub use pages::PreAdmitRequest;
 // The administration wire vocabulary and the device's client, under the
 // daemon's historic paths.
 pub use tilo_relay_session::rooms::{
-    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
-    ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand, RoomReply,
-    RoomSummary, SetMemberRoleRequest,
+    CancelInvitationRequest, GrantAppAuthorshipRequest, IssueInvitationRequest, IssuedInvitation,
+    PendingInvitation, ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError,
+    RoomCommand, RoomReply, RoomSummary, SetMemberRoleRequest,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -101,13 +102,24 @@ struct RoomRecord {
     collaboration: collaboration::CollaborationState,
 }
 
-/// The devices governance lets read a room's channels.
-fn readers(access: &GovernedAccess) -> std::collections::BTreeSet<collab_types::Ed25519PublicKey> {
-    access
-        .member_devices
-        .iter()
-        .map(|device| collab_types::Ed25519PublicKey::from_bytes(*device))
-        .collect()
+/// The devices governance lets read a room's channels: the room's governed
+/// member devices (`access`, as `peer` derived it at `now`), each record's
+/// channel less the devices a Read Deny on that record withholds.
+fn readers(
+    peer: &StatePeer,
+    access: &GovernedAccess,
+    now: SystemTime,
+) -> Result<stewardship::Readers, String> {
+    let key = |device: [u8; 32]| collab_types::Ed25519PublicKey::from_bytes(device);
+    let withheld = peer
+        .withheld_record_readers(now)?
+        .into_iter()
+        .map(|(channel, devices)| (channel, devices.into_iter().map(key).collect()))
+        .collect();
+    Ok(stewardship::Readers::new(
+        access.member_devices.iter().copied().map(key).collect(),
+        withheld,
+    ))
 }
 
 /// The stewards of `room`'s channels, under `dir`, when `authority` (this
@@ -390,6 +402,7 @@ fn prepare_governance(
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<(), String> {
+    peer.reconcile_administrator_grants(key, now)?;
     peer.reconcile_media_governance(key, now)?;
     peer.validate_media_governance_for_publication()
 }
@@ -893,9 +906,13 @@ impl Rooms {
         let workspace_id = room.workspace_id();
         let open = host.workspaces.lock().await.contains_key(&workspace_id);
         if !open {
-            let store =
-                crate::store::WorkspaceStore::open(host.access.state_root(), workspace_id, true)
-                    .map_err(|error| error.to_string())?;
+            let store = crate::store::WorkspaceStore::open_with_payloads(
+                host.access.state_root(),
+                workspace_id,
+                true,
+                host.access.shell_payloads().clone(),
+            )
+            .map_err(|error| error.to_string())?;
             if store
                 .load_snapshot()
                 .map_err(|error| error.to_string())?
@@ -915,6 +932,7 @@ impl Rooms {
         let workspace = crate::workspace_io::get_or_initialize(
             &host.workspaces,
             host.access.state_root().to_path_buf(),
+            host.access.shell_payloads(),
             workspace_id,
             true,
             crate::room_access::AdmissionMode::Governed,
@@ -1110,12 +1128,17 @@ impl Rooms {
                     .remove(room);
                 return Ok(());
             };
-            (
+            let now = SystemTime::now();
+            let room_readers =
+                readers(governed.peer(), &governed.peer().governed_access(now)?, now)?;
+            let taken = (
                 governed.workspace_id(),
                 governed.record.generation,
-                readers(&governed.peer().governed_access(SystemTime::now())?),
+                room_readers,
                 steward,
-            )
+            );
+            drop(governed);
+            taken
         };
         {
             let mut stewardship = steward.channels.lock().await;
@@ -1235,8 +1258,9 @@ impl Rooms {
     /// host queued before them).
     async fn settle(&self, room: &mut GovernedRoom) -> Result<(), String> {
         let host = &self.inner.host;
-        let access: GovernedAccess = room.peer().governed_access(SystemTime::now())?;
-        let readers = readers(&access);
+        let now = SystemTime::now();
+        let access: GovernedAccess = room.peer().governed_access(now)?;
+        let readers = readers(room.peer(), &access, now)?;
         host.access
             .replace(room.workspace_id(), true, access)
             .await

@@ -33,6 +33,42 @@ pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
     CATALOG.t_args(key, args)
 }
 
+/// What `key` says in every language the shell has, whichever one the
+/// desktop speaks: a German desktop still gets "wifi" typed, and an English
+/// one "wlan". Each catalogue's message is a comma-separated list of words
+/// and phrases, returned trimmed and lowercased; a language without the
+/// message adds none. Search matches actions and settings pages by these.
+pub fn words_in_every_locale(key: &str) -> Vec<String> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static WORDS: OnceLock<HashMap<&'static str, Vec<String>>> = OnceLock::new();
+    let words = WORDS.get_or_init(|| {
+        let mut words: HashMap<&'static str, Vec<String>> = HashMap::new();
+        for (_, catalogue) in CATALOG.sources() {
+            for line in catalogue.lines() {
+                let Some((message, value)) = line.split_once(" = ") else {
+                    continue;
+                };
+                if !message.starts_with(KEYWORD_PREFIX) || line.starts_with(char::is_whitespace) {
+                    continue;
+                }
+                words.entry(message).or_default().extend(
+                    value
+                        .split(',')
+                        .map(|word| word.trim().to_lowercase())
+                        .filter(|word| !word.is_empty()),
+                );
+            }
+        }
+        words
+    });
+    words.get(key).cloned().unwrap_or_default()
+}
+
+/// Messages whose value is a list of search words; see
+/// [`words_in_every_locale`].
+pub const KEYWORD_PREFIX: &str = "search-kw-";
+
 /// The desktop's language (BCP 47), for content that is localised outside
 /// the catalogue, such as emoji names.
 pub fn current_locale() -> String {

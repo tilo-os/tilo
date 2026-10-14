@@ -28,7 +28,7 @@ under `web/`. It is reference material only; nothing is ported verbatim.
 | Accessibility | The toolkit's semantic routes projected into an accessible DOM tree; DOM actions invoked the real widget actions. |
 | Clipboard | Text only, and only inside trusted clipboard events. |
 | Fonts | The product fonts from `crates/sdk/ui-core/assets/fonts/manifest.toml`, copied into the bundle with a `fonts.json` (name, bytes, sha256, `browser_startup`). `font-loader.mjs` fetched same-origin, verified hashes, loaded startup fonts before first frame and optional ones on demand. |
-| Images and assets | Host-driven `ImageStore`; a `loadAsset` callback or same-origin fetch; qdoc blobs hash-checked. |
+| Images and assets | Host-driven `ImageStore`; a `loadAsset` callback or same-origin fetch; qdoc blobs hash-checked. The page decodes images with the browser's own decoders (`createImageBitmap`) and hands the module RGBA pixels, so app images need no decoder in the module. Pages a native peer paints still decode their images in the module (`webview::paint`), and the text renderer keeps a PNG decoder for bitmap emoji. |
 | Storage | IndexedDB with strict-durability transactions storing bytes and Automerge actor together, in a dedicated worker. An exclusive Web Lock per profile/device serialised tabs. A write counted as saved only after commit. Failed closes retained custody until `retryPendingRecovery()`. |
 | Identity | Browser-held keys (a Cloud owner root and a device key per Cloud machine) persisted in IndexedDB under Web Locks (`cloud-identity-custody.mjs`). Enrollment went through an injected `CloudEnrollmentAdapter` (`inspect`/`apply` against the Cloud Store); `signCloudMachineMesh` signed machine-link grants inside WASM. |
 | Peer transport | "One browser state owner with authenticated HTTPS delivery; no relay fallback": a long-poll HTTPS carrier (`tilo-delivery-protocol`) authenticated with the peer key. Live presence used a separate channel; media used MoQ over WebTransport. `iroh` was linked for wasm but not used as the state carrier. |
@@ -583,6 +583,7 @@ peer.membership.list(): Promise<{room, name, generation,
   members: [{userPublicKey, name, role, owner, removed}],
   waiting: [{requestId, userPublicKey, devicePublicKey, name, role, requestedAtMs}],
   invitations: [{inviteId, role, expiresAtMs}]}>;
+peer.membership.requests(): Promise<[{requestId, userPublicKey, devicePublicKey, name, role, requestedAtMs}]>;  // waiting only, one request
 peer.membership.admit(requestId) / decline(requestId) / setRole(userPublicKey, role)
   / remove(userPublicKey) / cancelInvitation(inviteId);
 // The rooms the host governs, before the peer is in one (connect again with `room`):
@@ -641,6 +642,8 @@ web desktop offers it to the person as "Set up a machine", typed in or
 filled in from an `install` link (`web/machine-setup.mjs`;
 web-routing.md §6.3). The node must allow the page's origin
 (`--allowed-origin`) for the page to reach its install route.
+The web desktop then makes workspaces on it, invites people into them and
+lets in who asks (`web/workspace-actions.mjs`; web-routing.md §6.4).
 
 Browsers accept a device as a room's governor when its certificate owns
 workspaces (`can_own_workspaces`), so such a node governs and stewards the
@@ -1484,3 +1487,38 @@ cargo run -p tilo-relay --features web -- dev
 # in Cloud, with the user key the host printed
 npm run dev:tilo -- --port 9998 --host-origin https://localhost:9443 --user-public-key <hex>
 ```
+
+## Updating the engine without replacing the desktop SDK
+
+A worktree `tilo-vm swap userspace` assembles the native toolkit and apps in one
+Cargo graph. It does not build Chromium's optional runtime. Browser declares the
+exact engine reference in its signed `optional-runtimes`; a missing engine does
+not become available merely because the nine userspace components were updated.
+
+The Browser's **Install the browser engine** action opens the existing Store
+review for `so.tilo.runtime.chromium`. Store verifies the configured catalogue and
+uses its ordinary installation action. This does not replace Browser or its
+required core SDK.
+
+For an exact required version, the same canonical package flow is available as:
+
+```sh
+app runtime install tilo-runtime/2026.10.4-chromium --repo 'Tilo main'
+```
+
+The repository must already be enabled and pinned. The runtime offer must match
+this machine's architecture, system interfaces, release channel and the exact
+runtime reference. Download size, content hash, package root and publisher checks
+remain in the normal downloader/installer; the inner bundle must satisfy the
+installed immutable runtime-publisher policy. An existing package follows normal
+update, held-version and downgrade admission. No key is granted by this command.
+The installed engine coexists with the core SDK and becomes visible on the next
+Browser launch. No machine reboot is required.
+
+If the exact engine is not offered, this command fails. The maintained
+`Release / Apps` main-only dispatch can publish the engine alone with
+`engine_runtime_only=true`, `architectures=aarch64`, `apps=browser`, and
+`publish=true`. Publication and an installed, verified engine are separate
+prerequisites; an accepted Browser Open is not proof of either.
+
+The Browser's Install engine action opens `tilo-store:runtime/tilo-runtime/2026.10.4-chromium`. Store asks its launcher-issued AppHost capability to resolve that precise runtime from the person's enabled, independently pinned repositories, including retained versions. The ordinary details sheet shows the signed runtime reference and package version. Review installs nothing. The separate Install runtime action binds the selected signed root and uses the same exact-version InstallOffer downloader/installer as other Store packages, with no launch of the engine host. A changed review, missing offer or ambiguous repository selection refuses rather than choosing another runtime. Matching Store and AppHost schema versions must be delivered together.

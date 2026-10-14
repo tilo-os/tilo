@@ -48,7 +48,7 @@ def manifests(root, version, base_url):
         + "".join(entries) + "ManifestType: installer\nManifestVersion: 1.9.0\n",
         "Tilo.Imager.yaml": prefix + "DefaultLocale: en-US\nManifestType: version\nManifestVersion: 1.9.0\n",
         "Tilo.Imager.locale.en-US.yaml": prefix + "PackageLocale: en-US\nPublisher: Tilo Project\n"
-        "PackageName: Tilo Imager\nLicense: AGPL-3.0-only\n"
+        "PackageName: Tilo Installer\nLicense: AGPL-3.0-only\n"
         "ShortDescription: Create and verify customised Tilo installation media.\n"
         f"PackageUrl: {server.scheme}://{server.netloc}/{repository}\n"
         "ManifestType: defaultLocale\nManifestVersion: 1.9.0\n",

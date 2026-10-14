@@ -97,6 +97,7 @@ pub mod display_mode;
 pub mod display_placement;
 pub mod display_scale;
 pub mod display_tools;
+pub mod display_tuning;
 pub mod hardware;
 mod key;
 pub mod keyboard_shortcuts;
@@ -107,6 +108,7 @@ pub mod magnifier;
 pub mod notification_policy;
 pub mod person_displays;
 pub mod personal_dictionary;
+pub mod power;
 pub mod published;
 pub mod roaming_provenance;
 mod section_digest;
@@ -120,8 +122,10 @@ pub use key::{Key, SectionWrite};
 pub use section_digest::SectionDigest;
 pub use session::{SessionPaths, SessionSettings};
 pub use source::{
-    ChangeOrigin, ChangeSignal, ConditionalUpdate, DisplayUpdate, HostDocument, Listener,
-    SectionChange, SettingsSource, install_source, installed_source, merge_section,
+    ChangeOrigin, ChangeSignal, ConditionalUpdate, DeferredFailure, DisplayUpdate, HostDocument,
+    Listener, SectionChange, SettingsSource, defer_writes_on_this_thread, deferred_failure_pending,
+    flush_pending_writes, install_source, installed_source, merge_section, take_deferred_failures,
+    writes_deferred_on_this_thread,
 };
 
 /// The file name under the Tilo config root.
@@ -181,7 +185,7 @@ pub fn load() -> Map<String, Value> {
 }
 
 /// Identifies one version of the settings document, for readers that cache it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SettingsStamp {
     /// The settings file's modification time.
     Modified(std::time::SystemTime),

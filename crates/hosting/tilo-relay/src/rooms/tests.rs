@@ -461,21 +461,24 @@ async fn a_seeded_room_default_record_names_the_default_id() {
     let rooms = relay.rooms().unwrap();
     let created = rooms.create("Seeded default record").await.unwrap();
     let catalogue = tilo_agent_participant::AppCatalogue::native();
-    let record = crate::room_bots::room_record(&catalogue, "so.tilo.notes");
+    // An app that keeps a record per window: one that keeps a room record
+    // seeds its package primary, not the default route.
+    let app = "so.tilo.scratchpad";
+    let record = crate::room_bots::room_record(&catalogue, app);
     assert_eq!(record, ui::record::RecordId::room_default().as_str());
     assert!(
         rooms
-            .prepare_application(&created.room, &cert, &catalogue, "so.tilo.notes", &record)
+            .prepare_application(&created.room, &cert, &catalogue, app, &record)
             .await
             .unwrap()
     );
     let bytes = rooms
-        .record_document(&created.room, "so.tilo.notes", &record)
+        .record_document(&created.room, app, &record)
         .await
         .unwrap()
         .expect("the room holds its default record");
     let doc = automerge::AutoCommit::load(&bytes).unwrap();
-    let kind = catalogue.get("so.tilo.notes").unwrap().record_kind.clone();
+    let kind = catalogue.get(app).unwrap().record_kind.clone();
     assert_eq!(
         ui::record::identity(&doc),
         Some(ui::record::RecordCheckout::new(
@@ -915,6 +918,87 @@ async fn assert_canonical_chat_preparation(
             "preparing again must preserve the actual original document"
         );
     }
+}
+
+/// The room's copy of `record` of `app`, when it has one.
+#[cfg(feature = "agents")]
+async fn room_record(
+    rooms: &Rooms,
+    room: &str,
+    (app, record): (&str, &str),
+) -> Option<automerge::AutoCommit> {
+    let current = rooms.room(room).await.unwrap();
+    let bytes = current.lock().await.peer().document(app, record);
+    bytes.map(|bytes| automerge::AutoCommit::load(&bytes).unwrap())
+}
+
+/// The governor starts a room record no app factory makes, such as the
+/// shared desktop, then changes it in place: the record keeps its graph, an
+/// unchanged pass publishes nothing, and another certificate is refused.
+#[cfg(feature = "agents")]
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Relay::shutdown consumes the relay after the authoring assertions; the suggested subsequent drop would use a moved value"
+)]
+async fn governor_authors_a_room_record_no_factory_makes() {
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
+    const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Shared desktop").await.unwrap();
+    let room = created.room.as_str();
+    let read = || room_record(rooms, room, DESKTOP);
+    let text = |doc: &automerge::AutoCommit| {
+        doc.get(ROOT, "desktop")
+            .unwrap()
+            .unwrap()
+            .0
+            .into_string()
+            .unwrap()
+    };
+    assert!(read().await.is_none());
+    rooms
+        .author_room_record(room, &cert, DESKTOP, |doc| {
+            doc.put(ROOT, "desktop", "first").map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let mut first = read().await.expect("the record was started");
+    assert_eq!(text(&first), "first");
+    rooms
+        .author_room_record(room, &cert, DESKTOP, |_| Ok(()))
+        .await
+        .unwrap();
+    assert_eq!(read().await.unwrap().get_heads(), first.get_heads());
+    rooms
+        .author_room_record(room, &cert, DESKTOP, |doc| {
+            doc.put(ROOT, "desktop", "second")
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let second = read().await.unwrap();
+    assert_eq!(text(&second), "second");
+    let first_head = first.get_heads()[0];
+    assert!(
+        second.get_change_by_hash(&first_head).is_some(),
+        "the record keeps its graph"
+    );
+    let mut different = cert.clone();
+    different.device_label = "different current certificate".into();
+    sign_device_cert(&mut different, &SigningKey::from_bytes(&[1; 32])).unwrap();
+    assert!(
+        rooms
+            .author_room_record::<()>(room, &different, DESKTOP, |_| {
+                panic!("another certificate must never reach the change")
+            })
+            .await
+            .is_err()
+    );
+    relay.shutdown().await;
 }
 
 #[cfg(feature = "agents")]
