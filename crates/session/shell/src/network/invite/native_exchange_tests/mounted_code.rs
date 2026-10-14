@@ -173,6 +173,7 @@ struct Mounted {
     acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
     idle_reads: Option<Arc<idle_reads::Counter>>,
     active_reads: Option<Arc<active_reads::Meter>>,
+    wakes: Option<tokio::sync::mpsc::UnboundedReceiver<ui::WakeEvent>>,
 }
 
 impl Mounted {
@@ -224,7 +225,7 @@ impl Mounted {
             ))
             .await
             .unwrap();
-        let code = cold_code::mount_with_network_and_reads(
+        let mut code = cold_code::mount_with_network_and_reads(
             &device.owner,
             &device.identity,
             profile,
@@ -235,6 +236,17 @@ impl Mounted {
                 .or_else(|| idle_reads.as_ref().map(idle_reads::Counter::wrapper))
                 .or_else(|| active_reads.as_ref().map(active_reads::Meter::wrapper)),
         );
+        let wakes = if idle_reads.is_some() {
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            code.app
+                .controlled_bind_wakes_for_test(move |event| {
+                    let _ = sender.send(event);
+                })
+                .unwrap();
+            Some(receiver)
+        } else {
+            None
+        };
         Self {
             code,
             network,
@@ -242,6 +254,38 @@ impl Mounted {
             acknowledgement_gate,
             idle_reads,
             active_reads,
+            wakes,
+        }
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "mounted UI roots use Rc and run on their owning thread"
+    )]
+    async fn shown(&mut self, body: &str) {
+        loop {
+            self.frame();
+            assert!(self.code.app.collaboration_is_connected());
+            let phase = blocked_read::phase(self);
+            if self.has_body(body)
+                && phase["committed_read_ready"] == true
+                && phase["merge_ready"] == true
+                && phase["pending_remote"] == false
+                && phase["committed_queue"] == 0
+            {
+                return;
+            }
+            let event = self
+                .wakes
+                .as_mut()
+                .expect("the measured mount binds its actual wake source")
+                .recv()
+                .await
+                .expect("the original mounted owner must retain its wake source");
+            assert!(
+                self.code.app.controlled_accept_wake_for_test(&event),
+                "the original mounted owner must accept its scheduled wake"
+            );
         }
     }
 
@@ -298,6 +342,7 @@ impl Mounted {
             acknowledgement_gate: _,
             idle_reads: _,
             active_reads: _,
+            wakes: _,
         } = self;
         drop(code);
         async move {

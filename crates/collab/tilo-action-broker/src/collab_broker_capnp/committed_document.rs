@@ -102,6 +102,11 @@ pub enum NativeDocumentRead {
     },
 }
 pub trait NativeDocumentReads: Send + Sync {
+    /// Observe the scheduling decision of a genuine held read without changing it.
+    #[cfg(feature = "test-support")]
+    fn observe_held_wait(&self, context: &NativeDocumentReadContext, announced: bool) {
+        let _ = (context, announced);
+    }
     /// Durable native installation obligation, independent of runtime health.
     fn requires_room(&self, room: &str) -> bool;
     /// Prepare only a missing record for a live, original-package-attested
@@ -877,7 +882,10 @@ impl CapnpChannelHandle {
             &self.route().cluster_id,
             known_revision,
         )?;
-        Some(self.register_read_expiry(&context, service.as_ref()))
+        let announced = self.register_read_expiry(&context, service.as_ref());
+        #[cfg(feature = "test-support")]
+        service.observe_held_wait(&context, announced);
+        Some(announced)
     }
 
     /// Register with [`tilo_identity_host::policy_change::wake_at`] the first

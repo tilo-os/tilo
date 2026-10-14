@@ -79,6 +79,24 @@ impl super::App {
         self.pump_hosted_model_as(false).synced
     }
 
+    /// Bind the ordinary owner wake source for a headless mounted host.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn controlled_bind_wakes_for_test(
+        &mut self,
+        sink: impl Fn(crate::WakeEvent) + Send + Sync + 'static,
+    ) -> Result<(), crate::WakeBindError> {
+        self.wake_scope
+            .as_mut()
+            .ok_or(crate::WakeBindError::Closed)?
+            .bind(sink)
+    }
+
+    /// Accept a scheduled wake using the same generation check as the runner.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn controlled_accept_wake_for_test(&mut self, event: &crate::WakeEvent) -> bool {
+        self.accept_wake(event)
+    }
+
     /// Read the same state observer used around scheduled native inputs.
     #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub fn controlled_native_input_snapshot_for_test(&self) -> Option<serde_json::Value> {

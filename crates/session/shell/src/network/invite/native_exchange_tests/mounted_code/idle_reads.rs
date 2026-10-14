@@ -1,4 +1,4 @@
-//! The idle measurement for a shared workspace: a mounted app showing a
+//! Deterministic idle work for a shared workspace: a mounted app showing a
 //! shared document nobody edits asks the document owner nothing.
 //!
 //! Before the reader waited for changes it re-Opened its committed read
@@ -9,17 +9,16 @@
 //! The test process has no identity directory, so the broker cannot rely on
 //! being told when an identity file changes and re-checks a held wait every
 //! 200 ms. A second journey runs in a child process given identity
-//! directories to watch, as a session has, and measures that the broker
-//! then checks only when something announces a change.
+//! directories to watch, as a session has. Every file-event batch must reach
+//! the held reader, without a capture or a polling timer being scheduled.
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tilo_action_broker::services::{
     HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
 };
 
-/// How long the app is left alone before and while it is measured.
-const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
-const WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+/// Independent file-change/revalidation rendezvous exercised per run.
+const EVENTS: usize = 10;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_idle_shared_document_asks_its_owner_nothing() {
@@ -36,19 +35,8 @@ async fn an_idle_shared_document_asks_its_owner_nothing() {
 const ANNOUNCED_CHILD: &str = "TILO_TEST_IDLE_READS_ANNOUNCED";
 /// With every change announced the broker checks a held read only when told:
 /// once per waiting reader per announcement (the app holds at most this
-/// many reads), plus one for an announcement just before the window. The
-/// unannounced re-check makes five a second per reader with none.
+/// many reads). The unannounced fallback additionally schedules timed checks.
 const CHECKS_PER_ANNOUNCEMENT: usize = 4;
-/// Blocking wakeups per second of the broker's thread while its readers
-/// idle with every change announced and nothing announces: 0.2 measured
-/// (focused runs 101274, 101558), 1.4 in whole-shard runs with no checks and
-/// no captures (main runs 104884, 104917; PR run 104858); 21-24 on the
-/// unannounced re-check. Three a second still fails that re-check by 7x.
-const ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET: u32 = 3;
-/// What one announcement may add to them: each waiting reader's check and
-/// the broker's answer to it (about 8 measured, focused run 101557).
-const BROKER_WAKEUPS_PER_ANNOUNCEMENT: u32 = 10;
-
 /// The same idle journey with identity directories to watch, in a child
 /// process so its environment is its own: the broker holds each reader's
 /// wait without a clock and checks only on announcements.
@@ -100,6 +88,10 @@ pub(super) struct Counter {
     /// Reads answered with the whole document, and with only changes.
     whole: AtomicUsize,
     changes: AtomicUsize,
+    waits: AtomicUsize,
+    clocked_waits: AtomicUsize,
+    file_events: std::sync::atomic::AtomicU64,
+    observed: tokio::sync::Notify,
 }
 impl Counter {
     pub(super) fn new() -> Arc<Self> {
@@ -144,6 +136,18 @@ struct Reads {
     counter: Arc<Counter>,
 }
 impl NativeDocumentReads for Reads {
+    fn observe_held_wait(&self, context: &NativeDocumentReadContext, announced: bool) {
+        self.inner.observe_held_wait(context, announced);
+        self.counter.waits.fetch_add(1, Ordering::AcqRel);
+        if !announced {
+            self.counter.clocked_waits.fetch_add(1, Ordering::AcqRel);
+        }
+        self.counter.file_events.fetch_max(
+            tilo_identity_host::policy_change::identity_file_events(),
+            Ordering::AcqRel,
+        );
+        self.counter.observed.notify_one();
+    }
     fn requires_room(&self, room: &str) -> bool {
         self.inner.requires_room(room)
     }
@@ -175,6 +179,7 @@ impl NativeDocumentReads for Reads {
         self.counter.captures.fetch_add(1, Ordering::AcqRel);
         let read = self.inner.capture(context, revision, maximum)?;
         self.counter.count(&read);
+        self.counter.observed.notify_one();
         Ok(read)
     }
     fn capture_since(
@@ -186,6 +191,7 @@ impl NativeDocumentReads for Reads {
         self.counter.captures.fetch_add(1, Ordering::AcqRel);
         let read = self.inner.capture_since(context, held, maximum)?;
         self.counter.count(&read);
+        self.counter.observed.notify_one();
         Ok(read)
     }
     fn unchanged(
@@ -205,8 +211,8 @@ impl NativeDocumentReads for Reads {
     }
 }
 
-/// Leave the mounted app alone once it shows the shared file, then count
-/// what its readers ask the owner over [`WINDOW`].
+/// Measure the actual broker's work across file-event/revalidation rendezvous,
+/// not an elapsed idle window or Linux scheduler accounting.
 #[expect(
     clippy::future_not_send,
     reason = "mounted UI roots use Rc and run on this test runtime thread"
@@ -216,80 +222,93 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
         .idle_reads
         .clone()
         .expect("the idle journey counts the first mounted app's reads");
-    assert!(
-        mounted.code.app.collaboration_is_connected(),
-        "the mounted app is connected before it idles"
-    );
-    tokio::time::sleep(SETTLE).await;
+    tilo_test_env::within(
+        "the original committed reader to settle",
+        mounted.shown(BODY),
+    )
+    .await;
+    tilo_test_env::within("the original reader to hold its wait", async {
+        let captures = counter.captures.load(Ordering::Acquire);
+        while counter.waits.load(Ordering::Acquire) == 0 {
+            counter.observed.notified().await;
+            assert_eq!(
+                counter.captures.load(Ordering::Acquire),
+                captures,
+                "the settled reader must hold a wait, not repeatedly open its document"
+            );
+        }
+    })
+    .await;
     let (captures, checks) = counter.sample();
     let announcements = tilo_identity_host::policy_change::epoch();
-    // The test process's own threads, sampled from /proc over the window:
-    // the apps' collaboration shovels and the broker are among them.
-    let wakeups = tokio::task::spawn_blocking(|| {
-        tilo_test_env::idle::idle_wakeups(std::process::id(), std::time::Duration::ZERO, WINDOW)
-    })
-    .await
-    .unwrap()
-    .expect("sample the test process's threads");
+    let waits = counter.waits.load(Ordering::Acquire);
+    if announced {
+        assert!(tilo_identity_host::policy_change::timers_reliable());
+        assert!(tilo_identity_host::policy_change::identity_files_watched());
+        // Only the child owns these directories. No identity contents are
+        // fabricated or revoked; the production watcher observes file writes.
+        let root = std::path::PathBuf::from(std::env::var_os("TILO_IDENTITY_ROOT").unwrap());
+        for event in 0..EVENTS {
+            let before = tilo_identity_host::policy_change::identity_file_events();
+            std::fs::write(
+                root.join("peers").join("idle-read-watch-probe"),
+                event.to_string(),
+            )
+            .unwrap();
+            tilo_test_env::within(
+                "the file watcher and held reader to process the write",
+                async {
+                    while counter.file_events.load(Ordering::Acquire) <= before {
+                        counter.observed.notified().await;
+                    }
+                },
+            )
+            .await;
+        }
+    } else {
+        // No file watch is available in this journey. Exercise each genuine
+        // announcement and wait for its broker check, without advancing time.
+        for _ in 0..EVENTS {
+            let before = counter.waits.load(Ordering::Acquire);
+            tilo_identity_host::policy_change::announce();
+            tilo_test_env::within("the held reader to check an announcement", async {
+                while counter.waits.load(Ordering::Acquire) <= before {
+                    counter.observed.notified().await;
+                }
+            })
+            .await;
+        }
+    }
     let (captures_after, checks_after) = counter.sample();
-    let announcements_seen = tilo_identity_host::policy_change::epoch().wrapping_sub(announcements);
-    let idle_captures = captures_after.saturating_sub(captures);
-    let idle_checks = checks_after.saturating_sub(checks);
-    let seconds = WINDOW.as_secs_f64();
-    let per_second = |count: usize| f64::from(u32::try_from(count).unwrap_or(u32::MAX)) / seconds;
-    let reliable = tilo_identity_host::policy_change::timers_reliable()
-        && tilo_identity_host::policy_change::identity_files_watched();
+    let announced_count =
+        usize::try_from(tilo_identity_host::policy_change::epoch().wrapping_sub(announcements))
+            .unwrap();
+    let idle_captures = captures_after - captures;
+    let idle_checks = checks_after - checks;
+    let held_waits = counter.waits.load(Ordering::Acquire) - waits;
+    let clocked_waits = counter.clocked_waits.load(Ordering::Acquire);
     eprintln!(
-        "IDLE-SHARED-WORKSPACE owner_captures_per_s={:.2} owner_checks_per_s={:.2} announcements_per_s={:.2} reliable_signals={reliable} window_ms={}",
-        per_second(idle_captures),
-        per_second(idle_checks),
-        per_second(usize::try_from(announcements_seen).unwrap_or(usize::MAX)),
-        WINDOW.as_millis(),
-    );
-    let thread = |name: &str| {
-        wakeups.rate(
-            wakeups
-                .rows
-                .iter()
-                .filter(|row| row.thread.starts_with(name))
-                .map(|row| row.voluntary)
-                .sum(),
-        )
-    };
-    let broker_wakeups = thread("tilo-collab-bro");
-    eprintln!(
-        "IDLE-SHARED-WORKSPACE-THREADS shovel_blocking_per_s={:.2} broker_blocking_per_s={:.2}\n{wakeups}",
-        thread("ui-collab-shove"),
-        broker_wakeups,
+        "IDLE-SHARED-WORKSPACE events={EVENTS} captures={idle_captures} checks={idle_checks} announcements={announced_count} held_waits={held_waits} clocked_waits={clocked_waits}"
     );
     assert_eq!(
         idle_captures, 0,
-        "an idle shared document was captured {idle_captures} times in {WINDOW:?} ({idle_checks} cheap checks): is its reader polling again?"
+        "held readers never reopen an unchanged document"
     );
     assert!(
-        mounted.code.app.collaboration_is_connected(),
-        "waiting instead of polling keeps the reader connected"
+        held_waits >= EVENTS,
+        "every event reaches the actual held reader"
     );
     if announced {
-        assert!(
-            reliable,
-            "the announced journey must run with a reliable clock and watched identity files"
+        assert_eq!(
+            clocked_waits, 0,
+            "watched readers never schedule polling rechecks"
         );
-        let announced_count = usize::try_from(announcements_seen).unwrap_or(usize::MAX);
         assert!(
-            idle_checks
-                <= CHECKS_PER_ANNOUNCEMENT
-                    .saturating_mul(announced_count)
-                    .saturating_add(1),
-            "with every change announced the broker checked an idle read {idle_checks} times in {WINDOW:?} for {announced_count} announcements: is it re-checking on a clock?"
-        );
-        let wakeup_budget = f64::from(ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET)
-            + f64::from(BROKER_WAKEUPS_PER_ANNOUNCEMENT) * per_second(announced_count);
-        assert!(
-            broker_wakeups <= wakeup_budget,
-            "the broker thread woke {broker_wakeups:.2} times a second while its readers idled with every change announced ({announced_count} announcements; budget {wakeup_budget:.2}/s)"
+            idle_checks <= CHECKS_PER_ANNOUNCEMENT * announced_count,
+            "each waiting reader checks at most once per actual announcement"
         );
     }
+    assert!(mounted.code.app.collaboration_is_connected());
     changes_reach_the_idle_reader(device, mounted, &counter).await;
 }
 
@@ -305,13 +324,7 @@ async fn changes_reach_the_idle_reader(device: &Device, mounted: &mut Mounted, c
     let edited = format!("{BODY}// committed while the reader waited\n");
     super::blocked_read::commit_edit(device, &owner, BODY, &edited);
     tilo_test_env::within("the committed edit to show in the waiting app", async {
-        loop {
-            mounted.frame();
-            if mounted.has_body(&edited) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        mounted.shown(&edited).await;
     })
     .await;
     let (whole_after, changes_after) = counter.handed();

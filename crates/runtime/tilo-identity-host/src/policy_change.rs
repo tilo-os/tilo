@@ -40,6 +40,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
+static IDENTITY_FILE_EVENTS: AtomicU64 = AtomicU64::new(0);
+
+/// Identity-directory event batches processed by the production watcher.
+/// Unlike the policy epoch, this does not include document or clock changes.
+/// A consumer can use it to identify a revalidation following a file event.
+pub fn identity_file_events() -> u64 {
+    IDENTITY_FILE_EVENTS.load(Ordering::Acquire)
+}
 static WATCHES: Mutex<Vec<Weak<WatchState>>> = Mutex::new(Vec::new());
 
 /// Registered instants kept at most. Every consumer registers its earliest
@@ -440,6 +448,7 @@ mod platform {
                         // A directory created meanwhile is watched from now.
                         self.changed.store(true, Ordering::SeqCst);
                         let _ = self.sync_watches();
+                        super::IDENTITY_FILE_EVENTS.fetch_add(1, Ordering::AcqRel);
                         super::announce();
                     }
                 }
