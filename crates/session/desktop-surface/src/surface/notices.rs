@@ -490,7 +490,7 @@ impl NotificationLayer {
         let height = center
             .fitted_height(
                 self.notifications.host(),
-                self.type_lines,
+                &self.type_lines,
                 width,
                 r.y1 - PANEL_INSET - y0,
             )
@@ -498,7 +498,7 @@ impl NotificationLayer {
         let x1 = r.x1 - PANEL_INSET;
         Some(CenterLayout::new(
             Rect::new(x1 - width, y0, x1, y0 + height),
-            self.type_lines,
+            &self.type_lines,
         ))
     }
 

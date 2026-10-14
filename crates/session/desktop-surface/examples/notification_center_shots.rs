@@ -128,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // As tall as the rows ask within the room, like every host sizes it.
         let height = NotificationCenter::new().fitted_height(
             &host,
-            metrics,
+            &metrics,
             f64::from(width) - 32.0,
             f64::from(HEIGHT) - 32.0,
         );
