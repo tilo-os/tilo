@@ -1,5 +1,6 @@
 //! Markdown typed into a note becomes formatting as its closing delimiter is
-//! typed, stored in the notebook record and kept on reopening.
+//! typed, and contractions typed without an apostrophe get one back at the
+//! word's end: both stored in the notebook record and kept on reopening.
 
 use crate::framework_support::with_note;
 use notes::{PageId, markdown, read};
@@ -70,4 +71,39 @@ fn undo_or_backspace_after_formatting_brings_the_markdown_back() {
         blocks[0].text.starts_with("a **b*") && blocks[0].marks.is_empty(),
         "undo brings the delimiters back unformatted: {blocks:?}"
     );
+}
+
+#[test]
+fn contractions_typed_on_a_keyboard_get_their_apostrophe() {
+    let (mut app, page) = with_note("Autocorrect", "");
+    type_in_body(&mut app, "it doesnt work, cant stop");
+    let app = app.reopen().unwrap();
+    assert_eq!(
+        app.read_document(|doc| read::page_blocks(doc, page))[0].text,
+        "it doesn't work, cant stop"
+    );
+
+    let (mut app, page) = with_note("Revert", "");
+    type_in_body(&mut app, "it doesnt ");
+    app.harness().key("Backspace");
+    assert_eq!(
+        app.read_document(|doc| read::page_blocks(doc, page))[0].text,
+        "it doesnt",
+        "Backspace right after the correction reverts it"
+    );
+
+    let (mut app, page) = with_note("Code", "");
+    type_in_body(&mut app, "```");
+    app.harness().key("Enter");
+    app.harness().type_text("it doesnt work");
+    let blocks = app.read_document(|doc| read::page_blocks(doc, page));
+    assert_eq!(
+        blocks.last().unwrap().text,
+        "it doesnt work",
+        "code is never corrected: {blocks:?}"
+    );
+
+    let (mut app, page) = with_note("Inline code", "");
+    type_in_body(&mut app, "run `doesnt` now");
+    assert_eq!(stored_markdown(&app, page), "run `doesnt` now\n");
 }

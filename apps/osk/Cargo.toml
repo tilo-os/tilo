@@ -26,6 +26,8 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 tilo-input-context = { path = "../../crates/platform/tilo-input-context", features = ["client"] }
 tilo-keyboard-map = { path = "../../crates/platform/tilo-keyboard-map" }
+# The contractions autocorrect restores, shared with every text field.
+tilo-spellcheck = { path = "../../crates/text/spellcheck" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }

@@ -50,35 +50,6 @@ const MIN_CONFIDENCE: f64 = 0.6;
 const MIN_WORD_CHARS: usize = 2;
 /// Words longer than this are left alone (and never indexed).
 const MAX_WORD_CHARS: usize = 32;
-/// Contractions typed without their apostrophe. The lexicon holds no
-/// apostrophes, so these are resolved before the edit-distance search, which
-/// would otherwise pick a spelling neighbour ("dont" -> "done"). Forms that
-/// are words in their own right ("cant", "wont", "ill", "its") are absent.
-const CONTRACTIONS: &[(&str, &str)] = &[
-    ("arent", "aren't"),
-    ("couldnt", "couldn't"),
-    ("didnt", "didn't"),
-    ("doesnt", "doesn't"),
-    ("dont", "don't"),
-    ("hasnt", "hasn't"),
-    ("havent", "haven't"),
-    ("im", "I'm"),
-    ("isnt", "isn't"),
-    ("ive", "I've"),
-    ("shes", "she's"),
-    ("shouldnt", "shouldn't"),
-    ("thats", "that's"),
-    ("theyre", "they're"),
-    ("theyve", "they've"),
-    ("wasnt", "wasn't"),
-    ("werent", "weren't"),
-    ("weve", "we've"),
-    ("whats", "what's"),
-    ("wouldnt", "wouldn't"),
-    ("youre", "you're"),
-    ("youve", "you've"),
-];
-
 /// Bound on remembered kept-as-typed words.
 pub(crate) const MAX_KEPT_WORDS: usize = 1_024;
 
@@ -278,8 +249,11 @@ impl Autocorrector {
             return None;
         }
         let typed_idx = self.known.get(&lower).copied();
+        // The lexicon holds no apostrophes: a contraction typed without one
+        // is resolved before the edit-distance search, which would pick a
+        // spelling neighbour ("dont" -> "done").
         if typed_idx.is_none()
-            && let Some(&(_, full)) = CONTRACTIONS.iter().find(|(bare, _)| *bare == lower)
+            && let Some(full) = spellcheck::contraction(&lower)
         {
             return Some(match_case(typed, full));
         }

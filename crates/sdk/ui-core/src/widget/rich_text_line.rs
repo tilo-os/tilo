@@ -30,6 +30,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::TokenKind;
+use crate::widget::markdown_input;
 use crate::widget::marks::{self, Mark, MarkSegment, MarkSpan, PageId};
 use crate::widget::{TextInput, Widget};
 
@@ -301,6 +302,30 @@ impl RichTextLine {
                         && span.range.start < caret
                         && caret <= span.range.end
                 }))
+    }
+
+    /// Whether `event` types the backtick that closes inline code.
+    fn closes_inline_code(&self, event: &WindowEvent) -> bool {
+        let typed = match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        text: Some(text),
+                        ..
+                    },
+                ..
+            } => text.as_str(),
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => text.as_str(),
+            _ => return false,
+        };
+        if !self.inline_formatting || !typed.ends_with('`') {
+            return false;
+        }
+        let text = self.inner.value();
+        text.get(..self.inner.cursor_pos().min(text.len()))
+            .and_then(|head| markdown_input::detect_inline(&format!("{head}{typed}")))
+            .is_some_and(|found| found.kind == markdown_input::InlineKind::Code)
     }
 
     pub fn set_wrap(&mut self, wrap: bool) {
@@ -1281,6 +1306,10 @@ impl Widget for RichTextLine {
             }
         }
 
+        // A word typed in inline code is code: it is never autocorrected,
+        // nor is the word a typed backtick closes into code.
+        let in_code = self.caret_in_code() || self.closes_inline_code(event);
+        self.inner.set_autocorrect(in_code.then_some(false));
         self.inner.handle_event(event, ctx);
 
         // Reconcile marks against any text edit using byte-deltas from the previous snapshot.
