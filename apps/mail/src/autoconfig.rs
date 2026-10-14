@@ -509,24 +509,66 @@ async fn discover_candidates(email: &str, urls: Vec<String>, dns: bool) -> Optio
         .user_agent("Tilo Mail")
         .build()
         .ok()?;
-    // Every lookup starts at once; the answers are read in priority order, so
-    // the first that has a configuration wins without waiting for the rest.
-    // Dropping the stream (cancellation, a win) closes the other requests.
+    // Every lookup starts at once and the answers are taken in priority
+    // order. A configuration found further down the list waits for the
+    // lookups ranked above it, but only as long again as it took itself (at
+    // least PREFERENCE_GRACE): a domain whose autoconfig host or web server
+    // silently drops connections otherwise held setup for the whole lookup
+    // timeout after the Thunderbird database had answered.
+    // Dropping the lookups (cancellation, a win) closes their requests.
     let sources = urls.into_iter().map(Source::Url).chain(
         dns.then_some([Source::Srv, Source::Mx])
             .into_iter()
             .flatten(),
     );
-    let mut lookups: futures_util::stream::FuturesOrdered<_> = sources
-        .map(|source| resolve(&client, domain, source))
+    let started = tokio::time::Instant::now();
+    let mut lookups: futures_util::stream::FuturesUnordered<_> = sources
+        .enumerate()
+        .map(|(rank, source)| {
+            let client = &client;
+            async move { (rank, resolve(client, domain, source).await) }
+        })
         .collect();
-    while let Some(found) = lookups.next().await {
-        if found.is_some() {
-            return found;
+    let mut answers: Vec<Option<Option<Autoconfig>>> = (0..lookups.len()).map(|_| None).collect();
+    let mut deadline = None;
+    loop {
+        let waiting = answers.iter().position(Option::is_none);
+        let best = answers
+            .iter()
+            .position(|answer| matches!(answer, Some(Some(_))));
+        match (best, waiting) {
+            (Some(best), waiting) if waiting.is_none_or(|waiting| waiting > best) => {
+                return answers.get_mut(best)?.take().flatten();
+            }
+            (None, None) => return None,
+            _ => {}
+        }
+        if best.is_some() && deadline.is_none() {
+            let now = tokio::time::Instant::now();
+            deadline = now.checked_add(now.duration_since(started).max(PREFERENCE_GRACE));
+        }
+        let until = deadline
+            .or_else(|| started.checked_add(DISCOVERY_TIMEOUT))
+            .unwrap_or(started);
+        tokio::select! {
+            answered = lookups.next() => {
+                let (rank, found) = answered?;
+                if let Some(answer) = answers.get_mut(rank) {
+                    *answer = Some(found);
+                }
+            }
+            () = tokio::time::sleep_until(until) => {
+                // The lookups ranked higher had their chance: take the best.
+                return best.and_then(|best| answers.get_mut(best)?.take().flatten());
+            }
         }
     }
-    None
 }
+
+/// The least a found configuration waits for better-ranked lookups still
+/// running: the stagger RFC 8305 gives a connection attempt.
+#[cfg(feature = "live")]
+const PREFERENCE_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[cfg(feature = "live")]
 async fn resolve(client: &reqwest::Client, domain: &str, source: Source) -> Option<Autoconfig> {
@@ -721,6 +763,76 @@ mod tests {
                 .expect("cancellation closes the request socket");
             worker.join().unwrap();
         }
+    }
+
+    /// The domain's own autoconfig host takes connections and never answers;
+    /// the Thunderbird database answers at once. Setup takes the database's
+    /// answer after a short wait for the better-ranked one, not the whole
+    /// lookup timeout. A better-ranked answer that is merely slower still
+    /// wins.
+    #[cfg(feature = "live")]
+    #[test]
+    fn a_silent_autoconfig_host_does_not_hold_up_discovery() {
+        use std::io::{Read as _, Write as _};
+
+        fn serve(xml: Option<&'static str>, delay: std::time::Duration) -> String {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/config.xml", listener.local_addr().unwrap());
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { return };
+                    std::thread::spawn(move || {
+                        let mut request = [0; 4096];
+                        let _ = stream.read(&mut request);
+                        let Some(xml) = xml else {
+                            // Silent: hold the connection open, answer nothing.
+                            std::thread::sleep(std::time::Duration::from_secs(30));
+                            return;
+                        };
+                        std::thread::sleep(delay);
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{xml}",
+                            xml.len()
+                        );
+                    });
+                }
+            });
+            url
+        }
+        let other = SAMPLE.replace("imap.example.com", "imap.other.example");
+        let other: &'static str = Box::leak(other.into_boxed_str());
+        let never = std::sync::atomic::AtomicBool::new(false);
+
+        let started = std::time::Instant::now();
+        let found = discover_with_urls(
+            "me@custom.invalid",
+            &never,
+            vec![
+                serve(None, std::time::Duration::ZERO),
+                serve(Some(other), std::time::Duration::ZERO),
+            ],
+            false,
+        )
+        .expect("the database's answer");
+        let waited = started.elapsed();
+        assert_eq!(found.imap_host, "imap.other.example");
+        assert!(
+            waited < LOOKUP_TIMEOUT / 2,
+            "a silent autoconfig host held discovery for {waited:?}"
+        );
+
+        let found = discover_with_urls(
+            "me@custom.invalid",
+            &never,
+            vec![
+                serve(Some(SAMPLE), std::time::Duration::from_millis(100)),
+                serve(Some(other), std::time::Duration::ZERO),
+            ],
+            false,
+        )
+        .expect("the provider's answer");
+        assert_eq!(found.imap_host, "imap.example.com");
     }
 
     #[test]
