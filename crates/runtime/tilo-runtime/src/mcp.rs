@@ -1906,12 +1906,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .invocation_id
             .as_deref()
             .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
-        let mut wait =
+        let wait =
             std::time::Duration::from_millis(a.wait_ms.unwrap_or(DEFAULT_WAIT_MS).min(MAX_WAIT_MS));
-        if launching.is_some() {
-            // The host answers once the instance it started is up.
-            wait = wait.max(LAUNCH_WAIT);
-        }
+        // A launch is answered once the instance it started is up.
+        let wait = launching.as_ref().map_or(wait, |_| wait.max(LAUNCH_WAIT));
         let mut target = RemoteActionTarget {
             provider,
             address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
@@ -1969,6 +1967,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
             return Ok(value);
         }
+        self.answer_open(&mut value, &app_id, path, wait).await;
+        Ok(value)
+    }
+    /// Complete an `open` of `app_id`'s answer `value` with the instance it
+    /// started: the file at `path` opened in it, its directory and the
+    /// file's first page.
+    async fn answer_open(
+        &self,
+        value: &mut Value,
+        app_id: &str,
+        path: Option<String>,
+        wait: std::time::Duration,
+    ) {
         // The instance the host started, as it names it. A host that names
         // none (one older than this answer, or one that could not tell
         // which instance it started) leaves the caller to list them rather
@@ -1977,21 +1988,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .pointer(OPENED_PEER)
             .and_then(Value::as_u64)
             .inspect(|peer| {
-                self.seen().insert(*peer, Some(app_id.clone()));
+                self.seen().insert(*peer, Some(app_id.to_owned()));
             });
-        self.answer_open(&mut value, peer, path, wait).await;
-        Ok(value)
-    }
-    /// Complete an `open`'s answer `value` with the instance `peer` it
-    /// started: the file at `path` opened in it, its directory and the
-    /// file's first page.
-    async fn answer_open(
-        &self,
-        value: &mut Value,
-        peer: Option<u64>,
-        path: Option<String>,
-        wait: std::time::Duration,
-    ) {
         let opened = match (peer, path) {
             (Some(peer), Some(path)) => Some(self.open_path(peer, &path, wait).await),
             (None, Some(_)) => Some(json!({"error":OPENED_NO_PEER})),
