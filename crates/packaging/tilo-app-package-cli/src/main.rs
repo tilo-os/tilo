@@ -726,9 +726,8 @@ fn cmd_compress(file: &Path, output: Option<&Path>) -> Result<()> {
         },
         Path::to_path_buf,
     );
-    let temp = output.with_extension(format!("zst.tmp.{}", std::process::id()));
-    std::fs::write(&temp, &twin).with_context(|| format!("write {}", temp.display()))?;
-    std::fs::rename(&temp, &output).with_context(|| format!("write {}", output.display()))?;
+    tilo_files::native::atomic::write(&output, &twin)
+        .with_context(|| format!("write {}", output.display()))?;
     eprintln!(
         "compressed {} -> {}: {} -> {} bytes",
         file.display(),
