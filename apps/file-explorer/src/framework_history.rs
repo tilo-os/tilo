@@ -349,7 +349,7 @@ mod tests {
     fn history_writes_repeat_while_content_hydrates() {
         // --- phase: repeats_until_the_content_is_local ---
         {
-            let mut calls = 0;
+            let mut calls = 0_u32;
             let result = write_until_hydrated(Duration::from_secs(30), || {
                 calls = calls.saturating_add(1);
                 if calls < 3 {
@@ -363,7 +363,7 @@ mod tests {
         }
         // --- phase: other_answers_return_at_once ---
         {
-            let mut calls = 0;
+            let mut calls = 0_u32;
             let result = write_until_hydrated(Duration::from_secs(30), || {
                 calls = calls.saturating_add(1);
                 Err(ErrorCode::Busy.into_io_error())
