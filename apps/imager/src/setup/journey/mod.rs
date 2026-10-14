@@ -1077,6 +1077,9 @@ impl InstallerPreview {
                     | InstallerPreviewEffect::ContinuePreview
                     | InstallerPreviewEffect::BackInPreview
                     | InstallerPreviewEffect::CheckStorage
+                    // Read-only discovery does not export or grant access to
+                    // the retained preparation being edited.
+                    | InstallerPreviewEffect::CheckBelongings
                     | InstallerPreviewEffect::ToggleStorageDetails
                     | InstallerPreviewEffect::SetStorageSize { .. }
                     | InstallerPreviewEffect::SetPreviewDeviceName { .. }
@@ -1776,18 +1779,6 @@ impl InstallerPreview {
                     }
                     self.avatar = None;
                 }
-                if self.live
-                    && page == Page::Migration
-                    && choice == "migrate"
-                    && !choices_edit
-                    && self.belongings_worker.is_none()
-                {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    self.belongings_worker = Some(rx);
-                    std::thread::spawn(move || {
-                        let _ = tx.send(belongings::Belongings::discover());
-                    });
-                }
             }
             InstallerPreviewEffect::CheckBelongings
                 if page == Page::Belongings
@@ -2068,18 +2059,6 @@ impl InstallerPreview {
                     while self.journey.page != Page::Belongings {
                         self.journey.back()?;
                     }
-                }
-                #[cfg(unix)]
-                if self.live
-                    && page == Page::Devices
-                    && self.journey.page == Page::Belongings
-                    && self.resume_draft.is_some()
-                    && self.belongings.roots.is_none()
-                    && self.belongings_worker.is_none()
-                {
-                    // Restored choices carry no source authority. Discover
-                    // current metadata again; importing still needs fresh consent.
-                    self.apply(InstallerPreviewEffect::CheckBelongings)?;
                 }
             }
             InstallerPreviewEffect::EditPreview { section } => {
@@ -3549,6 +3528,17 @@ impl InstallerPreview {
             }
             // Back visits only pages with choices in the current live route.
             self.journey.history.retain(|page| *page != Page::Storage);
+        }
+        if self.live
+            && self.journey.page == Page::Belongings
+            && self.journey.migrate == Some(true)
+            && self.belongings.roots.is_none()
+            && self.belongings_worker.is_none()
+        {
+            // Choosing migration is a direction, not a reason to inspect Home
+            // and account stores before the person finishes their identity.
+            // Resumed choices also need fresh discovery, never restored grants.
+            self.apply(InstallerPreviewEffect::CheckBelongings)?;
         }
         Ok(())
     }

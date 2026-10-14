@@ -1310,6 +1310,133 @@ fn destination_discloses_usb_route_before_personal_setup() {
 }
 
 #[test]
+fn live_migration_choice_does_not_inspect_sources_before_profile() {
+    let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.stage(Some("installer-migration"));
+        preview.restart = restart_controller::Restart::default();
+        preview.live = true;
+        preview.capabilities.prepared_installation = true;
+        preview.journey.identity = None;
+        preview.journey.name.clear();
+        preview.belongings = belongings::Belongings::default();
+        preview.dirty = true;
+    })
+    .unwrap();
+    app.settle();
+    app.effect(&InstallerPreviewEffect::ChoosePreview {
+        choice: "migrate".into(),
+    })
+    .unwrap();
+    app.effect(&InstallerPreviewEffect::ContinuePreview)
+        .unwrap();
+    app.effect(&InstallerPreviewEffect::ChoosePreview {
+        choice: "new".into(),
+    })
+    .unwrap();
+    app.effect(&InstallerPreviewEffect::ContinuePreview)
+        .unwrap();
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        assert_eq!(preview.journey.page, Page::Profile);
+        assert!(
+            preview.belongings_worker.is_none(),
+            "inventory must not race identity setup"
+        );
+        assert!(preview.belongings.home.is_none());
+        assert!(preview.belongings.roots.is_none());
+        assert!(preview.belongings.accounts.candidates.is_empty());
+    })
+    .unwrap();
+    assert!(
+        app.effect(&InstallerPreviewEffect::CheckBelongings)
+            .is_err()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
+    let fixture = tempfile::tempdir().unwrap();
+    let home = fixture.path().join("home");
+    let config = home.join(".config");
+    std::fs::create_dir_all(config.join("Nextcloud")).unwrap();
+    std::fs::write(
+        config.join("Nextcloud/nextcloud.cfg"),
+        r"[Accounts]
+0\url=https://cloud.example
+0\http_user=ada
+0\authType=http
+",
+    )
+    .unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", &home);
+    env.set("XDG_CONFIG_HOME", &config);
+    for edit in [false, true] {
+        let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.stage(Some("installer-purpose"));
+            preview.restart = restart_controller::Restart::default();
+            preview.live = true;
+            preview.capabilities.prepared_installation = true;
+            preview.journey.destination = Some(Destination::Another);
+            preview.belongings = belongings::Belongings::default();
+            if edit {
+                preview.journey.page = Page::Review;
+                preview.journey.migrate = Some(false);
+                preview.journey.edit("belongings").unwrap();
+            }
+            preview.dirty = true;
+        })
+        .unwrap();
+        app.settle();
+        if edit {
+            app.effect(&InstallerPreviewEffect::ChoosePreview {
+                choice: "migrate".into(),
+            })
+            .unwrap();
+        }
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert_eq!(preview.journey.page, Page::Belongings);
+            assert!(preview.belongings_worker.is_some());
+        })
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            app.settle();
+            let checking = app
+                .with_widget::<InstallerPreview, _>(|preview| preview.belongings_worker.is_some())
+                .unwrap();
+            if !checking {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "metadata discovery did not finish"
+            );
+            std::thread::yield_now();
+        }
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert_eq!(preview.belongings.home.as_ref(), Some(&home));
+            assert!(preview.belongings.roots.is_some());
+            assert!(
+                preview
+                    .belongings
+                    .accounts
+                    .candidates
+                    .iter()
+                    .any(|account| {
+                        account.provider == super::super::account_transfer::Provider::Nextcloud
+                    })
+            );
+        })
+        .unwrap();
+    }
+}
+
+#[test]
 fn profile_explains_optional_picture_and_keeps_name_before_data_access() {
     let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
