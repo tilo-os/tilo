@@ -18,6 +18,7 @@ mod spatial_protocol;
 mod spatial_revocation_tests;
 mod spatial_withdrawal;
 mod window_views;
+pub(crate) mod worker;
 
 pub use window_views::{WindowViewer, publish_window_views, window_viewers};
 
@@ -1616,7 +1617,72 @@ pub struct LocalFabricCapabilities {
     pub audio_output: bool,
 }
 
-/// Stateful, low-frequency fabric pump owned by the native compositor loop.
+/// What the compositor hands the fabric pump each turn.
+pub(crate) struct FabricTurn {
+    pub selection: SharedSelection,
+    pub local: LocalFabricCapabilities,
+    pub app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+    pub realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
+    pub remote_capture: Option<crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime>,
+}
+
+/// A [`DeviceFabricRuntime`] with the network it pumps against.
+struct NetworkFabricPump {
+    runtime: DeviceFabricRuntime,
+    network: Arc<ShellNetwork>,
+}
+
+impl worker::FabricPump for NetworkFabricPump {
+    type Facts = FabricTurn;
+
+    fn pump(&mut self, turn: FabricTurn) {
+        if let Some(adapter) = turn.realtime_adapter {
+            self.runtime.set_realtime_adapter(adapter);
+        }
+        if let Some(remote_capture) = turn.remote_capture {
+            self.runtime.set_remote_capture_runtime(remote_capture);
+        }
+        self.runtime.set_local_app_focus(turn.app_focus);
+        self.runtime
+            .pump(&self.network, &turn.selection, turn.local);
+    }
+}
+
+/// Run `runtime` off the compositor thread (see [`worker`]). After each run
+/// that left spatial input or nearby-drop news for the compositor, its loop
+/// is woken to pick them up.
+///
+/// # Errors
+///
+/// The OS error when the thread cannot be started.
+pub(crate) fn spawn_worker(
+    runtime: DeviceFabricRuntime,
+    network: Arc<ShellNetwork>,
+) -> std::io::Result<worker::FabricWorker<FabricTurn>> {
+    let wake = network.loop_waker();
+    worker::FabricWorker::spawn(
+        "device-fabric",
+        NetworkFabricPump { runtime, network },
+        move || {
+            if fabric_output_pending() {
+                wake();
+            }
+        },
+    )
+}
+
+/// Whether the fabric left anything the compositor's loop consumes.
+fn fabric_output_pending() -> bool {
+    nearby_drop_state()
+        .lock()
+        .is_ok_and(|state| !state.events.is_empty())
+        || spatial_input_state().lock().is_ok_and(|spatial| {
+            !spatial.release_controllers.is_empty() || !spatial.inbound.is_empty()
+        })
+}
+
+/// Stateful, low-frequency fabric pump; the native compositor runs it on a
+/// thread of its own ([`spawn_worker`]).
 pub struct DeviceFabricRuntime {
     counter: u64,
     last_sample: Option<Instant>,
