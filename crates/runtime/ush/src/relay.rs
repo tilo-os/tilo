@@ -112,9 +112,8 @@ pub fn relays_with_offers(
     user: &[u8; 32],
     offers: &tilo_relay_protocol::RelayOffers,
 ) -> Vec<RelayPeer> {
-    let readable = std::fs::metadata(path).is_ok_and(|meta| meta.len() <= MAX_REGISTRY_BYTES);
-    let Some(registrations) = readable
-        .then(|| std::fs::read(path).ok())
+    let Some(registrations) = tilo_files::native::bounded::read(path, MAX_REGISTRY_BYTES)
+        .ok()
         .flatten()
         .and_then(|bytes| serde_json::from_slice::<Vec<Registration>>(&bytes).ok())
     else {

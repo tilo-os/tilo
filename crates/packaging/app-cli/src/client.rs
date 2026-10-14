@@ -120,13 +120,24 @@ struct SnapshotCheckpoint {
     snapshot_hash_hex: String,
 }
 
-fn client() -> Result<reqwest::blocking::Client, RegistryError> {
-    tilo_net::http::blocking_client()
-        .user_agent("app/0.1")
-        .timeout(http_timeout())
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| RegistryError::Http(e.to_string()))
+/// The process's one registry client, so the requests of a run share its
+/// connection pool instead of each paying a new TCP and TLS handshake. Its
+/// timeout ([`http_timeout`]) bounds each step of a request, not the whole
+/// transfer.
+fn client() -> Result<&'static reqwest::blocking::Client, RegistryError> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::blocking::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            tilo_net::http::blocking_client()
+                .user_agent("app/0.1")
+                .timeout(http_timeout())
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| RegistryError::Http(e.clone()))
 }
 
 /// Fetch and parse informational registry metadata, rejecting an owner identity
@@ -249,6 +260,22 @@ pub fn fetch_all_versions(
     package_id: &str,
 ) -> Result<VerifiedEntry, RegistryError> {
     let snapshot = fetch_snapshot(reg)?;
+    all_versions_in(reg, &snapshot, package_id)
+}
+
+/// [`fetch_all_versions`] from a snapshot the caller already fetched and
+/// verified, so asking about several packages downloads, verifies and
+/// checkpoints the snapshot once instead of once per package.
+///
+/// # Errors
+///
+/// Returns an error when the package is not listed in `snapshot`, or when the
+/// version index cannot be fetched or is not the one the snapshot signs.
+pub fn all_versions_in(
+    reg: &RegistryConfig,
+    snapshot: &CatalogueSnapshot,
+    package_id: &str,
+) -> Result<VerifiedEntry, RegistryError> {
     let listed = snapshot
         .entries()
         .into_iter()

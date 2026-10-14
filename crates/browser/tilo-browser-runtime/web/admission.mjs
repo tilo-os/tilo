@@ -13,7 +13,10 @@
  * 4. a host whose listed workspace has an admission door (`workspaces.mjs`)
  *    admits this browser's person at once; a link that names a room there
  *    is followed only if that is the room the person was admitted to;
- * 5. anyone else is told they have no access and who can invite them.
+ * 5. a host this browser set up for its person, or joined as them through
+ *    an invitation, is reconnected to with the root the page holds
+ *    (`reconnect`); the host decides whether that person is in the room;
+ * 6. anyone else is told they have no access and who can invite them.
  * A scope without a room (the web host's home workspace, whose room the
  * page learns on admission) can only be entered through its host's door.
  * A link never grants anything: each step is the room's own door. A failure
@@ -84,7 +87,15 @@ export async function admit({scope, secrets = {}, tickets, deps, onProgress = ()
   const accounts = await deps.readAccounts(origin);
   if (!accounts.length) {
     if (listed?.admission) return viaHost({workspace: listed, room, deps, onProgress});
-    throw new AdmissionError('no-access', NO_ACCESS);
+    let peer = null;
+    try {
+      peer = await deps.reconnect?.({origin, room, onProgress});
+    } catch (error) {
+      // As below: the host's reason could tell a missing room from a private one.
+      console.warn('admission: reconnecting failed', error?.code ?? error?.name ?? 'error');
+    }
+    if (!peer) throw new AdmissionError('no-access', NO_ACCESS);
+    return ready(peer);
   }
   const account = accounts.length === 1 ? accounts[0] : await deps.chooseAccount(accounts);
   onProgress({phase: 'connecting'});

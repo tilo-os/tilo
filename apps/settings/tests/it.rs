@@ -101,8 +101,16 @@ mod composition_balance;
 #[path = "alignment_review.rs"]
 mod alignment_review;
 
+#[path = "pane_geometry.rs"]
+mod pane_geometry;
+
 #[path = "published_surface.rs"]
 mod published_surface;
 
 #[path = "accounts_mail_loop.rs"]
 mod accounts_mail_loop;
+#[path = "perf_budget.rs"]
+mod perf_budget;
+
+#[path = "a11y_bus.rs"]
+mod a11y_bus;

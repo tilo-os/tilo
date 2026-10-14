@@ -178,6 +178,9 @@ pub(super) struct ActionRuntime {
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
     pub(super) local_history_status: Option<(bool, bool, bool)>,
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
+    /// What the broker holds of the surface `last_published_actions` names,
+    /// the base of the next delta.
+    pub(super) published_surface: Option<crate::collaboration::SurfacePublication>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
     /// Opaque, revision-bound continuation state for the broker directory.
@@ -249,6 +252,7 @@ impl ActionRuntime {
             last_control_availability: None,
             local_history_status: None,
             last_published_actions: None,
+            published_surface: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),
@@ -284,6 +288,18 @@ pub(super) struct AccessibilityRuntime {
     pub(super) text_scale: f32,
     pub(super) ui_scale: f32,
     pub(super) semantic_tree: crate::a11y_tree::SemanticTree,
+    /// Whether anything [`Self::semantic_tree`] is read from may have
+    /// changed since it was last refreshed: the document, a widget, the
+    /// layout, focus or the declared resources. A refresh with this clear
+    /// would rebuild the tree it already holds, and publishes nothing
+    /// instead (`App::refresh_semantic_tree`).
+    pub(super) semantic_tree_stale: bool,
+    /// How many times [`Self::semantic_tree_stale`] was set, so a caller
+    /// can tell whether anything marked it during some work.
+    pub(super) semantic_tree_marks: u64,
+    /// The refreshes that rebuilt [`Self::semantic_tree`] rather than
+    /// finding nothing changed.
+    pub(super) semantic_tree_builds: u64,
 }
 
 impl AccessibilityRuntime {
@@ -303,6 +319,9 @@ impl AccessibilityRuntime {
             text_scale: 1.0,
             ui_scale: 1.0,
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
+            semantic_tree_stale: true,
+            semantic_tree_marks: 0,
+            semantic_tree_builds: 0,
         }
     }
 }

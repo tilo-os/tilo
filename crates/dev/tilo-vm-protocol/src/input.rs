@@ -51,6 +51,28 @@ pub enum InputAction {
         duration_ms: u32,
         pressure: u8,
     },
+    /// Press a key combo and keep it down until a `KeyUp` (a held modifier).
+    KeyDown { combo: String },
+    /// Release what `KeyDown` pressed, in reverse order.
+    KeyUp { combo: String },
+    /// Plug in the device a checked-in profile describes (bus, ids, name and
+    /// capabilities of real hardware). A plugged keyboard profile takes over
+    /// `Key`, `Type`, `KeyDown` and `KeyUp` from the default keyboard.
+    DevicePlug { profile: String },
+    /// Remove a plugged profile device, as unplugging it would.
+    DeviceUnplug { profile: String },
+    /// `fingers` tap the plugged touchpad's centre and lift.
+    TouchpadTap { fingers: u8 },
+    /// `fingers` move across the touchpad by `dx_mm`, `dy_mm` millimetres over
+    /// `duration_ms`: one finger moves the pointer, two scroll, three swipe.
+    TouchpadSwipe {
+        fingers: u8,
+        dx_mm: i16,
+        dy_mm: i16,
+        duration_ms: u32,
+    },
+    /// Press and release the clickpad's physical button.
+    TouchpadClick,
     /// Press and release each gamepad combo in order, e.g. `a`, `guide+lb`,
     /// `up`.
     GamepadPress { combos: Vec<String> },
@@ -437,8 +459,31 @@ pub fn validate(actions: &[InputAction]) -> Result<(), String> {
                 text_strokes(text)
                     .map_err(|c| format!("'{c}' cannot be typed on a US keyboard layout"))?;
             }
-            InputAction::Move { .. } | InputAction::Click { .. } | InputAction::TouchTap { .. } => {
+            InputAction::KeyDown { combo } | InputAction::KeyUp { combo } => {
+                combo_codes(combo).map_err(|part| format!("'{part}' in '{combo}' names no key"))?;
             }
+            InputAction::DevicePlug { profile } | InputAction::DeviceUnplug { profile } => {
+                crate::profile::profile(profile)?;
+            }
+            InputAction::TouchpadTap { fingers } => touchpad_fingers(*fingers)?,
+            InputAction::TouchpadSwipe {
+                fingers,
+                dx_mm,
+                dy_mm,
+                duration_ms,
+            } => {
+                touchpad_fingers(*fingers)?;
+                duration(*duration_ms)?;
+                if (*dx_mm == 0 && *dy_mm == 0) || dx_mm.abs() > 200 || dy_mm.abs() > 200 {
+                    return Err(format!(
+                        "a touchpad swipe of {dx_mm},{dy_mm} mm is no movement on a pad under 200 mm"
+                    ));
+                }
+            }
+            InputAction::TouchpadClick
+            | InputAction::Move { .. }
+            | InputAction::Click { .. }
+            | InputAction::TouchTap { .. } => {}
             InputAction::TouchHold { duration_ms, .. }
             | InputAction::TouchDrag { duration_ms, .. } => duration(*duration_ms)?,
             InputAction::TouchPinch {
@@ -487,6 +532,16 @@ pub fn validate(actions: &[InputAction]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Fingers a touchpad gesture uses: the profile's pad tracks five, libinput
+/// decodes one to three as pointer, scroll and swipe.
+fn touchpad_fingers(fingers: u8) -> Result<(), String> {
+    if (1..=3).contains(&fingers) {
+        Ok(())
+    } else {
+        Err(format!("{fingers} fingers: a touchpad gesture uses 1 to 3"))
+    }
 }
 
 fn duration(ms: u32) -> Result<(), String> {
@@ -571,6 +626,54 @@ mod tests {
                 x: 0,
                 y: 0,
                 pressure: 0
+            }])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn device_and_touchpad_actions_validate_and_round_trip() {
+        let plug = InputAction::DevicePlug {
+            profile: "lenovo-83ed-touchpad".into(),
+        };
+        assert!(validate(std::slice::from_ref(&plug)).is_ok());
+        assert_eq!(
+            serde_json::to_string(&plug).unwrap(),
+            r#"{"kind":"device_plug","profile":"lenovo-83ed-touchpad"}"#
+        );
+        let unknown = validate(&[InputAction::DevicePlug {
+            profile: "nope".into(),
+        }])
+        .unwrap_err();
+        assert!(unknown.contains("lenovo-83ed-keyboard"), "{unknown}");
+        let swipe = InputAction::TouchpadSwipe {
+            fingers: 2,
+            dx_mm: 0,
+            dy_mm: -30,
+            duration_ms: 300,
+        };
+        assert!(validate(std::slice::from_ref(&swipe)).is_ok());
+        let text = serde_json::to_string(&swipe).unwrap();
+        assert_eq!(serde_json::from_str::<InputAction>(&text).unwrap(), swipe);
+        assert!(validate(&[InputAction::TouchpadTap { fingers: 4 }]).is_err());
+        assert!(
+            validate(&[InputAction::TouchpadSwipe {
+                fingers: 1,
+                dx_mm: 0,
+                dy_mm: 0,
+                duration_ms: 10
+            }])
+            .is_err()
+        );
+        assert!(
+            validate(&[InputAction::KeyDown {
+                combo: "shift".into()
+            }])
+            .is_ok()
+        );
+        assert!(
+            validate(&[InputAction::KeyUp {
+                combo: "nokey".into()
             }])
             .is_err()
         );

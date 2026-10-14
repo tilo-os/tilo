@@ -28,9 +28,9 @@ pub use log::{CLEAR_UNDO_WINDOW, NotificationLog};
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use model::ScheduledNotificationTarget;
 pub use model::{
-    ContinuityNotificationId, DEFAULT_DISMISS_AFTER, MAX_HISTORY, MAX_NOTIFICATIONS, Notification,
-    NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS, RemoteNotificationRoute,
-    lock_suppressed_label,
+    ContinuityNotificationId, DEFAULT_DISMISS_AFTER, MAX_HISTORY, MAX_NOTIFICATIONS,
+    NOT_NOW_ACTION, Notification, NotificationIconKind, NotificationPerson, NotificationSeverity,
+    PERSISTENT_DISMISS, RemoteNotificationRoute, lock_suppressed_label,
 };
 pub use persistence::{decode_history, encode_history};
 pub use stack::NotificationStack;

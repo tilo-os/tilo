@@ -118,4 +118,6 @@ interface AppHost {
     # what it listed. The stored snapshot is verified again against the pinned
     # owner key, the rollback checkpoint and its expiry; fails when none does.
     lastVerifiedCatalogue @20 (registry :Text) -> (entries :Text);
+    # Resolve a precise runtime from enabled, pinned repositories, including retained versions.
+    runtimeOffer @21 (registry :Text, runtime :Text) -> (offer :Text);
 }

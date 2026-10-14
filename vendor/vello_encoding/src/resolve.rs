@@ -538,6 +538,11 @@ impl Resolver {
                     if self.image_cache.bump_size() {
                         // We were able to increase the atlas size. Restart the outer loop.
                         continue 'outer;
+                    } else if self.image_cache.can_fit_image(&pending_image.image)
+                        && self.image_cache.evict_superseded() != 0
+                    {
+                        // The atlas is at its maximum: what no pass drew this time makes room.
+                        continue;
                     } else {
                         // If the atlas is already maximum size, there's nothing we can do. Set
                         // the xy field to None so this image isn't rendered and then carry on--

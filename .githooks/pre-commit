@@ -8,6 +8,11 @@ fail=0
 # differs from both parents even when each manifest was taken from one parent.
 lock_staged_names=$(git diff --cached --name-only)
 
+# This inventory compares tracked paths with the working tree's baseline.
+# Run before the merge-only index hides scripts inherited from main, or
+# those baseline entries would incorrectly look like removed scripts.
+python3 "$root/tools/policy/check_image_interpreters.py" || fail=1
+
 # Merging main into a branch stages everything main changed since the branch
 # point, thousands of files that main's own checks already passed. The checks
 # below read the staged change through the index, so they run against a copy
@@ -44,7 +49,6 @@ python3 "$root/tools/policy/check_ui_clock_contract.py"
 python3 "$root/tools/policy/check_settings_writes.py" || fail=1
 python3 "$root/tools/policy/check_integration_test_modules.py" || fail=1
 python3 "$root/tools/policy/check_too_many_arguments.py" || fail=1
-python3 "$root/tools/policy/check_image_interpreters.py" || fail=1
 
 # The staged names and diffs, read once. Every check below matches against
 # these variables, never against a pipe from git: under pipefail, a `grep -q`

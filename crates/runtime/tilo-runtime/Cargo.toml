@@ -125,3 +125,6 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

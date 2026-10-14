@@ -21,11 +21,12 @@ use tilo_app_package::id::PackageId;
 
 /// Service state shared across every accepted connection.
 /// What `tilo-install` runs after every install, update and uninstall, run
-/// after this daemon's own: the store's size cap, payload trees and staging
+/// after this daemon's own, and at every start of the daemon (a new image or a
+/// swapped userspace changes the system store without any install running): the store's size cap, payload trees and staging
 /// nothing names, and the runtime builds nothing installed runs on any
 /// more. A tree a launch holds or a running app has mounted stays. Never
 /// fails the change it follows.
-fn collect_after_change(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
+pub fn collect_after_change(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
     let runtimes = match runtime_bundle::gc::BundleRoot::from_env() {
         Ok(runtimes) => runtimes,
         Err(error) => {
@@ -640,6 +641,28 @@ fn wayland_socket() -> Option<std::path::PathBuf> {
     }
 }
 
+/// Start `package` through the host-owned launcher, on `uri` when given.
+pub(crate) fn launch_package(package: &InstalledPackage, uri: Option<&str>) -> Result<(), String> {
+    let mut command = std::process::Command::new(launcher_bin());
+    command
+        .arg("run")
+        .arg("--manifest")
+        .arg(&package.manifest_path)
+        .arg("--payload-root")
+        .arg(&package.payload_root)
+        .arg("--app-id")
+        .arg(&package.id);
+    if let Some(socket) = wayland_socket() {
+        command.arg("--wayland-socket").arg(socket);
+    }
+    if let Some(uri) = uri {
+        command.arg("--open-uri").arg(uri);
+    }
+    spawn_detached(command)
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+
 fn spawn_detached(mut command: std::process::Command) -> Result<String, Error> {
     command
         .spawn()
@@ -1150,6 +1173,46 @@ impl app_host::Server for AppHostServer {
             Ok(())
         }
     }
+    async fn runtime_offer(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::RuntimeOfferParams,
+        mut results: app_host::RuntimeOfferResults,
+    ) -> Result<(), Error> {
+        let parameters = params.get().map_err(failed)?;
+        let registry = parameters
+            .get_registry()
+            .map_err(failed)?
+            .to_string()
+            .map_err(failed)?;
+        let runtime = parameters
+            .get_runtime()
+            .map_err(failed)?
+            .to_string()
+            .map_err(failed)?;
+        if registry.is_empty()
+            || registry.len() > 256
+            || registry.chars().any(char::is_control)
+            || runtime.is_empty()
+            || runtime.len() > 256
+            || runtime.chars().any(char::is_control)
+        {
+            return Err(Error::failed("invalid runtime offer request".into()));
+        }
+        let json = tokio::task::spawn_blocking(move || {
+            let offer = app_cli::runtime_offer(&runtime, &registry).map_err(failed)?;
+            serde_json::to_string(&offer).map_err(failed)
+        })
+        .await
+        .map_err(failed)??;
+        if json.len() > 256 * 1024 {
+            return Err(Error::failed(
+                "runtime offer exceeds the response limit".into(),
+            ));
+        }
+        results.get().set_offer(&json);
+        Ok(())
+    }
+
     #[allow(
         clippy::manual_async_fn,
         reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"

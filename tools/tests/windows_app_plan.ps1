@@ -20,7 +20,7 @@ foreach ($arch in @('x86_64', 'aarch64')) {
         if ($app -eq 'clocks') {
             if ($special.builds.Count -ne 2 -or
                 ($special.builds[1].arguments -join ' ') -ne
-                'build --locked --profile release --jobs 2 --message-format=json-render-diagnostics -p ui-examples --example windows-host --features notifications') {
+                'build --locked --profile release --jobs 2 --message-format=json-render-diagnostics -p ui-examples --example windows-host') {
                 throw 'Clocks qualification omits its actual notification helper build.'
             }
         } elseif ($special.builds.Count -ne 1) { throw "Unexpected helper build for $app" }

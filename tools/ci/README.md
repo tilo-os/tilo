@@ -60,6 +60,7 @@ the smaller `os/Containerfile.ci-fast`.
 | `check.yml` check | `cargo check --locked --all-targets -p <package>...` |
 | `check.yml` clippy | `tools/ci/clippy-check.sh -p <package>...` or `--workspace` |
 | `check.yml` android | `bash tools/ci/install-android-ndk.sh`, then `cargo clippy --locked -p <app> --examples --features android --target aarch64-linux-android -- -D warnings` |
+| `check.yml` vendored | `tools/ci/test-vendored-crates.sh [vendor/<crate>...]`: each patched vendored crate's own `cargo test`, from a copy of the workspace lock (`VENDORED_TEST_CRATES` in `affected_packages.py`; `ci-nightly.yml` runs all) |
 | `check.yml` wasm | `tools/ci/check-wasm.sh`; `tools/ci/build-web-examples.sh example-<name>...` builds the web examples |
 | `lint.yml` | `tools/policy/run.sh`, `bash tools/ci/check-changed-rustfmt.sh origin/main`, `python3 tools/ci/check_changed_rust_allows.py origin/main`, `cargo deny --workspace check`, `cargo hakari generate --diff && cargo hakari manage-deps --dry-run`, `bash tools/ci/check-unused-dependencies.sh --changed origin/main ''` |
 | `app-sdk.yml` policy | `python3 tools/policy/check_app_portability.py`, `python3 tools/policy/check_app_capabilities.py`, `python3 tools/web/generate_web_desktop.py --check` |

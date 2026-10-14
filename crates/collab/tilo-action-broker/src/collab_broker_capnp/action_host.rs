@@ -521,7 +521,23 @@ impl CapnpBrokerState {
     /// member.
     fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
         match caller.room() {
-            Some(confined) => confined == workspace.room.to_string(),
+            // Confinement says which room a connection was admitted to, not
+            // that an agent still belongs to it: an agent whose membership
+            // was removed must lose its catalogue and authority at once. It
+            // takes part as the unconfined branch decides: an enrolled agent
+            // through its own grant, an agent a person's device handed this
+            // session to (`Caller::delegated_to`) through that person's.
+            Some(confined) => {
+                confined == workspace.room.to_string()
+                    && match caller.principal() {
+                        CallerPrincipal::Agent(_) => {
+                            BrokerActor::for_caller(caller).reads_in(workspace, now)
+                        }
+                        CallerPrincipal::Person(_)
+                        | CallerPrincipal::App(_)
+                        | CallerPrincipal::Bot(_) => true,
+                    }
+            }
             None => match caller.principal() {
                 // An application or a bot is always admitted into one room;
                 // unconfined, it takes part in none.
@@ -3132,6 +3148,29 @@ mod foreign_caller_tests {
     use std::sync::{Arc, Mutex};
     use tilo_action_policy::roles;
     use tilo_actions::remote::Caller;
+
+    #[test]
+    fn an_admitted_bot_sees_only_its_confined_room() {
+        let user = [27; 32];
+        let mut tree = WorkspaceTree::default();
+        for id in [7, 8] {
+            let mut workspace = Workspace::new(WorkspaceId(id), "Bot room");
+            workspace.set_owner(hex::encode(user));
+            tree.workspaces.push(workspace);
+        }
+        let room = tree.workspaces[0].room.to_string();
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared()),
+            None,
+        );
+        let bot = Caller::bot("bridge", user, [9; 32]);
+        assert!(state.rooms_for(&bot).is_empty());
+        assert_eq!(state.rooms_for(&bot.clone().in_room(&room)), vec![room]);
+        assert!(state.rooms_for(&bot.in_room("unknown-room")).is_empty());
+    }
 
     /// Every room is governed by one device.
     struct GovernedBy([u8; 32]);

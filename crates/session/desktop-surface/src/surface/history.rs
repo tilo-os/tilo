@@ -5,6 +5,12 @@
 //! The pane only reads: it works on an [`ActivitySnapshot`] the host built
 //! from its admitted room document, and on detached copies of the records
 //! the workspace's windows show. Nothing it does writes either.
+//!
+//! The surface reaches the pane only through [`open_activity`], which a
+//! host names in [`HistorySource::activity_pane`]. A host that would rather
+//! not carry the pane's code from the start (the browser desktop, which
+//! fetches it as its own module the first time someone opens Activity)
+//! answers [`ActivityPaneCode::Loading`] until it has it.
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -69,6 +75,74 @@ pub trait HistorySource {
     fn revision(&self) -> u64 {
         0
     }
+
+    /// The code that opens the pane: linked in, unless the host overrides
+    /// this. Asked each time the pane is to open, so a host still loading
+    /// it answers [`ActivityPaneCode::Loading`] and wakes the surface once
+    /// it can answer [`ActivityPaneCode::Ready`].
+    fn activity_pane(&self) -> ActivityPaneCode {
+        ActivityPaneCode::Ready(open_activity)
+    }
+}
+
+/// Where the history pane's code is, as a [`HistorySource`] reports it.
+#[derive(Clone, Copy, Debug)]
+pub enum ActivityPaneCode {
+    /// Open the pane with this, normally [`open_activity`].
+    Ready(OpenActivity),
+    /// The host is still loading it: the requested view stays requested.
+    Loading,
+    /// The host could not load it: the request is dismissed.
+    Unavailable,
+}
+
+/// [`open_activity`]'s signature, for a host that hands it over at run time.
+pub type OpenActivity = fn(
+    &mut dyn HistorySource,
+    &DesktopTree,
+    u64,
+    WorkspaceId,
+    ActivityView,
+) -> Option<ActivityPane>;
+
+/// An open history pane, as [`open_activity`] hands it to the surface.
+pub struct ActivityPane(pub(super) Box<dyn Overlay>);
+
+/// Open the history pane over `workspace`, showing `view`, on the history
+/// `source` keeps for the desktop `tree` at `revision`. `None` when
+/// `source` retains no history for that workspace.
+pub fn open_activity(
+    source: &mut dyn HistorySource,
+    tree: &DesktopTree,
+    revision: u64,
+    workspace: WorkspaceId,
+    view: ActivityView,
+) -> Option<ActivityPane> {
+    HistoryOverlay::open(source, tree, revision, workspace, view)
+        .map(|overlay| ActivityPane(Box::new(overlay)))
+}
+
+/// What the surface asks of an open pane. The surface calls it only through
+/// the pane's vtable, so none of the pane's code is reachable from the
+/// surface itself.
+pub(super) trait Overlay: Widget {
+    /// The workspace whose history the pane shows.
+    fn workspace(&self) -> WorkspaceId;
+    /// The view the presentation last named.
+    fn shown(&self) -> ActivityView;
+    fn set_shown(&mut self, view: ActivityView);
+    /// Read the history again when the desktop or a record changed since.
+    fn follow(&mut self, source: &mut dyn HistorySource, tree: &DesktopTree, revision: u64);
+    fn view(&self) -> ActivityView;
+    fn set_view(&mut self, view: ActivityView);
+    fn playing(&self) -> bool;
+    fn partial(&self) -> bool;
+    fn take_exit(&mut self) -> Exit;
+    /// The person left: remember what this device has now seen.
+    fn finish(&mut self);
+    fn route(&mut self, event: &WindowEvent, scale: f64, modifiers: ui::winit::event::Modifiers);
+    #[cfg(test)]
+    fn pane(&self) -> &RoomActivityPane;
 }
 
 pub(super) fn pane_view(view: ActivityView) -> PaneView {
@@ -97,12 +171,11 @@ pub(super) struct Exit {
 }
 
 /// The open pane and the history it reads.
-pub(super) struct HistoryOverlay {
+struct HistoryOverlay {
     pane: RoomActivityPane,
     snapshot: ActivitySnapshot,
-    pub workspace: WorkspaceId,
-    /// The view the presentation last named.
-    pub shown: ActivityView,
+    workspace: WorkspaceId,
+    shown: ActivityView,
     /// The tree and source revisions the pane last read.
     read: (u64, u64),
     exit: Exit,
@@ -113,7 +186,7 @@ pub(super) struct HistoryOverlay {
 }
 
 impl HistoryOverlay {
-    pub fn open(
+    fn open(
         source: &mut dyn HistorySource,
         tree: &DesktopTree,
         revision: u64,
@@ -153,9 +226,22 @@ impl HistoryOverlay {
         }
         self.dirty = true;
     }
+}
 
-    /// Read the history again when the desktop or a record changed since.
-    pub fn follow(&mut self, source: &mut dyn HistorySource, tree: &DesktopTree, revision: u64) {
+impl Overlay for HistoryOverlay {
+    fn workspace(&self) -> WorkspaceId {
+        self.workspace
+    }
+
+    fn shown(&self) -> ActivityView {
+        self.shown
+    }
+
+    fn set_shown(&mut self, view: ActivityView) {
+        self.shown = view;
+    }
+
+    fn follow(&mut self, source: &mut dyn HistorySource, tree: &DesktopTree, revision: u64) {
         let now = (revision, source.revision());
         if now == self.read {
             return;
@@ -167,11 +253,11 @@ impl HistoryOverlay {
         self.read_records(source, tree);
     }
 
-    pub fn view(&self) -> ActivityView {
+    fn view(&self) -> ActivityView {
         navigation_view(self.pane.view())
     }
 
-    pub fn set_view(&mut self, view: ActivityView) {
+    fn set_view(&mut self, view: ActivityView) {
         if self.view() != view {
             self.pane.set_view(pane_view(view));
             self.pane.layout(self.rect);
@@ -179,34 +265,28 @@ impl HistoryOverlay {
         }
     }
 
-    pub fn playing(&self) -> bool {
+    fn playing(&self) -> bool {
         self.pane.replay_is_playing()
     }
 
-    pub fn partial(&self) -> bool {
+    fn partial(&self) -> bool {
         !self.pane.feed_coverage().is_complete()
     }
 
-    pub fn take_exit(&mut self) -> Exit {
+    fn take_exit(&mut self) -> Exit {
         std::mem::take(&mut self.exit)
     }
 
-    /// The person left: remember what this device has now seen.
-    pub fn finish(&mut self) {
+    fn finish(&mut self) {
         self.pane.finish_view(self.workspace.raw());
     }
 
     #[cfg(test)]
-    pub fn pane(&self) -> &RoomActivityPane {
+    fn pane(&self) -> &RoomActivityPane {
         &self.pane
     }
 
-    pub fn route(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: ui::winit::event::Modifiers,
-    ) {
+    fn route(&mut self, event: &WindowEvent, scale: f64, modifiers: ui::winit::event::Modifiers) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Some(Point::new(position.x / scale, position.y / scale));
         }

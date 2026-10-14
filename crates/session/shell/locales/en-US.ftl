@@ -676,6 +676,21 @@ capability-host-shell = Open this device's own shell, outside every sandbox
 capability-network-hosts = Network access to { $hosts }
 capability-network = Network access
 
+# The session's agent door: a client in this login (an AI agent in a
+# terminal) asks to work in a workspace as an agent member.
+agent-door-client = { $client } ({ $program }, pid { $pid })
+agent-door-client-in-app = { $who } in { $app }
+agent-door-admission = Work in “{ $workspace }” as the agent { $agent }
+agent-door-param-agent = The agent to admit it as: an existing agent member, or a new one by this name. Defaults to the name the prompt proposes.
+agent-door-param-preset = A new agent's preset: Observer, Contributor, Operator, or Custom. Presets never grant access to a surface by themselves.
+agent-door-preset-invalid = Choose Observer, Contributor, Operator, or Custom.
+agent-door-agent-invalid = An agent needs a name of up to 128 characters.
+agent-door-workspace-gone = The workspace this client asked to work in is gone.
+agent-door-not-administrator = You do not administer this workspace, so { $agent } was not added.
+agent-door-no-workspace = There is no workspace here to work in.
+agent-door-withdrawn = The request was withdrawn before anyone answered it.
+agent-door-declined = The person at this desktop declined this connection.
+
 # The shortcut-guide pill in the display corner
 help-pill = Help  F1 · Super+?
 
@@ -880,6 +895,8 @@ osd-pause = Pause
 osd-next-track = Next track
 osd-previous-track = Previous track
 osd-stop = Stop
+osd-percent = { $percent }%
+osd-off = Off
 osd-muted = Muted
 osd-volume = Volume { $percent }%
 osd-brightness = Brightness { $percent }%
@@ -917,7 +934,7 @@ notification-source-caption = { $app } · From { $device }
 notification-app-host-apps = Host Apps
 notification-app-power = Power
 notification-remote-input-stopped = Remote input stopped
-notification-remote-input-stopped-sessions = Remote control and sharing sessions were stopped.
+notification-remote-input-stopped-sessions = Everyone connected to this computer was disconnected.
 notification-remote-input-stopped-shares = { $count ->
     [one] Remote control was removed and sharing was stopped.
    *[other] Remote control was removed from { $count } shares; sharing was stopped.
@@ -971,6 +988,9 @@ launch-error-registry-unreadable = The app list could not be read. Try again.
 launch-error-sandbox-supervision = The app's file permissions could not be supervised. Try again.
 launch-error-host-app-refused = This app's desktop entry cannot be started.
 launch-failed-launcher-unavailable = The app launcher is unavailable. Open Applications and try again.
+launch-failed-authority-changed = The app's file permissions changed while it was starting. Open it again.
+launch-failed-authority-timeout = The app's file permissions were not ready in time. Open it again.
+launch-failed-previous-instance = The previous copy of the app is still closing. Open it again in a moment.
 launch-failed-stopped = The app stopped before opening. Open Applications and try again.
 launch-failed-missing-library = The app needs a library this system doesn't have, so it stopped before opening.
 launch-failed-runtime-mismatch = This app was built for a different Tilo runtime. Update or reinstall it to get the runtime it needs.
@@ -1171,7 +1191,6 @@ search-record-in-another-workspace = In another workspace
 search-files-no-app = No app on this desktop opens .{ $ext } documents.
 
 # Search: host apps
-search-host-app-open = Open { $app }
 search-host-app-subtitle = { $source } · unconfined host app · { $id }
 
 # Search: app action jobs and resources
@@ -2064,6 +2083,8 @@ capture-recording-audio-lost = Recording continues without audio
 capture-recording-audio-lost-body = { $path } · { $reason }
 capture-recent-audio-lost = Recent capture continues without audio
 capture-failed = Capture failed
+settings-not-saved-title = Setting not saved
+settings-not-saved-body = Tilo could not save a change to your settings, so it went back to what it was. Check that the disk has free space, then try again.
 idle-inhibit-unnamed-app = An app
 
 # Sending a screenshot to a device or into the workspace files
@@ -2425,6 +2446,40 @@ device-fabric-error-input-sequence-exhausted = Input sequencing is exhausted. Re
 
 device-fabric-error-input-cleanup-pending = Previous input is still being released. Try again.
 
+search-provider-system-settings = System settings
+search-badge-settings = Settings
+setting-never = Never
+setting-minutes = { $minutes ->
+        [one] 1 minute
+       *[other] { $minutes } minutes
+    }
+setting-on = On
+setting-off = Off
+setting-mode-dark = Dark
+setting-mode-light = Light
+setting-mode-automatic = Automatic
+setting-mode-unset = Follows the theme
+setting-get = { $name }: { $value }
+setting-get-detail = Read the current value and the values that are allowed
+setting-current = Currently { $value }
+setting-set = Change { $name }
+setting-toggle = Toggle { $name }
+setting-power-lock-after = Lock screen after
+setting-power-lock-after-words = lock screen automatically sperren sperrzeit
+setting-power-blank-after = Turn screen off after
+setting-power-blank-after-words = screen off blank display dark bildschirm ausschalten abschalten dunkel
+setting-power-suspend-after = Suspend after
+setting-power-suspend-after-words = sleep standby energy saving bereitschaft ruhezustand energiesparen
+setting-power-auto-suspend = Suspend when idle
+setting-power-auto-suspend-words = automatic sleep standby inactivity automatisch inaktiv
+setting-display-scale = Display scale
+setting-display-scale-words = scaling zoom size bildschirm skalierung groesse
+setting-display-refresh-rate = Display refresh rate
+setting-display-refresh-rate-words = hertz frequency frames bildwiederholrate bildfrequenz
+setting-keyboard-layout = Keyboard layout
+setting-keyboard-layout-words = language input source keymap tastatur sprache belegung
+setting-appearance-mode = Appearance mode
+setting-appearance-mode-words = dark light night theme design dunkel hell nacht
 display-remote-heading = Your other screens
 display-remote-title = { $number } · { $name } · { $device }
 display-remote-row = { $status } · { $title }
@@ -2445,7 +2500,8 @@ activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
 activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
 activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
-activity-morning-unavailable = Source unavailable in this workspace · no current evidence
+activity-morning-unavailable = This source isn't available here
+activity-morning-source-unnamed = Chosen source
 activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
 activity-morning-open = Open morning source
 
@@ -2464,6 +2520,7 @@ activity-morning-command-refused = Request refused
 activity-morning-recorded = { $source } · last recorded workspace activity: { $time }
 
 activity-morning-next = Next chosen source
+search-host-app-open = Open { $app }
 
 qs-network-details = Wi-Fi networks
 qs-bluetooth-details = Bluetooth devices
@@ -2548,6 +2605,7 @@ agent-quick-stop-outcome-unknown = Waiting for Task Center to confirm whether th
 ## Each `search-kw-*` message is a comma-separated list; desktop search matches
 ## the lists of every language whatever language the desktop speaks.
 search-kind-settings-pages = Settings
+search-settings-page-subtitle = Personal Settings
 search-toggle-wifi-on = Wi-Fi: turn on
 search-toggle-wifi-off = Wi-Fi: turn off
 search-toggle-wifi-subtitle = Switch the Wi-Fi radio of this device
@@ -2663,9 +2721,15 @@ search-kw-settings-speakers = speakers, stereo, surround, subwoofer, multiroom, 
 search-settings-page-displays = Displays
 search-settings-page-displays-subtitle = Resolution, scale, arrangement, and brightness
 search-kw-settings-displays = display, monitor, screen, resolution, scale, brightness, night light, blue light, arrangement, external display, refresh rate, rotate
-search-settings-page-mouse-keyboard = Mouse & keyboard
-search-settings-page-mouse-keyboard-subtitle = Typing, spelling, input sources, and pointer behaviour
-search-kw-settings-mouse-keyboard = keyboard, keyboard layout, input source, input method, language, qwerty, qwertz, azerty, dvorak, pointer, trackpad, touchpad, mouse, scroll, natural scrolling, tap to click, key repeat, typing, spelling
+search-settings-page-keyboard = Keyboard
+search-settings-page-keyboard-subtitle = Layouts, typing and key options
+search-kw-settings-keyboard = keyboard, keyboard layout, layout, input source, input method, language, qwerty, qwertz, azerty, dvorak, key repeat, compose key, typing
+search-settings-page-pointing = Mouse & touchpad
+search-settings-page-pointing-subtitle = Pointer speed, scrolling, clicks and drawing tablets
+search-kw-settings-pointing = mouse, pointer, trackpad, touchpad, scroll, natural scrolling, tap to click, cursor, tablet, pen, stylus
+search-settings-page-spelling = Spelling & dictionary
+search-settings-page-spelling-subtitle = Spell checking, autocorrect and your personal words
+search-kw-settings-spelling = spell checker, spelling, autocorrect, auto-correct, dictionary, words
 search-settings-page-keyboard-shortcuts = Keyboard shortcuts
 search-settings-page-keyboard-shortcuts-subtitle = System and workspace keyboard shortcuts
 search-kw-settings-keyboard-shortcuts = shortcuts, hotkeys, key bindings, keybindings, keyboard shortcuts, keys, rebind

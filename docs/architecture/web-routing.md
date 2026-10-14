@@ -408,6 +408,12 @@ the page.
      before reconnects. A link naming another room on that host than the one
      the person was admitted to reads as no access. This is an admission policy of the host, not a
      separate page: a web host offers such a workspace as its home (§8).
+   - A host this browser set up for its person (§6.3), or joined as them
+     through an invitation, is reconnected to with the root the page holds
+     (`reconnect`, `hostToReconnect` in `web/workspaces.mjs`): on a machine
+     of their own the host first admits this device as the owner of the
+     room the link names (`workspaces.enter`), then the page connects to
+     it. The host decides; a refusal reads as no access, like the rest.
    - Otherwise the page says the person has no access and that the person
      who shared the link can invite them. It never says whether the record or
      resource exists: as the action door does with `Unknown`, "not there" and
@@ -481,6 +487,30 @@ open to correct and try again. A machine that took the certificate is
 remembered as a host the person owns (`keepOwnedHost` in
 `web/workspaces.mjs`): like a host they joined, it keeps their envelope and
 profile.
+
+### 6.4 Workspaces and invitations from the desktop
+
+`web/workspace-actions.mjs` adds the desktop's host actions for workspaces
+on the person's machines, each the host's decision:
+
+- **"New workspace"** (`new-workspace`), on a desktop whose host serves the
+  person it is (its certificate is their root's), or on their own desktop
+  once this browser set up a machine for them (also offered right after
+  setting one up). The host creates the room and admits this device as its
+  owner (`workspaces.create`, `enter`), and the page opens the room's link
+  (another room is another admission, so the page loads again).
+- **"Invite someone"** (`invite-someone`), in a room, and the desktop's own
+  Invite: `createInvitation` as Editor, presented as the room's link with
+  its `invite` secret, to select or copy (inside the person's click, as
+  Safari's clipboard requires) and send. Opening it is §6.1's `invite`.
+- **"Waiting to join"** (`waiting-to-join`), for the room's owner: the
+  people who asked, each let in or turned away (`membership.requests`,
+  `admit`, `decline`). While the owner's page is in the room it asks every
+  few seconds, and offers each new request once on a banner that lets the
+  person in.
+
+A person let in through an invitation is remembered for that host
+(`keepJoinedHost`), so their next visit reconnects (§6.1).
 
 ## 7. Native handling
 

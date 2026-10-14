@@ -49,13 +49,19 @@ pub fn pinned_ref(snapshot: &str, arch: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-/// `registry.tilo.so/tilo/<name>@sha256:<64 hex>` and nothing looser.
+/// The one repository the guest image is published to. Its scope in
+/// `/etc/containers/policy.json` requires the release key's signature; a
+/// sibling under the same namespace (the rejected `tilo-dev`, `tilo-ci` and
+/// `tilo-vm`, or one with no scope at all) is not the guest.
+const GUEST_REPOSITORY: &str = "registry.tilo.so/tilo/legacy-guest";
+
+/// `registry.tilo.so/tilo/legacy-guest@sha256:<64 hex>` and nothing looser.
 #[must_use]
 pub fn valid_pinned_ref(reference: &str) -> bool {
     let Some((repository, digest)) = reference.split_once("@sha256:") else {
         return false;
     };
-    repository.starts_with("registry.tilo.so/tilo/")
+    repository == GUEST_REPOSITORY
         && digest.len() == 64
         && digest
             .bytes()
@@ -192,7 +198,7 @@ mod tests {
     #[test]
     fn the_guest_image_is_fetched_only_by_pinned_digest() {
         let digest = "ab".repeat(32);
-        // phase: only a registry.tilo.so digest pin is accepted
+        // phase: only a digest pin of the signed guest repository is accepted
         {
             let snapshot = format!(
                 "# pinned by CI\nLEGACY_GUEST_X86_64_REF=registry.tilo.so/tilo/legacy-guest@sha256:{digest}\n"
@@ -211,6 +217,13 @@ mod tests {
                 "evil.example/legacy@sha256:{digest}"
             )));
             assert!(!valid_pinned_ref("registry.tilo.so/tilo/x@sha256:abc"));
+            // A sibling repository is not the signed guest scope, however
+            // well-formed its pin.
+            for sibling in ["tilo-dev", "tilo-vm", "tilo", "legacy-guest-dev"] {
+                assert!(!valid_pinned_ref(&format!(
+                    "registry.tilo.so/tilo/{sibling}@sha256:{digest}"
+                )));
+            }
             // Whatever is compiled in must be well-formed or absent.
             assert!(current_ref().is_none_or(|reference| valid_pinned_ref(&reference)));
         }

@@ -7,7 +7,7 @@
 
 use std::fs;
 use std::io::{self, Read};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 const LOCKED: &[u8] = b"locked\n";
@@ -35,10 +35,7 @@ impl SessionRecovery {
                 )
             })?;
         let metadata = fs::symlink_metadata(directory)?;
-        if !metadata.is_dir()
-            || metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.permissions().mode() & 0o077 != 0
-        {
+        if !metadata.is_dir() || !tilo_files::native::private::private_to_me(&metadata) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "session channel is not private",
@@ -77,6 +74,7 @@ impl SessionRecovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn orderly_restart_preserves_lock_and_verified_unlock() {

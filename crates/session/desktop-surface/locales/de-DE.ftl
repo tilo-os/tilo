@@ -599,6 +599,7 @@ notification-dnd-held = { $status } · { $count } zurückgehalten
 notification-stack-a11y = Benachrichtigungen
 notification-group-system = System
 notification-center-undo = Rückgängig
+notification-not-now = Später
 notification-app-failed-title = Eine App konnte nicht geöffnet werden
 notification-service-unavailable = Das ist auf diesem Desktop noch nicht verfügbar
 
@@ -1128,7 +1129,8 @@ activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen
 activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
 activity-morning-description = Ausgewählte Morgenquellen · Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
-activity-morning-unavailable = Quelle in diesem Arbeitsbereich nicht verfügbar · keine aktuellen Nachweise
+activity-morning-unavailable = Diese Quelle ist hier nicht verfügbar
+activity-morning-source-unnamed = Gewählte Quelle
 activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
 
 activity-morning-open = Morgenquelle öffnen

@@ -198,6 +198,8 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_TRUSTED_PROXIES` | none | CIDRs whose `X-Forwarded-For` is believed |
 | `TILO_ROOMS_MAX_GUESTS` | `300` | people online at once (up to 10000) |
 | `TILO_ROOMS_MAX_SPECTATORS` | `1000` | watching sessions at once |
+| `TILO_ROOMS_GUEST_JOINS_PER_10_MIN`, `TILO_ROOMS_GUEST_JOINS_PER_DAY` | `5`, `30` | guest joins one address may make (an IPv6 address counts by its /64); a visitor past them watches until the window frees up. Raise them where many visitors share an address: offices, schools, mobile carriers' NAT |
+| `TILO_ROOMS_SPECTATES_PER_10_MIN` | `30` | spectator certificates one address may take |
 | `TILO_ROOMS_OWNERS`, `TILO_ROOMS_MODERATORS` | none | user keys (hex), comma-separated |
 | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat,so.tilo.notes,so.tilo.canvas` | apps added to the room once, comma-separated; notes and canvas start with a welcome note and starter shapes in the room's default record |
 | `TILO_ROOMS_BOTS` | none | bots installed at the first start, `;`-separated, each `<entry> key=value …`, where the entry is a directory bot or a program file such as the image's `/usr/local/share/tilo/bots/discord-bridge.json`; the Discord bridge takes `guild=<server id>`, optionally `channel=<channel id>` to bridge only that channel and `server=<name>`, and the host connects the room's Chat to that server before the bridge runs |

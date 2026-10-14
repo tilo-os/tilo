@@ -109,7 +109,11 @@ pub trait WindowAttributesExtWebSys {
     /// In any case, the canvas won't be automatically inserted into the web page.
     ///
     /// [`None`] by default.
-    #[cfg_attr(not(web_platform), doc = "", doc = "[`HtmlCanvasElement`]: #only-available-on-wasm")]
+    #[cfg_attr(
+        not(web_platform),
+        doc = "",
+        doc = "[`HtmlCanvasElement`]: #only-available-on-wasm"
+    )]
     fn with_canvas(self, canvas: Option<HtmlCanvasElement>) -> Self;
 
     /// Sets whether `event.preventDefault()` should be called on events on the
@@ -388,7 +392,13 @@ impl CustomCursorExtWebSys for CustomCursor {
     }
 
     fn from_url(url: String, hotspot_x: u16, hotspot_y: u16) -> CustomCursorSource {
-        CustomCursorSource { inner: PlatformCustomCursorSource::Url { url, hotspot_x, hotspot_y } }
+        CustomCursorSource {
+            inner: PlatformCustomCursorSource::Url {
+                url,
+                hotspot_x,
+                hotspot_y,
+            },
+        }
     }
 
     fn from_animation(
@@ -439,7 +449,9 @@ impl Future for CustomCursorFuture {
     type Output = Result<CustomCursor, CustomCursorError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.0).poll(cx).map_ok(|cursor| CustomCursor { inner: cursor })
+        Pin::new(&mut self.0)
+            .poll(cx)
+            .map_ok(|cursor| CustomCursor { inner: cursor })
     }
 }
 
@@ -456,8 +468,11 @@ impl Display for CustomCursorError {
             Self::Blob => write!(f, "failed to create `Blob`"),
             Self::Decode(error) => write!(f, "failed to decode image: {error}"),
             Self::Animation => {
-                write!(f, "found `CustomCursor` that is an animation when building an animation")
-            },
+                write!(
+                    f,
+                    "found `CustomCursor` that is an animation when building an animation"
+                )
+            }
         }
     }
 }

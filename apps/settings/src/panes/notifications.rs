@@ -32,7 +32,8 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{english, t, t_args};
 use crate::prefs::NotificationPrefs;
 use crate::widgets::{
-    El, StatusTone, caption, card, error_row, rows, semantic_status_pill, value_row,
+    SettingsSection, StatusTone, card, error_row, note, rows, semantic_status_pill, setting_row,
+    value_row,
 };
 
 const FOCUS_DAYS: &[(&str, u8)] = &[
@@ -603,18 +604,14 @@ impl NotificationsPane {
         crate::widgets::cards(cards)
     }
 
-    fn build_dnd_card(&self) -> Box<dyn Widget> {
+    fn build_dnd_card(&self) -> SettingsSection {
         let (status_label, status_tone) = self.status();
 
         // A label-left / status-pill-right row, so the combined effect of the
         // toggles is legible at the top of the pane.
-        let status_row: El = Box::new(
-            ui::widget::Row::new()
-                .push(Box::new(
-                    ui::widget::Text::new(&t("notif-delivery")).with_role(ui::TextRole::Body),
-                ))
-                .push(Box::new(ui::widget::Spacer::new()))
-                .push(semantic_status_pill(&status_label, status_tone)),
+        let status_row = setting_row(
+            &t("notif-delivery"),
+            semantic_status_pill(&status_label, status_tone),
         );
 
         // Master Do Not Disturb, with the visible delivery-status pill.
@@ -634,7 +631,7 @@ impl NotificationsPane {
         )
     }
 
-    fn build_banners_card(&self) -> Box<dyn Widget> {
+    fn build_banners_card(&self) -> SettingsSection {
         card(
             &t("notif-banners-title"),
             rows(vec![
@@ -655,7 +652,7 @@ impl NotificationsPane {
         )
     }
 
-    fn build_delivery_card(&self) -> Box<dyn Widget> {
+    fn build_delivery_card(&self) -> SettingsSection {
         let sounds_row = match (
             media::event_sound::sound_backend(),
             super::installed_programs_unreadable(),
@@ -697,7 +694,7 @@ impl NotificationsPane {
         )
     }
 
-    fn build_focus_card(&self) -> Box<dyn Widget> {
+    fn build_focus_card(&self) -> SettingsSection {
         let focus_options: Vec<String> = english(FOCUS_TIMES).map(str::to_owned).collect();
         card(
             &t("notif-focus-title"),
@@ -737,12 +734,12 @@ impl NotificationsPane {
                         NotificationPrefs::paths().focus.end_minute,
                         |label: String| focus_minutes(&label),
                     ),
-                caption(&t("notif-focus-caption")),
+                note(&t("notif-focus-caption")),
             ]),
         )
     }
 
-    fn build_app_cards(&self) -> Vec<Box<dyn Widget>> {
+    fn build_app_cards(&self) -> Vec<SettingsSection> {
         let prefs = self.prefs();
         let mut app_cards = Vec::new();
         for app in &self.apps {
@@ -827,35 +824,35 @@ impl NotificationsPane {
                         AppChoice::PriorityContacts,
                     ),
                     mute,
-                    caption(&app_caption),
+                    note(&app_caption),
                 ]),
             ));
         }
         app_cards
     }
 
-    fn build_apps_card(is_empty: bool) -> Box<dyn Widget> {
+    fn build_apps_card(is_empty: bool) -> SettingsSection {
         if is_empty {
             card(
                 &t("notif-apps-title"),
-                rows(vec![caption(&t("notif-apps-empty"))]),
+                rows(vec![note(&t("notif-apps-empty"))]),
             )
         } else {
             card(
                 &t("notif-apps-title"),
-                rows(vec![caption(&t("notif-apps-caption"))]),
+                rows(vec![note(&t("notif-apps-caption"))]),
             )
         }
     }
 
-    fn build_explainer_card() -> Box<dyn Widget> {
+    fn build_explainer_card() -> SettingsSection {
         card(
             &t("notif-how-title"),
-            rows(vec![caption(&t("notif-how-caption"))]),
+            rows(vec![note(&t("notif-how-caption"))]),
         )
     }
 
-    fn build_priority_contacts_card() -> Box<dyn Widget> {
+    fn build_priority_contacts_card() -> SettingsSection {
         card(
             &t("notif-priority-title"),
             rows(vec![
@@ -863,7 +860,7 @@ impl NotificationsPane {
                     &t("notif-priority-source"),
                     &t("notif-priority-source-value"),
                 ),
-                caption(&t("notif-priority-caption")),
+                note(&t("notif-priority-caption")),
             ]),
         )
     }

@@ -1405,6 +1405,48 @@ min_delta = 2.0
 baseline_min_runs = 3
 source = "notes-latency, a note's open action to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
 
+# The pointer moving a few pixels over the long note, and a host frame with no
+# input at all (what a caret blink or another window's animation costs Notes).
+# An idle frame publishes no accessibility change and walks no widgets; on an
+# M5 Max, release, it is 0.25-0.28 ms to frame (0.64-0.66 ms while every frame
+# rebuilt the semantic tree), a pointer move 0.7 ms.
+
+[kpi."render.notes_latency.pointer.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+baseline_min_runs = 3
+source = "notes-latency, a pointer move over a 136-block note to the frame that shows it (reported)"
+
+[kpi."render.notes_latency.pointer.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a pointer move over a 136-block note to its frame rasterised (lavapipe; reported)"
+
+[kpi."render.notes_latency.idle.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.25
+baseline_min_runs = 3
+source = "notes-latency, a host frame with no input over a 136-block note, accessibility walk included (reported)"
+
+[kpi."render.notes_latency.idle.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+baseline_min_runs = 3
+source = "notes-latency, a host frame with no input over a 136-block note, rasterised where it changed (lavapipe; reported)"
+
 # The installed desktop: Dev / VM acceptance's nightly run on the newest
 # published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
 # (scripts/vm-acceptance, acceptance/records.py). Those runs compare and publish

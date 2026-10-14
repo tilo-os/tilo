@@ -322,8 +322,11 @@ tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 capnp.workspace = true
 capnp-rpc.workspace = true
-# The polkit agent cancels an authentication conversation.
+# The network secret agent cancels a request NetworkManager withdraws.
 tokio-util.workspace = true
+# The session's polkit authentication agent; the shell supplies the sheet it
+# asks in (`polkit_agent`).
+tilo-polkit-agent = { path = "../polkit-agent" }
 # capnp-rpc speaks futures-io; `io` supplies its buffered reader/writer.
 futures-util = { workspace = true, features = ["io"] }
 # The shell re-serialises signed op envelopes and presence keys onto
@@ -421,6 +424,7 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+tilo-secret-service = { path = "../../system/secret-service" }
 signal-hook-registry = "1.4.8"
 # Raw Vulkan for returning the device memory lavapipe freed
 # (`shell::render::software_gpu_memory`); the version wgpu-hal and ui's
@@ -472,3 +476,6 @@ windows-vm = { path = "../../windows/windows-vm" }
 # The shell runtime's policy, where the person's allow for Terminal's Host
 # target (the device's own shell) is recorded.
 ush = { path = "../../runtime/ush" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

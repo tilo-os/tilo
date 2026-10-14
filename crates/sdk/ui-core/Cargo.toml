@@ -88,7 +88,6 @@ priority-contacts = ["native", "dep:zbus", "zbus?/blocking-api"]
 # (`ui::portal`) and notifications (`ui::notify`) need no feature: their
 # platform crates select each target's backend.
 portal = ["native", "tilo-host/portal"]
-notifications = ["native", "tilo-host/notifications"]
 
 [dependencies]
 mime_guess.workspace = true

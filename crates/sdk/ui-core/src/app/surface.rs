@@ -80,11 +80,41 @@ impl App {
         handled
     }
 
+    /// [`Self::route_surface_input`], marking the semantic tree stale for
+    /// any input but a pointer move that nothing took up: one no widget
+    /// handled, wants to repaint or relayout for, over no floating surface,
+    /// and that marked nothing itself, changed nothing a widget declares
+    /// (the pointer's own position is no part of the tree). The tree is
+    /// stale while the input is routed, for anything that reads it then.
+    fn dispatch_surface_input(
+        &mut self,
+        window: &dyn AppSurface,
+        event: WindowEvent,
+        synthesized_touch: bool,
+    ) -> bool {
+        let stale = self.accessibility.semantic_tree_stale;
+        self.mark_semantic_tree_stale();
+        let marks = self.accessibility.semantic_tree_marks;
+        let pointer_move = matches!(event, WindowEvent::CursorMoved { .. });
+        let handled = self.route_surface_input(window, event, synthesized_touch);
+        let inert = pointer_move
+            && !handled
+            && self.accessibility.semantic_tree_marks == marks
+            && !self.unsettled()
+            && !self.root_widget.needs_redraw()
+            && !self.history_needs_redraw()
+            && self.root_widget.floating_surface_presentations().is_empty();
+        if inert {
+            self.accessibility.semantic_tree_stale = stale;
+        }
+        handled
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "input routing shares mutable state and must retain fixed precedence"
     )]
-    fn dispatch_surface_input(
+    fn route_surface_input(
         &mut self,
         window: &dyn AppSurface,
         event: WindowEvent,
@@ -1411,6 +1441,7 @@ mod tests {
     }
 
     include!("native_publication_scroll_tests.rs");
+    include!("semantic_publication_tests.rs");
 
     #[cfg(feature = "native")]
     mod input_phase_profile {
