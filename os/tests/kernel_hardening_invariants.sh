@@ -909,6 +909,32 @@ grep -Fqx 'SELinuxContext=system_u:system_r:tilo_fs_t:s0' "$fs_selinux" \
   || bad 'collaborative filesystem SELinux transition still fails open'
 [ "$fail" -ne 0 ] || ok 'root FUSE daemon has a fail-closed bounded execution context'
 
+# The daemon's domain enforces: a permissive tilo_fs_t only logs, leaving a
+# compromised root daemon boxed by its unit sandbox alone. Its allow-set names
+# the types fs uses; a rule on a whole attribute or the `all` permission set
+# would make the domain unconfined in all but name. Comments are stripped
+# first, so prose about the bring-up cannot satisfy or trip the check.
+fs_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
+fs_policy_fail=0
+fs_policy_active="$(sed 's/;.*//' "$fs_policy" | tr -s '[:space:]' ' ')"
+if grep -Eq '\(typepermissive[[:space:]]' <<<"$fs_policy_active"; then
+  bad 'tilo-base.cil makes a domain permissive; tilo_fs_t must enforce'
+  fs_policy_fail=1
+fi
+grep -Fq '(type tilo_fs_t)' <<<"$fs_policy_active" \
+  || { bad 'tilo-base.cil no longer defines the tilo_fs_t domain'; fs_policy_fail=1; }
+grep -Eq '\(allow tilo_fs_t fuse_device_t \(chr_file \(' <<<"$fs_policy_active" \
+  || { bad 'tilo-base.cil does not grant tilo_fs_t the FUSE device it mounts with'; fs_policy_fail=1; }
+if grep -Eq '\(allow tilo_fs_t (file_type|non_security_file_type|non_auth_file_type|exec_type|domain|unconfined_t|unconfined_service_t|kernel_t)[ )]' <<<"$fs_policy_active"; then
+  bad 'tilo-base.cil grants tilo_fs_t a whole attribute or an unconfined domain'
+  fs_policy_fail=1
+fi
+if grep -Eq '\(allow tilo_fs_t [^()]+ \([a-z_0-9]+ \(all\)\)\)' <<<"$fs_policy_active"; then
+  bad 'tilo-base.cil grants tilo_fs_t every permission of a class'
+  fs_policy_fail=1
+fi
+[ "$fs_policy_fail" -ne 0 ] || ok 'root FUSE daemon SELinux domain enforces with named types'
+
 for unit in tilo-secureboot-sign.service tilo-secureboot-sign-shutdown.service; do
   unit_path="$repo/os/usr/lib/systemd/system/$unit"
   grep -Fqx 'RuntimeDirectory=tilo-secureboot' "$unit_path" \
