@@ -6026,9 +6026,9 @@ fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
     );
 }
 
-/// Regenerating the TOC replaces rather than duplicates, and the TOC action sets a confirmation toast.
+/// Regenerating the TOC replaces rather than duplicates, and the TOC action brings the table into view.
 #[test]
-fn regenerating_the_toc_replaces_it_and_confirms() {
+fn regenerating_the_toc_replaces_it_and_shows_it() {
     // Phase: regenerating_toc_replaces_rather_than_duplicating.
     {
         let mut framed = doc_with_headings(1000, 700);
@@ -6058,18 +6058,16 @@ fn regenerating_the_toc_replaces_it_and_confirms() {
         );
     }
 
-    // Phase: toc_action_sets_a_confirmation_toast.
-    // Generating a TOC leaves a visible confirmation toast (the button used to
-    // give no feedback at all).
+    // Phase: toc_action_scrolls_the_table_into_view.
+    // The table itself is the feedback: generating it scrolls to the top
+    // where it lands, with no toast repeating what is on screen.
     {
         let mut framed = doc_with_headings(1000, 700);
         let (wp, state) = Framed::split(&mut framed);
-        assert!(!wp.toast.is_shown(), "no toast before the action");
+        wp.scroll_y = 144.0;
         wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertToc);
-        assert!(
-            wp.toast.is_shown(),
-            "generating a TOC surfaces a confirmation toast"
-        );
+        assert_eq!(wp.scroll_y, 0.0, "the new table of contents is in view");
+        assert!(!wp.toast.is_shown(), "no toast repeats the visible result");
         // And it actually produced TOC lines.
         let c = wp.model().containers.clone().unwrap();
         let toc = tilo_doc::model::materialize(&state.doc, &c)
