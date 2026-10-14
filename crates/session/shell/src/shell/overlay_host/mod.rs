@@ -10151,11 +10151,15 @@ impl ShellOverlayHost {
                 let rows = state.quick_settings.vpns.len();
                 DrillInList::list_height(qs::LIST_TOP, rows)
             }
-            QsLevel::Notifications => self.notification_center.preferred_height_for_width(
-                state.notification_log(),
-                self.qs_type_lines,
-                self.quick_settings_width(),
-            ),
+            // `state` is the caller's shared borrow of this same chrome; the
+            // host reads it again for the rows' own actions.
+            QsLevel::Notifications => self.chrome.as_ref().map_or(0.0, |chrome| {
+                self.notification_center.preferred_height_for_width(
+                    &ChromeNotifications::new(chrome),
+                    &self.qs_type_lines,
+                    self.quick_settings_width(),
+                )
+            }),
             QsLevel::Clipboard => {
                 let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -10189,7 +10193,7 @@ impl ShellOverlayHost {
     /// The notification centre's geometry for the current panel and text
     /// scale — the one oracle paint, hit-testing and sizing read.
     fn qs_notification_layout(&self) -> CenterLayout {
-        CenterLayout::new(self.quick_settings_rect(), self.qs_type_lines)
+        CenterLayout::new(self.quick_settings_rect(), &self.qs_type_lines).drill_in()
     }
 
     /// Scroll the notification centre from a pointer wheel over the open
