@@ -150,7 +150,7 @@ pub(super) const APPS: &[CatalogApp] = &[
     },
     CatalogApp {
         id: "so.tilo.imager",
-        name: "Disk Imager",
+        name: "Tilo Installer",
         category: "System",
         platforms: &["linux", "macos"],
     },
