@@ -1,14 +1,13 @@
 //! Validation of the immutable selected basis and recoverable exact-input GC.
 use super::{
-    Basis, CoeditPayload, CoverageDecision, DIRECTORY, File, PathBuf, RetentionAuthority, Seek,
-    Step, StoreError, WorkspaceStore, frame, fs, invalid, read_meta, replay, retained, route_key,
-    verify_room, verify_snapshot,
+    Basis, CoeditPayload, CoverageDecision, DIRECTORY, File, Invariant, PathBuf,
+    RetentionAuthority, Seek, ShellStore, Step, StoreError, durable, frame, frames, fs, invalid,
+    read_meta, route_key, verify_room, verify_snapshot,
 };
-use crate::store::bounded::Invariant;
 
 /// Reads one immutable selected reference per quantum, including prerequisites.
 /// Rebinding local authority is mandatory after restart; the disk pin is not trust.
-pub(crate) struct SelectedRead {
+pub struct SelectedRead {
     root: PathBuf,
     authority: RetentionAuthority,
     workspace: u64,
@@ -18,21 +17,27 @@ pub(crate) struct SelectedRead {
     gc: Option<SelectedGc>,
 }
 impl SelectedRead {
-    pub(crate) fn new(store: &WorkspaceStore) -> Result<Option<Self>, StoreError> {
-        let Some(authority) = store.shell_authority().cloned() else {
+    /// A reader of `store`'s committed selected basis; `None` while this
+    /// crate's adapter has bound no authority to `store`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selected basis cannot be opened or synced.
+    pub fn new(store: &dyn ShellStore) -> Result<Option<Self>, StoreError> {
+        let Some(authority) = super::authority(store).cloned() else {
             return Ok(None);
         };
-        let selected = retained::current(&store.root.join(DIRECTORY))?;
+        let selected = durable::current(&store.root().join(DIRECTORY))?;
         if let Some(path) = &selected {
-            retained::sync_file_once(&store.root.join(DIRECTORY).join("CURRENT"))?;
-            retained::sync_dir_once(&store.root.join(DIRECTORY))?;
-            retained::sync_file_once(&path.join("basis.manifest"))?;
-            retained::sync_dir_once(path)?;
+            durable::sync_file_once(&store.root().join(DIRECTORY).join("CURRENT"))?;
+            durable::sync_dir_once(&store.root().join(DIRECTORY))?;
+            durable::sync_file_once(&path.join("basis.manifest"))?;
+            durable::sync_dir_once(path)?;
         }
         Ok(Some(Self {
-            root: store.root.clone(),
+            root: store.root().to_path_buf(),
             authority,
-            workspace: store.workspace_id,
+            workspace: store.workspace_id(),
             input: selected
                 .as_ref()
                 .map(|p| File::open(p.join("basis.manifest")))
@@ -42,7 +47,12 @@ impl SelectedRead {
             gc: None,
         }))
     }
-    pub(crate) fn step(&mut self) -> Result<Step<()>, StoreError> {
+    /// One quantum of reading, then of recoverable retirement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the basis is invalid or cannot be read.
+    pub fn step(&mut self) -> Result<Step<()>, StoreError> {
         if let Some(gc) = &mut self.gc {
             if gc.step()? == Step::Done(()) {
                 self.gc = None;
@@ -104,11 +114,16 @@ impl SelectedRead {
         }
         Ok(Step::More)
     }
-    pub(crate) fn obsolete(&self, bytes: &[u8]) -> Result<bool, StoreError> {
+    /// Whether the selected basis already covers the retained frame `bytes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a selected snapshot cannot be read or verified.
+    pub fn obsolete(&self, bytes: &[u8]) -> Result<bool, StoreError> {
         if !self.basis.complete() {
             return Ok(false);
         }
-        let Some((source, payload)) = retained::payload(bytes, self.workspace) else {
+        let Some((source, payload)) = frames::payload(bytes, self.workspace) else {
             return Ok(false);
         };
         let (channel, body) = match payload {
@@ -164,7 +179,7 @@ impl SelectedGc {
         })
     }
     pub(super) fn step(&mut self) -> Result<Step<()>, StoreError> {
-        if retained::current(&self.root.join(DIRECTORY))?.as_ref() != Some(&self.generation) {
+        if durable::current(&self.root.join(DIRECTORY))?.as_ref() != Some(&self.generation) {
             return Err(invalid("retirement selection changed"));
         }
         // This cursor holds one immutable plan under the serialized owner.
@@ -172,8 +187,8 @@ impl SelectedGc {
         // barrier leaves the flag clear, so retries and newly opened cursors
         // must still establish durability before retiring anything.
         if !self.selection_synced {
-            retained::sync_file_once(&self.root.join(DIRECTORY).join("CURRENT"))?;
-            retained::sync_dir_once(&self.root.join(DIRECTORY))?;
+            durable::sync_file_once(&self.root.join(DIRECTORY).join("CURRENT"))?;
+            durable::sync_dir_once(&self.root.join(DIRECTORY))?;
             self.selection_synced = true;
         }
         let offset = self.input.stream_position()?;
@@ -203,7 +218,7 @@ impl SelectedGc {
                     };
                     #[cfg(not(unix))]
                     let same = false;
-                    if same && replay::equal_files(&source, &pin)? {
+                    if same && frames::equal_files(&source, &pin)? {
                         fs::remove_file(&source)?;
                     }
                 }
@@ -212,9 +227,9 @@ impl SelectedGc {
             }
             // A prior quantum/process may have unlinked the source but failed
             // its directory barrier. Absence alone is not durable retirement.
-            retained::sync_dir(source.parent().invariant("source missing")?)?;
+            durable::sync_dir(source.parent().invariant("source missing")?)?;
             fs::remove_file(&pin)?;
-            retained::sync_dir(&self.generation)?;
+            durable::sync_dir(&self.generation)?;
             Ok(())
         })();
         if let Err(error) = result {

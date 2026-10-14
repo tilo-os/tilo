@@ -18,10 +18,10 @@
 //! exports `baseline-peer.postcard` (the governor before the foreign change)
 //! and `final-peer.postcard`, plus the foreign author's exact signed change in
 //! `original-foreign.postcard`.
-use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use std::{fs, path::Path};
 use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
@@ -82,7 +82,7 @@ fn kind_of(message: &NeighbourMsg) -> Retention {
 
 /// One batch of the governor's publications with how each is retained, as
 /// written to disk.
-pub(crate) struct Batch(Vec<(NeighbourMsg, Retention)>);
+pub(super) struct Batch(Vec<(NeighbourMsg, Retention)>);
 
 impl Batch {
     /// A full checkpoint: every message is retained as a checkpoint.
@@ -110,7 +110,7 @@ impl Batch {
 }
 
 /// The generated scenario, before it is written to disk.
-pub(crate) struct ShellSelectionFixture {
+pub(super) struct ShellSelectionFixture {
     pub(crate) room: String,
     pub(crate) authority: DeviceCert,
     pub(crate) certificates: Vec<DeviceCert>,
@@ -128,7 +128,7 @@ pub(crate) struct ShellSelectionFixture {
     clippy::too_many_lines,
     reason = "one scenario: the governor's publications and the foreign change stay together"
 )]
-pub(crate) fn generate() -> ShellSelectionFixture {
+pub(super) fn generate() -> ShellSelectionFixture {
     let person = SigningKey::from_bytes(&[0x61; 32]);
     let key = SigningKey::from_bytes(&[0x62; 32]);
     let foreign_key = SigningKey::from_bytes(&[0x63; 32]);
@@ -299,7 +299,7 @@ fn write_batch(dir: &Path, name: &str, batch: &Batch) -> serde_json::Value {
 }
 
 /// Write the scenario into `dir` in the layout the tests read.
-pub(crate) fn write(fixture: &ShellSelectionFixture, dir: &Path) {
+pub(super) fn write(fixture: &ShellSelectionFixture, dir: &Path) {
     fs::create_dir_all(dir).unwrap();
     let manifest = serde_json::json!({
         "version": 1,

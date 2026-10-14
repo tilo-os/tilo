@@ -468,7 +468,8 @@ document it names, whether a checkpoint is governance, a member's own
 continuity checkpoint or complete on its own, and which devices a governance
 step is addressed to (the `ShellPayloads` adapter its embedder injects,
 `crates/hosting/tilo-relay-shell`), plus the retained-proof
-inputs of native shell replay (`store::shell_selection`). It also refuses a
+inputs of native shell replay (that crate's `selection`, which the store
+steps through the `tilo-relay-store` seam). It also refuses a
 document change its app's published surface does not allow, or that
 the room's governor did not grant its author (`surfaces`), fetching each
 app's `surface.toml` by content hash from the registry (`apps.tilo.so` unless

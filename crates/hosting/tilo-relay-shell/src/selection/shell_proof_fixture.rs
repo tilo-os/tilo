@@ -15,11 +15,12 @@
 //! and admission time, the frame count, the room-checkpoint frame and the
 //! superseded route.
 use super::*;
-use crate::{coedit::CoeditPayload, transport::Envelope};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
+use tilo_relay::store::{RETAINED_DIR, WorkspaceStore};
+use tilo_relay::transport::Envelope;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
 
@@ -306,11 +307,11 @@ pub(crate) fn generate() -> ShellProofFixture {
     // The relay's unbound store retains every publication in receipt order,
     // exactly as its authenticated ingress does.
     let store = tempfile::tempdir().unwrap();
-    let workspace = crate::room_workspace_id(ROOM).unwrap();
+    let workspace = tilo_relay::room_workspace_id(ROOM).unwrap();
     let relay = WorkspaceStore::open(store.path(), workspace, true).unwrap();
     for (index, publication) in retained.iter().enumerate() {
         let payload = publication.payload();
-        let bytes = crate::transport::encode(&Envelope::Delta {
+        let bytes = tilo_relay::transport::encode(&Envelope::Delta {
             workspace_id: workspace,
             author_device_public_key: source,
             authored_at_ns: u64::try_from(

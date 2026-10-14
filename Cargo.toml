@@ -208,6 +208,7 @@ members = [
     "crates/hosting/tilo-relay-protocol",
     "crates/hosting/tilo-relay-session",
     "crates/hosting/tilo-relay-shell",
+    "crates/hosting/tilo-relay-store",
 
     # Media
     "crates/media/ocr",
