@@ -6,8 +6,9 @@ use rusqlite::Connection;
 use std::sync::Arc;
 
 // Generated independently with hashlib.pbkdf2_hmac('sha1', password,
-// b'saltysalt', 1, 16), then openssl enc -aes-128-cbc -K <key> -iv
-// 20202020202020202020202020202020. Plaintext is raw-host SHA256 + UTF8
+// b'saltysalt', 1, 16), followed by external AES-128-CBC encryption with
+// IV 20202020202020202020202020202020 and PKCS#7 padding.
+// Plaintext is raw-host SHA256 + UTF8
 // for schema24; schema23 stores just UTF8. These are synthetic test values.
 const V10: &str = "76313034cc1c321001cbd03eb0a32947b5884a9d41f7cdef55a6c01c47b36fc1f513692fcce0d4e82bf502bd189b0770c6523e8e84ba6c19b831b8973f474af7a271ac";
 const V11: &str = "763131ee96ec8095b1bf04a8f9fa1c5a7d45308ea6eb722925cccd5f79ba1ba5f754d71a47efde835ff2fd5375a1c507ea6a313def214c97d1c7f3a16e8eb9119fbd19";

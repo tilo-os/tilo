@@ -18,7 +18,12 @@ class EncryptedCopyScratchTest(unittest.TestCase):
             self.assertLess(preflight, guided)
             self.assertLess(guided, prepare)
             self.assertLess(prepare, copy)
-            self.assertIn("validate_disk_identity\n\n# --- 2. install", INSTALL[INSTALL.index("COPY_SCRATCH_MOUNTED=0"):prepare])
+            recheck = INSTALL.index("validate_disk_identity\n", INSTALL.index("COPY_SCRATCH_MOUNTED=0"))
+            capacity = INSTALL.index("validate_home_target_capacity\n", recheck)
+            install = INSTALL.index("# --- 2. install", capacity)
+            self.assertLess(recheck, capacity)
+            self.assertLess(capacity, install)
+            self.assertLess(install, prepare)
 
         with self.subTest(phase="export uses only reviewed LUKS root and is removed before install"):
             self.assertIn('COPY_SCRATCH="$ENC_MNT/.tilo-bootc-copy-tmp"', INSTALL)
