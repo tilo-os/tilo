@@ -131,8 +131,9 @@ pub(crate) fn answer(
         effect => {
             let discovered = model.borrow().discovered.clone();
             let service = Arc::clone(&model.borrow().service);
-            Ok(cx.thread(
-                move |_| carry_out(service.as_ref(), &discovered, &effect),
+            Ok(crate::device_read::job(
+                cx,
+                move || carry_out(service.as_ref(), &discovered, &effect),
                 |app: &mut SettingsApp, outcome: Result<(), String>, _| {
                     let model = app.printers().model();
                     let mut model = model.borrow_mut();

@@ -1418,6 +1418,13 @@ impl InputArea {
         self.catalog.prefetch();
     }
 
+    /// Whether this device's input sources are still being read off the
+    /// UI thread, starting that read if none has: the pane, which lists
+    /// them, waits for it rather than parsing the layout rules itself.
+    pub(crate) fn catalog_pending(&self) -> bool {
+        self.catalog.pending()
+    }
+
     /// The attached devices, read again at most once per
     /// [`DEVICE_POLL_INTERVAL`]; `None` without a compositor snapshot.
     fn devices(&self) -> Option<InputHardwareSnapshot> {
@@ -1514,6 +1521,17 @@ impl SourceCatalog {
 
     pub(crate) fn error(&self) -> Option<&str> {
         self.read().1.as_deref()
+    }
+
+    /// Whether the catalogue is being read off the UI thread, started here
+    /// if it has not been read. `false` once it is read, or when the host
+    /// runs no background work and it is read when asked.
+    fn pending(&self) -> bool {
+        if self.read.get().is_some() {
+            return false;
+        }
+        self.prefetch();
+        !self.background.is_finished()
     }
 
     /// Start reading the device's catalogue off the UI thread, unless it

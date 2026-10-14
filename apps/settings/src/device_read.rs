@@ -15,7 +15,7 @@ use std::marker::PhantomData;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// A result on its way from the background executor.
-type Erased = Box<dyn Any + Send>;
+pub(crate) type Erased = Box<dyn Any + Send>;
 
 /// One background read of a `T`, started at most once.
 ///
@@ -74,15 +74,9 @@ impl ErasedRead {
         if self.pending.borrow().is_some() || self.done.borrow().is_some() {
             return false;
         }
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let wake = ui::WakeHandle::new();
-        let spawned = ui::background::Background::current().spawn("device read", move || {
-            let _ = sender.send(read());
-            wake.wake();
-        });
-        if spawned.is_err() {
+        let Some(receiver) = spawn_erased(read) else {
             return false;
-        }
+        };
         *self.pending.borrow_mut() = Some(receiver);
         true
     }
@@ -113,6 +107,274 @@ impl ErasedRead {
         let receiver = self.pending.borrow_mut().take()?;
         receiver.recv().ok()
     }
+}
+
+/// Mark a call that reaches the device or a service — a command, a D-Bus
+/// call, a walk of a large tree — and so may take seconds. In a debug build
+/// it panics on the UI thread: a pane that makes the window wait on the
+/// device fails its tests and a development build, instead of freezing the
+/// window on a slow device. The stand-ins a test reads mark their calls
+/// too, so a test that opens a pane on the UI thread proves it reads
+/// nothing there.
+#[track_caller]
+pub(crate) fn off_ui_thread() {
+    debug_assert!(
+        !ui::rt::is_ui_thread(),
+        "Settings reached the device on the UI thread; read it off the UI thread \
+         (crate::device_read::Reading, DeviceRead or an effect job)"
+    );
+}
+
+/// What an area last read of the device, read again off the UI thread.
+///
+/// A pane built over the area shows the last reading, or that the device is
+/// still being read, and takes in a new reading at the sync its landing
+/// wakes ([`Reading::revision`]). Asking for a read while one runs reads
+/// once more after it, so a reading asked for after a change shows it.
+pub(crate) struct Reading<T> {
+    read: ErasedReading,
+    of: PhantomData<fn() -> T>,
+}
+
+impl<T> Clone for Reading<T> {
+    fn clone(&self) -> Self {
+        Self {
+            read: self.read.clone(),
+            of: PhantomData,
+        }
+    }
+}
+
+/// A reading of any type, shared between the panes and the worker.
+type Shared = std::sync::Arc<dyn Any + Send + Sync>;
+
+impl<T: Clone + Send + Sync + 'static> Reading<T> {
+    /// Nothing read yet; [`Self::refresh`] reads with `read`.
+    pub(crate) fn new(read: impl Fn() -> T + Send + Sync + 'static) -> Self {
+        Self {
+            read: ErasedReading::new(std::sync::Arc::new(move || {
+                std::sync::Arc::new(read()) as Shared
+            })),
+            of: PhantomData,
+        }
+    }
+
+    /// The last reading; `None` until the first lands.
+    pub(crate) fn get(&self) -> Option<T> {
+        self.read.get()?.downcast_ref::<T>().cloned()
+    }
+
+    /// Bumped by every reading that lands.
+    pub(crate) fn revision(&self) -> u64 {
+        self.read.value.revision()
+    }
+
+    /// Change the last reading in place: what a change the device took
+    /// makes of it before the device is read again.
+    pub(crate) fn update(&self, change: impl FnOnce(&mut T)) {
+        if let Some(mut value) = self.get() {
+            change(&mut value);
+            self.read.value.set(Some(std::sync::Arc::new(value)));
+        }
+    }
+
+    /// Read the device again on the background executor; the window is
+    /// woken when the reading lands. A host that runs no background work
+    /// reads here.
+    pub(crate) fn refresh(&self) {
+        self.read.refresh();
+    }
+}
+
+/// [`Reading`] for a reading of any type: the reading, compiled once.
+#[derive(Clone)]
+struct ErasedReading {
+    value: ui::LocalState<Option<Shared>>,
+    read: std::sync::Arc<dyn Fn() -> Shared + Send + Sync>,
+    /// 0: idle, 1: a read runs, 2: a read runs and another is asked for.
+    running: std::sync::Arc<std::sync::atomic::AtomicU8>,
+}
+
+impl ErasedReading {
+    fn new(read: std::sync::Arc<dyn Fn() -> Shared + Send + Sync>) -> Self {
+        Self {
+            value: ui::LocalState::new(None),
+            read,
+            running: std::sync::Arc::default(),
+        }
+    }
+
+    fn get(&self) -> Option<Shared> {
+        self.value.with(Clone::clone)
+    }
+
+    fn refresh(&self) {
+        use std::sync::atomic::Ordering;
+        // Asked while a read runs: that read goes round once more.
+        if self
+            .running
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
+                0 => Some(1),
+                _ => Some(2),
+            })
+            .is_ok_and(|was| was != 0)
+        {
+            return;
+        }
+        let this = self.clone();
+        let work = Box::new(move || {
+            loop {
+                this.running.store(1, Ordering::Release);
+                this.value.set(Some((this.read)()));
+                if this
+                    .running
+                    .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    break;
+                }
+            }
+            Box::new(()) as Erased
+        });
+        if spawn_erased(work).is_none() {
+            self.value.set(Some((self.read)()));
+            self.running.store(0, Ordering::Release);
+        }
+    }
+}
+
+/// Blocking work for the background executor, its result erased.
+pub(crate) type Work = Box<dyn FnOnce() -> Erased + Send>;
+
+/// Run `work` on the background executor and wake the window asking when
+/// it ends; its result comes on the receiver. `None` when the host runs no
+/// background work. Every off-thread read and change of Settings goes
+/// through here, so the spawn and the channel are compiled once.
+fn spawn_erased(work: Work) -> Option<Receiver<Erased>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let wake = ui::WakeHandle::new();
+    let job: Box<dyn FnOnce() + Send> = Box::new(move || {
+        let _ = sender.send(work());
+        wake.wake();
+    });
+    ui::background::Background::current()
+        .spawn("settings device work", job)
+        .ok()
+        .map(|()| receiver)
+}
+
+/// Blocking work running off the UI thread for a model, which takes its
+/// result in when it lands ([`Landing::poll`]).
+pub(crate) struct Landing(Receiver<Erased>);
+
+/// Where a [`Landing`] stands.
+pub(crate) enum Landed<T> {
+    /// Still running.
+    Pending,
+    /// Its result.
+    Done(T),
+    /// The work stopped without a result (it panicked).
+    Lost,
+}
+
+impl Landing {
+    /// Run `work` off the UI thread. A host that runs no background work
+    /// runs it here, so the work is never lost.
+    pub(crate) fn start<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Self {
+        Self::start_erased(Box::new(move || Box::new(work()) as Erased))
+    }
+
+    /// [`Self::start`] for work whose result is already erased.
+    pub(crate) fn start_erased(work: Work) -> Self {
+        let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(work)));
+        let taken = std::sync::Arc::clone(&slot);
+        let run: Work = Box::new(move || {
+            let work = taken
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            work.map_or_else(|| Box::new(()) as Erased, |work| work())
+        });
+        if let Some(receiver) = spawn_erased(run) {
+            return Self(receiver);
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let work = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(work) = work {
+            let _ = sender.send(work());
+        }
+        Self(receiver)
+    }
+
+    /// Its result if it landed, taken once.
+    pub(crate) fn poll<T: 'static>(&self) -> Landed<T> {
+        match self.poll_erased() {
+            Landed::Done(value) => value
+                .downcast::<T>()
+                .map_or(Landed::Lost, |value| Landed::Done(*value)),
+            Landed::Pending => Landed::Pending,
+            Landed::Lost => Landed::Lost,
+        }
+    }
+
+    /// [`Self::poll`], its result left erased.
+    pub(crate) fn poll_erased(&self) -> Landed<Erased> {
+        match self.0.try_recv() {
+            Ok(value) => Landed::Done(value),
+            Err(TryRecvError::Empty) => Landed::Pending,
+            Err(TryRecvError::Disconnected) => Landed::Lost,
+        }
+    }
+
+    /// Wait for its result: only ever off the UI thread. `None` when the
+    /// work stopped without one.
+    pub(crate) fn wait_erased(&self) -> Option<Erased> {
+        off_ui_thread();
+        self.0.recv().ok()
+    }
+}
+
+/// The context an effect of Settings answers in.
+pub(crate) type Cx =
+    ui::framework::EffectCx<crate::resource::Settings, crate::settings_app::SettingsApp>;
+
+/// What takes a job's erased result in on the UI thread.
+type ErasedThen = Box<
+    dyn FnOnce(
+        &mut crate::settings_app::SettingsApp,
+        Erased,
+        &mut Cx,
+    ) -> ui::framework::EffectAnswer,
+>;
+
+/// Run `work` off the UI thread as the effect's job, then `then` with its
+/// result on the UI thread: [`ui::framework::EffectCx::thread`], with the
+/// result erased so the framework's job plumbing is compiled once for
+/// every effect of Settings rather than once per result type.
+pub(crate) fn job<T: Send + 'static>(
+    cx: &mut Cx,
+    work: impl FnOnce() -> T + Send + 'static,
+    then: impl FnOnce(&mut crate::settings_app::SettingsApp, T, &mut Cx) -> ui::framework::EffectAnswer
+    + 'static,
+) -> ui::framework::Effected {
+    erased_job(
+        cx,
+        Box::new(move || Box::new(work()) as Erased),
+        Box::new(move |app, value, cx| match value.downcast::<T>() {
+            Ok(value) => then(app, *value, cx),
+            Err(_) => Err("a job finished with a value of another type".into()),
+        }),
+    )
+}
+
+fn erased_job(cx: &mut Cx, work: Work, then: ErasedThen) -> ui::framework::Effected {
+    cx.thread(
+        move |_| work(),
+        move |app: &mut crate::settings_app::SettingsApp, value: Erased, cx| then(app, value, cx),
+    )
 }
 
 #[cfg(test)]

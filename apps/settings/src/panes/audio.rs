@@ -179,8 +179,9 @@ pub(crate) fn answer(
         // click is answered and painted at once.
         Plan::Device { key, work, settle } => {
             let work = model.changes.submit(key, work);
-            Ok(cx.thread(
-                move |_| work(),
+            Ok(crate::device_read::job(
+                cx,
+                work,
                 move |app: &mut SettingsApp, ran: Option<Result<(), String>>, _| {
                     // Replaced by a newer change of the same kind before it
                     // ran: that one settles the model.

@@ -33,6 +33,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::device_read::Reading;
 use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
@@ -755,6 +756,7 @@ pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn status(&self) -> Result<os_actions::TimeSyncStatus, String> {
+        crate::device_read::off_ui_thread();
         let mut status = os_actions::get_time_sync_status()?;
         if status.timezone.is_none() {
             status.timezone = timezone();
@@ -763,10 +765,12 @@ impl Clock for SystemClock {
     }
 
     fn ntp(&self) -> Result<bool, String> {
+        crate::device_read::off_ui_thread();
         os_actions::get_ntp()
     }
 
     fn zones(&self) -> Result<Vec<String>, String> {
+        crate::device_read::off_ui_thread();
         os_actions::list_timezones()
     }
 
@@ -781,10 +785,12 @@ impl Clock for SystemClock {
     }
 
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::set_ntp(enabled)
     }
 
     fn set_timezone(&self, timezone: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::set_timezone(timezone)
     }
 }
@@ -810,14 +816,17 @@ impl Default for SampleClock {
 
 impl Clock for SampleClock {
     fn status(&self) -> Result<os_actions::TimeSyncStatus, String> {
+        crate::device_read::off_ui_thread();
         Ok(self.status.lock_recover().clone())
     }
 
     fn ntp(&self) -> Result<bool, String> {
+        crate::device_read::off_ui_thread();
         Ok(self.status.lock_recover().ntp_enabled.unwrap_or(true))
     }
 
     fn zones(&self) -> Result<Vec<String>, String> {
+        crate::device_read::off_ui_thread();
         Ok([
             "America/New_York",
             "Asia/Tokyo",
@@ -834,11 +843,13 @@ impl Clock for SampleClock {
     }
 
     fn set_ntp(&self, enabled: bool) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         self.status.lock_recover().ntp_enabled = Some(enabled);
         Ok(())
     }
 
     fn set_timezone(&self, timezone: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         self.status.lock_recover().timezone = Some(timezone.to_owned());
         Ok(())
     }
@@ -859,28 +870,90 @@ pub enum TimeDateEffect {
     },
 }
 
-/// What the Time & Date area keeps for the window: the device's clock, and
-/// where its last change stands.
+/// What the clock reports: timedated's status, the zones it accepts and
+/// where they lie on the map. `timedatectl` goes through the system bus,
+/// which can take up to a D-Bus timeout to answer, so this is read off the
+/// UI thread ([`Reading`]).
+#[derive(Clone)]
+struct ClockReading {
+    /// What timedated reports, or why it could not be asked.
+    status: Result<os_actions::TimeSyncStatus, String>,
+    /// Whether automatic time is on, as the status or the separate ask
+    /// said.
+    automatic: Option<bool>,
+    /// Why the automatic-time switch's position is unknown.
+    auto_error: Option<String>,
+    /// The zones to choose from, the configured one among them, or why the
+    /// list could not be read.
+    zones: Result<Vec<String>, String>,
+    points: Vec<TimeZonePoint>,
+}
+
+impl ClockReading {
+    fn read(clock: &dyn Clock) -> Self {
+        let status = clock.status();
+        // Automatic time is asked on its own when timedated's status did
+        // not say, whether or not the status could be read.
+        let mut automatic = status.as_ref().ok().and_then(|status| status.ntp_enabled);
+        let mut auto_error = None;
+        if automatic.is_none() {
+            match clock.ntp() {
+                Ok(enabled) => automatic = Some(enabled),
+                Err(error) => auto_error = Some(error),
+            }
+        }
+        let zones = clock.zones().map(|mut zones| {
+            if let Some(zone) = status
+                .as_ref()
+                .ok()
+                .and_then(|status| status.timezone.as_ref())
+                && !zones.contains(zone)
+            {
+                zones.push(zone.clone());
+                zones.sort();
+            }
+            zones
+        });
+        let points = zones.as_deref().map(timezone_map).unwrap_or_default();
+        Self {
+            status,
+            automatic,
+            auto_error,
+            zones,
+            points,
+        }
+    }
+}
+
+/// What the Time & Date area keeps for the window: the device's clock, what
+/// it last reported, and where its last change stands.
 pub struct TimeDateArea {
     clock: Arc<dyn Clock>,
+    /// What the clock last reported, read again off the UI thread whenever
+    /// the pane opens and after every change.
+    reading: Reading<ClockReading>,
     /// Why the last change failed, for the pane to show.
     notice: LocalState<Option<String>>,
-    /// Bumped by every change the clock took, so the pane reads it again.
-    applied: LocalState<u64>,
 }
 
 impl TimeDateArea {
     /// The area over this device's clock, or a stand-in for a capture.
+    /// Nothing is read until the pane opens.
     pub fn new(cx: &PaneCx) -> Self {
         let clock: Arc<dyn Clock> = if cx.reaches_devices() {
             Arc::new(SystemClock)
         } else {
             Arc::new(SampleClock::default())
         };
+        Self::over(clock)
+    }
+
+    fn over(clock: Arc<dyn Clock>) -> Self {
+        let read = Arc::clone(&clock);
         Self {
             clock,
+            reading: Reading::new(move || ClockReading::read(read.as_ref())),
             notice: LocalState::new(None),
-            applied: LocalState::new(0),
         }
     }
 }
@@ -897,8 +970,9 @@ pub(crate) fn answer(
     cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
     let clock = Arc::clone(&app.time_date().clock);
-    Ok(cx.thread(
-        move |_| match effect {
+    Ok(crate::device_read::job(
+        cx,
+        move || match effect {
             TimeDateEffect::SetAutomaticTime { on } => clock
                 .set_ntp(on)
                 .map_err(|error| format!("automatic time could not be changed: {error}")),
@@ -916,7 +990,8 @@ pub(crate) fn answer(
         },
         |app: &mut SettingsApp, outcome: Result<(), String>, _| {
             let area = app.time_date();
-            area.applied.set(area.applied.get().wrapping_add(1));
+            // What the clock took is read off the UI thread too.
+            area.reading.refresh();
             match outcome {
                 Ok(()) => {
                     area.notice.set(None);
@@ -939,8 +1014,13 @@ pub struct TimeDatePane {
     locale: Followed<Locale>,
     notice: LocalState<Option<String>>,
     notice_shown: Option<String>,
-    applied: LocalState<u64>,
-    applied_seen: u64,
+    /// What the clock reports, read off the UI thread.
+    reading: Reading<ClockReading>,
+    /// The revision of `reading` taken in.
+    reading_seen: u64,
+    /// Whether a reading has landed; until then the rows say the clock is
+    /// being read.
+    read: bool,
     timezone: String,
     timezones: Vec<String>,
     timezone_points: Vec<TimeZonePoint>,
@@ -958,65 +1038,62 @@ pub struct TimeDatePane {
 }
 
 impl TimeDatePane {
-    /// The pane over `area`'s clock and `cx`'s locale. Every part the clock
-    /// could not read is kept as its failure and shown as one, never as a
-    /// default.
+    /// The pane over `area`'s clock and `cx`'s locale. It shows what the
+    /// clock last reported, or that it is being read, and reads it again
+    /// off the UI thread. Every part the clock could not read is kept as
+    /// its failure and shown as one, never as a default.
     pub fn new(cx: PaneCx, area: &TimeDateArea) -> Self {
         let locale = cx.follow::<Locale>();
-        let (mut timezones, timezones_error) = match area.clock.zones() {
-            Ok(zones) => (zones, None),
-            Err(error) => (Vec::new(), Some(error)),
-        };
-        let applied_seen = area.applied.get();
-        let notice_shown = area.notice.get();
+        area.reading.refresh();
         let mut pane = Self {
             h24: matches!(locale.get().time_format, TimeStyle::H24),
             cx,
             clock: Arc::clone(&area.clock),
             locale,
             notice: area.notice.clone(),
-            notice_shown,
-            applied: area.applied.clone(),
-            applied_seen,
+            notice_shown: area.notice.get(),
+            reading: area.reading.clone(),
+            reading_seen: area.reading.revision(),
+            read: false,
             timezone: String::new(),
             timezones: Vec::new(),
             timezone_points: Vec::new(),
             sync_status: os_actions::TimeSyncStatus::default(),
             status_error: None,
-            timezones_error,
+            timezones_error: None,
             timezone_unknown: false,
             auto_error: None,
             composed: ui::widget::Composed::default(),
         };
-        pane.read_clock();
-        if !pane.timezone_unknown && !timezones.contains(&pane.timezone) {
-            timezones.push(pane.timezone.clone());
-            timezones.sort();
+        if let Some(reading) = area.reading.get() {
+            pane.adopt(reading);
         }
-        pane.timezone_points = timezone_map(&timezones);
-        pane.timezones = timezones;
         pane
     }
 
-    /// Read what the clock reports now.
-    fn read_clock(&mut self) {
-        (self.sync_status, self.status_error) = match self.clock.status() {
+    /// Show what the clock reported.
+    fn adopt(&mut self, reading: ClockReading) {
+        self.read = true;
+        (self.sync_status, self.status_error) = match reading.status {
             Ok(status) => (status, None),
             Err(error) => (os_actions::TimeSyncStatus::default(), Some(error)),
         };
-        self.auto_error = None;
-        if self.sync_status.ntp_enabled.is_none() {
-            match self.clock.ntp() {
-                Ok(enabled) => self.sync_status.ntp_enabled = Some(enabled),
-                Err(error) => self.auto_error = Some(error),
-            }
-        }
+        self.sync_status.ntp_enabled = reading.automatic;
+        self.auto_error = reading.auto_error;
         self.timezone_unknown = self.sync_status.timezone.is_none();
         self.timezone = self.sync_status.timezone.clone().unwrap_or_default();
+        (self.timezones, self.timezones_error) = match reading.zones {
+            Ok(zones) => (zones, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
+        self.timezone_points = reading.points;
     }
 
     /// The automatic-time switch, or why its position is unknown.
     fn auto_row(&self) -> Item {
+        if !self.read {
+            return value_row(&t("time-auto"), &t("time-reading"));
+        }
         match (&self.auto_error, self.sync_status.ntp_enabled) {
             (Some(error), _) => error_row(
                 &t("time-auto"),
@@ -1031,6 +1108,9 @@ impl TimeDatePane {
 
     /// The zone chooser, or why there is nothing to choose from.
     fn zone_row(&self) -> Item {
+        if !self.read {
+            return value_row(&t("time-timezone"), &t("time-reading"));
+        }
         match &self.timezones_error {
             Some(error) => error_row(
                 &t("time-timezone"),
@@ -1073,7 +1153,9 @@ impl TimeDatePane {
             .clone()
             .unwrap_or_else(|| t("time-source-unknown"));
         let mapped = self.timezone_points.len();
-        let map_note = if mapped == 0 {
+        let map_note = if !self.read {
+            t("time-reading")
+        } else if mapped == 0 {
             t("time-map-empty")
         } else {
             t_args(
@@ -1125,6 +1207,10 @@ impl TimeDatePane {
         let source = card(
             &t("time-source-title"),
             rows(match &self.status_error {
+                _ if !self.read => vec![
+                    value_row(&t("time-sync"), &t("time-reading")),
+                    note(&t("time-source-caption")),
+                ],
                 Some(error) => vec![
                     error_row(
                         &t("time-sync"),
@@ -1150,10 +1236,12 @@ impl TimeDatePane {
 
 impl Widget for TimeDatePane {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        let applied = self.applied.get();
-        if applied != self.applied_seen {
-            self.applied_seen = applied;
-            self.read_clock();
+        let revision = self.reading.revision();
+        if revision != self.reading_seen {
+            self.reading_seen = revision;
+            if let Some(reading) = self.reading.get() {
+                self.adopt(reading);
+            }
             self.composed.invalidate();
         }
         let notice = self.notice.get();
@@ -1385,12 +1473,14 @@ mod tests {
     fn unreadable_time_settings_are_shown_as_errors() {
         let profile = tempfile::tempdir().unwrap();
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
-        let area = TimeDateArea {
-            clock: Arc::new(UnreadableClock),
-            notice: LocalState::new(None),
-            applied: LocalState::new(0),
-        };
-        let pane = TimeDatePane::new(cx, &area);
+        let area = TimeDateArea::over(Arc::new(UnreadableClock));
+        let mut pane = TimeDatePane::new(cx, &area);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while area.reading.revision() == pane.reading_seen {
+            assert!(std::time::Instant::now() < deadline, "the clock is read");
+            std::thread::yield_now();
+        }
+        pane.adopt(area.reading.get().expect("a reading landed"));
         assert!(pane.timezone_unknown);
         let text = crate::widgets::announced_text(pane.build_composition().as_ref());
         let says = |needle: &str| text.iter().any(|line| line == needle);
@@ -1406,6 +1496,89 @@ mod tests {
         assert!(
             !text.iter().any(|line| line.contains(SAMPLE_TIMEZONE)),
             "{text:#?}"
+        );
+    }
+
+    /// A clock whose timedated does not answer until it is let go (or ten
+    /// seconds pass), as `timedatectl` does behind a filtered system bus
+    /// that holds the call until the D-Bus timeout.
+    struct StalledClock(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+    impl StalledClock {
+        fn wait(&self) {
+            let (open, released) = &*self.0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut open = open.lock().unwrap();
+            while !*open && std::time::Instant::now() < deadline {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                open = released.wait_timeout(open, left).unwrap().0;
+            }
+            drop(open);
+        }
+    }
+
+    impl Clock for StalledClock {
+        fn status(&self) -> Result<os_actions::TimeSyncStatus, String> {
+            self.wait();
+            SampleClock::default().status()
+        }
+        fn ntp(&self) -> Result<bool, String> {
+            self.wait();
+            Ok(true)
+        }
+        fn zones(&self) -> Result<Vec<String>, String> {
+            self.wait();
+            SampleClock::default().zones()
+        }
+        fn now(&self, h24: bool) -> (String, String) {
+            SampleClock::default().now(h24)
+        }
+        fn set_ntp(&self, _: bool) -> Result<(), String> {
+            self.wait();
+            Ok(())
+        }
+        fn set_timezone(&self, _: &str) -> Result<(), String> {
+            self.wait();
+            Ok(())
+        }
+    }
+
+    /// Opening Time & Date while timedated takes its time is answered and
+    /// drawn at once: the pane says the clock is being read, and shows the
+    /// zone once timedated answers.
+    #[test]
+    fn a_stalled_timedated_never_holds_the_window() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let stalled = Arc::clone(&gate);
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            settings.set_time_date(TimeDateArea::over(Arc::new(StalledClock(stalled))));
+        })
+        .expect("the Settings window is mounted");
+
+        let clicked = std::time::Instant::now();
+        crate::effects::show_pane(&mut app, crate::categories::Category::TimeDate);
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        let answered = clicked.elapsed();
+        assert!(
+            answered < std::time::Duration::from_secs(1),
+            "opening the pane waited {answered:?} on timedated"
+        );
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains(&t("time-reading")), "{frame}");
+        assert!(!frame.contains(SAMPLE_TIMEZONE), "{frame}");
+
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains(SAMPLE_TIMEZONE))),
+            "the zone timedated reports is shown"
         );
     }
 
@@ -1429,8 +1602,15 @@ mod tests {
             },
         ))
         .unwrap();
-        let frame = app.harness().inspection_json().unwrap();
-        assert!(frame.contains("Europe/Berlin"), "{frame}");
+        // The clock is read off the UI thread: the pane shows the zone once
+        // the reading lands.
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(30), |harness| harness
+                    .inspection_json()
+                    .is_ok_and(|frame| frame.contains("Europe/Berlin"))),
+            "the zone the clock took is shown"
+        );
         assert!(
             app.effect(&SettingsEffect::from(TimeDateEffect::SetTimeZone {
                 zone: "Mars/Olympus_Mons".into(),
