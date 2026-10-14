@@ -10,6 +10,11 @@ topbar-sharing-session-controls = SESSION CONTROLS · { $name }
 topbar-sharing-session-viewing = SESSION VIEWING · { $name }
 topbar-sharing-count-controlling = { $controllers } CONTROL · { $viewers } VIEWING
 topbar-sharing-count = { $viewers } VIEWING
+topbar-watching-count = +{ $count } watching
+topbar-watching-description = { $count } { $count ->
+        [one] person
+       *[other] people
+    } watching without joining
 topbar-sharing-surface = surface { $surface }
 topbar-open-overview = Open overview
 topbar-tilo-menu = Tilo menu
@@ -523,11 +528,9 @@ notification-center-title = Notifications
 notification-center-empty = No recent notifications
 notification-center-cleared = Notifications cleared
 notification-center-clear-all = Clear all
-notification-center-position = Newest { $first }–{ $last } of { $total }
-notification-center-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
+notification-center-position = { $first }–{ $last } of { $total }
+notification-center-close = Close notifications
+notification-center-back-to-list = Back to notifications
 notification-center-newer = ↑ Newer
 notification-center-at-newest = At newest
 notification-center-older = ↓ Older
@@ -535,9 +538,12 @@ notification-center-at-oldest = At oldest
 history-severity-info = Information
 history-severity-warning = Warning
 history-severity-error = Error
-history-source-system = System
-history-notification-description = { $severity }. From { $source }. { $time }
-history-notification-description-body = { $severity }. From { $source }. { $time }. { $body }
+history-notification-description = { $severity }. { $time }
+history-notification-description-body = { $severity }. { $time }. { $body }
+history-notification-description-sourced = { $severity }. From { $source }. { $time }
+history-notification-description-sourced-body = { $severity }. From { $source }. { $time }. { $body }
+host-action-source-identity = Identity
+host-action-source-devices = Devices
 notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
         [yes] collapse
        *[no] expand
@@ -864,6 +870,14 @@ a11y-shell-people-present = Present now
 a11y-shell-people-now = Now: { $activity }
 a11y-shell-people-intent = Intent: { $status }
 a11y-shell-people-intent-inferred = Intent, inferred: { $status }
+a11y-shell-people-recent = Recently: { $summary }
+a11y-shell-people-recent-inferred = Recently, summarized: { $summary }
+a11y-shell-people-recent-toggle = What { $name } did recently
+a11y-shell-people-recent-toggle-description = Show or hide a short summary of the last few minutes
+a11y-shell-people-watching = { $count } { $count ->
+        [one] person
+       *[other] people
+    } watching without joining
 a11y-shell-status-name = Your collaboration status
 a11y-shell-status-inferred = Inferred on this device from recent semantic actions
 a11y-shell-status-set = Set what you are trying to accomplish
@@ -910,6 +924,7 @@ launchpad-keyboard-hint = Arrow keys move  ·  Enter opens  ·  Super+N shows ev
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-here-now = { $count } here now
+people-panel-watching = +{ $count } watching
 people-panel-screen-visible = Screen visible now
 people-panel-only-you = Only you are here
 people-panel-status-typing = Type a status, then press Enter
@@ -1018,8 +1033,6 @@ tilo-about-link-notify = Get notified
 tilo-about-link-source = Source code
 tilo-about-link-community = Community
 
-notification-center-read = Read
-notification-center-read-description = Read complete notification
 notification-preview-hidden = Notification preview hidden
 activity-catch-up-goals = Workspace tasks · { $done } completed · { $unfinished } unfinished · updated { $when }
 activity-catch-up-review-description = Review this workspace's waiting tasks, goals and agent work. Reading activity does not resolve a task.

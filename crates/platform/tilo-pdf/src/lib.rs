@@ -621,30 +621,6 @@ impl Engine {
         self.open_bytes(&std::fs::read(path)?)
     }
 
-    /// Open the document `content` holds at the address `hash`.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Invalid`] when the content is not (yet) available on this
-    /// device or does not match its address; otherwise as
-    /// [`Self::open_bytes`].
-    #[cfg(feature = "content")]
-    pub fn open_content(
-        &self,
-        content: &impl tilo_content::ContentSource,
-        hash: &str,
-    ) -> Result<Document> {
-        let bytes = content.content(hash).ok_or_else(|| {
-            Error::Invalid("the document's bytes are not available on this device yet".into())
-        })?;
-        if !tilo_content::verify(hash, &bytes) {
-            return Err(Error::Invalid(
-                "the stored document does not match its hash".into(),
-            ));
-        }
-        self.open_bytes(&bytes)
-    }
-
     /// Wrap an image (PNG, JPEG, WebP, …) as a one-page document, 612 pt
     /// wide. The image is decoded inside the engine.
     ///

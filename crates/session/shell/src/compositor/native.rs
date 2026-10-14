@@ -408,6 +408,9 @@ use crate::compositor::control_invocation::{
     ControlInvocation, ControlInvocationPoll, InvocationProgress,
 };
 use crate::compositor::control_listing::{HeldListing, ListingStamp, ListingWait};
+use crate::compositor::session_bootstrap::{
+    LoadedSession, load_session_tree, service_socket_is_live, spawn_session_collab_broker,
+};
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, TouchPhaseKind,
@@ -7268,197 +7271,6 @@ fn priority_route(
 /// How long an invite minted from the palette stays valid.
 const INVITE_EXPIRY_SECONDS: u64 = 3600;
 
-/// Load this machine's desktop state and bring it up to the invariants
-/// later stages assume: a persist path, a durable room identity per
-/// workspace, and an owner per room — an unowned room has no administrators.
-///
-/// Returns the tree plus whether peer sync may come up; refused when the
-/// device key won't load, since the id salt comes from it and an unsalted id space lets peers mint colliding ids.
-fn load_session_tree(
-    enable_peer_sync: bool,
-) -> (
-    crate::shell::state::WorkspaceTreeHandle,
-    bool,
-    Option<crate::shell::persist::StateNotice>,
-) {
-    use crate::shell::persist;
-
-    let path = persist::state_json_path();
-
-    // The id salt is set **before** the tree is loaded — load-bearing order.
-    //
-    // Two peers minting ids from the same counter collide, and CRDT sync
-    // folds them into one row. The salt (from the Iroh keypair) puts each
-    // peer in a disjoint id range, making an id safe as a replication key.
-    //
-    // Setting it after load left `bootstrap_default`'s first-boot ids
-    // unsalted — identical on every machine, so two such peers joining one
-    // room would collide. Re-seeding afterwards didn't help: it fixes ids minted *next*, not ones already in the tree.
-    let mut peer_sync_possible = enable_peer_sync;
-    let peer_key_path = crate::shell::network::peer_key_path();
-    match load_or_create_workspace_salt(&path, &peer_key_path) {
-        Ok(salt) => {
-            crate::shell::state::WorkspaceTree::set_process_peer_salt(salt);
-            tracing::info!("workspace id salt set to 0x{:04x}", salt);
-        }
-        Err(error) => {
-            peer_sync_possible = false;
-            tracing::error!(
-                %error,
-                "workspace id salt unavailable; peer sync stays off rather than using an unstable id namespace"
-            );
-        }
-    }
-    if peer_sync_possible {
-        match crate::network::behaviour::load_or_create_keypair(&peer_key_path) {
-            Ok(kp) => {
-                tracing::info!(endpoint = %kp.public(), "peer-sync: device identity loaded");
-            }
-            Err(e) => {
-                peer_sync_possible = false;
-                tracing::error!(
-                    "peer-sync: device key load failed ({e}); peer sync stays off \
-                     rather than syncing an unsalted id space"
-                );
-            }
-        }
-    }
-
-    // Carried out to `run`, which has the chrome to show it — silently handing
-    // someone a bootstrapped demo tree is indistinguishable from losing their work.
-    let (mut tree, state_notice) = persist::load_or_default(&path);
-    // Recover cards written by builds that mistook a host window's toolkit
-    // identity for an uninstalled package. The host catalogue is available
-    // before the frame loop starts, so this one-shot migration can distinguish
-    // a now-resolvable local app from a genuinely missing one without making
-    // the latter retry forever.
-    let recovered_host_apps =
-        crate::shell::peer_windows::retry_resolvable_host_app_errors(&mut tree);
-    // Past every id already in the tree, so a restart won't re-mint one in use. No-op on a first boot.
-    tree.seed_next_id_from_self();
-
-    // Nothing writes back over a file this session refused to read — a refused
-    // session runs without persistence, like `ui::persist` disabling a writer over a document it wouldn't open.
-    tree.persist_path = if state_notice.is_none() {
-        Some(path)
-    } else {
-        None
-    };
-    tree.fs_acl_path = Some(persist::fs_capability_export_path());
-    if recovered_host_apps {
-        tracing::info!(
-            target: "tilo::session_restore",
-            "retrying legacy host-app cards that now resolve to installed desktop entries"
-        );
-        tree.queue_save();
-    }
-
-    let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
-    if !adopted.is_empty() {
-        tracing::info!(
-            "capabilities: {} workspace(s) adopted by their selected identities",
-            adopted.len()
-        );
-    }
-    if let Some(account) = std::env::var("USER")
-        .ok()
-        .filter(|account| !account.is_empty())
-    {
-        let rebound = tree
-            .rebind_account_owned_workspaces(&account, crate::shell::state::local_user_id_for_room);
-        if !rebound.is_empty() {
-            tracing::info!(
-                "capabilities: {} workspace(s) created before this device's identity now belong to it",
-                rebound.len()
-            );
-        }
-    }
-    // Replay the persisted aggregate on every boot. A previous session may
-    // have stopped while the authority socket was unavailable; the
-    // background publisher coalesces this with any immediate mutation.
-    tree.export_fs_capabilities();
-    (tree.shared(), peer_sync_possible, state_notice)
-}
-
-/// Is something already listening on `path`? The collaboration broker
-/// unlinks before it binds, so without this check a second compositor on
-/// the same `XDG_RUNTIME_DIR` would steal the socket from the running
-/// session, splitting apps across two unreachable brokers. A successful
-/// connect means a live listener; `ECONNREFUSED` means a stale inode we do want to clear.
-fn collab_socket_is_live(path: &std::path::Path) -> bool {
-    path.exists() && std::os::unix::net::UnixStream::connect(path).is_ok()
-}
-
-/// Bind the session's CRDT fan-out broker on the service socket the
-/// launcher hands to apps. `None` means a degraded session, not a normal
-/// one — every app manifest declares `collab`, so nothing collaborates
-/// until this succeeds; reported at `error!` and surfaced via `chrome_state::set_collab_unavailable`.
-fn spawn_session_collab_broker(
-    chrome: &crate::shell::chrome_state::Chrome,
-    peer_sync: Option<&Arc<crate::shell::network::ShellNetwork>>,
-) -> Option<crate::shell::collab_broker::BrokerHandle> {
-    if let Err(e) = launcher::services::ensure_services_root() {
-        tracing::error!(
-            "collab: cannot create {} ({e}); apps will start without collaboration",
-            launcher::services::services_root().display()
-        );
-        chrome
-            .borrow_mut()
-            .set_collab_unavailable(crate::shell::i18n::t_args(
-                "collab-unavailable-services-root",
-                &[("error", e.to_string().into())],
-            ));
-        return None;
-    }
-
-    let capnp_path = launcher::services::collab_socket();
-    if collab_socket_is_live(&capnp_path) {
-        tracing::error!(
-            "collab: {} already has a live listener — another session is using this \
-             XDG_RUNTIME_DIR; refusing to take its socket. Apps will start without \
-             collaboration.",
-            capnp_path.display()
-        );
-        chrome
-            .borrow_mut()
-            .set_collab_unavailable(crate::shell::i18n::t("collab-unavailable-socket-taken"));
-        return None;
-    }
-
-    let peer_sync_owned = peer_sync.cloned();
-    let membership = chrome.borrow().tree_handle();
-    match crate::shell::collab_broker::spawn_native(
-        capnp_path.clone(),
-        &peer_sync_owned,
-        membership,
-    ) {
-        Ok(handle) => {
-            tracing::info!(
-                "collab: typed broker listening on {} — peer_sync={}",
-                capnp_path.display(),
-                peer_sync.is_some()
-            );
-            crate::shell::channel_encryption::ChannelKeyProvider::session()
-                .set(handle.channel_encryption());
-            chrome.borrow_mut().clear_collab_unavailable();
-            Some(handle)
-        }
-        Err(e) => {
-            tracing::error!(
-                "collab: bind {} failed ({e}); apps will start without collaboration",
-                capnp_path.display()
-            );
-            chrome
-                .borrow_mut()
-                .set_collab_unavailable(crate::shell::i18n::t_args(
-                    "collab-unavailable-broker",
-                    &[("error", e.to_string().into())],
-                ));
-            None
-        }
-    }
-}
-
 fn active_physical_gamepad_binding(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
@@ -8149,7 +7961,7 @@ fn spawn_session_identity_broker(
         return None;
     }
     let path = launcher::services::identity_socket();
-    if collab_socket_is_live(&path) {
+    if service_socket_is_live(&path) {
         tracing::error!(path = %path.display(), "identity: another session owns the socket");
         return None;
     }
@@ -9131,7 +8943,11 @@ pub fn run() {
 
     // The desktop's own state, loaded from disk not bootstrapped fresh — room
     // identity, owner and capability list all have to survive a restart.
-    let (tree_handle, enable_peer_sync, state_notice) = load_session_tree(enable_peer_sync);
+    let LoadedSession {
+        tree: tree_handle,
+        peer_sync_possible: enable_peer_sync,
+        notice: state_notice,
+    } = load_session_tree(enable_peer_sync);
     let mut state = State::new_with_workspace_tree(
         event_loop.handle(),
         display_handle.clone(),
@@ -9266,8 +9082,8 @@ pub fn run() {
         state.selection_store(),
     );
 
-    // Peer sync is constructed here (not only in hosted mode) because this is
-    // the compositor that boots as the Tilo session.
+    // Peer sync is constructed here because this is the compositor that boots
+    // as the Tilo session.
     let mut peer_sync = enable_peer_sync
         .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
         .flatten();
@@ -15519,106 +15335,6 @@ mod tests {
                     .is_empty(),
                 "post-layout geometry keeps the surface on the same physical output"
             );
-        }
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn collab_socket_is_bound_once_for_the_launcher() {
-        // Phase `compositor_binds_the_socket_the_launcher_dials`.
-        // The compositor binds the socket the launcher dials. Assert across both
-        // production paths, not either one's idea of the path: bind with the
-        // compositor's spawn function, resolve with the launcher's resolver,
-        // require an open descriptor. `required@1` makes a divergence an error, not the skip an optional service gets.
-        {
-            let runtime = tempfile::tempdir().expect("tempdir");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_RUNTIME_DIR", runtime.path());
-            let fb = FrameBuilder::new((800, 600));
-            let chrome = fb.chrome_handle();
-            let broker = spawn_session_collab_broker(&chrome, None)
-                .expect("the compositor must be able to bind its own collab socket");
-
-            assert!(
-                chrome.borrow().collab_available(),
-                "a session that bound its broker must not report collaboration unavailable: {:?}",
-                chrome.borrow().collab_unavailable
-            );
-
-            // The launcher's real resolver, on a manifest demanding the service.
-            // Use the authenticated launch path: collaboration deliberately rejects
-            // a bare socket connection with no app/workspace handoff.
-            let mut services = std::collections::BTreeMap::new();
-            services.insert(
-                launcher::services::COLLAB_SERVICE.to_string(),
-                tilo_app_package::ServiceReq {
-                    protocol: launcher::services::COLLAB_SERVICE.to_string(),
-                    requirement: tilo_app_package::Requirement::Required,
-                    version: 1,
-                },
-            );
-            let resolved = launcher::services::resolve_service_binds_for_launch(
-                &services,
-                false,
-                launcher::services::ServiceLaunchContext {
-                    app_id: "so.tilo.socket-contract-test",
-                    workspace_id: Some("socket-contract-workspace"),
-                },
-            )
-            .expect("the launcher must authenticate with the socket the compositor just bound");
-
-            assert_eq!(
-                resolved.len(),
-                1,
-                "expected exactly one resolved service, got {resolved:?}"
-            );
-            assert_eq!(resolved[0].name, launcher::services::COLLAB_SERVICE);
-            assert!(
-                resolved[0].host_fd() >= 0,
-                "the launcher must hand the app a real connected descriptor"
-            );
-
-            drop(broker);
-        }
-        // Phase `a_second_session_refuses_to_take_a_live_collab_socket`.
-        // A live socket is not taken away from the session that owns it. Two
-        // compositors against one `XDG_RUNTIME_DIR` is what a second login (or
-        // stray test) produces, and the broker unlinks before binding — without
-        // the liveness probe, the newcomer would silently strand the first session's apps. Refusing loudly is correct, and must reach the chrome.
-        {
-            let runtime = tempfile::tempdir().expect("tempdir");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_RUNTIME_DIR", runtime.path());
-
-            let first_fb = FrameBuilder::new((800, 600));
-            let first_chrome = first_fb.chrome_handle();
-            let first =
-                spawn_session_collab_broker(&first_chrome, None).expect("first broker binds");
-
-            let second_fb = FrameBuilder::new((800, 600));
-            let second_chrome = second_fb.chrome_handle();
-            let second = spawn_session_collab_broker(&second_chrome, None);
-
-            assert!(
-                second.is_none(),
-                "a second session must not bind over a live collab socket"
-            );
-            assert!(
-                !second_chrome.borrow().collab_available(),
-                "the refused session must report collaboration as unavailable"
-            );
-            assert!(
-                first_chrome.borrow().collab_available(),
-                "the session that owns the socket must be left working"
-            );
-            // And the first broker still answers — the point of refusing.
-            assert!(
-                collab_socket_is_live(&launcher::services::collab_socket()),
-                "the original broker must still be listening after the refusal"
-            );
-
-            drop(second);
-            drop(first);
         }
     }
 

@@ -19,6 +19,14 @@ topbar-sharing-count = { $viewers } { $viewers ->
         [one] SIEHT ZU
        *[other] SEHEN ZU
     }
+topbar-watching-count = +{ $count } { $count ->
+        [one] schaut zu
+       *[other] schauen zu
+    }
+topbar-watching-description = { $count } { $count ->
+        [one] Person schaut
+       *[other] Personen schauen
+    } zu, ohne teilzunehmen
 topbar-sharing-surface = Oberfläche { $surface }
 topbar-open-overview = Übersicht öffnen
 topbar-tilo-menu = Tilo-Menü
@@ -541,11 +549,9 @@ notification-center-title = Benachrichtigungen
 notification-center-empty = Keine neuen Benachrichtigungen
 notification-center-cleared = Benachrichtigungen gelöscht
 notification-center-clear-all = Alle löschen
-notification-center-position = Neueste { $first }–{ $last } von { $total }
-notification-center-count = { $count ->
-        [one] { $count } Benachrichtigung
-       *[other] { $count } Benachrichtigungen
-    }
+notification-center-position = { $first }–{ $last } von { $total }
+notification-center-close = Benachrichtigungen schließen
+notification-center-back-to-list = Zurück zu den Benachrichtigungen
 notification-center-newer = ↑ Neuere
 notification-center-at-newest = Neueste erreicht
 notification-center-older = ↓ Ältere
@@ -553,9 +559,12 @@ notification-center-at-oldest = Älteste erreicht
 history-severity-info = Information
 history-severity-warning = Warnung
 history-severity-error = Fehler
-history-source-system = System
-history-notification-description = { $severity }. Von { $source }. { $time }
-history-notification-description-body = { $severity }. Von { $source }. { $time }. { $body }
+history-notification-description = { $severity }. { $time }
+history-notification-description-body = { $severity }. { $time }. { $body }
+history-notification-description-sourced = { $severity }. Von { $source }. { $time }
+history-notification-description-sourced-body = { $severity }. Von { $source }. { $time }. { $body }
+host-action-source-identity = Identität
+host-action-source-devices = Geräte
 notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
         [yes] Einklappen
        *[no] Ausklappen
@@ -882,6 +891,14 @@ a11y-shell-people-present = Jetzt anwesend
 a11y-shell-people-now = Jetzt: { $activity }
 a11y-shell-people-intent = Absicht: { $status }
 a11y-shell-people-intent-inferred = Absicht, abgeleitet: { $status }
+a11y-shell-people-recent = Zuletzt: { $summary }
+a11y-shell-people-recent-inferred = Zuletzt, zusammengefasst: { $summary }
+a11y-shell-people-recent-toggle = Was { $name } zuletzt gemacht hat
+a11y-shell-people-recent-toggle-description = Eine kurze Zusammenfassung der letzten Minuten ein- oder ausblenden
+a11y-shell-people-watching = { $count } { $count ->
+        [one] Person schaut
+       *[other] Personen schauen
+    } zu, ohne teilzunehmen
 a11y-shell-status-name = Dein Zusammenarbeitsstatus
 a11y-shell-status-inferred = Auf diesem Gerät aus letzten Aktionen abgeleitet
 a11y-shell-status-set = Lege fest, woran du gerade arbeitest
@@ -928,6 +945,10 @@ launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Super+N 
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-here-now = { $count } gerade hier
+people-panel-watching = +{ $count } { $count ->
+        [one] schaut zu
+       *[other] schauen zu
+    }
 people-panel-screen-visible = Bildschirm gerade sichtbar
 people-panel-only-you = Nur du bist hier
 people-panel-status-typing = Gib einen Status ein und drücke dann die Eingabetaste
@@ -1036,8 +1057,6 @@ tilo-about-link-notify = Benachrichtigt werden
 tilo-about-link-source = Quellcode
 tilo-about-link-community = Community
 
-notification-center-read = Lesen
-notification-center-read-description = Vollständige Benachrichtigung lesen
 notification-preview-hidden = Benachrichtigungsvorschau verborgen
 
 activity-catch-up-goals = Aufgaben im Arbeitsbereich · { $done } abgeschlossen · { $unfinished } offen · aktualisiert { $when }

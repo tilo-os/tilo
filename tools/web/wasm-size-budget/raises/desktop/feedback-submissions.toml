@@ -1,4 +1,0 @@
-bytes = 1048576
-measured = 95307961
-run = 77116
-reason = "Register attributed feedback submission, triage resources and the portable review/capture contract through the existing Chat and SDK surface. App SDK run 77116 measured the desktop at 95307961 bytes, 84153 above the prior limit of 95223808. This receipt follows the standard 1% headroom rounded to 64 KiB; it does not attribute unrelated main growth to feedback or enable public access."

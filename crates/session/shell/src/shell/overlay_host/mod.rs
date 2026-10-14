@@ -883,6 +883,9 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// Roster id whose recent summary People shows. Local view state: the
+    /// same person stays expanded as the roster reorders.
+    expanded_collaborator: Option<String>,
     /// Peer whose live tab focus this session mirrors. Local-only and
     /// ephemeral: follow is a viewing mode, never shared workspace state.
     followed_peer: Option<String>,
@@ -2482,6 +2485,7 @@ impl ShellOverlayHost {
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             text_caret: None,
             pairing: crate::bluetooth_prompt::PairingOverlay::default(),
+            expanded_collaborator: None,
             followed_peer: None,
             followed_tab: None,
             followed_session: None,
@@ -10022,11 +10026,15 @@ impl ShellOverlayHost {
                 let rows = state.quick_settings.vpns.len();
                 DrillInList::list_height(qs::LIST_TOP, rows)
             }
-            QsLevel::Notifications => self.notification_center.preferred_height_for_width(
-                state.notification_log(),
-                self.qs_type_lines,
-                self.quick_settings_width(),
-            ),
+            // `state` is the caller's shared borrow of this same chrome; the
+            // host reads it again for the rows' own actions.
+            QsLevel::Notifications => self.chrome.as_ref().map_or(0.0, |chrome| {
+                self.notification_center.preferred_height_for_width(
+                    &ChromeNotifications::new(chrome),
+                    &self.qs_type_lines,
+                    self.quick_settings_width(),
+                )
+            }),
             QsLevel::Clipboard => {
                 let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -10060,7 +10068,7 @@ impl ShellOverlayHost {
     /// The notification centre's geometry for the current panel and text
     /// scale — the one oracle paint, hit-testing and sizing read.
     fn qs_notification_layout(&self) -> CenterLayout {
-        CenterLayout::new(self.quick_settings_rect(), self.qs_type_lines)
+        CenterLayout::new(self.quick_settings_rect(), &self.qs_type_lines).drill_in()
     }
 
     /// Scroll the notification centre from a pointer wheel over the open
@@ -14567,6 +14575,51 @@ impl ShellOverlayHost {
         self.status_selection = ui::text_selection::Selection::default();
     }
 
+    /// Follow the painted row's person, or stop when they are the one
+    /// already followed. Revalidated against the live roster first.
+    fn toggle_follow_row(&mut self, index: usize) {
+        let target = self
+            .collaborators_overlay
+            .follow_target(index)
+            .and_then(|id| {
+                self.chrome.as_ref().and_then(|chrome| {
+                    let state = chrome.borrow();
+                    let local_user = state.active_local_user();
+                    tilo_desktop::collaborators::collaborator_roster_rows(
+                        &state.tree().desktop,
+                        &local_user,
+                    )
+                    .into_iter()
+                    .find(|row| row.id == id && row.followable)
+                })
+            });
+        if let Some(target) = target {
+            if self.followed_peer.as_deref() == Some(target.id.as_str()) {
+                self.set_followed_peer(None);
+            } else {
+                self.set_followed_peer(Some(target.id));
+            }
+        }
+    }
+
+    /// Expand the painted row's recent summary, or collapse it when it is
+    /// already the open one. Keyed by the person, not the row index.
+    fn toggle_collaborator_details(&mut self, index: usize) {
+        let Some(target) = self
+            .collaborators_overlay
+            .details_target(index)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        self.expanded_collaborator =
+            if self.expanded_collaborator.as_deref() == Some(target.as_str()) {
+                None
+            } else {
+                Some(target)
+            };
+    }
+
     fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
         if matches!(
             hit,
@@ -14599,29 +14652,15 @@ impl ShellOverlayHost {
             *handled = true;
             return;
         }
-        if let CollaboratorsHit::ToggleFollow(index) = hit {
-            let target = self
-                .collaborators_overlay
-                .follow_target(index)
-                .and_then(|id| {
-                    self.chrome.as_ref().and_then(|chrome| {
-                        let state = chrome.borrow();
-                        let local_user = state.active_local_user();
-                        tilo_desktop::collaborators::collaborator_roster_rows(
-                            &state.tree().desktop,
-                            &local_user,
-                        )
-                        .into_iter()
-                        .find(|row| row.id == id && row.followable)
-                    })
-                });
-            if let Some(target) = target {
-                if self.followed_peer.as_deref() == Some(target.id.as_str()) {
-                    self.set_followed_peer(None);
-                } else {
-                    self.set_followed_peer(Some(target.id));
-                }
-            }
+        match hit {
+            CollaboratorsHit::ToggleDetails(index) => self.toggle_collaborator_details(index),
+            CollaboratorsHit::ToggleFollow(index) => self.toggle_follow_row(index),
+            _ => {}
+        }
+        if matches!(
+            hit,
+            CollaboratorsHit::ToggleDetails(_) | CollaboratorsHit::ToggleFollow(_)
+        ) {
             *handled = true;
             return;
         }
@@ -14659,6 +14698,7 @@ impl ShellOverlayHost {
                     state.bump();
                 }
                 CollaboratorsHit::ToggleFollow(_)
+                | CollaboratorsHit::ToggleDetails(_)
                 | CollaboratorsHit::PreviousPeople
                 | CollaboratorsHit::NextPeople
                 | CollaboratorsHit::EditStatus
@@ -19605,11 +19645,18 @@ impl Widget for ShellOverlayHost {
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {
-        self.layers
+        let mut targets = self
+            .layers
             .dictation
             .preview_target()
             .map(|rect| vec![("dictation.live-preview".into(), rect)])
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if self.onboarding.is_none() && self.palette_visible && self.palette.is_open() {
+            // The legacy widget id covers the result card. A touch aimed at
+            // the query must use the same row as its editable semantic node.
+            targets.push((PALETTE_QUERY_TARGET.into(), self.palette.input_row_rect()));
+        }
+        targets
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -21106,6 +21153,10 @@ impl ShellOverlayHost {
                     status_editing: self.status_editing,
                     status_selection: self.status_selection,
                     screen_exposure: screen_exposure.as_deref(),
+                    expanded_id: self.expanded_collaborator.as_deref(),
+                    // Native presence has no spectator role yet.
+                    watching: 0,
+                    status_editable: true,
                 },
                 self.last_cursor,
             );
