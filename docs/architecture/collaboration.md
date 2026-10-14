@@ -66,8 +66,12 @@ workspace room, expiry, and an Ed25519 signature. Iroh chooses a direct path
 when possible and uses its encrypted relay path when NAT traversal cannot
 establish one.
 
-Direct collaboration has no server requirement. It is the fast path for an
-ad-hoc invitation and remains active when a workspace host is configured.
+Direct collaboration needs no workspace host. It is the fast path for an
+ad-hoc invitation and remains active when a workspace host is configured. It
+does use number 0's public iroh infrastructure — their DNS service for address
+lookup and their relays for NAT traversal — which sees endpoint ids and IP
+addresses but no content (`docs/architecture/security.md`, "What leaves the
+device by default").
 
 An invite also signs the maximum role its bearer receives: Viewer,
 Commenter, or Editor. The inviter chooses that role before the token is
