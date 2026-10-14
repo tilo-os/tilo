@@ -27,7 +27,6 @@ package-store = { path = "../package-store", features = ["store"] }
 runtime-bundle = { path = "../runtime-bundle" }
 clap.workspace = true
 hex.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
@@ -36,6 +35,9 @@ semver.workspace = true
 # and downloads it over iroh-blobs. Same crate the app-host daemon
 # uses, so there is one implementation of "fetch and verify a tapp".
 app-registry = { path = "../app-registry" }
+# The sidecar contract the PATH shim reads; its library half has no
+# dependencies beyond serde.
+cli-shim = { path = "../cli-shim" }
 tilo-rt.workspace = true
 workspace-hack = { version = "0.1" }
 

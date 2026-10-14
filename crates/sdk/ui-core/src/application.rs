@@ -922,7 +922,7 @@ impl HostContext {
                     || saved.workspace_id != self.views.workspace_id()
                     || saved.instance_id != self.instance_id
                     || saved.record_id != self.record.id.as_str()
-                    || !self.record.kind.names(&saved.record_kind)
+                    || self.record.kind.as_str() != saved.record_kind
                 {
                     return Err(LaunchError::BindingMismatch);
                 }

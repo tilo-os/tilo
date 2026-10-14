@@ -40,11 +40,23 @@ expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example"},"a
 [[ $(get "$home" /entry.json) == "$expected" ]] || fail "entry.json: $(get "$home" /entry.json)"
 grep -q '^cache-control: no-cache' <(head_of "$home" /entry.json) || fail "entry.json must revalidate"
 
+# About links: those set are offered, an empty one is not.
+about=$(start -e TILO_WEB_ABOUT_SOURCE=https://example.org/source -e TILO_WEB_ABOUT_NOTIFY=)
+[[ $(get "$about" /entry.json) == '{"about":{"source":"https://example.org/source"}}' ]] \
+  || fail "entry.json about: $(get "$about" /entry.json)"
+"$engine" run --rm "${confine[@]}" -e TILO_WEB_ABOUT_COMMUNITY=javascript:x "$image" >/dev/null 2>&1 \
+  && fail "an About link that is not https must refuse to start"
+
 page=$(get "$home" /)
 version=$(grep -o "v/[0-9a-f]\{20\}/entry-page.mjs" <<<"$page" | head -1 | cut -d/ -f2)
 [[ -n $version ]] || fail "the entry page imports no versioned entry-page.mjs"
 grep -q "'../v/$version/entry-page.mjs'" <<<"$(get "$home" /app/)" || fail "the app entry points elsewhere"
 grep -q '^cache-control: no-cache' <(head_of "$home" /) || fail "/ must revalidate"
+# The arrival screen's lines, which arrival.mjs fetches beside itself.
+for locale in en-US de-DE; do
+  grep -q '^arrival-label-tip = ' <<<"$(get "$home" "/v/$version/locales/$locale.ftl")" \
+    || fail "the bundle carries no locales/$locale.ftl"
+done
 
 # Every answer to a plain GET is a whole 200, encoded or not: CDNs never
 # cache a 206, so a partial answer to a request without Range sends every

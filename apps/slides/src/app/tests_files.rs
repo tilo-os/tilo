@@ -67,10 +67,10 @@ fn presentation_files_open_and_save_through_the_chooser() {
         );
         bench.read(|app| {
             assert_eq!(app.cur_slide, 0, "it opens on its first slide");
-            assert!(matches!(
-                app.io_toast.get(),
-                Some((message, ToastKind::Success)) if message == tr("slides-toast-opened")
-            ));
+            assert!(
+                !matches!(app.io_toast.get(), Some((_, ToastKind::Success))),
+                "the opened deck on screen is the confirmation; no toast repeats it"
+            );
         });
         assert!(bench.undo(), "opening a file is one undo step");
         assert_eq!(bench.deck(), before, "undo puts the previous deck back");
@@ -126,7 +126,10 @@ fn presentation_files_open_and_save_through_the_chooser() {
         let saved =
             crate::odp::read_odp(&std::fs::read(&out).unwrap(), &ContentStore::memory()).unwrap();
         assert_eq!(saved.title, bench.deck().title);
-        assert!(bench.read(|app| matches!(app.io_toast.get(), Some((_, ToastKind::Success)))));
+        assert!(
+            !bench.read(|app| matches!(app.io_toast.get(), Some((_, ToastKind::Success)))),
+            "the person chose the file; no toast repeats the save"
+        );
     }
 
     // Case `ensure_odp_ext_appends_when_missing`.

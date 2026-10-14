@@ -24,9 +24,9 @@ With the flag, the shell:
 
 Without the flag, paths, copy and first-login behaviour remain the full Tilo
 system defaults, including the machine identity tree under `/var/lib/tilo`.
-Hosted (`--mode hosted`) development windows remain unable to provision a
-first identity because an application-shaped window is not a trusted login
-surface. A host package must start native mode from a display-manager session.
+A host package must start the compositor from a display-manager session:
+first-identity setup runs in its trusted chrome, and the former `--mode hosted`
+development window is refused at startup.
 
 Package checks should assert that the installed wrapper contains both
 `--host-desktop-session` and `--firstboot`, and that the Wayland desktop entry

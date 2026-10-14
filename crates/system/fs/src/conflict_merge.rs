@@ -16,7 +16,7 @@ pub const MAX_MERGE_INPUT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeterministicMergeCodec {
-    QdocAutomergeV1,
+    TiloDocAutomergeV1,
     PlainUtf8ThreeWayV1,
 }
 
@@ -86,7 +86,7 @@ pub fn preflight_exact(
     match merge_exact(first, second, base) {
         Ok(result) => {
             let explanation = match result.codec {
-                DeterministicMergeCodec::QdocAutomergeV1 => {
+                DeterministicMergeCodec::TiloDocAutomergeV1 => {
                     "Both document changes are preserved by the collaborative document format."
                 }
                 DeterministicMergeCodec::PlainUtf8ThreeWayV1 => {
@@ -104,7 +104,7 @@ pub fn preflight_exact(
                     "Both revisions changed the same text region. Review the diff before choosing a version."
                 }
                 DeterministicMergeError::UnsupportedContent
-                | DeterministicMergeError::MalformedQdoc => {
+                | DeterministicMergeError::MalformedTiloDoc => {
                     "This file format cannot be merged safely here. Keep both versions or choose one."
                 }
                 DeterministicMergeError::NoCommonBase
@@ -189,7 +189,7 @@ pub fn exact_common_base(
 }
 
 /// Merge two exact immutable members. The choice is content-driven and
-/// fail-closed: canonical qdoc Automerge documents use their change graph;
+/// fail-closed: canonical tilo-doc Automerge documents use their change graph;
 /// ordinary UTF-8 is accepted only for a provably non-overlapping conservative
 /// three-way case against an exact common ancestor.
 ///
@@ -217,9 +217,9 @@ pub fn merge_exact(
         std::mem::swap(&mut first, &mut second);
     }
 
-    if let Ok(bytes) = merge_qdoc(&first.bytes, &second.bytes) {
+    if let Ok(bytes) = merge_tilo_doc(&first.bytes, &second.bytes) {
         return Ok(DeterministicMergeResult {
-            codec: DeterministicMergeCodec::QdocAutomergeV1,
+            codec: DeterministicMergeCodec::TiloDocAutomergeV1,
             base_version: None,
             bytes,
         });
@@ -244,10 +244,10 @@ pub fn merge_exact(
     })
 }
 
-fn merge_qdoc(first: &[u8], second: &[u8]) -> Result<Vec<u8>, DeterministicMergeError> {
+fn merge_tilo_doc(first: &[u8], second: &[u8]) -> Result<Vec<u8>, DeterministicMergeError> {
     // Either version can come from a peer, so neither is decoded in this
     // process: both load in `tilo_automerge_isolate`, and the merge is an
-    // isolated apply of the second onto the first. Opening each as a qdoc
+    // isolated apply of the second onto the first. Opening each as a tilo-doc
     // then rejects arbitrary Automerge documents that do not implement the
     // canonical document schema.
     let mut left = tilo_automerge_isolate::load(first)
@@ -261,14 +261,15 @@ fn merge_qdoc(first: &[u8], second: &[u8]) -> Result<Vec<u8>, DeterministicMerge
     match tilo_automerge_isolate::apply(&mut left, second, Dependencies::RequireComplete) {
         Ok(Applied::Changed(_)) => {}
         Ok(Applied::MissingDependencies) | Err(_) => {
-            return Err(DeterministicMergeError::MalformedQdoc);
+            return Err(DeterministicMergeError::MalformedTiloDoc);
         }
     }
     let bytes = left.save();
     if bytes.len() > MAX_MERGE_INPUT_BYTES {
         return Err(DeterministicMergeError::OutputTooLarge);
     }
-    tilo_doc::Document::from_automerge(left).map_err(|_| DeterministicMergeError::MalformedQdoc)?;
+    tilo_doc::Document::from_automerge(left)
+        .map_err(|_| DeterministicMergeError::MalformedTiloDoc)?;
     Ok(bytes)
 }
 
@@ -311,8 +312,8 @@ pub enum DeterministicMergeError {
     InvalidBase,
     #[error("content has no supported deterministic merge codec")]
     UnsupportedContent,
-    #[error("qdoc content is malformed")]
-    MalformedQdoc,
+    #[error("tilo-doc content is malformed")]
+    MalformedTiloDoc,
     #[error("plain-text edits overlap")]
     OverlappingTextEdits,
     #[error("version graph is incomplete")]
@@ -505,8 +506,8 @@ mod tests {
     }
 
     #[test]
-    fn qdoc_merges_are_order_independent_and_deterministic() {
-        // Phase `qdoc_merge_is_input_order_independent_and_valid`.
+    fn tilo_doc_merges_are_order_independent_and_deterministic() {
+        // Phase `tilo_doc_merge_is_input_order_independent_and_valid`.
         {
             let mut base = Document::new();
             let block = base.insert_block(None, "paragraph");
@@ -535,18 +536,18 @@ mod tests {
             let forward = merge((version(2), left.clone()), (version(3), right.clone()));
             let reverse = merge((version(3), right), (version(2), left));
             assert_eq!(forward, reverse);
-            assert_eq!(forward.codec, DeterministicMergeCodec::QdocAutomergeV1);
+            assert_eq!(forward.codec, DeterministicMergeCodec::TiloDocAutomergeV1);
             Document::load(&forward.bytes).unwrap();
 
             assert_eq!(
                 merge_exact(
                     ExactMergeInput {
                         version_id: version(4),
-                        bytes: b"not a qdoc".to_vec(),
+                        bytes: b"not a tilo-doc".to_vec(),
                     },
                     ExactMergeInput {
                         version_id: version(5),
-                        bytes: b"also not a qdoc".to_vec(),
+                        bytes: b"also not a tilo-doc".to_vec(),
                     },
                     None,
                 ),
@@ -578,12 +579,12 @@ mod tests {
         }
     }
 
-    /// Either conflict member can come from a peer, so the qdoc codec decodes
+    /// Either conflict member can come from a peer, so the tilo-doc codec decodes
     /// both only in `tilo_automerge_isolate`: a version that crashes the
-    /// decoder, or a valid qdoc followed by a change with a bad checksum, is
-    /// refused while this process lives on and still merges valid qdocs.
+    /// decoder, or a valid tilo-doc followed by a change with a bad checksum, is
+    /// refused while this process lives on and still merges valid tilo-docs.
     #[test]
-    fn hostile_qdoc_versions_are_refused_by_the_isolate() {
+    fn hostile_tilo_doc_versions_are_refused_by_the_isolate() {
         let mut base = Document::new();
         let block = base.insert_block(None, "paragraph");
         base.splice_text(&block, 0, 0, "base");
@@ -631,7 +632,7 @@ mod tests {
             );
         }
         let merged = merge(right).unwrap();
-        assert_eq!(merged.codec, DeterministicMergeCodec::QdocAutomergeV1);
+        assert_eq!(merged.codec, DeterministicMergeCodec::TiloDocAutomergeV1);
         let merged = Document::load(&merged.bytes).unwrap();
         assert_eq!(merged.block_text(&block).as_deref(), Some("LbaseR"));
     }

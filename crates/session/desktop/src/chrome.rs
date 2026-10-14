@@ -200,6 +200,9 @@ pub struct DesktopChromeSnapshot {
     pub active_exposures: Vec<ActiveExposure>,
     /// The person's centre widgets; `None` until the host has read them.
     pub topbar_widgets: Option<TopBarWidgets>,
+    /// People following the room without taking part (spectators). The bar
+    /// counts them beside the avatars so an audience is never invisible.
+    pub watching: u32,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChromeIntent {
@@ -222,6 +225,10 @@ pub enum ChromeIntent {
     AcceptContinuity,
     /// Hide the continuity offer until that device's focus moves again.
     DismissContinuity,
+    /// Open or close the menu behind the bar's Tilo mark
+    /// ([`crate::topbar::TopBarChrome::with_tilo_mark`]), under
+    /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].
+    ToggleTiloMenu,
     /// Deliver a click to a running application's tray item.
     AppTray {
         key: String,

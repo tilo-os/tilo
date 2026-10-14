@@ -1061,7 +1061,7 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
                 crate::namespace::ROOT_INO,
                 "test.bin",
                 crate::namespace::ROOT_INO,
-                "test.qdoc",
+                "test.tilo-doc",
             )
             .unwrap();
         let before = fixture.durable_bytes();
@@ -1074,7 +1074,7 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
             .fs
             .rename_named(
                 crate::namespace::ROOT_INO,
-                "test.qdoc",
+                "test.tilo-doc",
                 crate::namespace::ROOT_INO,
                 "test.bin",
             )
@@ -2071,7 +2071,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
                 crate::namespace::ROOT_INO,
                 "test.bin",
                 crate::namespace::ROOT_INO,
-                "test.qdoc",
+                "test.tilo-doc",
             )
             .unwrap();
         assert!(
@@ -2260,10 +2260,10 @@ async fn history_read_current_winner_is_separate_from_exact_restore_receipt() {
     fixture.endpoint.close().await;
 }
 
-/// A `.qdoc` record with two document versions: v1 holds blocks "alpha" (in
+/// An existing `.qdoc` record with two document versions: v1 holds blocks "alpha" (in
 /// part bold) and "beta"; v2, written through the FUSE commit path, extends
 /// "beta".
-struct QdocVersions {
+struct TiloDocVersions {
     fixture: Fixture,
     v1: fs_protocol::FileVersionId,
     v1_bytes: Vec<u8>,
@@ -2271,7 +2271,7 @@ struct QdocVersions {
     alpha: String,
 }
 
-impl QdocVersions {
+impl TiloDocVersions {
     async fn new() -> Self {
         let fixture = Fixture::new().await;
         fixture
@@ -2340,15 +2340,15 @@ fn snapshot_of(bytes: &[u8]) -> tilo_doc::DocSnapshot {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn restores_qdoc_as_new_crdt_revision() {
-    let versions = QdocVersions::new().await;
+async fn restores_tilo_doc_as_new_crdt_revision() {
+    let versions = TiloDocVersions::new().await;
     let fixture = &versions.fixture;
     let record = fixture.fs.ns().record_id_for(fixture.ino).unwrap();
     let before = fixture.history.snapshot(record).unwrap();
     let Outcome::Applied { receipt } = versions.restore(Operation::Restore {
         version_id: versions.v1,
     }) else {
-        panic!("a qdoc restores");
+        panic!("a tilo-doc restores");
     };
 
     let restored = versions.current();
@@ -2404,7 +2404,7 @@ async fn restores_qdoc_as_new_crdt_revision() {
     let Outcome::Applied { receipt: undone } = versions.restore(Operation::Undo {
         restore_intent: receipt.intent_id,
     }) else {
-        panic!("the qdoc restore undoes");
+        panic!("the tilo-doc restore undoes");
     };
     let current = versions.current();
     assert_eq!(snapshot_of(&current), snapshot_of(&versions.v2_bytes));
@@ -2418,7 +2418,7 @@ async fn restores_qdoc_as_new_crdt_revision() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restore_preserves_concurrent_peer_edit() {
-    let versions = QdocVersions::new().await;
+    let versions = TiloDocVersions::new().await;
     // A peer holding v2 extends "alpha" while the restore happens here.
     let peer_bytes = {
         let mut peer = tilo_doc::Document::load(&versions.v2_bytes).unwrap();

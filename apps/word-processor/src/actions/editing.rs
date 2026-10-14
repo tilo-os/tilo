@@ -112,7 +112,7 @@ impl InlineMark {
         Self::Subscript,
     ];
 
-    /// The qdoc mark name (`strong`, `em`, `underline`, `strike`, `super`,
+    /// The tilo-doc mark name (`strong`, `em`, `underline`, `strike`, `super`,
     /// `sub`); also the `toggle-mark` argument spelling.
     pub fn name(self) -> &'static str {
         match self {
@@ -151,7 +151,7 @@ impl InlineMark {
     }
 }
 
-/// Paragraph kind for the style menu. `kind` is a qdoc block kind
+/// Paragraph kind for the style menu. `kind` is a tilo-doc block kind
 /// (`paragraph`, `heading`, `list_item`, …).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParagraphStyle {

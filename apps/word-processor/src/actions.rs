@@ -1,7 +1,7 @@
 //! The word processor's exported **actions** and the **resource tree** it
 //! publishes to Ctrl+K.
 //!
-//! Every document-mutating operation is a [`RichTextAction`] from qdoc's
+//! Every document-mutating operation is a [`RichTextAction`] from tilo-doc's
 //! rich-text vocabulary (re-exported here with its builders). The same
 //! [`EncodedAction`] is what toolbar/panel/menu affordances dispatch and what
 //! Ctrl+K dispatches — one source of truth, one replay path. This module adds

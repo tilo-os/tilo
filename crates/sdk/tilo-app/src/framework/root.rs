@@ -521,9 +521,11 @@ impl ResourceRoot {
         RootWidget::boxed(Box::new(self))
     }
 
-    /// The root as the widget a past version's preview draws.
-    pub(crate) fn into_root_widget(self) -> RootWidget {
-        RootWidget::new(Box::new(self))
+    /// The root as the widget a past version's preview draws. Boxed here,
+    /// not where the resource's type is known, so its widget table is
+    /// compiled once for every app.
+    pub(crate) fn into_root_widget(self) -> Box<dyn Widget> {
+        Box::new(RootWidget::new(Box::new(self)))
     }
 
     /// The handles of the root that name its resource type, when it is `R`.
