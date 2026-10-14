@@ -33,7 +33,9 @@ use fuser::{
     ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry,
     ReplyOpen, ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
-use libc::{EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
+use libc::{
+    EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EROFS,
+};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::future::Future;
@@ -341,6 +343,123 @@ fn commit_errno(error: &io::Error) -> i32 {
     error.raw_os_error().unwrap_or(EIO)
 }
 
+/// The audit's ceiling for a memory-backed stage. Sparse disk-backed stages
+/// do not allocate their logical size and are not subject to this limit.
+/// Memory stages reserve their eventual contiguous size before accepting a
+/// write or truncate, including deferred zero filling at commit.
+const MAX_STAGED_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// The audit's aggregate ceiling for memory stages of one mount. Reservations
+/// are held until the backing drops, including while a removed stage is still
+/// in use by another worker; shrinking does not free a Vec's capacity.
+const MAX_STAGED_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Refuses a staged size the daemon will not hold in memory.
+fn check_staged_size(len: u64) -> Result<(), i32> {
+    if len > MAX_STAGED_FILE_BYTES {
+        Err(EFBIG)
+    } else {
+        Ok(())
+    }
+}
+
+/// Refuses growth that would take every staged buffer past the total.
+fn check_staged_growth(staged: u64, growth: u64) -> Result<(), i32> {
+    if staged.saturating_add(growth) > MAX_STAGED_TOTAL_BYTES {
+        Err(ENOSPC)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod staging_limit_tests {
+    use super::*;
+    use crate::namespace::ROOT_INO;
+    use crate::store::ContentStore;
+    use iroh::endpoint::{Endpoint, presets};
+
+    async fn mount() -> (QuickFS, Endpoint, [u64; 3]) {
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("staging-limits").unwrap()));
+        let inos = ["a.bin", "b.bin", "c.bin"].map(|name| {
+            namespace
+                .lock()
+                .unwrap()
+                .create_file(ROOT_INO, name, None, 0, 1)
+                .unwrap()
+        });
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        (
+            QuickFS::new(namespace, hydrator, heuristics),
+            endpoint,
+            inos,
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn memory_writes_and_truncates_enforce_limits_without_allocating_holes() {
+        let (fs, endpoint, [a, b, c]) = mount().await;
+        let huge = MAX_STAGED_FILE_BYTES.saturating_mul(1024);
+        assert_eq!(fs.write_buffer(a, huge, b"x"), Err(EFBIG));
+        assert_eq!(fs.staged_len(a), Some(0));
+        assert_eq!(fs.truncate_inode(a, huge), Err(EFBIG));
+        // Unopened truncation uses a temporary stage, which must also be bounded.
+        assert_eq!(fs.truncate_inode(b, huge), Err(EFBIG));
+        assert_eq!(fs.staged_len(b), None);
+        for ino in [a, b] {
+            fs.write_buffer(ino, 0, b"x").unwrap();
+            fs.truncate_inode(ino, MAX_STAGED_FILE_BYTES).unwrap();
+        }
+        fs.write_buffer(c, 0, b"").unwrap();
+        assert_eq!(fs.write_buffer(c, 0, b"x"), Err(ENOSPC));
+        assert_eq!(fs.truncate_inode(c, 1), Err(ENOSPC));
+        assert_eq!(fs.staged_len(c), Some(0));
+        assert_eq!(
+            fs.truncate_inode(a, MAX_STAGED_FILE_BYTES.saturating_add(1)),
+            Err(EFBIG)
+        );
+        assert_eq!(fs.staged_len(a), Some(MAX_STAGED_FILE_BYTES));
+        // A removed stage held by another worker still owns its allocation.
+        let retained = fs.stage(a).unwrap();
+        fs.drop_buffer(a);
+        assert_eq!(fs.truncate_inode(c, 1), Err(ENOSPC));
+        drop(retained);
+        fs.write_buffer(c, 0, b"x").unwrap();
+        assert_eq!(fs.staged_bytes(c).unwrap(), b"x");
+        endpoint.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sparse_stages_are_not_subject_to_memory_limits_but_fallback_is() {
+        let (fs, endpoint, [a, b, c]) = mount().await;
+        let dir = tempfile::tempdir().unwrap();
+        let fs = fs.with_write_stage_dir(dir.path().join("stages"));
+        // Above both audit ceilings, without allocating or hydrating the hole.
+        let offset = MAX_STAGED_TOTAL_BYTES.saturating_add(1);
+        fs.write_buffer(a, offset, b"x").unwrap();
+        assert_eq!(fs.staged_len(a), Some(offset.saturating_add(1)));
+        assert_eq!(
+            fs.read_stage_blocking(&fs.stage(a).unwrap(), offset, 1)
+                .unwrap(),
+            b"x"
+        );
+        fs.write_buffer(b, 0, b"b").unwrap();
+        fs.truncate_inode(b, offset).unwrap();
+        assert_eq!(fs.staged_len(b), Some(offset));
+        // A stage-directory failure during create uses the protected memory backing.
+        std::fs::remove_dir_all(fs.stage_dir.as_ref().unwrap()).unwrap();
+        fs.buffers().insert(c, fs.empty_stage(false).shared());
+        assert_eq!(fs.write_buffer(c, offset, b"x"), Err(EFBIG));
+        assert_eq!(fs.truncate_inode(c, offset), Err(EFBIG));
+        assert_eq!(fs.staged_len(c), Some(0));
+        endpoint.close().await;
+    }
+}
+
 /// Name of the sibling that preserves bytes which could not be committed to
 /// their own record, derived from the bytes so a retry finds the same copy.
 fn unsaved_copy_name(name: &[u8], bytes: &[u8]) -> Vec<u8> {
@@ -518,6 +637,7 @@ pub struct QuickFS {
     write_buffers: Arc<Mutex<WriteStages>>,
     /// Where stages keep written bytes; `None` keeps them in memory.
     stage_dir: Option<std::path::PathBuf>,
+    memory_stage_budget: Arc<write_stage::MemoryBudget>,
     /// Commit bookkeeping for `write_buffers`. Lock order: `write_buffers`,
     /// then one inode's stage, then `buffer_states`; the namespace lock is
     /// taken after a stage lock, never before.
@@ -620,6 +740,7 @@ impl QuickFS {
             sync: None,
             write_buffers: Arc::new(Mutex::new(HashMap::new())),
             stage_dir: None,
+            memory_stage_budget: Arc::new(write_stage::MemoryBudget::default()),
             buffer_states: Mutex::new(HashMap::new()),
             commit_locks: Mutex::new(HashMap::new()),
             unsaved: None,
@@ -935,8 +1056,10 @@ impl QuickFS {
     /// Test-only: give `ino` a stage holding exactly `bytes`.
     #[cfg(test)]
     fn install_stage(&self, ino: u64, bytes: Vec<u8>) {
-        self.buffers()
-            .insert(ino, WriteStage::complete(bytes, None).shared());
+        let stage =
+            WriteStage::complete(&bytes, None, Arc::clone(&self.memory_stage_budget)).unwrap();
+        drop(bytes);
+        self.buffers().insert(ino, stage.shared());
     }
 
     /// Test-only: every byte `ino`'s stage reads as, if it has one.
@@ -974,7 +1097,9 @@ impl QuickFS {
         if self.is_document(ino) {
             let base = self.ns().hash_for(ino);
             let bytes = self.document_export(ino).ok_or(EIO)?;
-            return Ok((WriteStage::complete(bytes.to_vec(), base), base));
+            let stage = WriteStage::complete(&bytes, base, Arc::clone(&self.memory_stage_budget))
+                .map_err(|error| commit_errno(&error))?;
+            return Ok((stage, base));
         }
         let (base, base_len) = {
             let ns = self.ns();
@@ -985,22 +1110,34 @@ impl QuickFS {
             drop(ns);
             (base, len)
         };
-        let stage =
-            WriteStage::over(base, base_len, self.stage_dir.as_deref()).map_err(|error| {
-                eprintln!("inode {ino}: could not open a write stage: {error}");
-                EIO
-            })?;
+        let stage = WriteStage::over(
+            base,
+            base_len,
+            self.stage_dir.as_deref(),
+            Arc::clone(&self.memory_stage_budget),
+        )
+        .map_err(|error| {
+            eprintln!("inode {ino}: could not open a write stage: {error}");
+            EIO
+        })?;
         Ok((stage, base))
     }
 
     /// An empty stage for a file `create` just committed empty.
     fn empty_stage(&self, document: bool) -> WriteStage {
+        let memory = || WriteStage::empty(Arc::clone(&self.memory_stage_budget));
         if document {
-            return WriteStage::complete(Vec::new(), None);
+            return memory();
         }
-        WriteStage::over(None, 0, self.stage_dir.as_deref()).unwrap_or_else(|error| {
+        WriteStage::over(
+            None,
+            0,
+            self.stage_dir.as_deref(),
+            Arc::clone(&self.memory_stage_budget),
+        )
+        .unwrap_or_else(|error| {
             eprintln!("could not open a file-backed write stage ({error}); staging in memory");
-            WriteStage::complete(Vec::new(), None)
+            memory()
         })
     }
 
@@ -3016,7 +3153,7 @@ impl QuickFS {
                     .map(|(_, ext)| ext.to_ascii_lowercase())
             })
             .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "tilo-doc") {
+        if !matches!(extension.as_str(), "txt" | "qdoc" | "tilo-doc") {
             return Err(libc::ENOTSUP);
         }
         let state = history.snapshot(record_id).ok_or(EINVAL)?;
@@ -3061,7 +3198,7 @@ impl QuickFS {
             version_id: second_id,
             bytes: load(second_id)?,
         };
-        let preflight = if extension == "tilo-doc" {
+        let preflight = if matches!(extension.as_str(), "qdoc" | "tilo-doc") {
             crate::conflict_merge::preflight_exact(first, second, None)
         } else {
             let base_id =
@@ -3330,7 +3467,7 @@ impl QuickFS {
                     .map(|(_, ext)| ext.to_ascii_lowercase())
             })
             .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "tilo-doc") {
+        if !matches!(extension.as_str(), "txt" | "qdoc" | "tilo-doc") {
             return Err(libc::ENOTSUP);
         }
         let state = history.snapshot(record_id).ok_or(EINVAL)?;
@@ -3395,7 +3532,7 @@ impl QuickFS {
             version_id: second_id,
             bytes: load(second_id)?,
         };
-        let merged = if matches!(extension.as_str(), "tilo-doc") {
+        let merged = if matches!(extension.as_str(), "qdoc" | "tilo-doc") {
             let preflight = crate::conflict_merge::preflight_exact(first, second, None);
             let crate::conflict_merge::MergePreflight::Safe { result, .. } = preflight else {
                 // A failed preflight is deliberately indistinguishable from

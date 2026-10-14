@@ -1,8 +1,11 @@
 /**
  * Boot of the web entry pages: `index.html` (desktop mode) and
  * `app/index.html` (one app, full tab). The page:
- * 1. takes the secrets the inline scrubber moved out of the address bar;
- * 2. parses the link with the runtime's Rust grammar under its entry
+ * 1. takes the secrets the inline scrubber moved out of the address bar
+ *    (a machine to set up, `install`, is handed back for the page to offer);
+ * 2. parses the link with the runtime's Rust grammar under its entry (a bare
+ *    entry under a home workspace needs no grammar, so admission starts
+ *    while the runtime still loads)
  *    (`entry.json` beside the desktop page, written by the web host: `home`
  *    is the workspace a bare entry opens instead of the person's own desktop,
  *    `tickets` names where guest tickets are redeemed; absent, a bare entry
@@ -24,7 +27,47 @@ const PRIMARY_RECORD = '@tilo:package-primary';
  * at all is the app's own default. */
 const recordOption = record => (record === undefined ? {} : {record: record || PRIMARY_RECORD});
 
-/** The entry this page is served under: `{base, home?, tickets?}`. */
+/** The web links among `about`'s `notify`, `source` and `community`, or
+ * `null` without any: the desktop's About sheet offers only these. */
+function aboutLinks(about) {
+  const links = {};
+  for (const key of ['notify', 'source', 'community']) {
+    const url = about?.[key];
+    if (typeof url !== 'string') continue;
+    try {
+      if (['https:', 'http:'].includes(new URL(url).protocol)) links[key] = url;
+    } catch {
+      // Not a URL: not offered.
+    }
+  }
+  return Object.keys(links).length ? links : null;
+}
+
+/** The host a room scope names (`rooms.example`), for the bar's host pill;
+ * `null` on the person's own desktop. */
+function scopeHost(scope) {
+  if (scope.kind !== 'room') return null;
+  try {
+    return new URL(scope.host).host;
+  } catch {
+    return null;
+  }
+}
+
+/** `onStatus` that also titles the tab after the workspace in front. */
+function titled(window, forward) {
+  return status => {
+    const name = status?.workspaceName;
+    if (window.document && typeof name === 'string' && name) {
+      const title = `Tilo · ${name}`;
+      if (window.document.title !== title) window.document.title = title;
+    }
+    forward?.(status);
+  };
+}
+
+/** The entry this page is served under: `{base, home?, tickets?, about?}`;
+ * `about` holds the web host's links for the desktop's About sheet. */
 export async function readEntry({mode, location, fetch = globalThis.fetch}) {
   const base = new URL(mode === 'app' ? '../' : './', location.href);
   base.search = '';
@@ -37,8 +80,10 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
     // No configuration: a plain bundle's entry.
   }
   const home = typeof config.home?.host?.origin === 'string' ? config.home : null;
+  const about = aboutLinks(config.about);
   return {base: base.href, ...(home ? {home} : {}),
-    ...(typeof config.tickets === 'string' ? {tickets: config.tickets} : {})};
+    ...(typeof config.tickets === 'string' ? {tickets: config.tickets} : {}),
+    ...(about ? {about} : {})};
 }
 
 /** `{parse, format}` over the runtime's Rust grammar under `entry`. */
@@ -52,18 +97,25 @@ export function grammar(runtime, entry) {
   };
 }
 
+/** A bare entry under a web host's home workspace: its route, read without
+ * the runtime's grammar; `null` for any other link. */
+export function homeRoute({location, mode, home = null}) {
+  const bare = location.hash === '' || location.hash === '#';
+  if (!bare || !home) return null;
+  const scope = {kind: 'room', host: new URL(home.host.origin).origin, room: home.room ?? null};
+  // `home.app` is the app in front: on the desktop among the workspace's
+  // other apps, or full tab under an app entry. Without one, the desktop.
+  const target = home.app ? {scope, app: home.app} : {scope};
+  return {mode: home.app ? mode : 'desktop', target};
+}
+
 /** The route the page was opened with. A bare entry opens the web host's
  * home workspace (its room is learned on admission), or else, on the
  * desktop, the person's own desktop. */
 export function initialRoute({link, location, mode, home = null}) {
+  const toHome = homeRoute({location, mode, home});
+  if (toHome) return toHome;
   const bare = location.hash === '' || location.hash === '#';
-  if (bare && home) {
-    const scope = {kind: 'room', host: new URL(home.host.origin).origin, room: home.room ?? null};
-    // `home.app` is the app in front: on the desktop among the workspace's
-    // other apps, or full tab under an app entry. Without one, the desktop.
-    const target = home.app ? {scope, app: home.app} : {scope};
-    return {mode: home.app ? mode : 'desktop', target};
-  }
   if (bare && mode === 'desktop') {
     try {
       return link.parse(location.href);
@@ -104,19 +156,29 @@ export async function present({route, peer, surface, mountDesktop, diagnostics =
 /**
  * Boot an entry page. `deps` supplies the page host (`loadRuntime`,
  * `mountDesktop`) and the admission doors; the page wires the real ones.
+ * `onStep` hears the steps of getting in: `join` while a host's door is
+ * asked, `open` once admitted (until the desktop draws).
  */
-export async function boot({mode, window = globalThis, surface, status, deps, diagnostics = {}}) {
+export async function boot({mode, window = globalThis, surface, status, deps, diagnostics = {}, onStep = () => {}}) {
   const say = text => { if (status) status.textContent = text; };
   // The page's own loading note, which admission progress replaces only
   // while it lasts: once in, the note is back until the desktop draws.
   const loading = status?.textContent ?? '';
-  const secrets = takeLinkSecrets(window);
-  const runtime = await deps.loadRuntime();
+  // A machine to set up is not admission: the page offers it once open.
+  const {install, ...secrets} = takeLinkSecrets(window);
+  // The runtime (most of the page's download) loads while the entry is read
+  // and, for a bare entry under a home workspace, while admission starts:
+  // a host's door is asked, and the person and device keys opened, before
+  // anything needs the runtime. Each door waits for it where it does.
+  const loaded = deps.loadRuntime();
   const entry = await readEntry({mode, location: window.location, fetch: deps.fetch});
-  const link = grammar(runtime, entry);
+  const linked = loaded.then(runtime => grammar(runtime, entry));
+  // Awaited below; a failure is the first door's to report.
+  void linked.catch(() => {});
   let route;
   try {
-    route = initialRoute({link, location: window.location, mode, home: entry.home});
+    route = homeRoute({location: window.location, mode, home: entry.home})
+      ?? initialRoute({link: await linked, location: window.location, mode, home: entry.home});
   } catch (error) {
     say(error?.message ?? String(error));
     throw error;
@@ -125,11 +187,16 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const {peer} = await admit({
     scope: route.target.scope, secrets, tickets: entry.tickets,
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
-    onProgress: event => say(event.phase === 'pairing' ? 'Asking to pair this device…'
-      : event.phase === 'waiting' ? 'Waiting for the workspace owner to let you in…'
-      : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…'),
+    onProgress: event => {
+      onStep('join');
+      say(event.phase === 'pairing' ? 'Asking to pair this device…'
+        : event.phase === 'waiting' ? 'Waiting for the workspace owner to let you in…'
+        : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
+    },
   });
   say(loading);
+  onStep('open');
+  const link = await linked;
   if (peer && route.target.scope.kind === 'room' && !route.target.scope.room) {
     // The home workspace's room is known now: show its canonical link.
     route = {...route, target: {...route.target, scope: {...route.target.scope, room: peer.room}}};
@@ -138,9 +205,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // A listed workspace is shown under its listed name, not its room id.
   const scope = route.target.scope;
   const listed = scope.kind === 'room' ? workspaceAt(workspaces, scope.host) : null;
+  const host = scopeHost(scope);
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop,
-    diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...diagnostics},
-    onStatus: diagnostics.onStatus});
+    diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
+      ...(entry.about ? {about: entry.about} : {}), ...diagnostics},
+    onStatus: titled(window, diagnostics.onStatus)});
   if (shown.redirect) {
     window.location.replace(link.format({mode: shown.redirect, target: route.target}));
     return null;
@@ -155,5 +224,5 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
       return openTarget({mount: shown.mount, navigation: shown.navigation, target: next.target, mode: next.mode});
     },
     onError: error => say(error?.message ?? String(error))});
-  return {peer, mount: shown.mount, navigation: shown.navigation, router, link, entry};
+  return {peer, mount: shown.mount, navigation: shown.navigation, router, link, entry, ...(install ? {install} : {})};
 }

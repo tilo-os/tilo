@@ -433,6 +433,11 @@ class AppReleaseWorkflowContract(unittest.TestCase):
                             script.index('tools/upload_immutable_packages.sh "$upload_manifest"'))
             self.assertIn('public registry media is unavailable or has the wrong type', publish)
             self.assertIn('curl --silent --show-error --location --head --dump-header "$headers"', publish)
+            # Archived screenshots are downloaded and digest-checked; a single
+            # gateway timeout from the proxy must not fail the publication.
+            self.assertIn('--connect-timeout 10 --max-time 180 --retry 4 --retry-delay 2 \\\n'
+                          '      "$media_url" --output "$archived_file"', publish)
+            self.assertIn("[[ ${actual_sha%% *} == \"$version\" ]]", publish)
             self.assertIn("*.svg) expected_type='image/svg+xml'", publish)
             self.assertIn("*.webp) expected_type='image/webp'", publish)
             # Every media URL is checked, eight at a time, and any failure fails.

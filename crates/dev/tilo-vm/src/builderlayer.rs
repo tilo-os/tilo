@@ -152,6 +152,9 @@ pub(crate) fn pack_with_source(
         .and_then(|o| serde_json::from_slice(&o.stdout).ok())
         .unwrap_or(serde_json::Value::Null);
     let target = build::target_dir(&metadata);
+    for native in build::native_builds(&component, &target) {
+        run_to_stderr(Command::new(&native.program).args(&native.args))?;
+    }
     let staging_parent = Path::new(&target).join("tilo-vm-layers");
     std::fs::create_dir_all(&staging_parent)
         .map_err(CliError::io(format!("create {}", staging_parent.display())))?;
@@ -162,7 +165,8 @@ pub(crate) fn pack_with_source(
     let tree = staging.path().join("tree");
     let from = format!("{target}/{}", component.profile_dir());
     if component.image_assembled {
-        run_to_stderr(Command::new("python3").args([
+        let mut assemble = Command::new("python3");
+        assemble.args([
             "os/dev/assemble-app-runtime.py",
             "--repo",
             &root.display().to_string(),
@@ -174,7 +178,11 @@ pub(crate) fn pack_with_source(
             &component.build_features(extra).join(","),
             "--dest",
             &tree.display().to_string(),
-        ]))?;
+        ]);
+        if let Some(digest) = &source_digest {
+            assemble.args(["--source-inventory", digest]);
+        }
+        run_to_stderr(&mut assemble)?;
     } else {
         run_to_stderr(
             Command::new("python3")

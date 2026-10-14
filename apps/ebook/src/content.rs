@@ -442,21 +442,14 @@ pub fn open_epub_path(path: &Path) -> Option<Book> {
     }
 }
 
-/// Read one EPUB without trusting its advertised filesystem size. The metadata
-/// check gives a cheap refusal for ordinary huge files; `take` is the actual
-/// guard if the file grows between that check and the read.
+/// Read one EPUB, refusing one over [`MAX_EPUB_BYTES`] without loading it.
 fn read_epub_bytes(path: &Path) -> Option<Vec<u8>> {
     let (dir, name) = tilo_files::file_at(path).ok()?;
-    if tilo_files::blocking::metadata(&dir, &name).ok()?.len > MAX_EPUB_BYTES as u64 {
+    let bytes = tilo_files::blocking::read_bounded(&dir, &name, MAX_EPUB_BYTES).ok()?;
+    if bytes.is_none() {
         tracing::warn!(path = %path.display(), "ebook: file exceeds size limit");
-        return None;
     }
-    let bytes = tilo_files::blocking::read(&dir, &name).ok()?;
-    if bytes.len() > MAX_EPUB_BYTES {
-        tracing::warn!(path = %path.display(), "ebook: file grew beyond size limit");
-        return None;
-    }
-    Some(bytes)
+    bytes
 }
 
 /// The `.epub` files under the reader's watched folders (and any

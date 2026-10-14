@@ -410,7 +410,12 @@ impl QuickFS {
             let entries = self.visible_entries(dir).unwrap_or_default();
             for (ino, kind, name) in entries {
                 let name = name.as_bytes();
-                if name == b"." || name == b".." {
+                if !projectable_name(name) {
+                    tracing::warn!(
+                        target: "fs::native",
+                        ino,
+                        "not projecting an entry whose name is not one path component",
+                    );
                     continue;
                 }
                 let mut path = prefix.clone();
@@ -1110,6 +1115,41 @@ impl QuickFS {
                 Some((rel, lease))
             })
             .collect()
+    }
+}
+
+/// Whether a namespace entry's name is exactly one path component.
+///
+/// The native data plane turns these names into real paths under the live
+/// tree, as root. Local creates validate names, but a name merged from a
+/// peer's document is whatever bytes the peer wrote, so a separator, a NUL
+/// or a dot-link in it must never reach `Path::join`: `../../etc/cron.d/x`
+/// would leave the tree, and `/etc/cron.d/x` would replace it.
+pub fn projectable_name(name: &[u8]) -> bool {
+    !name.is_empty() && name != b"." && name != b".." && !name.contains(&b'/') && !name.contains(&0)
+}
+
+#[cfg(test)]
+mod projectable_name_tests {
+    use super::projectable_name;
+
+    #[test]
+    fn only_single_components_are_projected() {
+        for name in [&b"notes.md"[..], b"..hidden", b"a b", "é.txt".as_bytes()] {
+            assert!(projectable_name(name), "{name:?} is one component");
+        }
+        for name in [
+            &b""[..],
+            b".",
+            b"..",
+            b"../etc",
+            b"../../../../etc/cron.d/x",
+            b"/etc/cron.d/x",
+            b"a/b",
+            b"a\0b",
+        ] {
+            assert!(!projectable_name(name), "{name:?} must not be projected");
+        }
     }
 }
 
