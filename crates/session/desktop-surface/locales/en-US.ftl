@@ -76,6 +76,20 @@ topbar-clock-add-one-minute = Add one minute
 topbar-workspace-position = Workspace { $position } of { $total }
 topbar-desktop-navigation = Desktop navigation
 topbar-display-navigation = Display navigation
+topbar-strips = Strips in this workspace
+topbar-strip-count = { $name } · { $count }
+topbar-strip-go = Go to { $name }, { $count ->
+    [0] nobody there
+    [one] one person there
+   *[other] { $count } people there
+}
+topbar-strip-add = Add a strip
+topbar-strips-more-label = +{ $count }
+topbar-strips-more = { $count ->
+    [one] One more strip
+   *[other] { $count } more strips
+}, go to { $name }
+topbar-strip-name-placeholder = Name the strip
 
 # Workspace activity
 a11y-shell-workspace-activity = Workspace activity
@@ -528,11 +542,9 @@ notification-center-title = Notifications
 notification-center-empty = No recent notifications
 notification-center-cleared = Notifications cleared
 notification-center-clear-all = Clear all
-notification-center-position = Newest { $first }–{ $last } of { $total }
-notification-center-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
+notification-center-position = { $first }–{ $last } of { $total }
+notification-center-close = Close notifications
+notification-center-back-to-list = Back to notifications
 notification-center-newer = ↑ Newer
 notification-center-at-newest = At newest
 notification-center-older = ↓ Older
@@ -540,9 +552,12 @@ notification-center-at-oldest = At oldest
 history-severity-info = Information
 history-severity-warning = Warning
 history-severity-error = Error
-history-source-system = System
-history-notification-description = { $severity }. From { $source }. { $time }
-history-notification-description-body = { $severity }. From { $source }. { $time }. { $body }
+history-notification-description = { $severity }. { $time }
+history-notification-description-body = { $severity }. { $time }. { $body }
+history-notification-description-sourced = { $severity }. From { $source }. { $time }
+history-notification-description-sourced-body = { $severity }. From { $source }. { $time }. { $body }
+host-action-source-identity = Identity
+host-action-source-devices = Devices
 notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
         [yes] collapse
        *[no] expand
@@ -1032,8 +1047,6 @@ tilo-about-link-notify = Get notified
 tilo-about-link-source = Source code
 tilo-about-link-community = Community
 
-notification-center-read = Read
-notification-center-read-description = Read complete notification
 notification-preview-hidden = Notification preview hidden
 activity-catch-up-goals = Workspace tasks · { $done } completed · { $unfinished } unfinished · updated { $when }
 activity-catch-up-review-description = Review this workspace's waiting tasks, goals and agent work. Reading activity does not resolve a task.

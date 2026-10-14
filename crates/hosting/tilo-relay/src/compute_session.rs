@@ -6,7 +6,8 @@
 //!
 //! The first stream of a connection is the control stream: the handshake,
 //! then [`ComputeEnvelope`]s. Compute jobs and worker advertisements are the
-//! relay owner's devices' alone. Every further stream is one environment
+//! relay owner's devices' alone, as the host's authority decides
+//! (`HostOperation::ComputeControl`). Every further stream is one environment
 //! session, legacy-windows view or legacy launch
 //! ([`crate::environment_routing`]); those are open to any device the trust
 //! policy admits, and each is admitted by its workspace's membership.
@@ -154,7 +155,8 @@ async fn run_server_session(
     mut receive: RecvStream,
 ) -> Result<(), ComputeSessionError> {
     let peer = authenticate_server(&protocol, &mut send, &mut receive).await?;
-    let owner = peer.user_public_key == protocol.identity.user_public_key;
+    let controls = crate::host_authority::HostOperation::ComputeControl
+        .permits(&protocol.identity.user_public_key, &peer.user_public_key);
     let streams = tokio::spawn(accept_streams(
         protocol.routing(),
         peer.clone(),
@@ -179,9 +181,10 @@ async fn run_server_session(
                 }
                 incoming = read_compute(&mut receive) => {
                     let incoming = incoming?;
-                    if !owner {
+                    if !controls {
                         // Another user's device reaches environments on its
-                        // own streams; the control stream is the owner's.
+                        // own streams; the control stream is the host's
+                        // person's.
                         if matches!(incoming, ComputeEnvelope::Ping) {
                             write_compute(&mut send, &ComputeEnvelope::Pong).await?;
                             continue;

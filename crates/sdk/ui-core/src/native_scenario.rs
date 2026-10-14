@@ -58,6 +58,75 @@ pub enum Input {
     Key {
         key: crate::synthetic_input::NativeKey,
     },
+    /// A stylus tip touching down at `pressure` (`0.0..=1.0`): a pen sample
+    /// with a pointer move, then a sample with the left press, as a tablet
+    /// reports it.
+    PenDown {
+        x: f64,
+        y: f64,
+        pressure: f64,
+    },
+    /// One pen sample with a pointer move: a drag while the tip is down, a
+    /// hover at pressure `0.0` while it is up.
+    PenMove {
+        x: f64,
+        y: f64,
+        pressure: f64,
+    },
+    /// The tip lifting: a zero-pressure sample with a pointer move, then a
+    /// sample with the left release.
+    PenUp {
+        x: f64,
+        y: f64,
+    },
+}
+
+impl Input {
+    /// The window events this step delivers, in order, through the same
+    /// routing platform input takes.
+    #[cfg(feature = "native")]
+    pub(crate) fn window_events(self) -> Vec<winit::event::WindowEvent> {
+        use crate::synthetic_input as input;
+        use winit::event::ElementState;
+        match self {
+            Self::Hover { x, y } => vec![input::cursor_moved(x, y)],
+            Self::Click { x, y } => vec![
+                input::cursor_moved(x, y),
+                input::mouse_press(),
+                input::mouse_release(),
+            ],
+            Self::Wheel { dx, dy } => vec![input::mouse_wheel(dx, dy)],
+            Self::Character { value } => {
+                let key = winit::keyboard::Key::Character(value.to_string().into());
+                [ElementState::Pressed, ElementState::Released]
+                    .into_iter()
+                    .map(|state| input::key_input(&key, state))
+                    .collect()
+            }
+            Self::Key { key } => {
+                let key: winit::keyboard::Key = key.into();
+                [ElementState::Pressed, ElementState::Released]
+                    .into_iter()
+                    .map(|state| input::key_input(&key, state))
+                    .collect()
+            }
+            Self::PenDown { x, y, pressure } => vec![
+                input::pen_sample(pressure),
+                input::cursor_moved(x, y),
+                input::pen_sample(pressure),
+                input::mouse_press(),
+            ],
+            Self::PenMove { x, y, pressure } => {
+                vec![input::pen_sample(pressure), input::cursor_moved(x, y)]
+            }
+            Self::PenUp { x, y } => vec![
+                input::pen_sample(0.0),
+                input::cursor_moved(x, y),
+                input::pen_sample(0.0),
+                input::mouse_release(),
+            ],
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -92,13 +161,18 @@ impl Scenario {
         }
         for (id, input) in self.steps.iter().enumerate() {
             let finite = match input {
-                Input::Hover { x, y } | Input::Click { x, y } => x.is_finite() && y.is_finite(),
+                Input::Hover { x, y } | Input::Click { x, y } | Input::PenUp { x, y } => {
+                    x.is_finite() && y.is_finite()
+                }
+                Input::PenDown { x, y, pressure } | Input::PenMove { x, y, pressure } => {
+                    x.is_finite() && y.is_finite() && (0.0..=1.0).contains(pressure)
+                }
                 Input::Wheel { dx, dy } => dx.is_finite() && dy.is_finite(),
                 Input::Character { .. } | Input::Key { .. } => true,
             };
             if !finite {
                 return Err(format!(
-                    "native scenario step {id} contains a non-finite input"
+                    "native scenario step {id} contains a non-finite input or a pressure outside 0..=1"
                 ));
             }
         }
@@ -844,6 +918,34 @@ mod tests {
             ] {
                 assert!(serde_json::from_str::<Input>(input).is_err(), "{input}");
             }
+        }
+
+        // Case `pen_steps_load_and_reject_out_of_range_pressure`.
+        {
+            let scenario = parse(r#"{"name":"stroke","interval_us":8000,"steps":[{"kind":"pen_down","x":10,"y":20,"pressure":0.4},{"kind":"pen_move","x":12,"y":21,"pressure":0.9},{"kind":"pen_up","x":12,"y":21}]}"#).unwrap();
+            assert!(matches!(
+                scenario.steps[1],
+                Input::PenMove {
+                    x: 12.0,
+                    y: 21.0,
+                    pressure: 0.9
+                }
+            ));
+            for steps in [
+                r#"[{"kind":"pen_move","x":1,"y":1,"pressure":1.5}]"#,
+                r#"[{"kind":"pen_down","x":1,"y":1,"pressure":-0.1}]"#,
+                r#"[{"kind":"pen_up","x":1,"y":1,"pressure":0.0}]"#,
+            ] {
+                let json = format!(r#"{{"name":"pen","interval_us":8000,"steps":{steps}}}"#);
+                assert!(parse(&json).is_err(), "{steps}");
+            }
+            let mut invalid = scenario.clone();
+            invalid.steps[0] = Input::PenMove {
+                x: 0.0,
+                y: 0.0,
+                pressure: f64::NAN,
+            };
+            assert!(invalid.validate().is_err());
         }
 
         // Case `rejects_invalid_scenario_before_scheduling`.

@@ -19,7 +19,7 @@ impl NotesApp {
             let document = cx.document().ok_or("the editor document is unavailable")?;
             return Ok(Effected::value(self.editor_observation(&document)));
         }
-        let state = Workspace::of(cx.live().get(), &self.workspace);
+        let state = Workspace::of(&cx.live().get(), &self.workspace);
         match effect {
             NotesEffect::InspectEditor => Err("the editor document is unavailable".into()),
             NotesEffect::ImportMarkdownFile => Ok(Self::choose_markdown(cx)),

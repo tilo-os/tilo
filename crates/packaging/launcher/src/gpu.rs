@@ -70,7 +70,7 @@ pub const PIPELINE_SEED_ENV: &str = "TILO_PIPELINE_SEED_DIR";
 /// published.
 #[must_use]
 pub fn host_pipeline_seed() -> Option<PathBuf> {
-    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?)
+    let dir = tilo_paths::xdg::runtime_dir()?
         .join("tilo")
         .join(PIPELINE_SEED_DIR_NAME);
     dir.is_dir().then_some(dir)

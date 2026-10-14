@@ -88,6 +88,20 @@ topbar-clock-add-one-minute = Eine Minute hinzufügen
 topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation
+topbar-strips = Leisten in diesem Arbeitsbereich
+topbar-strip-count = { $name } · { $count }
+topbar-strip-go = Zu { $name } wechseln, { $count ->
+    [0] niemand dort
+    [one] eine Person dort
+   *[other] { $count } Personen dort
+}
+topbar-strip-add = Leiste hinzufügen
+topbar-strips-more-label = +{ $count }
+topbar-strips-more = { $count ->
+    [one] Eine weitere Leiste
+   *[other] { $count } weitere Leisten
+}, zu { $name } wechseln
+topbar-strip-name-placeholder = Leiste benennen
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
@@ -549,11 +563,9 @@ notification-center-title = Benachrichtigungen
 notification-center-empty = Keine neuen Benachrichtigungen
 notification-center-cleared = Benachrichtigungen gelöscht
 notification-center-clear-all = Alle löschen
-notification-center-position = Neueste { $first }–{ $last } von { $total }
-notification-center-count = { $count ->
-        [one] { $count } Benachrichtigung
-       *[other] { $count } Benachrichtigungen
-    }
+notification-center-position = { $first }–{ $last } von { $total }
+notification-center-close = Benachrichtigungen schließen
+notification-center-back-to-list = Zurück zu den Benachrichtigungen
 notification-center-newer = ↑ Neuere
 notification-center-at-newest = Neueste erreicht
 notification-center-older = ↓ Ältere
@@ -561,9 +573,12 @@ notification-center-at-oldest = Älteste erreicht
 history-severity-info = Information
 history-severity-warning = Warnung
 history-severity-error = Fehler
-history-source-system = System
-history-notification-description = { $severity }. Von { $source }. { $time }
-history-notification-description-body = { $severity }. Von { $source }. { $time }. { $body }
+history-notification-description = { $severity }. { $time }
+history-notification-description-body = { $severity }. { $time }. { $body }
+history-notification-description-sourced = { $severity }. Von { $source }. { $time }
+history-notification-description-sourced-body = { $severity }. Von { $source }. { $time }. { $body }
+host-action-source-identity = Identität
+host-action-source-devices = Geräte
 notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
         [yes] Einklappen
        *[no] Ausklappen
@@ -1056,8 +1071,6 @@ tilo-about-link-notify = Benachrichtigt werden
 tilo-about-link-source = Quellcode
 tilo-about-link-community = Community
 
-notification-center-read = Lesen
-notification-center-read-description = Vollständige Benachrichtigung lesen
 notification-preview-hidden = Benachrichtigungsvorschau verborgen
 
 activity-catch-up-goals = Aufgaben im Arbeitsbereich · { $done } abgeschlossen · { $unfinished } offen · aktualisiert { $when }

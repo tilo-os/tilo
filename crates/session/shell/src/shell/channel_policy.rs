@@ -7,6 +7,10 @@
 //! - every person the room's roster lists with a role that can read
 //!   (owner, editor, commenter or viewer) is allowed; a restriction below
 //!   read, an expired grant or a removal takes the person out;
+//! - a channel is one record's: a Read Deny on a record the room's grants
+//!   name (`room › app › resource`) takes its person, or service member, out
+//!   of that record's channel and no other
+//!   ([`collab_types::named_record_of_channel`]);
 //! - each allowed person reads through every certified device of theirs:
 //!   the devices the room's governor admitted (root-signed certificate,
 //!   unexpired, not revoked), plus, for this machine's own identity, the
@@ -19,7 +23,7 @@
 
 use std::collections::BTreeSet;
 
-use collab_types::Ed25519PublicKey;
+use collab_types::{ChannelId, Ed25519PublicKey};
 
 use super::channel_encryption::ChannelDirectory;
 use super::state::{RoomAuthority, RoomId, WorkspaceTree, WorkspaceTreeHandle};
@@ -142,9 +146,14 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
         Some(Ed25519PublicKey::from_bytes(*endpoint.as_bytes()))
     }
 
-    fn allowed_devices(&self, room: RoomId, now: u64) -> BTreeSet<Ed25519PublicKey> {
+    fn allowed_devices(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+        now: u64,
+    ) -> BTreeSet<Ed25519PublicKey> {
         let own = (self.own_devices)(room);
-        allowed_devices(&self.tree.read(), room, now, &own)
+        allowed_devices(&self.tree.read(), room, channel, now, &own)
     }
 
     fn policy_epoch(&self) -> Option<u64> {
@@ -196,10 +205,19 @@ pub fn next_policy_change(
     capabilities.into_iter().chain(certificates).min()
 }
 
-/// Every device that may read `room`'s channels at `now` (Unix seconds).
+/// Every device that may read `channel`, one of `room`'s channels, at `now`
+/// (Unix seconds).
+///
+/// Who reads the room reads every channel of it, except a record's channel
+/// whose record the room's grants name: there each reader must also be
+/// allowed to read that record, decided by the same
+/// `Workspace::answer_at` at the record's
+/// [`collab_types::document_node`] that hands this machine's own apps the
+/// record's keys. A record no grant names is read as the room is.
 pub fn allowed_devices(
     tree: &WorkspaceTree,
     room: RoomId,
+    channel: ChannelId,
     now: u64,
     own_devices: &[(tilo_user_identity::DeviceCert, bool)],
 ) -> BTreeSet<Ed25519PublicKey> {
@@ -229,15 +247,21 @@ pub fn allowed_devices(
             }),
     );
     let room_node = workspace.node();
+    let record = collab_types::named_record_of_channel(
+        &workspace.policy.grants,
+        &workspace.policy.room,
+        channel,
+    )
+    .map(|(app, record)| collab_types::document_node(&workspace.policy.room, app, record));
+    let read = tilo_action_policy::ActionKind::Read;
+    let allow = tilo_action_policy::Answer::Allow;
     let readers: BTreeSet<String> = people
         .into_iter()
         .filter(|person| {
-            workspace.answer_at(
-                person,
-                &room_node,
-                tilo_action_policy::ActionKind::Read,
-                now,
-            ) == tilo_action_policy::Answer::Allow
+            workspace.answer_at(person, &room_node, read, now) == allow
+                && record
+                    .as_ref()
+                    .is_none_or(|node| workspace.answer_at(person, node, read, now) == allow)
         })
         .collect();
     let now_ns = now.saturating_mul(1_000_000_000);
@@ -266,7 +290,17 @@ pub fn allowed_devices(
         }
     }
     for member in super::service_members::service_members(workspace, now) {
-        if member.kinds.contains(tilo_action_policy::ActionKind::Read) {
+        let reads_record = record.as_ref().is_none_or(|node| {
+            let subject = tilo_action_policy::Subject::agent(
+                super::service_members::service_principal(&member.device),
+            );
+            workspace
+                .subject_authority(subject)
+                .decide(node, read, &tilo_desktop_model::context_at(now))
+                .answer
+                == allow
+        });
+        if member.kinds.contains(read) && reads_record {
             allowed.insert(member.device);
         }
     }
@@ -421,10 +455,12 @@ mod tests {
             (cert(&owner, 11, false), true),
         ];
         assert_eq!(
-            allowed_devices(&tree, room, 1_000, &own),
+            allowed_devices(&tree, room, ChannelId::new(), 1_000, &own),
             BTreeSet::from([device_key(10), device_key(20), device_key(21)])
         );
-        assert!(allowed_devices(&tree, room, 100, &own).contains(&device_key(30)));
+        assert!(
+            allowed_devices(&tree, room, ChannelId::new(), 100, &own).contains(&device_key(30))
+        );
 
         // Bob is removed from the room: his devices go with him.
         tree.desktop
@@ -434,10 +470,92 @@ mod tests {
             .unwrap()
             .dismiss(&person(&bob));
         assert_eq!(
-            allowed_devices(&tree, room, 1_000, &own),
+            allowed_devices(&tree, room, ChannelId::new(), 1_000, &own),
             BTreeSet::from([device_key(10)])
         );
-        assert!(allowed_devices(&tree, RoomId::new(), 1_000, &own).is_empty());
+        assert!(allowed_devices(&tree, RoomId::new(), ChannelId::new(), 1_000, &own).is_empty());
+    }
+
+    /// A Read Deny on one record keeps the denied person's devices, and a
+    /// denied service member, out of that record's channel and no other: the
+    /// room's other records, and records nobody has written yet, are read as
+    /// the room is.
+    #[test]
+    fn a_read_deny_on_a_record_withholds_that_records_channel_only() {
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let bob = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let carol = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let mut tree = WorkspaceTree::default();
+        let workspace = tree.append_empty_workspace("Shared");
+        let room = tree.room_of(workspace).unwrap();
+        let service = device_key(50);
+        let entry = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|candidate| candidate.id == workspace)
+            .unwrap();
+        entry.set_owner(person(&owner));
+        entry.admit(person(&bob), Role::Editor);
+        entry.admit(person(&carol), Role::Viewer);
+        let room_id = entry.policy.room.clone();
+        entry.grant(crate::shell::service_members::service_membership(
+            &room_id,
+            &service,
+            "indexing",
+            KindSet::READ,
+            None,
+            Subject::person(person(&owner)),
+        ));
+        let app = "so.tilo.sheets";
+        let payroll = collab_types::document_node(&room_id, app, "payroll");
+        let deny = |id: &str, subject: Subject, node: tilo_action_policy::TreePath| {
+            Grant::new(
+                id,
+                subject,
+                node,
+                KindSet::READ,
+                Answer::Deny,
+                Subject::person(person(&owner)),
+            )
+        };
+        entry.grant(deny(
+            "bob-payroll",
+            Subject::person(person(&bob)),
+            payroll.clone(),
+        ));
+        entry.grant(deny(
+            "service-payroll",
+            Subject::agent(crate::shell::service_members::service_principal(&service)),
+            payroll,
+        ));
+        admit(&mut tree, room, cert(&bob, 20, false), Vec::new());
+        admit(&mut tree, room, cert(&carol, 30, false), Vec::new());
+        let own = vec![(cert(&owner, 10, false), false)];
+
+        let payroll = collab_types::document_channel_id(app, &room_id, "payroll");
+        let notes = collab_types::document_channel_id(app, &room_id, "notes");
+        let unwritten = collab_types::document_channel_id("so.tilo.notes", &room_id, "draft");
+        assert_eq!(
+            allowed_devices(&tree, room, payroll, 1_000, &own),
+            BTreeSet::from([device_key(10), device_key(30)])
+        );
+        let everyone = BTreeSet::from([device_key(10), device_key(20), device_key(30), service]);
+        for channel in [notes, unwritten] {
+            assert_eq!(allowed_devices(&tree, room, channel, 1_000, &own), everyone);
+        }
+
+        // Lifting the Deny lets Bob read the record again.
+        let entry = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|candidate| candidate.id == workspace)
+            .unwrap();
+        assert!(entry.revoke_grant(&tilo_action_policy::GrantId::new("bob-payroll")));
+        let lifted = allowed_devices(&tree, room, payroll, 1_000, &own);
+        assert!(lifted.contains(&device_key(20)));
+        assert!(!lifted.contains(&service));
     }
 
     /// Stewards re-check at the first instant the readers change
@@ -483,13 +601,23 @@ mod tests {
         let own = vec![(cert(&owner, 10, false), false), (second, false)];
 
         assert_eq!(next_policy_change(&tree, room, 100, &own), Some(300));
-        assert!(allowed_devices(&tree, room, 299, &own).contains(&device_key(40)));
-        assert!(!allowed_devices(&tree, room, 300, &own).contains(&device_key(40)));
+        assert!(
+            allowed_devices(&tree, room, ChannelId::new(), 299, &own).contains(&device_key(40))
+        );
+        assert!(
+            !allowed_devices(&tree, room, ChannelId::new(), 300, &own).contains(&device_key(40))
+        );
         assert_eq!(next_policy_change(&tree, room, 300, &own), Some(500));
-        assert!(allowed_devices(&tree, room, 499, &own).contains(&device_key(30)));
-        assert!(!allowed_devices(&tree, room, 500, &own).contains(&device_key(30)));
+        assert!(
+            allowed_devices(&tree, room, ChannelId::new(), 499, &own).contains(&device_key(30))
+        );
+        assert!(
+            !allowed_devices(&tree, room, ChannelId::new(), 500, &own).contains(&device_key(30))
+        );
         assert_eq!(next_policy_change(&tree, room, 500, &own), Some(800));
-        assert!(!allowed_devices(&tree, room, 800, &own).contains(&device_key(11)));
+        assert!(
+            !allowed_devices(&tree, room, ChannelId::new(), 800, &own).contains(&device_key(11))
+        );
         assert_eq!(next_policy_change(&tree, room, 800, &own), None);
         assert_eq!(next_policy_change(&tree, RoomId::new(), 100, &own), None);
     }
