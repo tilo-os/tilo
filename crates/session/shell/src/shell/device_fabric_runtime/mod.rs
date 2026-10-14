@@ -1703,6 +1703,7 @@ impl DeviceFabricRuntime {
                     caller: None,
                     badge_count: None,
                     contact_endpoint: None,
+                    sender_name: None,
                     sound: None,
                 });
         }

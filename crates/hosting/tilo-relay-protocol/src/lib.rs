@@ -23,6 +23,8 @@
 //!   service and each `tilo-relay room` child it runs;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
 //!   the server advertisements compute admission checks;
+//! - [`placement`] — which advertised device a compute job is sent to, and
+//!   why every other one was passed over;
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
 //! - [`home_peer`] — the registry record written after enrolling an
 //!   always-on peer;
@@ -54,6 +56,7 @@ pub mod live;
 pub mod mesh;
 pub mod metrics;
 pub mod personal_devices;
+pub mod placement;
 pub mod policy;
 pub mod process_lease;
 pub mod public_avatars;
@@ -76,6 +79,10 @@ pub use mesh::{
     ReplicationIntent, ReplicationResource, ServerAdvertisement, ServiceCapabilities,
 };
 pub use metrics::MetricsSnapshot;
+pub use placement::{
+    ComputeRequirements, Ineligible, NoEligibleWorker, Placement, PlacementCandidate,
+    PlacementRank, PowerClass, place_compute_job,
+};
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
 pub use transport::{ALPN, ContentPeerRegistration, Envelope};

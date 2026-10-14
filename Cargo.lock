@@ -3486,6 +3486,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-clock",
  "tilo-connector",
  "tilo-net",
  "tilo-relay",
@@ -4148,6 +4149,7 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "serde_json",
+ "tilo-clock",
  "tokio",
  "tokio-websockets",
  "workspace-hack",
@@ -7979,6 +7981,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-clock",
  "tilo-desktop-entry",
+ "tilo-files",
  "tilo-paths",
  "tilo-rt",
  "tilo-sandbox-core",
@@ -9237,6 +9240,7 @@ dependencies = [
  "hex",
  "image",
  "reqwest 0.13.4",
+ "rquickjs",
  "runtime-dylib",
  "rustypipe",
  "serde",
@@ -10661,6 +10665,7 @@ dependencies = [
  "tilo-rt",
  "tilo-test-env",
  "tracing",
+ "uuid",
  "workspace-hack",
  "zbus",
  "zeroize",
@@ -13054,6 +13059,7 @@ dependencies = [
  "tilo-clock",
  "tilo-test-env",
  "tokio",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -16341,7 +16347,6 @@ name = "tilo-browser-runtime"
 version = "0.1.0"
 dependencies = [
  "accounts",
- "chrono",
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -16503,6 +16508,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-clock",
  "tilo-files",
  "tilo-secrets",
  "tokio",
@@ -21986,6 +21992,7 @@ dependencies = [
  "tilo-net",
  "tilo-paths",
  "tokio",
+ "uuid",
  "workspace-hack",
 ]
 

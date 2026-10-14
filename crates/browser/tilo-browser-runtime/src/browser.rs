@@ -2455,11 +2455,21 @@ pub fn desktop_set_host_actions(id: u64, actions: &str) -> Result<(), JsValue> {
     let actions: Vec<tilo_desktop_surface::HostAction> =
         serde_json::from_str(actions).map_err(error)?;
     with_mount(id, |m| {
-        m.desktop
+        let desktop = m
+            .desktop
             .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?
-            .handle
-            .set_host_actions(actions);
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        // An ask for an action no longer offered was answered some other way.
+        let mut withdrew = false;
+        for gone in desktop.handle.set_host_actions(actions) {
+            withdrew |= desktop
+                .persistence
+                .notifications
+                .withdraw_host_action(&gone);
+        }
+        if withdrew {
+            m.window.request_redraw();
+        }
         Ok(())
     })
 }
