@@ -104,21 +104,30 @@ struct RoomRecord {
 
 /// The devices governance lets read a room's channels: the room's governed
 /// member devices (`access`, as `peer` derived it at `now`), each record's
-/// channel less the devices a Read Deny on that record withholds.
+/// channel less the devices a Read Deny on that record, its app or a pattern
+/// over it withholds. The record of a channel is named by a grant or by one
+/// of the routes `steward` keeps; a channel whose record is neither is
+/// withheld from whoever a Deny over a pattern could keep out of it.
 fn readers(
     peer: &StatePeer,
     access: &GovernedAccess,
+    steward: Option<&stewardship::Steward>,
     now: SystemTime,
 ) -> Result<stewardship::Readers, String> {
     let key = |device: [u8; 32]| collab_types::Ed25519PublicKey::from_bytes(device);
-    let withheld = peer
-        .withheld_record_readers(now)?
+    let routes = steward
+        .map(stewardship::Steward::routes)
+        .unwrap_or_default();
+    let record_readers = peer.withheld_record_readers(now, &routes)?;
+    let withheld = record_readers
+        .withheld
         .into_iter()
         .map(|(channel, devices)| (channel, devices.into_iter().map(key).collect()))
         .collect();
     Ok(stewardship::Readers::new(
         access.member_devices.iter().copied().map(key).collect(),
         withheld,
+        record_readers.unrouted.into_iter().map(key).collect(),
     ))
 }
 
@@ -517,7 +526,12 @@ struct RoomsInner {
 
 /// What a member sent a room's channel steward.
 enum ChannelNoticeKind {
-    Request(Box<collab_types::MlsAccessRequestV1>),
+    /// An access request, with the route of the channel's record when the
+    /// device sent it.
+    Request(
+        Box<collab_types::MlsAccessRequestV1>,
+        Option<Box<collab_types::ChannelRoute>>,
+    ),
     Ack(Box<collab_types::MlsGovernanceAckV1>),
 }
 
@@ -1000,7 +1014,19 @@ impl Rooms {
                 request,
                 ..
             } if named == room => {
-                return self.channel_notice(room, (author, ChannelNoticeKind::Request(request)));
+                return self
+                    .channel_notice(room, (author, ChannelNoticeKind::Request(request, None)));
+            }
+            tilo_peer_state::NeighbourMsg::MlsRoutedAccessRequest {
+                room: named,
+                request,
+                route,
+                ..
+            } if named == room => {
+                return self.channel_notice(
+                    room,
+                    (author, ChannelNoticeKind::Request(request, Some(route))),
+                );
             }
             tilo_peer_state::NeighbourMsg::MlsGovernanceAck {
                 room: named, ack, ..
@@ -1129,8 +1155,9 @@ impl Rooms {
                 return Ok(());
             };
             let now = SystemTime::now();
-            let room_readers =
-                readers(governed.peer(), &governed.peer().governed_access(now)?, now)?;
+            let access = governed.peer().governed_access(now)?;
+            self.learn_queued_routes(room, &steward, &access)?;
+            let room_readers = readers(governed.peer(), &access, Some(&*steward), now)?;
             let taken = (
                 governed.workspace_id(),
                 governed.record.generation,
@@ -1156,9 +1183,11 @@ impl Rooms {
             let mut acks = Vec::new();
             for (author, notice) in waiting {
                 match notice {
-                    ChannelNoticeKind::Request(request) => {
+                    ChannelNoticeKind::Request(request, route) => {
                         asked = true;
-                        if let Err(error) = stewardship.request(author, *request, &readers) {
+                        if let Err(error) =
+                            stewardship.request(author, *request, route.as_deref(), &readers)
+                        {
                             tracing::debug!(room, %error, "channel access request refused");
                         }
                     }
@@ -1178,6 +1207,35 @@ impl Rooms {
             }
             drop(stewardship);
         }
+        Ok(())
+    }
+
+    /// Keep the route of every routed access request queued for `room`'s
+    /// `steward` whose author is a governed member device (`access`) and
+    /// whose request is its own: the readers the queued requests are decided
+    /// with then decide each named record itself. A route that does not
+    /// prove its channel is not kept ([`stewardship::Steward::learn_route`]),
+    /// and the request carrying it is refused when it is taken.
+    fn learn_queued_routes(
+        &self,
+        room: &str,
+        steward: &stewardship::Steward,
+        access: &GovernedAccess,
+    ) -> Result<(), String> {
+        let queued = self
+            .inner
+            .channel_notices
+            .lock()
+            .map_err(|_| "channel notices poisoned")?;
+        for (author, notice) in queued.get(room).into_iter().flatten() {
+            if let ChannelNoticeKind::Request(request, Some(route)) = notice
+                && request.device.as_bytes() == author
+                && access.member_devices.contains(author)
+            {
+                steward.learn_route(request.channel, route);
+            }
+        }
+        drop(queued);
         Ok(())
     }
 
@@ -1260,7 +1318,7 @@ impl Rooms {
         let host = &self.inner.host;
         let now = SystemTime::now();
         let access: GovernedAccess = room.peer().governed_access(now)?;
-        let readers = readers(room.peer(), &access, now)?;
+        let readers = readers(room.peer(), &access, room.stewardship.as_deref(), now)?;
         host.access
             .replace(room.workspace_id(), true, access)
             .await

@@ -173,6 +173,17 @@ pub struct GovernedAccess {
     pub member_devices: Vec<[u8; 32]>,
     pub member_user_roots: Vec<[u8; 32]>,
 }
+/// Who a Read Deny keeps out of a room's record channels; see
+/// [`StatePeer::withheld_record_readers`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecordReaders {
+    /// Each channel whose record the steward can name, and the member
+    /// devices that may not read that record (possibly none).
+    pub withheld: std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>,
+    /// The member devices kept out of every channel whose record the steward
+    /// cannot name: those a Deny over a pattern of records could keep out.
+    pub unrouted: BTreeSet<[u8; 32]>,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernedMember {
     pub user_public_key: [u8; 32],
@@ -1081,15 +1092,25 @@ impl StatePeer {
         })
     }
 
-    /// The governed member devices a Read Deny keeps out of one record's
-    /// channel, by channel: for every record the room's grants name
-    /// ([`collab_types::named_records`]), each device of
+    /// The governed member devices a Read Deny keeps out of a record's
+    /// channel, as a channel steward admits them.
+    ///
+    /// A channel is one record's, and its id a hash of the record's route,
+    /// so a steward decides a channel by its record when it can name it: a
+    /// record the room's grants name ([`collab_types::named_records`]), or one
+    /// of `routes`, the routes devices proved to it
+    /// ([`collab_types::ChannelRoute::proves`]). For each such record
+    /// [`RecordReaders::withheld`] lists every device of
     /// [`Self::governed_access`] that may not read it
-    /// ([`Self::check_document_read`], the decision every door applies).
-    /// A steward admits a device to a record's channel only when it reads
-    /// the room and is not withheld here, so the denied record's key never
-    /// reaches it and the room's other records are unaffected. Records no
-    /// grant names are read as the room is.
+    /// ([`Self::check_document_read`], the decision every door applies), so a
+    /// Deny on the record, on its app or on any pattern over it withholds its
+    /// key, and the room's other records are unaffected.
+    ///
+    /// A channel whose record the steward cannot name may be any record
+    /// nothing names. [`RecordReaders::unrouted`] lists every device that
+    /// may not read one of the records a Deny over a pattern stands for
+    /// ([`collab_types::pattern_read_witnesses`]): such a channel is withheld
+    /// from them until a device names its record, and from no one else.
     ///
     /// # Errors
     ///
@@ -1097,8 +1118,8 @@ impl StatePeer {
     pub fn withheld_record_readers(
         &self,
         now: SystemTime,
-    ) -> Result<std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>, String>
-    {
+        routes: &[collab_types::ChannelRoute],
+    ) -> Result<RecordReaders, String> {
         let access = self.governed_access(now)?;
         let policy = self
             .core
@@ -1107,24 +1128,46 @@ impl StatePeer {
             .ok_or("room governance missing")?
             .policy()
             .room_policy(&self.core.room);
-        let records: BTreeSet<(&str, &str)> =
-            collab_types::named_records(&policy.grants, &self.core.room).collect();
-        let mut withheld = std::collections::HashMap::new();
-        for (app, record) in records {
-            let denied: BTreeSet<[u8; 32]> = access
+        let room = self.core.room.as_str();
+        let denied = |app: &str, record: &str| -> BTreeSet<[u8; 32]> {
+            access
                 .member_devices
                 .iter()
                 .copied()
                 .filter(|device| self.check_document_read(*device, app, record, now).is_err())
-                .collect();
-            if !denied.is_empty() {
-                withheld.insert(
-                    collab_types::document_channel_id(app, &self.core.room, record),
-                    denied,
-                );
-            }
+                .collect()
+        };
+        let mut records: BTreeSet<(&str, &str)> =
+            collab_types::named_records(&policy.grants, room).collect();
+        records.extend(
+            routes
+                .iter()
+                .map(|route| (route.app.as_str(), route.record.as_str())),
+        );
+        let mut withheld = std::collections::HashMap::new();
+        for (app, record) in records {
+            // Only a grant below the room can decide a record otherwise than
+            // the room: a record none covers is read by every member.
+            let node = collab_types::document_node(room, app, record);
+            let covered = policy
+                .grants
+                .iter()
+                .any(|grant| grant.node.len() > 1 && grant.node.covers(&node));
+            let devices = if covered {
+                denied(app, record)
+            } else {
+                BTreeSet::new()
+            };
+            withheld.insert(
+                collab_types::document_channel_id(app, room, record),
+                devices,
+            );
         }
-        Ok(withheld)
+        let unrouted = collab_types::pattern_read_witnesses(&policy.grants, room)
+            .iter()
+            .flat_map(|(app, record)| denied(app, record))
+            .collect();
+        Ok(RecordReaders { withheld, unrouted })
     }
 
     /// Authority-authored collaborator projection. The structural owner is

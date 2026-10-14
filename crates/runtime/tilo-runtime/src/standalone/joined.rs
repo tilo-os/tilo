@@ -450,6 +450,7 @@ impl GovernanceTransport for Joined {
         let room = match &message {
             NeighbourMsg::MlsGovernance { room, .. }
             | NeighbourMsg::MlsAccessRequest { room, .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { room, .. }
             | NeighbourMsg::MlsGovernanceAck { room, .. } => RoomId::parse(room),
             _ => None,
         };
