@@ -86,6 +86,8 @@ run 'Shared app runtime carries no OS internals or dead weight' \
   python3 tools/policy/check_runtime_dylib_surface.py
 run 'Browser wasm32 builds stay off the workspace-hack' \
   python3 tools/policy/check_wasm_workspace_hack.py
+run 'No new interpreter scripts in the OS image' \
+  python3 tools/policy/check_image_interpreters.py
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py
 run 'rustls is the only TLS stack' python3 tools/policy/check_tls_stack.py
 run 'No setup-specific references' python3 tools/policy/check_setup_neutral.py
