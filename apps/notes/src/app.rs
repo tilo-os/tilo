@@ -353,6 +353,11 @@ pub struct NotesApp {
     /// The page the `MainPanel` editor is currently bound to in the doc.
     /// `sync` rebinds whenever this drifts from the selected page.
     bound_page: Option<PageId>,
+    /// A note just made from the keyboard or the header's New note: its
+    /// title takes the keyboard once its body is bound, so typing names it.
+    naming_page: Option<PageId>,
+    /// The next page created is named first ([`Self::naming_page`]).
+    name_next_created: bool,
     /// The tree has been laid out once, so the shell's columns are known.
     laid_out: bool,
     /// Forces a redraw when our own chrome changes without any child widget
@@ -689,6 +694,8 @@ impl NotesApp {
             pending_events: Vec::new(),
             last_mouse: Point::ZERO,
             bound_page: None,
+            naming_page: None,
+            name_next_created: false,
             laid_out: false,
             self_dirty: false,
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
@@ -1231,6 +1238,9 @@ impl NotesApp {
             return;
         };
         if self.bound_page != Some(sel) {
+            if self.naming_page.is_some_and(|page| page == sel) {
+                self.sidebar.set_focus(false);
+            }
             self.bind_selected_page(state, sel);
             if self.sidebar.is_focused() {
                 // Opening a page from the page tree (a row, New note) keeps
@@ -1240,6 +1250,9 @@ impl NotesApp {
                 // Ctrl+Z and browser text input would reach nothing.
                 self.main.editor_mut().set_focus(false);
             }
+        }
+        if self.bound_page == Some(sel) && self.naming_page.take_if(|page| *page == sel).is_some() {
+            self.main.begin_new_title_edit();
         }
     }
 
@@ -1691,6 +1704,9 @@ impl NotesApp {
                 )?;
                 self.reconcile_canonical(edits.doc())?;
                 self.workspace.set_selected(Some(id));
+                if std::mem::take(&mut self.name_next_created) {
+                    self.naming_page = Some(id);
+                }
             }
             OutEvent::Rename { id, new_title } => {
                 if gone(self, id) {
@@ -1848,6 +1864,10 @@ impl NotesApp {
         self.main.focus_note_body();
         if let Some(new_title) = self.main.take_title_rename()
             && let Some(id) = outgoing_page
+            && self
+                .workspace
+                .get(id)
+                .is_some_and(|page| page.title != new_title.trim())
         {
             self.pending_events.push(OutEvent::Rename { id, new_title });
         }
@@ -2823,7 +2843,7 @@ impl Widget for NotesApp {
         if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
             return;
         }
-        if self.handle_new_child_shortcut(event, *ctx.modifiers, &mut ctx.state, ctx.handled) {
+        if self.handle_new_child_shortcut(event, ctx) {
             return;
         }
         if self.handle_route_history_shortcut(event, *ctx.modifiers, ctx.handled) {
@@ -3168,9 +3188,7 @@ impl NotesApp {
     fn handle_new_child_shortcut(
         &mut self,
         event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-        edits: &mut ui::widget::Edits<'_>,
-        handled: &mut bool,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let WindowEvent::KeyboardInput {
             event:
@@ -3184,14 +3202,22 @@ impl NotesApp {
         else {
             return false;
         };
-        let mods = modifiers.state();
+        let mods = ctx.modifiers.state();
         if !(mods.control_key() || mods.super_key()) || c.to_lowercase().as_str() != "n" {
             return false;
         }
         let parent = self.workspace.selected();
-        self.apply_and_dispatch(edits, OutEvent::CreateChild { parent });
+        // The new note opens with its title taking the keyboard: Ctrl+N,
+        // the name, Enter, the note.
+        self.name_next_created = true;
+        self.apply_and_dispatch(&mut ctx.state, OutEvent::CreateChild { parent });
+        self.name_next_created = false;
         self.sidebar.sync_from_workspace(&self.workspace);
-        *handled = true;
+        self.ensure_editor_bound(ctx.state.doc());
+        if self.main.title_focused() {
+            *ctx.focus_target = self.main.title_node();
+        }
+        *ctx.handled = true;
         true
     }
 
