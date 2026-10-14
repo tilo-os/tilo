@@ -1056,6 +1056,14 @@ mod tests {
             let cx = PaneCx::in_file(profile.path().join("settings.json"));
             let mut pane = PowerPane::new(cx.clone(), &PowerArea::new(&cx));
             assert_eq!(pane.battery(), &sample_battery());
+            // A fresh profile shows "Suspend when idle" off: the same value
+            // the compositor's policy and the `power.auto-suspend` action
+            // read from the untouched document.
+            assert!(!pane.prefs().auto_suspend);
+            assert_eq!(
+                pane.prefs().auto_suspend,
+                settings_store::power::AUTO_SUSPEND.get_at(&profile.path().join("settings.json"))
+            );
             let theme = Theme::dark();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -1114,7 +1122,7 @@ mod tests {
             &mut app,
             crate::host::testing::POWER,
             "auto_suspend",
-            false,
+            true,
         )
         .unwrap();
         let edit = |app: &mut TestApp<SettingsShell>, field: &str, value: serde_json::Value| {
@@ -1125,7 +1133,7 @@ mod tests {
         edit(&mut app, "saver_suspend_minutes", 5.into()).unwrap();
         edit(&mut app, "lid_close_action", "lock".into()).unwrap();
         let power = app.settings::<PowerPrefs>().get();
-        assert!(!power.auto_suspend);
+        assert!(power.auto_suspend);
         assert_eq!(power.blank_minutes, 30);
         assert_eq!(power.lock_minutes, 0);
         assert_eq!(power.saver_suspend_minutes, 5);
