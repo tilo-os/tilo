@@ -1853,17 +1853,18 @@ source = "KPI: Relay cost per active collaborator-hour"
 
 # Browser runtime (scripts/perf/browser_qualification.mjs): the release
 # desktop bundle (build.sh --bundle desktop, the bytes web-entry.yml
-# publishes) in headless Chrome for Testing on the shared `runner` class, at
-# FHD, three fresh-context rounds. The runner has no GPU, and Chrome offers
+# publishes) in headless Chrome for Testing on the shared `runner` class, one
+# fresh-context round at 960x540. The runner has no GPU, and Chrome offers
 # WebGPU no CPU driver but its own SwiftShader (it renders its page on
 # lavapipe, but its WebGPU adapter stays SwiftShader). So these records are
 # compared only with each other and never quoted as hardware figures, and the
 # ceilings are reported, never enforced; the relative rule catches regressions
 # of the runtime's own work. They time the page's side of each step (a frame
-# presented is a frame submitted). The demo workload is left out here
-# (--demo-seconds 0): SwiftShader takes tens of seconds for a panned FHD frame
-# on this runner, so its frame rate and the 30 and 120 fps goals are judged
-# where a GPU draws (a hardware qualification: --renderer gpu --enforce-goals,
+# presented is a frame submitted). SwiftShader takes tens of seconds for a
+# panned FHD frame on this runner and queues its work behind the page (a first
+# FHD round took 20 minutes, a second never finished in two hours), hence one
+# small round. The demo workload is left out (--demo-seconds 0), so its frame
+# rate and the 30 and 120 fps goals are judged where a GPU draws (a hardware qualification: --renderer gpu --enforce-goals,
 # docs/measurements/performance.md). The ceilings are the runtime's goals: a
 # window activated within 50 ms and first opened within 250 ms
 # (crates/browser/tilo-web-desktop/scripts/open-times.mjs), its own code

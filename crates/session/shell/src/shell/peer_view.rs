@@ -40,10 +40,11 @@ use ui::TextRole;
 /// useful ceiling — one paint-in-flight, one staged for the next frame.
 pub(crate) const PENDING_CEILING: u32 = 2;
 
-/// How long a push waits for its picture: not at all. The view is pushed
-/// on the compositor loop, which must never stall on a peer's decode (a
-/// wait here held input, every other window and presentation for up to
-/// 150 ms per slow frame). The picture comes out of a later push or
+/// How long a push waits for its picture: not at all, not even for the
+/// decoder to start. The view is pushed on the compositor loop, which must
+/// never stall on a peer's decode (a wait here held input, every other
+/// window and presentation for up to 150 ms per slow frame, and up to 5 s
+/// while a stream's decoder started). The picture comes out of a later push or
 /// [`PeerView::collect_late_picture`], once the decoder's wake (see
 /// [`PeerView::set_picture_wake`]) or the poll below brings the loop back.
 const PICTURE_WAIT: std::time::Duration = std::time::Duration::ZERO;
@@ -762,15 +763,24 @@ impl Widget for PeerView {
 
     /// While a pushed picture is still decoding, wake the loop shortly so it
     /// is collected even if no further frame of the stream arrives. A view
-    /// with a picture wake needs no deadline: the decoder wakes the loop.
+    /// with a picture wake needs no poll: the decoder wakes the loop when a
+    /// picture is out, an element fails or a new one has started. Only the
+    /// moment a starting element is given up for showing nothing is
+    /// announced by no one, so the view wakes once for it.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let pending = self.decoder.picture_pending();
+        let startup = self.decoder.startup_deadline().filter(|_| pending);
         if self.picture_wake.is_some() {
-            return None;
+            return startup;
         }
+        // Without a wake, poll for a while after each push, and for as long
+        // as the decoder is still starting.
         let now = ui::time::Instant::now();
         self.late_poll_until
-            .filter(|until| now < *until && self.decoder.picture_pending())
+            .max(startup)
+            .filter(|until| now < *until && pending)
             .and_then(|_| now.checked_add(LATE_PICTURE_POLL))
+            .or(startup)
     }
 
     fn mark_drawn(&mut self) {
@@ -907,8 +917,11 @@ mod tests {
             let nalus = vp9_unit(W, H);
 
             let mut view = vp9_view(PeerSurfaceMetrics::default());
-            let progressed = view.push_encoded(&nalus);
-            assert!(progressed, "decoder produced no frame from encoder output");
+            assert_eq!(
+                push_settled(&mut view, &nalus, None),
+                PushOutcome::Decoded,
+                "decoder produced no frame from encoder output"
+            );
             let latest = view.latest_frame().expect("frame stashed");
             assert_eq!(latest.width, W);
             assert_eq!(latest.height, H);
@@ -1062,12 +1075,73 @@ mod tests {
         let mut view = vp9_view(PeerSurfaceMetrics::default());
         assert_eq!(view.next_wake_deadline(), None, "nothing pushed yet");
         assert_eq!(
-            view.push_encoded_with_latency(&vp9_unit(W, H), None),
+            push_settled(&mut view, &vp9_unit(W, H), None),
             PushOutcome::Decoded,
         );
         assert!(!view.picture_pending());
         assert_eq!(view.collect_late_picture(), None);
         assert_eq!(view.next_wake_deadline(), None);
+    }
+
+    /// A stream's first push costs the loop no decoder start-up: the
+    /// decoder starts on a media thread, the push returns, and the decoder
+    /// wakes the loop to collect the picture. Until the first picture the
+    /// view wakes once more at most, when a decoder that never showed
+    /// anything would be given up; once it shows, the view keeps the loop
+    /// asleep.
+    #[test]
+    fn the_first_push_never_waits_for_the_decoder_to_start() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        const W: u32 = 64;
+        const H: u32 = 64;
+        let nalus = vp9_unit(W, H);
+        let mut view = vp9_view(PeerSurfaceMetrics::default());
+        let wakes = Arc::new(AtomicUsize::new(0));
+        view.set_picture_wake(Some({
+            let wakes = Arc::clone(&wakes);
+            Arc::new(move || {
+                wakes.fetch_add(1, Ordering::SeqCst);
+            })
+        }));
+        let started = std::time::Instant::now();
+        let outcome = view.push_encoded_with_latency(&nalus, None);
+        eprintln!(
+            "first push of a stream: {:?}, {outcome:?}",
+            started.elapsed()
+        );
+        match outcome {
+            PushOutcome::Pending => {
+                assert!(view.picture_pending(), "the keyframe is still decoding");
+                assert!(
+                    view.next_wake_deadline().is_some(),
+                    "one wake for the start-up deadline"
+                );
+                let deadline = tilo_test_env::hang_deadline();
+                while view.picture_pending() && std::time::Instant::now() < deadline {
+                    if wakes.load(Ordering::SeqCst) > 0
+                        && let Some(outcome) = view.collect_late_picture()
+                    {
+                        assert_eq!(outcome, PushOutcome::Decoded);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                assert!(
+                    wakes.load(Ordering::SeqCst) > 0,
+                    "the decoder woke the loop"
+                );
+                assert!(!view.picture_pending(), "the keyframe's picture came out");
+            }
+            // A loaded runner can descend into the decoder's own threads
+            // long enough for them to finish before the push returns.
+            PushOutcome::Decoded => {}
+            outcome => panic!("the stream's keyframe decodes: {outcome:?}"),
+        }
+        assert!(view.latest_frame().is_some(), "the keyframe is shown");
+        assert_eq!(
+            view.next_wake_deadline(),
+            None,
+            "a view that shows its stream keeps the loop asleep"
+        );
     }
 
     /// Push `unit` until a push returns before its picture is out, and
@@ -1104,13 +1178,6 @@ mod tests {
         let nalus = vp9_unit(W, H);
         let metrics = PeerSurfaceMetrics::default();
         let mut view = vp9_view(metrics.clone());
-        // The first unit waits for the decoder to start, as before.
-        assert_eq!(
-            view.push_encoded_with_latency(&nalus, None),
-            PushOutcome::Decoded
-        );
-        view.mark_drawn();
-
         let wakes = Arc::new(AtomicUsize::new(0));
         view.set_picture_wake(Some({
             let wakes = Arc::clone(&wakes);
@@ -1118,6 +1185,19 @@ mod tests {
                 wakes.fetch_add(1, Ordering::SeqCst);
             })
         }));
+        // The first unit starts the decoder on a media thread: its start-up
+        // and its picture each wake the loop once.
+        assert_eq!(push_settled(&mut view, &nalus, None), PushOutcome::Decoded);
+        view.mark_drawn();
+        let deadline = tilo_test_env::hang_deadline();
+        while wakes.load(Ordering::SeqCst) < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            wakes.swap(0, Ordering::SeqCst),
+            2,
+            "the decoder's start-up and its first picture woke the loop"
+        );
         let latency_ns = 1_000_000;
         let decoded = push_until_pending(&mut view, &nalus, Some(latency_ns));
         assert!(view.picture_pending(), "a pending push is still decoding");
@@ -1170,7 +1250,7 @@ mod tests {
             let mut view = vp9_view(metrics.clone());
 
             assert_eq!(
-                view.push_encoded_with_latency(&nalus, Some(1_000)),
+                push_settled(&mut view, &nalus, Some(1_000)),
                 PushOutcome::Decoded,
             );
             assert_eq!(view.frames_pending(), 1);
@@ -1236,7 +1316,11 @@ mod tests {
                 PeerView::new_for_stream(42, 7, "h264", PeerSurfaceMetrics::default(), &caps, None);
             view.restart_stream("vp9", Some((W, H)));
             assert_eq!(view.codec(), StreamCodec::Vp9);
-            assert!(view.push_encoded(&vp9_unit(W, H)), "the new codec decodes");
+            assert_eq!(
+                push_settled(&mut view, &vp9_unit(W, H), None),
+                PushOutcome::Decoded,
+                "the new codec decodes"
+            );
             view.restart_stream("vp9", Some((W, H)));
             assert!(
                 view.latest_frame().is_some(),
@@ -1254,9 +1338,17 @@ mod tests {
             let mut view = vp9_view(metrics);
 
             assert_eq!(external.snapshot().frames_received, 0);
-            view.push_encoded_with_latency(&nalus, Some(500));
+            assert_eq!(
+                push_settled(&mut view, &nalus, Some(500)),
+                PushOutcome::Decoded
+            );
             assert_eq!(external.snapshot().frames_received, 1);
-            assert_eq!(external.snapshot().latency_ns_mean, 500);
+            // The first picture comes out after its push returns (the
+            // decoder starts on a media thread), so its latency is the
+            // push's plus the decode it waited for, as both handles see.
+            let seen = external.snapshot().latency_ns_mean;
+            assert_eq!(seen, view.metrics().snapshot().latency_ns_mean);
+            assert!(seen >= 500, "the push's latency is counted: {seen}");
         }
 
         push_encoded_returns_false_for_empty_payload();

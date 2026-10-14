@@ -8,7 +8,9 @@
 //!
 //! The media pipeline starts on the first access unit, so constructing a
 //! decoder never fails for a known codec; a machine that cannot decode the
-//! codec yields no frames and logs why once. The sender only picks a codec
+//! codec yields no frames and logs why once. A decoder that never waits (the
+//! compositor loop's) starts its element on a media thread, so that first
+//! unit costs the caller no start-up either. The sender only picks a codec
 //! every receiver advertised (see `media::realtime::negotiate`).
 
 use media::realtime::{DecodeOutput, DecoderConfig, PictureWake, RealtimeDecoder, StreamColor};
@@ -209,7 +211,15 @@ impl VideoDecoder {
                 display_size: self.display_size,
                 ..DecoderConfig::new(self.codec)
             };
-            match RealtimeDecoder::new(config) {
+            // A caller that must never wait does not wait for the element to
+            // start either: it starts on a media thread, and the wake says
+            // when it is up.
+            let started = if self.picture_wait.is_some_and(|wait| wait.is_zero()) {
+                RealtimeDecoder::new_without_waiting(config)
+            } else {
+                RealtimeDecoder::new(config)
+            };
+            match started {
                 Ok(mut d) => {
                     d.set_stream_color(self.stream_colorimetry.map(stream_color));
                     if let Some(wait) = self.picture_wait {
@@ -239,6 +249,19 @@ impl VideoDecoder {
                 .inner
                 .as_ref()
                 .is_some_and(RealtimeDecoder::picture_pending)
+    }
+
+    /// When a decoder that never waits gives up on an element that has shown
+    /// no picture (see `RealtimeDecoder::startup_deadline`). Nothing else
+    /// announces that moment, so a caller wakes for it and collects with
+    /// [`Self::take_late_frame`].
+    pub fn startup_deadline(&self) -> Option<std::time::Instant> {
+        if self.failed {
+            return None;
+        }
+        self.inner
+            .as_ref()
+            .and_then(RealtimeDecoder::startup_deadline)
     }
 
     /// The newest picture that finished after its `decode` returned, without
