@@ -81,7 +81,9 @@ fn capture(
         target,
     );
     let size = app.harness().frame_output().device_size;
-    let mut renderer = OffscreenRenderer::new(size.0, size.1);
+    // Use stable segment ordering for repeatable headless captures;
+    // the fine rasterizer remains the production GPU renderer.
+    let mut renderer = OffscreenRenderer::try_new_with_cpu_preprocessing(size.0, size.1)?;
     let mut text = TextRenderer::new();
     text.set_text_scale(theme.text_scale);
     let mut encoder = Recording::start(video, size)?;
