@@ -3303,7 +3303,6 @@ impl WordProcessorWidget {
                         },
                     )?;
                     self.save_error = None;
-                    self.toast.show(t("toast-saved"), ToastKind::Success);
                     self.note_file_written(path, &bytes);
                 }
                 Err(e) => {
@@ -5214,17 +5213,12 @@ impl WordProcessorWidget {
             self.lifecycle.dirty = true;
             return;
         }
-        let n = entries.len();
         self.perform_action(state, &crate::actions::generate_toc_action(entries));
         self.refresh_blocks(state);
         self.lifecycle.dirty = true;
-        // Scroll the freshly-inserted TOC (always at the document top) into view
-        // and surface a confirmation toast, so the action has a visible result.
+        // Scroll the freshly-inserted TOC (always at the document top) into
+        // view: the table itself is the visible result.
         self.scroll_y = 0.0;
-        self.toast.show(
-            t_args("toast-toc-updated", &[arg("n", num::i64_of_usize(n))]),
-            ToastKind::Success,
-        );
     }
 
     /// Draw the transient confirmation through the shared toast-card renderer.
@@ -12224,8 +12218,6 @@ impl WordProcessorWidget {
                 if self.sheet.remove(&id) {
                     self.persist_stylesheet_via_actions(state);
                     self.refresh_blocks(state);
-                    self.toast
-                        .show(t("toast-style-deleted"), ToastKind::Success);
                 }
             }
             StyleMenuAction::Duplicate(id) => {
@@ -12237,8 +12229,6 @@ impl WordProcessorWidget {
                     // Apply the copy to the caret block so the panel focuses it.
                     self.dispatch_apply_named_style(state, &new_id);
                     self.refresh_blocks(state);
-                    self.toast
-                        .show(t("toast-style-duplicated"), ToastKind::Success);
                 }
             }
         }
