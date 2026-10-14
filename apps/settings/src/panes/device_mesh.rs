@@ -39,8 +39,6 @@ const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
 const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
 const APPLY_TIMEOUT: Duration = Duration::from_secs(120);
-const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
-const ENROLLMENT_TIMEOUT: Duration = Duration::from_secs(600);
 const MANAGEMENT_TIMEOUT: Duration = Duration::from_secs(60);
 const ROLE_PERSONAL: &str = "Personal device";
 const ROLE_ACTIVE: &str = "Available while active";
@@ -318,6 +316,9 @@ pub struct DeviceMeshArea {
     /// The relay's configuration and state and the device fleet, read off
     /// the UI thread after the window's first frame ([`Self::start_read`]).
     read: crate::device_read::DeviceRead<MeshRead>,
+    /// The area's client for the action door, shared with its model: the
+    /// window carries its requests and answers on the app's connection.
+    remote: ui::RemoteActions,
 }
 
 impl DeviceMeshArea {
@@ -326,7 +327,13 @@ impl DeviceMeshArea {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
             read: crate::device_read::DeviceRead::default(),
+            remote: ui::RemoteActions::current(),
         }
+    }
+
+    /// The client the window's connection carries pairing requests on.
+    pub(crate) fn remote_mut(&mut self) -> &mut ui::RemoteActions {
+        &mut self.remote
     }
 
     /// Where the relay configuration is read from, and whether what is
@@ -350,7 +357,8 @@ impl DeviceMeshArea {
                 let (path, devices) = self.source();
                 MeshRead::of(path, devices, ui::time::wall())
             });
-            let model = DeviceMeshModel::from_read(self.cx.clone(), read);
+            let mut model = DeviceMeshModel::from_read(self.cx.clone(), read);
+            model.remote = self.remote.clone();
             Rc::new(std::cell::RefCell::new(model))
         })
     }
@@ -464,10 +472,15 @@ pub struct DeviceMeshModel {
     next_peer_health: usize,
     apply_child: Option<bounded_command::AsyncCommand>,
     apply_queued: bool,
-    pairing_child: Option<bounded_command::AsyncCommand>,
+    /// The pairing step the host runs for this pane: its invocation, and
+    /// whether it is the discovery (else the approval).
+    pairing_call: Option<ui::LocalState<ui::InvocationCall>>,
     pairing_discovery: bool,
     pairing_candidate: Option<PairCandidate>,
     pairing_target: PairingTarget,
+    /// The pane's client for the action door: pairing runs on the host,
+    /// behind its actions, never in this process.
+    remote: ui::RemoteActions,
     next_status_refresh: Instant,
 }
 
@@ -477,10 +490,11 @@ struct DiscoveredWorkspace {
     name: String,
 }
 
+/// The device the host's discovery found, as its action answers it.
 #[derive(Clone, Debug, serde::Deserialize, PartialEq, Eq)]
 struct PairCandidate {
-    device_node_id: String,
-    relay_service_node_id: String,
+    device: String,
+    service: String,
     label: String,
     verification_code: String,
 }
@@ -912,10 +926,11 @@ impl DeviceMeshModel {
             next_peer_health: 0,
             apply_child: None,
             apply_queued: false,
-            pairing_child: None,
+            pairing_call: None,
             pairing_discovery: false,
             pairing_candidate: None,
             pairing_target: PairingTarget::HomePeer,
+            remote: ui::RemoteActions::current(),
             next_status_refresh: ui::time::now() + STATUS_REFRESH_INTERVAL,
         }
     }
@@ -1276,7 +1291,7 @@ impl DeviceMeshModel {
                     .collect(),
             )
         };
-        let pairing = self.pairing_child.is_some();
+        let pairing = self.pairing_call.is_some();
         let pair_label = if pairing && self.pairing_target == PairingTarget::HomePeer {
             t("mesh-pairing")
         } else if let Some(candidate) = self
@@ -1712,33 +1727,32 @@ impl DeviceMeshModel {
         }
     }
 
+    /// Pair a nearby device through the host's actions: the first choice
+    /// asks the host to look for one, the next approves the one found. The
+    /// host runs discovery and the polkit-gated approval; nothing here
+    /// starts a process.
     fn approve_enrollment(&mut self, target: PairingTarget) {
-        if self.pairing_child.is_some() {
+        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_pairing};
+        if self.pairing_call.is_some() {
             return;
         }
+        let role = match target {
+            PairingTarget::HomePeer => "home-peer",
+            PairingTarget::PersonalDevice => "personal-device",
+        };
         let Some(candidate) = self.pairing_candidate.clone() else {
             self.pairing_target = target;
-            let discover_command = match target {
-                PairingTarget::HomePeer => "discover",
-                PairingTarget::PersonalDevice => "discover-device",
-            };
-            let mut command = Command::new("/usr/bin/tilo-enroll");
-            command.args([discover_command, "--timeout", "15"]);
-            self.load_status = match bounded_command::spawn_prepared(
-                command,
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("role".into(), role.into());
+            self.pairing_call = Some(self.remote.invoke(
+                device_pairing::target(device_pairing::DISCOVER),
+                InvokeArgument::Json(arguments),
                 None,
-                COMMAND_OUTPUT_LIMIT,
-                DISCOVERY_TIMEOUT,
-            ) {
-                Ok(child) => {
-                    self.pairing_child = Some(child);
-                    self.pairing_discovery = true;
-                    match target {
-                        PairingTarget::HomePeer => "Looking for your new home server…".into(),
-                        PairingTarget::PersonalDevice => "Looking for your new device…".into(),
-                    }
-                }
-                Err(error) => format!("Could not start nearby discovery: {error}"),
+            ));
+            self.pairing_discovery = true;
+            self.load_status = match target {
+                PairingTarget::HomePeer => "Looking for your new home server…".into(),
+                PairingTarget::PersonalDevice => "Looking for your new device…".into(),
             };
             self.changed = true;
             return;
@@ -1748,68 +1762,111 @@ impl DeviceMeshModel {
             self.approve_enrollment(target);
             return;
         }
-        let identity_dir = match runtime_identity::identity_dir_from_env() {
-            Ok(path) => path,
-            Err(error) => {
-                self.load_status = format!("Could not find your identity: {error}");
-                self.changed = true;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("role".into(), role.into());
+        arguments.insert("device".into(), candidate.device.clone().into());
+        arguments.insert("service".into(), candidate.service.clone().into());
+        if target == PairingTarget::HomePeer {
+            let ids: Vec<u64> = if self.config.workspaces.is_empty() {
+                self.discovered_workspaces
+                    .iter()
+                    .map(|workspace| workspace.id)
+                    .collect()
+            } else {
+                self.config
+                    .workspaces
+                    .iter()
+                    .map(|workspace| workspace.id)
+                    .collect()
+            };
+            arguments.insert("workspace_ids".into(), ids.into());
+        }
+        // Choosing the button that shows the device's code is the person's
+        // confirmation that both screens show it.
+        arguments.insert("confirm".into(), true.into());
+        self.pairing_call = Some(self.remote.invoke(
+            device_pairing::target(device_pairing::APPROVE),
+            InvokeArgument::Json(arguments),
+            Some(Confirmation::Confirmed),
+        ));
+        self.pairing_discovery = false;
+        self.load_status = format!(
+            "Approving {} with code {}…",
+            candidate.label, candidate.verification_code
+        );
+        self.changed = true;
+    }
+
+    /// Take in the host's answer to the pairing step, once it settled.
+    fn poll_pairing(&mut self) {
+        use ui::tilo_actions::InvocationUpdate;
+        let Some(call) = self.pairing_call.as_ref() else {
+            return;
+        };
+        self.remote.poll();
+        let answer = call.get();
+        if !answer.is_settled() {
+            return;
+        }
+        self.pairing_call = None;
+        let discovery = std::mem::take(&mut self.pairing_discovery);
+        self.changed = true;
+        let output = match answer {
+            ui::RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => output,
+            ui::RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => {
+                self.load_status = format!(
+                    "Device was not paired: {}. Choose the pairing action to retry.",
+                    error.message
+                );
                 return;
             }
-        };
-        let mut command = Command::new("pkexec");
-        match target {
-            PairingTarget::HomePeer => {
-                command
-                    .args([CONTROL_HELPER, "approve-enrollment", "--identity-root"])
-                    .arg(identity_root())
-                    .arg("--identity-dir")
-                    .arg(&identity_dir);
+            ui::RemoteCall::Done(_) => {
+                self.load_status =
+                    "Pairing stopped: it was cancelled. Choose the pairing action to retry.".into();
+                return;
             }
+            ui::RemoteCall::Refused(error) => {
+                self.load_status =
+                    format!("Pairing stopped: {error}. Choose the pairing action to retry.");
+                return;
+            }
+            ui::RemoteCall::Pending => return,
+        };
+        if discovery {
+            match output
+                .value
+                .map(serde_json::from_value::<PairCandidate>)
+                .transpose()
+            {
+                Ok(Some(candidate)) => {
+                    self.load_status = format!(
+                        "Found {}. Confirm code {} on both devices, then approve.",
+                        candidate.label, candidate.verification_code
+                    );
+                    self.pairing_candidate = Some(candidate);
+                }
+                Ok(None) | Err(_) => {
+                    self.load_status = "Nearby discovery returned an invalid identity".into();
+                }
+            }
+            return;
+        }
+        self.registered_home_peers = registered_home_peer_count();
+        self.refresh_runtime_status();
+        self.load_status = match self.pairing_target {
+            PairingTarget::HomePeer => "Home server paired".into(),
             PairingTarget::PersonalDevice => {
-                command
-                    .args([CONTROL_HELPER, "approve-device", "--identity-root"])
-                    .arg(identity_root())
-                    .arg("--identity-dir")
-                    .arg(identity_dir);
+                match crate::device_fleet::list() {
+                    Ok(devices) => {
+                        self.personal_devices = devices;
+                        self.personal_device_error = None;
+                    }
+                    Err(error) => self.personal_device_error = Some(error.to_string()),
+                }
+                "Personal device added".into()
             }
-        }
-        command
-            .args(["--expected-device", &candidate.device_node_id])
-            .args(["--expected-service", &candidate.relay_service_node_id]);
-        let ids = if self.config.workspaces.is_empty() {
-            self.discovered_workspaces
-                .iter()
-                .map(|workspace| workspace.id)
-                .collect::<Vec<_>>()
-        } else {
-            self.config
-                .workspaces
-                .iter()
-                .map(|workspace| workspace.id)
-                .collect()
         };
-        if target == PairingTarget::HomePeer {
-            for id in ids {
-                command.args(["--workspace-id", &id.to_string()]);
-            }
-        }
-        self.load_status = match bounded_command::spawn_prepared(
-            command,
-            None,
-            COMMAND_OUTPUT_LIMIT,
-            ENROLLMENT_TIMEOUT,
-        ) {
-            Ok(child) => {
-                self.pairing_child = Some(child);
-                self.pairing_discovery = false;
-                format!(
-                    "Approving {} with code {}…",
-                    candidate.label, candidate.verification_code
-                )
-            }
-            Err(error) => format!("Could not start pairing: {error}"),
-        };
-        self.changed = true;
+        self.pairing_candidate = None;
     }
 
     fn start_home_peer_command(
@@ -1941,61 +1998,7 @@ impl DeviceMeshModel {
             None => {}
         }
 
-        let pairing_result = self
-            .pairing_child
-            .as_mut()
-            .and_then(bounded_command::AsyncCommand::try_wait);
-        match pairing_result {
-            Some(Ok(output)) => {
-                self.pairing_child = None;
-                if output.status.success() && self.pairing_discovery {
-                    match serde_json::from_slice::<PairCandidate>(&output.stdout) {
-                        Ok(candidate) => {
-                            self.load_status = format!(
-                                "Found {}. Confirm code {} on both devices, then approve.",
-                                candidate.label, candidate.verification_code
-                            );
-                            self.pairing_candidate = Some(candidate);
-                        }
-                        Err(_) => {
-                            self.load_status =
-                                "Nearby discovery returned an invalid identity".into();
-                        }
-                    }
-                } else if output.status.success() {
-                    self.registered_home_peers = registered_home_peer_count();
-                    self.refresh_runtime_status();
-                    self.load_status = match self.pairing_target {
-                        PairingTarget::HomePeer => "Home server paired".into(),
-                        PairingTarget::PersonalDevice => {
-                            match crate::device_fleet::list() {
-                                Ok(devices) => {
-                                    self.personal_devices = devices;
-                                    self.personal_device_error = None;
-                                }
-                                Err(error) => self.personal_device_error = Some(error.to_string()),
-                            }
-                            "Personal device added".into()
-                        }
-                    };
-                    self.pairing_candidate = None;
-                } else {
-                    self.load_status = format!(
-                        "Device was not paired: {}. Choose the pairing action to retry.",
-                        command_error(&output.stderr, "the pairing window closed or was cancelled")
-                    );
-                }
-                self.pairing_discovery = false;
-                self.changed = true;
-            }
-            Some(Err(error)) => {
-                self.pairing_child = None;
-                self.load_status =
-                    format!("Pairing stopped: {error}. Choose the pairing action to retry.");
-                self.changed = true;
-            }
-            None => {}
-        }
+        self.poll_pairing();
 
         let management_result = self
             .management_child
@@ -2090,9 +2093,7 @@ impl PaneModel for DeviceMeshModel {
     }
 
     fn busy(&self) -> bool {
-        self.apply_child.is_some()
-            || self.pairing_child.is_some()
-            || self.management_child.is_some()
+        self.apply_child.is_some() || self.pairing_call.is_some() || self.management_child.is_some()
     }
 
     fn next_wake(&self) -> Option<Instant> {
@@ -2612,38 +2613,185 @@ mod tests {
             }
         }
 
-        // Case `pairing_process_transitions_to_success_and_allows_another_pairing`.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-            // The child's own timeout bounds the wait; how quickly a loaded
-            // machine schedules `true` is not what this test is about.
-            let timeout = Duration::from_secs(30);
-            pane.pairing_child = Some(
-                bounded_command::spawn_prepared(Command::new("true"), None, 64, timeout).unwrap(),
-            );
-            let deadline = ui::time::now() + timeout;
-            while pane.pairing_child.is_some() && ui::time::now() < deadline {
-                pane.poll_background_tasks();
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            assert!(pane.pairing_child.is_none());
-            assert_eq!(pane.load_status, "Home server paired");
-        }
-
         // Case `duplicate_pair_action_is_ignored_while_pairing_is_active`.
         {
             let dir = tempfile::tempdir().unwrap();
             let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-            let mut command = Command::new("sleep");
-            command.arg("2");
-            pane.pairing_child = Some(
-                bounded_command::spawn_prepared(command, None, 64, Duration::from_secs(5)).unwrap(),
+            let host = Arc::new(PairingHost::default());
+            pane.remote = ui::RemoteActions::with_host(
+                host.clone(),
+                ui::tilo_actions::remote::Caller::local_person("owner"),
             );
             pane.approve_enrollment(PairingTarget::HomePeer);
-            assert!(pane.pairing_child.is_some());
-            pane.pairing_child = None;
+            pane.approve_enrollment(PairingTarget::HomePeer);
+            assert_eq!(host.asked().len(), 1, "one pairing step at a time");
         }
+    }
+
+    const NEARBY_DEVICE: &str = "aa00000000000000000000000000000000000000000000000000000000000001";
+    const NEARBY_SERVICE: &str = "bb00000000000000000000000000000000000000000000000000000000000002";
+
+    /// The host's pairing actions, in process: it records what it was asked
+    /// and answers the way the host does.
+    #[derive(Default)]
+    struct PairingHost {
+        asked: Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+    }
+
+    impl PairingHost {
+        fn asked(&self) -> Vec<ui::tilo_actions::remote::InvokeRequest> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    impl ui::tilo_actions::remote::ActionHost for PairingHost {
+        fn query(
+            &self,
+            _: &ui::tilo_actions::remote::Caller,
+            _: ui::tilo_actions::remote::CatalogueQuery,
+        ) -> ui::tilo_actions::remote::Pending<
+            Result<
+                ui::tilo_actions::remote::CataloguePage,
+                ui::tilo_actions::remote::ActionHostError,
+            >,
+        > {
+            ui::tilo_actions::remote::Pending::ready(Err(
+                ui::tilo_actions::remote::ActionHostError::NotPermitted,
+            ))
+        }
+
+        fn invoke(
+            &self,
+            _: &ui::tilo_actions::remote::Caller,
+            request: ui::tilo_actions::remote::InvokeRequest,
+        ) -> ui::tilo_actions::remote::Pending<
+            Result<
+                ui::tilo_actions::remote::InvocationReceipt,
+                ui::tilo_actions::remote::ActionHostError,
+            >,
+        > {
+            use ui::tilo_actions::remote::device_pairing;
+            let invocation = request.invocation;
+            let value = if request.target.address.action == device_pairing::DISCOVER {
+                serde_json::json!({
+                    "role": "home-peer",
+                    "device": NEARBY_DEVICE,
+                    "service": NEARBY_SERVICE,
+                    "label": "Kitchen NAS",
+                    "verification_code": "123-456",
+                })
+            } else {
+                serde_json::json!({"role": "home-peer", "device": NEARBY_DEVICE, "label": "Kitchen NAS"})
+            };
+            self.asked.lock().unwrap().push(request);
+            ui::tilo_actions::remote::Pending::ready(Ok(
+                ui::tilo_actions::remote::InvocationReceipt {
+                    invocation,
+                    status: ui::tilo_actions::remote::ReceiptStatus::Completed {
+                        output: ui::tilo_actions::ActionOutput {
+                            value: Some(value),
+                            resources: Vec::new(),
+                        },
+                    },
+                },
+            ))
+        }
+
+        fn observe(
+            &self,
+            _: &ui::tilo_actions::remote::Caller,
+            _: &ui::tilo_actions::InvocationId,
+        ) -> Option<ui::tilo_actions::remote::InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _: &ui::tilo_actions::remote::Caller,
+            _: &ui::tilo_actions::InvocationId,
+        ) -> Result<(), ui::tilo_actions::remote::ActionHostError> {
+            Ok(())
+        }
+    }
+
+    /// Pairing runs on the host behind its actions: discovering asks the
+    /// host, approving invokes its approval with the device found and the
+    /// person's confirmation, and the pane starts no process of its own.
+    #[test]
+    fn pairing_invokes_the_host_actions_and_spawns_nothing() {
+        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_pairing};
+        let dir = tempfile::tempdir().unwrap();
+        let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+        pane.config.workspaces = vec![WorkspaceBinding {
+            id: 7,
+            pin: true,
+            replication: ReplicationIntent::OnDemand,
+            admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
+        }];
+        let host = Arc::new(PairingHost::default());
+        pane.remote = ui::RemoteActions::with_host(
+            host.clone(),
+            ui::tilo_actions::remote::Caller::local_person("owner"),
+        );
+
+        pane.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
+        pane.poll_background_tasks();
+        let asked = host.asked();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(
+            asked[0].target,
+            device_pairing::target(device_pairing::DISCOVER)
+        );
+        assert_eq!(
+            asked[0].argument,
+            InvokeArgument::Json(
+                serde_json::json!({"role": "home-peer"})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            )
+        );
+        assert_eq!(
+            pane.load_status,
+            "Found Kitchen NAS. Confirm code 123-456 on both devices, then approve."
+        );
+        assert!(pane.pairing_call.is_none(), "discovery has answered");
+
+        pane.apply(&DeviceMeshEffect::PairHomeServer).unwrap();
+        pane.poll_background_tasks();
+        let asked = host.asked();
+        assert_eq!(asked.len(), 2);
+        assert_eq!(
+            asked[1].target,
+            device_pairing::target(device_pairing::APPROVE)
+        );
+        assert_eq!(
+            asked[1].argument,
+            InvokeArgument::Json(
+                serde_json::json!({
+                    "role": "home-peer",
+                    "device": NEARBY_DEVICE,
+                    "service": NEARBY_SERVICE,
+                    "workspace_ids": [7],
+                    "confirm": true,
+                })
+                .as_object()
+                .unwrap()
+                .clone()
+            )
+        );
+        assert_eq!(asked[1].confirmation, Some(Confirmation::Confirmed));
+        assert_eq!(pane.load_status, "Home server paired");
+        assert!(
+            pane.pairing_candidate.is_none(),
+            "the paired device is done"
+        );
+        assert!(
+            pane.apply_child.is_none() && pane.management_child.is_none(),
+            "pairing started no process in the app"
+        );
     }
 
     /// Wait for a background read to end, as the warm-up's wake would.
