@@ -428,10 +428,7 @@ fn push_failure(package_id: &str, display_name: &str, detail: String) {
         display_name: display_name.to_string(),
         managed_agent_id: None,
         managed_workspace_id: None,
-        kind: LaunchEventKind::SpawnFailed {
-            reason: launcher::LaunchFailure::Other,
-            detail,
-        },
+        kind: LaunchEventKind::SpawnFailed { detail },
     });
 }
 

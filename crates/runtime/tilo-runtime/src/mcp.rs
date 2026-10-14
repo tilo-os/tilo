@@ -1,6 +1,4 @@
 //! Transport-independent MCP projection of the production action broker.
-#[path = "mcp_agent.rs"]
-mod agent;
 #[path = "mcp_content.rs"]
 mod content;
 #[path = "mcp_page.rs"]
@@ -63,21 +61,6 @@ pub struct McpServer<H> {
     working: tokio::sync::Semaphore,
     /// Places for the session's requests that work or wait for a turn.
     admitted: tokio::sync::Semaphore,
-    /// Which tools the session offers.
-    surface: Surface,
-}
-
-/// The tools a session offers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Surface {
-    /// `tilo_list_apps`, `tilo_query`, `tilo_resolve`, `tilo_invoke`,
-    /// `tilo_status`, `tilo_cancel`: a directory browsed by peer and
-    /// resource id, for clients that parse it.
-    Classic,
-    /// `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`: apps and
-    /// resources addressed by name, answered as text. What an AI agent in a
-    /// terminal is served.
-    Agent,
 }
 
 /// A session's requests that work at once; more wait for a turn. One agent
@@ -439,21 +422,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Self::from_caller(host, room, actor, caller)
     }
 
-    /// One session of agent `agent_id`, which the host admitted itself into
-    /// `room` (a desktop's agent door, after the person said so). It acts as
-    /// that agent and nobody else: an agent holds no role of its own, so the
-    /// host's gate offers and runs only what the workspace grants it, and a
-    /// revoked membership ends both at once. Each session is its own fresh
-    /// execution, retired when the session drops.
-    #[must_use]
-    pub fn for_agent(host: H, room: String, agent_id: &str) -> Self {
-        let caller = Caller::local_agent(agent_id)
-            .in_room(room.clone())
-            .in_new_execution();
-        Self::from_caller(host, room, format!("agent:{agent_id}"), caller)
-            .with_surface(Surface::Agent)
-    }
-
     /// The host has already bound this exact authenticated run to its action
     /// door. This constructor does not mint or replace the execution identity.
     pub(crate) fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
@@ -499,16 +467,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             seen: std::sync::Mutex::default(),
             working: tokio::sync::Semaphore::new(MAX_WORKING),
             admitted: tokio::sync::Semaphore::new(MAX_ADMITTED),
-            surface: Surface::Classic,
         }
     }
-    /// Offer the tools `surface` names.
-    #[must_use]
-    pub fn with_surface(mut self, surface: Surface) -> Self {
-        self.surface = surface;
-        self
-    }
-
     /// The caller this connection's actions run as: the agent it is, acting
     /// for the person.
     #[must_use]
@@ -882,10 +842,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self
     }
     fn tools(&self) -> Vec<Value> {
-        let mut tools = match self.surface {
-            Surface::Classic => tool_definitions().to_vec(),
-            Surface::Agent => agent::tool_definitions().to_vec(),
-        };
+        let mut tools = tool_definitions().to_vec();
         if self.computer.is_some() {
             tools.extend(crate::computer::tool_definitions());
         }
@@ -1055,7 +1012,32 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             },
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools":self.tools()})),
-            "tools/call" => self.call_tool(params).await,
+            "tools/call" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Call {
+                    name: String,
+                    #[serde(default = "empty_object")]
+                    arguments: Value,
+                }
+                match parse::<Call>(params) {
+                    Ok(call)
+                        if self.computer.is_some()
+                            && matches!(call.name.as_str(), "computer" | "computer_batch") =>
+                    {
+                        Ok(self.computer(&call.name, call.arguments).await)
+                    }
+                    Ok(call)
+                        if tool_definitions().iter().any(|definition| {
+                            definition["name"].as_str() == Some(call.name.as_str())
+                        }) =>
+                    {
+                        Ok(tool_result(self.call(&call.name, call.arguments).await))
+                    }
+                    Ok(_) => return Some(error(&id, -32602, "Unknown tool")),
+                    Err(e) => Err(e),
+                }
+            }
             "resources/list" => self.resources(params).await,
             "resources/read" => self.read_resource(params).await,
             _ => return Some(error(&id, -32601, "Method not found")),
@@ -1064,43 +1046,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(value) => json!({"jsonrpc":"2.0","id":id,"result":value}),
             Err(e) => error(&id, -32602, &e),
         })
-    }
-    /// `tools/call`: the tool `params` names, on the surface this session
-    /// serves. An unknown tool is an invalid-params error like a malformed call.
-    async fn call_tool(&self, params: Value) -> Result<Value, String> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Call {
-            name: String,
-            #[serde(default = "empty_object")]
-            arguments: Value,
-        }
-        match parse::<Call>(params) {
-            Ok(call)
-                if self.computer.is_some()
-                    && matches!(call.name.as_str(), "computer" | "computer_batch") =>
-            {
-                Ok(self.computer(&call.name, call.arguments).await)
-            }
-            Ok(call)
-                if self.surface == Surface::Agent
-                    && agent::tool_definitions().iter().any(|definition| {
-                        definition["name"].as_str() == Some(call.name.as_str())
-                    }) =>
-            {
-                Ok(self.agent_call(&call.name, call.arguments).await)
-            }
-            Ok(call)
-                if self.surface == Surface::Classic
-                    && tool_definitions().iter().any(|definition| {
-                        definition["name"].as_str() == Some(call.name.as_str())
-                    }) =>
-            {
-                Ok(tool_result(self.call(&call.name, call.arguments).await))
-            }
-            Ok(_) => Err("Unknown tool".into()),
-            Err(e) => Err(e),
-        }
     }
     /// The turn a request of this session works in: at most [`MAX_WORKING`]
     /// work at once, and at most [`MAX_ADMITTED`] work or wait, beyond which

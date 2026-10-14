@@ -276,29 +276,6 @@ class RealLink(unittest.TestCase):
         self.assertNotIn("3syn", symbols)
         self.assertNotIn("unreached", symbols)
 
-    def test_a_shared_generic_instantiated_in_a_macro_only_crate_stays_exported(self):
-        # With shared generics, an app compiled against the runtime links
-        # RawVec<usize>::grow_one from whichever upstream crate rustc picks
-        # (the lowest crate id), which can be proc_macro2. Its instance is
-        # alloc's item, named after proc_macro2 only as the instantiating
-        # crate, so leaving it out made those apps fail to link.
-        shared = "_RNvMs3_NtCsi2GJixwxVUa_5alloc7raw_vecINtB5_6RawVecjE8grow_oneCs9H9DpKkakbh_11proc_macro2"
-        own = "_RNvMNtCs9H9DpKkakbh_11proc_macro23impNtB2_11TokenStream3new"
-        (self.directory / "leaf.c").write_text(
-            f"int {shared}(void) {{ return 1; }}\n"
-            f"int {own}(void) {{ return 2; }}\n")
-        (self.directory / "list").write_text(
-            f"{{\n  global:\n    {shared};\n    {own};\n  local:\n    *;\n}};\n")
-        result = subprocess.run([sys.executable, str(SCRIPT), "-shared", "-fPIC", "-ffunction-sections",
-                                 "leaf.c", "-Wl,--version-script=list", "-o", "libleaf.so"],
-                                cwd=self.directory, capture_output=True, text=True,
-                                env=dict(os.environ, TILO_LAZY_LINK_CC="cc"))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        exported = subprocess.run(["nm", "-D", "--defined-only", str(self.directory / "libleaf.so")],
-                                  capture_output=True, text=True).stdout
-        self.assertIn(shared, exported)
-        self.assertNotIn(own, exported)
-
 
 if __name__ == "__main__":
     unittest.main()

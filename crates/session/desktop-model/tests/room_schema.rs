@@ -61,7 +61,6 @@ fn strip(salt: u16, counter: u64, label: &str) -> Strip {
             active_tab: id + 2,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
             tabs: vec![Tab {
                 id: id + 2,
                 title: label.into(),

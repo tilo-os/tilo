@@ -780,10 +780,10 @@ mod tests {
         }
         // phase: the_sweep_accepts_an_app_whose_document_actions_are_prompted
         {
-            let prompted = ActionSpec::prompted_param(
+            let prompted = ActionSpec::prompted(
                 "rename",
                 "Rename probe",
-                tilo_actions::ActionParam::required("value", tilo_actions::ParamType::Text, "Name"),
+                "Name",
                 "",
                 tilo_actions::ExecutionLocus::ClientLocal,
                 |name| encode(&Probe::Set(name.to_string())),

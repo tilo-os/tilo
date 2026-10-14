@@ -1109,10 +1109,6 @@ impl Widget for ContextMenu {
         self.platform = conventions;
     }
 
-    fn composition_follows_allocation(&self) -> bool {
-        true
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

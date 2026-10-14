@@ -3176,10 +3176,6 @@ impl<Row: 'static> Widget for DataTable<Row> {
         received_changes || moved || children_changed
     }
 
-    fn composition_follows_allocation(&self) -> bool {
-        true
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
