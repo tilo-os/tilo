@@ -72,6 +72,8 @@ jobs:
             echo "cgroup cpu.max: $(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo unknown)"
             echo "cgroup memory.max: $(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo unknown)"
             echo "kernel: $(uname -r)"
+            # Where the host keeps its state (TMPDIR), and the tmpfs runs'.
+            df -h "${TMPDIR:-/tmp}" /dev/shm | sed 's/^/disk: /'
           } | tee capacity/machine.txt
 
       - name: Sweep

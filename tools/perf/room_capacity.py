@@ -61,6 +61,8 @@ class Run:
     name: str
     kind: str
     args: tuple[str, ...]
+    # Environment the bench (and the host it starts) runs with.
+    env: tuple[tuple[str, str], ...] = ()
 
 
 def plan(which: str) -> list[Run]:
@@ -77,6 +79,9 @@ def plan(which: str) -> list[Run]:
     # the arrival rate or by the room's size.
     runs += [Run(f"ramp5-g{n}", "ramp5", ("--guests", str(n), "--ramp", "5", "--join-timeout", "120"))
              for n in (300, 500)]
+    # The host's state on memory instead of the runner's disk: whether the
+    # room waits on storage (every commit is made durable before it counts).
+    runs += [Run(f"tmpfs-g{n}", "tmpfs", ("--guests", str(n)), (("TMPDIR", "/dev/shm"),)) for n in (100, 300)]
     # Spectators admitted as Viewers of their own: what a watching session
     # costs. The homepage embed's path (one spectator person, every page a
     # device of it) is the `embed` run.
@@ -105,13 +110,15 @@ def cgroup_memory() -> tuple[int, int] | None:
     return (current, int(limit)) if limit.isdigit() else None
 
 
-def bench(command: list[str], log: Path, timeout_s: float) -> tuple[int | None, str, str | None]:
+def bench(command: list[str], log: Path, timeout_s: float,
+          env: tuple[tuple[str, str], ...] = ()) -> tuple[int | None, str, str | None]:
     """Run one bench in its own process group. It is stopped, and the stop
     named, when it outlives `timeout_s` or the job's memory passes
     MEMORY_GUARD of its limit: a run that would take the runner down with it
     is a failure point to record, not a lost sweep."""
     with log.open("w", encoding="utf-8") as stderr:
-        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr, text=True, start_new_session=True)
+        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr, text=True, start_new_session=True,
+                                 env={**os.environ, **dict(env)})
         output: list[str] = []
         reader = threading.Thread(target=lambda: output.append(child.stdout.read() if child.stdout else ""))
         reader.start()
@@ -147,11 +154,12 @@ def sweep(binary: Path, out: Path, which: str) -> int:
     failed = []
     for run in plan(which):
         command = [str(binary), "bench", *COMMON, *run.args]
-        print(f"== {run.name}: {' '.join(command)}", flush=True)
-        code, stdout, stopped = bench(command, out / f"{run.name}.log", run_seconds(run))
+        prefix = "".join(f"{name}={value} " for name, value in run.env)
+        print(f"== {run.name}: {prefix}{' '.join(command)}", flush=True)
+        code, stdout, stopped = bench(command, out / f"{run.name}.log", run_seconds(run), run.env)
         report = json.loads(stdout) if code == 0 else None
         (out / f"{run.name}.json").write_text(
-            json.dumps({"name": run.name, "kind": run.kind, "args": list(run.args), "exit": code,
+            json.dumps({"name": run.name, "kind": run.kind, "args": list(run.args), "env": dict(run.env), "exit": code,
                         "stopped": stopped, "report": report}, indent=2),
             encoding="utf-8")
         if report is None:
