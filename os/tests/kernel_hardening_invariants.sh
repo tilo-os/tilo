@@ -655,6 +655,11 @@ grep -rEq '"init_on_free=' "$repo/os/usr/lib/bootc/kargs.d" \
   && bad 'init_on_free is set: it zeroes all RAM single-threaded at boot and disables init_on_alloc'
 grep -Fq 'init_on_free=1 is deliberately NOT set' "$kargs" \
   || bad 'the hardening kargs no longer record why init_on_free is left out'
+# The boot audit reads the kernel's own "mem auto-init:" report. With
+# init_on_free left out that report says "heap free:off" on every correct boot,
+# so requiring free:on would warn on all of them.
+grep -Fq "'alloc:on'*'free:on'" "$audit" \
+  && bad 'boot audit still requires heap free:on although the image leaves init_on_free out'
 # Firmware OEM strings, fw_cfg and boot-loader drop-ins must not become
 # systemd credentials of a sealed boot; the unsealed dev image removes the file.
 grep -Fxq 'kargs = ["systemd.import_credentials=no"]' "$repo/os/usr/lib/bootc/kargs.d/05-credentials.toml" \
