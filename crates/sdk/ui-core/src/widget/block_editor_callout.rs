@@ -110,7 +110,11 @@ impl CalloutKind {
 
 /// Height of the band above a callout's text that holds its icon and name,
 /// at 1× text: one body line and a tight gap on either side.
-pub(super) const CALLOUT_HEADER_HEIGHT: f64 = 28.0;
+pub(super) fn callout_header_height() -> f64 {
+    let body = crate::tokens::typography::stock().style(TextRole::Body);
+    let tight = crate::tokens::spacing::RhythmScale::BASE.tight;
+    f64::from(body.size * body.line_height + 2.0 * tight)
+}
 
 /// Paint a callout: its wash from the content edge `x0` to the line's end,
 /// over the header band and the text, the icon and name in the header, and
@@ -120,7 +124,7 @@ pub(super) fn draw_callout(b: &mut Block, kind: CalloutKind, x0: f64, ctx: &mut 
     let tokens = &theme.tokens;
     let scale = f64::from(theme.text_scale);
     let line_rect = b.line.get_rect();
-    let header = CALLOUT_HEADER_HEIGHT * scale;
+    let header = callout_header_height() * scale;
     let surface = Rect::new(x0, line_rect.y0 - header, line_rect.x1, line_rect.y1);
     let wash = tokens.colors.wash_on(
         tokens.colors.surfaces.content,
