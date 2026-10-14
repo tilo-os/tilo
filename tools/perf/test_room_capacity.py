@@ -108,6 +108,14 @@ class SummaryTest(unittest.TestCase):
         egress = 1000.0 * 3600 * 730 / 1e9 * 1120 * 0.09
         self.assertAlmostEqual(aws["usd_per_month_per_100_guests"], (299.71 + egress) / 1120 * 100)
 
+    def test_a_node_whose_port_fills_first_is_bound_by_its_network(self):
+        node = self.prices["room_node"]["hetzner-ax102"]
+        # 1 Mbit/s each: the 1 Gbit/s port at 70 % carries 700 guests, the
+        # CPU 4480.
+        cost = room_capacity.node_cost(node, self.prices, {"cores": 0.005, "mib": 2.0, "egress_bytes_s": 125_000.0},
+                                       idle_mib=100)
+        self.assertEqual((cost["binding"], cost["guests_per_node"]), ("network", 700))
+
     def test_a_partial_sweep_is_reported_without_derivations(self):
         summary = room_capacity.summarize([run("plain-g300", "plain", report(300, 700, 1.5))], self.prices)
         self.assertEqual(summary["derived"], {})
