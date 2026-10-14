@@ -61,6 +61,9 @@ taffy.workspace = true
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# Mounts Notes in the desktop surface the browser desktop hosts apps in.
+tilo-desktop-model = { path = "../../crates/session/desktop-model" }
+tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
 
 [[test]]
 name = "it"

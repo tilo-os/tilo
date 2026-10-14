@@ -1,6 +1,7 @@
 //! The desktop's chrome in the page, from `tilo-desktop`'s widgets: the
 //! native shell's backdrop, its top bar over the strip, the launchpad on a
-//! workspace with no windows yet, and the overview panel.
+//! workspace with no windows yet, the overview panel, and the menu behind
+//! the bar's Tilo mark with the About sheet saying what this is.
 //!
 //! Desktop chords are the native shell's Super chords where the browser
 //! passes Super through, and the same keys with the page's stand-in for
@@ -20,6 +21,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use tilo_desktop::about::{AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
     ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, TopBarWidget,
     TopBarWidgets,
@@ -56,12 +58,17 @@ pub(crate) enum HostRequest {
 pub(crate) type HostRequests = Rc<RefCell<Vec<HostRequest>>>;
 
 /// What the embedding page offers the desktop.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct HostOffers {
     /// The page takes [`HostRequest::Invite`].
     pub invite: bool,
     /// The page runs on macOS: its command key is Cmd.
     pub mac: bool,
+    /// The host of the room shown (`example.org`), named beside the
+    /// workspace; `None` on the person's own desktop.
+    pub host: Option<String>,
+    /// The deployment's links the About sheet offers.
+    pub about: tilo_desktop::about::AboutLinks,
 }
 
 /// The bar's view of the page: the surface's tree, the wall clock, and the
@@ -207,6 +214,7 @@ pub(crate) struct BrowserShell {
     bar: TopBarChrome,
     area: Stack,
     overview: OverviewPanel,
+    tilo_menu: TiloMenu,
     /// The tree revision the open overview shows.
     overview_revision: u64,
     /// The minute the bar's clock last showed.
@@ -216,6 +224,8 @@ pub(crate) struct BrowserShell {
     handle: DesktopHandle,
     generation: String,
     empty: Rc<Cell<bool>>,
+    /// Whether the bar last drew its Tilo mark pressed (its menu open).
+    menu_shown: Cell<bool>,
     offers: HostOffers,
     requests: HostRequests,
 }
@@ -237,7 +247,11 @@ impl BrowserShell {
             wake,
         });
         let tree = handle.read(Clone::clone);
-        let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        let mut bar = TopBarChrome::from_tree(&tree)
+            .with_chrome(chrome.clone())
+            .with_tilo_mark();
+        bar.set_host_label(offers.host.clone());
+        let tilo_menu = TiloMenu::new(AboutVariant::Browser, &offers.about);
         let empty = Rc::new(Cell::new(workspace_is_empty(&tree)));
         let launchpad = CollaborationLaunchpad::new(|_| 0.0).with_copy(welcome_copy(offers.mac));
         let area = Stack::new()
@@ -251,6 +265,7 @@ impl BrowserShell {
             bar,
             area,
             overview: OverviewPanel::new(),
+            tilo_menu,
             overview_revision: 0,
             drawn_minute: Cell::new(i64::MIN),
             rect: Rect::ZERO,
@@ -258,6 +273,7 @@ impl BrowserShell {
             handle,
             generation,
             empty,
+            menu_shown: Cell::new(false),
             offers,
             requests,
         }
@@ -330,6 +346,9 @@ impl BrowserShell {
             }
             ChromeIntent::ToggleCollaborators => self.invite(),
             ChromeIntent::ToggleOverview => self.toggle_overview(),
+            ChromeIntent::ToggleTiloMenu => {
+                self.tilo_menu.toggle(self.bar.tilo_mark_rect(), self.rect);
+            }
             _ => {}
         }
     }
@@ -598,6 +617,12 @@ impl Widget for BrowserShell {
         if self.empty.replace(empty) != empty {
             changed = true;
         }
+        changed |= self.tilo_menu.settle();
+        let menu_open = self.tilo_menu.is_menu_open();
+        if self.menu_shown.replace(menu_open) != menu_open {
+            self.bar.set_tilo_menu_open(menu_open);
+            changed = true;
+        }
         changed |= self.bar.update(state, path);
         changed |= self.area.update(state, path);
         // Chosen while the surface updated (search, a banner): the page
@@ -653,24 +678,31 @@ impl Widget for BrowserShell {
         };
         style.size = Size::auto();
         let _ = taffy.set_style(overview, style);
+        let tilo_menu = self.tilo_menu.build_layout(taffy, theme, map);
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
             size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
-        taffy.widget_node(style, &[backdrop, bar, area, overview], map, self)
+        taffy.widget_node(
+            style,
+            &[backdrop, bar, area, overview, tilo_menu],
+            map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let nodes = taffy.children(node).unwrap_or_default();
-        if let [backdrop, bar, area, overview] = nodes[..] {
+        if let [backdrop, bar, area, overview, tilo_menu] = nodes[..] {
             self.backdrop.apply_layout(taffy, backdrop, inner);
             self.bar.apply_layout(taffy, bar, inner);
             self.area.apply_layout(taffy, area, inner);
             self.overview.apply_layout(taffy, overview, inner);
+            self.tilo_menu.apply_layout(taffy, tilo_menu, inner);
         }
     }
 
@@ -692,9 +724,18 @@ impl Widget for BrowserShell {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let [_, bar, area, overview] = nodes[..] else {
+        let [_, bar, area, overview, tilo_menu] = nodes[..] else {
             return;
         };
+        // The Tilo menu and its sheet take what they cover, the keyboard
+        // and the press that dismisses them.
+        if self.tilo_menu.is_open() {
+            self.tilo_menu
+                .handle_event(event, &mut ctx.reborrow(ctx.path, tilo_menu));
+            if *ctx.handled {
+                return;
+            }
+        }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && self.chord(key, ctx.modifiers)
         {
@@ -718,7 +759,13 @@ impl Widget for BrowserShell {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.backdrop, &self.bar, &self.area, &self.overview]
+        vec![
+            &self.backdrop,
+            &self.bar,
+            &self.area,
+            &self.overview,
+            &self.tilo_menu,
+        ]
     }
 
     fn visit_retained_components(
@@ -737,6 +784,7 @@ impl Widget for BrowserShell {
             &mut self.bar,
             &mut self.area,
             &mut self.overview,
+            &mut self.tilo_menu,
         ]
     }
 
@@ -747,6 +795,7 @@ impl Widget for BrowserShell {
                 &self.bar,
                 &self.area,
                 &self.overview,
+                &self.tilo_menu,
             ]
             .iter()
             .any(|child| child.needs_redraw())
@@ -762,6 +811,7 @@ impl Widget for BrowserShell {
             &self.bar,
             &self.area,
             &self.overview,
+            &self.tilo_menu,
         ]
         .iter()
         .filter_map(|child| child.next_wake_deadline())

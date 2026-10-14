@@ -9744,6 +9744,8 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-content",
+ "tilo-desktop-model",
+ "tilo-desktop-surface",
  "tilo-doc",
  "tilo-document",
  "tilo-files",
@@ -15949,7 +15951,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "web-time",
+ "tilo-clock",
 ]
 
 [[package]]
@@ -17878,6 +17880,7 @@ dependencies = [
 name = "tilo-relay"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "anyhow",
  "app-cli",
  "app-registry",
@@ -17943,6 +17946,7 @@ dependencies = [
  "tilo-identity-host",
  "tilo-moderation",
  "tilo-moq",
+ "tilo-net",
  "tilo-paths",
  "tilo-peer-state",
  "tilo-relay-client",
@@ -18061,7 +18065,7 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-resource-macros",
- "tilo-rt",
+ "tilo-wake",
  "uuid",
  "workspace-hack",
 ]
@@ -18180,6 +18184,7 @@ dependencies = [
  "tilo-clock",
  "tilo-platform-caps",
  "tilo-test-env",
+ "tilo-wake",
  "tokio",
  "tracing",
  "wasm-bindgen",
@@ -18837,6 +18842,14 @@ dependencies = [
  "uuid",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-wake"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -20362,7 +20375,17 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "serde_core",
+ "uuid-rng-internal",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "uuid-rng-internal"
+version = "1.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e1d7ccff5e453092983b2a5ec27ebdd52745f40bef229e92051a054a37c662b"
+dependencies = [
+ "getrandom 0.4.3",
 ]
 
 [[package]]

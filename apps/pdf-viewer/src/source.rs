@@ -67,25 +67,9 @@ const MAX_RASTER_CACHE_BYTES: usize = 192 * 1024 * 1024;
 fn read_file_bounded(path: &Path, limit: usize) -> anyhow::Result<Vec<u8>> {
     let (dir, name) =
         tilo_files::file_at(path).with_context(|| format!("reading {}", path.display()))?;
-    let metadata = tilo_files::blocking::metadata(&dir, &name)
-        .with_context(|| format!("reading {}", path.display()))?;
-    if metadata.len > limit as u64 {
-        return Err(anyhow!(
-            "file is {} MiB; PDF Viewer opens files up to {} MiB",
-            metadata.len / (1024 * 1024),
-            limit / (1024 * 1024)
-        ));
-    }
-    let bytes = tilo_files::blocking::read(&dir, &name)
-        .with_context(|| format!("reading {}", path.display()))?;
-    // Metadata may race with a writer; the size is checked again.
-    if bytes.len() > limit {
-        return Err(anyhow!(
-            "file grew beyond the {} MiB PDF Viewer open limit",
-            limit / (1024 * 1024)
-        ));
-    }
-    Ok(bytes)
+    tilo_files::blocking::read_bounded(&dir, &name, limit)
+        .with_context(|| format!("reading {}", path.display()))?
+        .ok_or_else(|| anyhow!("PDF Viewer opens files up to {} MiB", limit / (1024 * 1024)))
 }
 
 type ImportInspection = (String, String, Vec<(f64, f64)>);

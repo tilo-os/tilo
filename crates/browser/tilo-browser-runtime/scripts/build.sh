@@ -8,39 +8,60 @@
 #                       the Typst editor's fonts), with sizes and hashes
 #   build.json          revision, tools, profile and output hashes
 #
-# usage: build.sh OUTPUT_DIR [--profile release|dev] [--[no-]wasm-opt] [--bundle runtime|desktop]
+# usage: build.sh OUTPUT_DIR [--profile release|dev|quick] [--[no-]wasm-opt]
+#                 [--bundle runtime|desktop] [--no-split] [--update]
 # `--profile release` compiles with Cargo's `wasm-release` profile and runs
 # wasm-opt (binaryen) unless `--no-wasm-opt`; `dev` skips it unless `--wasm-opt`.
+# `quick` is the development loop's: Cargo's `wasm-dev` profile (no debug
+# information, light optimisation), whose much smaller module wasm-bindgen
+# and the splitter get through in half the time, and no wasm-opt.
 # `--bundle desktop` builds crates/browser/tilo-web-desktop instead: the same
 # runtime with every web-capable app registered from its manifest, under the
 # runtime's module name so the page host loads it unchanged, plus apps.json;
 # its module is split (tools/web/wasm-split/split.sh) into a start module and
-# one module per app, fetched when the app first opens.
+# one module per app, fetched when the app first opens. `--no-split` (dev and
+# quick only) leaves it whole, for a loop that is not about loading apps.
+# `--update` (dev and quick only) brings an OUTPUT_DIR this script built
+# before up to date, step by step: the module is bound and split again only
+# when the linked module changed, the page's modules and entry pages are
+# copied again, and fonts, data, the compute module and the MoQ library are
+# kept. A loop that edits only web/*.mjs takes seconds; one that edits Rust,
+# the compile, wasm-bindgen and, unless `--no-split`, the split.
 # Needs the wasm32-unknown-unknown target and a wasm-bindgen CLI matching the
 # crate's pinned wasm-bindgen.
 set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-out=${1:?usage: build.sh OUTPUT_DIR [--profile release|dev] [--[no-]wasm-opt] [--bundle runtime|desktop]}
+usage='usage: build.sh OUTPUT_DIR [--profile release|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop] [--no-split] [--update]'
+out=${1:?$usage}
 shift
 profile=release
 optimize=
 bundle=runtime
+split=1
+update=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) profile=${2:?--profile needs a value}; shift 2 ;;
     --wasm-opt) optimize=1; shift ;;
     --no-wasm-opt) optimize=0; shift ;;
     --bundle) bundle=${2:?--bundle needs a value}; shift 2 ;;
-    *) echo "unknown argument: $1" >&2; exit 2 ;;
+    --no-split) split=0; shift ;;
+    --update) update=1; shift ;;
+    *) echo "unknown argument: $1" >&2; echo "$usage" >&2; exit 2 ;;
   esac
 done
 case "$profile" in
   release) cargo_profile=wasm-release artifact=wasm-release optimize=${optimize:-1} ;;
   dev) cargo_profile=dev artifact=debug optimize=${optimize:-0} ;;
+  quick) cargo_profile=wasm-dev artifact=wasm-dev optimize=${optimize:-0} ;;
   *) echo "unsupported profile: $profile" >&2; exit 2 ;;
 esac
+# A release bundle is always built whole from source and split: what ships.
+[[ $profile != release || ( $split == 1 && $update == 0 ) ]] || {
+  echo '--no-split and --update are for dev and quick bundles' >&2; exit 2;
+}
 case "$bundle" in
   runtime) package=tilo-browser-runtime ;;
   desktop) package=tilo-web-desktop ;;
@@ -55,7 +76,17 @@ if [[ $bundle == desktop ]]; then
 fi
 [[ "$out" == /* ]] || { echo 'OUTPUT_DIR must be absolute' >&2; exit 2; }
 # Stale modules beside new ones would make the bundle's provenance ambiguous.
-[[ ! -d "$out" || -z "$(ls -A "$out")" ]] || { echo 'OUTPUT_DIR must be empty' >&2; exit 2; }
+if [[ $update == 1 && -f "$out/build.json" ]]; then
+  python3 -c 'import json,sys; b=json.load(open(sys.argv[1])); sys.exit(b.get("bundle")!=sys.argv[2] or b.get("profile")!=sys.argv[3])' \
+    "$out/build.json" "$bundle" "$profile" || {
+    echo "--update: $out holds another bundle or profile; build into an empty directory" >&2; exit 2;
+  }
+else
+  [[ ! -d "$out" || -z "$(ls -A "$out")" ]] || { echo 'OUTPUT_DIR must be empty (or pass --update)' >&2; exit 2; }
+  update=0
+fi
+# Whether --update keeps this output of an earlier run.
+kept() { [[ $update == 1 && -e "$out/$1" ]]; }
 
 cd "$repo"
 # A host whose system clang lacks WebAssembly compiles the C dependencies
@@ -69,6 +100,12 @@ pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$crate/Cargo.toml")
 [[ "$("$bindgen" --version)" == "wasm-bindgen $pinned" ]] || {
   echo "wasm-bindgen CLI must be $pinned to match the crate" >&2; exit 2;
 }
+# A development bundle may be built from a tree without its git metadata (a
+# build container's synced copy); it records an unknown revision. A release
+# bundle names the commit it was built from.
+if [[ $profile != release ]] && ! git rev-parse HEAD >/dev/null 2>&1; then
+  git() { [[ $1 == rev-parse ]] && echo unknown; return 0; }
+fi
 revision=$(git rev-parse HEAD)
 source_status=$(git status --porcelain)
 
@@ -81,10 +118,37 @@ target_dir=$(cargo metadata --format-version 1 --no-deps --offline |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 mkdir -p "$out/pkg" "$out/fonts"
 linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
-"$bindgen" "$linked" --target web --out-dir "$out/pkg" --out-name tilo_browser_runtime "${bindgen_flags[@]}"
+# The linked module this pkg/ was made from, and how; empty when there is
+# no module to read (a wasm-bindgen that makes its output itself), so
+# such a pkg/ is never reused.
+made_from=""
+# Size and modification time, with GNU stat or the BSD stat of macOS.
+file_stamp() { stat -c '%s %Y' "$1" 2>/dev/null || stat -f '%z %m' "$1"; }
+if [[ -f "$linked" ]]; then made_from="$(file_stamp "$linked") split=$split"; fi
+if [[ -n "$made_from" ]] && kept pkg/.made-from && [[ "$(cat "$out/pkg/.made-from")" == "$made_from" ]]; then
+  echo "pkg: unchanged module, kept" >&2
+else
+  # Made beside the old pkg/ and swapped in, so a page reloading meanwhile
+  # gets one or the other; the compute module's pkg/compute moves over.
+  next="$out/pkg.next"
+  rm -rf "$next"
+  mkdir -p "$next"
+  "$bindgen" "$linked" --target web --out-dir "$next" --out-name tilo_browser_runtime "${bindgen_flags[@]}"
+  if [[ $bundle == desktop && $split == 1 ]]; then
+    bash "$repo/tools/web/wasm-split/split.sh" "$linked" "$next"
+  elif [[ $bundle == desktop ]]; then
+    bash "$repo/tools/web/wasm-split/split.sh" --unsplit "$next"
+  fi
+  if [[ -d "$out/pkg/compute" ]]; then mv "$out/pkg/compute" "$next/compute"; fi
+  # A release bundle ships exactly what it was built from; no stamp.
+  if [[ $profile != release && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
+  rm -rf "$out/pkg"
+  mv "$next" "$out/pkg"
+fi
 if [[ $bundle == desktop ]]; then
-  bash "$repo/tools/web/wasm-split/split.sh" "$linked" "$out/pkg"
   cp "$repo/crates/browser/tilo-web-desktop/apps.json" "$out/apps.json"
+fi
+if [[ $bundle == desktop ]] && ! kept data/typst; then
   # The Typst editor's fonts, which only native builds embed; the editor asks
   # for them by name when it opens (crates/platform/tilo-typst-fonts).
   typst_assets=$(cargo metadata --format-version 1 --locked --offline --filter-platform wasm32-unknown-unknown |
@@ -114,17 +178,25 @@ else
 fi
 compute_opt=--no-wasm-opt
 [[ $optimize == 1 ]] && compute_opt=--wasm-opt
-bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$profile" "$compute_opt"
-find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' -exec cp {} "$out/" \;
+compute_profile=$profile
+[[ $profile == quick ]] && compute_profile=dev
+if ! kept pkg/compute; then
+  bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$compute_profile" "$compute_opt"
+fi
+moq_kept=0
+kept media-moq-library.mjs && moq_kept=1
+find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' ! -name media-moq-library.mjs -exec cp {} "$out/" \;
 cp "$crate/web/index.html" "$out/index.html"
 mkdir -p "$out/app"
 cp "$crate/web/app/index.html" "$out/app/index.html"
 # The live plane's MoQ library is bundled from the published @moq/net pinned
-# in scripts/moq-browser/package-lock.json, never committed; this replaces
-# any local development copy just copied.
-(cd "$repo/scripts/moq-browser" && npm ci --no-audit --no-fund --silent && node build.mjs "$out/media-moq-library.mjs")
+# in scripts/moq-browser/package-lock.json, never committed, never from a
+# local development copy in web/.
+if [[ $moq_kept == 0 ]]; then
+  (cd "$repo/scripts/moq-browser" && npm ci --no-audit --no-fund --silent && node build.mjs "$out/media-moq-library.mjs")
+fi
 
-python3 - "$repo" "$out" <<'PY'
+kept fonts.json || python3 - "$repo" "$out" <<'PY'
 import importlib.util, json, pathlib, re, shutil, sys
 repo, out = map(pathlib.Path, sys.argv[1:])
 tool = repo / 'tools/font-catalog.py'

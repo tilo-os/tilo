@@ -34,8 +34,39 @@
 
 use crate::argv;
 use crate::exec::Runner;
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+
+/// A secret handed to a tpm2 tool by path rather than on its command line.
+///
+/// `/proc/<pid>/cmdline` is world-readable and the image deliberately ships
+/// no `hidepid`, so a `str:` authorisation on argv is readable by every local
+/// process for as long as the tool runs — and the harden ceremony can overlap
+/// the first desktop session. tpm2-tools read a `file:` form instead; the
+/// file is 0600 in a root-only directory and removed when the guard drops.
+struct AuthFile {
+    path: PathBuf,
+}
+
+impl AuthFile {
+    fn write(scratch: &Path, name: &str, secret: &[u8]) -> Result<Self> {
+        let path = scratch.join(name);
+        tilo_files::native::atomic::write_with_mode(&path, secret, 0o600)
+            .with_context(|| format!("writing the authorisation to {}", path.display()))?;
+        Ok(Self { path })
+    }
+
+    fn spec(&self) -> String {
+        format!("file:{}", self.path.display())
+    }
+}
+
+impl Drop for AuthFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
 
 /// What the hardware reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -203,14 +234,22 @@ pub fn read(runner: &dyn Runner) -> Result<Params> {
     Ok(parse_properties(&out.stdout_utf8()))
 }
 
-/// Tighten the parameters. Needs `lockoutAuth` once it has been set. Returns the parameters
-/// as they actually are afterwards, not necessarily what was asked for —
-/// `TPM2_DictionaryAttackParameters` may be more restrictive, and some firmware silently clamps.
+/// Tighten the parameters. Needs `lockoutAuth` once it has been set; it is passed to the
+/// tool through a scratch file under `scratch` (a root-only directory), never on argv.
+/// Returns the parameters as they actually are afterwards, not necessarily what was asked
+/// for — `TPM2_DictionaryAttackParameters` may be more restrictive, and some firmware
+/// silently clamps.
 ///
 /// # Errors
 ///
-/// Returns an error if `tpm2_dictionarylockout` fails, or if the subsequent [`read`] fails.
-pub fn tighten(runner: &dyn Runner, target: Target, lockout_auth: Option<&[u8]>) -> Result<Params> {
+/// Returns an error if the scratch file cannot be written, if `tpm2_dictionarylockout`
+/// fails, or if the subsequent [`read`] fails.
+pub fn tighten(
+    runner: &dyn Runner,
+    target: Target,
+    lockout_auth: Option<&[u8]>,
+    scratch: &Path,
+) -> Result<Params> {
     let mt = target.max_tries.to_string();
     let rt = target.recovery_time.to_string();
     let lr = target.lockout_recovery.to_string();
@@ -223,9 +262,11 @@ pub fn tighten(runner: &dyn Runner, target: Target, lockout_auth: Option<&[u8]>)
         "--lockout-recovery-time",
         &lr,
     ];
+    let auth_file;
     let auth_spec;
     if let Some(a) = lockout_auth {
-        auth_spec = format!("str:{}", String::from_utf8_lossy(a));
+        auth_file = AuthFile::write(scratch, "lockout.auth", a)?;
+        auth_spec = auth_file.spec();
         args.push(OsStr::new("--auth"));
         args.push(OsStr::new(&auth_spec));
     }
@@ -246,10 +287,18 @@ pub fn tighten(runner: &dyn Runner, target: Target, lockout_auth: Option<&[u8]>)
 /// full `tpm2_clear` from firmware setup, destroying every sealed keyslot — recoverable with
 /// the recovery key, unrecoverable without it.
 ///
+/// Both values reach the tool through scratch files under `scratch`, never on argv.
+///
 /// # Errors
 ///
-/// Returns an error if `new_auth` is longer than 48 bytes, or if `tpm2_changeauth` fails.
-pub fn set_reset_auth(runner: &dyn Runner, new_auth: &[u8], old_auth: Option<&[u8]>) -> Result<()> {
+/// Returns an error if `new_auth` is longer than 48 bytes, if a scratch file cannot be
+/// written, or if `tpm2_changeauth` fails.
+pub fn set_reset_auth(
+    runner: &dyn Runner,
+    new_auth: &[u8],
+    old_auth: Option<&[u8]>,
+    scratch: &Path,
+) -> Result<()> {
     if new_auth.len() > 48 {
         bail!(
             "a {}-byte reset authorisation is longer than TPM2B_AUTH accepts in practice; keep it \
@@ -257,11 +306,14 @@ pub fn set_reset_auth(runner: &dyn Runner, new_auth: &[u8], old_auth: Option<&[u
             new_auth.len()
         );
     }
-    let new_spec = format!("str:{}", String::from_utf8_lossy(new_auth));
+    let new_file = AuthFile::write(scratch, "lockout.new", new_auth)?;
+    let new_spec = new_file.spec();
     let mut args = argv!["-c", "lockout", &new_spec];
+    let old_file;
     let old_spec;
     if let Some(o) = old_auth {
-        old_spec = format!("str:{}", String::from_utf8_lossy(o));
+        old_file = AuthFile::write(scratch, "lockout.old", o)?;
+        old_spec = old_file.spec();
         args.push(OsStr::new("-p"));
         args.push(OsStr::new(&old_spec));
     }
@@ -296,6 +348,97 @@ pub fn new_reset_auth() -> Result<zeroize::Zeroizing<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Records every invocation and answers it as a success whose stdout is
+    /// the swtpm property dump, so `tighten` can `read` back afterwards. A
+    /// `file:` argument naming a file that does not exist while the tool
+    /// runs is recorded too, since the tool would have read nothing.
+    struct Recorder {
+        calls: Mutex<Vec<(String, Vec<String>)>>,
+        missing_files: Mutex<Vec<String>>,
+    }
+
+    impl Runner for Recorder {
+        fn run(
+            &self,
+            program: &str,
+            args: &[&OsStr],
+            _stdin: Option<&[u8]>,
+        ) -> Result<crate::exec::Output> {
+            let args: Vec<String> = args
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            for spec in args.iter().filter_map(|a| a.strip_prefix("file:")) {
+                if !Path::new(spec).is_file() {
+                    self.missing_files
+                        .lock()
+                        .unwrap()
+                        .push(format!("{program}: {spec}"));
+                }
+            }
+            self.calls.lock().unwrap().push((program.to_string(), args));
+            Ok(crate::exec::Output {
+                code: 0,
+                stdout: SWTPM.as_bytes().to_vec(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn lockout_authorisations_reach_the_tools_by_file_never_by_argv() {
+        let scratch = tempfile::tempdir().unwrap();
+        let runner = Recorder {
+            calls: Mutex::new(Vec::new()),
+            missing_files: Mutex::new(Vec::new()),
+        };
+        let secret = b"0123456789abcdef0123456789abcdef";
+        let old = b"previous-authorisation";
+        set_reset_auth(&runner, secret, Some(old), scratch.path()).unwrap();
+        tighten(&runner, Target::default(), Some(secret), scratch.path()).unwrap();
+
+        let calls = runner.calls.lock().unwrap().clone();
+        let missing = runner.missing_files.lock().unwrap().clone();
+        assert!(
+            missing.is_empty(),
+            "every authorisation file must exist while its tool runs: {missing:?}"
+        );
+        let command_lines: Vec<String> = calls.iter().flat_map(|(_, args)| args.clone()).collect();
+        for leaked in [secret.as_slice(), old.as_slice()] {
+            let leaked = String::from_utf8_lossy(leaked);
+            assert!(
+                command_lines
+                    .iter()
+                    .all(|arg| !arg.contains(leaked.as_ref())),
+                "the authorisation must never appear on a command line: {command_lines:?}"
+            );
+        }
+        assert!(
+            command_lines.iter().all(|arg| !arg.starts_with("str:")),
+            "no `str:` form may remain: {command_lines:?}"
+        );
+        let (tool, tool_args) = calls.first().expect("tpm2_changeauth ran");
+        assert_eq!(tool, "tpm2_changeauth");
+        assert_eq!(
+            tool_args.iter().filter(|a| a.starts_with("file:")).count(),
+            2,
+            "both the new and the old authorisation go by file"
+        );
+        let (tool, tool_args) = calls.get(1).expect("tpm2_dictionarylockout ran");
+        assert_eq!(tool, "tpm2_dictionarylockout");
+        assert!(
+            tool_args
+                .windows(2)
+                .any(|w| w[0] == "--auth" && w[1].starts_with("file:"))
+        );
+        // The scratch files do not outlive the call.
+        assert!(
+            std::fs::read_dir(scratch.path()).unwrap().next().is_none(),
+            "scratch authorisation files must be removed"
+        );
+    }
 
     const SWTPM: &str = "\
 TPM2_PT_PERMANENT:
