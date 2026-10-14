@@ -3694,7 +3694,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
@@ -3723,7 +3723,7 @@ jobs:
             found=1
             printf '%s\t%s\n' \
               "$raw" "$base/tilo-windows-compat-image/$arch-$sha256/tilo-windows-compat.raw" \
-              "$dir/descriptor.json" "$base/tilo-windows-compat-image/$arch-$GITHUB_SHA/descriptor.json" \
+              "$dir/descriptor.json" "$base/tilo-windows-compat-image/$arch-$TILO_IMAGE_SOURCE/descriptor.json" \
               > "$RUNNER_TEMP/windows-compat-uploads.tsv"
             TILO_PACKAGE_UPLOAD_WORKERS=1 tools/upload_immutable_packages.sh "$RUNNER_TEMP/windows-compat-uploads.tsv"
           done
