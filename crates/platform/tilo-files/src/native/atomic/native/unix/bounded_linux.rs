@@ -19,7 +19,7 @@ pub(super) fn validate_private(file: &File, metadata: &Metadata) -> io::Result<(
     if !matches!(profile, 0xef53 | 0x9123_683e | 0x5846_5342 | 0x0102_1994) {
         return Err(io::ErrorKind::Unsupported.into());
     }
-    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
+    if !crate::native::private::private_to_me(metadata) {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     Ok(())
