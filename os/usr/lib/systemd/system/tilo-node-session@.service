@@ -1,5 +1,7 @@
 # %i's node session: the headless Tilo session beside the node's relay that
 # runs the person's apps and streams their windows to the person's web pages.
+# It follows the rooms its node governs for the person (TILO_SHELL_FOLLOW_HOST_ROOMS),
+# joining each as one of their devices as it appears.
 # Started by tilo-node-session@%i.path once the session is certified.
 [Unit]
 Description=Tilo node session for %i
@@ -19,6 +21,6 @@ ExecStartPre=/bin/sh -c 'exec /usr/bin/systemctl start "user@$(id -u %i).service
 # with the unit.
 ExecStartPre=-/usr/bin/systemctl --machine=%i@ --user stop tilo-node-session.service
 ExecStopPost=-/usr/bin/systemctl --machine=%i@ --user stop tilo-node-session.service
-ExecStart=/usr/bin/systemd-run --quiet --wait --collect --unit=tilo-node-session --machine=%i@ --user --setenv=TILO_IDENTITY_ROOT=/var/lib/tilo-node/%i/session --setenv=TILO_COLLAB_HOST -- /usr/libexec/tilo-session --backend headless
+ExecStart=/usr/bin/systemd-run --quiet --wait --collect --unit=tilo-node-session --machine=%i@ --user --setenv=TILO_IDENTITY_ROOT=/var/lib/tilo-node/%i/session --setenv=TILO_COLLAB_HOST --setenv=TILO_SHELL_FOLLOW_HOST_ROOMS=1 -- /usr/libexec/tilo-session --backend headless
 Restart=always
 RestartSec=2
