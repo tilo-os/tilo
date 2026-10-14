@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_switch_reads_only_its_own_change_and_derives_the_same_history() {
+    fn a_workspace_switch_reads_only_its_own_change_and_derives_nothing() {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let first = tree.active;
         let second = tree.append_empty_workspace("Second");
@@ -246,23 +246,29 @@ mod tests {
                 crate::activity::replay::REPLAY_CHECKPOINT_READS.with(Cell::get),
             )
         };
+        let derived = format!("{:?}", pane.derived);
         for n in 0..12 {
             tree.set_active(if n % 2 == 0 { second } else { first });
             tree.commit_room_change();
             let (diffs, forks) = reads();
+            let logged = pane.history_log.changes_read();
             pane.refresh(&mut tree);
             let (diffs_after, forks_after) = reads();
-            // Each switch is one change: re-reading the room's whole history
-            // made a switch's first frame O(history).
+            // The switch's change is read once and passed over: no row to
+            // describe, nothing derived again.
             assert_eq!(
-                diffs_after - diffs,
+                pane.history_log.changes_read() - logged,
                 1,
-                "switch {n} diffs only its own change"
+                "switch {n} reads only its own change"
+            );
+            assert_eq!(diffs_after - diffs, 0, "switch {n} describes no change");
+            assert_eq!(
+                format!("{:?}", pane.derived),
+                derived,
+                "switch {n} leaves the rows as they were"
             );
             // The first visit to "Second" checkpoints the change that
-            // created it. A switch's own change shows the desktop the change
-            // before it left, so it forks nothing: forking the room for it
-            // made every switch's first frame O(history).
+            // created it, a row of that workspace; nothing else forks.
             assert!(
                 forks_after - forks <= usize::from(n == 0),
                 "switch {n} forks the document {} times",
@@ -290,8 +296,52 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        assert!(!frames(&pane).is_empty(), "the switches are replayable");
+        assert!(
+            !frames(&pane).is_empty(),
+            "the desktop's changes are replayable"
+        );
         assert_eq!(frames(&pane), frames(&fresh), "the replay checkpoints");
+    }
+
+    /// Switching takes no place in Activity's window: switching back and
+    /// forth 250 times used to fill all 200 places with switches, and the
+    /// rename before them, the one thing anyone did, was gone.
+    #[test]
+    fn switching_workspaces_never_pushes_what_people_did_out_of_activity() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let first = tree.active;
+        let second = tree.append_empty_workspace("Second");
+        tree.commit_room_change();
+        if let Some(workspace) = tree.desktop.workspaces.iter_mut().find(|w| w.id == first) {
+            workspace.name = "Renamed before switching".to_string();
+        }
+        tree.seed_doc_from_cache();
+        let mut pane = native_pane();
+        pane.refresh(&mut tree);
+        let renamed = |pane: &RoomActivityPane| {
+            pane.derived
+                .iter()
+                .filter(|(entry, _)| is_feed_change(entry))
+                .filter(|(entry, _)| entry.summary.contains("Renamed before switching"))
+                .count()
+        };
+        assert_eq!(renamed(&pane), 1, "the rename is in Activity");
+        let rows = pane.derived.len();
+        for n in 0..250 {
+            tree.set_active(if n % 2 == 0 { second } else { first });
+            tree.commit_room_change();
+            pane.refresh(&mut tree);
+        }
+        assert_eq!(renamed(&pane), 1, "the rename is still in Activity");
+        assert_eq!(pane.derived.len(), rows, "no switch became a row");
+        // A pane reading the whole document from scratch agrees.
+        let mut fresh = native_pane();
+        fresh.refresh(&mut tree);
+        assert_eq!(renamed(&fresh), 1);
+        assert_eq!(
+            format!("{:?}", fresh.derived),
+            format!("{:?}", pane.derived)
+        );
     }
 
     /// A change that switches workspaces and edits a workspace at once does
