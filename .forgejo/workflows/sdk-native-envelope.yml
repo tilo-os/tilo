@@ -122,7 +122,7 @@ jobs:
       # The generated app compiles its whole graph into a temporary target
       # directory that the test removes. Run before the .tapp step, the two
       # builds never occupy the runner's disk at the same time.
-      - name: A generated app builds outside the repository (native and wasm32)
+      - name: A generated app goes from new to a release awaiting review
         run: |
           rustup target add wasm32-unknown-unknown
           bash tools/ci/measure.sh "generated app outside the repository" -- \
