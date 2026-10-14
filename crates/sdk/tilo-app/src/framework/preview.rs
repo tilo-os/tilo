@@ -21,12 +21,6 @@ use ui_core::history_mode::{
     HistoryScopeDefinition, PreviewInput,
 };
 use ui_core::vello::kurbo::Rect;
-#[cfg(not(target_family = "wasm"))]
-use ui_core::{
-    Theme,
-    text_render::TextRenderer,
-    vello::{Scene, kurbo::Affine},
-};
 
 use super::app::{Editing, ResourceApp, build_root, leaked};
 use super::live::Live;
@@ -279,12 +273,17 @@ pub(crate) fn render_past<A: ResourceApp>(
         .map(|typed| typed.live.clone())
         .ok_or_else(|| format!("{} drew another resource", A::TITLE))?;
     let mut preview = past_preview::<A>(root, doc);
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
+    let theme = ui_core::Theme::dark();
+    let mut text = ui_core::text_render::TextRenderer::new();
     let bounds = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
     preview.layout(bounds, &mut text, &theme)?;
-    let mut scene = Scene::new();
-    preview.draw(&mut scene, Affine::IDENTITY, &mut text, &theme);
+    let mut scene = ui_core::vello::Scene::new();
+    preview.draw(
+        &mut scene,
+        ui_core::vello::kurbo::Affine::IDENTITY,
+        &mut text,
+        &theme,
+    );
     Ok(PastVersion { preview, live })
 }
 
@@ -294,10 +293,15 @@ pub(crate) fn render_past<A: ResourceApp>(
 pub(crate) fn draw_past<A: ResourceApp>(
     doc: AutoCommit,
     bounds: Rect,
-    scene: &mut Scene,
-    transform: Affine,
-    theme: &Theme,
+    scene: &mut ui_core::vello::Scene,
+    transform: ui_core::vello::kurbo::Affine,
+    theme: &ui_core::Theme,
 ) -> Result<(), String> {
+    use ui_core::Theme;
+    use ui_core::text_render::TextRenderer;
+    use ui_core::vello::Scene;
+    use ui_core::vello::kurbo::Affine;
+
     // Lay out `preview` in `bounds` and draw it. An item of its own, not
     // generic over `A`, so it is compiled once rather than in every app.
     fn draw_preview(
@@ -321,6 +325,10 @@ pub(crate) fn draw_past<A: ResourceApp>(
 mod tests {
     use super::*;
     use crate::prelude::*;
+    use ui_core::Theme;
+    use ui_core::text_render::TextRenderer;
+    use ui_core::vello::Scene;
+    use ui_core::vello::kurbo::Affine;
 
     #[derive(Model, Default)]
     pub struct Page {
