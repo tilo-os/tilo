@@ -213,3 +213,43 @@ fn a_dropped_image_file_goes_into_the_note() {
     );
     assert_eq!(dropped[0].1, bytes);
 }
+
+/// Pasting one picture after another, writing a line under each, keeps every
+/// picture and every line in the order they were put there, whether the
+/// paste is made at the end of a line or on a fresh empty one: after a paste
+/// the caret is on a line under the picture, so typing never goes back above
+/// it or onto it, and the next picture goes under that line.
+#[test]
+fn pictures_pasted_in_a_row_with_typing_between_keep_their_order() {
+    for enter_first in [false, true] {
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let (mut app, page) = note();
+        let mut expected = vec!["above".to_owned()];
+        for n in 0..5u8 {
+            let image = image::RgbImage::from_pixel(12, 9, image::Rgb([n * 40, 40, 40]));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+            let bytes = bytes.into_inner();
+            let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+            recorder.copy_image_elsewhere(ClipboardImage {
+                mime: "image/png",
+                bytes,
+            });
+            if enter_first {
+                app.harness().key("Enter");
+            }
+            paste(&mut app);
+            app.harness().type_text(&format!("line {n}"));
+            expected.push(format!("![Pasted image]({source})"));
+            expected.push(format!("line {n}"));
+        }
+        let blocks: Vec<String> = app
+            .read_document(|doc| read::page_block_snapshots(doc, page))
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(blocks, expected, "Enter before each paste: {enter_first}");
+        assert_eq!(images(&app, page).len(), 5);
+    }
+}

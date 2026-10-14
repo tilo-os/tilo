@@ -294,7 +294,7 @@ impl<S: RichTextSource> RichTextSurface<S> {
         self.source
             .with_state(|state| {
                 if placeholder && state.body().is_empty() {
-                    Some(RichTextAction::AppendParagraph { text })
+                    Some(crate::image_paste::into_empty_body(text))
                 } else {
                     crate::image_paste::plan(state, target, text)
                 }
