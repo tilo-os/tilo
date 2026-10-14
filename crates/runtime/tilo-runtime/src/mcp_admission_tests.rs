@@ -84,3 +84,61 @@ fn admitted_runtime_factory_failure_or_wrong_audience_never_falls_back_to_keyles
         });
     }
 }
+
+/// A desktop's agent door serves each connection as the agent the person
+/// admitted, never as the person: every call reaches the host as that agent,
+/// confined to the admitted room, in a fresh execution per connection, and
+/// an agent session is offered no pixel tools.
+#[test]
+fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
+    let host = StubHost::default();
+    let callers = host.callers.clone();
+    let first = McpServer::for_agent(host.clone(), "room".into(), "claude-terminal");
+    let second = McpServer::for_agent(host, "room".into(), "claude-terminal");
+    let call = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tilo_do","arguments":{"path":"test/Note#apply"}}});
+    run(async {
+        for server in [&first, &second] {
+            let initialized = server
+                .handle(serde_json::from_slice(&initialize("Claude Code")).unwrap())
+                .await
+                .unwrap();
+            assert!(initialized.get("result").is_some(), "{initialized}");
+        }
+        let tools = first
+            .handle(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}))
+            .await
+            .unwrap();
+        let names: Vec<_> = tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(names.contains(&"tilo_do"), "{names:?}");
+        assert!(
+            !names.iter().any(|name| name.starts_with("computer")),
+            "{names:?}"
+        );
+        for server in [&first, &second] {
+            let reply = server.handle(call.clone()).await.unwrap();
+            assert_eq!(reply["result"]["isError"], false, "{reply}");
+        }
+    });
+    let callers = callers.lock().unwrap();
+    assert!(callers.len() >= 2, "each session asked the host");
+    for caller in callers.iter() {
+        assert_eq!(
+            caller.principal(),
+            &tilo_actions::remote::CallerPrincipal::Agent("claude-terminal".into())
+        );
+        assert_eq!(caller.room(), Some("room"));
+        assert!(caller.execution_is_live());
+    }
+    assert_ne!(
+        callers.first().map(Caller::execution_id),
+        callers.last().map(Caller::execution_id)
+    );
+    drop(callers);
+    assert!(first.audience_matches("room", "agent:claude-terminal"));
+    drop(first);
+}

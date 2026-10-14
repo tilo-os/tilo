@@ -196,15 +196,20 @@ impl FilePickerOverlay {
 /// Centre the file chooser in `viewport`, clamping its fraction so it stays
 /// usable on a small output without walling a large one.
 pub fn file_picker_rect(viewport: Rect) -> Rect {
-    const MIN_W: f64 = 420.0;
-    const MIN_H: f64 = 320.0;
-    const MAX_W: f64 = 900.0;
-    const MAX_H: f64 = 640.0;
+    // The dialog's size comes from the toolkit's panel metrics: a sheet wide
+    // enough for the sidebar plus a readable list, tall enough for a dozen
+    // rows between the header and footer.
+    let metrics = ui::tokens::Metrics::BASE;
+    let sheet = f64::from(metrics.panel_width_sheet);
+    let min_w = sheet;
+    let max_w = sheet * 1.6;
+    let min_h = f64::from(metrics.panel_width_list);
+    let max_h = sheet * 1.15;
     let w = (viewport.width() * 0.62)
-        .clamp(MIN_W, MAX_W)
+        .clamp(min_w, max_w)
         .min(viewport.width());
     let h = (viewport.height() * 0.72)
-        .clamp(MIN_H, MAX_H)
+        .clamp(min_h, max_h)
         .min(viewport.height());
     let x0 = viewport.x0 + (viewport.width() - w) / 2.0;
     let y0 = viewport.y0 + (viewport.height() - h) / 2.0;
@@ -232,6 +237,7 @@ fn picker_scope_for(
             crate::portal::PickerScope {
                 initial_dir: std::path::PathBuf::new(),
                 roots: Vec::new(),
+                home: None,
             }
         }
     });
@@ -305,6 +311,7 @@ impl ActiveFilePicker {
             .with_mode(mode)
             .with_multiple(request.multiple)
             .with_accept_label(request.accept_label.clone())
+            .with_home(scope.home)
             .with_filters(filters);
         if let Some(name) = request.current_name.as_deref() {
             widget = widget.with_filename(name);
@@ -376,6 +383,7 @@ mod tests {
             scope: Some(crate::portal::PickerScope {
                 initial_dir: temp.path().into(),
                 roots: vec![temp.path().into()],
+                home: None,
             }),
             reply,
         });
@@ -558,6 +566,7 @@ mod tests {
             scope: Some(crate::portal::PickerScope {
                 initial_dir: root.into(),
                 roots: vec![root.into()],
+                home: None,
             }),
             reply,
         });
@@ -824,8 +833,13 @@ mod tests {
 
             let viewport = Rect::new(10.0, 20.0, 2010.0, 1220.0);
             let picker = file_picker_rect(viewport);
-            assert_eq!(picker.width(), 900.0);
-            assert_eq!(picker.height(), 640.0);
+            let sheet = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
+            assert_eq!(
+                picker.width(),
+                sheet * 1.6,
+                "wide enough for sidebar + list, no wider"
+            );
+            assert_eq!(picker.height(), sheet * 1.15);
             assert_eq!(picker.center(), viewport.center());
         }
 
@@ -855,6 +869,7 @@ mod tests {
             chrome.borrow_mut().hosted_inputs.picker_scope = Some(crate::portal::PickerScope {
                 initial_dir: root.clone(),
                 roots: vec![root],
+                home: None,
             });
 
             let queue = crate::portal::FilePickerQueue::new();
@@ -947,6 +962,7 @@ mod tests {
             scope: Some(crate::portal::PickerScope {
                 initial_dir: root.clone(),
                 roots: vec![root.clone()],
+                home: None,
             }),
             reply,
         });
@@ -1021,6 +1037,7 @@ mod tests {
             scope: Some(crate::portal::PickerScope {
                 initial_dir: root.clone(),
                 roots: vec![root],
+                home: None,
             }),
             reply,
         });
@@ -1054,6 +1071,7 @@ mod tests {
         chrome.borrow_mut().hosted_inputs.picker_scope = Some(crate::portal::PickerScope {
             initial_dir: elsewhere.clone(),
             roots: vec![elsewhere],
+            home: None,
         });
 
         let queue = crate::portal::FilePickerQueue::new();
@@ -1070,6 +1088,7 @@ mod tests {
             scope: Some(crate::portal::PickerScope {
                 initial_dir: granted.clone(),
                 roots: vec![granted.clone()],
+                home: None,
             }),
             reply,
         });

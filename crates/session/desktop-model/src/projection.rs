@@ -1218,6 +1218,7 @@ pub fn hydrate_group(rep: ReplicatedGroup) -> WindowGroup {
         active_tab,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 

@@ -81,7 +81,9 @@ use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
     configured_shortcut_action, shortcut_action_label, shortcut_action_rows,
-    shortcut_action_summary, shortcut_chord_from_event, shortcut_guide_chord,
+    shortcut_action_summary, shortcut_chord_from_event, shortcut_chord_keycaps,
+    shortcut_guide_chord, shortcut_guide_content_height, shortcut_navigation_columns,
+    shortcut_navigation_height, shortcut_navigation_step, shortcut_note_lines,
     shortcut_reference_columns, shortcut_reference_group_height, shortcut_reference_rows,
     shortcut_reference_step,
 };
@@ -494,6 +496,12 @@ pub struct ShellOverlayHost {
     shortcut_rebind: Option<settings_store::hardware::ShortcutAction>,
     shortcut_rebind_message: Option<String>,
     shortcut_guide_focus: Option<ShortcutGuideFocus>,
+    /// How far the keyboard guide's body is scrolled, in logical pixels.
+    /// Only non-zero when the window is shorter than the guide's content.
+    shortcut_guide_scroll: f64,
+    /// The scroll range measured by the last paint, so the wheel clamps to
+    /// what is actually there.
+    shortcut_guide_max_scroll: f64,
     desktop_controls: DesktopControlsSource,
     shortcut_help_drawn_rect: Rect,
     /// The effective shortcut table for this compositor session.  Input is
@@ -632,6 +640,9 @@ pub struct ShellOverlayHost {
     overview_metrics: OverviewMetrics,
     /// Layout-only theme snapshot for the shared compact-modal rule.
     overview_layout_theme: Theme,
+    /// The keyboard guide's navigation row step for the theme of the last
+    /// layout pass, so the guide's hit-testing and paint share one answer.
+    shortcut_navigation_step: f64,
     overview_layout_viewport: Rect,
     /// Interruptible open/close driver for quick-settings, so it fades +
     /// slides out on close instead of vanishing.
@@ -1242,7 +1253,7 @@ fn instant_capture(
 // helpers: name the conversion, scope the `#[allow]` to it alone, and
 // use the named function everywhere instead of a bare `as`.
 
-/// Same rationale as [`usize_to_f64_lossy`], for the millisecond
+/// Same rationale as [`f64_of_usize`], for the millisecond
 /// durations `Instant::elapsed().as_millis()` and this file's transition
 /// constants use.
 #[allow(
@@ -2162,6 +2173,12 @@ impl ShellOverlayHost {
             crate::shell::search::providers::SessionActionsProvider::new(session_action_policy),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::SystemSettingsProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::SettingsPagesProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::tray_items::TrayItemsProvider::global(),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -2337,6 +2354,8 @@ impl ShellOverlayHost {
             shortcut_rebind: None,
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
+            shortcut_guide_scroll: 0.0,
+            shortcut_guide_max_scroll: 0.0,
             shortcut_config: inputs.shortcut_config,
             shortcut_triggers: shortcut_triggers::ShortcutTriggerState::new(
                 inputs.shortcut_triggers,
@@ -2387,6 +2406,7 @@ impl ShellOverlayHost {
             overview_panel_cache_fills: 0,
             overview_metrics: OverviewMetrics::default(),
             overview_layout_theme: Theme::default(),
+            shortcut_navigation_step: shortcut_navigation_step(&Theme::default()),
             overview_layout_viewport: Rect::ZERO,
             transition_started: None,
             transition_from: 0.0,
@@ -2712,17 +2732,31 @@ impl ShellOverlayHost {
         self.capture_studio.is_open()
     }
 
+    /// Whether the screenshot picker is up and nothing has been chosen yet;
+    /// the compositor holds the screen still for exactly this span.
+    pub fn capture_choosing_screenshot(&self) -> bool {
+        self.capture_studio.is_choosing_screenshot()
+    }
+
     /// Whether an inner shell surface currently owns the seat even though it
     /// is not represented by one of the ordinary chrome overlay flags.
     ///
     /// Capture Studio deliberately stops being modal after recording starts,
     /// so `capture_studio_open` is too broad for this boundary: the recording
-    /// pill must leave applications interactive. Screenshot markup and the
-    /// power confirmation remain modal for their whole lifetime.
+    /// pill must leave applications interactive. Screenshot markup remains
+    /// modal for its whole lifetime.
+    ///
+    /// Every shell-owned menu or flyout claims the seat while it is open,
+    /// as Quick Settings does: the stacked popovers (the tab menu, the power
+    /// menu) and the screenshot receipt's "Send…" picker. Each hangs over
+    /// application windows; were the window under it given the pointer, the
+    /// menu would show no hover and judge its next press against the last
+    /// pointer position the shell saw — outside the menu — and close.
     pub(crate) fn inner_surface_captures_input(&self) -> bool {
-        self.layers.power_menu.is_open()
+        self.layers.popover_open()
             || self.screenshot_markup.is_some()
             || self.capture_studio.modal_capture().is_some()
+            || self.capture_studio.send_menu_open()
             || self.agent_quick_composer.modal_capture().is_some()
     }
 
@@ -3301,7 +3335,7 @@ impl ShellOverlayHost {
         {
             return;
         }
-        let alpha = osd.alpha_at(now);
+        let alpha = osd.alpha_in(theme, now);
         if alpha <= 0.0 {
             return;
         }
@@ -4163,6 +4197,13 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            if let Some(surface) = self.desktop_surface_mut() {
+                surface.retire_departed_requested_groups(&tree.desktop);
+            }
+        }
         let closing_visual = self
             .desktop_surface_mut()
             .is_some_and(|surface| surface.close_animation_in_flight());
@@ -4991,14 +5032,14 @@ impl ShellOverlayHost {
         };
         // Client `xdg_toplevel.set_fullscreen` wins over a user-expanded
         // group if both are set.
-        let (fs_group, maximize, single) = {
+        let (fs_group, single, client_fullscreen) = {
             let st = chrome.borrow();
             let client = st.fullscreen_group();
             let single = st.single_strip().then(|| st.active_strip_id()).flatten();
             (
                 client.or_else(|| st.maximized_group()),
-                client.is_none(),
                 single,
+                client.is_some(),
             )
         };
         // The live client tree and this rendered tree aren't yet unified,
@@ -5022,9 +5063,10 @@ impl ShellOverlayHost {
             // tree, the host outlives the content, and `&mut self` gives us
             // unaliased access for the duration of this call.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
-            // A maximize fills the work area beside the wheel; a client
-            // fullscreen covers the whole output.
-            row.set_promotion_keeps_gutter(maximize);
+            // Neither keeps a gutter: a maximize tucks the wheel away
+            // (see `maximized_wheel_tucked`) rather than stopping beside it.
+            row.set_promotion_keeps_gutter(false);
+            row.set_promotion_keeps_controls(!client_fullscreen);
             match fs_group {
                 Some(gid) if owned && row.group_ids().contains(&gid) => {
                     row.set_fullscreen(Some(gid), false);
@@ -5050,6 +5092,25 @@ impl ShellOverlayHost {
                 unsafe { (*row).group_ids().contains(&group) }
             })
         })
+    }
+
+    /// An expanded (maximized) window owns the left edge: the workspace
+    /// switcher disc is tucked away rather than drawn over it. The top bar
+    /// stays, and a wheel summon (edge gesture) shows the disc again.
+    fn maximized_wheel_tucked(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        {
+            let st = chrome.borrow();
+            if st.fullscreen_group().is_some()
+                || st.maximized_group().is_none()
+                || st.wheel_summon().is_some()
+            {
+                return false;
+            }
+        }
+        self.fullscreen_group_is_owned()
     }
 
     /// Whether the requested fullscreen/maximized group is represented by a
@@ -5174,6 +5235,21 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        // The maximized chrome's `[Full screen]` chip: the same real
+        // fullscreen Super+F and F11 toggle, for that group.
+        let mut fullscreen = None;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: as in `take_group_intents`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                if group.take_pending_fullscreen_request() {
+                    fullscreen = Some(group.id);
+                }
+            }
+        }
+        if let Some(group) = fullscreen {
+            chrome.borrow_mut().set_user_fullscreen_group(Some(group));
+        }
         let intents = self.take_group_intents(|group| {
             tilo_desktop::intents::take_maximize(group)
                 .map(tilo_desktop::intents::DesktopIntent::Local)
@@ -5264,7 +5340,7 @@ impl ShellOverlayHost {
                                 continue;
                             }
                             selection_changed |= group.active_tab != w.tab;
-                            group.active_tab = w.tab;
+                            group.activate_tab(w.tab);
                             if ws.id == active_workspace {
                                 focus_writes.push((ws.id, w.strip, w.group));
                                 activated_file_tabs.push(w.tab);
@@ -6267,12 +6343,10 @@ impl ShellOverlayHost {
         };
 
         // A retired native/portal request cannot leave a stale grant sheet.
-        chrome_handle.borrow_mut().pending_grants.retain(|pending| {
-            pending
-                .reply
-                .as_ref()
-                .is_none_or(|reply| !reply.is_closed())
-        });
+        chrome_handle
+            .borrow_mut()
+            .pending_grants
+            .retain(|pending| !pending.is_retired());
 
         // The widget and semantic actions answer the same exact pending request.
         let choice = self
@@ -6302,7 +6376,7 @@ impl ShellOverlayHost {
             let st = chrome_handle.borrow();
             if let Some(pending) = st.pending_grants.front() {
                 self.permission_prompt_id = Some(pending.id);
-                let label = capability_label(&pending.capability);
+                let label = prompt_label(&pending.request);
                 let is_owner = is_active_workspace_owner(&st);
                 self.permission_prompt = Some(PermissionPrompt::new(
                     pending.app_id.clone(),
@@ -6802,6 +6876,11 @@ impl ShellOverlayHost {
         self.window_previews.begin_refresh(now, &wanted)
     }
 
+    /// Whether any chrome shows window previews now.
+    pub fn wants_window_previews(&self) -> bool {
+        !self.window_preview_targets().is_empty()
+    }
+
     /// The compositor went through `visited` requests of this round.
     pub fn advance_window_previews(&mut self, visited: usize) {
         self.window_previews.advance(visited);
@@ -7289,6 +7368,35 @@ impl ShellOverlayHost {
         })
     }
 
+    /// Whether the focused group is maximized.
+    pub(crate) fn focused_group_maximized(&mut self) -> bool {
+        self.mutate_focused_group_widget(|row, group| {
+            row.groups
+                .iter()
+                .find(|candidate| candidate.id == group)
+                .is_some_and(|g| g.maximized)
+        })
+    }
+
+    /// Maximize or restore the focused group; `false` when it already is in
+    /// that state or nothing is focused.
+    pub(crate) fn set_focused_group_maximized(&mut self, maximized: bool) -> bool {
+        self.mutate_focused_group_widget(|row, group| {
+            let Some(group) = row
+                .groups
+                .iter_mut()
+                .find(|candidate| candidate.id == group)
+            else {
+                return false;
+            };
+            if group.maximized == maximized {
+                return false;
+            }
+            group.toggle_maximized();
+            true
+        })
+    }
+
     /// Super+F on a Tilo window: cover the output, including the wheel.
     /// A client `xdg_toplevel` fullscreen still goes through the compositor.
     pub(crate) fn toggle_focused_group_fullscreen(&self) -> bool {
@@ -7378,7 +7486,7 @@ impl ShellOverlayHost {
                 .and_then(|s| s.window_groups.iter_mut().find(|g| g.id == group))
                 && g.active_tab != tab
             {
-                g.active_tab = tab;
+                g.activate_tab(tab);
                 changed = true;
             }
             if tree.desktop.active_group_for(strip) != Some(group) {
@@ -7681,17 +7789,22 @@ impl ShellOverlayHost {
     /// The shared window grip overlays client content. Resolve it in laid-out
     /// screen coordinates, after strip panning, before forwarding client input.
     pub fn group_resize_hit(&self, group_id: u64, point: (f64, f64)) -> bool {
-        self.group_resize_rect(group_id)
-            .is_some_and(|rect| rect.contains(Point::new(point.0, point.1)))
+        self.group_resize_rects(group_id)
+            .iter()
+            .any(|rect| rect.contains(Point::new(point.0, point.1)))
     }
 
-    /// Visible grip geometry shared by local routing and remote admission.
-    pub fn group_resize_rect(&self, group_id: u64) -> Option<Rect> {
-        self.group_row_ptrs.values().find_map(|&ptr| {
-            // SAFETY: see field doc on `group_row_ptrs`.
-            let row: &GroupRow = unsafe { &*ptr };
-            row.group_resize_rect(group_id)
-        })
+    /// Visible grip geometry (leading and trailing edge) shared by local
+    /// routing and remote admission.
+    pub fn group_resize_rects(&self, group_id: u64) -> Vec<Rect> {
+        self.group_row_ptrs
+            .values()
+            .flat_map(|&ptr| {
+                // SAFETY: see field doc on `group_row_ptrs`.
+                let row: &GroupRow = unsafe { &*ptr };
+                row.group_resize_rects(group_id)
+            })
+            .collect()
     }
 
     /// Every tile laid out on this device, with the tab it shows, in
@@ -8304,9 +8417,11 @@ impl ShellOverlayHost {
                     let state = chrome.borrow();
                     let tree = state.tree();
                     if let Some(tile) = tilo_desktop::search::window_row_tile(&tree.desktop, &r.id)
-                        && let Some(image) = crate::app_icons::for_tile(tile)
                     {
-                        e = e.image(image);
+                        match crate::app_icons::for_tile(tile) {
+                            Some(image) => e = e.image(image),
+                            None => e = e.icon(crate::app_icons::glyph_for_tile(tile)),
+                        }
                     }
                 }
                 if let Some(sub) = &r.subtitle {
@@ -8315,8 +8430,8 @@ impl ShellOverlayHost {
                 if let Some(badge) = &r.badge {
                     e = e.badge(badge.clone());
                 }
-                if r.id == "room.activity.open" {
-                    e = e.keybinding("Super+H");
+                if let Some(shortcut) = &r.shortcut {
+                    e = e.keybinding(shortcut.clone());
                 }
                 entries.push(e);
                 results.push(r.clone());
@@ -9074,6 +9189,16 @@ impl ShellOverlayHost {
                     self.palette_visible = true;
                     return;
                 }
+            }
+            crate::shell::search::usage::record(&result.provider_id, &result.id);
+            // A switch flips where the person can see it: keep the palette
+            // open on the row's new state instead of closing it.
+            if result.provider_id == crate::shell::search::providers::actions::PROVIDER_ID
+                && crate::shell::search::providers::actions::toggles_in_place(&result.id)
+            {
+                self.last_search_query = "\0toggled\0".into();
+                self.palette_layout_dirty = true;
+                return;
             }
             self.palette_visible = false;
             self.palette.close();
@@ -12105,21 +12230,22 @@ impl ShellOverlayHost {
         }) else {
             return;
         };
-        let result = match history_target_address(target) {
-            HistoryTargetAddress::File(path) => {
-                crate::shell::launcher::launch_document_in_workspace(
-                    app_id,
-                    &workspace,
-                    Some(&path),
-                )
-            }
-            HistoryTargetAddress::Uri(uri) => {
-                crate::shell::launcher::launch_uri_in_workspace(app_id, &workspace, &uri)
-            }
-            HistoryTargetAddress::App => {
-                crate::shell::launcher::launch_in_workspace(app_id, &workspace)
-            }
+        // Queued: this runs on the compositor thread, and a launch's file
+        // work belongs on the preflight worker.
+        let (document, uri) = match history_target_address(target) {
+            HistoryTargetAddress::File(path) => (Some(path), None),
+            HistoryTargetAddress::Uri(uri) => (None, Some(uri)),
+            HistoryTargetAddress::App => (None, None),
         };
+        // A refusal arrives later as a launch event, which settles its
+        // placement and posts its notice under this target's label.
+        let result = crate::shell::launcher::queue_package_open(
+            app_id.to_owned(),
+            Some(target.label.clone()),
+            &workspace,
+            document,
+            uri,
+        );
         if let Err(error) = result {
             // A previous document/app launch can have staged a one-shot
             // placement for this package. This history action did not claim
@@ -12333,6 +12459,21 @@ impl ShellOverlayHost {
                     ..
                 }
         );
+        if let WindowEvent::MouseWheel { delta, .. } = event
+            && self.overlay_flags().shortcut_help
+        {
+            let dy: f64 = match *delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * 30.0,
+                winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
+            };
+            self.shortcut_guide_scroll =
+                (self.shortcut_guide_scroll + dy).clamp(0.0, self.shortcut_guide_max_scroll);
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            *ctx.handled = true;
+            return true;
+        }
         if is_absorbable_pointer
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
@@ -12607,6 +12748,9 @@ impl ShellOverlayHost {
     }
 
     fn move_shortcut_guide_focus(&mut self, backwards: bool) {
+        // Focus walks the editable pairs at the top of the body; bring them
+        // back into view rather than focusing something scrolled away.
+        self.shortcut_guide_scroll = 0.0;
         let controls = self.shortcut_guide_controls();
         let current = self
             .shortcut_guide_focus
@@ -13190,6 +13334,10 @@ impl ShellOverlayHost {
 
     /// Run one editable navigation or window shortcut. `false` when
     /// `action` is not one of them.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one dispatch over every navigation shortcut"
+    )]
     fn run_navigation_shortcut(
         &mut self,
         action: settings_store::hardware::ShortcutAction,
@@ -13268,7 +13416,23 @@ impl ShellOverlayHost {
                 } else {
                     1
                 };
-                if let Some(chrome) = self.chrome.clone() {
+                // Super+Up/Down are strip navigation first. Where there is
+                // no strip to go to they are the Windows-style maximize and
+                // restore: Up on the topmost strip maximizes the focused
+                // group, Down on a maximized group restores it.
+                let focused = self
+                    .chrome
+                    .as_ref()
+                    .map_or(0, |c| c.borrow().strip_focus().1);
+                if direction < 0 && focused == 0 {
+                    if !repeat {
+                        let _ = self.set_focused_group_maximized(true);
+                    }
+                } else if direction > 0 && self.focused_group_maximized() {
+                    if !repeat {
+                        let _ = self.set_focused_group_maximized(false);
+                    }
+                } else if let Some(chrome) = self.chrome.clone() {
                     let _ = chrome.borrow_mut().switch_strip(direction);
                 }
             }
@@ -14363,6 +14527,17 @@ impl ShellOverlayHost {
         false
     }
 
+    /// Whether `p` is on a window's edge grip. The strip ribbon and rail hit
+    /// zones are wider than their painted segments and reach into the
+    /// windows, so inside a window the grip has to win.
+    fn point_on_window_edge_grip(&self, p: Point) -> bool {
+        self.group_row_ptrs.values().any(|&ptr| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.resize_grab_hit_at(p)
+        })
+    }
+
     fn handle_workspace_navigation_click(&mut self, p: Point) -> bool {
         if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
             self.set_followed_peer(None);
@@ -14394,6 +14569,7 @@ impl ShellOverlayHost {
         // under an open panel goes to the panel.
         if !self.overlay_flags().overview
             && !self.cursor_over_open_overlay(p)
+            && !self.point_on_window_edge_grip(p)
             && let Some(i) = self.strip_ribbon().hit(p)
             && let Some(chrome) = self.chrome.clone()
         {
@@ -14404,6 +14580,7 @@ impl ShellOverlayHost {
         // one pointer path that also pans the strip.
         if !self.overlay_flags().overview
             && !self.cursor_over_open_overlay(p)
+            && !self.point_on_window_edge_grip(p)
             && let Some(i) = self.strip_rail().hit(p)
             && let Some((strip, group)) = self.strip_rail_target(i)
         {
@@ -17603,6 +17780,63 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
 /// widget publishes it.
 const PALETTE_QUERY_TARGET: &str = "command-palette:query";
 
+/// Where one `update` of the host spent its time, reported as
+/// `SLOW-HOST-UPDATE` when the whole of it took long enough to hold up input:
+/// a stalled pump then names its step in the session log.
+struct UpdateSteps {
+    started: Instant,
+    last: Instant,
+    steps: [(&'static str, Duration); 20],
+    len: usize,
+}
+
+/// An update this long delays the frame behind it by a visible amount.
+const SLOW_HOST_UPDATE: Duration = Duration::from_millis(50);
+
+impl UpdateSteps {
+    fn start() -> Self {
+        let now = Instant::now();
+        Self {
+            started: now,
+            last: now,
+            steps: [("", Duration::ZERO); 20],
+            len: 0,
+        }
+    }
+
+    fn mark(&mut self, step: &'static str) {
+        let now = Instant::now();
+        if let Some(slot) = self.steps.get_mut(self.len) {
+            *slot = (step, now.saturating_duration_since(self.last));
+            self.len = self.len.saturating_add(1);
+        }
+        self.last = now;
+    }
+
+    /// The `SLOW-HOST-UPDATE` line, when the update was slow.
+    fn report(&self, total: Duration) -> Option<String> {
+        if total < SLOW_HOST_UPDATE {
+            return None;
+        }
+        let steps = self
+            .steps
+            .iter()
+            .take(self.len)
+            .map(|(step, took)| format!("{step}={took:?}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some(format!("SLOW-HOST-UPDATE total={total:?} ({steps})"))
+    }
+}
+
+impl Drop for UpdateSteps {
+    fn drop(&mut self) {
+        if let Some(line) = self.report(self.started.elapsed()) {
+            eprintln!("{line}");
+        }
+    }
+}
+
 impl Widget for ShellOverlayHost {
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
@@ -17686,6 +17920,7 @@ impl Widget for ShellOverlayHost {
         reason = "the compositor tick is deliberately ordered in one place so source refreshes precede palette input and every frame-side effect remains visible"
     )]
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
+        let mut steps = UpdateSteps::start();
         let (doc, path) = ui::doc::document_ref(doc, path);
         let action_dirty = self
             .agent_actions
@@ -17712,6 +17947,7 @@ impl Widget for ShellOverlayHost {
             apps.pump_messaging_records();
             apps.pump_feedback();
         }
+        steps.mark("in-process-apps");
         if self.onboarding.is_some() {
             // Compositor-owned sheets (polkit administrator prompts, network
             // secrets) are raised by the system on behalf of the person in
@@ -17731,17 +17967,21 @@ impl Widget for ShellOverlayHost {
         let projection_open = self.overlay_flags().projection;
         let display_storage_dirty =
             self.projection_overlay.poll_storage(projection_open) | self.close_settled_projection();
+        steps.mark("settings-readings");
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
+        steps.mark("peer-sync");
         self.tick_shortcut_triggers();
         self.pump_shortcut_step_prompts();
         self.record_finished_shortcut_runs();
+        steps.mark("shortcut-triggers");
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
             state.expire_notification_history_clear(Instant::now());
             state.flush_notification_history();
         }
+        steps.mark("notification-history");
         let mut search_index_ready = false;
         // Retained search indexes are maintained on the compositor tick,
         // before palette input is routed.  Providers may do a source refresh
@@ -17770,10 +18010,12 @@ impl Widget for ShellOverlayHost {
                         doc_root: path,
                     });
         }
+        steps.mark("search-index");
         self.poll_pending_launchpad_actions();
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
         self.latch_overview_transition();
+        steps.mark("launchpad-and-shortcut-actions");
         // Workspace switch before anything walking `group_row_ptrs` (it
         // replaces the whole row set), then splice the tree's structural
         // changes into the rows — both before the children's own `update`
@@ -17782,7 +18024,9 @@ impl Widget for ShellOverlayHost {
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
+        steps.mark("resync");
         let content_dirty = self.content.update(doc, path);
+        steps.mark("content-update");
         // Normally drained synchronously by input dispatch. Keep this
         // fallback for accessibility/synthetic activation paths that can
         // queue a widget close without returning through pointer dispatch.
@@ -17794,6 +18038,7 @@ impl Widget for ShellOverlayHost {
         self.harvest_floating_surface_requests();
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
+        steps.mark("harvest-requests");
         let palette_dirty = self.palette.update(doc, path);
         if search_index_ready {
             // A worker published an immutable index after the palette opened.
@@ -17812,6 +18057,7 @@ impl Widget for ShellOverlayHost {
             .map(|(_, mirror)| mirror.update(doc, path))
             .fold(false, |dirty, next| dirty || next);
         let sidebar_dirty = self.sidebar.as_mut().is_some_and(|w| w.update(doc, path));
+        steps.mark("palette-mirrors-sidebar");
         // The harvesters run after `content.update` so this frame's
         // gestures are visible to them, mirroring one-shot widget-side
         // changes into the persisted tree so they survive a restart and
@@ -17829,6 +18075,7 @@ impl Widget for ShellOverlayHost {
         if opened_for_new_tab {
             self.refresh_search_results(doc, path);
         }
+        steps.mark("harvest-changes");
         self.clear_stale_open_target();
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
@@ -17842,6 +18089,7 @@ impl Widget for ShellOverlayHost {
         let capture_targets = self.capture_targets();
         self.capture_studio.set_candidates(capture_targets);
         self.dispatch_cross_strip_detaches();
+        steps.mark("presence-and-follow");
         // Offer every open tab's document to its own writer, debounced and
         // off-thread — without this the store never writes to disk.
         if let Some(chrome) = self.chrome.as_ref() {
@@ -17858,15 +18106,18 @@ impl Widget for ShellOverlayHost {
             drop(state);
             records.tick();
         }
+        steps.mark("documents-and-records");
         // Before the prompt pump, so a request arriving this frame is on
         // screen by the end of it, not one frame later.
         let portal_dirty = self.drain_portal_prompts();
         let picker_dirty = self.pump_file_picker();
         let dialog_dirty = self.pump_portal_dialogs();
         self.pump_permission_prompt();
+        steps.mark("prompts");
         let launch_dirty = self.drain_launch_events() | self.settle_launches_of_opened_windows();
         self.run_requested_session_actions();
         let session_action_dirty = self.drain_session_action_results();
+        steps.mark("launches-and-session-actions");
         // Also driven by the widget's own `update`, but routed here too so
         // chrome stays consistent for tests that never call the widget.
         let notifications_dropped = if let Some(chrome) = self.chrome.as_ref() {
@@ -17882,6 +18133,8 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
+        steps.mark("commit");
+        drop(steps);
         agent_quick_dirty
             || marker_dirty
             || content_dirty
@@ -17947,6 +18200,7 @@ impl Widget for ShellOverlayHost {
         // them here, where the theme is in hand, so this pass's hit-testing
         // and paint share one answer.
         self.resolve_overview_layout(theme);
+        self.shortcut_navigation_step = shortcut_navigation_step(theme);
         self.onboarding_node = None;
         // Both pushed before the content tree is built, so this pass's
         // fullscreen collapse and per-display width resolution are in
@@ -17968,11 +18222,17 @@ impl Widget for ShellOverlayHost {
             if fullscreen {
                 work_area.set_vertical_padding(0.0);
                 work_area.set_extra_top_padding(0.0);
+                work_area.set_extra_bottom_padding(0.0);
                 work_area.set_gap(0.0);
             } else {
+                // The same margin under the windows as above them. The
+                // column holds zero-height navigation leaves ahead of the
+                // rows; a gap between them (`gap_standard` here) stacked
+                // two stray gaps over the first strip.
                 work_area.set_vertical_padding(0.0);
                 work_area.set_extra_top_padding(12.0);
-                work_area.set_gap(theme.gap_standard);
+                work_area.set_extra_bottom_padding(12.0);
+                work_area.set_gap(0.0);
             }
         }
         let spans = self.strip_output_spans();
@@ -18055,7 +18315,7 @@ impl Widget for ShellOverlayHost {
         // so it hovers above the content pane instead of displacing it.
         let primary = self.primary_output().filter(|_| self.is_partitioned());
         let sidebar_width = self.sidebar_width();
-        let covers_wheel = self.client_fullscreen_is_owned();
+        let covers_wheel = self.client_fullscreen_is_owned() || self.maximized_wheel_tucked();
         let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
             let node = sidebar.build_layout(taffy, theme, node_map);
             // See the palette override above: failure here is not
@@ -18087,8 +18347,9 @@ impl Widget for ShellOverlayHost {
                 style.flex_grow = 0.0;
                 style.flex_shrink = 0.0;
                 // A fullscreen surface covers the whole output, so the
-                // wheel is suppressed alongside the top bar. A maximized
-                // group stops beside it.
+                // wheel is suppressed alongside the top bar. An expanded
+                // group tucks it away too, but keeps the bar; a summon
+                // brings it back.
                 if covers_wheel {
                     style.display = Display::None;
                 }
@@ -18355,7 +18616,7 @@ impl Widget for ShellOverlayHost {
         // each helper (in the other `impl ShellOverlayHost` block) for
         // what it covers.
         let flags = self.overlay_flags();
-        self.draw_desktop_layer(scene, transform, text_renderer, theme, presence);
+        self.draw_desktop_below_bar(scene, transform, text_renderer, theme, presence);
         // Detached app surfaces are presented by the shell after the window
         // layer, but before shell chrome. The app still paints the live
         // content and owns its controls; only presentation ownership changes.
@@ -18378,6 +18639,11 @@ impl Widget for ShellOverlayHost {
             }
         }
         self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
+        // The top bar goes over all of that, as the retained sections
+        // compose it: their workspace section holds everything above.
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.draw_bar(scene, transform, text_renderer, theme, presence);
+        }
         self.draw_dropdowns_and_sheets(scene, transform, text_renderer, theme, presence, flags);
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
         let suppress_agent_markers = self.agent_quick_composer.is_open()
@@ -20071,6 +20337,16 @@ pub(crate) fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::P
 
 /// Human-readable label for the inline permission prompt from a
 /// [`Capability`] payload.
+/// What a pending prompt asks, as the person reads it.
+pub(crate) fn prompt_label(request: &crate::shell::chrome_state::PromptRequest) -> String {
+    match request {
+        crate::shell::chrome_state::PromptRequest::Capability(capability) => {
+            capability_label(capability)
+        }
+        crate::shell::chrome_state::PromptRequest::AgentAdmission(admission) => admission.label(),
+    }
+}
+
 pub(crate) fn capability_label(cap: &Capability) -> String {
     match cap {
         Capability::Filesystem { path, mode, .. } => {
@@ -20262,6 +20538,7 @@ fn build_state_group_from_widget(
         active_tab,
         width,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 
@@ -20325,7 +20602,20 @@ impl ShellOverlayHost {
     /// sidebar wheel, the permission prompt bar, the toast stack and the
     /// visual-alert edge. First of four passes split out of `draw`, which
     /// was one 372-line function.
-    fn draw_desktop_layer(
+    /// The desktop below the top bar: backdrop, windows and the extras over
+    /// them. The caller draws the bar ([`DesktopSurface::draw_bar`]) after
+    /// the floating surfaces and the overview, matching the order
+    /// [`Self::draw_scene_sections`] records: there all of this lands in
+    /// the workspace section, which composes under the top bar's. Drawing
+    /// the bar first and these over it is not only a different z-order
+    /// where they overlap: a clipped layer here (the docked wheel's group
+    /// clip starts at the bar's bottom edge) rounds what is under it to
+    /// eight bits in the tiles its edge crosses, and the bar's antialiased
+    /// edges in those tiles then blend over rounded instead of exact
+    /// colour.
+    ///
+    /// [`DesktopSurface::draw_bar`]: tilo_desktop::composition::DesktopSurface::draw_bar
+    fn draw_desktop_below_bar(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -20333,12 +20623,14 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Match the compositor's retained section order in the dense oracle:
-        // app content cannot cover OS-owned anchored chrome that extends
-        // below the reserved top-bar band.
-        // The shared surface draws backdrop, workspace, then top bar.
-        self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+        match self.desktop_surface_mut() {
+            Some(surface) => {
+                surface.draw_below_bar(scene, transform, text_renderer, theme, presence);
+            }
+            None => self
+                .content
+                .draw(scene, transform, text_renderer, theme, presence),
+        }
         self.draw_desktop_extras(scene, transform, text_renderer, theme, presence);
     }
 
@@ -21418,7 +21710,27 @@ impl ShellOverlayHost {
         // contains every documented action.
         let area = self.overlay_area();
         let width = (area.width() - 64.0).clamp(0.0, 960.0);
-        let height = (area.height() - 64.0).clamp(0.0, 600.0);
+        // The keyboard guide is exactly as tall as its content (header, body,
+        // bottom margin) and scrolls only when the window is shorter; the
+        // other modalities keep their fixed card.
+        let intrinsic = if matches!(
+            self.shortcut_help_modality(),
+            ui::InputModality::Keyboard | ui::InputModality::Pointer
+        ) {
+            let note_lines = shortcut_note_lines(
+                shortcut_action_summary(&self.shortcut_config).is_some(),
+                self.desktop_controls.config().vim_mode,
+            );
+            98.0 + shortcut_guide_content_height(
+                width - 48.0,
+                SHORTCUT_GUIDE_ROWS.len(),
+                note_lines,
+                self.shortcut_navigation_step,
+            ) + 22.0
+        } else {
+            600.0
+        };
+        let height = (area.height() - 64.0).min(intrinsic).max(0.0);
         Rect::new(
             area.center().x - width / 2.0,
             area.center().y - height / 2.0,
@@ -21673,7 +21985,7 @@ impl ShellOverlayHost {
         text_renderer.draw_style(
             scene,
             &done_label,
-            colors.text_primary,
+            colors.intent.on_inverted,
             transform.pre_translate(
                 (
                     done.center().x - f64::from(done_w) / 2.0,
@@ -21696,10 +22008,9 @@ impl ShellOverlayHost {
             .interaction
             .controller
             .unwrap_or(ui::ControllerFamily::Generic);
-        let compact_panel = panel.height() <= 536.0;
         let body = Rect::new(
             panel.x0 + 24.0,
-            panel.y0 + if compact_panel { 88.0 } else { 98.0 },
+            panel.y0 + 98.0,
             panel.x1 - 24.0,
             panel.y1 - 22.0,
         );
@@ -21810,7 +22121,7 @@ impl ShellOverlayHost {
                     ),
                     ("guide-row-quick-settings", one(ControllerButton::Guide)),
                 ];
-                let row_step = if compact_panel { 48.0 } else { 54.0 };
+                let row_step = if panel.height() <= 536.0 { 48.0 } else { 54.0 };
                 let per_column = rows.len().div_ceil(2);
                 for (index, (label, (first, second))) in rows.iter().enumerate() {
                     let column = index.checked_div(per_column).unwrap_or(0);
@@ -21925,9 +22236,41 @@ impl ShellOverlayHost {
                     KeyboardBinding::new(modifiers, key)
                 };
                 let rows = SHORTCUT_GUIDE_ROWS;
-                let compact = body.height() < 450.0;
-                let navigation_step = if compact { 41.0 } else { 44.0 };
-                let navigation_height = if compact { 154.0 } else { 168.0 };
+                let references = shortcut_reference_rows(shortcuts);
+                let summary = shortcut_action_summary(shortcuts);
+                let vim_mode = self.desktop_controls.config().vim_mode;
+                let note_lines = shortcut_note_lines(summary.is_some(), vim_mode);
+                // Everything below is laid out in content coordinates and
+                // shifted by `scroll`; the body clips it. The panel is as
+                // tall as this content, so scrolling only exists when the
+                // window is shorter than the guide.
+                let content_height = shortcut_guide_content_height(
+                    body.width(),
+                    rows.len(),
+                    note_lines,
+                    self.shortcut_navigation_step,
+                );
+                self.shortcut_guide_max_scroll = (content_height - body.height()).max(0.0);
+                let scroll = self
+                    .shortcut_guide_scroll
+                    .clamp(0.0, self.shortcut_guide_max_scroll);
+                self.shortcut_guide_scroll = scroll;
+                let outer = transform;
+                let transform = outer.pre_translate((0.0, -scroll).into());
+                let visible = body.inflate(8.0, 0.0);
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    outer,
+                    &visible,
+                );
+                let nav_columns = shortcut_navigation_columns(body.width());
+                let navigation_height = shortcut_navigation_height(
+                    rows.len(),
+                    nav_columns,
+                    self.shortcut_navigation_step,
+                );
                 let navigation_surface =
                     Rect::new(body.x0, body.y0, body.x1, body.y0 + navigation_height);
                 scene.fill(
@@ -21935,7 +22278,10 @@ impl ShellOverlayHost {
                     transform,
                     colors.neutral[1],
                     None,
-                    &RoundedRect::from_rect(navigation_surface, 14.0),
+                    &RoundedRect::from_rect(
+                        navigation_surface,
+                        f64::from(theme.tokens.radii.detail),
+                    ),
                 );
                 text_renderer.draw_style(
                     scene,
@@ -21948,12 +22294,17 @@ impl ShellOverlayHost {
                         .with_weight(TextWeight::Semibold),
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
-                    let column = index % 2;
-                    let row = index / 2;
-                    let column_width = (navigation_surface.width() - 36.0) / 2.0;
+                    let column = index.checked_rem(nav_columns).unwrap_or_default();
+                    let row = index.checked_div(nav_columns).unwrap_or_default();
+                    let column_width = (navigation_surface.width()
+                        - 28.0
+                        - 8.0 * f64_of_usize(nav_columns.saturating_sub(1)))
+                        / f64_of_usize(nav_columns);
                     let x =
                         navigation_surface.x0 + 14.0 + f64_of_usize(column) * (column_width + 8.0);
-                    let y = navigation_surface.y0 + 31.0 + f64_of_usize(row) * navigation_step;
+                    let y = navigation_surface.y0
+                        + 31.0
+                        + f64_of_usize(row) * self.shortcut_navigation_step;
                     text_renderer.draw_style(
                         scene,
                         &t(label),
@@ -21977,10 +22328,15 @@ impl ShellOverlayHost {
                     for (action, rect) in actions.into_iter().zip(hit_rects) {
                         let hit =
                             Rect::new(rect.x0 - 5.0, rect.y0 - 5.0, rect.x1 + 5.0, rect.y1 + 5.0);
+                        // Pointer hit-testing runs in screen space.
+                        let screen_hit =
+                            Rect::new(hit.x0, hit.y0 - scroll, hit.x1, hit.y1 - scroll);
                         let active = self.shortcut_rebind == Some(action);
                         let focused =
                             self.shortcut_guide_focus == Some(ShortcutGuideFocus::Binding(action));
-                        let hovered = self.last_cursor.is_some_and(|point| hit.contains(point));
+                        let hovered = self
+                            .last_cursor
+                            .is_some_and(|point| screen_hit.contains(point));
                         if active || focused || hovered {
                             scene.stroke(
                                 &Stroke::new(if active || focused { 2.0 } else { 1.0 }),
@@ -21990,7 +22346,9 @@ impl ShellOverlayHost {
                                 &RoundedRect::from_rect(hit, 8.0),
                             );
                         }
-                        self.shortcut_binding_rects.push((action, hit));
+                        if screen_hit.intersect(body).area() > 0.0 {
+                            self.shortcut_binding_rects.push((action, screen_hit));
+                        }
                     }
 
                     let reset = Rect::new(
@@ -22003,7 +22361,11 @@ impl ShellOverlayHost {
                         shortcuts.bindings.get(&action) != defaults.bindings.get(&action)
                     });
                     if changed {
-                        let hovered = self.last_cursor.is_some_and(|point| reset.contains(point));
+                        let screen_reset =
+                            Rect::new(reset.x0, reset.y0 - scroll, reset.x1, reset.y1 - scroll);
+                        let hovered = self
+                            .last_cursor
+                            .is_some_and(|point| screen_reset.contains(point));
                         let focused = self.shortcut_guide_focus
                             == Some(ShortcutGuideFocus::Reset(*previous, *next));
                         // A Control (HIG §9.1/§9.5): the shared lift floor
@@ -22044,7 +22406,10 @@ impl ShellOverlayHost {
                             None,
                             &reset_style,
                         );
-                        self.shortcut_reset_rects.push((*previous, *next, reset));
+                        if screen_reset.intersect(body).area() > 0.0 {
+                            self.shortcut_reset_rects
+                                .push((*previous, *next, screen_reset));
+                        }
                     }
                 }
                 let essentials_y = navigation_surface.y1 + 12.0;
@@ -22058,30 +22423,37 @@ impl ShellOverlayHost {
                         .text(TextRole::Caption)
                         .with_weight(TextWeight::Semibold),
                 );
-                let references = shortcut_reference_rows(shortcuts);
                 let reference_columns = shortcut_reference_columns(body.width());
-                let reference_step = shortcut_reference_step(compact);
+                let reference_step = shortcut_reference_step();
                 let reference_top = essentials_y + 18.0;
                 let reference_gap = 12.0;
                 let reference_width = (body.width()
                     - reference_gap * f64_of_usize(reference_columns.saturating_sub(1)))
                     / f64_of_usize(reference_columns);
-                let reference_height = shortcut_reference_group_height(compact);
+                let reference_height = shortcut_reference_group_height();
                 let group_titles = [
                     "guide-group-windows",
                     "guide-group-search",
                     "guide-group-capture",
                 ];
-                for (group_index, group_rows) in references.chunks(6).enumerate() {
-                    let x = body.x0 + f64_of_usize(group_index) * (reference_width + reference_gap);
-                    let group = Rect::new(
-                        x,
-                        reference_top,
-                        x + reference_width,
-                        reference_top + reference_height,
-                    );
-                    // A keycap is a detail inside the guide (`radii.detail`) on
-                    // the Control floor with its derived edge (HIG §9.5).
+                let chord_style = theme.text(TextRole::Caption);
+                let label_gap =
+                    f64::from(text_renderer.measure_style("Ag", None, &chord_style).1) + 4.0;
+                let mut groups_bottom = reference_top;
+                for (group_index, group_rows) in references
+                    .chunks(shortcuts::SHORTCUT_REFERENCE_GROUP_ROWS)
+                    .enumerate()
+                {
+                    let column = group_index
+                        .checked_rem(reference_columns)
+                        .unwrap_or_default();
+                    let band = group_index
+                        .checked_div(reference_columns)
+                        .unwrap_or_default();
+                    let x = body.x0 + f64_of_usize(column) * (reference_width + reference_gap);
+                    let y = reference_top + f64_of_usize(band) * (reference_height + reference_gap);
+                    let group = Rect::new(x, y, x + reference_width, y + reference_height);
+                    groups_bottom = groups_bottom.max(group.y1);
                     ui::surface::card(
                         scene,
                         transform,
@@ -22089,11 +22461,7 @@ impl ShellOverlayHost {
                         f64::from(theme.tokens.radii.detail),
                         qs::control_fill(theme, false),
                     );
-                    #[expect(
-                        clippy::indexing_slicing,
-                        reason = "shortcut_reference_rows yields 18 rows, so chunks(6) gives exactly one group per title (pinned by shortcut_reference_columns_stay_semantically_grouped)"
-                    )]
-                    let group_title = group_titles[group_index];
+                    let group_title = group_titles.get(group_index).copied().unwrap_or_default();
                     text_renderer.draw_style(
                         scene,
                         &t(group_title),
@@ -22106,16 +22474,6 @@ impl ShellOverlayHost {
                     );
                     for (row_index, (label, chord)) in group_rows.iter().enumerate() {
                         let entry_y = group.y0 + 29.0 + f64_of_usize(row_index) * reference_step;
-                        let chord_style = theme.text(TextRole::Caption);
-                        let (chord_width, chord_height) =
-                            text_renderer.measure_style(chord, None, &chord_style);
-                        let pill_height = f64::from(chord_height) + 6.0;
-                        let pill = Rect::new(
-                            group.x0 + 12.0,
-                            entry_y + 13.0,
-                            (group.x0 + 28.0 + f64::from(chord_width)).min(group.x1 - 12.0),
-                            entry_y + 13.0 + pill_height,
-                        );
                         text_renderer.draw_style(
                             scene,
                             label,
@@ -22124,64 +22482,77 @@ impl ShellOverlayHost {
                             Some(f32_of_f64(group.width() - 24.0)),
                             &chord_style,
                         );
-                        scene.fill(
-                            Fill::NonZero,
-                            transform,
-                            colors.neutral[2],
-                            None,
-                            &RoundedRect::from_rect(pill, 5.0),
-                        );
-                        text_renderer.draw_style(
-                            scene,
-                            chord,
-                            colors.text_primary,
-                            transform.pre_translate((pill.x0 + 6.0, pill.y0 + 3.0).into()),
-                            Some(f32_of_f64((pill.width() - 12.0).max(0.0))),
-                            &chord_style.clone().with_weight(TextWeight::Semibold),
-                        );
+                        // Real keycaps from the same component as the
+                        // navigation rows; alternatives are split by a slash.
+                        let mut cap_x = group.x0 + 12.0;
+                        let cap_y = entry_y + label_gap;
+                        for (alt_index, keys) in shortcut_chord_keycaps(chord).iter().enumerate() {
+                            if alt_index > 0 {
+                                text_renderer.draw_style(
+                                    scene,
+                                    "/",
+                                    colors.text_dim,
+                                    transform.pre_translate((cap_x + 6.0, cap_y + 4.0).into()),
+                                    None,
+                                    &chord_style,
+                                );
+                                cap_x += 20.0;
+                            }
+                            cap_x += InputHint::paint_keycap_labels_at(
+                                scene,
+                                transform,
+                                Point::new(cap_x, cap_y),
+                                keys,
+                                text_renderer,
+                                theme,
+                            );
+                        }
                     }
                 }
-                let pointer_y = reference_top + reference_height + 4.0;
-                if pointer_y + 18.0 <= body.y1 {
-                    ui::surface::separator(
-                        scene,
-                        transform,
-                        body.x0,
-                        body.x1,
-                        pointer_y + 0.5,
-                        0.0,
-                        ui::chrome::ChromeRole::Panel.surface(theme),
-                    );
+                let pointer_y = groups_bottom + 4.0;
+                ui::surface::separator(
+                    scene,
+                    transform,
+                    body.x0,
+                    body.x1,
+                    pointer_y + 0.5,
+                    0.0,
+                    ui::chrome::ChromeRole::Panel.surface(theme),
+                );
+                let mut note_y = pointer_y + 14.0;
+                let mut note = |text: &str, scene: &mut Scene| {
                     text_renderer.draw_style(
                         scene,
-                        &t("guide-pointer"),
+                        text,
                         colors.text_primary,
-                        transform.pre_translate((body.x0, pointer_y + 14.0).into()),
+                        transform.pre_translate((body.x0, note_y).into()),
                         Some(f32_of_f64(body.width())),
                         &theme.text(TextRole::Caption),
                     );
-                    if let Some(summary) = shortcut_action_summary(shortcuts)
-                        && pointer_y + 40.0 < body.y1
-                    {
-                        text_renderer.draw_style(
-                            scene,
-                            &summary,
-                            colors.text_primary,
-                            transform.pre_translate((body.x0, pointer_y + 32.0).into()),
-                            Some(f32_of_f64(body.width())),
-                            &theme.text(TextRole::Caption),
-                        );
-                    }
-                    if self.desktop_controls.config().vim_mode && pointer_y + 58.0 < body.y1 {
-                        text_renderer.draw_style(
-                            scene,
-                            &t("guide-vim-mode"),
-                            colors.text_primary,
-                            transform.pre_translate((body.x0, pointer_y + 50.0).into()),
-                            None,
-                            &theme.text(TextRole::Caption),
-                        );
-                    }
+                    note_y += 18.0;
+                };
+                note(&t("guide-pointer"), scene);
+                if let Some(summary) = &summary {
+                    note(summary, scene);
+                }
+                if vim_mode {
+                    note(&t("guide-vim-mode"), scene);
+                }
+                scene.pop_layer();
+                if self.shortcut_guide_max_scroll > 0.0 {
+                    // A scrollbar thumb on the panel's right inner edge, so
+                    // a clipped guide says it continues.
+                    let track = Rect::new(panel.x1 - 10.0, body.y0, panel.x1 - 6.0, body.y1);
+                    let thumb_h = (track.height() * body.height() / content_height).max(24.0);
+                    let thumb_y = track.y0
+                        + (track.height() - thumb_h) * scroll / self.shortcut_guide_max_scroll;
+                    scene.fill(
+                        Fill::NonZero,
+                        outer,
+                        ui::widget::scrollbar::thumb_color(theme, false),
+                        None,
+                        &RoundedRect::new(track.x0, thumb_y, track.x1, thumb_y + thumb_h, 2.0),
+                    );
                 }
             }
         }

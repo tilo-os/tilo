@@ -246,6 +246,12 @@ impl Command {
 struct ListPage {
     limit: Option<usize>,
     cursor: Option<String>,
+    /// `--kind KIND`, repeatable: only rows of these kinds (`application`,
+    /// `action`, `note`, `file`, …).
+    kinds: Vec<String>,
+    /// `--files`: also list files and folders, which a listing leaves out
+    /// unless asked: every checkout's `markdown.rs` is not an app's action.
+    files: bool,
 }
 
 /// Top-level CLI invocation — the `--socket` override, if given, + the
@@ -795,10 +801,21 @@ fn parse_action_invocation<'a>(
     let mut args_json = None;
     let mut args_stdin = false;
     let mut device = None;
-    let mut wait_ms = None;
+    // An invocation answers its result: the receipt of an admission says
+    // nothing a caller can act on, and a second `actions status` to learn
+    // how it went is the polling this default removes.
+    let mut wait_ms = Some(DEFAULT_INVOKE_WAIT_MS);
+    let mut waited = false;
     while let Some(flag) = iter.next() {
         match flag.as_str() {
-            "--wait" => wait_ms = Some(DEFAULT_INVOKE_WAIT_MS),
+            "--wait" => {
+                wait_ms = Some(DEFAULT_INVOKE_WAIT_MS);
+                waited = true;
+            }
+            "--no-wait" => {
+                wait_ms = None;
+                waited = false;
+            }
             "--device" => {
                 let id = iter.next().ok_or_else(|| {
                     ParseError::Usage("--device requires an enrolled device id".to_string())
@@ -841,8 +858,13 @@ fn parse_action_invocation<'a>(
                 wait_ms = Some(ms.parse::<u64>().map_err(|_| {
                     ParseError::Usage(format!("--wait=MS: `{ms}` is not a number of milliseconds"))
                 })?);
+                waited = true;
             }
         }
+    }
+    if device.is_some() && !waited {
+        // One sent to a device answers once the device has it.
+        wait_ms = None;
     }
     if wait_ms.is_some() && device.is_some() {
         return Err(ParseError::Usage(
@@ -877,6 +899,71 @@ fn wait_flag(word: &str) -> Option<Result<u64, ParseError>> {
     }))
 }
 
+/// `actions list [flags] [query words]`.
+fn parse_actions_list<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    // Everything after `list` that isn't a flag joins the
+    // query, so `actions list open settings` works without
+    // the caller having to quote it.
+    let mut json = false;
+    let mut include_programmatic = false;
+    let mut page = ListPage::default();
+    let mut wait_ms = None;
+    let mut words: Vec<String> = Vec::new();
+    while let Some(rest) = iter.next() {
+        if rest == "--json" {
+            json = true;
+        } else if rest == "--programmatic" {
+            include_programmatic = true;
+        } else if rest == "--limit" {
+            let raw = iter.next().ok_or_else(|| {
+                ParseError::Usage("actions list --limit needs a number of rows".into())
+            })?;
+            page.limit = Some(raw.parse::<usize>().map_err(|_| {
+                ParseError::Usage(format!(
+                    "actions list --limit: `{raw}` is not a number of rows"
+                ))
+            })?);
+        } else if rest == "--files" {
+            page.files = true;
+        } else if rest == "--kind" {
+            page.kinds.push(
+                iter.next()
+                    .ok_or_else(|| {
+                        ParseError::Usage(
+                            "actions list --kind needs a kind: application, action, \
+                             note, record, file, …"
+                                .into(),
+                        )
+                    })?
+                    .clone(),
+            );
+        } else if rest == "--cursor" {
+            page.cursor = Some(
+                iter.next()
+                    .ok_or_else(|| {
+                        ParseError::Usage(
+                            "actions list --cursor needs the next_cursor a page gave".into(),
+                        )
+                    })?
+                    .clone(),
+            );
+        } else if let Some(wait) = wait_flag(rest) {
+            wait_ms = Some(wait?);
+        } else {
+            words.push(rest.clone());
+        }
+    }
+    Ok(Command::ActionsList {
+        query: words.join(" "),
+        json,
+        include_programmatic,
+        page,
+        wait_ms,
+    })
+}
+
 fn parse_actions_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
@@ -893,54 +980,7 @@ fn parse_actions_command<'a>(
                 "actions session takes no arguments (got `{extra}`); it reads requests on stdin"
             ))),
         },
-        "list" => {
-            // Everything after `list` that isn't a flag joins the
-            // query, so `actions list open settings` works without
-            // the caller having to quote it.
-            let mut json = false;
-            let mut include_programmatic = false;
-            let mut page = ListPage::default();
-            let mut wait_ms = None;
-            let mut words: Vec<String> = Vec::new();
-            while let Some(rest) = iter.next() {
-                if rest == "--json" {
-                    json = true;
-                } else if rest == "--programmatic" {
-                    include_programmatic = true;
-                } else if rest == "--limit" {
-                    let raw = iter.next().ok_or_else(|| {
-                        ParseError::Usage("actions list --limit needs a number of rows".into())
-                    })?;
-                    page.limit = Some(raw.parse::<usize>().map_err(|_| {
-                        ParseError::Usage(format!(
-                            "actions list --limit: `{raw}` is not a number of rows"
-                        ))
-                    })?);
-                } else if rest == "--cursor" {
-                    page.cursor = Some(
-                        iter.next()
-                            .ok_or_else(|| {
-                                ParseError::Usage(
-                                    "actions list --cursor needs the next_cursor a page gave"
-                                        .into(),
-                                )
-                            })?
-                            .clone(),
-                    );
-                } else if let Some(wait) = wait_flag(rest) {
-                    wait_ms = Some(wait?);
-                } else {
-                    words.push(rest.clone());
-                }
-            }
-            Ok(Command::ActionsList {
-                query: words.join(" "),
-                json,
-                include_programmatic,
-                page,
-                wait_ms,
-            })
-        }
+        "list" => parse_actions_list(iter),
         "invoke" => parse_action_invocation(iter),
         "status" | "cancel" => {
             let raw = iter.next().ok_or_else(|| {
@@ -1103,6 +1143,12 @@ fn actions_list_wire(
         }
         if let Some(cursor) = &page.cursor {
             object.insert("cursor".into(), cursor.clone().into());
+        }
+        if !page.kinds.is_empty() {
+            object.insert("kinds".into(), page.kinds.clone().into());
+        }
+        if page.files {
+            object.insert("files".into(), true.into());
         }
     }
     with_wait(&mut wire, wait_ms);
@@ -1469,18 +1515,24 @@ fn print_usage() {
          Action model (admin control socket):\n\
          \x20 actions list [QUERY] [--json] [--programmatic] search: list actions as `PROVIDER:ID  KIND  TITLE`\n\
          \x20                               (read-only; empty QUERY lists everything;\n\
-         \x20                               --json adds params, contract and hierarchy)\n\
+         \x20                               --json adds params, contract and hierarchy;\n\
+         \x20                               apps' resources and actions come first, files\n\
+         \x20                               and folders only with --files or --kind file)\n\
+         \x20              [--kind KIND]   only rows of that kind (repeatable): application,\n\
+         \x20                               action, note, record, tab, file, …\n\
          \x20              [--limit ROWS] [--cursor NEXT]\n\
          \x20                               one page at a time (default 200 rows); a\n\
          \x20                               longer listing names its next page's cursor\n\
          \x20              [--wait[=MS]]   answer once the listing is complete: no app\n\
          \x20                               index or directory page still on its way\n
          \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT | --args-stdin]\n\
-         \x20               [--wait[=MS]]   run one action by its address; answers the\n\
-         \x20                               typed receipt. --wait answers once it has\n\
-         \x20                               settled (default 5000 ms, at most 30000) and\n\
-         \x20                               exits 1 if it failed. --device sends it to\n\
-         \x20                               that enrolled device\n\
+         \x20               [--wait[=MS]] [--no-wait]\n\
+         \x20                               run one action by its address; answers once\n\
+         \x20                               it has settled (default 5000 ms, at most\n\
+         \x20                               30000) with its result, and exits 1 if it\n\
+         \x20                               failed. --no-wait answers the admission\n\
+         \x20                               receipt. --device sends it to that enrolled\n\
+         \x20                               device, which answers once it has it\n\
          \x20 actions status INVOCATION_ID [--wait[=MS]]\n\
          \x20                               latest state and output of a running action;\n\
          \x20                               --wait answers once it has settled\n\
@@ -1986,7 +2038,7 @@ mod tests {
                     args_stdin: false,
                     args_json: Some(r#"{"count":2,"force":true}"#.into()),
                     device: None,
-                    wait_ms: None,
+                    wait_ms: Some(DEFAULT_INVOKE_WAIT_MS),
                 },
             ),
             // Receipt ids parse for cancel; status in `waits_parse_on_status_and_list`.
@@ -2290,12 +2342,27 @@ mod tests {
             words.extend_from_slice(extra);
             parse(&words).map(|invocation| invocation.command)
         };
+        // The result is the answer: an invocation waits unless told not to.
         let plain = invoke(&[]).unwrap();
         assert!(matches!(
             plain,
+            Command::ActionsInvoke {
+                wait_ms: Some(DEFAULT_INVOKE_WAIT_MS),
+                ..
+            }
+        ));
+        assert_eq!(wire(&plain)["wait_ms"], DEFAULT_INVOKE_WAIT_MS);
+        let admitted = invoke(&["--no-wait"]).unwrap();
+        assert!(matches!(
+            admitted,
             Command::ActionsInvoke { wait_ms: None, .. }
         ));
-        assert_eq!(wire(&plain).get("wait_ms"), None);
+        assert_eq!(wire(&admitted).get("wait_ms"), None);
+        // Sent to a device it answers once the device has it.
+        assert!(matches!(
+            invoke(&["--device", "aa"]).unwrap(),
+            Command::ActionsInvoke { wait_ms: None, .. }
+        ));
         let waited = invoke(&["--wait"]).unwrap();
         assert!(matches!(
             waited,

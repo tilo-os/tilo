@@ -48,7 +48,10 @@ pub fn on_page_transition(
     let show_listener =
         event_handle::EventListenerHandle::new(window.clone(), "pageshow", show_closure);
     let hide_listener = event_handle::EventListenerHandle::new(window, "pagehide", hide_closure);
-    PageTransitionEventHandle { _show_listener: show_listener, _hide_listener: hide_listener }
+    PageTransitionEventHandle {
+        _show_listener: show_listener,
+        _hide_listener: hide_listener,
+    }
 }
 
 pub fn scale_factor(window: &web_sys::Window) -> f64 {
@@ -159,7 +162,11 @@ pub fn style_size_property(style: &Style, property: &str) -> f64 {
 }
 
 pub fn is_dark_mode(window: &web_sys::Window) -> Option<bool> {
-    window.match_media("(prefers-color-scheme: dark)").ok().flatten().map(|media| media.matches())
+    window
+        .match_media("(prefers-color-scheme: dark)")
+        .ok()
+        .flatten()
+        .map(|media| media.matches())
 }
 
 pub fn is_visible(document: &Document) -> bool {
