@@ -9560,6 +9560,12 @@ impl Widget for BlockEditor {
         )
     }
 
+    /// The document node above is never hidden; answer without building
+    /// every block's subtree.
+    fn accessibility_hidden(&self) -> bool {
+        false
+    }
+
     #[expect(
         clippy::too_many_lines,
         clippy::indexing_slicing,
