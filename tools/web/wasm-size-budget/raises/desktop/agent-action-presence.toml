@@ -1,4 +1,0 @@
-bytes = 917504
-run = 70425
-measured = 89725020
-reason = "Agent action presence: exact semantic control bindings, resource-anchored markers, reduced-motion and bounded continuity painting (#2834). App SDK run 70425 measured the merged desktop 6236 bytes above its existing budget; this records the ratchet's measured size plus standard headroom."
