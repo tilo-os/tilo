@@ -1133,6 +1133,10 @@ by = "tools/tests/test_focused_test.py"
 # gate but do not pass today; fix the suite, then move it into a group.
 
 [[unrequired]]
+suite = "scripts/test-cloud-rystic.py"
+reason = "explicit licensed integration runner: requires installed/authenticated Rystic and metered local twins; run python3 scripts/test-cloud-rystic.py all on trusted hosts; --contracts additionally exposes documented vendor fidelity failures"
+
+[[unrequired]]
 suite = "tools/ci/test_airdrop_sender.py"
 reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Python dependencies, system libarchive/OpenSSL and loopback TLS sockets; the offline ci-fast image cannot fetch the oracle; run explicitly as documented in continuity-interop.md, failing if prerequisites are absent"
 

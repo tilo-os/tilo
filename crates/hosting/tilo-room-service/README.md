@@ -240,9 +240,22 @@ builder compiles `tilo-relay` (feature `agents`), `tilo-room-service` and
 the desktop bundle, and BuildKit assembles
 `container/Containerfile` from those outputs (`bin/`, `assets/`). Pushes to
 main and manual runs publish `registry.tilo.so/tilo/room-service:sha-<commit>`
-and a digest receipt; deployments pin the digest. `container/test-image.sh`
-is the image's smoke test. Run it on a branch with
+and a digest receipt (`room-service-image-receipt`: repository, tag, digest,
+source revision, platform and the build run); deployments pin the digest.
+`container/test-image.sh` is the image's smoke test. Run it on a branch with
 `fgj workflow run room-service-image.yml -R tilo/tilo --ref <branch>`.
+
+Production pins this image and the web entry together, from one main
+commit, in the infra repository. `tools/release/cloud_promotion.py` plans
+that change: `plan` picks the newest main commit with both images (or
+`--revision`, or two `--receipt` files), checks each digest's revision label
+and platform in the registry and prints the exact manifest diff and pull
+request body (`--infra <checkout> --apply` edits a checkout); `propose` opens
+the pull request on a `promote/` branch with `INFRA_PROMOTION_TOKEN`; `drift`
+reports which revision each service runs and how far main is ahead. The
+`Release / Cloud promotion` workflow (`cloud-promotion.yml`) runs `drift`
+every Monday and the promotion on a manual run. Promotions are batched: each
+web entry deploy makes open tabs offer a reload.
 
 Locally, `dev/run.py` runs the persistent room as production does: this
 service in persistent mode with its child relay, and the web entry laid out
@@ -263,7 +276,11 @@ uses it with `PUBLIC_TILO_ROOMS_URL=http://localhost:8790`.
 ## Operating it
 
 - **`GET /metrics`** (Prometheus text, in-cluster only: requests carrying
-  `X-Forwarded-For` get 404). `tilo_rooms_*`: rooms, online guests and
+  `X-Forwarded-For` get 404). `tilo_rooms_build_info{revision}` is 1 and
+  names the commit the running image was built from (`TILO_SOURCE_REVISION`,
+  which the Containerfile sets from the revision label; `unknown` outside an
+  image), to compare with the revision of the pinned digest.
+  `tilo_rooms_*`: rooms, online guests and
   spectators, `joins_total`, `join_failures_total{reason}`, mode, browser
   error counters, and the relay's own counters read from the snapshot each
   relay persists every second (`relay_up`, `relay_sessions`,
@@ -283,4 +300,6 @@ uses it with `PUBLIC_TILO_ROOMS_URL=http://localhost:8790`.
   is the mode at start, the file wins once set. `spectator-only` refuses new
   rooms, invitations and admissions with `503` and `Retry-After`;
   `back-soon` also stops spectating (the persistent room's routes read
-  `ops::get().mode()`). `GET /mode` tells the page which.
+  `ops::get().mode()`). `GET /mode` tells the page which, and is public:
+  `{"mode": "normal", "revision": "<commit>"}`, the same revision as the
+  build info, so drift can be seen from outside the cluster.
