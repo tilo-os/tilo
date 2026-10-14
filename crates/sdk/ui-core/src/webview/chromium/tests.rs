@@ -321,7 +321,12 @@ fn private_engines_own_and_remove_their_disposable_roots() {
         let root = private_root();
 
         let engine = ChromiumEngine::with_private_host(&host, &root).unwrap();
-        let launched = std::fs::read_to_string(&arguments).unwrap();
+        // The engine is handed back while its host starts.
+        let launched = tilo_test_env::wait_for("the helper's arguments", || {
+            std::fs::read_to_string(&arguments)
+                .ok()
+                .filter(|text| text.contains("--profile="))
+        });
         let has_private = launched.lines().any(|arg| arg == "--private");
         let has_profile = launched
             .lines()
@@ -354,9 +359,19 @@ fn private_engines_own_and_remove_their_disposable_roots() {
         let host = fixture.path().join("not-ready");
         std::fs::write(&host, "#!/bin/sh\nexit 7\n").unwrap();
         std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A host that exits before it is ready fails the page once it is
+        // reaped; the window never waited for it.
         let readiness_root = private_root();
-        assert!(ChromiumEngine::with_private_host(&host, &readiness_root).is_err());
+        let engine = ChromiumEngine::with_private_host(&host, &readiness_root).unwrap();
+        wait_until_removed(&readiness_root);
         assert!(!readiness_root.exists());
+        assert!(engine.shared.failed.load(Ordering::Acquire));
+        assert!(
+            engine
+                .drain_events()
+                .iter()
+                .any(|event| matches!(event, WebViewEvent::LoadFailed { .. }))
+        );
     }
     // phase: private_packaged_helper_discovery_failure_removes_root
     {
@@ -652,6 +667,59 @@ fn helper_failures_are_reported_once_and_reaped() {
         assert_eq!(*engine.shared.uri.lock().unwrap(), "https://old.example");
         assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed {uri,error} if uri == "https://new.example" && error.contains("not queued"))));
     }
+}
+
+/// Opening a Browser window, the first of its profile, starts the engine
+/// host, which takes a second or more to say it is ready. The window must not
+/// wait for it: the engine is handed back while the host is still starting,
+/// and what the page asks for meanwhile reaches the host once it reads.
+#[test]
+#[cfg(unix)]
+fn an_engine_is_ready_to_use_before_its_host_is() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut ready = Vec::new();
+    protocol::write_json(
+        &mut ready,
+        &json!({"event":"ready","cef_version":"152","chromium_version":"152"}),
+    )
+    .unwrap();
+    let encoded: String = ready.iter().map(|byte| format!("\\{:03o}", byte)).collect();
+    let dir = tempfile::tempdir().unwrap();
+    let host = dir.path().join("host");
+    // Reads nothing and says nothing until the test lets it start.
+    std::fs::write(
+        &host,
+        format!(
+            "#!/bin/sh\n\
+             profile=${{1#--profile=}}\n\
+             while [ ! -f \"$profile/start\" ]; do sleep 0.01; done\n\
+             printf '{encoded}'\n\
+             exec 3>&1\n\
+             exec cat > \"$profile/commands\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let profile = dir.path().join("profile");
+    // Returns while the host waits: a constructor that waited for `ready`
+    // would give up after its 20 s and fail here.
+    let engine = ChromiumEngine::with_host(&host, &profile).unwrap();
+    let profile = profile.canonicalize().unwrap();
+    assert!(engine.supports_text_input());
+    engine.send(WebViewCommand::Navigate("https://first.test/".into()));
+    std::fs::write(profile.join("start"), b"").unwrap();
+    wait_for_command(
+        &profile,
+        "the navigation sent before the host was ready",
+        |command| command["op"] == "navigate" && command["url"] == "https://first.test/",
+    );
+    assert!(!engine.shared.failed.load(Ordering::Acquire));
+    assert!(
+        !engine
+            .drain_events()
+            .iter()
+            .any(|event| matches!(event, WebViewEvent::LoadFailed { .. }))
+    );
 }
 
 #[test]

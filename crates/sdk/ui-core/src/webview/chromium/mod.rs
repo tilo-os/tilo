@@ -758,6 +758,64 @@ fn launch_host(
     Ok(child)
 }
 
+/// What a starting host's supervisor needs: it serves the profile to other
+/// Browser processes, waits for the host to report ready and watches it until
+/// it exits.
+struct Starter {
+    child: Arc<Mutex<Option<std::process::Child>>>,
+    ready: std::sync::mpsc::Receiver<()>,
+    claim: Option<shared::Claim>,
+    runtime: Weak<Runtime>,
+    hub: Arc<shared::Hub>,
+    shared: Arc<Shared>,
+    queue: Arc<CommandQueue>,
+    private_root: Option<PathBuf>,
+}
+
+impl Starter {
+    fn run(self) {
+        let Some(mut child) = take_supervisor_child(&self.child) else {
+            self.shared
+                .fail("Chromium supervisor lost process ownership".into());
+            self.queue.close();
+            return;
+        };
+        // Other Browser windows of the profile join at once rather than
+        // waiting for the host: their tabs queue behind this one's.
+        let served = self
+            .claim
+            .as_ref()
+            .map(|claim| claim.serve(self.runtime.clone(), &self.hub))
+            .transpose();
+        let server = served.as_ref().ok().cloned().flatten();
+        let started = served.and_then(|_| {
+            self.ready
+                .recv_timeout(Duration::from_secs(20))
+                .map_err(|error| format!("Chromium did not initialize: {error}"))
+        });
+        if let Err(error) = started {
+            // A host that exited first has already said why.
+            self.shared.fail(error);
+            self.queue.close();
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(root) = &self.private_root {
+                cleanup_private_root(root);
+            }
+        } else {
+            supervise_child(
+                child,
+                &self.shared,
+                &self.queue,
+                self.private_root.as_deref(),
+            );
+        }
+        if let Some(claim) = self.claim {
+            claim.release_after_exit(server.as_ref());
+        }
+    }
+}
+
 fn valid_context_menu(value: &Value) -> bool {
     valid_id(value)
         && value["link"].as_str().is_some_and(|s| s.len() <= 8192)
@@ -779,7 +837,9 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if the runtime/profile cannot be located, prepared, or initialized.
+    /// Returns an error if the runtime/profile cannot be located or prepared,
+    /// or the host cannot be started. A host that starts but never becomes
+    /// ready fails the page later, as a [`WebViewEvent::LoadFailed`].
     pub fn new() -> Result<Arc<Self>, String> {
         Self::new_with_extensions(&[])
     }
@@ -787,7 +847,7 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid extensions, unavailable runtime/profile, or helper initialization failure.
+    /// Returns an error for invalid extensions, unavailable runtime/profile, or a helper that cannot be started.
     pub fn new_with_extensions(extensions: &[PathBuf]) -> Result<Arc<Self>, String> {
         let profile = std::env::var_os("TILO_CHROMIUM_PROFILE")
             .map(PathBuf::from)
@@ -799,7 +859,7 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if the private root is not owned, the runtime is missing, or initialization fails.
+    /// Returns an error if the private root is not owned, the runtime is missing, or the helper cannot be started.
     pub fn new_private(root: &Path) -> Result<Arc<Self>, String> {
         match host_path() {
             Ok(host) => Self::with_private_host(&host, root),
@@ -814,7 +874,7 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid extensions, profile preparation failure, or helper startup/initialization failure.
+    /// Returns an error for invalid extensions, profile preparation failure, or helper startup failure.
     pub fn with_profile_extensions(
         profile: &Path,
         extensions: &[PathBuf],
@@ -826,7 +886,7 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if the profile cannot be prepared or the helper cannot start and initialize.
+    /// Returns an error if the profile cannot be prepared or the helper cannot start.
     pub fn with_host(host: &Path, profile: &Path) -> Result<Arc<Self>, String> {
         Self::with_host_extensions(host, profile, &[], None)
     }
@@ -836,7 +896,7 @@ impl ChromiumEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if the private root is not owned, the profile cannot be prepared, or the helper cannot initialize.
+    /// Returns an error if the private root is not owned, the profile cannot be prepared, or the helper cannot start.
     pub fn with_private_host(host: &Path, root: &Path) -> Result<Arc<Self>, String> {
         if !is_owned_private_root(root) {
             return Err("Private Chromium root is not owned by Browser".into());
@@ -919,55 +979,23 @@ impl ChromiumEngine {
             let _ = child.wait();
             return Err(error.to_string());
         }
-        if let Err(error) = ready_rx.recv_timeout(Duration::from_secs(20)) {
-            shared.stopping.store(true, Ordering::Release);
-            tx.close();
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("Chromium did not initialize: {error}"));
-        }
-        let served = claim
-            .as_ref()
-            .map(|claim| claim.serve(Arc::downgrade(&runtime), &hub))
-            .transpose();
-        let server = match served {
-            Ok(server) => {
-                if let Some(server) = &server {
-                    let _ = runtime.server.set(server.clone());
-                }
-                server
-            }
-            Err(error) => {
-                shared.stopping.store(true, Ordering::Release);
-                tx.close();
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        };
+        // The host takes a second or more to initialize, longer on a loaded
+        // machine. Its window does not wait for it: commands queue until the
+        // host reads them, and the profile socket, the host's readiness and
+        // its supervision follow on a thread of their own. A host that never
+        // becomes ready fails the page as one that dies later does.
         let child = Arc::new(Mutex::new(Some(child)));
-        let supervisor_child = child.clone();
-        let supervisor_shared = shared.clone();
-        let supervisor_queue = tx.clone();
-        let wait_for_private_cleanup = private_root.is_some();
-        let supervisor_private_root = private_root;
-        let supervisor = spawn_named("chromium-supervisor", move || {
-            let Some(child) = take_supervisor_child(&supervisor_child) else {
-                supervisor_shared.fail("Chromium supervisor lost process ownership".into());
-                supervisor_queue.close();
-                return;
-            };
-            supervise_child(
-                child,
-                &supervisor_shared,
-                &supervisor_queue,
-                supervisor_private_root.as_deref(),
-            );
-            if let Some(claim) = claim {
-                claim.release_after_exit(server.as_ref());
-            }
-        });
-        let supervisor = match supervisor {
+        let starter = Starter {
+            child: child.clone(),
+            ready: ready_rx,
+            claim,
+            runtime: Arc::downgrade(&runtime),
+            hub,
+            shared: shared.clone(),
+            queue: tx.clone(),
+            private_root: private_root.clone(),
+        };
+        let supervisor = match spawn_named("chromium-supervisor", move || starter.run()) {
             Ok(supervisor) => supervisor,
             Err(error) => {
                 if let Some(mut child) = take_supervisor_child(&child) {
@@ -978,7 +1006,7 @@ impl ChromiumEngine {
                 return Err(format!("Chromium supervisor: {error}"));
             }
         };
-        if wait_for_private_cleanup {
+        if private_root.is_some() {
             *runtime.supervisor.lock_recover() = Some(supervisor);
         }
         cleanup_on_error.disarm();
