@@ -11,6 +11,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
 };
 use tilo_contact_directory::ContactDirectory;
@@ -191,16 +192,20 @@ fn daemon_with_receipt(
     peer: UnixStream,
     receipt: Option<serde_json::Value>,
 ) -> std::thread::JoinHandle<UnixStream> {
-    daemon_with_revocation(peer, receipt, None)
+    daemon_with_revocation(peer, receipt, None, None)
 }
 fn daemon_with_revocation(
     mut peer: UnixStream,
     receipt: Option<serde_json::Value>,
     revoked: Option<Arc<AtomicBool>>,
+    send_ready: Option<mpsc::Receiver<()>>,
 ) -> std::thread::JoinHandle<UnixStream> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(peer.try_clone().expect("reader"));
         account_probe(&mut reader, &mut peer);
+        if let Some(send_ready) = send_ready {
+            send_ready.recv().expect("app prepared for native send");
+        }
         let mut probe = String::new();
         reader.read_line(&mut probe).expect("identity probe");
         let probe: serde_json::Value = serde_json::from_str(&probe).expect("identity request");
@@ -242,7 +247,7 @@ async fn revoked_signal_authority_after_native_send_retains_uncertainty_without_
     let (stream, peer) = UnixStream::pair().expect("actual protocol streams");
     peer.set_read_timeout(Some(ui::time::Duration::from_secs(5)))
         .expect("bounded daemon fixture");
-    let daemon = daemon_with_revocation(peer, None, Some(revoked.clone()));
+    let daemon = daemon_with_revocation(peer, None, Some(revoked.clone()), None);
     let service = broker(
         root.path(),
         stream,
@@ -665,9 +670,13 @@ fn actual_signal_recipient_receipt_correlates_native_operation_and_updates_priva
         .expect("deadline");
     let receipt = serde_json::json!({"jsonrpc":"2.0","method":"receive","params":{"account":"+15555550101",
         "envelope":{"sourceUuid":ACI,"receiptMessage":{"when":44,"isDelivery":false,"isRead":true,"isViewed":false,"timestamps":[43]}}}});
-    let daemon = daemon_with_receipt(peer, Some(receipt));
+    // The recipient probe belongs to the send, so start its five-second
+    // socket deadline after the app has finished opening under CI load.
+    let (send_ready, ready) = mpsc::channel();
+    let daemon = daemon_with_revocation(peer, Some(receipt), None, Some(ready));
     let service = broker(root.path(), stream, authority);
     let mut app = open_app(service.client());
+    send_ready.send(()).expect("native fixture ready for send");
     let send = MessagesEffect::Send {
         choice: choice(),
         operation: "fixture-operation".into(),
