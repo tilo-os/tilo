@@ -46,6 +46,8 @@ pub(super) struct Planned {
     pub read: Vec<String>,
     /// When the planner returned it.
     pub ready_at: Instant,
+    /// Whether a model made it (not steps written out or stated outright).
+    pub by_model: bool,
 }
 
 /// A read the planner's thread asks of the loop while it plans.
@@ -137,6 +139,7 @@ impl Planning {
                         steps,
                         read: loop_reads.found,
                         ready_at: Instant::now(),
+                        by_model: planner.last_planned_by_model(),
                     };
                     if made.send(answer).is_err() {
                         return;
@@ -201,6 +204,7 @@ impl Planning {
                 steps: Err("the agent's planner stopped".into()),
                 read: Vec::new(),
                 ready_at: Instant::now(),
+                by_model: false,
             },
         };
         if self.pending.as_deref() == Some(planned.task.as_str()) {

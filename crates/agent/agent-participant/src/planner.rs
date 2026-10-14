@@ -348,6 +348,13 @@ pub trait Planner: Send {
     fn checks_work(&self) -> bool {
         false
     }
+
+    /// Whether the plan this planner last made was a model's (not steps
+    /// written out, nor one operation the task stated outright): only a
+    /// model's plan is checked.
+    fn last_planned_by_model(&self) -> bool {
+        false
+    }
 }
 
 /// Reads the steps from the task: one JSON object or an array of them.

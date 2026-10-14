@@ -185,6 +185,8 @@ pub struct ModelPlanner {
     model: Box<dyn PlanModel>,
     /// Whether its tasks are checked against their requests once done.
     checks_work: bool,
+    /// Whether the last plan it made was the model's.
+    by_model: bool,
     /// The rest this planner last handed back as a
     /// [`StepAction::Continue`], and how many re-plans in a row led to it.
     continued: Option<(String, usize)>,
@@ -197,6 +199,7 @@ impl ModelPlanner {
         Self {
             model,
             checks_work: false,
+            by_model: false,
             continued: None,
         }
     }
@@ -744,6 +747,10 @@ impl Planner for ModelPlanner {
         self.checks_work
     }
 
+    fn last_planned_by_model(&self) -> bool {
+        self.by_model
+    }
+
     fn plan_reading(
         &mut self,
         task: &str,
@@ -771,6 +778,7 @@ impl Planner for ModelPlanner {
         let direct = (replans == 0 && context.request.is_none())
             .then(|| single_operation(task, &catalogue, &targets))
             .flatten();
+        self.by_model = direct.is_none();
         let answer = match direct {
             Some(answer) => answer,
             None => self.model.choose_briefed(

@@ -1312,8 +1312,16 @@ mod tests {
         assert_eq!(own["range"], "A2");
         assert_eq!(own["rows"], serde_json::json!([["Hall"]]));
 
-        let mut blank = TestApp::<SheetsShell>::new().unwrap();
-        let error = blank
+        // A sheet with data but no header row is refused; an empty one
+        // takes its headers from the records (see the test below).
+        let mut headless = TestApp::<SheetsShell>::new().unwrap();
+        headless
+            .call(
+                "set-cells",
+                serde_json::json!({"sheet": "Sheet1", "start": "A3", "rows": [["loose"]]}),
+            )
+            .unwrap();
+        let error = headless
             .call(
                 "set-records",
                 serde_json::json!({"sheet": "Sheet1", "records": [{"Item": "x"}]}),
@@ -1333,5 +1341,44 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("the sheets are `Sheet1`"), "{error}");
+    }
+
+    /// `set-records` on an empty sheet writes the header row first: the
+    /// records' keys in the order they come, or `columns` when given.
+    #[test]
+    fn set_records_gives_an_empty_sheet_its_headers() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        let answer = app
+            .call(
+                "set-records",
+                serde_json::json!({"sheet": "Sheet1", "records": [
+                    {"Tier": "Basic", "Price": 49, "Unit cost": 18, "Margin": "=[Price]-[Unit cost]"},
+                    {"Tier": "Pro", "Price": 89, "Unit cost": 31, "Margin": "=[Price]-[Unit cost]"},
+                ]}),
+            )
+            .unwrap()
+            .expect("the edit answers");
+        assert_eq!(
+            answer["rows"],
+            serde_json::json!([
+                ["Tier", "Price", "Unit cost", "Margin"],
+                ["Basic", 49.0, 18.0, 31.0],
+                ["Pro", 89.0, 31.0, 58.0],
+            ])
+        );
+        let mut ordered = TestApp::<SheetsShell>::new().unwrap();
+        let answer = ordered
+            .call(
+                "set-records",
+                serde_json::json!({"sheet": "Sheet1", "columns": ["Price", "Tier"], "records": [
+                    {"Tier": "Basic", "Price": 49},
+                ]}),
+            )
+            .unwrap()
+            .expect("the edit answers");
+        assert_eq!(
+            answer["rows"],
+            serde_json::json!([["Price", "Tier"], [49.0, "Basic"]])
+        );
     }
 }

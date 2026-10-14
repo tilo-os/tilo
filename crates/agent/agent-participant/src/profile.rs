@@ -152,9 +152,11 @@ impl Profile {
             service_tier: tier,
             reasoning_effort: Some("low".to_owned()),
             hedge_after: hedge_ms.map(Duration::from_millis),
-            // Small and medium models skip or get wrong a part of a long
-            // request more often; the check costs one planning turn.
-            check_work: matches!(class, ModelClass::Small | ModelClass::Medium),
+            // Small models skip or get wrong a part of a long request most
+            // often. The check is one or two more planning turns on the
+            // task's critical path (a medium model's run took three times
+            // as long), so larger models skip it unless asked.
+            check_work: class == ModelClass::Small,
         }
     }
 
@@ -259,14 +261,14 @@ mod tests {
         assert_eq!(none, Profile::default());
     }
 
-    /// Small and medium models check their work by default; larger ones do
-    /// not; the environment turns it either way.
+    /// Small models check their work by default; larger ones do not; the
+    /// environment turns it either way.
     #[test]
-    fn small_and_medium_models_check_their_work() {
+    fn small_models_check_their_work() {
         let none = |_: &str| None;
         for (model, checks) in [
             ("claude-haiku-5-5", true),
-            ("gpt-5.6-terra", true),
+            ("gpt-5.6-terra", false),
             ("claude-opus-5-5", false),
             ("gpt-6-astra", false),
         ] {

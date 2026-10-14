@@ -207,6 +207,10 @@ struct Running {
     changed: bool,
     /// The turns the task was planned again on once its steps ran.
     follow_ups: FollowUps,
+    /// Whether a model planned any of it: steps written out, or one
+    /// operation the task stated outright, are neither re-planned nor
+    /// checked.
+    by_model: bool,
     /// The steps that ran, briefly, oldest first: what a repair must not
     /// do again.
     ran: Vec<String>,
@@ -270,12 +274,9 @@ impl Running {
     /// When every step ran: a model plan of reads alone is planned once
     /// more with what they found; a model plan that made or changed
     /// something is checked once against the request when `checks_work`.
-    /// Steps written out run as written.
+    /// Steps written out or stated outright run as written.
     fn plan_more(&mut self, checks_work: bool) {
-        if !self.steps.is_empty()
-            || self.acted == 0
-            || self.request.trim_start().starts_with(['[', '{'])
-        {
+        if !self.steps.is_empty() || self.acted == 0 || !self.by_model {
             return;
         }
         let rest = if !self.changed && !self.follow_ups.after_reads {
@@ -313,6 +314,7 @@ impl Running {
             acted: 0,
             changed: false,
             follow_ups: FollowUps::default(),
+            by_model: false,
             ran: Vec::new(),
         };
         for seen in read {
@@ -384,9 +386,10 @@ fn unknown_action(address: &ActionAddress, offered: &[ActionDescriptor]) -> Stri
 /// What a task whose steps made or changed something is checked with, once,
 /// when its planner checks work.
 const CHECK_WORK: &str = "Check what this task made against the request, item by item: each value, \
-     name, date, element, file and export it asks for. Read back what you changed where it is not \
-     shown. If anything asked for is missing or wrong, plan only the steps that fix it, without \
-     redoing what is right. If everything is as asked, plan no steps.";
+     name, date, element, file and export it asks for, using what the records above now hold \
+     (read one only if what it holds is not shown). If anything asked for is missing or wrong, \
+     plan only the steps that fix it, without redoing what is right. If everything is as asked, \
+     plan no steps at once.";
 
 /// What a task whose plan was only reads is planned again with.
 const READS_ANSWERED: &str = "The reads above have answered. Now plan the steps that make or change \
@@ -983,6 +986,7 @@ impl AgentParticipant {
                 steps,
                 read: Vec::new(),
                 ready_at: Instant::now(),
+                by_model: false,
             });
             return;
         }
@@ -997,6 +1001,7 @@ impl AgentParticipant {
                 steps: Err(error),
                 read: Vec::new(),
                 ready_at: Instant::now(),
+                by_model: false,
             });
         }
     }
@@ -1028,6 +1033,7 @@ impl AgentParticipant {
             steps,
             read,
             ready_at,
+            by_model,
         } = planned;
         if !self.control.is_running(&task) {
             return;
@@ -1038,11 +1044,14 @@ impl AgentParticipant {
             .is_some_and(|running| running.id == task);
         match steps {
             Ok(steps) if !continues => {
-                self.running = Some(Running::new(task, text, steps, read));
+                let mut running = Running::new(task, text, steps, read);
+                running.by_model = by_model;
+                self.running = Some(running);
                 self.plan_ready_at = Some(ready_at);
             }
             Ok(steps) => {
                 if let Some(running) = self.running.as_mut().filter(|_| running_it) {
+                    running.by_model |= by_model;
                     for seen in read {
                         running.observe(seen);
                     }
@@ -2211,6 +2220,7 @@ mod tests {
     fn a_plan_of_reads_alone_is_planned_again_once() {
         let mut running =
             Running::new("t1".into(), "build the deck".into(), Vec::new(), Vec::new());
+        running.by_model = true;
         running.acted = 2;
         running.plan_more(false);
         assert!(matches!(
@@ -2222,6 +2232,7 @@ mod tests {
         assert!(running.steps.is_empty(), "only once");
 
         let mut edited = Running::new("t2".into(), "build the deck".into(), Vec::new(), Vec::new());
+        edited.by_model = true;
         edited.acted = 1;
         edited.changed = true;
         edited.plan_more(false);
@@ -2315,6 +2326,7 @@ mod tests {
     fn a_plan_that_made_something_is_checked_once() {
         let mut running =
             Running::new("t1".into(), "build the deck".into(), Vec::new(), Vec::new());
+        running.by_model = true;
         running.acted = 3;
         running.changed = true;
         running.plan_more(false);

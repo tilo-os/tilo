@@ -216,6 +216,23 @@ pub(crate) fn new_sheet_cells(
     Ok(cells)
 }
 
+/// The keys of `records` in the order they first come: an empty sheet's
+/// headers when none are given.
+fn keys_in_order(records: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut keys: Vec<serde_json::Value> = Vec::new();
+    for key in records
+        .iter()
+        .filter_map(serde_json::Value::as_object)
+        .flat_map(serde_json::Map::keys)
+    {
+        let key = serde_json::Value::String(key.clone());
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    keys
+}
+
 /// The sheet row (0-based) `set-records` writes its first record to: data
 /// row `data_row` (1 = the row under the headers), else the row after the
 /// last one used.
@@ -259,15 +276,29 @@ pub(crate) fn set_records_spec(sheet: usize, sheet_id: &str, info: Arc<SheetInfo
                 "Data row the first record goes to, 1 = the row under the headers (sheet row 2), \
                  the rest below it; omit to append after the last used row",
             ),
+            ActionParam::optional(
+                "columns",
+                ParamType::Array,
+                "An empty sheet's headers, in order; omitted, they are the records' keys as \
+                 they first come",
+            ),
         ],
         move |args| {
             let Some(records) = args.array("records") else {
                 return invalid("records must be an array of objects keyed by header");
             };
-            let cells = Columns::of_sheet(&info).and_then(|columns| {
-                let first = first_record_row(&info, args.integer("row"))?;
-                cells_from_records(&columns, first, records)
-            });
+            let cells = match Columns::of_sheet(&info) {
+                Ok(columns) => first_record_row(&info, args.integer("row"))
+                    .and_then(|first| cells_from_records(&columns, first, records)),
+                // An empty sheet takes its header row from the records.
+                Err(_) if info.snapshot.raw.is_empty() => {
+                    let names = args
+                        .array("columns")
+                        .map_or_else(|| keys_in_order(records), <[_]>::to_vec);
+                    new_sheet_cells(&names, records)
+                }
+                Err(message) => Err(message),
+            };
             match cells {
                 Ok(cells) if cells.is_empty() => invalid("records hold no values to write"),
                 Ok(cells) => encode(&SheetsAction::SetCells {
