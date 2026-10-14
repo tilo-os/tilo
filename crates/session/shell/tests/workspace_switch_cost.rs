@@ -8,7 +8,8 @@
 //! goes to the empty workspace and Super+Page Up comes back, as
 //! vm-acceptance W16 does once. The frame loop's own trace
 //! (`TILO_FRAME_TRACE`) gives each tick's thread CPU and its phases; the gate
-//! is the worst tick across five complete switch-backs. Each sample includes
+//! is the worst tick across five complete switch-backs, less what the
+//! harness's own control requests took of it. Each sample includes
 //! the entire switch, so one expensive painted transition fails the budget.
 //! The relative median-peak check also compares the same switches with their
 //! ordinary animation ticks; it diagnoses costly remounts across runners.
@@ -85,7 +86,15 @@ struct Tick {
     painted: bool,
     /// Wall time of each of [`PHASES`], in microseconds.
     phases: Vec<u64>,
+    /// The loop thread's CPU for the session's own work: the tick's, less
+    /// what answering the harness's control requests took. A request lands
+    /// in whichever tick is running when it arrives; on a slow runner the
+    /// Super release that ends the chord landed in the switch's first frame
+    /// and added its two relayouts (4 to 7 ms) to it. A person's keys come
+    /// through the input phase, which counts.
     cpu_us: Option<u64>,
+    /// What the control requests took of the tick, as the report shows it.
+    control_cpu_us: Option<u64>,
     input_step: String,
     paint_reasons: String,
 }
@@ -103,8 +112,13 @@ impl Tick {
             .map(|((name, _), us)| format!("{name} {:.2} ms", ms(*us)))
             .collect::<Vec<_>>()
             .join(", ");
+        let control = self
+            .control_cpu_us
+            .filter(|us| *us >= 100)
+            .map(|us| format!(" (control requests {:.2} ms more)", ms(us)))
+            .unwrap_or_default();
         format!(
-            "tick {}: cpu {} ms; wall {phases} (input step {}; {})",
+            "tick {}: cpu {} ms{control}; wall {phases} (input step {}; {})",
             self.seq,
             self.cpu_ms()
                 .map_or_else(|| "?".to_owned(), |ms| format!("{ms:.2}")),
@@ -131,11 +145,12 @@ fn read_trace(path: &Path) -> Vec<Tick> {
             .position(|column| *column == name)
             .unwrap_or_else(|| panic!("the frame trace has no {name} column: {header}"))
     };
-    let (seq, start, painted, cpu, step, reasons) = (
+    let (seq, start, painted, cpu, control, step, reasons) = (
         at("seq"),
         at("start_us"),
         at("painted"),
         at("cpu_us"),
+        at("testctl_cpu_us"),
         at("input_step"),
         at("paint_reasons"),
     );
@@ -145,6 +160,7 @@ fn read_trace(path: &Path) -> Vec<Tick> {
             let fields: Vec<&str> = line.split(',').collect();
             let field = |index: usize| fields.get(index).copied().unwrap_or_default();
             let number = |index: usize| field(index).parse::<u64>().ok();
+            let control_cpu_us = number(control);
             Some(Tick {
                 seq: number(seq)?,
                 start_us: number(start)?,
@@ -153,7 +169,10 @@ fn read_trace(path: &Path) -> Vec<Tick> {
                     .iter()
                     .map(|index| number(*index).unwrap_or_default())
                     .collect(),
-                cpu_us: number(cpu),
+                cpu_us: number(cpu)
+                    .zip(control_cpu_us)
+                    .map(|(tick, control)| tick.saturating_sub(control)),
+                control_cpu_us,
                 input_step: field(step).to_owned(),
                 paint_reasons: field(reasons).to_owned(),
             })
@@ -360,6 +379,7 @@ fn sampling_keeps_a_repeated_expensive_first_tick_but_not_one_outlier() {
         painted: true,
         phases: vec![0; PHASES.len()],
         cpu_us: Some(cpu_us),
+        control_cpu_us: Some(0),
         input_step: "services".into(),
         paint_reasons: reasons.into(),
     };
@@ -395,6 +415,7 @@ fn relative_gate_tracks_runner_speed_as_a_supplement() {
             painted: true,
             phases: vec![0; PHASES.len()],
             cpu_us: Some(peak_us),
+            control_cpu_us: Some(0),
             input_step: "services".into(),
             paint_reasons: "session+revision+animation+transition".into(),
         }];
@@ -404,6 +425,7 @@ fn relative_gate_tracks_runner_speed_as_a_supplement() {
             painted: true,
             phases: vec![0; PHASES.len()],
             cpu_us: Some(animation_us),
+            control_cpu_us: Some(0),
             input_step: "services".into(),
             paint_reasons: "animation".into(),
         }));
@@ -432,6 +454,7 @@ fn a_uniformly_slow_switch_fails_the_absolute_budget_even_if_relative_passes() {
             painted: true,
             phases: vec![0; PHASES.len()],
             cpu_us: Some(36_000),
+            control_cpu_us: Some(0),
             input_step: "services".into(),
             paint_reasons: "session+transition".into(),
         },
@@ -441,6 +464,7 @@ fn a_uniformly_slow_switch_fails_the_absolute_budget_even_if_relative_passes() {
             painted: true,
             phases: vec![0; PHASES.len()],
             cpu_us: Some(6_000),
+            control_cpu_us: Some(0),
             input_step: "services".into(),
             paint_reasons: "animation".into(),
         },
@@ -460,6 +484,7 @@ fn one_painted_outlier_fails_the_switch_back_budget() {
         painted: true,
         phases: vec![0; PHASES.len()],
         cpu_us: Some(cpu_us),
+        control_cpu_us: Some(0),
         input_step: "services".into(),
         paint_reasons: "session".into(),
     };
@@ -489,6 +514,7 @@ fn the_window_ends_before_the_harness_asks_again_but_keeps_the_whole_switch() {
         painted: !reasons.is_empty(),
         phases: vec![0; PHASES.len()],
         cpu_us: Some(cpu_us),
+        control_cpu_us: Some(0),
         input_step: "services".into(),
         paint_reasons: reasons.into(),
     };
@@ -517,6 +543,32 @@ fn the_window_ends_before_the_harness_asks_again_but_keeps_the_whole_switch() {
         "a slow frame inside the switch must still be over the budget"
     );
     assert!(switch_window(vec![tick(1, 0, 1_000, "animation")]).is_err());
+}
+
+/// CI run 129512's worst tick, the first frame of a switch back: 34.77 ms
+/// of thread CPU, 5.83 ms of it answering the harness's Super release, which
+/// arrived while the frame ran. The switch is charged its own 28.94 ms.
+#[test]
+fn a_control_request_in_a_switch_frame_is_charged_to_the_harness() {
+    let dir = tempfile::tempdir().expect("a directory for the trace");
+    let trace = dir.path().join("frame-trace.csv");
+    std::fs::write(
+        &trace,
+        "seq,start_us,input_us,pump_us,layout_us,scene_us,submit_us,testctl_us,clients_us,painted,cpu_us,input_step,paint_reasons,testctl_cpu_us\n\
+         368,0,660,7650,2010,16920,0,5830,240,1,34770,services,session+revision+animation+transition+apps+peers,5830\n\
+         369,9000,500,4000,1500,3000,0,0,100,1,9000,services,animation,0\n",
+    )
+    .expect("write the trace");
+    let ticks = read_trace(&trace);
+    assert_eq!(ticks[0].cpu_us, Some(28_940));
+    assert_eq!(ticks[0].control_cpu_us, Some(5_830));
+    assert_eq!(ticks[1].cpu_us, Some(9_000));
+    assert!(
+        ticks[0]
+            .describe()
+            .contains("control requests 5.83 ms more")
+    );
+    assert_switch_back_budget(&ticks[0], "the harness's request");
 }
 
 #[test]
