@@ -58,7 +58,6 @@ anyhow.workspace = true
 tilo-paths.workspace = true
 landlock.workspace = true
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
 seccompiler.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -82,3 +81,6 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

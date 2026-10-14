@@ -96,7 +96,6 @@ tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 clap.workspace = true
 ed25519-dalek.workspace = true
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
 zeroize.workspace = true
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
 tar.workspace = true
@@ -113,3 +112,6 @@ libc.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

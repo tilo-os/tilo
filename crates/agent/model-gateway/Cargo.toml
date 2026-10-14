@@ -23,7 +23,6 @@ thiserror.workspace = true
 zeroize.workspace = true
 wire-frame = { path = "../../system/wire-frame" }
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
 tilo-files = { path = "../../platform/tilo-files" }
 # Loopback admission of device-local models is shared with apps discovering them.
 url.workspace = true
@@ -54,3 +53,6 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

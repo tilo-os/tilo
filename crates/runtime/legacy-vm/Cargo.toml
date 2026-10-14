@@ -31,7 +31,6 @@ tilo-callstream = { path = "../../collab/tilo-callstream", optional = true }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol", optional = true }
 legacy-agent-protocol = { path = "../legacy-agent-protocol" }
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -50,3 +49,6 @@ tilo-desktop-entry = { path = "../../system/desktop-entry" }
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

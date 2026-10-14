@@ -220,7 +220,6 @@ tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
 parking_lot.workspace = true
 
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
 
 # Peer invitations are base64-url wrapped signed JSON tickets containing the
 # owner's stable iroh EndpointAddr.
@@ -473,3 +472,6 @@ windows-vm = { path = "../../windows/windows-vm" }
 # The shell runtime's policy, where the person's allow for Terminal's Host
 # target (the device's own shell) is recorded.
 ush = { path = "../../runtime/ush" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

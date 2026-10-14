@@ -19,7 +19,6 @@ tilo-files = { path = "../../platform/tilo-files" }
 hex.workspace = true
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true
-rustix = { workspace = true, features = ["process"] }
 getrandom.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
@@ -36,3 +35,6 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
