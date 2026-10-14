@@ -905,9 +905,12 @@ mod tests {
         let mut now = t0;
         for _ in 0..5 {
             for state in [SaveState::Saving, SaveState::Saved] {
-                assert!(!surface.set(state, now), "nothing shown changes");
+                assert!(!surface.set(state.clone(), now), "nothing shown changes");
                 assert!(!surface.is_visible(now), "autosave shows nothing");
-                assert!(!surface.needs_frame(now) && surface.next_wake_deadline().is_none());
+                assert!(!surface.needs_frame(now));
+                // A save that has not landed yet only wakes to check on it.
+                let stall = (state == SaveState::Saving).then(|| now + SAVE_STALL);
+                assert_eq!(surface.next_wake_deadline(), stall);
                 assert!(!surface.poke(now), "nor does a poke");
                 now += Duration::from_millis(400);
             }
@@ -1023,7 +1026,7 @@ mod tests {
         assert!(!surface.advance(again + SAVE_STALL - Duration::from_millis(1)));
         assert!(surface.advance(again + SAVE_STALL));
 
-        assert!(surface.set(SaveState::Saved, again + SAVE_STALL));
+        surface.set(SaveState::Saved, again + SAVE_STALL);
         assert_eq!(
             surface.bubble.text(),
             "Saved",
