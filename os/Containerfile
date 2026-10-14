@@ -764,13 +764,15 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && thin_pid=$!; \
        fi \
     && build_phase rust-release \
+    # The relay serves browsers (`run --web`): a machine set up as a node runs
+    # the person's rooms for their web pages.
     # Without LTO nothing merges the units again, so a dev build splits the
     # large crates (shell's library alone ran 180 s at eight) further.
     && release_units="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 8)" \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
-       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} \
+       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay --features tilo-relay/web ${RELEASE_BINS} \
     && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \

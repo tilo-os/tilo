@@ -1,0 +1,18 @@
+# %i's node session: the headless Tilo session beside the node's relay that
+# runs the person's apps and streams their windows to the person's web pages.
+# Started by tilo-node-session@%i.path once the session is certified.
+[Unit]
+Description=Tilo node session for %i
+Requires=tilo-node-relay@%i.service
+After=tilo-node-relay@%i.service systemd-user-sessions.service systemd-logind.service
+ConditionPathExists=/var/lib/tilo-node/%i/session/device/cert.bin
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+EnvironmentFile=/run/tilo-node/%i/session-host.env
+ExecStartPre=/usr/bin/loginctl enable-linger %i
+ExecStartPre=/usr/libexec/tilo-board-session-prepare user-manager %i
+ExecStart=/usr/bin/systemd-run --quiet --wait --collect --unit=tilo-node-session --machine=%i@ --user --setenv=TILO_IDENTITY_ROOT=/var/lib/tilo-node/%i/session --setenv=TILO_COLLAB_HOST -- /usr/libexec/tilo-session --backend headless
+Restart=always
+RestartSec=2

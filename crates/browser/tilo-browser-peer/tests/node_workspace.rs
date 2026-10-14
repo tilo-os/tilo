@@ -199,6 +199,7 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
         Some(SessionDevice {
             public_key: session,
             cert_out: session_cert_out.clone(),
+            user_key_out: None,
         }),
     )
     .unwrap();
