@@ -912,7 +912,7 @@ pub struct FrameBuilder {
     enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AnimationDemand {
     pub host: u32,
     pub floating: bool,
