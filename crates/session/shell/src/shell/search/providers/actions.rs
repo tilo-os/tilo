@@ -21,6 +21,7 @@ use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
+mod enrollment_tokens;
 mod native_identity;
 
 use crate::shell::shared_display_actions;
@@ -276,11 +277,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.risk = RiskLevel::Privileged;
             contract.confirmation = ConfirmationPolicy::Confirm;
         }
-        "identity.devices.copy"
-        | "identity.device.enroll"
-        | "identity.home-peer.enroll"
-        | "peer.invite.named"
-        | "agent.invite" => {
+        id if enrollment_tokens::role_of(id).is_some() => contract = enrollment_tokens::contract(),
+        "identity.devices.copy" | "peer.invite.named" | "agent.invite" => {
             contract.kind = ActionKind::Outside;
         }
         "peer.invite" | "peer.connect" => {
@@ -1442,52 +1440,34 @@ impl Action {
                 Ok(())
             },
         ),
-        chrome(
-            "identity.device.enroll",
-            "search-action-identity-device-enroll",
-            "search-action-identity-device-enroll-subtitle",
-            |st, _| {
-                let (_, profile) = active_identity(st)?;
-                let now = tilo_clock::unix_now_ns();
-                let expires = now.saturating_add(5 * 60 * 1_000_000_000);
-                let token = crate::device_fleet::DeviceFleetStore::from_env()
-                    .and_then(|store| {
-                        store.mint_enrollment(
-                            &profile.id,
-                            tilo_user_identity::DeviceCapabilities::member(),
-                            now,
-                            expires,
-                        )
-                    })
-                    .map_err(|error| ActionError::Refused(error.to_string()))?;
-                // The row's subtitle states the copy and its five-minute life.
-                ui::text_selection::clipboard_copy(&token);
-                Ok(())
+        Action {
+            id: enrollment_tokens::DEVICE_ENROLL_ID,
+            label: "search-action-identity-device-enroll",
+            subtitle: "search-action-identity-device-enroll-subtitle",
+            params: enrollment_tokens::ENROLL_PARAMS,
+            apply: |st, args| {
+                enrollment_tokens::mint(
+                    st,
+                    args,
+                    tilo_identity_host::enrollment::EnrollmentRole::PersonalDevice,
+                )
+                .map(|_| ())
             },
-        ),
-        chrome(
-            "identity.home-peer.enroll",
-            "search-action-identity-home-peer-enroll",
-            "search-action-identity-home-peer-enroll-subtitle",
-            |st, _| {
-                let (_, profile) = active_identity(st)?;
-                let now = tilo_clock::unix_now_ns();
-                let expires = now.saturating_add(5 * 60 * 1_000_000_000);
-                let token = crate::device_fleet::DeviceFleetStore::from_env()
-                    .and_then(|store| {
-                        store.mint_enrollment(
-                            &profile.id,
-                            tilo_user_identity::DeviceCapabilities::host(),
-                            now,
-                            expires,
-                        )
-                    })
-                    .map_err(|error| ActionError::Refused(error.to_string()))?;
-                // The row's subtitle states the copy and its five-minute life.
-                ui::text_selection::clipboard_copy(&token);
-                Ok(())
+        },
+        Action {
+            id: enrollment_tokens::HOME_PEER_ENROLL_ID,
+            label: "search-action-identity-home-peer-enroll",
+            subtitle: "search-action-identity-home-peer-enroll-subtitle",
+            params: enrollment_tokens::ENROLL_PARAMS,
+            apply: |st, args| {
+                enrollment_tokens::mint(
+                    st,
+                    args,
+                    tilo_identity_host::enrollment::EnrollmentRole::HomePeer,
+                )
+                .map(|_| ())
             },
-        ),
+        },
         Action {
             id: "identity.device.revoke",
             label: "search-action-identity-device-revoke",
@@ -3656,6 +3636,27 @@ impl ActionsProvider {
                              _: &Chrome,
                              _: &ActionArgs| {
                                 inspect_display_outputs()
+                                    .map(crate::shell::search::ActionReceipt::completed_with)
+                            },
+                        )
+                            as Rc<crate::shell::search::InvokeFn>),
+                        // The setup code is the action's answer, for a script
+                        // or agent to hand to the joining device.
+                        id if enrollment_tokens::role_of(id).is_some() => Some(Rc::new(
+                            move |_: &mut ui::widget::Edits<'_>,
+                                  _: &automerge::ObjId,
+                                  chrome: &Chrome,
+                                  args: &ActionArgs| {
+                                let role = enrollment_tokens::role_of(id).ok_or_else(|| {
+                                    ActionError::Refused(format!("{id} mints no setup code"))
+                                })?;
+                                let state = chrome.borrow();
+                                if !current_shell_action_authorized(&state, id) {
+                                    return Err(ActionError::Refused(format!(
+                                        "current workspace authority no longer permits {id}"
+                                    )));
+                                }
+                                enrollment_tokens::mint(&state, args, role)
                                     .map(crate::shell::search::ActionReceipt::completed_with)
                             },
                         )

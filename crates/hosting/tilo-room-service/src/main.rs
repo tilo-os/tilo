@@ -700,7 +700,12 @@ impl Service {
             (&Method::GET, ["metrics"]) => self.metrics(request.headers()).await,
             (&Method::GET, ["mode"]) => Self::json(
                 StatusCode::OK,
-                &serde_json::json!({"mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str()}),
+                &serde_json::json!({
+                    "mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str(),
+                    // Public like the web entry's version.json: which build
+                    // answers here, for drift reports from outside the cluster.
+                    "revision": ops::get().map_or(ops::UNKNOWN_REVISION, ops::Ops::revision),
+                }),
             ),
             (&Method::POST, ["errors"]) => self.client_error(request.into_body()).await,
             (&Method::POST, ["rooms"]) => match Self::paused() {
