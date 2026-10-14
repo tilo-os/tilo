@@ -117,6 +117,65 @@ fn a_pasted_screenshot_decodes_for_drawing() {
     assert!(drawn, "{source} never decoded");
 }
 
+/// The pasted picture appears by itself: once its decode settles off the UI
+/// thread, the window schedules a frame and that frame paints the picture,
+/// with no key, click or relayout from anyone. A plate that waits for the
+/// next input to show its picture is the grey box a person sees.
+#[test]
+fn a_pasted_screenshot_is_painted_once_it_decodes_without_further_input() {
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    let (mut app, page) = note();
+    recorder.copy_image_elsewhere(ClipboardImage {
+        mime: "image/png",
+        bytes: png(64, 48, false),
+    });
+    paste(&mut app);
+    let source = images(&app, page)[0]
+        .0
+        .split("](")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches(')')
+        .to_owned();
+    // Pictures the window's frame paints: draws with vello's image tag
+    // (`vello_encoding::DrawTag::IMAGE`). The empty plate paints none.
+    let pictures = |app: &mut TestApp<NotesShell>| {
+        app.harness()
+            .frame_render_input()
+            .scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|tag| tag.0 == 0x28C)
+            .count()
+    };
+    // Wait for the decode without laying anything out: `surface_mut` runs
+    // no frame, unlike `surface`.
+    assert!(
+        app.surface_mut::<notes::NotesApp>()
+            .image_decoded_for_test(&source),
+        "{source} never decoded"
+    );
+    // The decode may settle while the paste's own frames still run, which
+    // then paint the picture; when it settles after them, its completion
+    // must schedule the frame that does.
+    if pictures(&mut app) == 0 {
+        let schedule = app.harness().frame_schedule();
+        assert!(
+            schedule.needs_redraw || schedule.needs_animation_frame,
+            "the picture decoded but no frame is due to show it: {:?}",
+            app.harness().redraw_sources()
+        );
+        assert!(app.harness().poll_frame().unwrap(), "no frame was drawn");
+    }
+    assert_eq!(
+        pictures(&mut app),
+        1,
+        "the frame after the decode still paints the empty plate"
+    );
+}
+
 #[test]
 fn a_screenshot_larger_than_an_asset_is_kept_smaller() {
     let (services, recorder) = ui::host::HostServices::recording();
