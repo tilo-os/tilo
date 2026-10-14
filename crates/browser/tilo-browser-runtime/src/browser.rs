@@ -2383,7 +2383,8 @@ pub fn request_semantics(id: u64) -> Result<(), JsValue> {
 /// Rejects a closed mount or a failure to serialize the snapshot.
 #[wasm_bindgen]
 pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
-    with_mount(id, |m| {
+    // A read: it changes nothing a semantics tree shows.
+    with_mount_quietly(id, |m| {
         m.desktop
             .as_ref()
             .map(|d| {
@@ -2404,7 +2405,8 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn desktop_record_windows(id: u64) -> Result<Option<String>, JsValue> {
-    with_mount(id, |m| {
+    // A read: it changes nothing a semantics tree shows.
+    with_mount_quietly(id, |m| {
         m.desktop
             .as_ref()
             .map(|d| {
@@ -2757,7 +2759,8 @@ pub fn desktop_set_peer_windows(id: u64, windows: &str) -> Result<(), JsValue> {
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn desktop_navigation_revision(id: u64) -> Result<f64, JsValue> {
-    with_mount(id, |m| {
+    // A read: it changes nothing a semantics tree shows.
+    with_mount_quietly(id, |m| {
         #[allow(
             clippy::cast_precision_loss,
             reason = "a revision counter stays far below 2^53 and is only compared for change"
@@ -3144,7 +3147,8 @@ pub fn clipboard_event(
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn font_demands(id: u64) -> Result<String, JsValue> {
-    with_mount(id, |m| {
+    // Takes what the last shaping asked to fetch; the tree is the same.
+    with_mount_quietly(id, |m| {
         serde_json::to_string(&m.frame.take_browser_font_demands()).map_err(error)
     })
 }

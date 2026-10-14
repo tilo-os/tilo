@@ -1899,13 +1899,14 @@ impl Widget for DesktopSurface {
 
     /// A sideways trackpad pan of the shown strip moves windows and changes
     /// nothing else: no document, focus, selection or declaration. Every
-    /// other wheel reaches a layer above the strip or the window under the
-    /// pointer, which answer for themselves.
+    /// other wheel reaches a layer above the strip (a banner or the
+    /// notification centre shown, the activity pane, search) or the window
+    /// under the pointer, which answer for themselves.
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         let WindowEvent::MouseWheel { delta, .. } = event else {
             return false;
         };
-        self.notices.is_none()
+        self.notices.as_ref().is_none_or(|layer| !layer.visible())
             && self.activity.is_none()
             && !self.search.is_open()
             && self.pans_strip(*delta, ui::time::now())
