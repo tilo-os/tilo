@@ -368,6 +368,48 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     });
     assert_eq!(seen, DocumentMutation::Snapshot(reply));
 
+    // The session administers the room it holds through the room's own
+    // `tilo.workspace` governance actions on its relay session, as an agent
+    // or a screen reader would: the relay issues the invitation, and
+    // cancelling it there takes it off the relay's pending list.
+    let target = net
+        .administered_room(room)
+        .expect("a relay of Ada's governs the room the session holds");
+    assert!(matches!(
+        target,
+        super::relay_rooms::AdministeredRoom::Held(_)
+    ));
+    let token = net
+        .issue_relay_invitation(
+            &target,
+            crate::network::invite::InviteRole::Viewer,
+            None,
+            Some("Grace"),
+            600,
+        )
+        .expect("the relay issues the invitation through the room's action");
+    assert!(!token.is_empty());
+    let pending = || {
+        runtime
+            .block_on(relay.rooms().unwrap().pending(&acme.room, &node))
+            .unwrap()
+    };
+    let issued = pending()
+        .into_iter()
+        .find(|invitation| invitation.invitee_name.as_deref() == Some("Grace"))
+        .expect("the relay holds the invitation it issued");
+    assert_eq!(issued.role, tilo_peer_state::join::MemberRole::Viewer);
+    assert!(
+        net.cancel_relay_invitation(room, issued.invite_id)
+            .expect("the relay cancels it through the room's action")
+    );
+    assert!(
+        !pending()
+            .iter()
+            .any(|invitation| invitation.invite_id == issued.invite_id),
+        "a cancelled invitation is no longer pending at the relay"
+    );
+
     // The browser announces no identity to the session, yet its actions
     // reach it as the room's governance admitted it: asking for the
     // workspace's catalogue (the node's applications among it).

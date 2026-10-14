@@ -79,7 +79,7 @@ impl InviteRoute {
 /// tree's lock). The room is this person's own when that root is the
 /// identity selected for this room, which may be a workspace-specific
 /// identity rather than the device's default person: the identity
-/// `ShellNetwork::administered_room` then signs the relay request with.
+/// `ShellNetwork::administered_room` then asks the relay as.
 pub(crate) fn may_issue_invitation(
     tree: &WorkspaceTree,
     workspace: &Workspace,

@@ -303,6 +303,50 @@ async fn invitations_run_through_the_rooms_own_methods() {
             .any(|invitation| invitation["invite"] == invite_id.as_str())
     );
 
+    // The desktop's invitation: seconds take precedence over the hours an
+    // older relay would read, for exactly the person and name it asked.
+    let guest = ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+        .verifying_key()
+        .to_bytes();
+    let before = tilo_clock::unix_now_ns();
+    let timed = invoke(
+        &host,
+        workspace,
+        &caller(&owner),
+        request(
+            &room,
+            governance::INVITE,
+            json!({
+                "role": "viewer",
+                "recipient": hex::encode(guest),
+                "invitee_name": "Ada",
+                "expires_in_seconds": 600,
+                "expires_in_hours": 1,
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    let after = tilo_clock::unix_now_ns();
+    let timed_id = timed["invite"].as_str().unwrap();
+    assert!(!timed["invitation"].as_str().unwrap().is_empty());
+    let timed = rooms
+        .pending(&room, &owner)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|pending| hex::encode(pending.invite_id) == timed_id)
+        .expect("the timed invitation is pending");
+    assert_eq!(timed.role, MemberRole::Viewer);
+    assert_eq!(timed.recipient_user_public_key, Some(guest));
+    assert_eq!(timed.invitee_name.as_deref(), Some("Ada"));
+    let lifetime: u64 = 600_000_000_000;
+    assert!(
+        (before.saturating_add(lifetime)..=after.saturating_add(lifetime))
+            .contains(&timed.expires_at_ns),
+        "{timed:?}"
+    );
+
     // An Editor may not invite: the action does not exist for them.
     let refused = invoke(
         &host,
