@@ -4343,6 +4343,7 @@ fn remember_governance(
         msg,
         NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
     ) {
         return;
@@ -7800,7 +7801,18 @@ mod tests {
                         inbound.push(Inbound::Frame { room, frame });
                     }
                     NeighbourMsg::MlsAccessRequest { request, .. } => {
-                        inbound.push(Inbound::AccessRequest { room, request });
+                        inbound.push(Inbound::AccessRequest {
+                            room,
+                            request,
+                            route: None,
+                        });
+                    }
+                    NeighbourMsg::MlsRoutedAccessRequest { request, route, .. } => {
+                        inbound.push(Inbound::AccessRequest {
+                            room,
+                            request,
+                            route: Some(route),
+                        });
                     }
                     NeighbourMsg::MlsGovernanceAck { ack, .. } => {
                         inbound.push(Inbound::Ack { room, ack });

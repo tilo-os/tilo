@@ -2394,7 +2394,7 @@ impl Task {
                 };
                 let signer = Arc::clone(&self.signer);
                 let device = self.config.cert.device_public_key;
-                if let Some(envelope) = sign_governance(signer.as_ref(), device, outgoing).await {
+                for envelope in sign_governance(signer.as_ref(), device, outgoing).await {
                     delivered &= client.send(envelope).is_ok();
                 }
             }
@@ -2485,29 +2485,50 @@ impl SavedPeerChannels {
 }
 
 /// Sign a governance message with the device key and wrap it for the host,
-/// which retains it for the steward.
+/// which retains it for the steward. An access request goes twice: routed,
+/// so the steward decides Read on the record, and plain, for a steward that
+/// predates routes.
 async fn sign_governance(
     signer: &dyn DeviceSigner,
     device: [u8; 32],
     outgoing: crate::channels::Outgoing,
-) -> Option<Envelope> {
+) -> Vec<Envelope> {
+    let Some(messages) = signed_governance(signer, outgoing).await else {
+        return Vec::new();
+    };
+    messages
+        .into_iter()
+        .filter_map(|(workspace_id, message)| governance_envelope(device, workspace_id, &message))
+        .collect()
+}
+
+/// `outgoing` signed, as the messages that carry it and their workspace.
+async fn signed_governance(
+    signer: &dyn DeviceSigner,
+    outgoing: crate::channels::Outgoing,
+) -> Option<Vec<(u64, neighbour_wire::NeighbourMsg)>> {
     {
         let (workspace_id, message) = match outgoing {
             crate::channels::Outgoing::Request {
                 workspace_id,
                 room,
                 mut request,
+                route,
             } => {
                 let signature = signer.sign(request.signing_bytes().ok()?).await.ok()?;
                 request.signature = collab_types::Signature::from_bytes(signature);
-                (
-                    workspace_id,
-                    neighbour_wire::NeighbourMsg::MlsAccessRequest {
-                        room,
-                        request: Box::new(request),
-                        delivery: rand::random(),
-                    },
-                )
+                let routed = neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
+                    room: room.clone(),
+                    request: Box::new(request.clone()),
+                    route: Box::new(route),
+                    delivery: rand::random(),
+                };
+                let plain = neighbour_wire::NeighbourMsg::MlsAccessRequest {
+                    room,
+                    request: Box::new(request),
+                    delivery: rand::random(),
+                };
+                return Some(vec![(workspace_id, routed), (workspace_id, plain)]);
             }
             crate::channels::Outgoing::Ack {
                 workspace_id,
@@ -2526,20 +2547,29 @@ async fn sign_governance(
                 )
             }
         };
-        let (channel, _) = neighbour_wire::retention(&message, false)?;
-        Some(Envelope::Delta {
-            workspace_id,
-            author_device_public_key: device,
-            authored_at_ns: tilo_clock::unix_now_ns(),
-            delta: CoeditPayload::Checkpoint {
-                channel,
-                body: postcard::to_allocvec(&message).ok()?,
-            }
-            .encode()
-            .ok()?,
-            signature: [0; 64],
-        })
+        Some(vec![(workspace_id, message)])
     }
+}
+
+/// `message`, signed governance of `workspace_id`, wrapped for the host.
+fn governance_envelope(
+    device: [u8; 32],
+    workspace_id: u64,
+    message: &neighbour_wire::NeighbourMsg,
+) -> Option<Envelope> {
+    let (channel, _) = neighbour_wire::retention(message, false)?;
+    Some(Envelope::Delta {
+        workspace_id,
+        author_device_public_key: device,
+        authored_at_ns: tilo_clock::unix_now_ns(),
+        delta: CoeditPayload::Checkpoint {
+            channel,
+            body: postcard::to_allocvec(message).ok()?,
+        }
+        .encode()
+        .ok()?,
+        signature: [0; 64],
+    })
 }
 
 impl Task {

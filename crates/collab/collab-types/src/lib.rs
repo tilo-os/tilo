@@ -128,9 +128,9 @@ pub use invite::{
     INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
 };
 pub use mls_governance::{
-    Admission, JoinMaterial, Joining, MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION,
-    MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction, MlsGovernanceContext,
-    MlsGovernanceError, MlsGovernanceFrameV1,
+    Admission, ChannelRoute, JoinMaterial, Joining, MAX_CHANNEL_ROUTE_ID_BYTES, MLS_ACCESS_VERSION,
+    MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
+    MlsGovernanceContext, MlsGovernanceError, MlsGovernanceFrameV1,
 };
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
@@ -159,5 +159,6 @@ pub use role::{ArtifactKind, OpKind, Role};
 pub use space::{Space, SpaceId};
 pub use validator::{
     ChannelState, DEFAULT_ROOM, ValidationError, document_node, named_record_of_channel,
-    named_records, validate_admitted_inbound_op, validate_inbound_op, validate_replayed_inbound_op,
+    named_records, pattern_read_witnesses, validate_admitted_inbound_op, validate_inbound_op,
+    validate_replayed_inbound_op,
 };

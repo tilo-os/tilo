@@ -175,40 +175,62 @@ one record of a room they read: "Finance: Deny Read; Finance › summary: Allow
 Read" hides every finance record but the summary. Every per-record read
 decision asks the same function: the room peer's record read check
 (`StatePeer::check_document_read`) and the joined room's document reads
-through it. Channel admission, below, is the exception: it asks Read once, on
-the room node, through the workspace tree (`shell::channel_policy`). A device whose person is denied any record is refused the room's
-whole legacy delivery rather than given a filtered one, because an automerge
-change graph cannot be served in part ([rooms.md](rooms.md)).
+through it, and so does channel admission, below. A device whose person is
+denied any record is refused the room's whole legacy delivery rather than given
+a filtered one, because an automerge change graph cannot be served in part
+([rooms.md](rooms.md)).
 
 What carries a read decision to the bytes is the record's channel key, and
 channel stewards admit devices per channel, that is per record
-(`ChannelDirectory::allowed_devices(room, channel, now)`). A channel id is a
-hash of its record's route, so a steward names a channel's record from the
-grants that name it: a grant on `room › app › resource`, or below it
-(`collab_types::named_record_of_channel`). For such a record a device is
-admitted only while its person reads the room and the same read decision
-allows the record (`Workspace::answer_at` on a desktop steward,
-`StatePeer::withheld_record_readers` over `check_document_read` on a relay
-steward). So a Read Deny naming a record withholds that record's key: the
-steward never admits the denied person's devices, and a device that already
-held the key is removed in a new epoch of that channel alone, while every
-other channel of the room keeps its epoch and its readers. As with any
-removal, the device keeps what it could read before. Lifting the Deny admits
-it again when it asks. Records no grant names, including records nobody has
-written yet, are read as the room is.
+(`ChannelDirectory::allowed_devices(room, channel, route, now)`). A device is
+admitted to a record's channel only while its person reads the room and the
+same read decision allows the record (`Workspace::answer_at` on a desktop
+steward, `StatePeer::withheld_record_readers` over `check_document_read` on a
+relay steward). So a Read Deny on a record, on its app, or on any pattern of
+records covering it withholds that record's key: the steward never admits the
+denied person's devices, and a device that already held the key is removed in
+a new epoch of that channel alone, while every other channel of the room keeps
+its epoch and its readers. As with any removal, the device keeps what it could
+read before. Lifting the Deny admits it again when it asks.
 
-Two Denies still bind only honest devices and doors, not a member's own
-modified client:
+A channel id is a hash of its record's route, so the steward has to be told
+which record a channel carries. It learns it two ways, and neither asks it to
+trust anyone:
 
-- A Deny over a pattern, such as "Finance: Deny Read" on an app or every
-  resource of a kind, names no record. A steward cannot tell which unnamed
-  channel belongs to that app, so it admits the room's readers to them. To
-  withhold a record's key, deny that record by name.
-- A Deny below a record, on an item or a field, cannot be carried by a key
-  that opens the whole record.
+- A grant naming the record (`room › app › resource`, or below it) gives the
+  route itself (`collab_types::named_record_of_channel`).
+- A device asking for a channel's key sends the record's route beside its
+  request (`NeighbourMsg::MlsRoutedAccessRequest`, `collab_types::ChannelRoute`),
+  as does the steward's own endpoint. The route proves itself: the steward
+  keeps it only if it hashes, with the room, to the channel's id, and refuses
+  a request whose route does not. It keeps the route beside the channel's
+  group and decides every later change of the channel with it, after a restart
+  too. A kept route is checked again when it is read back, so a damaged file
+  names no record rather than a wrong one.
 
-For those, the room is the confidentiality boundary: to keep content from
-someone, deny the record by name or keep it in a room they are not in
+A channel whose record the steward cannot name may be any record that nothing
+names. It is withheld from every device whose person may not read one of the
+records a Deny over a pattern stands for (`collab_types::pattern_read_witnesses`:
+for each such grant, a record it covers that no grant names), and admitted to
+every other reader of the room. So "Finance: Deny Read" keeps its person out
+of every channel of the room until a device names the channel's record, while
+everyone else reads as before. This also makes the order of arrival harmless:
+a plain request that reaches the steward before its routed copy admits no one
+the Deny could keep out. A device sends both forms while a steward may predate
+routes, and a steward that predates them decides with the room alone. The
+record of a channel nobody has written yet is named by its first request, so a
+new record admits its author and every other reader the decision allows from
+its first key. Nothing a steward keeps can let a denied device back in: a lost
+or unreadable route makes the channel one whose record is unknown, which
+withholds more, never less.
+
+A Deny below a record, on an item or a field, binds every honest device and
+door, but not a member's own modified client: a record has one channel and one
+key, which opens all of it, and splitting a record's channel per field would
+be key management that narrows nothing a separate record does not. Against a
+modified client the record is the boundary. To keep a part of a record from
+someone, keep it in a record of its own and deny that record, by name or by a
+pattern, or keep it in a room they are not in
 ([rooms.md](rooms.md), "Rooms hold references, not copies").
 
 The sandbox's capabilities ([security.md](security.md)) keep the opposite
