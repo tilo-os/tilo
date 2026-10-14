@@ -43,7 +43,7 @@ class PlanTest(unittest.TestCase):
             self.assertIn(expected, names)
         caps = next(item for item in room_capacity.plan("full") if item.name == "caps")
         self.assertEqual(caps.args, ("--guests", "500", "--spectators", "2000",
-                                     "--max-guests", "500", "--max-spectators", "2000"))
+                                     "--spectator-members", "--max-guests", "500", "--max-spectators", "2000"))
 
     def test_a_regex_selects_runs_and_an_empty_selection_fails(self):
         self.assertEqual([item.name for item in room_capacity.plan("^spect-")],

@@ -1,7 +1,12 @@
-//! One watching page, as the homepage embed runs it: certify an in-memory
-//! device key as the room's spectator person through `POST /spectate`, hold
-//! a session subscribed to the first desktop room, and read its documents
-//! and its live plane without ever sending.
+//! One watching page, holding a session subscribed to the first desktop
+//! room and reading its documents and its live plane without ever sending.
+//!
+//! By default it gets in as the homepage embed does: it certifies an
+//! in-memory device key as the room's one spectator person through
+//! `POST /spectate`. With `--spectator-members`, each spectator is instead
+//! pre-admitted as a Viewer of its own (`/spectate` with `"member": true`)
+//! and redeems that as a guest's page does: what a read-only session costs a
+//! room whose spectators are admitted.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,10 +17,8 @@ use serde::Deserialize;
 use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-use crate::guest::{Shared, now_ms, open_live, take_events};
+use crate::guest::{FULL, Shared, WATCHING_FULL, admit, now_ms, open_live, take_events};
 
-/// What the room service tells a spectator past the spectator cap.
-const WATCHING_FULL: &str = "too many people are watching";
 /// How often a watching page looks at what arrived.
 const TICK: Duration = Duration::from_millis(100);
 
@@ -26,7 +29,15 @@ struct Spectating {
     workspace_id: u64,
 }
 
-async fn certify(shared: &Shared, key: &SigningKey) -> Result<Spectating, String> {
+/// The device key, its certificate and the room to watch.
+async fn certify(shared: &Shared) -> Result<(SigningKey, DeviceCert, u64), String> {
+    if shared.args.spectator_members {
+        let request = serde_json::json!({ "member": true });
+        let (key, cert, rooms) = admit(shared, "/spectate", request, "Spectator").await?;
+        let workspace = rooms.first().ok_or("no room to watch")?.workspace_id;
+        return Ok((key, cert, workspace));
+    }
+    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let (status, body) = shared
         .service
         .post_with(
@@ -47,17 +58,18 @@ async fn certify(shared: &Shared, key: &SigningKey) -> Result<Spectating, String
     if status != 200 {
         return Err(format!("/spectate: status {status}"));
     }
-    serde_json::from_slice(&body).map_err(|error| error.to_string())
+    let spectating: Spectating =
+        serde_json::from_slice(&body).map_err(|error| error.to_string())?;
+    Ok((key, spectating.certificate, spectating.workspace_id))
 }
 
 /// Run one spectator until the run stops.
 pub async fn run(shared: Arc<Shared>) {
     let stats = shared.spectator_stats.clone();
     let begun = Instant::now();
-    let key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let spectating = match certify(&shared, &key).await {
-        Ok(spectating) => spectating,
-        Err(error) if error == WATCHING_FULL => {
+    let (key, cert, workspace) = match certify(&shared).await {
+        Ok(certified) => certified,
+        Err(error) if error == WATCHING_FULL || error == FULL => {
             stats.full(begun.elapsed().as_secs_f64() * 1000.0);
             return;
         }
@@ -70,14 +82,13 @@ pub async fn run(shared: Arc<Shared>) {
     let peer = PeerHandle::start(
         PeerConfig {
             host: Host::Https(shared.relay.clone()),
-            cert: spectating.certificate,
+            cert,
             host_cert: shared.host_cert.clone(),
             revocations: RevocationList::new(),
         },
         Arc::new(key),
         Arc::new(MemoryPeerStore::default()),
     );
-    let workspace = spectating.workspace_id;
     if let Err(error) = peer.join(workspace) {
         stats.fail(format!("subscribe: {error}"));
         return;
@@ -90,7 +101,18 @@ pub async fn run(shared: Arc<Shared>) {
             |event| matches!(event, PeerEvent::Ready { workspace_id } if workspace_id == workspace),
         );
         if !ready && (Instant::now() > deadline || *stop.borrow()) {
-            stats.fail("join: no Ready before the timeout");
+            // Name what the host answered: a refused subscription is a
+            // finding, not a slow one.
+            let session = peer.status();
+            stats.fail(format!(
+                "join: no Ready before the timeout (authenticated: {}, failures: {:?})",
+                session.authenticated,
+                session
+                    .failures
+                    .iter()
+                    .map(|failure| format!("{} {}", failure.code, failure.message))
+                    .collect::<Vec<_>>()
+            ));
             peer.close();
             return;
         }
