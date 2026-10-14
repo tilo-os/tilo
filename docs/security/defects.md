@@ -885,22 +885,49 @@ string. Held by `os/tests/kernel_hardening_invariants.sh`.
 requirements on `/usr/share/tilo/cosign.pub` with a repository-bound `signedIdentity`, and every
 more specific scope under either Tilo namespace is that or `reject`. An unreadable, malformed or
 duplicate-keyed policy fails. `os/tests/kernel_hardening_invariants.sh` runs it against the
-shipped policy and fourteen weakened copies (each Tilo scope accepting anything, another key,
-`signedBy`, a remapped identity, extra key material, a tag override, a removed scope, malformed
-JSON, a duplicate scope, a missing file), every one of which must fail. Separately, the audit's mem-init check required the kernel to report
+shipped policy and eighteen weakened copies (each Tilo scope accepting anything, another key,
+`signedBy`, a remapped identity, extra key material, a tag override, a removed scope, a removed
+legacy-guest or development scope that leaves it to the permissive default, a permissive
+namespace scope, malformed JSON, a duplicate scope, a missing file), every one of which must
+fail. Separately, the audit's mem-init check required the kernel to report
 `heap free:on` and so warned on every correct boot once `init_on_free` left the kernel
 arguments; it now requires `alloc:on`, and `os/tests/kernel_hardening_invariants.sh` refuses the
 old pattern.
 
 ## P2-6 — `insecureAcceptAnything` is the container policy default
 
-`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `registry.tilo.so/tilo/tilo`
-only; every other image reference is unverified.
+`os/etc/containers/policy.json:2-4`. Signature enforcement covers the official Tilo
+repositories only; every other image reference is unverified by the policy.
 
-**Still open.** The default is still `insecureAcceptAnything`. Current source requires a
-`sigstoreSigned` signature for `code.tilo.so/tilo/tilo`, `registry.tilo.so/tilo/tilo` and
-`registry.tilo.so/tilo/legacy-guest`, and rejects the `tilo-vm`, `tilo-ci` and `tilo-dev`
-repositories on both registries; every other reference is still unverified.
+**Still open: awaiting the owner's decision to accept or tighten.** The default is still
+`insecureAcceptAnything`. Current source requires a `sigstoreSigned` signature for
+`code.tilo.so/tilo/tilo`, `registry.tilo.so/tilo/tilo` and `registry.tilo.so/tilo/legacy-guest`,
+and rejects the `tilo-vm`, `tilo-ci` and `tilo-dev` repositories on both registries.
+`tilo-image-policy-check` now also judges the legacy guest and those development repositories by
+their *effective* rule, so removing one's scope (handing it to the permissive default) or adding
+a permissive `registry.tilo.so/tilo` namespace scope fails the boot audit.
+
+What the permissive default reaches, as of this entry:
+
+- **No Tilo OS image path depends on it.** The installer installs the booted medium's image from
+  local container storage, and the offline target verifies the cosign signature, docker reference
+  and provenance itself before importing with `skopeo --insecure-policy`. The recorded update
+  origin is restricted to `registry.tilo.so/tilo/tilo` or `code.tilo.so/tilo/tilo`
+  (`os/dev/hardware_profile.py`), production `tilo os upgrade` refuses `--to`, and the legacy guest
+  is fetched only by a compiled-in digest of `registry.tilo.so/tilo/legacy-guest`
+  (`crates/runtime/legacy-vm/src/image.rs`). `tilo-install` does not pass bootc's
+  `--enforce-container-sigpolicy`.
+- **Only root can point bootc at another reference**; there is no polkit rule for bootc or
+  rpm-ostree, and the wheel update unit takes fixed arguments.
+- **Rootless podman, skopeo and distrobox** read `~/.config/containers/policy.json` first, which the
+  user can write anyway, so the system default grants a session nothing it lacks.
+- **Features that would break under a default `reject`:** the Containers app's `podman pull`,
+  distrobox (the runtime portal's container shell), `tinker base add`, the local-model
+  `podman load`, dev images' `tilo os upgrade --to`, and possibly the installer's
+  `containers-storage` handoff. A tightened default therefore needs a root/user split (a
+  `reject` system default plus a per-user permissive policy) and an install scenario run.
+- **One uncovered Tilo origin:** the operator-built host image (`os/build-host.sh`) records
+  `localhost/tilo-host:latest`, which no scope covers.
 
 ## P1-10 — The filesystem daemon's SELinux domain is permissive
 
@@ -960,6 +987,31 @@ configuration, which this entry does not assess.
 `os/kernel/config-fragments/x86_64.config` enables `X86_USER_SHADOW_STACK` and `X86_KERNEL_IBT`;
 `aarch64.config` says ARM pointer authentication and BTI are not equivalents and makes no such
 guarantee. ARM64 builds therefore lack this layer.
+
+## P1-12 — A filesystem grant covering the home directory reaches Tilo's private stores
+
+`crates/packaging/launcher/src/capabilities.rs`, `is_bindable_path`. A granted path is bound and
+allowed by Landlock with no filter beyond absolute-and-not-`/`, and Landlock cannot carve a hole
+beneath an allowed directory. An app granted `$HOME` or `~/.config` therefore reads, as the same
+uid, the identity store's fallback secrets (`~/.config/tilo/identity/secrets/*.key`, the person's
+root secret when no keyring answered at provisioning), any secret-vault `vault.key`, and with a
+writable grant can rewrite `trusted-attestors.toml` and `revoked-keys.toml`. Nothing is exposed
+without such a grant ([identity-security.md](../identity-security.md)).
+
+**Fix direction:** mask these paths in the mount namespace after the grant's bind (a tmpfs over
+the directories, `/dev/null` over the files), on both launcher pipelines.
+
+## P2-9 — The per-launch identity broker loads the root secret and never uses it
+
+`crates/packaging/launcher/src/run.rs`, `start_identity_broker`. Every authored launch loads the
+selected record *with* its secret (`runtime_identity::load_for_launch`, a Secret Service round
+trip or a read of the fallback file) into a broker thread that refuses `sign` for every record
+it can be given (`SigningIdentity::signs_with_root_key` is true whenever `device_certificate` is
+`None`, which every launcher-built identity is). The secret sits in launcher memory for the app's
+lifetime for nothing; app signatures come from the identity service.
+
+**Fix direction:** serve fd 15 from `runtime_identity::load_metadata_from_path`, which validates
+the record without contacting the secret provider.
 
 ---
 

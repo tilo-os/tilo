@@ -19,12 +19,12 @@ The scenarios we defend against:
 
 ## Identity
 
-- One Ed25519 device key per machine at `/var/lib/tilo/device-private/keypair.bin`, provisioned by root before login. Every network and document identity derives from it — no subsystem mints its own. The file is 0640 in a root-owned, non-writable `tilo-identity` directory: the root filesystem daemon and session compositor can read it, but session processes cannot delete or replace it. A key that exists but cannot be read is an error, never a reason to re-key.
+- One Ed25519 device key per machine at `/var/lib/tilo/device-private/keypair.bin`, provisioned by root before login (`tilo-device-key-init.service`). Every network and document identity derives from it — no subsystem mints its own. The file is 0640 `root:tilo-identity` in a `2750 root:tilo-identity` directory (`os/usr/lib/tmpfiles.d/tilo.conf`). The login account is a member of `tilo-identity` (`os/account.env`), because the compositor in its session presents the same identity fs.service presents as root — so every unsandboxed process of that user, not only the compositor, can read the key; none can delete or replace it, and no app sandbox is given the directory. The key is a plain file, not sealed to a TPM or wrapped by the login credential. A key that exists but cannot be read is an error, never a reason to re-key.
 - The certified device public key is the Iroh `EndpointId` used by the shell, filesystem, and workspace-host client. It is the stable peer identity everywhere.
 - Identity decisions carry the whole peer id (`PeerOrigin`), never a fold of it: an equality check a digest can be ground against is not an identity check.
 - The personal signing identity is the user root. It certifies each device key; workspace hosts accept only device certificates chaining to the configured user root and permitted by the workspace membership/revocation state.
-- **No application ever obtains a root signature.** A root signature over the right 32 bytes is a device certificate (enrolling the signer's machine as one of the person's devices) or a revocation (evicting the real ones). The per-launch identity broker the launcher hands a sandboxed app (`runtime_identity::broker`) therefore answers metadata only for a root-capable record and refuses `sign`; application signatures come from the identity service (`tilo-identity-host`), which signs with the enrolled *device* key and only under a grant that names the action (`Scope::Action`) — the `Scope::Workspace` grant every opened app holds matches every resource and is deliberately not enough.
-- A room's membership grants are written with `Scope::Room(room)`, never `Scope::Workspace`: the latter matches every path, device and host, so a member grant carrying it would read as authority over all of them wherever a person actor is evaluated against the room's capability list.
+- **No application ever obtains a root signature.** A root signature over the right 32 bytes is a device certificate (enrolling the signer's machine as one of the person's devices) or a revocation (evicting the real ones). The per-launch identity broker the launcher hands a sandboxed app (`runtime_identity::broker`) therefore answers metadata only for a root-capable record and refuses `sign`; application signatures come from the identity service (`tilo-identity-host`), which signs with the enrolled *device* key and only when the workspace policy allows the app an `Outside` action on that action's own signature node (`device_signature_node(room, app, action)`) — the open-app authorship grant every opened app holds (`tilo_action_policy::roles::app_authorship`) covers only Read and Undoable and is deliberately not enough.
+- A room's membership grants are written on nodes beneath the room (`room:<id>/…`, `tilo_action_policy::roles`), never at a workspace-wide root: a grant there matches every path, device and host, so a member grant carrying it would read as authority over all of them wherever a person actor is evaluated against the room's grants.
 
 Invite tokens are signed ed25519 blobs scoped to a workspace; see `docs/architecture/collaboration.md §7` for the wire format and validation order.
 
@@ -451,10 +451,33 @@ continuity checkpoint or complete on its own, and which devices a governance
 step is addressed to (`payloads::ShellPayloads`), plus the retained-proof
 inputs of native shell replay (`store::shell_selection`). It also refuses a
 document change its app's published surface does not allow, or that
-the room's governor did not grant its author (`surfaces`). The content of a
-sealed document stays opaque to it. Cross-device actions are signed by their
+the room's governor did not grant its author (`surfaces`), fetching each
+app's `surface.toml` by content hash from the registry (`apps.tilo.so` unless
+`TILO_REGISTRY` names another). Cross-device actions are signed by their
 source device, so routing them confers no power to forge one (see
 "Encryption" below).
+
+What it can read depends on the channel and on its certificate:
+
+- **Unsealed channels: everything.** The host verifies, folds and retains
+  their content, so it holds the full plaintext of every unsealed document it
+  carries, unencrypted at rest in its state directory (`store`).
+- **Sealed channels, plain host certificate: nothing of the content.** A host
+  certified only to host rooms governs them without stewarding their channels
+  and holds no channel key; it routes and retains ciphertext.
+- **Sealed channels, owner-capable certificate: everything.** A node whose
+  certificate lets it own workspaces is the person's own node: it stewards the
+  MLS channel of every record in the rooms it governs, is a member of each
+  group, holds its keys, and lends them to its own room actions and agents
+  (`rooms::stewardship`, `rooms::steward_endpoint`). Members accept a steward
+  only from a device certified to own workspaces.
+- **Always, whatever the channel:** member and device lists, roles, room and
+  invitee names; presence — pointers, carets, selections and typing ranges —
+  except package-primary live frames, which are sealed (`presence_mailbox`);
+  the titles of each member's recent actions, records and apps behind "who is
+  here", kept for a short TTL and sent to a model only when the operator sets
+  `TILO_RELAY_SUMMARY_ENDPOINT` (`web::here`); and, for legacy windows shared
+  with it, their keystrokes and frames (`web::legacy`).
 
 ## Encryption
 
@@ -463,6 +486,46 @@ source device, so routing them confers no power to forge one (see
 
 - iroh's FUSE traffic (`fs`) is QUIC + TLS 1.3.
 - At-rest encryption for cloud-backed `/var/workspace` is a follow-up.
+
+## What leaves the device by default
+
+Tilo's own components carry no telemetry, analytics or crash-upload client: no
+such crate is in the build (`tools/policy/check_no_telemetry.py`), panics are written only to `~/.cache/tilo/crashes/`
+(`crash_log`), and the image removes `systemd-coredump`. A feedback report
+leaves only when the person has configured a destination room and approved the
+reviewed report; it travels to that room over the collaboration transport,
+never to a Tilo service (`docs/architecture/feedback.md`). What does leave,
+without anyone asking each time:
+
+- **number 0's iroh infrastructure.** Every peer-to-peer endpoint (the shell,
+  fs, the initrd's sibling unlock, the app-registry transport, `tilo-relay`)
+  binds with iroh's `presets::N0`. That preset publishes a signed record of the
+  endpoint id — this device's public key — and its home relay URL (no IP
+  addresses) to n0's DNS service at `dns.iroh.link`, re-sent when it changes
+  and every five minutes, and looks peers up there; n0 sees the requesting IP
+  and the key. The shell holds n0's public relays (`*.relay.n0.iroh.link`)
+  back until something needs the device reachable — a shared room, an invite,
+  another of the person's devices — and lets them rest five minutes after the
+  last need (`endpoint-reachability`); fs mounts, sibling unlock and the
+  registry transport use them from the start. A relay sees IP addresses,
+  endpoint ids, which peers talk, timing and sizes; never content. Whether a
+  desktop whose relays are dormant still publishes to n0's DNS is not pinned
+  by a test.
+- **OS updates.** `bootc-fetch-apply-updates.timer` is enabled and checks the
+  machine's recorded origin, `registry.tilo.so/tilo/tilo` by default, on the
+  owner's schedule, optionally deferred on metered links
+  (`tilo-update-policy-set`, `tilo-update-policy-check`). The registry sees the
+  IP and the references requested.
+- **Time.** chronyd uses NTS-authenticated time from `time.cloudflare.com`,
+  `nts.netnod.se`, `nts1.time.nl` and `ptbtime1.ptb.de` (`os/etc/chrony.conf`).
+- **Fedora base services.** NetworkManager's connectivity check, `fwupd`'s
+  metadata refresh and `geoclue` (started only when an app asks for location
+  through the portal) follow the Fedora base image's defaults, which this
+  repository neither configures nor audits.
+
+The app catalogue (`apps.tilo.so`) is fetched only when the Store opens, and
+owner-opted extension refresh only after the owner opts in. LAN discovery
+(mDNS) is off unless `TILO_COLLAB_LAN_DISCOVERY` is set.
 
 ## Private file contents from the session chooser
 
