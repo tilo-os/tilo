@@ -74,6 +74,17 @@ node scripts/perf/browser_qualification.mjs target/qualify --out qualify.json \
 `--cpu-throttle 4` slows the page's CPU fourfold, a stand-in for older hardware
 on a fast machine; such a run is never this group's series.
 
+The `hosting` group has two jobs: the relay's cost per collaborator-hour
+(`relay_load`, rooms of four) and a public room host at 100 guests
+(`hosting-room`: `tilo-room-load bench --guests 100`, three runs on `runner-large`, through
+`adapters.py room-load`), which guards the guests' p99 join and chat delivery
+and the host's peak memory and CPU. The capacity curve behind that point and
+the deployed caps (guests and spectators from 50 to 4000, the caps at once, and
+the price of 100 concurrent guests per node) is **Perf / room host capacity**
+(`perf-room-capacity.yml`, manual dispatch, `tools/perf/room_capacity.py`);
+[docs/benchmarks/room-host-capacity-2026-10.md](../benchmarks/room-host-capacity-2026-10.md)
+records a run.
+
 The `latency` group is the compositor's side only (headless, no panel).
 Input-to-presentation latency on the reference machines is a weekly,
 report-only run through `tilo-vm`, outside this workflow:

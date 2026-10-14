@@ -463,6 +463,8 @@ inputs = [
   "crates/session/shell/src/shell/search/providers/files.rs",
   # ... and the hosting-load KPI ids equal to the relay load bench's.
   "crates/hosting/tilo-relay/examples/relay_load/main.rs",
+  # ... and the room-load report fields equal to the room load bench's.
+  "crates/dev/room-load/src/",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   "crates/session/shell/examples/redraw_bench.rs",
@@ -505,6 +507,7 @@ suites = [
   "tools/perf/test_compare.py",
   "tools/perf/test_image_size.py",
   "tools/perf/test_record.py",
+  "tools/perf/test_room_capacity.py",
   "tools/perf/test_runtime_size_ratchet.py",
   "tools/perf/test_store.py",
   "tools/perf/test_tapp_size_ratchet.py",
