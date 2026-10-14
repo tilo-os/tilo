@@ -191,10 +191,14 @@ fi
 # shows up here and nowhere else.
 meminit="$(journalctl --quiet --boot --dmesg --no-pager --output=cat 2>/dev/null \
   | grep -m1 'mem auto-init:' || true)"
+# The image asks for zero-on-alloc only (01-hardening.toml says why free is
+# off). A local init_on_free=1 makes the kernel zero on free instead and turn
+# alloc zeroing off: allocations still reach their caller zeroed, so note it.
 case "$meminit" in
-  *'alloc:on'*'free:on'*) ok "${meminit#*mem auto-init: }(live, from the kernel's own report)" ;;
-  '')                     note "mem auto-init: kernel report not in the ring buffer (rotated out?)" ;;
-  *)                      warn "mem auto-init NOT fully on: ${meminit#*mem auto-init: }" ;;
+  *'alloc:on'*) ok "${meminit#*mem auto-init: }(live, from the kernel's own report)" ;;
+  *'free:on'*)  note "mem auto-init zeroes on free (local init_on_free=1): ${meminit#*mem auto-init: }" ;;
+  '')           note "mem auto-init: kernel report not in the ring buffer (rotated out?)" ;;
+  *)            warn "mem auto-init NOT on: ${meminit#*mem auto-init: }" ;;
 esac
 
 # Enforced module signatures. sig_enforce is the live value of
