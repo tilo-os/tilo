@@ -26,7 +26,7 @@ thiserror.workspace = true
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 tempfile.workspace = true
