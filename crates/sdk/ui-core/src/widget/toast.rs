@@ -752,9 +752,41 @@ pub fn card_height(
         if single_action_inline(text_renderer, theme, card, width) {
             return compact;
         }
+        // The action ends the card, so the text has the card's width and
+        // wraps there whole rather than eliding.
         let control_height = ButtonFace::height(crate::widget::ControlSize::Small, theme);
         let (_, pad_y) = card_pad(theme);
-        return (compact + control_height + pad_y + choice_lead(theme)).ceil();
+        let text_width =
+            f32_of_f64((width - leading_column(theme, card) - 2.0 * pad_x - trailing).max(1.0));
+        let block: f64 = [
+            (card.caption, theme.text(TextRole::Caption)),
+            (card.title, theme.text(TextRole::Label).strong()),
+            (card.body, theme.text(TextRole::Caption)),
+        ]
+        .into_iter()
+        .map(|(text, style)| {
+            let text = single_line_text(text);
+            if text.is_empty() {
+                0.0
+            } else {
+                f64::from(
+                    text_renderer
+                        .measure_style(&text, Some(text_width), &style)
+                        .1,
+                )
+            }
+        })
+        .sum();
+        let wrapped = block
+            .max(leading_side(theme, card).unwrap_or(0.0))
+            .max(if card.closable { control_height } else { 0.0 })
+            + 2.0 * pad_y
+            + choice_lead(theme)
+            + choice_height(theme)
+            + choice_foot(theme);
+        return wrapped
+            .max(compact + control_height + pad_y + choice_lead(theme))
+            .ceil();
     }
     let text_width = width - leading_column(theme, card) - pad_x - trailing;
     if text_width <= 0.0 {
@@ -1831,6 +1863,26 @@ mod tests {
             "{under:?} ends the card {rect:?}"
         );
         assert!(rect.height() > minimum_card_height(&mut tr, &large, &card));
+        // Every letter of the caption, title, body and button is painted:
+        // an elided line would drop most of them.
+        let mut scene = Scene::new();
+        paint_card(&mut scene, Affine::IDENTITY, &mut tr, &large, rect, &card);
+        let glyphs: usize = scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .iter()
+            .map(|run| run.glyphs.len())
+            .sum();
+        let letters = [card.caption, card.title, card.body, card.primary_action]
+            .concat()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .count();
+        assert!(
+            glyphs >= letters,
+            "{glyphs} glyphs for {letters} letters: a line was elided"
+        );
     }
 
     #[test]
