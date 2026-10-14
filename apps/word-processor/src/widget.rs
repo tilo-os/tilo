@@ -1265,6 +1265,9 @@ pub struct WordProcessorWidget {
     /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Notice,
+    /// "Saved report.docx", said in passing for a save that changed nothing
+    /// on screen; never a toast, since there is nothing to read or act on.
+    acknowledger: ui::widget::acknowledgement::Acknowledger,
     ime_rect: Option<Rect>,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
@@ -1539,6 +1542,7 @@ impl WordProcessorWidget {
             pending_save: None,
             style_menu: StyleMenu::default(),
             toast: Notice::default(),
+            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
             ime_rect: None,
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
@@ -5239,6 +5243,11 @@ impl WordProcessorWidget {
         );
         self.toast
             .paint(scene, transform, tr, theme, area, ToastAnchor::BottomCenter);
+        let now = ui::time::now();
+        if let Some(ack) = self.acknowledger.current(now) {
+            let alpha = ack.alpha_at(now, theme.reduce_motion);
+            ack.draw(scene, transform, tr, theme, area, alpha);
+        }
     }
 }
 
@@ -9861,10 +9870,14 @@ impl WordProcessorWidget {
     ) -> Result<(), String> {
         let doc = cx.document().ok_or("the document is not at hand")?.clone();
         self.try_write_to_path(&doc, path, WpFormat::from_path(path))?;
-        // No chooser was involved, so nothing on screen changed: the file
-        // is out of sight and the toast is the only answer. A save through
-        // the chooser stays quiet, since the person just picked the file.
-        self.toast.show(t("toast-saved"), ToastKind::Success);
+        // No chooser was involved, so nothing on screen changed: say so in
+        // passing. A save through the chooser stays quiet, since the person
+        // just picked the file.
+        let file = path
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        self.acknowledger
+            .say(t_args("saved-file", &[arg("file", file)]));
         Ok(())
     }
 
@@ -10093,7 +10106,10 @@ impl Widget for WordProcessorWidget {
     fn needs_animation_frame(&self) -> bool {
         // Only the outline and inspector drawers move, while they open or
         // close.
-        self.outline_drawer.is_animating() || self.inspector_drawer.is_animating()
+        self.outline_drawer.is_animating()
+            || self.inspector_drawer.is_animating()
+            // A passing "Saved …" holds, fades and goes on its own.
+            || self.acknowledger.current(ui::time::now()).is_some()
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -10354,6 +10370,11 @@ impl Widget for WordProcessorWidget {
         }
         let mut node = tree.into_access_node();
         node.children.extend(self.toast.access_node());
+        node.children.extend(
+            self.acknowledger
+                .current(ui::time::now())
+                .map(|ack| ack.accessibility()),
+        );
         Some(node)
     }
 
