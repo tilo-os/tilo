@@ -730,7 +730,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         assert_eq!(block_scene(&mut editor).encoding().draw_tags.len(), idle);
     }
 
-    eprintln!("phase caret_block_handle_stays_visible_after_pointer_exit_and_follows_focus");
+    eprintln!("phase caret_block_handle_shows_after_pointer_motion_and_follows_focus");
     {
         let mut editor = block_gesture_fixture();
         // Isolate handle paint from the independently tested insertion caret.
@@ -739,6 +739,13 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         let idle = block_scene(&mut editor).encoding().draw_tags.len();
         editor.focus_block(1, ui::widget::CursorPlacement::End);
         editor.set_focus(true);
+        assert_eq!(
+            block_scene(&mut editor).encoding().draw_tags.len(),
+            idle,
+            "the handles are for the pointer: none shows before it moves"
+        );
+        let second = editor.blocks()[1].line.get_rect().center();
+        block_event(&mut editor, cursor_moved(second.x, second.y));
         block_event(
             &mut editor,
             WindowEvent::CursorLeft {
@@ -748,7 +755,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         assert_eq!(
             block_scene(&mut editor).encoding().draw_tags.len(),
             idle + 6,
-            "the caret block retains its handle away from the pointer"
+            "once the pointer has moved, the caret block keeps its handle away from it"
         );
         let first = editor.blocks()[0].line.get_rect().center();
         block_event(&mut editor, cursor_moved(first.x, first.y));

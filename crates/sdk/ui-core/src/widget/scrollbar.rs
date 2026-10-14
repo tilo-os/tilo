@@ -115,25 +115,7 @@ impl BarFade {
         now: crate::time::Instant,
         held: bool,
     ) -> f32 {
-        use crate::time::Duration;
-        if held {
-            return 1.0;
-        }
-        let Some(t) = last_activity else {
-            return 0.0;
-        };
-        let elapsed = now.saturating_duration_since(t);
-        let hold = Duration::from_millis(BAR_HOLD_MS);
-        let fade = Duration::from_millis(BAR_FADE_MS);
-        // `checked_sub` doubles as the "still within the hold window" test:
-        // `None` means `elapsed < hold`.
-        let Some(since_hold) = elapsed.checked_sub(hold) else {
-            return 1.0;
-        };
-        if since_hold >= fade {
-            return 0.0;
-        }
-        1.0 - since_hold.as_secs_f32() / fade.as_secs_f32()
+        Self::idle_fade(last_activity).opacity_at(now, held)
     }
 
     /// Whether the bar is fading at `now` (the owner needs frames).
@@ -147,13 +129,7 @@ impl BarFade {
         now: crate::time::Instant,
         held: bool,
     ) -> bool {
-        use crate::time::Duration;
-        !held
-            && last_activity.is_some_and(|activity| {
-                let elapsed = now.saturating_duration_since(activity);
-                elapsed >= Duration::from_millis(BAR_HOLD_MS)
-                    && elapsed < Duration::from_millis(BAR_HOLD_MS + BAR_FADE_MS)
-            })
+        Self::idle_fade(last_activity).fading_at(now, held)
     }
 
     /// When the fade starts, if it is still ahead at `now`: the owner's
@@ -172,12 +148,7 @@ impl BarFade {
         now: crate::time::Instant,
         held: bool,
     ) -> Option<crate::time::Instant> {
-        if held {
-            return None;
-        }
-        last_activity?
-            .checked_add(crate::time::Duration::from_millis(BAR_HOLD_MS))
-            .filter(|deadline| *deadline > now)
+        Self::idle_fade(last_activity).fade_deadline_at(now, held)
     }
 
     /// Whether the fade has run its course at `now`.
@@ -185,10 +156,16 @@ impl BarFade {
         last_activity: Option<crate::time::Instant>,
         now: crate::time::Instant,
     ) -> bool {
-        last_activity.is_some_and(|activity| {
-            now.saturating_duration_since(activity)
-                >= crate::time::Duration::from_millis(BAR_HOLD_MS + BAR_FADE_MS)
-        })
+        Self::idle_fade(last_activity).finished_at(now)
+    }
+
+    /// The scroll bar's hold and fade, last woken at `last_activity`.
+    fn idle_fade(last_activity: Option<crate::time::Instant>) -> crate::animation::IdleFade {
+        crate::animation::IdleFade::new(
+            crate::time::Duration::from_millis(BAR_HOLD_MS),
+            crate::time::Duration::from_millis(BAR_FADE_MS),
+        )
+        .woken_at(last_activity)
     }
 }
 
