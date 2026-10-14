@@ -1132,6 +1132,10 @@ impl App {
                 if low { "  LOW: tilo-vm gc" } else { "" }
             ));
         }
+        if let Some(change) = &status.image_change {
+            lines.extend(change.describe().into_iter().map(|line| format!("  {line}")));
+            insert(&mut vm_data, "image_change", json!(change));
+        }
         let ci_from_host = Self::adapter(&vm)?.ci_layers_from_host();
         lines.push(format!(
             "  builds: {}",
@@ -3395,6 +3399,16 @@ impl App {
             )
             .next(&["tilo-vm status"]));
         }
+        if !staged.success
+            && let Some((free, needed)) = imageup::insufficient_space(&staged.stderr)
+        {
+            return Err(CliError::NoSpace {
+                place: format!("VM {}", vm.name),
+                free,
+                what: "the new OS image".into(),
+                needed,
+            });
+        }
         if !staged.success {
             return Err(CliError::CommandFailed {
                 command: words.join(" "),
@@ -3451,7 +3465,7 @@ impl App {
             }
             return Ok(Outcome::new(
                 format!(
-                    "staged {} on VM {}; it boots at the next restart (now running {previous_text})\n  {}",
+                    "staged {} on VM {}; it boots at the next restart (now running {previous_text})\n  at that boot every slot goes back to the new image: layers built for this one are dropped\n  {}",
                     next.describe(),
                     vm.name,
                     self.receipt.summary()
@@ -3462,9 +3476,15 @@ impl App {
         }
         let booted = self.reboot_into(vm, endpoint, &facts.boot_id, &next.digest)?;
         self.warnings.extend(self.receipt.slow());
+        let change = self.image_change_of_this_boot(vm, endpoint);
+        let slots = match &change {
+            Some(change) if !change.dropped.is_empty() => change.describe().join("\n  "),
+            Some(_) => "no slot ran layers: every slot runs the new image as installed".into(),
+            None => "slots: tilo-vmd did not report how it reconciled them with the new image (tilo-vm status)".into(),
+        };
         Ok(Outcome::new(
             format!(
-                "VM {} now runs {}\n  before: {previous_text}, kept for tilo-vm vm rollback-image\n  slots and layers are unchanged (they live in /var)\n  {}",
+                "VM {} now runs {}\n  before: {previous_text}, kept for tilo-vm vm rollback-image\n  {slots}\n  {}",
                 vm.name,
                 booted.describe(),
                 self.receipt.summary()
@@ -3476,9 +3496,38 @@ impl App {
                 "transport": stage.transport,
                 "digest": booted.digest,
                 "previous": previous.map(|p| p.digest),
+                "image_change": change,
             }),
         )
         .next(&["tilo-vm status", "tilo-vm vm rollback-image"]))
+    }
+
+    /// What tilo-vmd's early-boot reconcile did with the slots on the image
+    /// this boot runs, when it says so: its last image change, if that change
+    /// is to the booted image (the kernel command line names it).
+    fn image_change_of_this_boot(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+    ) -> Option<tilo_vm_protocol::ImageChange> {
+        let cmdline = self.vm_sh(vm, endpoint, "cat /proc/cmdline").ok()?;
+        let booted = tilo_vm_protocol::booted_image(&cmdline.stdout)?;
+        let status = self.connect(vm).ok()?.call(Status { slot: None }).ok()?;
+        if status.slots_image.as_deref() != Some(booted.as_str()) {
+            // A daemon that does not reconcile, or one that has not yet.
+            return None;
+        }
+        match status.image_change {
+            Some(change) if change.to == booted => Some(change),
+            // The reconcile for this image dropped nothing: no slot ran layers.
+            _ => Some(tilo_vm_protocol::ImageChange {
+                from: None,
+                to: booted,
+                at: String::new(),
+                dropped: Vec::new(),
+                freed_bytes: 0,
+            }),
+        }
     }
 
     /// So the shutdown can apply the staged deployment (see
