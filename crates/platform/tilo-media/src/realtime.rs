@@ -766,6 +766,17 @@ mod unavailable {
         ) -> Result<Option<DecodedPicture>, RealtimeError> {
             Err(RealtimeError::NotCompiled)
         }
+
+        pub fn picture_pending(&self) -> bool {
+            match self.never {}
+        }
+
+        /// # Errors
+        ///
+        /// Never returns: no decoder exists to drain.
+        pub fn take_late_picture(&mut self) -> Result<Option<DecodedPicture>, RealtimeError> {
+            match self.never {}
+        }
     }
 
     /// Nothing can be encoded or decoded without `GStreamer`.
