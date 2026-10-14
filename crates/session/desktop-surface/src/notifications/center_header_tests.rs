@@ -324,7 +324,10 @@ fn a_rows_choices_sit_compact_and_trailing_like_its_banners() {
         not_now.x0 > row.x0 + qs::CONTROL_INSET + 1.0,
         "at their own width, not a pair of slabs"
     );
-    assert!((row.y1 - qs::CONTROL_PAD - keep.y1).abs() < 1e-6);
+    assert!(
+        (row.y1 - ui::widget::toast::choice_foot(&theme) - keep.y1).abs() < 1e-6,
+        "the card's padding under the choices"
+    );
     // Too narrow for both at their width: equal halves.
     let (row, not_now, keep) = choices(200.0);
     assert!((not_now.x0 - (row.x0 + qs::CONTROL_INSET)).abs() < 1e-6);

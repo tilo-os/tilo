@@ -685,7 +685,7 @@ pub fn minimum_card_height(
         })
         + 2.0 * pad_y;
     if !card.secondary_action.is_empty() && !card.primary_action.is_empty() {
-        height += control_height + pad_y + f64::from(theme.tokens.spacing.s1);
+        height += control_height + pad_y + choice_lead(theme);
     }
     height.ceil()
 }
@@ -806,10 +806,10 @@ fn paint_card_actions(
     if card.secondary_action.is_empty() || card.primary_action.is_empty() {
         return None;
     }
-    let (pad_x, pad_y) = card_pad(theme);
+    let (pad_x, _) = card_pad(theme);
     let left = rect.x0 + pad_x;
     let right = rect.x1 - pad_x;
-    let y1 = rect.y1 - pad_y;
+    let y1 = rect.y1 - choice_foot(theme);
     let y0 = y1 - choice_height(theme);
     let (secondary, primary) = choice_rects(
         Rect::new(left, y0, right, y1),
@@ -863,13 +863,24 @@ fn paint_card_actions(
     if faded {
         scene.pop_layer();
     }
-    Some(y0 - f64::from(theme.tokens.spacing.s1))
+    Some(y0 - choice_lead(theme))
 }
 
 /// The height of a card's choices: compact controls, so a card reads as
 /// its message first.
 pub fn choice_height(theme: &Theme) -> f64 {
     ButtonFace::height(crate::widget::ControlSize::Small, theme)
+}
+
+/// The step between a card's text and its choices: a full related step,
+/// so the choices read as the message's answer rather than part of it.
+pub fn choice_lead(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s2)
+}
+
+/// The padding under a card's choices: the card's own vertical padding.
+pub fn choice_foot(theme: &Theme) -> f64 {
+    card_pad(theme).1
 }
 
 /// The space between a card's two choices.

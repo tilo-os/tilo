@@ -109,6 +109,7 @@ pub struct CenterMetrics {
     choice_height: f64,
     choice_gap: f64,
     choice_lead: f64,
+    choice_foot: f64,
     /// The theme rows are measured in, so a row is as tall as its body
     /// wraps to and its choices as wide as their labels. Without one (bare
     /// line boxes) every row keeps room for the full preview.
@@ -129,6 +130,7 @@ impl From<(f64, f64)> for CenterMetrics {
             choice_height: qs::TARGET,
             choice_gap: qs::RELATED_GAP,
             choice_lead: qs::RELATED_GAP,
+            choice_foot: qs::CONTROL_PAD,
             theme: None,
         }
     }
@@ -291,7 +293,8 @@ impl CenterLayout {
             height: ButtonFace::height(ControlSize::Regular, theme),
             choice_height: ui::widget::toast::choice_height(theme),
             choice_gap: ui::widget::toast::choice_gap(theme),
-            choice_lead: f64::from(theme.tokens.spacing.s1),
+            choice_lead: ui::widget::toast::choice_lead(theme),
+            choice_foot: ui::widget::toast::choice_foot(theme),
             theme: Some(std::sync::Arc::new(theme.clone())),
         }
     }
@@ -434,12 +437,14 @@ impl CenterLayout {
             + self.label_lh
             + f64_of_usize(shape.body_lines) * self.caption_lh
     }
-    /// A row's height: its text, then its own choices a small step under
-    /// it, as on its banner.
+    /// A row's height: its text, then its own choices padded as on its
+    /// banner, a related step under the text and the card's padding under
+    /// them.
     fn row_extent(&self, shape: &RowShape) -> f64 {
         self.text_extent(shape)
             + if shape.choices > 0 {
-                self.actions.choice_lead + self.actions.choice_height
+                self.actions.choice_lead + self.actions.choice_height + self.actions.choice_foot
+                    - qs::CONTROL_PAD
             } else {
                 0.0
             }
@@ -644,7 +649,7 @@ impl CenterLayout {
     /// secondary then primary, sharing the band in halves only when their
     /// labels do not fit.
     pub fn row_actions(&self, row: Rect, shape: &RowShape) -> Vec<Rect> {
-        let y1 = row.y1 - qs::CONTROL_PAD;
+        let y1 = row.y1 - self.actions.choice_foot;
         let band = Rect::new(
             row.x0 + qs::CONTROL_INSET,
             y1 - self.actions.choice_height,
