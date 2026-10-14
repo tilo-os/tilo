@@ -14,9 +14,9 @@ pub const MAX_FIELD_RANK: i32 = 100;
 /// field (the lightest, [`FieldWeight::BODY`], ranks an infix at 12).
 pub const SPANNING_RANK: i32 = 11;
 
-/// Rank of a query that only matches a full-weight field's words within a
-/// small edit distance: a typo in a name the person remembers. Lighter
-/// fields never match this way.
+/// Rank of a query that only matches a title's words within a small edit
+/// distance: a typo in a name the person remembers. A keyword's words match
+/// this way one rank lower; other fields never do.
 pub const FUZZY_RANK: i32 = 10;
 
 /// How strongly a query matched one field; later variants are stronger.
@@ -81,7 +81,10 @@ impl MatchTier {
     #[must_use]
     pub fn rank_in(self, weight: FieldWeight) -> Option<i32> {
         match self {
-            Self::Spanning | Self::Typo => Some(self.percent()),
+            Self::Spanning => Some(self.percent()),
+            // A name remembered wrongly beats a keyword remembered wrongly.
+            Self::Typo if weight == FieldWeight::TITLE => Some(self.percent()),
+            Self::Typo => Some(self.percent().saturating_sub(1)),
             Self::Contains if weight.percent() == 0 => Some(0),
             _ if weight.percent() == 0 => None,
             _ => Some(self.percent().saturating_mul(i32::from(weight.percent())) / 100),
@@ -96,6 +99,11 @@ pub struct FieldWeight(u8);
 impl FieldWeight {
     /// The name a person looks for: a title, a contact's name, a file name.
     pub const TITLE: Self = Self(100);
+    /// A word the person uses for the thing without it being its name: an
+    /// alias, a synonym, the product it stands in for ("youtube" for a video
+    /// app), the same in another language. Ranks below the name and above
+    /// identities; its words also match by typo.
+    pub const KEYWORD: Self = Self(80);
     /// A stable identity the person may type verbatim: an id, a path, a key.
     pub const IDENTITY: Self = Self(50);
     /// A secondary line shown with the hit: an author, a sender, a folder.
@@ -139,12 +147,16 @@ impl FieldWeight {
     }
 }
 
+/// The slot [`FieldWeight::KEYWORD`] is kept in.
+pub const KEYWORD_SLOT: usize = 3;
+
 /// The weights an index keeps a field for: the standard ones plus the
 /// action and package identities the launcher ranks just below a title.
-pub const INDEXED_WEIGHTS: [FieldWeight; 8] = [
+pub const INDEXED_WEIGHTS: [FieldWeight; 9] = [
     FieldWeight::TITLE,
     FieldWeight::new(90),
     FieldWeight::new(88),
+    FieldWeight::KEYWORD,
     FieldWeight::IDENTITY,
     FieldWeight::SUBTITLE,
     FieldWeight::METADATA,
@@ -159,9 +171,10 @@ mod tests {
     #[test]
     fn weights_find_their_slot() {
         assert_eq!(FieldWeight::TITLE.slot(), 0);
-        assert_eq!(FieldWeight::UNRANKED.slot(), 7);
+        assert_eq!(FieldWeight::UNRANKED.slot(), 8);
         assert_eq!(FieldWeight::new(89).slot(), 1);
-        assert_eq!(FieldWeight::new(45).slot(), 3);
+        assert_eq!(FieldWeight::KEYWORD.slot(), KEYWORD_SLOT);
+        assert_eq!(FieldWeight::new(45).slot(), 4);
         assert_eq!(FieldWeight::new(200), FieldWeight::TITLE);
     }
 

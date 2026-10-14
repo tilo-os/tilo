@@ -26,6 +26,7 @@ fn source() -> (DesktopTree, CommandSource) {
         active_tab: 31,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
         tabs: [30, 31, 32]
             .into_iter()
             .map(|id| Tab {

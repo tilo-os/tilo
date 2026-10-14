@@ -35,20 +35,8 @@ impl WallpaperBackend {
         }
     }
 }
-#[cfg(target_os = "linux")]
-fn bool_opt(options: &HashMap<String, OwnedValue>, key: &str) -> bool {
-    options
-        .get(key)
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| bool::try_from(v).ok())
-        .unwrap_or(false)
-}
 fn set_on(options: &HashMap<String, OwnedValue>) -> Option<String> {
-    let value = options
-        .get("set-on")
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| String::try_from(v).ok())
-        .unwrap_or_else(|| "both".into());
+    let value = crate::portal::option::<String>(options, "set-on").unwrap_or_else(|| "both".into());
     matches!(value.as_str(), "background" | "lockscreen" | "both").then_some(value)
 }
 /// xdg-document-portal exports use ordinary `file:` URIs. The service
@@ -89,7 +77,7 @@ impl WallpaperBackend {
             app_id: auth.caller.app_id.clone(),
             workspace_id: auth.caller.workspace_id.0.to_string(),
             uri,
-            show_preview: bool_opt(&options, "show-preview"),
+            show_preview: crate::portal::option(&options, "show-preview").unwrap_or(false),
             set_on,
         };
         // Import and decode before asking. When `show-preview` is set the

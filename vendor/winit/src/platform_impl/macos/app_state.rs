@@ -4,7 +4,7 @@ use std::rc::Weak;
 use std::time::Instant;
 
 use objc2::rc::Retained;
-use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
+use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationTerminateReply, NSRunningApplication,
@@ -12,9 +12,9 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol};
 
 use super::event_handler::EventHandler;
-use super::event_loop::{ActiveEventLoop, PanicInfo, notify_windows_of_exit, stop_app_immediately};
+use super::event_loop::{notify_windows_of_exit, stop_app_immediately, ActiveEventLoop, PanicInfo};
 use super::observer::{EventLoopWaker, RunLoop};
-use super::{DEVICE_ID, WindowId, menu};
+use super::{menu, WindowId, DEVICE_ID};
 use crate::event::{DeviceEvent, Event, StartCause, WindowEvent};
 use crate::event_loop::{ActiveEventLoop as RootActiveEventLoop, ControlFlow};
 use crate::window::WindowId as RootWindowId;

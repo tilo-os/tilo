@@ -5727,8 +5727,10 @@ mod injected_startup_tests {
             deferred_services(),
         );
         widget.nearby_send.poll_if_due(ui::time::now());
+        // Nearby Send's first poll leaves its snapshot in flight, which sets no
+        // deadline at all (its reply is an event); nothing may be due yet.
         assert!(
-            Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline > ui::time::now()),
+            Widget::next_wake_deadline(&widget).is_none_or(|deadline| deadline > ui::time::now()),
             "the completed-reply branch, rather than Nearby Send's initial poll, must supply the immediate wake"
         );
         widget

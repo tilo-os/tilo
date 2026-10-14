@@ -202,6 +202,7 @@ pub fn installed_tilo_to_store_item(entry: &InstalledPackage) -> StoreItem {
             download_url: None,
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: (!entry.publisher_key_hex.trim().is_empty())
             .then(|| entry.publisher_key_hex.clone()),
@@ -224,6 +225,7 @@ fn tilo_version_to_store(v: &RegistryVersion, tapp: &TappArtifact) -> StoreItemV
         download_url: Some(tapp.tapp_url.clone()),
         root_hash_hex: Some(tapp.tapp_root_hash_hex.clone()),
         size_bytes: tapp.tapp_size_bytes,
+        runtime: tapp.target.runtime.clone(),
     }
 }
 
@@ -267,6 +269,7 @@ pub fn flathub_placeholder_to_item(
             download_url: None,
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: None,
         installed,
@@ -299,6 +302,7 @@ pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
             download_url: None,
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: None,
         installed: InstalledState::Installed {
@@ -452,6 +456,7 @@ pub fn flathub_record_to_item(
             download_url: None,
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: None,
         installed,
@@ -580,6 +585,22 @@ mod tests {
             }
         ));
         assert!(!item.allows_action(crate::ActionKind::FlatpakInstall, true));
+    }
+
+    #[test]
+    fn tapp_versions_keep_their_runtime_pin_and_runtime_packages_offer_install() {
+        let mut entry = tilo_entry("so.tilo.runtime.chromium", "Chromium", "1.0.0", [1; 32]);
+        let runtime = "tilo-runtime/2026.10.10-chromium";
+        let version = &mut entry.versions[0];
+        version.tapp_mut().unwrap().target.runtime = Some(runtime.into());
+        let stored = tilo_version_to_store(version, version.tapp().unwrap());
+        assert_eq!(stored.runtime.as_deref(), Some(runtime));
+        let item = tilo_to_store_item(&verified(entry), "Tilo main", &[]);
+        assert!(item.bot.is_none());
+        assert_eq!(
+            item.action_kind(true),
+            crate::model::ActionKind::RuntimeInstall
+        );
     }
 
     #[test]

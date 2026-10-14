@@ -573,10 +573,11 @@ pub fn mode_command(state: &Path, args: &[String]) -> Result<()> {
             let Some(mode) = Mode::parse(wanted) else {
                 bail!("mode is one of: normal, spectator-only, back-soon");
             };
-            std::fs::create_dir_all(state).context("create the state directory")?;
-            let temporary = state.join("mode.new");
-            std::fs::write(&temporary, mode.as_str()).context("write the mode")?;
-            std::fs::rename(&temporary, state.join(MODE_FILE)).context("set the mode")?;
+            tilo_files::native::atomic::write_creating_parent(
+                &state.join(MODE_FILE),
+                mode.as_str().as_bytes(),
+            )
+            .context("set the mode")?;
             println!("{}", mode.as_str());
             Ok(())
         }

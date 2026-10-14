@@ -12,7 +12,9 @@ use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
-pub use tree_handle::{WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard};
+pub use tree_handle::{
+    WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard, next_policy_revision,
+};
 pub use window_hosting::WindowHosting;
 
 pub use collab_types::caps::{
@@ -553,8 +555,9 @@ use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// High-16-bit peer salt for every id `next_id` mints. Default `0`
-/// keeps tests on `0x0001, 0x0002, …`; the hosted entry point overwrites
-/// it at startup with a hash of the local Iroh key. `Relaxed`: written
+/// keeps tests on `0x0001, 0x0002, …`; session bootstrap
+/// (`compositor::session_bootstrap::load_session_tree`) overwrites it at
+/// startup with the salt stored beside the state file. `Relaxed`: written
 /// once at boot, nothing piggy-backs on visibility.
 pub(crate) static NEXT_ID_PEER_SALT: AtomicU16 = AtomicU16::new(0);
 
@@ -707,6 +710,19 @@ pub fn local_user_id_for_room(room: &RoomId) -> UserId {
         .unwrap_or_else(local_user_id)
 }
 
+/// [`local_user_id_for_room`] for the compositor's input and frame loop, which
+/// asks on every key and frame. After the first answer it never waits for the
+/// identity directory: a change another process made shows one refresh later.
+/// Code that records who owns something uses the exact function.
+pub fn local_user_id_for_room_prompt(room: &RoomId) -> UserId {
+    #[cfg(test)]
+    crate::shell::test_support::ambient_start("room identity");
+    crate::identity_registry::selected_principal_id_prompt(&room.to_string())
+        .ok()
+        .flatten()
+        .unwrap_or_else(local_user_id)
+}
+
 /// The name a session goes by before it says who is sitting at it.
 /// Derived from the Iroh peer handle, so it must match the fallback
 /// label [`crate::shell::peer_presence::fold_inbound`] gives an
@@ -751,6 +767,14 @@ pub struct WorkspaceTree {
     /// Projected from the owner, so not persisted.
     #[serde(skip)]
     pub stewarded_rooms: BTreeSet<RoomId>,
+    /// Which version of the authorization-relevant state (grants, roster,
+    /// owner, ...) this tree holds. Advanced by the released write guard that
+    /// changed it ([`WorkspaceTreeHandle::write`]), from one process-wide
+    /// counter, so a larger value is always a later state. A launch records
+    /// the value its captured grants came from; the published policy carries
+    /// the value it was exported at.
+    #[serde(skip)]
+    pub policy_revision: u64,
     /// The host-independent desktop: workspaces, focus pointers and the
     /// schema version. Flattened, so `state.json` keeps its shape.
     #[serde(flatten)]
@@ -874,6 +898,7 @@ impl Default for WorkspaceTree {
             native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
             native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
             stewarded_rooms: BTreeSet::new(),
+            policy_revision: 0,
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             room_authority: HashMap::new(),
@@ -2771,18 +2796,31 @@ impl WorkspaceTree {
     /// keypress never waits on the disk.
     /// [`crate::shell::persist::wait_for_saves`] waits for them. A copy the
     /// state file refuses (a stale authority snapshot) exports nothing.
+    ///
+    /// There is no debounce or batching: the copy is taken and submitted
+    /// before this returns, and a submission for a path that has not started
+    /// writing is replaced by the newer copy, which holds every earlier
+    /// revision. The released write guard calls this itself for every write
+    /// that changes authorization state, so no policy revision depends on a
+    /// caller remembering to save.
     pub fn queue_save(&self) {
         let started = std::time::Instant::now();
         let export = self.fs_capability_export();
         let actions = crate::shell::launcher::action_authority::Export::of(self);
+        let failure = actions.failure_handle();
         match (&self.persist_path, export) {
             (Some(path), export) => {
-                crate::shell::persist::queue_save(self, path, move || {
-                    actions.publish();
-                    if let Some(export) = export {
-                        export.write();
-                    }
-                });
+                crate::shell::persist::queue_save_or_report(
+                    self,
+                    path,
+                    move || {
+                        actions.publish();
+                        if let Some(export) = export {
+                            export.write();
+                        }
+                    },
+                    move |error| failure.fail(error),
+                );
             }
             (None, Some(export)) => {
                 export.submit();
@@ -4183,6 +4221,7 @@ impl WorkspaceTree {
                     active_tab: tab_notes,
                     width: WindowWidth::Wide,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }],
             // One invented peer so the top-bar avatar stack has something
@@ -4812,6 +4851,7 @@ impl WorkspaceTree {
                         active_tab: 0,
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     });
                 }
                 let group = &mut strip.window_groups[app.placement.group as usize];
@@ -4828,7 +4868,7 @@ impl WorkspaceTree {
                 if group.active_tab == 0 {
                     // This only defines the group's internal default when the
                     // person later enters it; it does not touch tree focus maps.
-                    group.active_tab = app.id.0;
+                    group.activate_tab(app.id.0);
                 }
                 changed = true;
             }
@@ -6240,6 +6280,7 @@ mod automerge_foundation_tests {
                         active_tab: tab_id,
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     }],
                 }];
                 tree.sync_room_doc(room);
@@ -6420,6 +6461,7 @@ mod automerge_foundation_tests {
                     active_tab: tab_id,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
             host.sync_room_doc(room);
@@ -6812,6 +6854,7 @@ mod automerge_foundation_tests {
                     active_tab: tab,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
 
@@ -7040,6 +7083,7 @@ mod automerge_foundation_tests {
                 active_tab: tab,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         }];
         (strip, group, tab)
@@ -7093,6 +7137,7 @@ mod automerge_foundation_tests {
                 active_tab: tab_b,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         }];
         tree.desktop.active_strip.insert(ws, strip);
@@ -8221,6 +8266,7 @@ mod automerge_foundation_tests {
                     active_tab: 0,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             });
             tree_a.seed_doc_from_cache();
@@ -8305,6 +8351,7 @@ mod automerge_foundation_tests {
                     active_tab: expected[0],
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             });
             tree_a.seed_doc_from_cache();
@@ -8413,6 +8460,7 @@ mod active_group_tests {
                     active_tab: 0,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 })
                 .collect(),
         };

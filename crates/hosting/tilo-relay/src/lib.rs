@@ -97,6 +97,8 @@ pub mod environment_tools;
 #[cfg(not(target_arch = "wasm32"))]
 mod handshake;
 #[cfg(not(target_arch = "wasm32"))]
+mod host_authority;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;
 #[cfg(target_os = "linux")]
 pub mod legacy_route;

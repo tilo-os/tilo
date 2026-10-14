@@ -218,7 +218,7 @@ fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
                 "rd.luks.options" => value == "tpm2-device=auto,fido2-device=auto",
                 "composefs" => value == boot.composefs_digest,
                 "tilo.mode" => value == "normal",
-                "init_on_alloc" | "init_on_free" | "page_alloc.shuffle" => value == "1",
+                "init_on_alloc" | "page_alloc.shuffle" => value == "1",
                 "lockdown" => value == "integrity",
                 "randomize_kstack_offset" => value == "on",
                 "vsyscall" => value == "none",
@@ -1059,6 +1059,8 @@ pub(crate) mod tests {
                 " root=tilo-auto",
                 " rd.luks.options=tpm2-device=auto,fido2-device=auto",
                 " tilo.luks=000000000000000000000000000000000000000000000",
+                // Left out of the live hardening set (01-hardening.toml).
+                " init_on_free=1",
             ] {
                 assert!(
                     with_cmdline(&format!("{base}{tail}")).is_err(),

@@ -20,11 +20,13 @@ impl XConnection {
             .entry(cursor)
             .or_insert_with(|| self.get_cursor(cursor));
 
-        self.update_cursor(window, cursor).expect("Failed to set cursor");
+        self.update_cursor(window, cursor)
+            .expect("Failed to set cursor");
     }
 
     pub(crate) fn set_custom_cursor(&self, window: xproto::Window, cursor: &CustomCursor) {
-        self.update_cursor(window, cursor.inner.cursor).expect("Failed to set cursor");
+        self.update_cursor(window, cursor.inner.cursor)
+            .expect("Failed to set cursor");
     }
 
     fn create_empty_cursor(&self) -> ffi::Cursor {
@@ -148,7 +150,12 @@ impl CustomCursor {
             let cursor =
                 (event_loop.xconn.xcursor.XcursorImageLoadCursor)(event_loop.xconn.display, ximage);
             (event_loop.xconn.xcursor.XcursorImageDestroy)(ximage);
-            Self { inner: Arc::new(CustomCursorInner { xconn: event_loop.xconn.clone(), cursor }) }
+            Self {
+                inner: Arc::new(CustomCursorInner {
+                    xconn: event_loop.xconn.clone(),
+                    cursor,
+                }),
+            }
         }
     }
 }

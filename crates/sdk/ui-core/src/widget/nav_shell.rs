@@ -3405,7 +3405,7 @@ impl Widget for NavShell {
         self.structure_dirty = false;
         self.invalidation.invalidate();
         let style = Style {
-            size: Size::from_percent(1.0, 1.0),
+            size: Self::region_size(),
             ..Default::default()
         };
         taffy.widget_node(style, &nodes, node_map, self)
@@ -3414,6 +3414,7 @@ impl Widget for NavShell {
     fn manual_layout_policy(&self) -> Option<ManualPolicy> {
         Some(ManualPolicy::for_children(
             Rc::clone(&self.policy),
+            Self::region_size(),
             self.baseline.clone(),
             self.invalidation.clone(),
         ))
@@ -3868,6 +3869,11 @@ impl crate::widget::controls::ActionControls for NavShell {
 }
 
 impl NavShell {
+    /// The shell fills the window it is given.
+    fn region_size() -> Size<taffy::Dimension> {
+        Size::from_percent(1.0, 1.0)
+    }
+
     /// What the shell itself answers: the sidebar shortcut, Escape, Ctrl+F,
     /// a scrim press, and the resize drag. Returns whether it consumed
     /// `event`.

@@ -35,6 +35,7 @@ path = "junit.xml"
 # follow, so a run ends on short tests.
 [test-groups]
 compositor = { max-threads = 2 }
+desktop-smoke = { max-threads = 1 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
 imager-durable-disk = { max-threads = 2 }
@@ -50,6 +51,16 @@ test-group = "gpu-golden"
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"
 priority = 90
+
+# The desktop smoke gate: one at a time, so the load variant's busy threads
+# never starve the quiet one, and a hang bound of two minutes, since a healthy
+# run takes well under one. A frozen compositor is reported by the test itself
+# within half a second; this only bounds a test that cannot even do that.
+[[profile.default.overrides]]
+filter = 'binary(it) and test(desktop_smoke::)'
+test-group = "desktop-smoke"
+priority = 95
+slow-timeout = { period = "60s", terminate-after = 2 }
 
 # Not started with the pool-wide and longest tests: each suite's first route
 # join runs under the SDK's 4.5 s primary-route deadline, which the opening

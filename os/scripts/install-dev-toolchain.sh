@@ -8,6 +8,12 @@
 #       install os/scripts/builder-packages.txt (the production builder's
 #       packages but for its Rust compiler) and EXTRA from the frozen repo at
 #       /repo, at the fixed build clock
+#   install-dev-toolchain.sh tools-tree DEST
+#       the `tilo-dev-tools` sysext tree: the pinned Rust release (as `rust`,
+#       but under DEST) plus the third-party GUI clients the VM acceptance suite
+#       opens, as the files of exactly the packages they add on top of the
+#       image this runs in. Only /usr and /opt travel: a systemd-sysext cannot
+#       carry /etc or /var. DEST is then a tar-able layer for tilo-vm.
 #
 # The toolchain lives under /usr so it updates with the image (/usr/local is
 # /var/usrlocal on bootc, which an image update never touches), linked into
@@ -52,8 +58,38 @@ case "${1:-}" in
     rm -rf /var/log/dnf5.log* /var/cache/libdnf5 /var/lib/dnf/system-repo.lock /run/dnf /etc/ld.so.cache
     rustc --version && cargo --version && sccache --version
     ;;
+  tools-tree)
+    dest="${2:?tools-tree needs a destination directory}"
+    channel="$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' "$dev/rust-toolchain.toml")"
+    [ -n "$channel" ]
+    toolchain="$channel-$(uname -m)-unknown-linux-gnu"
+    [ -x "/run/tilo-rust-toolchains/$toolchain/bin/rustc" ] \
+      || { printf 'RUST_TOOLCHAIN_IMAGE has no %s toolchain\n' "$toolchain" >&2; exit 1; }
+    mkdir -p "$dest/usr/lib" "$dest/usr/bin"
+    cp -a "/run/tilo-rust-toolchains/$toolchain" "$dest/usr/lib/rust-toolchain"
+    for tool in "$dest"/usr/lib/rust-toolchain/bin/*; do
+      ln -s "/usr/lib/rust-toolchain/bin/${tool##*/}" "$dest/usr/bin/${tool##*/}"
+    done
+    query='%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\n'
+    rpm -qa --qf "$query" | sort > /run/tilo-dev-before
+    LD_PRELOAD=/run/tilo-build-clock.so dnf install -y --setopt=reposdir=/repo \
+      --setopt=install_weak_deps=False \
+      chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils
+    rpm -qa --qf "$query" | sort > /run/tilo-dev-after
+    comm -13 /run/tilo-dev-before /run/tilo-dev-after > /run/tilo-dev-added
+    [ -s /run/tilo-dev-added ]
+    xargs -r -a /run/tilo-dev-added rpm -ql | sort -u > /run/tilo-dev-files
+    # Directories are recreated by cp --parents; files outside /usr and /opt
+    # (default /etc config, /var state) cannot be part of a sysext.
+    grep -E '^/(usr|opt)/' /run/tilo-dev-files | while IFS= read -r file; do
+      if [ -d "$file" ] && [ ! -L "$file" ]; then continue; fi
+      cp -a --parents "$file" "$dest"
+    done
+    grep -Ev '^/(usr|opt)/' /run/tilo-dev-files | sed 's/^/not in the sysext: /' >&2 || true
+    rm -f /run/tilo-dev-before /run/tilo-dev-after /run/tilo-dev-added /run/tilo-dev-files
+    ;;
   *)
-    echo 'usage: install-dev-toolchain.sh rust | packages [EXTRA...]' >&2
+    echo 'usage: install-dev-toolchain.sh rust | packages [EXTRA...] | tools-tree DEST' >&2
     exit 2
     ;;
 esac

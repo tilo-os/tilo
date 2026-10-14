@@ -107,6 +107,10 @@ fn framework_item_view_opens_exact_owner_item_in_live_ui() {
     assert!(view.primary);
     assert_eq!(view.open_action, "open");
     assert!(view.validate(&first).is_empty());
+    // The view is the same for every item: the item's label is the
+    // resource's, so the published `open` is one shared catalogue entry.
+    assert_eq!(second.views, first.views);
+    assert_ne!(view.label, first.label);
     let (_, first_id) = tilo_resource::items::item_of_resource::<Pages>(first.id.as_str()).unwrap();
     let (_, second_id) =
         tilo_resource::items::item_of_resource::<Pages>(second.id.as_str()).unwrap();

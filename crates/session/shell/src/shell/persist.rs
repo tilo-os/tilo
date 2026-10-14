@@ -363,6 +363,18 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
 /// Returns once the snapshot is taken; a failure is logged there. See
 /// [`wait_for_saves`].
 pub fn queue_save(tree: &WorkspaceTree, path: &Path, after_save: impl FnOnce() + Send + 'static) {
+    queue_save_or_report(tree, path, after_save, |_| {});
+}
+
+/// [`queue_save`], also telling `after_failure` why a write failed, so what
+/// waits on this save ends with its error instead of waiting for a save that
+/// will not happen.
+pub fn queue_save_or_report(
+    tree: &WorkspaceTree,
+    path: &Path,
+    after_save: impl FnOnce() + Send + 'static,
+    after_failure: impl FnOnce(&std::io::Error) + Send + 'static,
+) {
     let snapshot = TreeSnapshot::of(tree);
     let path = path.to_path_buf();
     super::durable_writer::global().submit(path.clone(), move || {
@@ -373,6 +385,7 @@ pub fn queue_save(tree: &WorkspaceTree, path: &Path, after_save: impl FnOnce() +
             Ok(Publication::Superseded) => {}
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "workspace tree persistence failed");
+                after_failure(&error);
                 return;
             }
         }
@@ -390,6 +403,7 @@ pub fn queue_save(tree: &WorkspaceTree, path: &Path, after_save: impl FnOnce() +
 /// Wait until every save queued so far is on disk: before the session ends
 /// or sleeps, and before anything reads the files back.
 pub fn wait_for_saves() {
+    settings_store::flush_pending_writes();
     super::durable_writer::global().flush();
 }
 
@@ -397,6 +411,7 @@ pub fn wait_for_saves() {
 /// of the session. Returns whether every save made it.
 pub fn wait_for_saves_within(limit: std::time::Duration) -> bool {
     let started = std::time::Instant::now();
+    settings_store::flush_pending_writes();
     let saved = super::durable_writer::global().flush_timeout(limit);
     if !saved {
         tracing::error!(
@@ -789,6 +804,7 @@ mod tests {
                     active_tab: 0,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
             let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
@@ -859,6 +875,7 @@ mod tests {
                     active_tab: survivor,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
             let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
             group.tabs.push(Tab {
@@ -956,6 +973,7 @@ mod tests {
                     active_tab: 0,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
             let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
             group.tabs.push(Tab {
@@ -1008,6 +1026,7 @@ mod tests {
                     active_tab: 92_002,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
             assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
                 &mut tree, 92_003

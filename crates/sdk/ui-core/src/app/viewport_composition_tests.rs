@@ -51,6 +51,9 @@ impl Widget for ResponsiveRoot {
             child.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
         }
     }
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
