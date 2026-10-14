@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import stat
 
@@ -51,7 +52,16 @@ ASSETS = {
 }
 
 
-def assemble(destination):
+def immutable_base(value):
+    if not re.fullmatch(
+        r'(?:[a-z0-9][a-z0-9./:_-]*@)?sha256:[0-9a-f]{64}', value
+    ):
+        raise ValueError('prerequisite base must be an immutable image ID or digest reference')
+    return value
+
+
+def assemble(destination, base=BASE):
+    base = immutable_base(base)
     destination.mkdir(mode=0o700)
     inputs = {}
     for source, (installed, mode) in ASSETS.items():
@@ -75,7 +85,7 @@ def assemble(destination):
         target.write_bytes(data)
         target.chmod(mode)
         inputs[source] = {'installed': '/' + installed, 'sha256': digest, 'mode': mode}
-    manifest = {'schema': 1, 'base': BASE, 'packages': PACKAGES,
+    manifest = {'schema': 1, 'base': base, 'packages': PACKAGES,
                 'sources': inputs, 'qualification': False,
                 'candidate_executables_included': False,
                 'flatpak_runtime_preparer_included': True}
@@ -84,7 +94,7 @@ def assemble(destination):
     provenance.write_text(json.dumps(manifest, sort_keys=True, indent=2) + '\n')
     provenance.chmod(0o644)
     (destination / 'Containerfile').write_text(
-        f'FROM {BASE}\n'
+        f'FROM {base}\n'
         + 'RUN dnf install -y ' + ' '.join(PACKAGES) + ' && dnf clean all\n'
         + 'COPY rootfs/ /\n'
         + 'RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf '
@@ -99,8 +109,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True,
                         help='exclusive new build context directory')
+    parser.add_argument('--base', type=immutable_base, default=BASE,
+                        help='immutable local image ID or registry digest reference')
     args = parser.parse_args()
-    assemble(args.output.absolute())
+    assemble(args.output.absolute(), args.base)
     print(str(args.output.absolute()))
 
 

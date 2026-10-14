@@ -16,6 +16,36 @@ pipeline = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pipeline)
 
 
+class PrerequisiteBase(unittest.TestCase):
+    def setUp(self):
+        path = pipeline.ROOT / 'os/scripts/installer-receive-fixture/prerequisite-image.py'
+        spec = importlib.util.spec_from_file_location('capture_prerequisite_test', path)
+        self.prerequisites = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.prerequisites)
+
+    def test_actual_recipe_and_provenance_use_selected_immutable_base(self):
+        base = 'registry.fedoraproject.org/fedora@sha256:' + 'b' * 64
+        with tempfile.TemporaryDirectory() as scratch:
+            context = Path(scratch) / 'context'
+            manifest = self.prerequisites.assemble(context, base)
+            self.assertEqual(manifest['base'], base)
+            self.assertEqual((context / 'Containerfile').read_text().splitlines()[0],
+                             'FROM ' + base)
+            recorded = json.loads((context / 'source-inputs.json').read_text())
+            self.assertEqual(recorded['base'], base)
+            self.assertFalse(recorded['qualification'])
+            self.assertFalse(recorded['candidate_executables_included'])
+
+    def test_mutable_or_injected_base_refused_before_allocating_context(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            context = Path(scratch) / 'context'
+            for base in ('fedora:44', 'sha256:' + 'a' * 63,
+                         'sha256:' + 'a' * 64 + '\\nRUN true'):
+                with self.subTest(base=base), self.assertRaises(ValueError):
+                    self.prerequisites.assemble(context, base)
+                self.assertFalse(context.exists())
+
+
 class BuildOrder(unittest.TestCase):
     def test_missing_authority_refuses_before_any_build(self):
         with tempfile.TemporaryDirectory() as scratch, patch.object(pipeline, 'run') as run:
@@ -34,7 +64,8 @@ class BuildOrder(unittest.TestCase):
                        TILO_CAPTURE_QUALIFIER_BASE=image, TILO_CAPTURE_SOURCE_ASSETS='/operator/assets',
                        TILO_CAPTURE_SIGNING_PURPOSE='developer-isolated')
 
-            def assemble(context):
+            def assemble(context, base):
+                self.assertEqual(base, env['TILO_CAPTURE_QUALIFIER_BASE'])
                 context.mkdir()
                 (context / 'rootfs/etc/tilo').mkdir(parents=True)
                 (context / 'rootfs/usr/libexec').mkdir(parents=True)
