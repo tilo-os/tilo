@@ -488,41 +488,9 @@ fn available_output(stream: &mut std::process::ChildStderr) -> String {
 
 /// Stop `child` and every process in its group, bounded.
 pub(crate) fn terminate(child: &mut Option<Child>) {
-    let Some(mut child) = child.take() else {
-        return;
-    };
-    let Ok(pid) = i32::try_from(child.id()) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return;
-    };
-    let group = pid.saturating_neg();
-    // SAFETY: the process is spawned with `process_group(0)`, making its
-    // validated PID the process-group ID. A negative target is confined to
-    // that group and cannot signal the compositor's own group.
-    let _ = unsafe { libc::kill(group, libc::SIGTERM) };
-    let deadline = Instant::now()
-        .checked_add(Duration::from_millis(750))
-        .unwrap_or_else(Instant::now);
-    loop {
-        let leader_finished = child.try_wait().ok().flatten().is_some();
-        // Signal 0 only checks whether any descendant still occupies the
-        // dedicated group. Do not return just because the leader exited: a
-        // worker it started may still be winding down.
-        let group_gone = unsafe { libc::kill(group, 0) } != 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-        if leader_finished && group_gone {
-            return;
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    if let Some(mut child) = child.take() {
+        bounded_command::terminate_tree(&mut child, Duration::from_millis(750));
     }
-    // SAFETY: same dedicated process group as above. This is the bounded
-    // fallback for a worker that ignored SIGTERM.
-    let _ = unsafe { libc::kill(group, libc::SIGKILL) };
-    let _ = child.wait();
 }
 
 #[cfg(test)]
