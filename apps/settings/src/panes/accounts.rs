@@ -52,9 +52,11 @@ mod cloud_control;
 mod cloud_signin;
 mod import_review;
 mod thunderbird_import;
+mod vault_lane;
 pub(crate) use cloud_control::CloudMounts;
 pub use cloud_signin::{BrowserOpener, PortalOpener};
 use runtime_fs::cloud::CloudRequest;
+use vault_lane::Step;
 #[cfg(test)]
 mod signin_tests;
 
@@ -80,7 +82,7 @@ pub enum AccountsEffect {
         revision: u64,
     },
     /// Import only selected configuration as pending sign-in metadata.
-    #[effect(returns, device_only, idempotent)]
+    #[effect(job, returns, device_only, idempotent)]
     CommitThunderbirdImport { revision: u64 },
     /// Discard the metadata review and fence unfinished discovery callbacks.
     #[effect(view)]
@@ -138,7 +140,7 @@ pub enum AccountsEffect {
         account: String,
     },
     /// Remove an account, its saved credential and its sync record.
-    #[effect(row, destructive, label = "Remove account")]
+    #[effect(row, job, destructive, label = "Remove account")]
     RemoveAccount {
         #[param("The account's id")]
         account: String,
@@ -165,7 +167,12 @@ pub enum AccountsEffect {
 }
 
 /// Answer `effect` on the area's model; a connection check runs on a
-/// worker.
+/// worker, and what changes the credential vault answers once the vault
+/// took it, in turn with the account changes under way (`vault_lane`).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one short arm per account effect, each routing to the pane"
+)]
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AccountsEffect,
@@ -212,11 +219,31 @@ pub(crate) fn answer(
             model.changed = true;
         }
         AccountsEffect::CommitThunderbirdImport { revision } => {
-            let root = model.account_root.clone();
-            let result = model.import_review.commit(&root, revision)?;
-            model.reload();
-            model.changed = true;
-            return Ok(Effected::value(result));
+            // No account work under way: answered at once, as before.
+            if model.lane.is_idle() {
+                let root = model.account_root.clone();
+                let result = model.import_review.commit(&root, revision)?;
+                model.queue_reload();
+                model.changed = true;
+                return Ok(Effected::value(result));
+            }
+            // Otherwise in turn with the account mutations under way, which
+            // journal the stores this changes.
+            let reply = cx.reply();
+            model.run_in_lane(move |pane| {
+                let root = pane.account_root.clone();
+                let result = pane.import_review.commit(&root, revision);
+                if result.is_ok() {
+                    pane.queue_reload();
+                    pane.changed = true;
+                }
+                reply.finish(result.map(|status| ui::tilo_actions::ActionOutput {
+                    value: Some(serde_json::Value::String(status)),
+                    resources: Vec::new(),
+                }));
+                Step::Done
+            });
+            return Ok(Effected::Pending);
         }
         AccountsEffect::CancelThunderbirdImport => {
             model.import_review.cancel()?;
@@ -245,7 +272,16 @@ pub(crate) fn answer(
         AccountsEffect::CancelNewPassword => {
             model.command(AccountViewCommand::CancelReauthentication);
         }
-        AccountsEffect::RemoveAccount { account } => model.remove(&account)?,
+        AccountsEffect::RemoveAccount { account } => {
+            if model.is_sample {
+                return Err(SAMPLE_NOT_REMOVABLE.into());
+            }
+            let reply = cx.reply();
+            model.remove_then(&account, move |result| {
+                reply.finish(result.map(|()| ui::tilo_actions::ActionOutput::default()));
+            });
+            return Ok(Effected::Pending);
+        }
         AccountsEffect::SyncNow { account } => {
             return cloud(model, CloudRequest::SyncNow { account }, cx);
         }
@@ -258,8 +294,9 @@ pub(crate) fn answer(
         AccountsEffect::TestAccount { account } => {
             let check = model.connection_check(&account)?;
             drop(model);
-            return Ok(cx.thread(
-                move |_| check(),
+            return Ok(crate::device_read::job(
+                cx,
+                check,
                 |_: &mut SettingsApp, outcome: Result<String, String>, _| {
                     complete_account_check(outcome)
                 },
@@ -282,8 +319,9 @@ fn cloud(
 ) -> EffectAnswer {
     let send = model.cloud.request(request)?;
     drop(model);
-    Ok(cx.thread(
-        move |_| send(),
+    Ok(crate::device_read::job(
+        cx,
+        send,
         |app: &mut SettingsApp, outcome: Result<(), String>, _| {
             app.accounts().model().borrow_mut().cloud.invalidate();
             outcome.map(|()| Effected::done())
@@ -379,15 +417,17 @@ impl AccountsArea {
             let read = self.read.take();
             let mut model = if scene.is_some() {
                 AccountsPane::from_dir_in(root, crate::accounts::sample_directory(), false)
-            } else if let Some(read) = read
-                && !root.mutation_pending()
-            {
+            } else if read.is_some() && !root.mutation_pending() {
                 let dir = AccountDirectory::load_in(&root);
-                AccountsPane::from_read(root, dir, read)
+                match read {
+                    Some(read) => AccountsPane::from_read(root, dir, read),
+                    None => AccountsPane::recovered_in(root, None),
+                }
             } else {
-                // Opened here: nothing was read, or an interrupted mutation
-                // is recovered first, which may rewrite the vault read.
-                AccountsPane::in_root(root)
+                // Nothing was read, or an interrupted mutation is recovered
+                // first, which may rewrite the vault read: the vault is
+                // opened again, off the UI thread.
+                AccountsPane::recovered_in(root, read.map(|read| read.custodian))
             };
             if let Some(kind) = scene.and_then(|scene| scene.account_form) {
                 model = model.with_open_form_for_shot(kind);
@@ -555,6 +595,22 @@ struct AccountDraft {
     password: String,
 }
 
+/// What takes in how a piece of account work in the lane ended, and says
+/// what comes next.
+type Settle = Box<dyn FnOnce(&mut AccountsPane, Result<(), String>) -> Step>;
+
+/// What removing an account changed, to finish or roll back.
+struct Removal {
+    id: accounts::AccountId,
+    original_store: accounts::AccountStore,
+    original_statuses: accounts::AccountSyncStatusStore,
+    credential_changed: bool,
+    original_secret: Option<accounts::Secret>,
+}
+
+/// Why the sample's accounts offer no removal.
+const SAMPLE_NOT_REMOVABLE: &str = "example accounts cannot be removed";
+
 struct ProbeJob {
     receiver: crate::channel::Receiver<Result<String, String>>,
     deadline: ui::time::Instant,
@@ -590,6 +646,10 @@ impl Default for AccountsPane {
 
 /// The person's external accounts as the pane shows them, with the forms
 /// and sign-ins in progress.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent state of the pane's forms and vault work, never a parameter"
+)]
 pub struct AccountsPane {
     /// The window this model serves, for binding its controls; none for a
     /// model a test drives directly.
@@ -600,7 +660,16 @@ pub struct AccountsPane {
     seen_accounts: Option<u64>,
     dir: AccountDirectory,
     sync_statuses: accounts::AccountSyncStatusStore,
-    vault: accounts::SecretVault,
+    /// The credential vault as last opened, for where it keeps
+    /// credentials; `None` until it first opened.
+    vault: Option<accounts::SecretVault>,
+    /// The vault being opened again on a worker; a later opening replaces
+    /// an earlier one.
+    vault_opening: Option<crate::device_read::Landing>,
+    /// The vault work queued and running, in order.
+    lane: vault_lane::VaultLane,
+    /// A reload waits in the lane.
+    reload_queued: bool,
     /// Whether `dir` is the illustrative sample (the real stores are empty).
     is_sample: bool,
     form_kind: Option<AccountKind>,
@@ -617,10 +686,23 @@ pub struct AccountsPane {
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     form_probe: Option<ProbeJob>,
     form_candidate: Option<AccountDraft>,
+    /// The form's draft is read against the vault or saved to it.
+    form_saving: bool,
+    /// Which opening of the form the work under way serves: work for a
+    /// form since cancelled or replaced shows nothing in the new one.
+    form_round: u64,
     reauth_probe: Option<ProbeJob>,
     reauth_candidate: Option<(accounts::AccountId, accounts::Secret)>,
+    /// The sign-in-again password is read against the vault or saved to it.
+    reauth_saving: bool,
+    /// As `form_round`, for the sign-in-again form.
+    reauth_round: u64,
     /// A running browser or Apple ID sign-in.
     sign_in: Option<cloud_signin::SignInFlow>,
+    /// A completed sign-in is being saved.
+    sign_in_saving: bool,
+    /// As `form_round`, for the sign-in.
+    sign_in_round: u64,
     custodian: account_custody::Custodian,
     opener: std::sync::Arc<dyn BrowserOpener>,
     /// The file accounts the cloud service has mounted.
@@ -636,7 +718,9 @@ impl AccountsPane {
         Self::in_root(AccountRoot::live())
     }
 
-    /// The live pane over the account stores under `account_root`.
+    /// The live pane over the account stores under `account_root`, its
+    /// vault opened here: never on the UI thread, where the window builds
+    /// its pane from what the area read off it.
     pub fn in_root(account_root: AccountRoot) -> Self {
         // Loading the directory first recovers an interrupted mutation,
         // which may rewrite the vault the read then opens.
@@ -654,51 +738,47 @@ impl AccountsPane {
         // empty state. The deterministic `--shots`/tests use
         // `from_dir(sample_directory(), true)` for a rich still instead.
         Self {
-            dir,
             sync_statuses: read.statuses,
-            vault: read.vault,
-            is_sample: false,
-            form_kind: None,
-            form_error: None,
-            form_account_id: None,
-            form_password: ui::LocalState::new(String::new()),
-            form_name: ui::LocalState::new(String::new()),
-            form_email: ui::LocalState::new(String::new()),
-            form_user: ui::LocalState::new(String::new()),
-            form_server: ui::LocalState::new(String::new()),
-            reauth_password: ui::LocalState::new(String::new()),
-            reauth_error: None,
-            reauth_id: None,
-            account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
-            form_probe: None,
-            form_candidate: None,
-            reauth_probe: None,
-            reauth_candidate: None,
-            import_review: import_review::ImportReview::default(),
-            sign_in: None,
-            custodian: read.custodian,
-            opener: std::sync::Arc::new(PortalOpener),
+            vault: Some(read.vault),
             cloud: CloudMounts::live(),
-            changed: false,
-            cx: None,
-            account_root,
-            seen_accounts: None,
+            ..Self::over(account_root, dir, false, read.custodian)
         }
     }
 
-    /// Test / `--shots` constructor over an explicit directory. `is_sample`
-    /// controls whether Remove buttons render (real accounts) or not
-    /// (illustration).
-    pub fn from_dir(dir: AccountDirectory, is_sample: bool) -> Self {
-        Self::from_dir_in(AccountRoot::live(), dir, is_sample)
+    /// The live pane over the account stores under `account_root`, an
+    /// interrupted mutation recovered first: the vault opens off the UI
+    /// thread, and `custodian`, when one was opened, is used.
+    fn recovered_in(
+        account_root: AccountRoot,
+        custodian: Option<account_custody::Custodian>,
+    ) -> Self {
+        let dir = AccountDirectory::load_in(&account_root);
+        let custodian = custodian.unwrap_or_else(|| account_root.custodian());
+        let mut pane = Self {
+            sync_statuses: account_root.statuses(),
+            cloud: CloudMounts::live(),
+            ..Self::over(account_root, dir, false, custodian)
+        };
+        pane.reopen_vault();
+        pane
     }
 
-    /// [`Self::from_dir`] whose edits persist under `account_root`.
-    pub fn from_dir_in(account_root: AccountRoot, dir: AccountDirectory, is_sample: bool) -> Self {
+    /// The pane showing `dir` over `account_root`, holding nothing it read
+    /// of the device: no sync statuses, no vault, the service asked for no
+    /// mounts.
+    fn over(
+        account_root: AccountRoot,
+        dir: AccountDirectory,
+        is_sample: bool,
+        custodian: account_custody::Custodian,
+    ) -> Self {
         Self {
             dir,
             sync_statuses: accounts::AccountSyncStatusStore::default(),
-            vault: account_root.vault(),
+            vault: None,
+            vault_opening: None,
+            lane: vault_lane::VaultLane::default(),
+            reload_queued: false,
             is_sample,
             form_kind: None,
             form_error: None,
@@ -714,11 +794,17 @@ impl AccountsPane {
             account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
             form_probe: None,
             form_candidate: None,
+            form_saving: false,
+            form_round: 0,
             reauth_probe: None,
             reauth_candidate: None,
+            reauth_saving: false,
+            reauth_round: 0,
             import_review: import_review::ImportReview::default(),
             sign_in: None,
-            custodian: account_root.custodian(),
+            sign_in_saving: false,
+            sign_in_round: 0,
+            custodian,
             opener: std::sync::Arc::new(PortalOpener),
             cloud: CloudMounts::at(None),
             changed: false,
@@ -726,6 +812,23 @@ impl AccountsPane {
             account_root,
             seen_accounts: None,
         }
+    }
+
+    /// Test / `--shots` constructor over an explicit directory. `is_sample`
+    /// controls whether Remove buttons render (real accounts) or not
+    /// (illustration).
+    pub fn from_dir(dir: AccountDirectory, is_sample: bool) -> Self {
+        Self::from_dir_in(AccountRoot::live(), dir, is_sample)
+    }
+
+    /// [`Self::from_dir`] whose edits persist under `account_root`. The
+    /// vault, which only says where credentials are kept here, opens off
+    /// the UI thread.
+    pub fn from_dir_in(account_root: AccountRoot, dir: AccountDirectory, is_sample: bool) -> Self {
+        let custodian = account_root.custodian();
+        let mut pane = Self::over(account_root, dir, is_sample, custodian);
+        pane.reopen_vault();
+        pane
     }
 
     /// Know the cloud service's mounts from `cloud` (tests).
@@ -769,9 +872,10 @@ impl AccountsPane {
     }
 
     /// Drive the same nonblocking sync polling the live host uses until the
-    /// pending account probe and its synchronous disk transaction finish.
-    /// Bounded by the probe's production deadline; unlike a fixed number of
-    /// scheduler yields this remains reliable when the test suite is busy.
+    /// pending account probe and the vault and disk transaction after it
+    /// finish. Bounded by the probe's production deadline; unlike a fixed
+    /// number of scheduler yields this remains reliable when the test suite
+    /// is busy.
     #[doc(hidden)]
     pub fn finish_form_submission_for_test(&mut self) -> bool {
         let deadline = ui::time::now() + ProbeJob::DEADLINE;
@@ -862,25 +966,30 @@ impl AccountsPane {
     }
 
     /// Block until the running sign-in step reports, then apply it exactly
-    /// as `sync` would. Returns whether a step reported before `timeout`.
+    /// as `sync` would, and wait for a completed sign-in to be saved.
+    /// Returns whether a step reported before `timeout`.
     #[doc(hidden)]
     pub fn finish_sign_in_step_for_test(&mut self, timeout: std::time::Duration) -> bool {
-        let Some(flow) = self.sign_in.as_mut() else {
-            // The step completed and the sync that started it already saved it.
-            return true;
+        let reported = if let Some(flow) = self.sign_in.as_mut()
+            && flow.busy()
+        {
+            let reported = flow.wait_for_test(timeout);
+            self.poll_sign_in();
+            reported
+        } else {
+            // No step runs: the sync that started it already took it in.
+            true
         };
-        if !flow.busy() {
-            // Already reported and applied by the sync that started it.
-            return true;
-        }
-        let reported = flow.wait_for_test(timeout);
-        self.poll_sign_in();
+        // A completed sign-in is saved through the vault on a worker.
+        self.settle_lane();
         reported
     }
 
     fn open_sign_in(&mut self, kind: AccountKind, existing: Option<&accounts::Account>) {
         self.form_kind = None;
         self.reauth_id = None;
+        self.sign_in_round = self.sign_in_round.wrapping_add(1);
+        self.sign_in_saving = false;
         self.sign_in = Some(cloud_signin::SignInFlow::new(
             kind,
             existing,
@@ -909,7 +1018,37 @@ impl AccountsPane {
         let Some(completed) = completed else {
             return;
         };
-        match Self::save_signed_in(&self.account_root, &completed) {
+        self.sign_in_saving = true;
+        let round = self.sign_in_round;
+        self.run_in_lane(move |pane| {
+            match Self::signed_in_accounts(&pane.account_root, &completed) {
+                Ok((stored, mail)) => {
+                    let id = stored.id.clone();
+                    let secret = completed.secret;
+                    let accounts = std::iter::once(stored)
+                        .chain(mail)
+                        .map(|account| (account, Some(secret.clone())))
+                        .collect();
+                    pane.commit_then(
+                        accounts,
+                        Box::new(move |pane: &mut Self, result: Result<(), String>| {
+                            pane.sign_in_saved(round, result.map(|()| id))
+                        }),
+                    )
+                }
+                Err(error) => pane.sign_in_saved(round, Err(error)),
+            }
+        });
+        self.changed = true;
+    }
+
+    /// Take in how saving the sign-in of `round` ended.
+    fn sign_in_saved(&mut self, round: u64, saved: Result<accounts::AccountId, String>) -> Step {
+        let current = round == self.sign_in_round;
+        if current {
+            self.sign_in_saving = false;
+        }
+        match saved {
             Ok(id) => {
                 let custodian = self.custodian.clone();
                 // Publishing may renew a session over the network; the
@@ -919,16 +1058,19 @@ impl AccountsPane {
                         warn!(target: "tilo::settings", %error, "could not publish the first credential for a new sign-in");
                     }
                 });
-                self.sign_in = None;
-                self.reload();
+                if current {
+                    self.sign_in = None;
+                }
+                self.queue_reload();
             }
             Err(error) => {
-                if let Some(flow) = self.sign_in.as_mut() {
+                if current && let Some(flow) = self.sign_in.as_mut() {
                     flow.save_failed(&error);
                 }
             }
         }
         self.changed = true;
+        Step::Done
     }
 
     fn connect_google_mail(&mut self) -> Result<(), String> {
@@ -945,12 +1087,13 @@ impl AccountsPane {
         Ok(())
     }
 
-    /// Persist a completed sign-in: the sealed grant first, then the
-    /// account metadata, journaled like every other account mutation.
-    fn save_signed_in(
+    /// The accounts a completed sign-in saves, the signed-in one first: its
+    /// metadata over the stored envelope it signs in again, or a new one,
+    /// and the Gmail account granted with it, which shares its credential.
+    fn signed_in_accounts(
         account_root: &AccountRoot,
         completed: &cloud_signin::Completed,
-    ) -> Result<accounts::AccountId, String> {
+    ) -> Result<(accounts::Account, Option<accounts::Account>), String> {
         let type_id = completed.kind.type_id();
         let shared = account_root.store();
         let id = completed.existing_id.clone().map_or_else(
@@ -984,7 +1127,7 @@ impl AccountsPane {
             }
             merge_config(&mut stored.config, serde_json::Value::Object(identity));
         }
-        let mut accounts = vec![(stored, Some(&completed.secret))];
+        let mut granted = None;
         if let Some(mail) = &completed.mail {
             let mut mail = mail.clone();
             if let Some(existing) = shared.get(&mail.id) {
@@ -998,10 +1141,9 @@ impl AccountsPane {
                 mail = existing.clone();
                 merge_config(&mut mail.config, config);
             }
-            accounts.push((mail, Some(&completed.secret)));
+            granted = Some(mail);
         }
-        Self::commit_accounts(account_root, accounts)?;
-        Ok(id)
+        Ok((stored, granted))
     }
 
     /// Seed the ordinary add surface for a deterministic acceptance capture.
@@ -1081,11 +1223,21 @@ impl AccountsPane {
             self.changed = true;
             return;
         }
+        self.next_form_round();
         self.form_kind = Some(kind);
         self.form_account_id = Some(view.id);
         self.form_error = None;
         self.form_password.set(String::new());
         self.changed = true;
+    }
+
+    /// A new opening of the account form: work still under way for an
+    /// earlier one shows nothing in it.
+    fn next_form_round(&mut self) {
+        self.form_round = self.form_round.wrapping_add(1);
+        self.form_saving = false;
+        self.form_probe = None;
+        self.form_candidate = None;
     }
 
     /// Take `command`, as the pane's buttons and their effects ask.
@@ -1096,6 +1248,7 @@ impl AccountsPane {
             }
             Some(AccountViewCommand::Add(kind)) => {
                 self.sign_in = None;
+                self.next_form_round();
                 self.form_kind = Some(kind);
                 self.form_account_id = None;
                 self.form_error = None;
@@ -1112,7 +1265,10 @@ impl AccountsPane {
                 self.changed = true;
             }
             Some(AccountViewCommand::Submit) if self.sign_in.is_some() => {
-                if let Some(flow) = self.sign_in.as_mut() {
+                // A completed sign-in being saved is not started again.
+                if !self.sign_in_saving
+                    && let Some(flow) = self.sign_in.as_mut()
+                {
                     flow.submit();
                 }
                 self.changed = true;
@@ -1166,10 +1322,19 @@ impl AccountsPane {
             return;
         }
         self.sign_in = None;
+        self.next_reauth_round();
         self.reauth_id = Some(id);
         self.reauth_error = None;
         self.reauth_password.set(String::new());
         self.changed = true;
+    }
+
+    /// A new opening of the sign-in-again form, as [`Self::next_form_round`].
+    fn next_reauth_round(&mut self) {
+        self.reauth_round = self.reauth_round.wrapping_add(1);
+        self.reauth_saving = false;
+        self.reauth_probe = None;
+        self.reauth_candidate = None;
     }
 
     fn clear_form_fields(&self) {
@@ -1184,7 +1349,11 @@ impl AccountsPane {
         let mut panel: Vec<SettingsSection> = Vec::new();
 
         let mut intro: Vec<Item> = vec![note(&t("accounts-intro"))];
-        if self.vault.custody() == accounts::SecretCustody::LocalFile {
+        if self
+            .vault
+            .as_ref()
+            .is_some_and(|vault| vault.custody() == accounts::SecretCustody::LocalFile)
+        {
             intro.push(note(&t("accounts-vault-local")));
         }
         if self.is_sample {
@@ -1615,31 +1784,72 @@ impl AccountsPane {
         card(&t("accounts-reauth-title"), rows(fields))
     }
 
-    /// Reload the real directory after a mutation. The live pane never
-    /// substitutes the sample, so `is_sample` stays as constructed (always
-    /// `false` for the live pane).
+    /// Reload the real directory after a mutation, in turn with the vault
+    /// work queued before it. The live pane never substitutes the sample,
+    /// so `is_sample` stays as constructed (always `false` for the live
+    /// pane).
+    fn queue_reload(&mut self) {
+        if std::mem::replace(&mut self.reload_queued, true) {
+            return;
+        }
+        self.run_in_lane(|pane| {
+            pane.reload_queued = false;
+            pane.reload();
+            Step::Done
+        });
+    }
+
+    /// Reload the directory and the sync statuses here, and the vault on a
+    /// worker. Loading the directory recovers an interrupted mutation, so
+    /// this runs only in the lane, never while a mutation is under way.
     fn reload(&mut self) {
         self.dir = AccountDirectory::load_in(&self.account_root);
         self.sync_statuses = self.account_root.statuses();
-        self.vault = self.account_root.vault();
+        self.changed = true;
+        self.reopen_vault();
+    }
+
+    /// Open the vault again on a worker. What the pane shows of it, where
+    /// it keeps credentials, changes nothing, so this waits for no other
+    /// vault work; [`Self::poll`] takes it in.
+    fn reopen_vault(&mut self) {
+        let vault = self.account_root.vault_opener();
+        self.vault_opening = Some(crate::device_read::Landing::start(move || vault.open()));
+    }
+
+    /// Take in the vault a worker opened again.
+    fn poll_vault_opening(&mut self) {
+        let Some(opening) = &self.vault_opening else {
+            return;
+        };
+        match opening.poll::<accounts::SecretVault>() {
+            crate::device_read::Landed::Done(vault) => {
+                self.vault = Some(vault);
+                self.vault_opening = None;
+                self.changed = true;
+            }
+            crate::device_read::Landed::Pending => {}
+            crate::device_read::Landed::Lost => self.vault_opening = None,
+        }
     }
 
     fn account_type(kind: AccountKind) -> &'static str {
         kind.type_id()
     }
 
-    /// Build the exact non-secret metadata and sealed credential that will be
-    /// checked and, only after that check succeeds, committed. Existing
-    /// envelopes are cloned so fields contributed by another app or a newer
-    /// provider survive an edit.
+    /// Build the exact non-secret metadata that will be checked and, only
+    /// after that check succeeds, committed; its credential follows from
+    /// the vault ([`Self::prepare_secret`]). Existing envelopes are cloned
+    /// so fields contributed by another app or a newer provider survive an
+    /// edit.
     #[allow(
         clippy::too_many_lines,
         reason = "one canonical conversion validates the complete set of account kinds and credential fields"
     )]
-    fn prepare_account(
+    fn prepare_metadata(
         account_root: &AccountRoot,
         draft: &AccountDraft,
-    ) -> Result<(accounts::Account, accounts::Secret), String> {
+    ) -> Result<accounts::Account, String> {
         let kind = draft.kind;
         let existing_id = draft.existing_id.as_deref();
         let name = draft.name.as_str();
@@ -1776,8 +1986,17 @@ impl AccountsPane {
                 ));
             }
         }
-        let vault = account_root.vault();
-        let mut secret = vault.get(&id).unwrap_or_default();
+        Ok(stored)
+    }
+
+    /// The credential account `id` is checked and saved with: the one
+    /// `vault` holds, its password replaced by a typed `password`.
+    fn prepare_secret(
+        vault: &accounts::SecretVault,
+        id: &accounts::AccountId,
+        password: &str,
+    ) -> Result<accounts::Secret, String> {
+        let mut secret = vault.get(id).unwrap_or_default();
         if password.trim().is_empty() {
             // An unreadable vault is not one without this account's credential.
             if let Some(error) = vault.recovery_error() {
@@ -1791,99 +2010,53 @@ impl AccountsPane {
             // preserve any provider token fields we do not own.
             secret.password = password.trim().to_string();
         }
-        Ok((stored, secret))
+        Ok(secret)
     }
 
-    /// Commit a draft after its protocol probe succeeds. The draft is rebuilt
-    /// over the latest canonical envelope to preserve concurrent/newer fields.
-    fn save_account_with_id(
-        account_root: &AccountRoot,
-        draft: &AccountDraft,
-    ) -> Result<(), String> {
-        let (stored, prepared_secret) = Self::prepare_account(account_root, draft)?;
-        let password = draft.password.as_str();
-        let publishes = matches!(draft.kind, AccountKind::WebDav | AccountKind::Nextcloud);
+    /// Commit a draft after its protocol probe succeeds: rebuilt over the
+    /// latest canonical envelope to preserve concurrent/newer fields, its
+    /// credential read from the vault on a worker, then journalled and
+    /// saved ([`Self::commit_then`]). A typed `WebDAV` or Nextcloud
+    /// password reaches the storage daemon before `settle` takes how it
+    /// ended. Runs in the lane.
+    fn save_draft_then(&mut self, draft: AccountDraft, settle: Settle) -> Step {
+        let stored = match Self::prepare_metadata(&self.account_root, &draft) {
+            Ok(stored) => stored,
+            Err(error) => return settle(self, Err(error)),
+        };
         let id = stored.id.clone();
-        Self::commit_account(
-            account_root,
-            stored,
-            (!password.trim().is_empty()).then_some(&prepared_secret),
-        )?;
-        if publishes && !password.trim().is_empty() {
-            // Replace the daemon's Basic credential right away rather than
-            // after its next rejected request.
-            if let Err(error) = account_root.custodian().publish(&id, false) {
-                warn!(target: "tilo::settings", %error, "could not publish the updated credential");
-            }
-        }
-        Ok(())
-    }
-
-    /// Journal and persist `stored` with its credential (when given): the
-    /// vault first, so a metadata failure never leaves an account whose
-    /// credential is missing.
-    fn commit_account(
-        account_root: &AccountRoot,
-        stored: accounts::Account,
-        secret: Option<&accounts::Secret>,
-    ) -> Result<(), String> {
-        Self::commit_accounts(account_root, vec![(stored, secret)])
-    }
-
-    /// Save related service accounts in one metadata mutation, with credentials
-    /// durable first and compensated together on failure.
-    fn commit_accounts(
-        account_root: &AccountRoot,
-        prepared: Vec<(accounts::Account, Option<&accounts::Secret>)>,
-    ) -> Result<(), String> {
-        let mut shared = account_root.store();
-        let original_store = shared.clone();
-        let original_statuses = account_root.statuses();
-        account_root.begin_mutation(&original_store, &original_statuses)?;
-        let mut vault = account_root.vault();
-        let mut previous_secrets = Vec::new();
-        for (stored, secret) in prepared {
-            if let Some(secret) = secret {
-                previous_secrets.push((stored.id.clone(), vault.get(&stored.id)));
-                vault.put(&stored.id, secret);
-            }
-            shared.upsert(stored);
-        }
-        if !previous_secrets.is_empty()
-            && let Err(error) = vault.try_save()
-        {
-            let _ = account_root.finish_mutation();
-            return Err(format!("could not save credential: {error}"));
-        }
-        if let Err(e) = account_root.save_store(&shared) {
-            // Live records publish each edit before projecting to disk. Restore
-            // that metadata too, and retain the journal if either restoration fails.
-            let metadata_rollback = account_root.save_store(&original_store);
-            if !previous_secrets.is_empty() {
-                for (id, previous) in previous_secrets {
-                    match previous {
-                        Some(secret) => vault.put(&id, &secret),
-                        None => {
-                            vault.remove(&id);
+        let password = draft.password.clone();
+        Step::vault(
+            move |vault| Self::prepare_secret(&vault.open(), &id, &password),
+            move |pane, secret| {
+                let secret = match secret {
+                    Ok(secret) => secret,
+                    Err(error) => return settle(pane, Err(error)),
+                };
+                let typed = !draft.password.trim().is_empty();
+                let publishes =
+                    typed && matches!(draft.kind, AccountKind::WebDav | AccountKind::Nextcloud);
+                let id = stored.id.clone();
+                let after: Settle = Box::new(
+                    move |pane: &mut Self, committed: Result<(), String>| {
+                        if committed.is_err() || !publishes {
+                            return settle(pane, committed);
                         }
-                    }
-                }
-                if let Err(rollback) = vault.try_save() {
-                    return Err(format!(
-                        "could not persist account: {e}; credential rollback also failed: {rollback}"
-                    ));
-                }
-            }
-            if let Err(rollback) = metadata_rollback {
-                return Err(format!(
-                    "could not persist account: {e}; metadata rollback also failed: {rollback}"
-                ));
-            }
-            let _ = account_root.finish_mutation();
-            warn!(target: "tilo::settings", op = "account_store_save", error = %e, "failed to persist account metadata");
-            return Err(format!("could not persist account: {e}"));
-        }
-        finish_or_recover(account_root, "account save")
+                        // Replace the daemon's Basic credential right away rather
+                        // than after its next rejected request.
+                        Step::vault(
+                            move |vault| {
+                                if let Err(error) = vault.custodian().publish(&id, false) {
+                                    warn!(target: "tilo::settings", %error, "could not publish the updated credential");
+                                }
+                            },
+                            move |pane, ()| settle(pane, Ok(())),
+                        )
+                    },
+                );
+                pane.commit_then(vec![(stored, typed.then_some(secret))], after)
+            },
+        )
     }
 
     #[cfg(test)]
@@ -1897,107 +2070,328 @@ impl AccountsPane {
         server: &str,
         password: &str,
     ) -> Result<(), String> {
-        Self::save_account_with_id(
-            account_root,
-            &AccountDraft {
-                kind,
-                existing_id: existing_id.map(str::to_string),
-                assigned_id: None,
-                name: name.to_string(),
-                identity: identity.to_string(),
-                username: username.to_string(),
-                server: server.to_string(),
-                password: password.to_string(),
+        let draft = AccountDraft {
+            kind,
+            existing_id: existing_id.map(str::to_string),
+            assigned_id: None,
+            name: name.to_string(),
+            identity: identity.to_string(),
+            username: username.to_string(),
+            server: server.to_string(),
+            password: password.to_string(),
+        };
+        let mut pane = Self::from_dir_in(account_root.clone(), AccountDirectory::default(), false);
+        let outcome = Rc::new(std::cell::RefCell::new(None));
+        let landed = Rc::clone(&outcome);
+        pane.run_in_lane(move |pane| {
+            pane.save_draft_then(
+                draft,
+                Box::new(move |_: &mut Self, result: Result<(), String>| {
+                    *landed.borrow_mut() = Some(result);
+                    Step::Done
+                }),
+            )
+        });
+        pane.settle_lane();
+        outcome
+            .take()
+            .unwrap_or_else(|| Err("the save stopped unexpectedly".into()))
+    }
+
+    /// Journal and persist `accounts` with their credentials (where given)
+    /// in one mutation: the vault first, on a worker, so a metadata failure
+    /// never leaves an account whose credential is missing. `settle` takes
+    /// how it ended.
+    fn commit_then(
+        &mut self,
+        accounts: Vec<(accounts::Account, Option<accounts::Secret>)>,
+        settle: Settle,
+    ) -> Step {
+        let root = &self.account_root;
+        if let Err(error) = root.begin_mutation(&root.store(), &root.statuses()) {
+            return settle(self, Err(error));
+        }
+        let (stored, secrets): (Vec<_>, Vec<_>) = accounts
+            .into_iter()
+            .map(|(account, secret)| {
+                let id = account.id.clone();
+                (account, secret.map(|secret| (id, secret)))
+            })
+            .unzip();
+        let secrets: Vec<(accounts::AccountId, accounts::Secret)> =
+            secrets.into_iter().flatten().collect();
+        // Persist credential custody first. If metadata then fails, the only
+        // residue is an unreachable encrypted vault entry, never an account
+        // that applications try to use without its credential.
+        if secrets.is_empty() {
+            return self.commit_metadata(stored, Vec::new(), settle);
+        }
+        Step::vault(
+            move |vault| {
+                let mut vault = vault.open();
+                let previous: Vec<_> = secrets
+                    .iter()
+                    .map(|(id, secret)| {
+                        let previous = vault.get(id);
+                        vault.put(id, secret);
+                        (id.clone(), previous)
+                    })
+                    .collect();
+                vault.try_save().map(|()| previous)
+            },
+            move |pane, sealed| match sealed {
+                Ok(previous) => pane.commit_metadata(stored, previous, settle),
+                Err(error) => {
+                    let _ = pane.account_root.finish_mutation();
+                    settle(pane, Err(format!("could not save credential: {error}")))
+                }
             },
         )
     }
 
-    /// Remove an account of `kind` by id from its owning store, persisting.
-    pub(crate) fn remove_account(
-        account_root: &AccountRoot,
-        custodian: &account_custody::Custodian,
-        kind: AccountKind,
-        id: &str,
-    ) -> Result<(), String> {
-        let expected_type = kind.type_id();
-        let account_id = accounts::AccountId::from(id.to_string());
-        let original_store = account_root.store();
-        if let Some(account) = original_store.get(&account_id)
-            && account.type_id.as_str() != expected_type
-            && !(kind == AccountKind::Mail
-                && account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE)
-        {
-            return Err(
-                "account type changed before removal; refresh Settings and try again".into(),
-            );
+    /// The metadata half of [`Self::commit_then`]; `previous` is what the
+    /// vault held for each account whose credential was written.
+    fn commit_metadata(
+        &mut self,
+        stored: Vec<accounts::Account>,
+        previous: PreviousSecrets,
+        settle: Settle,
+    ) -> Step {
+        // Over the accounts as they are now: an edit that reached the
+        // person's record while the vault was written is kept.
+        let before = self.account_root.store();
+        let mut shared = before.clone();
+        for account in stored {
+            shared.upsert(account);
         }
-        let original_statuses = account_root.statuses();
-        account_root.begin_mutation(&original_store, &original_statuses)?;
-        let mut vault = account_root.vault();
-        let original_secret = vault.get(&account_id);
+        let Err(error) = self.account_root.save_store(&shared) else {
+            let finished = finish_or_recover(&self.account_root, "account save");
+            return settle(self, finished);
+        };
+        // A live record publishes each edit before projecting it to disk:
+        // put its metadata back too, and keep the journal if that fails.
+        let metadata_rollback = self.account_root.save_store(&before);
+        warn!(target: "tilo::settings", op = "account_store_save", %error, "failed to persist account metadata");
+        let failed = format!("could not persist account: {error}");
+        // Once the credentials are back as they were (or that failed),
+        // the mutation ends; the journal stays when a rollback failed, so
+        // the next load rolls the rest back.
+        let rolled_back = move |pane: &mut Self, credentials: Result<(), String>| {
+            if let Err(rollback) = credentials {
+                return settle(
+                    pane,
+                    Err(format!(
+                        "{failed}; credential rollback also failed: {rollback}"
+                    )),
+                );
+            }
+            if let Err(rollback) = metadata_rollback {
+                return settle(
+                    pane,
+                    Err(format!(
+                        "{failed}; metadata rollback also failed: {rollback}"
+                    )),
+                );
+            }
+            let _ = pane.account_root.finish_mutation();
+            settle(pane, Err(failed))
+        };
+        if previous.is_empty() {
+            return rolled_back(self, Ok(()));
+        }
+        Step::vault(
+            move |vault| {
+                let mut vault = vault.open();
+                for (id, secret) in &previous {
+                    match secret {
+                        Some(secret) => vault.put(id, secret),
+                        None => {
+                            vault.remove(id);
+                        }
+                    }
+                }
+                vault.try_save()
+            },
+            rolled_back,
+        )
+    }
 
+    /// Commit `accounts` with their credentials as a sign-in does, waiting
+    /// for the vault work: for a test, off the UI thread.
+    #[cfg(test)]
+    fn commit_accounts(
+        account_root: &AccountRoot,
+        accounts: Vec<(accounts::Account, Option<&accounts::Secret>)>,
+    ) -> Result<(), String> {
+        let accounts = accounts
+            .into_iter()
+            .map(|(account, secret)| (account, secret.cloned()))
+            .collect();
+        let mut pane = Self::from_dir_in(account_root.clone(), AccountDirectory::default(), false);
+        let outcome = Rc::new(std::cell::RefCell::new(None));
+        let landed = Rc::clone(&outcome);
+        pane.run_in_lane(move |pane| {
+            pane.commit_then(
+                accounts,
+                Box::new(move |_: &mut Self, result: Result<(), String>| {
+                    *landed.borrow_mut() = Some(result);
+                    Step::Done
+                }),
+            )
+        });
+        pane.settle_lane();
+        outcome
+            .take()
+            .unwrap_or_else(|| Err("the save stopped unexpectedly".into()))
+    }
+
+    /// Remove the account `id`, its credential and its sync record, in turn
+    /// with the vault work under way; `done` takes how it ended.
+    pub(crate) fn remove_then(
+        &mut self,
+        id: &str,
+        done: impl FnOnce(Result<(), String>) + 'static,
+    ) {
+        if self.is_sample {
+            done(Err(SAMPLE_NOT_REMOVABLE.into()));
+            return;
+        }
+        let id = accounts::AccountId::from(id.to_owned());
+        self.run_in_lane(move |pane| {
+            pane.removal(
+                id,
+                Box::new(move |pane: &mut Self, result: Result<(), String>| {
+                    if result.is_ok() {
+                        pane.queue_reload();
+                        pane.changed = true;
+                    }
+                    done(result);
+                    Step::Done
+                }),
+            )
+        });
+    }
+
+    /// Journal the removal of `account_id`, then drop its credential on a
+    /// worker. Runs in the lane.
+    fn removal(&mut self, account_id: accounts::AccountId, settle: Settle) -> Step {
+        let root = &self.account_root;
+        let original_store = root.store();
+        let Some(stored) = original_store.get(&account_id) else {
+            return settle(self, Err(t("accounts-gone")));
+        };
+        if AccountKind::from_type_id(stored.type_id.as_str()).is_none() {
+            return settle(self, Err("unsupported account type".into()));
+        }
+        let original_statuses = root.statuses();
+        if let Err(error) = root.begin_mutation(&original_store, &original_statuses) {
+            return settle(self, Err(error));
+        }
         // Credential first prevents a metadata-only account from becoming
         // visible if vault persistence fails. Every later failure restores all
         // earlier writes; compensation failures are appended to the result.
-        let credential_changed = vault.remove(&account_id);
-        if credential_changed && let Err(error) = vault.try_save() {
-            let _ = account_root.finish_mutation();
-            return Err(format!("could not remove saved credential: {error}"));
-        }
+        let id = account_id.clone();
+        Step::vault(
+            move |vault| {
+                let mut vault = vault.open();
+                let original = vault.get(&id);
+                let changed = vault.remove(&id);
+                if changed && let Err(error) = vault.try_save() {
+                    return Err(error);
+                }
+                Ok((changed, original))
+            },
+            move |pane, removed| match removed {
+                Ok((credential_changed, original_secret)) => pane.removal_metadata(
+                    Removal {
+                        id: account_id,
+                        original_store,
+                        original_statuses,
+                        credential_changed,
+                        original_secret,
+                    },
+                    settle,
+                ),
+                Err(error) => {
+                    let _ = pane.account_root.finish_mutation();
+                    settle(
+                        pane,
+                        Err(format!("could not remove saved credential: {error}")),
+                    )
+                }
+            },
+        )
+    }
 
-        let mut updated_store = original_store.clone();
-        updated_store.remove(&account_id);
-        if let Err(error) = account_root.save_store(&updated_store) {
-            let rollback = if credential_changed {
-                restore_secret(account_root, &account_id, original_secret.as_ref())
-            } else {
-                Ok(())
-            };
-            let rollback_succeeded = rollback.is_ok();
-            let result = with_rollback_error(
-                format!("could not remove account metadata: {error}"),
-                rollback,
-            );
-            if rollback_succeeded {
-                let _ = account_root.finish_mutation();
-            }
-            return Err(result);
+    /// The metadata half of [`Self::removal`], once the credential is gone.
+    fn removal_metadata(&mut self, removal: Removal, settle: Settle) -> Step {
+        let root = &self.account_root;
+        // Over the accounts as they are now: an edit that reached the
+        // person's record while the vault was written is kept.
+        let mut updated_store = root.store();
+        updated_store.remove(&removal.id);
+        if let Err(error) = root.save_store(&updated_store) {
+            let failed = format!("could not remove account metadata: {error}");
+            return self.roll_back_removal(removal, failed, Ok(()), settle);
         }
-
-        let mut updated_statuses = original_statuses;
-        updated_statuses.remove(&account_id);
-        if let Err(error) = account_root.save_statuses(&updated_statuses) {
-            let metadata_rollback = account_root
-                .save_store(&original_store)
+        let mut updated_statuses = removal.original_statuses.clone();
+        updated_statuses.remove(&removal.id);
+        if let Err(error) = root.save_statuses(&updated_statuses) {
+            let metadata_rollback = root
+                .save_store(&removal.original_store)
                 .map_err(|e| e.to_string());
-            let secret_rollback = if credential_changed {
-                restore_secret(account_root, &account_id, original_secret.as_ref())
-            } else {
-                Ok(())
-            };
-            let rollback = combine_rollbacks(metadata_rollback, secret_rollback);
-            let rollback_succeeded = rollback.is_ok();
-            let result = with_rollback_error(
-                format!("could not remove account sync status: {error}"),
-                rollback,
-            );
-            if rollback_succeeded {
-                let _ = account_root.finish_mutation();
-            }
-            return Err(result);
+            let failed = format!("could not remove account sync status: {error}");
+            return self.roll_back_removal(removal, failed, metadata_rollback, settle);
         }
-        finish_or_recover(account_root, "account removal")?;
+        if let Err(error) = finish_or_recover(root, "account removal") {
+            return settle(self, Err(error));
+        }
         // Give the grant back to the provider and withdraw the daemon's
         // handoff credential. Best effort, off the UI thread: the account is
         // already gone locally.
-        if let (Some(account), Some(secret)) = (original_store.get(&account_id), original_secret)
-            && account_custody::is_cloud_type(account.type_id.as_str())
+        if let (Some(account), Some(secret)) = (
+            removal.original_store.get(&removal.id),
+            removal.original_secret,
+        ) && account_custody::is_cloud_type(account.type_id.as_str())
         {
             let account = account.clone();
-            let custodian = custodian.clone();
+            let custodian = self.custodian.clone();
             std::thread::spawn(move || custodian.revoke(&account, &secret));
         }
-        Ok(())
+        settle(self, Ok(()))
+    }
+
+    /// Restore the credential a failed removal dropped (on a worker), then
+    /// fail with `failed` and whatever could not be restored. The journal
+    /// is cleared only when everything was.
+    fn roll_back_removal(
+        &mut self,
+        removal: Removal,
+        failed: String,
+        metadata_rollback: Result<(), String>,
+        settle: Settle,
+    ) -> Step {
+        let finish = move |pane: &mut Self, secret_rollback: Result<(), String>| {
+            let rollback = combine_rollbacks(metadata_rollback, secret_rollback);
+            let rolled_back = rollback.is_ok();
+            let result = with_rollback_error(failed, rollback);
+            if rolled_back {
+                let _ = pane.account_root.finish_mutation();
+            }
+            settle(pane, Err(result))
+        };
+        if !removal.credential_changed {
+            return finish(self, Ok(()));
+        }
+        let Removal {
+            id,
+            original_secret,
+            ..
+        } = removal;
+        Step::vault(
+            move |vault| restore_secret(vault.open(), &id, original_secret.as_ref()),
+            finish,
+        )
     }
 
     fn cancel_form(&mut self) {
@@ -2007,11 +2401,10 @@ impl AccountsPane {
                 return;
             }
             if self.form_kind.is_some() {
+                self.next_form_round();
                 self.form_kind = None;
                 self.form_error = None;
                 self.form_account_id = None;
-                self.form_probe = None;
-                self.form_candidate = None;
                 self.form_password.set(String::new());
                 self.clear_form_fields();
                 self.changed = true;
@@ -2019,9 +2412,10 @@ impl AccountsPane {
         }
     }
 
-    /// Save starts a bounded protocol probe against a device-local draft. No
-    /// metadata or credential is persisted until [`Self::poll_form_probe`]
-    /// receives success.
+    /// Save checks the draft, reads its credential from the vault on a
+    /// worker, then starts a bounded protocol probe against the
+    /// device-local draft. No metadata or credential is persisted until
+    /// [`Self::poll_form_probe`] receives success.
     fn submit_form(&mut self) {
         {
             if let Some(flow) = self.sign_in.as_mut() {
@@ -2037,7 +2431,7 @@ impl AccountsPane {
             let Some(kind) = self.form_kind else {
                 return;
             };
-            if self.form_probe.is_some() {
+            if self.form_probe.is_some() || self.form_saving {
                 return;
             }
             let identity = if kind == AccountKind::Mail {
@@ -2055,25 +2449,56 @@ impl AccountsPane {
                 server,
                 password,
             };
-            match Self::prepare_account(&self.account_root, &draft) {
-                Ok((account, secret)) => {
-                    draft.assigned_id = Some(account.id.clone());
-                    let tester = std::sync::Arc::clone(&self.account_tester);
-                    let (sender, receiver) = crate::channel::sync_channel(1);
-                    std::thread::spawn(move || {
-                        let _ = sender.send(tester.test(&account, &secret));
-                    });
-                    self.form_candidate = Some(draft);
-                    self.form_probe = Some(ProbeJob::new(receiver));
-                    self.form_error = Some(t("accounts-checking"));
-                    self.changed = true;
-                }
+            let account = match Self::prepare_metadata(&self.account_root, &draft) {
+                Ok(account) => account,
                 Err(error) => {
                     self.form_error = Some(error);
                     self.changed = true;
+                    return;
                 }
-            }
+            };
+            draft.assigned_id = Some(account.id.clone());
+            self.form_saving = true;
+            self.form_error = Some(t("accounts-checking"));
+            self.changed = true;
+            let round = self.form_round;
+            let id = account.id.clone();
+            let typed = draft.password.clone();
+            self.run_in_lane(move |_| {
+                Step::vault(
+                    move |vault| Self::prepare_secret(&vault.open(), &id, &typed),
+                    move |pane, secret| {
+                        if round == pane.form_round {
+                            pane.form_saving = false;
+                            match secret {
+                                Ok(secret) => pane.start_form_probe(draft, account, secret),
+                                Err(error) => pane.form_error = Some(error),
+                            }
+                            pane.changed = true;
+                        }
+                        Step::Done
+                    },
+                )
+            });
         }
+    }
+
+    /// Check `account` with `secret` on a worker; `draft` is saved once the
+    /// server accepted it.
+    fn start_form_probe(
+        &mut self,
+        draft: AccountDraft,
+        account: accounts::Account,
+        secret: accounts::Secret,
+    ) {
+        let tester = std::sync::Arc::clone(&self.account_tester);
+        let (sender, receiver) = crate::channel::sync_channel(1);
+        std::thread::spawn(move || {
+            let _ = sender.send(tester.test(&account, &secret));
+        });
+        self.form_candidate = Some(draft);
+        self.form_probe = Some(ProbeJob::new(receiver));
+        self.form_error = Some(t("accounts-checking"));
     }
 
     fn poll_form_probe(&mut self) {
@@ -2094,34 +2519,57 @@ impl AccountsPane {
                 self.changed = true;
                 return;
             };
-            match Self::save_account_with_id(&self.account_root, &candidate) {
+            self.form_saving = true;
+            let round = self.form_round;
+            self.run_in_lane(move |pane| {
+                pane.save_draft_then(
+                    candidate,
+                    Box::new(move |pane: &mut Self, saved: Result<(), String>| {
+                        pane.form_saved(round, saved)
+                    }),
+                )
+            });
+        }
+        self.changed = true;
+    }
+
+    /// Take in how saving the form of `round` ended.
+    fn form_saved(&mut self, round: u64, saved: Result<(), String>) -> Step {
+        if saved.is_ok() {
+            self.queue_reload();
+        }
+        if round == self.form_round {
+            self.form_saving = false;
+            match saved {
                 Ok(()) => {
                     self.form_kind = None;
                     self.form_error = None;
                     self.form_account_id = None;
                     self.clear_form_fields();
-                    self.reload();
                 }
                 Err(error) => self.form_error = Some(error),
             }
         }
         self.changed = true;
+        Step::Done
     }
 
     fn cancel_reauth(&mut self) {
         {
+            self.next_reauth_round();
             self.reauth_id = None;
             self.reauth_error = None;
-            self.reauth_probe = None;
-            self.reauth_candidate = None;
             self.reauth_password.set(String::new());
             self.changed = true;
         }
     }
 
+    /// Read the account's credential from the vault on a worker, then check
+    /// it with the typed password on another; nothing is saved before the
+    /// server accepted it.
     fn submit_reauth(&mut self) {
         {
-            if self.reauth_probe.is_some() {
+            if self.reauth_probe.is_some() || self.reauth_saving {
                 return;
             }
             if let Some(id) = self.reauth_id.clone() {
@@ -2137,22 +2585,33 @@ impl AccountsPane {
                     self.changed = true;
                     return;
                 };
-                let mut secret = self
-                    .account_root
-                    .vault()
-                    .get(&account_id)
-                    .unwrap_or_default();
-                secret.password = password.trim().to_string();
-                let tester = std::sync::Arc::clone(&self.account_tester);
-                let candidate = secret.clone();
-                let (sender, receiver) = crate::channel::sync_channel(1);
-                std::thread::spawn(move || {
-                    let _ = sender.send(tester.test(&account, &candidate));
-                });
-                self.reauth_candidate = Some((account_id, secret));
-                self.reauth_probe = Some(ProbeJob::new(receiver));
+                self.reauth_saving = true;
                 self.reauth_error = Some(t("accounts-checking-reauth"));
                 self.changed = true;
+                let round = self.reauth_round;
+                let stored_id = account_id.clone();
+                self.run_in_lane(move |_| {
+                    Step::vault(
+                        move |vault| vault.open().get(&stored_id).unwrap_or_default(),
+                        move |pane, mut secret: accounts::Secret| {
+                            if round != pane.reauth_round {
+                                return Step::Done;
+                            }
+                            pane.reauth_saving = false;
+                            secret.password = password.trim().to_string();
+                            let tester = std::sync::Arc::clone(&pane.account_tester);
+                            let candidate = secret.clone();
+                            let (sender, receiver) = crate::channel::sync_channel(1);
+                            std::thread::spawn(move || {
+                                let _ = sender.send(tester.test(&account, &candidate));
+                            });
+                            pane.reauth_candidate = Some((account_id, secret));
+                            pane.reauth_probe = Some(ProbeJob::new(receiver));
+                            pane.changed = true;
+                            Step::Done
+                        },
+                    )
+                });
             }
         }
     }
@@ -2175,47 +2634,58 @@ impl AccountsPane {
                 self.changed = true;
                 return;
             };
-            let mut vault = self.account_root.vault();
-            vault.put(&account_id, &secret);
-            match vault.try_save() {
-                Ok(()) => {
-                    self.reauth_id = None;
-                    self.reauth_error = None;
-                    self.reauth_password.set(String::new());
-                }
-                Err(error) => self.reauth_error = Some(error),
-            }
+            self.reauth_saving = true;
+            let round = self.reauth_round;
+            self.run_in_lane(move |_| {
+                Step::vault(
+                    move |vault| {
+                        let mut vault = vault.open();
+                        vault.put(&account_id, &secret);
+                        vault.try_save()
+                    },
+                    move |pane, saved| {
+                        if round == pane.reauth_round {
+                            pane.reauth_saving = false;
+                            match saved {
+                                Ok(()) => {
+                                    pane.reauth_id = None;
+                                    pane.reauth_error = None;
+                                    pane.reauth_password.set(String::new());
+                                }
+                                Err(error) => pane.reauth_error = Some(error),
+                            }
+                        }
+                        pane.changed = true;
+                        Step::Done
+                    },
+                )
+            });
         }
         self.changed = true;
     }
 }
 
 impl AccountsPane {
-    /// Remove the account `id`, its credential and its sync record.
+    /// Remove the account `id`, its credential and its sync record, waiting
+    /// for the vault: for a caller off the UI thread. The window removes
+    /// through [`AccountsEffect::RemoveAccount`], which waits for nothing.
     ///
     /// # Errors
     ///
     /// Why the account could not be removed.
     pub fn remove(&mut self, id: &str) -> Result<(), String> {
-        if self.is_sample {
-            return Err("example accounts cannot be removed".into());
-        }
-        let stored = self
-            .account_root
-            .store()
-            .get(&accounts::AccountId::from(id.to_owned()))
-            .cloned()
-            .ok_or_else(|| t("accounts-gone"))?;
-        let kind = AccountKind::from_type_id(stored.type_id.as_str())
-            .ok_or_else(|| "unsupported account type".to_string())?;
-        Self::remove_account(&self.account_root, &self.custodian, kind, id)?;
-        self.reload();
-        self.changed = true;
-        Ok(())
+        let outcome = Rc::new(std::cell::RefCell::new(None));
+        let landed = Rc::clone(&outcome);
+        self.remove_then(id, move |result| *landed.borrow_mut() = Some(result));
+        self.settle_lane();
+        outcome
+            .take()
+            .unwrap_or_else(|| Err("the removal stopped unexpectedly".into()))
     }
 
-    /// The check of account `id`'s saved sign-in, to run on a worker: a
-    /// protocol probe, or for a cloud drive a fresh token from the provider.
+    /// The check of account `id`'s saved sign-in, to run on a worker: its
+    /// credential read from the vault, then a protocol probe, or for a
+    /// cloud drive a fresh token from the provider.
     fn connection_check(
         &self,
         id: &str,
@@ -2227,14 +2697,15 @@ impl AccountsPane {
             .get(&account_id)
             .cloned()
             .ok_or_else(|| t("accounts-gone"))?;
-        let secret = self.account_root.vault().get(&account_id).ok_or_else(|| {
-            "this account has no saved credential; sign in again first".to_string()
-        })?;
         let cloud = AccountKind::from_type_id(account.type_id.as_str())
             .is_some_and(AccountKind::is_cloud_storage);
+        let vault = self.account_root.vault_opener();
         let custodian = self.custodian.clone();
         let tester = std::sync::Arc::clone(&self.account_tester);
         Ok(move || {
+            let secret = vault.open().get(&account_id).ok_or_else(|| {
+                "this account has no saved credential; sign in again first".to_string()
+            })?;
             if cloud {
                 custodian
                     .publish(&account_id, true)
@@ -2246,20 +2717,27 @@ impl AccountsPane {
         })
     }
 
-    /// Take in finished checks and sign-in steps; whether anything shown
-    /// changed.
+    /// Take in finished checks, sign-in steps and vault work; whether
+    /// anything shown changed.
     pub fn poll(&mut self) -> bool {
         let revision = self.account_root.revision();
         if !self.is_sample && revision != self.seen_accounts {
             if self.seen_accounts.is_some() {
-                self.reload();
-                if let Err(error) = self.account_root.project() {
-                    tracing::warn!(%error, "the device's account file could not follow the person's accounts");
-                }
+                // After the vault work under way: a reload recovers a
+                // journalled mutation, which must not be one still running.
+                self.run_in_lane(|pane| {
+                    pane.reload();
+                    if let Err(error) = pane.account_root.project() {
+                        tracing::warn!(%error, "the device's account file could not follow the person's accounts");
+                    }
+                    Step::Done
+                });
                 self.changed = true;
             }
             self.seen_accounts = revision;
         }
+        self.advance_lane(false);
+        self.poll_vault_opening();
         self.poll_form_probe();
         self.poll_sign_in();
         self.poll_reauth_probe();
@@ -2286,6 +2764,8 @@ impl PaneModel for AccountsPane {
     fn busy(&self) -> bool {
         self.form_probe.is_some()
             || self.reauth_probe.is_some()
+            || !self.lane.is_idle()
+            || self.vault_opening.is_some()
             || self
                 .sign_in
                 .as_ref()
@@ -2315,12 +2795,12 @@ fn merge_config(target: &mut serde_json::Value, updates: serde_json::Value) {
     }
 }
 
+/// Put back in `vault` what it held for `id` before a failed mutation.
 fn restore_secret(
-    account_root: &AccountRoot,
+    mut vault: accounts::SecretVault,
     id: &accounts::AccountId,
     secret: Option<&accounts::Secret>,
 ) -> Result<(), String> {
-    let mut vault = account_root.vault();
     match secret {
         Some(secret) => vault.put(id, secret),
         None => {
@@ -2358,6 +2838,10 @@ fn finish_or_recover(account_root: &AccountRoot, operation: &str) -> Result<(), 
     }
     Ok(())
 }
+
+/// What the vault held for each account a save wrote the credential of,
+/// so a failed metadata write can put it back.
+type PreviousSecrets = Vec<(accounts::AccountId, Option<accounts::Secret>)>;
 
 #[cfg(test)]
 mod tests {
@@ -2444,13 +2928,19 @@ mod tests {
         (dir, root)
     }
 
-    /// Drive the host's polling until the pending account probe reports,
-    /// however long the probe thread takes to be scheduled.
+    /// Drive the host's polling until the pending account probe and the
+    /// vault work around it report, however long their threads take to be
+    /// scheduled.
     fn settle_probes(pane: &mut AccountsPane) {
         let deadline = ui::time::now() + ProbeJob::DEADLINE;
         loop {
             let _ = pane.poll();
-            if pane.form_probe.is_none() && pane.reauth_probe.is_none() {
+            if pane.form_probe.is_none()
+                && pane.reauth_probe.is_none()
+                && !pane.form_saving
+                && !pane.reauth_saving
+                && pane.lane.is_idle()
+            {
                 return;
             }
             assert!(ui::time::now() < deadline, "account probe never reported");
@@ -2981,7 +3471,7 @@ mod tests {
         assert!(area.is_open());
         assert!(vault.get(&id).is_some(), "the credential was saved");
         assert_eq!(
-            model.vault.get(&id),
+            model.vault.as_ref().and_then(|held| held.get(&id)),
             vault.get(&id),
             "the vault read is held"
         );
@@ -3005,5 +3495,98 @@ mod tests {
         std::fs::create_dir_all(&accounts_dir).expect("the accounts directory");
         std::fs::write(accounts_dir.join("mutation-journal.json"), b"{}").expect("an intent");
         assert!(root.mutation_pending());
+    }
+
+    /// A Secret Service that does not answer holds no click: removing an
+    /// account and checking its connection answer at once on the window's
+    /// thread, the account stays shown until the vault took its removal,
+    /// and the removal lands once the vault answers.
+    #[test]
+    fn a_stalled_vault_never_holds_the_window() {
+        use std::sync::{Arc, Condvar, Mutex};
+        use std::time::{Duration, Instant};
+
+        let (_dir, root) = scratch_root();
+        let id = accounts::AccountId::from("stalled@example.test");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(accounts::Account::new(id.clone(), "email"));
+        root.save_store(&store).expect("the store is saved");
+        let mut vault = root.vault();
+        vault.put(&id, &accounts::Secret::password("test-only-password"));
+        vault.try_save().expect("the vault is saved");
+        // What the window's warm-up opened off the UI thread.
+        let read = AccountsRead::of(&root);
+        let config = root.path().expect("an explicit root");
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let window = {
+            let id = id.clone();
+            std::thread::spawn(move || {
+                ui::rt::mark_ui_thread();
+                let stalled = Arc::clone(&gate);
+                let root = AccountRoot::at(config).with_vault_gate(move || {
+                    let (open, opened) = &*stalled;
+                    // A safety deadline, so a failing test cannot hang.
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    let mut open = open.lock().unwrap();
+                    while !*open && Instant::now() < deadline {
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        open = opened.wait_timeout(open, left).unwrap().0;
+                    }
+                    drop(open);
+                });
+                let dir = AccountDirectory::load_in(&root);
+                let mut pane = AccountsPane::from_read(root.clone(), dir, read);
+
+                let clicked = Instant::now();
+                let removed = Rc::new(std::cell::RefCell::new(None));
+                let landed = Rc::clone(&removed);
+                pane.remove_then(id.as_str(), move |result| {
+                    *landed.borrow_mut() = Some(result);
+                });
+                let check = pane.connection_check(id.as_str());
+                let _ = pane.poll();
+                let answered = clicked.elapsed();
+                // The vault answers nothing until the gate opens below (or
+                // its ten-second safety deadline passes): clicks answered
+                // before then did not wait for it. The journal they write
+                // is a local file, slow only on a loaded test machine.
+                assert!(
+                    answered < Duration::from_secs(10),
+                    "the clicks waited {answered:?} on the vault"
+                );
+                assert!(check.is_ok(), "the check reads the vault on its worker");
+                assert!(
+                    removed.borrow().is_none(),
+                    "the removal waits for the vault"
+                );
+                assert!(
+                    PaneModel::busy(&pane),
+                    "the pane keeps polling while the vault is out"
+                );
+                assert!(
+                    root.store().get(&id).is_some(),
+                    "the account is kept until the vault took its removal"
+                );
+
+                *gate.0.lock().unwrap() = true;
+                gate.1.notify_all();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while removed.borrow().is_none() || !pane.lane.is_idle() {
+                    assert!(Instant::now() < deadline, "the removal lands");
+                    let _ = pane.poll();
+                    std::thread::yield_now();
+                }
+                assert_eq!(removed.take(), Some(Ok(())));
+                assert!(root.store().get(&id).is_none(), "the metadata is gone");
+            })
+        };
+        if let Err(panic) = window.join() {
+            std::panic::resume_unwind(panic);
+        }
+        assert!(
+            root.vault().get(&id).is_none(),
+            "the credential went with the account"
+        );
+        assert!(!root.mutation_pending(), "the removal's journal is cleared");
     }
 }

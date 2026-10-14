@@ -194,8 +194,9 @@ pub(crate) fn answer(
         } else {
             ui::collaboration::DisplayOrigin::LocalHost
         };
-        return Ok(cx.thread(
-            move |_| request_host_display(&command, original),
+        return Ok(crate::device_read::job(
+            cx,
+            move || request_host_display(&command, original),
             move |app, result, _| {
                 let model = app.displays().model();
                 let mut model = model.borrow_mut();

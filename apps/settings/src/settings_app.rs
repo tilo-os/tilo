@@ -111,6 +111,8 @@ pub struct SettingsApp {
     updates: panes::updates::UpdatesArea,
     storage: panes::storage::StorageArea,
     disk_unlock: panes::disk_unlock::DiskUnlockArea,
+    /// This device's privacy switches, protection and secret store.
+    permissions: panes::permissions::PermissionsArea,
     printers: panes::printers::PrintersArea,
     users: panes::users::UsersArea,
     bluetooth: panes::bluetooth::BluetoothArea,
@@ -123,6 +125,9 @@ pub struct SettingsApp {
     network: panes::network::NetworkArea,
     /// When the areas above read what their live rows show.
     area_reads: crate::effects::AreaReads,
+    /// The pane shown is the stand-in for one whose area is still being
+    /// read ([`Self::pane_reading`]); the sync its read lands in builds it.
+    pane_waits: std::cell::Cell<bool>,
     /// The text scale the shell was built for. A large-text preference widens
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
@@ -172,6 +177,7 @@ impl SettingsApp {
             updates: panes::updates::UpdatesArea::new(&cx),
             storage: panes::storage::StorageArea::new(&cx, device_mesh.remote()),
             disk_unlock: panes::disk_unlock::DiskUnlockArea::new(&cx),
+            permissions: panes::permissions::PermissionsArea::new(&cx),
             printers: panes::printers::PrintersArea::new(&cx),
             users,
             bluetooth: panes::bluetooth::BluetoothArea::new(&cx),
@@ -184,6 +190,7 @@ impl SettingsApp {
             displays: panes::display::DisplayArea::new(&cx),
             network: panes::network::NetworkArea::new(&cx),
             area_reads: crate::effects::AreaReads::of(&cx),
+            pane_waits: std::cell::Cell::new(false),
             selected: Category::DEFAULT,
             structure_dirty: false,
             cx,
@@ -399,6 +406,7 @@ impl SettingsApp {
         self.power = panes::power::PowerArea::new(&cx);
         self.updates = panes::updates::UpdatesArea::new(&cx);
         self.disk_unlock = panes::disk_unlock::DiskUnlockArea::new(&cx);
+        self.permissions = panes::permissions::PermissionsArea::new(&cx);
         self.printers = panes::printers::PrintersArea::new(&cx);
         self.bluetooth = panes::bluetooth::BluetoothArea::new(&cx);
         self.speakers = panes::speakers::SpeakersArea::new(&cx);
@@ -422,7 +430,36 @@ impl SettingsApp {
     /// that has read and of the pane shown, which reads it anyway — every
     /// area's when reading is not put off ([`crate::effects::AreaReads`]).
     pub(crate) fn publishes_area(&self, area: &crate::effects::LiveArea) -> bool {
-        !self.area_reads.deferred() || area.pane == self.selected || (area.is_open)(self)
+        // An area read off the UI thread is published once its read has
+        // been taken in: asking for its rows before would wait for it.
+        !self.area_reads.deferred()
+            || (area.is_open)(self)
+            || (area.pane == self.selected && area.background.is_none())
+    }
+
+    /// Whether the selected pane's area is still being read off the UI
+    /// thread: its commands and D-Bus calls can take seconds, so the pane
+    /// says it is being read until the read lands, rather than the window
+    /// waiting for it. Starts the read if the warm-up has not reached the
+    /// area yet. A window that reads stand-ins (a screenshot, a test that
+    /// does not read as a live window does) reads them at once instead.
+    fn pane_reading(&self) -> bool {
+        if !self.area_reads.deferred() {
+            return false;
+        }
+        let area_reading = crate::effects::LIVE_AREAS
+            .iter()
+            .filter(|area| area.pane == self.selected && !(area.is_open)(self))
+            .filter_map(|area| area.background.as_ref())
+            .any(|read| {
+                let _ = (read.start)(self);
+                !(read.finished)(self)
+            });
+        area_reading
+            || (matches!(
+                self.selected,
+                Category::Keyboard | Category::Pointing | Category::Spelling
+            ) && self.input.catalog_pending())
     }
 
     /// Read on after the first frame, so the published rows fill in an area
@@ -473,6 +510,18 @@ impl SettingsApp {
         &self.power
     }
 
+    /// Put `area` in place of this device's clock, for a test.
+    #[cfg(test)]
+    pub(crate) fn set_time_date(&mut self, area: panes::time_date::TimeDateArea) {
+        self.time_date = area;
+    }
+
+    /// Put `area` in place of this device's power hardware, for a test.
+    #[cfg(test)]
+    pub(crate) fn set_power(&mut self, area: panes::power::PowerArea) {
+        self.power = area;
+    }
+
     /// This device's system image, firmware and codec pack.
     pub(crate) fn updates(&self) -> &panes::updates::UpdatesArea {
         &self.updates
@@ -480,6 +529,17 @@ impl SettingsApp {
 
     pub(crate) fn disk_unlock(&self) -> &panes::disk_unlock::DiskUnlockArea {
         &self.disk_unlock
+    }
+
+    /// This device's privacy switches, protection and secret store.
+    pub(crate) fn permissions(&self) -> &panes::permissions::PermissionsArea {
+        &self.permissions
+    }
+
+    /// Put `area` in place of this device's privacy and security, for a test.
+    #[cfg(test)]
+    pub(crate) fn set_permissions(&mut self, area: panes::permissions::PermissionsArea) {
+        self.permissions = area;
     }
 
     pub(crate) fn storage(&self) -> &panes::storage::StorageArea {
@@ -550,8 +610,18 @@ impl SettingsApp {
         }
     }
 
-    /// Dispatch to the per-category pane body.
+    /// Dispatch to the per-category pane body: the pane, or what stands in
+    /// for it while its area is read ([`Self::pane_reading`]).
     fn build_pane_body(&self) -> Box<dyn Widget> {
+        let reading = self.pane_reading();
+        self.pane_waits.set(reading);
+        if reading {
+            return crate::widgets::cards(vec![crate::widgets::untitled(crate::widgets::rows(
+                vec![crate::widgets::note(&crate::i18n::t(
+                    "settings-pane-reading",
+                ))],
+            ))]);
+        }
         match self.selected {
             Category::Network => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.network.model(),
@@ -623,6 +693,7 @@ impl SettingsApp {
             Category::RegionFormats => Box::new(panes::region::RegionPane::new(self.cx.clone())),
             Category::Permissions => panes::permissions::build_with_disk_unlock(
                 &self.cx,
+                &self.permissions,
                 Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                     self.disk_unlock.model(),
                 ))),
@@ -843,6 +914,11 @@ impl Widget for SettingsApp {
         if let Some(category) = self.sidebar_selection.with(|request| *request) {
             self.sidebar_selection.set(None);
             self.select(category);
+        }
+        // The read the pane shown waits for has landed: build the pane.
+        if self.pane_waits.get() && !self.pane_reading() {
+            self.structure_dirty = true;
+            self.refresh_shell_children();
         }
         if let Some(field) = self.shell.as_ref().and_then(NavShell::filter)
             && self.search_state.with(|query| query == &self.search_query)

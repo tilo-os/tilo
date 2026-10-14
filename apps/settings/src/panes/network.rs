@@ -284,12 +284,11 @@ pub(crate) fn answer(
     let begun = app.network().model().borrow_mut().begin(effect)?;
     Ok(match begun {
         Begun::Done => Effected::done(),
-        Begun::Work(work) => cx.thread(
-            move |_| work(),
-            |app: &mut SettingsApp, landed: Landed, _| {
+        Begun::Work(work) => {
+            crate::device_read::job(cx, work, |app: &mut SettingsApp, landed: Landed, _| {
                 app.network().model().borrow_mut().land(landed)
-            },
-        ),
+            })
+        }
     })
 }
 
@@ -767,6 +766,7 @@ impl NetworkService for DeviceNetwork {
     }
 
     fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::open_tool(intent)
     }
 }
@@ -837,6 +837,7 @@ impl NetworkService for SampleNetwork {
     }
 
     fn open_tool(&self, _intent: ToolIntent) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         Ok(())
     }
 }
@@ -873,6 +874,8 @@ pub(crate) enum Landed {
     Shared(Result<String, String>),
     Diagnosed(Result<os_actions::ConnectionDiagnostics, String>),
     SignedIn(Result<(), String>),
+    /// A system tool the shell was asked to open.
+    Opened(Result<(), String>),
 }
 
 /// The fields of one saved Wi-Fi network's policy form.
@@ -1698,8 +1701,7 @@ impl NetworkModel {
                         profile: None,
                     },
                 };
-                self.service.open_tool(intent)?;
-                Begun::Done
+                Begun::work(move || Landed::Opened(service.open_tool(intent)))
             }
             NetworkEffect::RunDiagnostics => {
                 Begun::work(move || Landed::Diagnosed(service.diagnostics()))
@@ -2101,6 +2103,8 @@ impl NetworkModel {
             Landed::SignedIn(result) => result
                 .map(|()| String::new())
                 .map_err(|error| format!("Could not open network sign-in: {error}")),
+            // The tool answers for itself: neither outcome is a notice.
+            Landed::Opened(result) => return result.map(|()| Effected::done()),
         };
         self.notice = Some(match &reported {
             Ok(said) if said.is_empty() => return Ok(Effected::done()),
@@ -3712,6 +3716,7 @@ mod tests {
         }
 
         fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
             let _ = intent;
             self.changes.lock().unwrap().push("tool".into());
             Ok(())
@@ -3960,6 +3965,26 @@ mod tests {
                 Effected::Pending => Ok(None),
             },
         }
+    }
+
+    /// Opening the VPN studio asks the shell on a worker, never while the
+    /// effect is begun on the UI thread; the shell's answer is the effect's.
+    #[test]
+    fn the_vpn_studio_is_opened_off_the_ui_thread() {
+        let fake = Arc::new(FakeNetwork::default());
+        let mut model = model(&fake);
+        let Ok(Begun::Work(work)) = model.begin(NetworkEffect::OpenVpnStudio { vpn: None }) else {
+            panic!("opening the VPN studio runs on a worker");
+        };
+        assert!(
+            fake.changes.lock().unwrap().is_empty(),
+            "the shell is not asked before the worker runs"
+        );
+        let landed = std::thread::spawn(work).join().unwrap();
+        assert_eq!(fake.changes.lock().unwrap().as_slice(), ["tool"]);
+        let notice = model.notice.clone();
+        assert!(matches!(model.land(landed), Ok(Effected::Done(_))));
+        assert_eq!(model.notice, notice, "the tool answers for itself");
     }
 
     /// The ordinary worker completion must honor the action a caller invoked,
