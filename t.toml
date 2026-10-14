@@ -1,0 +1,33 @@
+# The checks CI runs (.forgejo/workflows/check.yml, lint.yml), for `t`.
+# Each cargo family becomes one check per workspace package: `test/<package>`, `clippy/<package>`.
+
+# CI resolves tilo-builder:latest to a digest per run; pinning one here keeps results comparable.
+image = "registry.tilo.so/tilo/tilo-builder:latest"
+inputs = ["rust-toolchain.toml", ".cargo/config.toml", "deny.toml"]
+
+[env]
+XDG_RUNTIME_DIR = "/tmp/tilo-xdg-runtime"
+
+[[cargo]]
+name = "test"
+tool = "nextest"
+wrapper = ["bash", "tools/test-env.sh"]
+args = ["--locked", "--profile", "ci", "--tests"]
+inputs = [".config/nextest.toml", "tools/test-env.sh"]
+
+[[cargo]]
+name = "clippy"
+tool = "clippy"
+args = ["--locked", "--all-targets"]
+trailing = ["-D", "warnings"]
+
+[[cargo]]
+name = "check"
+tool = "check"
+args = ["--locked", "--all-targets"]
+default = false
+
+[[check]]
+name = "policy"
+run = "bash tools/policy/run.sh"
+inputs = ["tools/policy/**", "scripts/**", "Cargo.toml", "**/Cargo.toml", ".forgejo/**"]
