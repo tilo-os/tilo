@@ -610,10 +610,13 @@ case "$fsctx" in
   *) note "fs.service domain: $fsctx" ;;
 esac
 
-# Image signature enforcement (verify-before-update). Match the Tilo registry
-# scope and pinned public-key path together: an unrelated sigstore policy must
-# not make this check pass.
+# Image signature enforcement (verify-before-update). Parsed, not grepped:
+# tilo-image-policy-check proves each Tilo image scope itself requires a
+# sigstore signature from the pinned key, so a signed sibling scope cannot
+# stand in for a weakened Tilo scope, and an unreadable or malformed policy
+# fails rather than passes.
 policy=/etc/containers/policy.json
+image_policy_check=/usr/libexec/tilo-image-policy-check
 
 legacy_crypto_tools=""
 for tool in openssl sbsign sbverify efi-updatevar cert-to-efi-sig-list mokutil pesign efikeygen certutil pk12util; do
@@ -635,14 +638,12 @@ for tool in p11tool gnutls-cli; do
   fi
 done
 
-if [ -r "$policy" ] \
-   && grep -Fq '"registry.tilo.so/tilo/tilo"' "$policy" \
-   && grep -Fq '"type": "sigstoreSigned"' "$policy" \
-   && grep -Fq '"keyPath": "/usr/share/tilo/cosign.pub"' "$policy" \
-   && [ -s /usr/share/tilo/cosign.pub ]; then
-  ok "container signature policy pins signed Tilo images to the installed verification key"
+if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then
+  warn "Tilo image signature policy does not require the pinned signature: ${policy_report:-$image_policy_check produced no verdict}"
+elif [ ! -s /usr/share/tilo/cosign.pub ]; then
+  warn "Tilo image signature policy pins /usr/share/tilo/cosign.pub, but that verification key is missing or empty"
 else
-  warn "Tilo image signature policy or its pinned verification key is missing"
+  ok "container signature policy pins signed Tilo images to the installed verification key"
 fi
 
 if [ -e /var/lib/tilo/image-trust/required ]; then

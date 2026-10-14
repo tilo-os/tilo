@@ -1033,12 +1033,89 @@ if grep -Eq 'mokutil[[:space:]]+--sb-state' "$audit"; then
   bad 'Secure Boot health still delegates firmware state parsing to removed mokutil'
 fi
 
-for policy_fragment in \
-  '"registry.tilo.so/tilo/tilo"' \
-  '"type": "sigstoreSigned"' \
-  '"keyPath": "/usr/share/tilo/cosign.pub"'; do
-  grep -Fq "$policy_fragment" "$audit" \
-    || bad "boot audit does not bind image trust to $policy_fragment"
+# Image signature policy: the audit must parse policy.json through the checker,
+# and the checker must pass the shipped policy and fail every weakened copy. A
+# grep for fragments is satisfied by a signed sibling scope while the Tilo
+# scope itself accepts anything.
+image_policy_check="$repo/os/usr/libexec/tilo-image-policy-check"
+image_policy="$repo/os/etc/containers/policy.json"
+grep -Fqx 'image_policy_check=/usr/libexec/tilo-image-policy-check' "$audit" \
+  && grep -Fq 'if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then' "$audit" \
+  && grep -Fq '[ ! -s /usr/share/tilo/cosign.pub ]' "$audit" \
+  || bad 'boot audit does not parse the image signature policy and check the pinned key'
+if grep -Fq '"type": "sigstoreSigned"' "$audit"; then
+  bad 'boot audit still greps policy.json fragments instead of parsing the policy'
+fi
+grep -Fq 'os/usr/libexec/tilo-image-policy-check' "$image_recipe" \
+  || bad 'image signature policy checker is not copied into the OS image'
+[ "$(head -n 1 "$image_policy_check")" = '#!/usr/bin/python3' ] \
+  || bad 'image signature policy checker does not run on the image python3'
+
+policy_cases="$(mktemp -d)"
+trap 'rm -rf "$policy_cases"' EXIT
+# Each fixture is the shipped policy with one Tilo scope weakened while the
+# signed sibling scopes stay intact, so only a scope-aware parse can fail it.
+if ! python3 - "$image_policy" "$policy_cases" <<'PY'
+import copy, json, pathlib, sys
+
+base = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+out = pathlib.Path(sys.argv[2])
+tilo = "registry.tilo.so/tilo/tilo"
+code = "code.tilo.so/tilo/tilo"
+docker = base["transports"]["docker"]
+
+
+def case(name, mutate):
+    policy = copy.deepcopy(base)
+    mutate(policy["transports"]["docker"])
+    (out / f"{name}.json").write_text(json.dumps(policy, indent=2), encoding="utf-8")
+
+
+def scope(name, requirements):
+    return lambda d: d.__setitem__(name, requirements)
+
+
+def field(name, key, value):
+    return lambda d: d[name][0].__setitem__(key, value)
+
+
+accept = [{"type": "insecureAcceptAnything"}]
+case("tilo-scope-accepts-anything", scope(tilo, accept))
+case("code-scope-accepts-anything", scope(code, accept))
+case("tilo-scope-other-key", field(tilo, "keyPath", "/etc/pki/other.pub"))
+case("tilo-scope-removed", lambda d: d.pop(tilo))
+case("tilo-scope-empty", scope(tilo, []))
+case("tilo-scope-gpg-signed-by", scope(tilo, [{
+    "type": "signedBy", "keyType": "GPGKeys", "keyPath": "/usr/share/tilo/cosign.pub"}]))
+case("tilo-scope-remapped-identity", field(tilo, "signedIdentity", {
+    "type": "remapIdentity", "prefix": tilo, "signedPrefix": "registry.example/any"}))
+case("tilo-scope-extra-key-data", field(tilo, "keyData", "a2V5"))
+case("tilo-tag-accepts-anything", scope(tilo + ":latest", accept))
+case("legacy-guest-accepts-anything", scope("registry.tilo.so/tilo/legacy-guest", accept))
+case("no-docker-scopes", lambda d: d.clear())
+(out / "malformed.json").write_text('{"transports": {"docker": {', encoding="utf-8")
+(out / "duplicate-scope.json").write_text(
+    '{"transports": {"docker": {'
+    f'"{tilo}": {json.dumps(docker[tilo])}, "{code}": {json.dumps(docker[code])}, '
+    f'"{tilo}": {json.dumps(accept)}'
+    '}}}', encoding="utf-8")
+PY
+then
+  bad 'could not build weakened image signature policy fixtures'
+fi
+if python3 "$image_policy_check" "$image_policy" >/dev/null; then
+  ok 'shipped container policy requires the pinned Tilo image signature'
+else
+  bad 'shipped container policy fails the image signature policy check'
+fi
+weakened_policies=0
+for weakened in "$policy_cases"/*.json "$policy_cases/missing.json"; do
+  weakened_policies=$((weakened_policies + 1))
+  if python3 "$image_policy_check" "$weakened" >/dev/null; then
+    bad "image signature policy check accepts weakened policy $(basename "$weakened")"
+  fi
 done
+[ "$weakened_policies" -eq 14 ] \
+  || bad "expected 14 weakened image signature policies, exercised $weakened_policies"
 
 exit "$fail"
