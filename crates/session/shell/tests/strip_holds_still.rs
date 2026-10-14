@@ -495,8 +495,10 @@ fn the_strip_moves_only_when_the_person_moves_it() {
         // edges: exactly the framing a geometry-driven correction would
         // "fix".
         let before = h.scroll_x();
-        assert!(h.fb.host_mut().update_active_strip_pan(-173.0, true));
-        let _ = h.fb.host_mut().end_active_strip_pan(Instant::now());
+        // One report, released at once: the fingers rest, nothing is thrown.
+        let at = Instant::now();
+        assert!(h.fb.host_mut().update_active_strip_pan(-173.0, true, at));
+        let _ = h.fb.host_mut().end_active_strip_pan(at, false);
         h.settle();
         let panned = h.scroll_x();
         assert!(

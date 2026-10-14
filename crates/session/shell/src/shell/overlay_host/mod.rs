@@ -6958,10 +6958,11 @@ impl ShellOverlayHost {
         row.set_group_active_tab(group, tab)
     }
 
-    /// Directly pan the active strip from a three-finger gesture. Focus is
-    /// deliberately unchanged: moving the canvas and choosing an app are
-    /// separate operations, just as they are during a pointer drag.
-    pub fn update_active_strip_pan(&mut self, travel: f64, began: bool) -> bool {
+    /// Directly pan the active strip from a three-finger gesture whose
+    /// total `travel` was reported `at`. Focus is deliberately unchanged:
+    /// moving the canvas and choosing an app are separate operations, just
+    /// as they are during a pointer drag.
+    pub fn update_active_strip_pan(&mut self, travel: f64, began: bool, at: Instant) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -6984,12 +6985,13 @@ impl ShellOverlayHost {
             row.begin_strip_pan();
             self.strip_pan_active = true;
         }
-        row.update_strip_pan(travel)
+        row.update_strip_pan(travel, at)
     }
 
-    /// Finish direct strip manipulation and start a boundary settle only if
-    /// the fingers released in elastic overpull.
-    pub fn end_active_strip_pan(&mut self, now: Instant) -> bool {
+    /// Finish direct strip manipulation at `now`: a strip the fingers threw
+    /// coasts on, one released in elastic overpull settles to its end. A
+    /// `cancelled` gesture throws nothing.
+    pub fn end_active_strip_pan(&mut self, now: Instant, cancelled: bool) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -7007,7 +7009,11 @@ impl ShellOverlayHost {
         };
         // SAFETY: same stable ownership contract as update above.
         let row: &mut GroupRow = unsafe { &mut *ptr };
-        row.end_strip_pan(now)
+        if cancelled {
+            row.cancel_strip_pan(now)
+        } else {
+            row.end_strip_pan(now)
+        }
     }
 
     /// Moves focus one or more windows along the active strip — the single

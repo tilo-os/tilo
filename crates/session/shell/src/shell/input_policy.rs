@@ -1095,10 +1095,11 @@ mod tests {
             .expect("group")
             .get_rect();
         let viewport = fb.host().group_row_rect_for_tests(strip).expect("viewport");
-        assert!(
-            fb.host_mut()
-                .update_active_strip_pan(initial.x0 - viewport.x0 + 80.0, true)
-        );
+        assert!(fb.host_mut().update_active_strip_pan(
+            initial.x0 - viewport.x0 + 80.0,
+            true,
+            std::time::Instant::now()
+        ));
         let _ = fb.paint_settled();
         let rect = fb
             .host_mut()

@@ -13,7 +13,7 @@ use super::*;
 
 use crate::shell::render::paint::{SceneDamage, VelloDrmBridge};
 use crate::shell::test_support::{
-    DenyAmbientStarts, PopulatedShellFixture, dispatch_populated_fixture_click,
+    DenyAmbientStarts, PopulatedShellFixture, dispatch_populated_fixture_click, settled_pan_report,
 };
 
 const NATIVE_WIDTH: u32 = 3_840;
@@ -2156,13 +2156,17 @@ fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
         let mut worst_step = 0_u8;
         let mut control_step = 0_u8;
         let mut previous_strips: Option<Vec<u8>> = None;
-        frame.host_mut().update_active_strip_pan(0.0, true);
+        frame
+            .host_mut()
+            .update_active_strip_pan(0.0, true, settled_pan_report(0));
         // Fractional travel, as a touchpad reports it: the pans land on
         // whole device pixels, so the layers move without resampling.
         let mut travel = 0.0;
         for step in 0..24 {
             travel += if step < 16 { 23.7 } else { -31.3 };
-            frame.host_mut().update_active_strip_pan(travel, false);
+            frame
+                .host_mut()
+                .update_active_strip_pan(travel, false, settled_pan_report(step + 1));
             frame.relayout();
             let painted = frame.paint_with_damage();
             let label = format!("{name}, pan step {step}");
@@ -2259,12 +2263,16 @@ fn a_rubber_band_past_the_strip_start_composited_from_layers_matches_a_full_rend
     let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
     let mut layered = gpu_target(size);
     let mut dense = gpu_target(size);
-    frame.host_mut().update_active_strip_pan(0.0, true);
+    frame
+        .host_mut()
+        .update_active_strip_pan(0.0, true, settled_pan_report(0));
     let mut travel = 0.0;
     let mut composited = 0;
     for step in 0..12 {
         travel -= 37.3;
-        frame.host_mut().update_active_strip_pan(travel, false);
+        frame
+            .host_mut()
+            .update_active_strip_pan(travel, false, settled_pan_report(step + 1));
         frame.relayout();
         let painted = frame.paint_with_damage();
         let label = format!("left overpull, step {step}");
@@ -2617,11 +2625,17 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
                 "{name}: drawing the layers made no frame: the next frame at rest is unchanged"
             );
             let _ = present_or_keep(&mut layered, &rest, &name);
-            frame.host_mut().update_active_strip_pan(0.0, true);
+            frame
+                .host_mut()
+                .update_active_strip_pan(0.0, true, settled_pan_report(0));
             let mut travel = 0.0;
             for step in 0..6 {
                 travel += 23.7;
-                frame.host_mut().update_active_strip_pan(travel, false);
+                frame.host_mut().update_active_strip_pan(
+                    travel,
+                    false,
+                    settled_pan_report(step + 1),
+                );
                 frame.relayout();
                 let painted = frame.paint_with_damage();
                 let label = format!("{name}, pan step {step}");
@@ -2749,8 +2763,12 @@ fn a_warm_after_the_chrome_changed_rasterises_only_the_tiles_that_changed() {
             "{theme_name}: the warm rasterises the pointer's tiles, not a layer ({rewarmed} px of \
              {output})"
         );
-        frame.host_mut().update_active_strip_pan(0.0, true);
-        frame.host_mut().update_active_strip_pan(23.7, false);
+        frame
+            .host_mut()
+            .update_active_strip_pan(0.0, true, settled_pan_report(0));
+        frame
+            .host_mut()
+            .update_active_strip_pan(23.7, false, settled_pan_report(1));
         frame.relayout();
         let painted = frame.paint_with_damage();
         let label = format!("{theme_name}, pan after the rewarm");
@@ -2802,18 +2820,22 @@ fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
         frame.relayout();
         let rest = frame.paint_with_damage();
         let _ = present_or_keep(&mut layered, &rest, theme_name);
-        frame.host_mut().update_active_strip_pan(0.0, true);
+        frame
+            .host_mut()
+            .update_active_strip_pan(0.0, true, settled_pan_report(0));
         let mut travel = 0.0;
         for step in 0..6 {
             travel += 23.7;
-            frame.host_mut().update_active_strip_pan(travel, false);
+            frame
+                .host_mut()
+                .update_active_strip_pan(travel, false, settled_pan_report(step + 1));
             frame.relayout();
             let painted = frame.paint_with_damage();
             let label = format!("{theme_name}, pan step {step}");
             let _ = present(&mut layered, &painted, &label);
             assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
         }
-        frame.host_mut().end_active_strip_pan(Instant::now());
+        frame.host_mut().end_active_strip_pan(Instant::now(), false);
         // What the last frame that came as layers rasterised.
         let mut last_layered = None;
         for step in 0..10 {
@@ -2846,8 +2868,12 @@ fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
             // The desktop changed at rest: the session warms the layers.
             let _ = warm_at_rest(&mut frame, &mut layered, &|| true, theme_name);
         }
-        frame.host_mut().update_active_strip_pan(0.0, true);
-        frame.host_mut().update_active_strip_pan(23.7, false);
+        frame
+            .host_mut()
+            .update_active_strip_pan(0.0, true, settled_pan_report(0));
+        frame
+            .host_mut()
+            .update_active_strip_pan(23.7, false, settled_pan_report(1));
         frame.relayout();
         let painted = frame.paint_with_damage();
         let label = format!("{theme_name}, second pan");
@@ -2891,7 +2917,7 @@ fn assert_shows_a_full_render(
 /// screen space again, with screen-space damage.
 #[cfg(target_os = "linux")]
 fn assert_rests_in_screen_space(frame: &mut FrameBuilder, name: &str) {
-    frame.host_mut().end_active_strip_pan(Instant::now());
+    frame.host_mut().end_active_strip_pan(Instant::now(), false);
     for _ in 0..8 {
         frame.relayout();
         let _ = frame.paint_with_damage();
@@ -2938,11 +2964,15 @@ fn a_scaled_display_gets_strip_pans_on_device_pixels() {
         frame.relayout();
         let _ = frame.paint_with_damage();
     }
-    frame.host_mut().update_active_strip_pan(0.0, true);
+    frame
+        .host_mut()
+        .update_active_strip_pan(0.0, true, settled_pan_report(0));
     let mut travel = 0.0;
     for step in 0..6 {
         travel += 17.3;
-        frame.host_mut().update_active_strip_pan(travel, false);
+        frame
+            .host_mut()
+            .update_active_strip_pan(travel, false, settled_pan_report(step + 1));
         frame.relayout();
         let painted = frame.paint_with_damage();
         let (id, scroll, max_scroll) = frame.host().strip_scroll_offsets()[0];

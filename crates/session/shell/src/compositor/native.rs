@@ -5034,7 +5034,7 @@ fn execute_planned_action(
         }
         PlannedAction::Touchpad(edge) => {
             if let Some(gesture) = feed_touchpad_edge(&mut ctx.gestures, *edge) {
-                apply_shell_gesture(fb, gesture);
+                apply_shell_gesture(fb, gesture, Instant::now());
             }
         }
         PlannedAction::KeyboardKey { key, pressed } => {
@@ -11288,11 +11288,11 @@ pub fn run() {
                             .set_zones(input_capture_zones(backend.outputs()));
                     }
                 }
-                BackendEvent::ShellGesture(action) => {
+                BackendEvent::ShellGesture(action, at) => {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
-                        apply_shell_gesture(&mut frame_builder, action);
+                        apply_shell_gesture(&mut frame_builder, action, at);
                         session_changed = true;
                     }
                 }
@@ -20054,24 +20054,24 @@ fn feed_touchpad_edge(
     }
 }
 
-/// Perform the navigation a claimed touchpad gesture resolved to — a second
-/// way to ask for something the shell already does, not a parallel model.
+/// Perform the navigation a claimed touchpad gesture, reported `at`,
+/// resolved to — a second way to ask for something the shell already does,
+/// not a parallel model.
 fn apply_shell_gesture(
     frame_builder: &mut FrameBuilder,
     action: crate::compositor::backend::drm::gestures::GestureAction,
+    at: Instant,
 ) {
     use crate::compositor::backend::drm::gestures::GestureAction;
     match action {
         GestureAction::StripPanUpdate { travel, began } => {
             frame_builder
                 .host_mut()
-                .update_active_strip_pan(travel, began);
+                .update_active_strip_pan(travel, began, at);
             return;
         }
-        GestureAction::StripPanEnd { .. } => {
-            frame_builder
-                .host_mut()
-                .end_active_strip_pan(Instant::now());
+        GestureAction::StripPanEnd { cancelled } => {
+            frame_builder.host_mut().end_active_strip_pan(at, cancelled);
             return;
         }
         _ => {}
@@ -20546,7 +20546,11 @@ mod gesture_wireup_tests {
             });
             let before = fb.chrome().tree().desktop.active;
             // What a four-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
-            apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::SwitchWorkspace(-1),
+                std::time::Instant::now(),
+            );
             let after = fb.chrome().tree().desktop.active;
             assert_ne!(
                 before, after,
@@ -20568,7 +20572,11 @@ mod gesture_wireup_tests {
             });
             let workspace = fb.chrome().tree().desktop.active;
             let (_, focused) = fb.chrome().strip_focus();
-            apply_shell_gesture(&mut fb, GestureAction::SwitchStrip(1));
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::SwitchStrip(1),
+                std::time::Instant::now(),
+            );
             assert_eq!(
                 fb.chrome().strip_focus().1,
                 focused + 1,
@@ -20584,18 +20592,34 @@ mod gesture_wireup_tests {
         {
             let mut fb = builder();
             assert!(!fb.chrome().overlays.overview);
-            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::ShowOverview,
+                std::time::Instant::now(),
+            );
             assert!(fb.chrome().overlays.overview);
-            apply_shell_gesture(&mut fb, GestureAction::HideOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::HideOverview,
+                std::time::Instant::now(),
+            );
             assert!(!fb.chrome().overlays.overview);
         }
         // Phase `showing_an_already_open_overview_is_a_no_op`.
         {
             // The gesture fires once per swipe; a second swipe in the same direction must not bump the revision for nothing.
             let mut fb = builder();
-            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::ShowOverview,
+                std::time::Instant::now(),
+            );
             let revision = fb.chrome().revision;
-            apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+            apply_shell_gesture(
+                &mut fb,
+                GestureAction::ShowOverview,
+                std::time::Instant::now(),
+            );
             assert_eq!(fb.chrome().revision, revision);
         }
     }

@@ -1606,9 +1606,10 @@ fn pan_row(row: &mut GroupRow, offset: f64) -> bool {
         return false;
     }
     let target = offset.clamp(0.0, row.pan_max_scroll_x());
+    let now = ui::time::now();
     row.begin_strip_pan();
-    let moved = row.update_strip_pan(target - row.scroll_x());
-    row.end_strip_pan(ui::time::now());
+    let moved = row.update_strip_pan(target - row.scroll_x(), now);
+    row.end_strip_pan(now);
     if moved {
         row.hold_strip_pan();
     }
