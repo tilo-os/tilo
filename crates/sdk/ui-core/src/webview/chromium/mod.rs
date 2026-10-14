@@ -3,7 +3,7 @@
     clippy::disallowed_methods,
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
-pub mod install;
+mod audio;
 mod protocol;
 pub mod runtime;
 mod shared;
@@ -34,6 +34,7 @@ struct NavigationRequests {
 
 #[derive(Default)]
 struct Shared {
+    audio: audio::PageAudio,
     text_input: Mutex<super::text_input::Transactions>,
     native_edit_history: AtomicBool,
     guarded_edit_history: AtomicBool,
@@ -479,6 +480,7 @@ impl UnavailableEngine {
         Arc::new(Self {
             message,
             shared: Shared {
+                audio: audio::PageAudio::default(),
                 text_input: Mutex::default(),
                 native_edit_history: AtomicBool::new(false),
                 guarded_edit_history: AtomicBool::new(false),
@@ -724,6 +726,25 @@ fn host_command(host: &Path) -> Command {
     command
 }
 
+/// Engine audio switches.
+///
+/// A governed (sandboxed) app is given no PipeWire/Pulse socket and no
+/// `/dev/snd`; its sound goes through the host's output service, which
+/// Chromium cannot speak. `--tilo-audio-bridge` makes the host take every
+/// page's PCM itself (CEF's audio handler) and send it here, to play through
+/// that service (see `audio`). Chromium then opens no device, so it does not
+/// probe the PulseAudio and ALSA endpoints the sandbox withholds; while the
+/// service is unavailable the PCM is dropped, which keeps media
+/// playing silently as the fake audio manager would. An app that is not
+/// governed keeps Chromium's own audio.
+fn host_audio_switches(governed: bool) -> &'static [&'static str] {
+    if governed {
+        &["--tilo-audio-bridge"]
+    } else {
+        &[]
+    }
+}
+
 fn launch_host(
     host: &Path,
     profile: &Path,
@@ -731,6 +752,7 @@ fn launch_host(
     private_root: Option<&Path>,
 ) -> Result<std::process::Child, String> {
     let mut command = host_command(host);
+    command.args(host_audio_switches(media::audio_output::is_governed()));
     if private_root.is_some() {
         command.arg("--private");
     }
@@ -1373,6 +1395,13 @@ fn route_native_event(
             drop(requests);
             shared.wake();
         }
+        if matches!(event_name, "audio_start" | "audio" | "audio_stop") {
+            shared.audio.event(event_name, value);
+            return Ok(());
+        }
+        if matches!(event_name, "closed" | "tab_detached") {
+            shared.audio.stop();
+        }
         if event_name == "text_input_result" {
             shared
                 .text_input
@@ -1536,15 +1565,6 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
     let valid = match event {
         "credential_result" => super::CredentialReply::decode(value).is_some(),
         "site_status" | "site_result" => valid_site_event(value, event),
-        "devtools_result" => {
-            value["request_id"]
-                .as_u64()
-                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
-                && value["ok"].is_boolean()
-                && value["body"]
-                    .as_str()
-                    .is_some_and(|body| body.len() <= 1024 * 1024)
-        }
         "context_closed" | "permission_closed" => valid_id(value),
         "context_menu" => valid_context_menu(value),
         "find_result" => {
@@ -1560,6 +1580,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             .as_f64()
             .is_some_and(|level| level.is_finite() && (-5.0..=9.0).contains(&level)),
         "fullscreen" => value["fullscreen"].is_boolean(),
+        "audio_start" | "audio" | "audio_stop" => audio::valid_event(event, value),
         "renderer_terminated" => value
             .as_object()
             .is_some_and(|object| object.len() == if value.get("tab").is_some() { 2 } else { 1 }),
@@ -1677,19 +1698,6 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::Credentials(request) => request.valid(),
         WebViewCommand::SetSiteExceptions(origins) => {
             origins.len() <= 1024 && origins.iter().all(|s| !s.is_empty() && s.len() <= 8192)
-        }
-        WebViewCommand::DevTools {
-            request_id,
-            method,
-            params,
-            session,
-        } => {
-            *request_id > 0
-                && i32::try_from(*request_id).is_ok()
-                && method.len() <= 128
-                && params.is_object()
-                && params.to_string().len() <= 64 * 1024
-                && session.as_ref().is_none_or(|session| session.len() <= 128)
         }
         WebViewCommand::RequestSiteStatus { request_id, origin } => {
             *request_id > 0
@@ -1858,11 +1866,6 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
         "site_status" | "site_result" => decode_site_event(value, value["event"].as_str()?)?,
-        "devtools_result" => WebViewEvent::DevToolsResult {
-            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
-            ok: value["ok"].as_bool()?,
-            body: value["body"].as_str()?.into(),
-        },
         "context_closed" => WebViewEvent::ContextMenuClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
@@ -2082,18 +2085,6 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::SetUserScripts(scripts) => json!({"op":"scripts","scripts": &*scripts}),
         WebViewCommand::SetSiteExceptions(origins) => {
             json!({"op":"site_exceptions","origins":origins})
-        }
-        WebViewCommand::DevTools {
-            request_id,
-            method,
-            params,
-            session,
-        } => {
-            let mut command = json!({"op":"devtools_call","request_id":request_id,"method":method,"params":params});
-            if let Some(session) = session {
-                command["session"] = json!(session);
-            }
-            command
         }
         WebViewCommand::RequestSiteStatus { request_id, origin } => {
             json!({"op":"site_status","request_id":request_id,"origin":origin})

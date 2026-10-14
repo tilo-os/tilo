@@ -68,9 +68,7 @@ pub enum Category {
     Sound,
     Speakers,
     Displays,
-    Keyboard,
-    Pointing,
-    Spelling,
+    MouseKeyboard,
     KeyboardShortcuts,
     TimeDate,
     Users,
@@ -170,7 +168,7 @@ const DISPLAYS_KEYWORDS: &[&str] = &[
     "arrangement",
     "external",
 ];
-const KEYBOARD_KEYWORDS: &[&str] = &[
+const MOUSE_KEYBOARD_KEYWORDS: &[&str] = &[
     "keyboard",
     "keyboard layout",
     "input source",
@@ -180,32 +178,19 @@ const KEYBOARD_KEYWORDS: &[&str] = &[
     "qwertz",
     "azerty",
     "dvorak",
-    "key repeat",
-    "layout",
-    "compose key",
-    "caps lock",
-    "typing",
-];
-const POINTING_KEYWORDS: &[&str] = &[
-    "mouse",
     "pointer",
     "trackpad",
     "touchpad",
     "scroll",
     "natural scrolling",
     "tap to click",
+    "key repeat",
+    "layout",
     "cursor",
-    "tablet",
-    "pen",
-    "stylus",
-];
-const SPELLING_KEYWORDS: &[&str] = &[
     "spell checker",
     "spelling",
     "autocorrect",
     "auto-correct",
-    "dictionary",
-    "words",
 ];
 const TIME_DATE_KEYWORDS: &[&str] = &[
     "clock",
@@ -394,14 +379,12 @@ impl Category {
         Category::Sound,
         Category::Speakers,
         Category::Displays,
-        Category::Keyboard,
+        Category::MouseKeyboard,
         Category::KeyboardShortcuts,
         Category::Printers,
         // System
         Category::Appearance,
         Category::Accessibility,
-        Category::Pointing,
-        Category::Spelling,
         Category::Notifications,
         Category::DefaultApps,
         Category::Storage,
@@ -429,13 +412,11 @@ impl Category {
             | Category::Sound
             | Category::Speakers
             | Category::Displays
-            | Category::Keyboard
+            | Category::MouseKeyboard
             | Category::KeyboardShortcuts
             | Category::Printers => Section::Devices,
             Category::Appearance
             | Category::Accessibility
-            | Category::Pointing
-            | Category::Spelling
             | Category::Notifications
             | Category::DefaultApps
             | Category::Storage
@@ -468,9 +449,7 @@ impl Category {
             Category::Sound => "settings-category-sound",
             Category::Speakers => "settings-category-speakers",
             Category::Displays => "settings-category-displays",
-            Category::Keyboard => "settings-category-keyboard",
-            Category::Pointing => "settings-category-pointing",
-            Category::Spelling => "settings-category-spelling",
+            Category::MouseKeyboard => "settings-category-mouse-keyboard",
             Category::KeyboardShortcuts => "settings-category-keyboard-shortcuts",
             Category::TimeDate => "settings-category-time-date",
             Category::Users => "settings-category-users",
@@ -499,9 +478,7 @@ impl Category {
             Category::Sound => "settings-category-sound-subtitle",
             Category::Speakers => "settings-category-speakers-subtitle",
             Category::Displays => "settings-category-displays-subtitle",
-            Category::Keyboard => "settings-category-keyboard-subtitle",
-            Category::Pointing => "settings-category-pointing-subtitle",
-            Category::Spelling => "settings-category-spelling-subtitle",
+            Category::MouseKeyboard => "settings-category-mouse-keyboard-subtitle",
             Category::KeyboardShortcuts => "settings-category-keyboard-shortcuts-subtitle",
             Category::TimeDate => "settings-category-time-date-subtitle",
             Category::Users => "settings-category-users-subtitle",
@@ -535,9 +512,8 @@ impl Category {
             Category::Sound => Icon::Volume2,
             Category::Speakers => Icon::Speaker,
             Category::Displays => Icon::Monitor,
-            Category::Keyboard | Category::KeyboardShortcuts => Icon::Keyboard,
-            Category::Pointing => Icon::Mouse,
-            Category::Spelling => Icon::Type,
+            Category::MouseKeyboard => Icon::Mouse,
+            Category::KeyboardShortcuts => Icon::Keyboard,
             Category::TimeDate => Icon::Calendar,
             Category::Users => Icon::Users,
             Category::Printers => Icon::Printer,
@@ -566,9 +542,7 @@ impl Category {
             Category::Sound => SOUND_KEYWORDS,
             Category::Speakers => SPEAKERS_KEYWORDS,
             Category::Displays => DISPLAYS_KEYWORDS,
-            Category::Keyboard => KEYBOARD_KEYWORDS,
-            Category::Pointing => POINTING_KEYWORDS,
-            Category::Spelling => SPELLING_KEYWORDS,
+            Category::MouseKeyboard => MOUSE_KEYBOARD_KEYWORDS,
             Category::TimeDate => TIME_DATE_KEYWORDS,
             Category::Users => USERS_KEYWORDS,
             Category::Printers => PRINTERS_KEYWORDS,
@@ -626,9 +600,7 @@ impl Category {
             Category::Sound => "sound",
             Category::Speakers => "speakers",
             Category::Displays => "displays",
-            Category::Keyboard => "keyboard",
-            Category::Pointing => "pointing",
-            Category::Spelling => "spelling",
+            Category::MouseKeyboard => "mouse_keyboard",
             Category::KeyboardShortcuts => "keyboard_shortcuts",
             Category::TimeDate => "time_date",
             Category::Users => "users",
@@ -714,13 +686,23 @@ mod tests {
             ),
             (Category::Network, "vpn", true, "vpn → Network"),
             (
-                Category::Keyboard,
+                Category::MouseKeyboard,
                 "keyboard layout",
                 true,
-                "keyboard layout → Keyboard",
+                "keyboard layout → Mouse & Keyboard",
             ),
-            (Category::Keyboard, "qwertz", true, "qwertz → Keyboard"),
-            (Category::Keyboard, "language", true, "language → Keyboard"),
+            (
+                Category::MouseKeyboard,
+                "qwertz",
+                true,
+                "qwertz → Mouse & Keyboard",
+            ),
+            (
+                Category::MouseKeyboard,
+                "language",
+                true,
+                "language → Mouse & Keyboard",
+            ),
             (Category::Power, "battery", true, "battery → Power"),
             (
                 Category::Appearance,

@@ -13,7 +13,8 @@ Changes:
   are) anchors the call graph at wasm-bindgen's `__wbindgen_start` export.
 - The JavaScript loader template it embedded is gone; `src/main.rs` writes
   the bundle's own loader (`__wasm_split.js`, module URLs relative to the
-  loader, a callback on failure too) and file names.
+  loader, a callback on failure too, and a `tilo-module-unavailable` event
+  on the page when the server no longer has a module) and file names.
 
 Fixes, each of which broke the split program of a large Rust module at run
 time:

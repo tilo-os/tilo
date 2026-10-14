@@ -124,7 +124,6 @@ fn minimal_tree() -> WorkspaceTree {
         active_tab: tab_id,
         width: WindowWidth::Normal,
         maximized: false,
-        focus_history: Vec::new(),
     };
     let strip = Strip {
         id: strip_id,

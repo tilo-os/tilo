@@ -103,30 +103,70 @@ fn colours_code(kind: TokenKind) -> bool {
     )
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the parser advances one shared index while both slices are bounds-checked by the loop"
-)]
-fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
+/// What one line of a code run is highlighted from: the run's language and
+/// every line up to and including it, since a line's colours depend on the
+/// parse state the lines above it leave (an open string or comment).
+struct SyntaxKeys(rustc_hash::FxHasher);
+
+impl SyntaxKeys {
+    fn new(language: &str) -> Self {
+        let mut hasher = rustc_hash::FxHasher::default();
+        std::hash::Hasher::write(&mut hasher, language.as_bytes());
+        std::hash::Hasher::write_usize(&mut hasher, language.len());
+        Self(hasher)
+    }
+
+    fn line_key(&mut self, line: &str) -> u64 {
+        std::hash::Hasher::write(&mut self.0, line.as_bytes());
+        std::hash::Hasher::write_usize(&mut self.0, line.len());
+        std::hash::Hasher::finish(&self.0)
+    }
+}
+
+/// Colour each fenced code run by its grammar, and clear the colours of
+/// every other block. A run is highlighted again only when its language or
+/// one of its lines changed since its colours were derived: each line keeps
+/// the key it was coloured under, so an unchanged frame parses nothing.
+/// Returns how many lines were highlighted.
+fn refresh_syntax_colors(blocks: &mut [Block]) -> usize {
+    let mut highlighted = 0usize;
     let mut index = 0usize;
-    while index < blocks.len() {
-        let Some(language) = languages.get(index).and_then(Option::as_deref) else {
-            let Some(block) = blocks.get_mut(index) else {
-                break;
-            };
-            block.line.set_transient_colors(Vec::new());
+    while let Some(block) = blocks.get(index) {
+        let BlockKind::CodeBlock { lang } = &block.kind else {
+            if let Some(block) = blocks.get_mut(index) {
+                block.line.set_transient_colors(Vec::new());
+            }
             index = index.saturating_add(1);
             continue;
         };
-        let mut state = SyntaxHighlighter::for_token_or_plain(language).start();
         let start = index;
-        while index < blocks.len()
-            && languages.get(index).and_then(Option::as_deref) == Some(language)
-            && blocks[start].same_code_group(&blocks[index])
+        let mut end = start.saturating_add(1);
+        while blocks
+            .get(end)
+            .is_some_and(|next| block.same_code_group(next))
         {
-            let Some(block) = blocks.get_mut(index) else {
-                break;
-            };
+            end = end.saturating_add(1);
+        }
+        index = end;
+        let language = lang.as_deref().unwrap_or_default();
+        let Some(run) = blocks.get(start..end) else {
+            break;
+        };
+        let mut keys = SyntaxKeys::new(language);
+        if run
+            .iter()
+            .all(|line| line.line.transient_colors_key() == Some(keys.line_key(line.text())))
+        {
+            continue;
+        }
+        let language = language.to_owned();
+        let Some(run) = blocks.get_mut(start..end) else {
+            break;
+        };
+        let mut keys = SyntaxKeys::new(&language);
+        let mut state = SyntaxHighlighter::for_token_or_plain(&language).start();
+        for block in run {
+            let key = keys.line_key(block.text());
             let colors = state
                 .highlight_line(block.text())
                 .into_iter()
@@ -136,10 +176,11 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
                     kind: span.kind,
                 })
                 .collect();
-            block.line.set_transient_colors(colors);
-            index = index.saturating_add(1);
+            block.line.set_keyed_transient_colors(key, colors);
+            highlighted = highlighted.saturating_add(1);
         }
     }
+    highlighted
 }
 
 /// Each `CodeBlock` stores one authored source line. It may wrap visually;
@@ -566,6 +607,14 @@ pub struct BlockEditor {
     font_scale: f32,
     #[cfg(test)]
     painted_blocks: usize,
+    /// Code lines syntax-highlighted, for tests that a frame derives
+    /// colours only for what changed.
+    #[cfg(test)]
+    highlighted_lines: usize,
+    /// Formula previews whose source text was joined, for tests that a
+    /// frame derives it only for what it paints.
+    #[cfg(test)]
+    formula_sources: usize,
     dirty: bool,
     paint_damage: crate::widget::paint_damage::PaintDamage,
     /// Where each line this draw painted past its own rect (a correction
@@ -652,10 +701,6 @@ pub struct BlockEditor {
     /// Reordering begins only from the quiet six-dot handle, preserving normal
     /// text selection drags everywhere else in a block.
     block_drag: Option<BlockDrag>,
-    /// Edge-scroll timing of the handle drag, shared with every other
-    /// reorder gesture ([`crate::reorder`]): the pointer near the editor's
-    /// top or bottom edge asks the host to scroll.
-    block_drag_scroll: crate::reorder::ReorderController<usize>,
     /// Host clip in window coordinates, including the visible editor gutter.
     /// Tooltip discovery runs independently of paint clipping.
     tooltip_viewport: Option<Rect>,
@@ -682,9 +727,6 @@ pub struct BlockEditor {
     /// Layout must not alternate between a placeholder and the actual aspect ratio.
     image_dimensions: HashMap<String, (u32, u32)>,
     image_attachments: HashMap<String, ImageAttachment>,
-    /// Height of the host's visible document area, which bounds an image
-    /// preview (see [`Self::set_viewport_height`]).
-    viewport_height: Option<f64>,
     formula_chrome: Vec<Option<FormulaChrome>>,
     visual_formulas: HashMap<usize, VisualFormulaState>,
     visual_formula_focus: Option<usize>,
@@ -807,6 +849,10 @@ impl BlockEditor {
             font_scale: 1.0,
             #[cfg(test)]
             painted_blocks: 0,
+            #[cfg(test)]
+            highlighted_lines: 0,
+            #[cfg(test)]
+            formula_sources: 0,
             dirty: true,
             paint_damage: crate::widget::paint_damage::PaintDamage::default(),
             line_overhang: HashMap::new(),
@@ -841,7 +887,6 @@ impl BlockEditor {
             copied_code_feedback: None,
             opening_code_fence: None,
             block_drag: None,
-            block_drag_scroll: crate::reorder::ReorderController::new(),
             tooltip_viewport: None,
             blocks_list: None,
             local_author: None,
@@ -854,7 +899,6 @@ impl BlockEditor {
             image_preview_rects: Vec::new(),
             image_store: None,
             image_dimensions: HashMap::new(),
-            viewport_height: None,
             image_attachments: HashMap::new(),
             formula_chrome: Vec::new(),
             visual_formulas: HashMap::new(),
@@ -926,18 +970,6 @@ impl BlockEditor {
     /// window-coordinate clip as painting (including the handle gutter).
     pub fn set_tooltip_viewport(&mut self, viewport: Option<Rect>) {
         self.tooltip_viewport = viewport;
-    }
-
-    /// The height of the host's visible document area (a scrolling host's
-    /// viewport, not the editor's content extent). An image preview is
-    /// never taller than [`IMAGE_VIEWPORT_FRACTION`] of it, so a large
-    /// picture leaves room to see and drag past it. Hosts refresh it before
-    /// layout; returns whether it changed, so a host can lay out again.
-    pub fn set_viewport_height(&mut self, height: Option<f64>) -> bool {
-        let height = height.filter(|height| height.is_finite() && *height > 0.0);
-        let changed = self.viewport_height != height;
-        self.viewport_height = height;
-        changed
     }
 
     pub fn empty_hint(&self) -> &str {
@@ -1224,7 +1256,7 @@ impl BlockEditor {
                 table.blur_projection();
             }
         }
-        if !focused && self.take_block_drag().is_some() {
+        if !focused && self.block_drag.take().is_some() {
             self.dirty = true;
         }
         if focused == self.is_focused {
@@ -3366,15 +3398,23 @@ impl BlockEditor {
         let tokens = &theme.tokens;
         let hovered = self.hovered_block();
         let mut painted = Vec::new();
-        for index in 0..self.blocks.len() {
+        // At most three blocks show a handle: the dragged one, the caret's and
+        // the hovered one. Only those are measured.
+        let mut shown = [
+            self.block_drag.map(|drag| drag.source),
+            self.focused.filter(|_| self.is_focused),
+            hovered,
+        ];
+        shown.sort_unstable();
+        let mut previous = None;
+        for index in shown.into_iter().flatten() {
+            if previous.replace(index) == Some(index) {
+                continue;
+            }
             let Some(handle) = self.block_drag_handle_rect(index) else {
                 continue;
             };
             let active = self.block_drag.is_some_and(|drag| drag.source == index);
-            let contains_caret = self.is_focused && self.focused == Some(index);
-            if !active && !contains_caret && hovered != Some(index) {
-                continue;
-            }
             painted.push(handle);
             let color = tokens.colors.text_primary.with_alpha_factor(0.72);
             let center = handle.center();
@@ -3511,51 +3551,6 @@ impl BlockEditor {
         true
     }
 
-    /// End the handle drag, whatever ends it.
-    fn take_block_drag(&mut self) -> Option<BlockDrag> {
-        self.block_drag_scroll.cancel();
-        self.block_drag.take()
-    }
-
-    /// Whether a block is being dragged by its handle (past the click
-    /// threshold). Such a drag near the edge of the editor's visible area
-    /// needs [`Self::tick_block_drag`] every frame.
-    pub fn block_drag_active(&self) -> bool {
-        self.block_drag.is_some_and(|drag| drag.active)
-    }
-
-    /// How far the host should scroll its document, in logical pixels
-    /// (positive is down), for the `elapsed` since the last tick: nonzero
-    /// while the pointer of an active block drag is in the edge band of
-    /// `viewport`, faster the closer to the edge. The editor does not own
-    /// its scrolling; the host scrolls, lays the editor out again and the
-    /// drop target follows the pointer ([`Self::retarget_block_drag`] runs
-    /// with that layout).
-    pub fn tick_block_drag(&mut self, viewport: Rect, elapsed: crate::time::Duration) -> f64 {
-        if !self.block_drag_active() {
-            return 0.0;
-        }
-        self.block_drag_scroll
-            .tick(viewport, elapsed, crate::time::now())
-            .scroll_delta
-    }
-
-    /// Point the active drag's drop target at the block under the pointer,
-    /// now that the blocks have moved under it (the host scrolled).
-    pub fn retarget_block_drag(&mut self) {
-        let y = self.last_mouse_pos.y;
-        let Some(mut drag) = self.block_drag.filter(|drag| drag.active) else {
-            return;
-        };
-        if let Some(target) = self.block_at_y(y)
-            && target != drag.target
-        {
-            drag.target = target;
-            self.block_drag = Some(drag);
-            self.dirty = true;
-        }
-    }
-
     /// Complete or cancel a handle drag before normal text routing sees its
     /// terminal event. A cancelled drag never changed the projection; a drop
     /// is immediately captured by the semantic action bridge.
@@ -3572,7 +3567,7 @@ impl BlockEditor {
             }
         );
         if (escape || matches!(event, WindowEvent::Focused(false)))
-            && self.take_block_drag().is_some()
+            && self.block_drag.take().is_some()
         {
             *ctx.handled = true;
             self.dirty = true;
@@ -3586,7 +3581,7 @@ impl BlockEditor {
                 ..
             }
         );
-        let Some(drag) = released.then(|| self.take_block_drag()).flatten() else {
+        let Some(drag) = released.then(|| self.block_drag.take()).flatten() else {
             return false;
         };
         if drag.active {
@@ -4127,9 +4122,17 @@ impl BlockEditor {
         Some((start, end))
     }
 
-    fn refresh_live_link_hits(&mut self, theme: &Theme) {
+    /// The links of the blocks this frame `painted`: a link off screen has
+    /// no geometry anyone can point at, and its line's shaped positions may
+    /// be from an earlier frame.
+    fn refresh_live_link_hits(&mut self, theme: &Theme, painted: &[bool]) {
         self.live_link_hits.clear();
-        for block in &self.blocks {
+        for (block, _) in self
+            .blocks
+            .iter()
+            .zip(painted)
+            .filter(|(_, painted)| **painted)
+        {
             let line = &block.line;
             for span in line.marks() {
                 let target = match &span.mark {
@@ -4185,29 +4188,6 @@ impl BlockEditor {
         b.line.set_cursor_pos(title_end);
         self.dirty = true;
         self.edit_pending = true;
-    }
-
-    /// Where the caret is in the document, for a host that keeps it in
-    /// view while editing: the focused block's caret, never an open
-    /// overlay's field (the slash menu, a link popover, find), whose own
-    /// rect says nothing about where the person is writing.
-    pub fn document_caret_rect(&self) -> Option<Rect> {
-        let block = self.blocks.get(self.focused?)?;
-        if self
-            .image_attachments
-            .get(&block.id)
-            .is_some_and(|image| !image.editing)
-        {
-            return None;
-        }
-        if let Some(rect) = self
-            .table_editors
-            .get(&block.id)
-            .and_then(super::block_editor_table::DocumentTable::projected_ime_rect)
-        {
-            return Some(rect);
-        }
-        Widget::ime_cursor_rect(&block.line)
     }
 
     /// So the host can avoid stealing focus from the popover.
@@ -6622,18 +6602,6 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     }
 }
 
-/// The share of the host's visible height an image preview may take at
-/// most, aspect kept: a large picture never fills the editor.
-pub const IMAGE_VIEWPORT_FRACTION: f64 = 0.6;
-
-/// The largest rect of the picture's aspect inside `rect`, centred.
-fn fitted_image_rect(rect: Rect, (width, height): (u32, u32)) -> Rect {
-    let ratio =
-        (rect.width() / f64::from(width).max(1.0)).min(rect.height() / f64::from(height).max(1.0));
-    let size = (f64::from(width) * ratio, f64::from(height) * ratio);
-    Rect::from_center_size(rect.center(), size)
-}
-
 fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     let Some((alt, destination)) = standalone_markdown_image(source) else {
         return;
@@ -6643,13 +6611,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     }
     let scale = f64::from(ctx.theme.text_scale);
     let radius = 8.0 * scale;
-    let image = ctx.image_store.and_then(|store| store.get(destination));
-    // A preview capped to the viewport is narrower than the column: the
-    // plate hugs the picture rather than letterboxing it.
-    let plate = image.as_ref().map_or(rect, |image| {
-        fitted_image_rect(rect, (image.width, image.height))
-    });
-    let shape = vello::kurbo::RoundedRect::from_rect(plate, radius);
+    let shape = vello::kurbo::RoundedRect::from_rect(rect, radius);
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
         ctx.transform,
@@ -6657,8 +6619,13 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         None,
         &shape,
     );
-    if let Some(image) = image {
-        crate::image_store::paint_image_cover(ctx.scene, ctx.transform, plate, &image, 0.0);
+    if let Some(image) = ctx.image_store.and_then(|store| store.get(destination)) {
+        let ratio = (rect.width() / f64::from(image.width).max(1.0))
+            .min(rect.height() / f64::from(image.height).max(1.0));
+        let width = f64::from(image.width) * ratio;
+        let height = f64::from(image.height) * ratio;
+        let fitted = Rect::from_center_size(rect.center(), (width, height));
+        crate::image_store::paint_image_cover(ctx.scene, ctx.transform, fitted, &image, 0.0);
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             ctx.transform,
@@ -7392,11 +7359,6 @@ impl BlockEditor {
                     || standalone_markdown_image(block.text()).is_some()
             })
             .collect();
-        let max_image_height = self.viewport_height.map(|height| {
-            crate::num::u32_of_i64(crate::num::i64_of_f64(
-                (height * IMAGE_VIEWPORT_FRACTION).round(),
-            ))
-        });
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let image = self.image_attachments.get(&b.id);
             let image_preview = image
@@ -7406,7 +7368,6 @@ impl BlockEditor {
                 Some(dimensions) => super::rich_text_line::ImagePreview::Present {
                     dimensions,
                     editing: image.is_some_and(|image| image.editing),
-                    max_height: max_image_height,
                 },
                 None => super::rich_text_line::ImagePreview::Absent,
             });
@@ -8076,7 +8037,9 @@ impl Widget for BlockEditor {
             } else {
                 ""
             };
-            block.line.inner_mut().set_placeholder(hint);
+            if block.line.inner().placeholder() != hint {
+                block.line.inner_mut().set_placeholder(hint);
+            }
             // New lines (a split, a paste) take the editor's alignment too.
             if block.line.align() != self.text_align {
                 block.line.set_align(self.text_align);
@@ -8085,19 +8048,20 @@ impl Widget for BlockEditor {
 
         let handles = self.draw_block_drag_affordance(scene, transform, theme);
 
+        // Syntax colours are derived per change, not per frame; an unchanged
+        // run keeps the colours it has.
+        let highlighted = refresh_syntax_colors(&mut self.blocks);
+        #[cfg(test)]
+        {
+            self.highlighted_lines = self.highlighted_lines.saturating_add(highlighted);
+        }
+        #[cfg(not(test))]
+        let _ = highlighted;
+
         // Precompute run geometry so a multi-line fence paints one background
         // and a formula fence paints one preview after its final source line.
         let line_rects: Vec<Rect> = self.blocks.iter().map(|b| b.line.get_rect()).collect();
         let ordinals = numbered_ordinals(&self.blocks);
-        let code_languages: Vec<Option<String>> = self
-            .blocks
-            .iter()
-            .map(|block| match &block.kind {
-                BlockKind::CodeBlock { lang } => Some(lang.clone().unwrap_or_default()),
-                _ => None,
-            })
-            .collect();
-        apply_syntax_colors(&mut self.blocks, &code_languages);
         let mut run_start = 0;
         let code_runs = self
             .blocks
@@ -8113,58 +8077,6 @@ impl Widget for BlockEditor {
                 Some(run_start)
             })
             .collect::<Vec<_>>();
-        let mut formula_runs: Vec<Option<FormulaRunPreview>> = vec![None; self.blocks.len()];
-        let mut formula_index = 0usize;
-        while formula_index < self.blocks.len() {
-            let Some(descriptor) = self
-                .blocks
-                .get(formula_index)
-                .and_then(|b| formula_descriptor(&b.kind))
-            else {
-                formula_index = formula_index.saturating_add(1);
-                continue;
-            };
-            let end = formula_run_end(&self.blocks, formula_index);
-            let source = self
-                .blocks
-                .get(formula_index..=end)
-                .map(|run| run.iter().map(Block::text).collect::<Vec<_>>().join("\n"))
-                .unwrap_or_default();
-            if let Some(slot) = formula_runs.get_mut(formula_index) {
-                *slot = Some(FormulaRunPreview {
-                    end,
-                    descriptor,
-                    source,
-                });
-            }
-            formula_index = end.saturating_add(1);
-        }
-
-        self.code_copy_hits.clear();
-        let mut code_index = 0usize;
-        while code_index < code_languages.len() {
-            let Some(Some(_)) = code_languages.get(code_index) else {
-                code_index = code_index.saturating_add(1);
-                continue;
-            };
-            let mut end = code_index;
-            while code_runs.get(end.saturating_add(1)) == code_runs.get(code_index) {
-                end = end.saturating_add(1);
-            }
-            if formula_runs.get(code_index).is_none_or(Option::is_none)
-                && let Some(line) = line_rects.get(code_index)
-            {
-                let size = 22.0 * self.text_scale;
-                let rect = Rect::new(
-                    line.x1 - size - 4.0 * self.text_scale,
-                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale,
-                    line.x1 - 4.0 * self.text_scale,
-                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale + size,
-                );
-                self.code_copy_hits.push((rect, code_index, end));
-            }
-            code_index = end.saturating_add(1);
-        }
 
         let paint_rects: Vec<_> = (0..self.blocks.len())
             .map(|index| self.block_paint_rect(index))
@@ -8193,6 +8105,70 @@ impl Widget for BlockEditor {
                         .is_some_and(|group| group.contains(&index))
             })
             .collect();
+
+        // A run's ground, formula preview and copy chrome are painted by its
+        // first line, so only a run whose first line paints needs them: the
+        // rest of the document derives nothing this frame.
+        let mut formula_runs: Vec<Option<FormulaRunPreview>> = vec![None; self.blocks.len()];
+        let mut formula_index = 0usize;
+        while formula_index < self.blocks.len() {
+            let Some(descriptor) = self
+                .blocks
+                .get(formula_index)
+                .and_then(|b| formula_descriptor(&b.kind))
+            else {
+                formula_index = formula_index.saturating_add(1);
+                continue;
+            };
+            let end = formula_run_end(&self.blocks, formula_index);
+            if painted.get(formula_index).copied().unwrap_or(false) {
+                let source = self
+                    .blocks
+                    .get(formula_index..=end)
+                    .map(|run| run.iter().map(Block::text).collect::<Vec<_>>().join("\n"))
+                    .unwrap_or_default();
+                #[cfg(test)]
+                {
+                    self.formula_sources = self.formula_sources.saturating_add(1);
+                }
+                if let Some(slot) = formula_runs.get_mut(formula_index) {
+                    *slot = Some(FormulaRunPreview {
+                        end,
+                        descriptor,
+                        source,
+                    });
+                }
+            }
+            formula_index = end.saturating_add(1);
+        }
+
+        self.code_copy_hits.clear();
+        let mut code_index = 0usize;
+        while code_index < code_runs.len() {
+            let Some(Some(_)) = code_runs.get(code_index) else {
+                code_index = code_index.saturating_add(1);
+                continue;
+            };
+            let mut end = code_index;
+            while code_runs.get(end.saturating_add(1)) == code_runs.get(code_index) {
+                end = end.saturating_add(1);
+            }
+            if painted.get(code_index).copied().unwrap_or(false)
+                && formula_descriptor(&self.blocks[code_index].kind).is_none()
+                && let Some(line) = line_rects.get(code_index)
+            {
+                let size = 22.0 * self.text_scale;
+                let rect = Rect::new(
+                    line.x1 - size - 4.0 * self.text_scale,
+                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale,
+                    line.x1 - 4.0 * self.text_scale,
+                    line.y0 - CODE_HEADER_HEIGHT * self.text_scale + 2.0 * self.text_scale + size,
+                );
+                self.code_copy_hits.push((rect, code_index, end));
+            }
+            code_index = end.saturating_add(1);
+        }
+
         let mut drag_offset = active_drag
             .map(|drag| self.last_mouse_pos - drag.start)
             .unwrap_or_default();
@@ -8662,14 +8638,12 @@ impl Widget for BlockEditor {
                 ctx.theme.tokens.colors.text_dim,
                 1.5 * self.text_scale,
             );
-            let language =
-                code_languages
-                    .get(*start)
-                    .and_then(Option::as_ref)
-                    .map_or(
-                        "Code",
-                        |value| if value.is_empty() { "Code" } else { value },
-                    );
+            let language = match self.blocks.get(*start).map(|block| &block.kind) {
+                Some(BlockKind::CodeBlock { lang: Some(lang) }) if !lang.is_empty() => {
+                    lang.as_str()
+                }
+                _ => "Code",
+            };
             // The language label starts where the code does.
             let left = line.x0 + inset;
             let available = (rect.x0 - left - 8.0 * self.text_scale).max(0.0);
@@ -8778,7 +8752,7 @@ impl Widget for BlockEditor {
         // style, scale, and BiDi changes unclickable.
         #[cfg(test)]
         let links_probe = crate::profiling::frame_probe::span("block_link_hits");
-        self.refresh_live_link_hits(theme);
+        self.refresh_live_link_hits(theme, &painted);
         #[cfg(test)]
         drop(links_probe);
         if let Some(prefix) = outside_prefix {
@@ -9154,7 +9128,22 @@ impl Widget for BlockEditor {
         if self.slash_menu.is_visible() {
             return Widget::ime_cursor_rect(&self.slash_menu);
         }
-        self.document_caret_rect()
+        let block = self.blocks.get(self.focused?)?;
+        if self
+            .image_attachments
+            .get(&block.id)
+            .is_some_and(|image| !image.editing)
+        {
+            return None;
+        }
+        if let Some(rect) = self
+            .table_editors
+            .get(&block.id)
+            .and_then(super::block_editor_table::DocumentTable::projected_ime_rect)
+        {
+            return Some(rect);
+        }
+        Widget::ime_cursor_rect(&block.line)
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
@@ -9368,6 +9357,12 @@ impl Widget for BlockEditor {
             .retained_block_selection
             .as_ref()
             .and_then(|_| self.selected_block_range());
+        // Every block's controls carry the same labels: look each up once,
+        // not once per block per frame.
+        let change_type_label = crate::i18n!("block-editor-change-type");
+        let text_label = crate::i18n::I18nManager::lookup("widget-block-text", None);
+        let indent_label = crate::i18n::I18nManager::lookup("widget-block-indent", None);
+        let outdent_label = crate::i18n::I18nManager::lookup("widget-block-outdent", None);
         children.extend(self.blocks.iter().enumerate().map(|(index, block)| {
             let up_disabled = self.neighboring_group(index, true).is_none();
             let position = index.saturating_add(1);
@@ -9395,7 +9390,7 @@ impl Widget for BlockEditor {
                             .disabled(down_disabled),
                     ),
                 AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-change-type"))
+                    .with_name(change_type_label.clone())
                     .with_action_target(format!("notes.block-type:{}", block.id))
                     .with_bounds(bounds)
                     .with_state(AccessState::new().focusable(true)),
@@ -9406,7 +9401,7 @@ impl Widget for BlockEditor {
             {
                 block_children.insert(
                     0,
-                    text.with_name(crate::i18n::I18nManager::format("widget-block-text", &[]))
+                    text.with_name(text_label.clone())
                         .with_action_target(format!("notes.block-text:{}", block.id))
                         .with_bounds(block.line.get_rect()),
                 );
@@ -9414,16 +9409,16 @@ impl Widget for BlockEditor {
             for (direction, label, disabled) in [
                 (
                     "in",
-                    "widget-block-indent",
+                    &indent_label,
                     self.blocks[self.movable_group(index)]
                         .iter()
                         .any(|b| b.indent() >= MAX_LIST_INDENT),
                 ),
-                ("out", "widget-block-outdent", block.indent() == 0),
+                ("out", &outdent_label, block.indent() == 0),
             ] {
                 block_children.push(
                     AccessNode::new(Role::Button)
-                        .with_name(crate::i18n::I18nManager::format(label, &[]))
+                        .with_name(label.clone())
                         .with_action_target(format!("notes.block-indent:{}:{direction}", block.id))
                         .with_bounds(bounds)
                         .with_state(AccessState::new().focusable(!disabled).disabled(disabled)),
@@ -9651,6 +9646,12 @@ impl Widget for BlockEditor {
                 .with_state(AccessState::new().focusable(self.is_focusable()).focused(self.is_focused()).multiline(true))
                 .with_children(children),
         )
+    }
+
+    /// The document node above is never hidden; answer without building
+    /// every block's subtree.
+    fn accessibility_hidden(&self) -> bool {
+        false
     }
 
     #[expect(
@@ -10463,7 +10464,6 @@ impl BlockEditor {
             start: self.last_mouse_pos,
             active: false,
         });
-        self.block_drag_scroll.begin(source, self.last_mouse_pos);
         *ctx.focus_target = Some(ctx.node_id);
         *ctx.handled = true;
         self.dirty = true;
@@ -10605,8 +10605,6 @@ impl BlockEditor {
                 self.dirty = true;
             }
             self.block_drag = Some(drag);
-            self.block_drag_scroll
-                .update(logical, None, crate::time::now(), |_, _| true);
             return;
         }
 
@@ -10677,7 +10675,7 @@ impl BlockEditor {
         true
     }
 
-    /// The `/` still falls through to `TextInput` (visible
+    /// The leading `/` still falls through to `TextInput` (visible
     /// feedback); `slash_open_at` remembers where to strip it on commit.
     /// Code blocks excluded — `/` there is meaningful text.
     fn try_open_slash_menu(&mut self, event: &WindowEvent) {
@@ -10722,17 +10720,6 @@ impl BlockEditor {
                 .selection_range()
                 .map_or(block.line.cursor_pos(), |(start, _)| start)
         });
-        // A `/` inside a word ("and/or", "src/lib") is text. The menu opens
-        // only at the start of a block or after whitespace.
-        let after_boundary = self.blocks.get(focused_idx).is_none_or(|block| {
-            let text = block.line.value();
-            text.get(..trigger_byte.min(text.len()))
-                .and_then(|before| before.chars().next_back())
-                .is_none_or(char::is_whitespace)
-        });
-        if !after_boundary {
-            return;
-        }
         self.slash_menu
             .set_anchor(self.fallback_popover_anchor(focused_idx));
         self.slash_menu.set_filter("");

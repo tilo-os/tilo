@@ -17,8 +17,10 @@ the SDK moves on.
 
 ## Install
 
-You need Rust, installed with [rustup](https://rustup.rs). Then install
-`tilo-app`:
+You need Rust, installed with [rustup](https://rustup.rs), and Python 3.11
+or newer as `python3` (or named by `$PYTHON`): building the SDK stages its
+pinned fonts with a Python script. macOS's own `/usr/bin/python3` is older;
+`brew install python` provides one. Then install `tilo-app`:
 
 ```bash
 cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli

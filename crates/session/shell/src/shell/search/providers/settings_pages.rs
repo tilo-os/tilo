@@ -2,7 +2,7 @@
 //! Settings first.
 //!
 //! Each page is one row: found by its name, by what it holds ("night light"
-//! finds Displays, "keyboard layout" finds Keyboard) and by the words
+//! finds Displays, "keyboard layout" finds Mouse & keyboard) and by the words
 //! people use for it in either language, so a German desktop that types
 //! "wifi" and an English one that types "wlan" both land on Network. Enter
 //! opens the page through Settings' own `settings://` link, the way every
@@ -24,9 +24,7 @@ const PAGES: &[&str] = &[
     "sound",
     "speakers",
     "displays",
-    "keyboard",
-    "pointing",
-    "spelling",
+    "mouse_keyboard",
     "keyboard_shortcuts",
     "time_date",
     "users",
@@ -62,13 +60,8 @@ pub struct SettingsPagesProvider {
 struct Built {
     locale: String,
     rows: Vec<SearchResult>,
-    /// Each page's searchable text, in row order, followed by one entry per
-    /// [`Built::settings`].
+    /// Each page's searchable text, in row order.
     fields: Vec<Vec<(String, FieldWeight)>>,
-    /// The settings a page holds that the session also serves by name
-    /// ([`super::system_settings::named_settings`]): the row of the page
-    /// they are on, and their name in the desktop's language.
-    settings: Vec<(usize, String)>,
 }
 
 impl SettingsPagesProvider {
@@ -114,67 +107,33 @@ impl SettingsPagesProvider {
                 },
             ));
         }
-        let mut settings = Vec::new();
-        for (slug, name) in super::system_settings::named_settings() {
-            let Some(page) = PAGES.iter().position(|page| *page == slug) else {
-                continue;
-            };
-            fields.push(vec![(name.to_lowercase(), FieldWeight::TITLE)]);
-            settings.push((page, name));
-        }
         Built {
             locale,
             rows,
             fields,
-            settings,
         }
     }
 
-    /// The pages `needle` finds, best first. A page found by the exact name
-    /// of a setting it holds ("keyboard layout") is offered under that name,
-    /// so the row says what the person typed and Enter opens the page it is
-    /// on, where it is changed by choosing rather than by typing a value.
+    /// The pages `needle` finds, best first.
     fn ranked(&self, built: &Built, needle: &str) -> Vec<SearchResult> {
-        let mut ranks = self
-            .ranker
-            .ranks(
-                needle,
-                built
-                    .fields
-                    .iter()
-                    .map(|row| row.iter().map(|(text, weight)| (text.as_str(), *weight))),
-            )
-            .into_iter();
-        let mut out: Vec<Option<SearchResult>> = built
+        let ranks = self.ranker.ranks(
+            needle,
+            built
+                .fields
+                .iter()
+                .map(|row| row.iter().map(|(text, weight)| (text.as_str(), *weight))),
+        );
+        built
             .rows
             .iter()
-            .zip(ranks.by_ref())
-            .map(|(row, rank)| {
+            .zip(ranks)
+            .filter_map(|(row, rank)| {
                 Some(SearchResult {
                     score: crate::shell::search::provider_score(rank?),
                     ..row.clone()
                 })
             })
-            .collect();
-        for ((page, name), rank) in built.settings.iter().zip(ranks) {
-            if rank != Some(ui::search::MAX_FIELD_RANK) || needle.trim().is_empty() {
-                continue;
-            }
-            let (Some(slot), Some(base)) = (out.get_mut(*page), built.rows.get(*page)) else {
-                continue;
-            };
-            *slot = Some(SearchResult {
-                title: name.clone(),
-                subtitle: Some(format!(
-                    "{} · {}",
-                    base.title,
-                    t("search-settings-page-subtitle")
-                )),
-                score: crate::shell::search::provider_score(ui::search::MAX_FIELD_RANK),
-                ..base.clone()
-            });
-        }
-        out.into_iter().flatten().collect()
+            .collect()
     }
 }
 

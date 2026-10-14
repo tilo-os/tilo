@@ -15,8 +15,6 @@ pub mod activation;
 #[cfg(target_os = "linux")]
 pub(crate) mod admin_control;
 #[cfg(target_os = "linux")]
-pub(crate) mod agent_door;
-#[cfg(target_os = "linux")]
 pub mod agent_seats;
 #[cfg(target_os = "linux")]
 mod audio_capture;
@@ -63,8 +61,6 @@ pub mod input_method;
 #[cfg(target_os = "linux")]
 pub mod input_method_service;
 pub mod key_latency;
-#[cfg(target_os = "linux")]
-pub mod liveness;
 pub(crate) mod lock_actions;
 pub mod lock_auth;
 pub mod lock_controller;
@@ -99,8 +95,6 @@ pub mod render_node;
 #[cfg(target_os = "linux")]
 pub mod scanout_feedback;
 pub mod screen_dim;
-#[cfg(target_os = "linux")]
-pub mod seat_lock;
 pub mod selection;
 #[cfg(target_os = "linux")]
 pub(crate) mod session_bootstrap;

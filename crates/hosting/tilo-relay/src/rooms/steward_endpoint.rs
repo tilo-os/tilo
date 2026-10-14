@@ -99,7 +99,8 @@ impl Rooms {
         }
         let channel =
             collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
-        let allowed = readers(&room.peer().governed_access(SystemTime::now())?);
+        let now = SystemTime::now();
+        let allowed = readers(room.peer(), &room.peer().governed_access(now)?, now)?;
         let steward = room
             .stewardship
             .clone()

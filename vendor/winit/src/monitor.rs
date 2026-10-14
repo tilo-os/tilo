@@ -77,9 +77,7 @@ impl VideoModeHandle {
     /// a separate set of valid video modes.
     #[inline]
     pub fn monitor(&self) -> MonitorHandle {
-        MonitorHandle {
-            inner: self.video_mode.monitor(),
-        }
+        MonitorHandle { inner: self.video_mode.monitor() }
     }
 }
 
@@ -164,8 +162,6 @@ impl MonitorHandle {
     /// - **Web:** Always returns an empty iterator
     #[inline]
     pub fn video_modes(&self) -> impl Iterator<Item = VideoModeHandle> {
-        self.inner
-            .video_modes()
-            .map(|video_mode| VideoModeHandle { video_mode })
+        self.inner.video_modes().map(|video_mode| VideoModeHandle { video_mode })
     }
 }

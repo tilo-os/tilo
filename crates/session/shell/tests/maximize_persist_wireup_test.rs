@@ -64,7 +64,6 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
         active_tab: tab_id,
         width: WindowWidth::Normal,
         maximized: false,
-        focus_history: Vec::new(),
     };
     let strip = Strip {
         id: strip_id,

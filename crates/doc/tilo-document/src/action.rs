@@ -408,53 +408,6 @@ pub enum RichTextAction {
     /// restore a version): every existing body block is removed, then the
     /// Markdown is imported as fresh blocks.
     ReplaceBody { markdown: String },
-    /// Insert `blocks` of any kind, in order, at `at`. A new body's single
-    /// empty paragraph is replaced when the blocks go at its end. Block ids
-    /// are minted under the pinned action actor.
-    InsertBlocks {
-        at: crate::block_edit::Placement,
-        blocks: Vec<crate::block_edit::NewBlock>,
-    },
-    /// Insert the blocks `markdown` says (a block per line, see
-    /// [`block_markdown`](crate::block_markdown)) at `at`.
-    InsertMarkdown {
-        at: crate::block_edit::Placement,
-        markdown: String,
-    },
-    /// Make the text of `block` `text`, changing only the characters that
-    /// differ. With `markdown`, `text` is inline Markdown and the block's
-    /// dialect marks follow it; otherwise its marks stay as they are.
-    SetBlockText {
-        block: String,
-        text: String,
-        #[serde(default)]
-        markdown: bool,
-    },
-    /// Turn `block` into the kind `shape` names, keeping its text.
-    SetBlockShape {
-        block: String,
-        shape: crate::block_edit::BlockShape,
-    },
-    /// Set a checklist item's state, or toggle it when `done` is absent. A
-    /// bullet or numbered item becomes a checklist item.
-    SetBlockDone { block: String, done: Option<bool> },
-    /// Indent a list item by `by` levels (negative outdents), within the
-    /// depth the editor draws.
-    ShiftIndent { block: String, by: i64 },
-    /// Move `block` to `at`. Resolved at apply time, so `End` is the end
-    /// the body has when it applies.
-    MoveBlock {
-        block: String,
-        at: crate::block_edit::Placement,
-    },
-    /// Remove `blocks` from the body, leaving it a paragraph if none is left.
-    DeleteBlocks { blocks: Vec<String> },
-    /// Replace the body with `markdown` as the fewest edits that make it so:
-    /// blocks named by their `^id`, or whose line is unchanged, stay the same
-    /// blocks (their ids, marks and authorship hold, and no tombstone is
-    /// made); edited blocks are edited in place, the rest inserted or
-    /// removed. Unlike [`Self::ReplaceBody`] it does not recreate the body.
-    SyncBody { markdown: String },
     /// Replace the whole body with `blocks`, formatted as they are: text an
     /// app brings with marks Markdown cannot carry (a note's links to other
     /// notes, a slide's runs, a copied fragment).
@@ -519,8 +472,6 @@ enum ActionDomain {
     Table,
     Structure,
     Review,
-    /// Edits by block id: [`crate::block_edit`].
-    Blocks,
 }
 
 impl RichTextAction {
@@ -566,15 +517,6 @@ impl RichTextAction {
             | Self::AddComment { .. }
             | Self::ReplyToComment { .. }
             | Self::TrackInsert { .. } => ActionDomain::Review,
-            Self::InsertBlocks { .. }
-            | Self::InsertMarkdown { .. }
-            | Self::SetBlockText { .. }
-            | Self::SetBlockShape { .. }
-            | Self::SetBlockDone { .. }
-            | Self::ShiftIndent { .. }
-            | Self::MoveBlock { .. }
-            | Self::DeleteBlocks { .. }
-            | Self::SyncBody { .. } => ActionDomain::Blocks,
         }
     }
 }
@@ -834,9 +776,6 @@ impl<'a> ActionValidator<'a> {
             ActionDomain::Table => self.validate_tables(action),
             ActionDomain::Structure => self.validate_structure(action),
             ActionDomain::Review => self.validate_review(action),
-            ActionDomain::Blocks => {
-                crate::block_edit::check(action, self.doc, self.containers).is_ok()
-            }
         }
     }
 
@@ -2274,7 +2213,7 @@ fn apply_add_comment(
 }
 
 /// The text an action typed in: `len` characters of `block` from `start`.
-pub(crate) struct Written {
+struct Written {
     region: Region,
     block: String,
     start: usize,
@@ -2291,7 +2230,7 @@ impl Written {
         }
     }
 
-    pub(crate) fn body(block: String, start: usize, text: &str) -> Self {
+    fn body(block: String, start: usize, text: &str) -> Self {
         Self {
             region: Region::Body,
             block,
@@ -2301,21 +2240,22 @@ impl Written {
     }
 
     /// Mark the written text as `author`'s, as part of the edit that wrote it.
-    pub(crate) fn attribute(&self, dm: &mut DocMut<'_>, author: &str) {
+    ///
+    /// Every key carries its own mark, even typed straight after `author`'s
+    /// own run. Relying on that run's mark to take the key in instead would
+    /// lose the key to a collaborator typing at the same place at the same
+    /// time: their key's mark, anchored where this key lands, would cover it
+    /// and win.
+    fn attribute(&self, dm: &mut DocMut<'_>, author: &str) {
         if self.len == 0 || author.is_empty() {
             return;
         }
-        let span = Span {
-            block: self.block.clone(),
-            start: self.start,
-            end: self.start.saturating_add(self.len),
-        };
-        add_mark_region(
-            dm,
+        dm.mark_author_in(
             self.region,
-            &span,
-            tilo_doc::schema::MARK_AUTHOR,
-            &MarkVal::Str(author.to_owned()),
+            &self.block,
+            self.start,
+            self.start.saturating_add(self.len),
+            author,
         );
     }
 }
@@ -2694,10 +2634,7 @@ impl RichTextAction {
         // before creating the mutable editing view.  In particular, do not let
         // a stale multi-block format/delete partially affect still-existing
         // blocks when one peer has already removed another target.
-        if self.domain() == ActionDomain::Blocks {
-            // Names the stale block or the malformed argument.
-            crate::block_edit::check(self, doc, &c).map_err(ActionError::Refused)?;
-        } else if !action_is_valid(self, doc, &c) {
+        if !action_is_valid(self, doc, &c) {
             return Err(ActionError::Refused(
                 "action targets are stale or its arguments are outside Writer's safe limits".into(),
             ));
@@ -2730,13 +2667,6 @@ impl RichTextAction {
             ActionDomain::Table => apply_table_action(&mut dm, self),
             ActionDomain::Structure => apply_structure_action(&mut dm, self),
             ActionDomain::Review => apply_review_action(&mut dm, self),
-            ActionDomain::Blocks => {
-                for written in crate::block_edit::apply(&mut dm, self) {
-                    if let Some(author) = author.as_deref() {
-                        written.attribute(&mut dm, author);
-                    }
-                }
-            }
         }
         Ok(())
     }
