@@ -939,27 +939,7 @@ pub(crate) fn document_portal_path_from_uri(uri: &str) -> Result<PathBuf, String
 }
 
 fn document_portal_root() -> PathBuf {
-    tilo_paths::xdg::runtime_dir()
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", nix_uid())))
-        .join("doc")
-}
-
-fn nix_uid() -> u32 {
-    // `id -u` is intentionally not spawned. Linux exposes the effective uid
-    // through procfs; absent procfs the standard runtime-dir path below will
-    // simply fail closed during canonicalisation.
-    fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|status| {
-            status
-                .lines()
-                .find(|line| line.starts_with("Uid:"))?
-                .split_whitespace()
-                .nth(1)?
-                .parse()
-                .ok()
-        })
-        .unwrap_or(0)
+    tilo_paths::xdg::runtime_dir_or_default().join("doc")
 }
 
 fn document_portal_path_from_uri_at(uri: &str, root: &Path) -> Result<PathBuf, String> {

@@ -246,6 +246,22 @@ pub mod xdg {
         Base::Runtime.resolve(&env, home)
     }
 
+    /// [`runtime_dir`], else where the platform keeps it without the
+    /// variable: `/run/user/<euid>` as systemd-logind creates it, the per-user
+    /// `$TMPDIR` on macOS. For callers that must name a per-user socket or
+    /// file even in a session started without `$XDG_RUNTIME_DIR`.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn runtime_dir_or_default() -> PathBuf {
+        runtime_dir().unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                std::env::temp_dir()
+            } else {
+                PathBuf::from(format!("/run/user/{}", rustix::process::geteuid().as_raw()))
+            }
+        })
+    }
+
     /// `$XDG_DATA_DIRS` in preference order, else `/usr/local/share` and
     /// `/usr/share`. Relative and empty entries are ignored, as the spec
     /// requires.
