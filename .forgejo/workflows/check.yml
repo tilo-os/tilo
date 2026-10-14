@@ -229,12 +229,25 @@ jobs:
       # The live transport suites import the MoQ library, generated from the
       # @moq/net pinned in scripts/moq-browser/package-lock.json as the
       # browser runtime build does; it is never committed. ci-fast ships node
-      # without npm.
+      # without npm. A stalled registry fetch can fail npm ci after minutes of
+      # silence, so print its errors and retry a failed install from a clean
+      # tree.
       - name: Prepare pinned MoQ library for offline suites
         if: contains(needs.select.outputs.suites, 'live-fake-relay.test.mjs') || contains(needs.select.outputs.suites, 'live-transport.test.mjs')
         run: |
           dnf install -y --setopt=install_weak_deps=False npm
-          npm ci --prefix scripts/moq-browser --no-audit --no-fund --silent
+          for attempt in 1 2 3; do
+            if npm ci --prefix scripts/moq-browser --no-audit --no-fund --loglevel=error --fetch-timeout=60000; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::npm ci for scripts/moq-browser failed after $attempt attempts" >&2
+              exit 1
+            fi
+            echo "::notice::npm ci for scripts/moq-browser failed; retrying ($attempt/3)"
+            rm -rf scripts/moq-browser/node_modules
+            sleep $((attempt * 5))
+          done
           node scripts/moq-browser/build.mjs
 
       - name: Run selected suites
