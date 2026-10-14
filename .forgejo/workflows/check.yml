@@ -309,6 +309,12 @@ jobs:
       - name: Ensure isolated audio test dependency
         run: bash tools/ensure-headless-audio.sh
 
+      # And the X11 bridge (xwayland-satellite and Xwayland) the shell's X11
+      # clipboard and focus tests drive; the pinned builder predates it.
+      - name: Ensure X11 bridge test tools
+        if: contains(matrix.test_packages, '-p shell')
+        run: bash tools/ci/ensure-x11-bridge-tools.sh
+
       # Pinned/older builders may predate native PDF capture coverage. Stage
       # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
       # Where the runner's kernel can enforce Landlock, the PDF helper's
