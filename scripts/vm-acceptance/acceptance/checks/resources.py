@@ -651,18 +651,19 @@ def _open_several(ctx, apps: tuple[str, ...] = FOUR_APPS, name: str = "R"):
     """Open `apps` (R02's four) in the active workspace; return the ones still open 8 s later.
 
     An app whose window closed on its own in that time is recorded in
-    facts["apps_closed_after_open"], with what the session log and the user
+    facts["apps_closed_after_open"], and one whose window never appeared in
+    facts["apps_failed_to_open"] with why, each with what the session log and the user
     journal said about it (`<name>-apps-closed-after-open.log`), rather than measured as if
     it were running."""
     ctx.reset()
     shells = core.terminal_shells(ctx) if "so.tilo.terminal" in apps else set()
-    groups = {}
+    groups, failed = {}, {}
     for app in apps:
         try:
             group, _ = ctx.open_app(app)
             groups[app] = group["id"]
-        except core.CheckFailed:
-            pass
+        except core.CheckFailed as e:
+            failed[app] = str(e)[:300]
     time.sleep(8)
     # Terminal's shell runs once its guest is built, which on an account's first session
     # imports the environment's runtime first. Waiting for it keeps that
@@ -671,9 +672,9 @@ def _open_several(ctx, apps: tuple[str, ...] = FOUR_APPS, name: str = "R"):
         ctx.facts["terminal_shell_s"] = core.wait_new_terminal_shell(ctx, shells, core.TERMINAL_SHELL_S)
     st = ctx.state()
     closed = [app for app, gid in groups.items() if core.group_by_id(st, gid) is None]
-    if closed:
+    if closed or failed:
         ctx.shot(f"{name}-apps-closed-after-open")
-        pattern = "|".join(a.replace(".", "\\.") for a in closed)
+        pattern = "|".join(a.replace(".", "\\.") for a in [*closed, *failed])
         # The compositor's own lines and the apps' ends, not their start-up chatter.
         ctx.write(f"{name}-apps-closed-after-open.log", ctx.vm.exec(
             "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
@@ -685,6 +686,7 @@ def _open_several(ctx, apps: tuple[str, ...] = FOUR_APPS, name: str = "R"):
             "| tail -n 60 | cut -c1-400; echo ---; coredumpctl --no-pager list 2>/dev/null | tail -n 10; true",
             check=False))
     ctx.facts["apps_closed_after_open"] = closed
+    ctx.facts["apps_failed_to_open"] = failed
     return [app for app in groups if app not in closed]
 
 
@@ -1457,6 +1459,13 @@ true
 
 HOME_PEERS = '"${TILO_IDENTITY_ROOT:?}/peers/home-peers.json"'
 
+# What the compositor said about launches, authorship and the native owner while R09 ran:
+# an app that never opens in a committed workspace is refused on that path.
+SHARED_SESSION_LOG = (
+    "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
+    "| grep -aiE 'launch|authorship|native|membership|owner|custody|refus|identity|enroll|governor' "
+    "| tail -n 200 | cut -c1-500; true")
+
 
 def _guest(script: str, **values) -> str:
     for key, value in {"DIR": HOME_RELAY_DIR, "UNIT": HOME_RELAY_UNIT, **values}.items():
@@ -1648,9 +1657,13 @@ def idle_shared(ctx, res):
         res.metrics["opened"] = opened
         here = next(w for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == shared["id"])
         groups = [g for s in here["strips"] for g in s["window_groups"]]
+        failed = ctx.facts.get("apps_failed_to_open") or {}
+        if failed:
+            res.metrics["failed_to_open"] = failed
+            ctx.write("R09-session.log", ctx.vm.exec(SHARED_SESSION_LOG, check=False))
         expect(len(opened) == len(SHARED_APPS) and len(groups) >= len(SHARED_APPS),
                f"{len(opened)} of {len(SHARED_APPS)} apps stayed open in the shared workspace "
-               f"({opened}; {len(groups)} window groups there)")
+               f"({opened}; {len(groups)} window groups there; never opened: {failed or 'none'})")
         m = measure(ctx, ctx.config["idle_seconds"], "R09", threads=(BROKER_THREAD, SHOVEL_THREAD))
         res.metrics.update(m, renderer=ctx.facts.get("renderer"))
         ctx.write("R09-idle-shared.json", json.dumps(m, indent=1))
