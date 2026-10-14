@@ -1,0 +1,516 @@
+//! Job-scoped content for personal-mesh compute.
+//!
+//! A job names its inputs by blake3 digest ([`ComputeJobSpec::inputs`]) and
+//! its result names its outputs the same way. The bytes never ride in the
+//! durable [`ComputeEnvelope`](crate::ComputeEnvelope)s: each digest moves
+//! on a stream of its own on the compute connection
+//! ([`StreamOpen::ComputeContent`]), and only as far as the job binds it.
+//!
+//! - **Inputs.** The job's worker asks for a digest the job lists as an
+//!   input, while the job is not terminal. The relay asks the job's
+//!   *requester* for it ([`WorkerStreamOpen::ComputeContent`]), which
+//!   answers from its own workspace content. The worker therefore reads
+//!   exactly what the invoker itself can produce: being a worker grants no
+//!   read of its own, and the package sandbox only ever sees the staged
+//!   bytes.
+//! - **Outputs.** The job's requester asks for a digest the completed job
+//!   reported. The relay asks the worker, which serves it from the outputs
+//!   it retains for that job's requester
+//!   ([`ComputeOutputSource`](crate::compute::ComputeOutputSource)).
+//!
+//! Anything else is refused before the other end is asked. Each hop checks
+//! the bytes against the digest and its bound: the source before sending,
+//! the relay while forwarding, the asker on receipt.
+
+use std::time::Duration;
+
+use iroh::endpoint::{Connection, SendStream};
+use thiserror::Error;
+use tilo_relay_protocol::environment::{
+    ContentReply, ENVIRONMENT_PROTOCOL_VERSION, MemberIdentity, StreamOpen, WorkerStreamOpen,
+    bounded_detail,
+};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+use crate::auth::AuthenticatedPeer;
+use crate::compute::{ComputeJobPhase, ComputeJobSpec, MAX_COMPUTE_INPUT_BYTES};
+use crate::environment_host::{EnvironmentStreamError, read_message, write_message};
+use crate::environment_routing::RoutingContext;
+use crate::host_authority::HostOperation;
+use crate::mesh::DeviceKey;
+use crate::room_access::{self, RoomOperation};
+
+/// Bytes copied per read while forwarding or receiving content.
+const CONTENT_CHUNK_BYTES: usize = 64 * 1024;
+/// How long the relay waits for the device holding the bytes to answer.
+const SOURCE_ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Why job content could not be fetched.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ContentFetchError {
+    /// The relay or the device holding the bytes refused; the code says why.
+    #[error("compute content refused: {0}")]
+    Refused(String),
+    /// The bytes exceed the bound the caller allowed.
+    #[error("compute content exceeds its bound")]
+    TooLarge,
+    /// The bytes do not match the digest asked for.
+    #[error("compute content does not match its digest")]
+    Integrity,
+    /// The stream failed before the bytes arrived.
+    #[error("compute content stream: {0}")]
+    Stream(String),
+    /// The bytes arrived but could not be kept.
+    #[error("compute content store: {0}")]
+    Store(String),
+}
+
+impl ContentFetchError {
+    /// The stable code for this failure.
+    #[must_use]
+    pub fn code(&self) -> &str {
+        match self {
+            Self::Refused(code) => code,
+            Self::TooLarge => "too_large",
+            Self::Integrity => "integrity",
+            Self::Stream(_) => "stream",
+            Self::Store(_) => "store",
+        }
+    }
+}
+
+impl From<EnvironmentStreamError> for ContentFetchError {
+    fn from(error: EnvironmentStreamError) -> Self {
+        Self::Stream(error.to_string())
+    }
+}
+
+/// Fetch the bytes of `digest`, which job `job_id` in `workspace_id` binds
+/// to this device, over its authenticated compute `connection` to the
+/// relay: an input when this device is the job's worker, an output when it
+/// is the job's requester.
+///
+/// # Errors
+///
+/// [`ContentFetchError::Refused`] with the relay's or the source's code,
+/// [`ContentFetchError::TooLarge`] past `max_bytes`,
+/// [`ContentFetchError::Integrity`] when the bytes do not hash to `digest`,
+/// or [`ContentFetchError::Stream`] when the stream fails.
+pub async fn fetch_job_content(
+    connection: &Connection,
+    workspace_id: u64,
+    job_id: [u8; 16],
+    digest: [u8; 32],
+    max_bytes: u64,
+) -> Result<Vec<u8>, ContentFetchError> {
+    let (mut send, mut receive) = connection
+        .open_bi()
+        .await
+        .map_err(|error| ContentFetchError::Stream(error.to_string()))?;
+    write_message(
+        &mut send,
+        &StreamOpen::ComputeContent {
+            version: ENVIRONMENT_PROTOCOL_VERSION,
+            workspace_id,
+            job_id,
+            digest,
+        },
+    )
+    .await?;
+    let _ = send.finish();
+    receive_content(&mut receive, digest, max_bytes).await
+}
+
+/// Read one [`ContentReply`] and the bytes it announces, checked against
+/// `digest` and `max_bytes`.
+async fn receive_content<R>(
+    receive: &mut R,
+    digest: [u8; 32],
+    max_bytes: u64,
+) -> Result<Vec<u8>, ContentFetchError>
+where
+    R: AsyncRead + Unpin + Send,
+{
+    let len = match read_message::<_, ContentReply>(receive).await? {
+        Some(ContentReply::Found { len }) => len,
+        Some(ContentReply::Refused { code }) => return Err(ContentFetchError::Refused(code)),
+        None => return Err(ContentFetchError::Stream("stream ended unanswered".into())),
+    };
+    if len > max_bytes {
+        return Err(ContentFetchError::TooLarge);
+    }
+    let len = usize::try_from(len).map_err(|_| ContentFetchError::TooLarge)?;
+    let mut bytes = Vec::with_capacity(len.min(CONTENT_CHUNK_BYTES));
+    let mut hasher = blake3::Hasher::new();
+    let mut chunk = vec![0; CONTENT_CHUNK_BYTES];
+    while bytes.len() < len {
+        let want = (len - bytes.len()).min(CONTENT_CHUNK_BYTES);
+        let read = receive
+            .read(&mut chunk[..want])
+            .await
+            .map_err(|error| ContentFetchError::Stream(error.to_string()))?;
+        if read == 0 {
+            return Err(ContentFetchError::Stream("content ended early".into()));
+        }
+        hasher.update(&chunk[..read]);
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    if hasher.finalize().as_bytes() != &digest {
+        return Err(ContentFetchError::Integrity);
+    }
+    Ok(bytes)
+}
+
+/// Answer a [`WorkerStreamOpen::ComputeContent`] from what the local store
+/// returned for it: the bytes when they match `digest`, otherwise a refusal
+/// (`missing` when the store has nothing, `unreadable` when it failed).
+///
+/// # Errors
+///
+/// Returns an error when the stream fails.
+pub async fn answer_content<W>(
+    send: &mut W,
+    digest: [u8; 32],
+    found: Result<Option<Vec<u8>>, String>,
+) -> Result<(), EnvironmentStreamError>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    let bytes = match found {
+        Ok(Some(bytes)) if blake3::hash(&bytes).as_bytes() == &digest => bytes,
+        Ok(Some(_)) => return refuse(send, "integrity").await,
+        Ok(None) => return refuse(send, "missing").await,
+        Err(error) => {
+            tracing::warn!(%error, "compute content could not be read");
+            return refuse(send, "unreadable").await;
+        }
+    };
+    let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    write_message(send, &ContentReply::Found { len }).await?;
+    send.write_all(&bytes).await?;
+    Ok(())
+}
+
+async fn refuse<W>(send: &mut W, code: &str) -> Result<(), EnvironmentStreamError>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    write_message(send, &ContentReply::Refused { code: code.into() }).await
+}
+
+/// Which end of a job holds a digest the other end asked for.
+struct ContentRoute {
+    source: DeviceKey,
+    connection: Connection,
+    max_bytes: u64,
+}
+
+/// The relay's side of [`StreamOpen::ComputeContent`]: decide from the
+/// job's durable record whether `peer` may have `digest`, ask the end that
+/// holds it, and forward its answer, checked against the digest.
+///
+/// # Errors
+///
+/// Returns an error when a stream fails.
+pub(crate) async fn route_content(
+    context: &RoutingContext,
+    peer: &AuthenticatedPeer,
+    (workspace_id, job_id, digest): (u64, [u8; 16], [u8; 32]),
+    send: &mut SendStream,
+) -> Result<(), EnvironmentStreamError> {
+    let route = match choose_source(context, peer, workspace_id, job_id, digest).await {
+        Ok(route) => route,
+        Err(code) => return refuse(send, code).await,
+    };
+    let Ok((mut source_send, mut source_receive)) = route.connection.open_bi().await else {
+        return refuse(send, "source_offline").await;
+    };
+    write_message(
+        &mut source_send,
+        &WorkerStreamOpen::ComputeContent {
+            version: ENVIRONMENT_PROTOCOL_VERSION,
+            workspace_id,
+            asker: MemberIdentity {
+                user: peer.user_public_key,
+                device: peer.device_public_key,
+            },
+            job_id,
+            digest,
+        },
+    )
+    .await?;
+    let _ = source_send.finish();
+    let answer = tokio::time::timeout(
+        SOURCE_ANSWER_TIMEOUT,
+        read_message::<_, ContentReply>(&mut source_receive),
+    )
+    .await;
+    let len = match answer {
+        Ok(Ok(Some(ContentReply::Found { len }))) => len,
+        Ok(Ok(Some(ContentReply::Refused { code }))) => {
+            return refuse(send, &bounded_detail(code)).await;
+        }
+        Ok(Ok(None) | Err(_)) => return refuse(send, "source_failed").await,
+        Err(_) => return refuse(send, "source_unresponsive").await,
+    };
+    if len > route.max_bytes {
+        let _ = source_receive.stop(0u32.into());
+        return refuse(send, "too_large").await;
+    }
+    write_message(send, &ContentReply::Found { len }).await?;
+    let forwarded = forward(&mut source_receive, send, len).await?;
+    if forwarded.as_bytes() != &digest {
+        // The asker checks too; ending the stream abnormally tells it now.
+        let _ = send.reset(1u32.into());
+        tracing::warn!(
+            source = %hex::encode(route.source),
+            job = %hex::encode(job_id),
+            "compute content did not match its digest; not forwarded"
+        );
+    } else {
+        tracing::debug!(
+            source = %hex::encode(route.source),
+            job = %hex::encode(job_id),
+            bytes = len,
+            "compute content forwarded"
+        );
+    }
+    Ok(())
+}
+
+/// Copy exactly `len` bytes from `from` to `to`, hashing them.
+async fn forward<R, W>(
+    from: &mut R,
+    to: &mut W,
+    len: u64,
+) -> Result<blake3::Hash, EnvironmentStreamError>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    let mut hasher = blake3::Hasher::new();
+    let mut chunk = vec![0; CONTENT_CHUNK_BYTES];
+    let mut remaining = len;
+    while remaining > 0 {
+        let want = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(CONTENT_CHUNK_BYTES);
+        let read = from.read(&mut chunk[..want]).await?;
+        if read == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        }
+        hasher.update(&chunk[..read]);
+        to.write_all(&chunk[..read]).await?;
+        remaining = remaining.saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
+    }
+    Ok(hasher.finalize())
+}
+
+/// Decide who holds `digest` for `peer`, or the code refusing it.
+async fn choose_source(
+    context: &RoutingContext,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+    job_id: [u8; 16],
+    digest: [u8; 32],
+) -> Result<ContentRoute, &'static str> {
+    // Job content is compute control: the host's own person's devices.
+    if !HostOperation::ComputeControl.permits(&context.own_user_public_key, &peer.user_public_key) {
+        return Err("not_authorised");
+    }
+    let workspace = context
+        .workspace(workspace_id)
+        .await
+        .ok_or("not_authorised")?;
+    let workspace = workspace.lock().await;
+    if !room_access::decide(&workspace, &context.trust(), peer, RoomOperation::Compute).admitted() {
+        return Err("not_authorised");
+    }
+    let record = workspace
+        .store
+        .load_compute_job(&job_id)
+        .map_err(|_| "unavailable")?
+        .ok_or("not_authorised")?;
+    let (source, max_bytes) = source_for(
+        &record.spec,
+        &record.lifecycle.phase,
+        peer.device_public_key,
+        digest,
+    )?;
+    let connection = workspace
+        .compute
+        .worker_connection(&source)
+        .ok_or("source_offline")?;
+    drop(workspace);
+    Ok(ContentRoute {
+        source,
+        connection,
+        max_bytes,
+    })
+}
+
+/// The job's rule: the worker may have a listed input while the job runs,
+/// the requester a reported output once it completed. Returns the device
+/// holding the bytes and their bound.
+fn source_for(
+    spec: &ComputeJobSpec,
+    phase: &ComputeJobPhase,
+    asker: DeviceKey,
+    digest: [u8; 32],
+) -> Result<(DeviceKey, u64), &'static str> {
+    let running = matches!(phase, ComputeJobPhase::Pending | ComputeJobPhase::Running);
+    if asker == spec.worker && running && spec.inputs.contains(&digest) {
+        return Ok((spec.requester, MAX_COMPUTE_INPUT_BYTES));
+    }
+    if asker == spec.requester
+        && matches!(phase, ComputeJobPhase::Completed { outputs } if outputs.contains(&digest))
+    {
+        return Ok((spec.worker, spec.limits.output_bytes));
+    }
+    Err("not_authorised")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compute::{COMPUTE_JOB_SCHEMA_VERSION, ComputeResourceLimits};
+
+    fn spec() -> ComputeJobSpec {
+        ComputeJobSpec {
+            version: COMPUTE_JOB_SCHEMA_VERSION,
+            job_id: [9; 16],
+            requester: [1; 32],
+            worker: [2; 32],
+            workspace_id: 7,
+            app_id: "org.tilo.render".into(),
+            package_digest: [3; 32],
+            entrypoint: "render".into(),
+            arguments: Vec::new(),
+            inputs: vec![[4; 32]],
+            limits: ComputeResourceLimits {
+                cpu_time_ms: 5_000,
+                memory_bytes: 32 * 1024 * 1024,
+                output_bytes: 1024,
+                gpu: false,
+            },
+            issued_at_ms: 100,
+            expires_at_ms: 10_000,
+        }
+    }
+
+    #[test]
+    fn job_content_goes_only_where_the_job_binds_it() {
+        let job = spec();
+        let worker = job.worker;
+        let requester = job.requester;
+        let stranger = [5; 32];
+        let done = ComputeJobPhase::Completed {
+            outputs: vec![[6; 32]],
+        };
+
+        // A listed input, to the worker while the job runs, from the
+        // requester; never once it ended, never an unlisted digest.
+        assert_eq!(
+            source_for(&job, &ComputeJobPhase::Running, worker, [4; 32]),
+            Ok((job.requester, MAX_COMPUTE_INPUT_BYTES))
+        );
+        assert_eq!(
+            source_for(&job, &done, worker, [4; 32]),
+            Err("not_authorised")
+        );
+        assert_eq!(
+            source_for(&job, &ComputeJobPhase::Running, worker, [8; 32]),
+            Err("not_authorised")
+        );
+        // The requester cannot pull its own input back through the worker,
+        // nor an output before the job reported it.
+        assert_eq!(
+            source_for(&job, &ComputeJobPhase::Running, requester, [4; 32]),
+            Err("not_authorised")
+        );
+        assert_eq!(
+            source_for(&job, &ComputeJobPhase::Running, requester, [6; 32]),
+            Err("not_authorised")
+        );
+        // A reported output, to the requester, from the worker, within the
+        // job's output bound.
+        assert_eq!(
+            source_for(&job, &done, requester, [6; 32]),
+            Ok((job.worker, 1024))
+        );
+        assert_eq!(
+            source_for(&job, &done, worker, [6; 32]),
+            Err("not_authorised")
+        );
+        for phase in [ComputeJobPhase::Running, done] {
+            for digest in [[4; 32], [6; 32]] {
+                assert_eq!(
+                    source_for(&job, &phase, stranger, digest),
+                    Err("not_authorised")
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn content_is_checked_against_its_digest_and_bound_on_receipt() {
+        let bytes = b"rendered frame".to_vec();
+        let digest = *blake3::hash(&bytes).as_bytes();
+
+        let mut wire = Vec::new();
+        answer_content(&mut wire, digest, Ok(Some(bytes.clone())))
+            .await
+            .unwrap();
+        assert_eq!(
+            receive_content(&mut wire.as_slice(), digest, 1024).await,
+            Ok(bytes.clone())
+        );
+        assert_eq!(
+            receive_content(&mut wire.as_slice(), digest, 4).await,
+            Err(ContentFetchError::TooLarge)
+        );
+        assert_eq!(
+            receive_content(&mut wire.as_slice(), [0; 32], 1024).await,
+            Err(ContentFetchError::Integrity)
+        );
+        // A truncated body is an error, not a short read.
+        let cut = &wire[..wire.len() - 1];
+        assert!(matches!(
+            receive_content(&mut &cut[..], digest, 1024).await,
+            Err(ContentFetchError::Stream(_))
+        ));
+
+        // A source never sends bytes under the wrong digest, nor pretends
+        // to have what its store lacks.
+        let mut wrong = Vec::new();
+        answer_content(&mut wrong, [0; 32], Ok(Some(bytes)))
+            .await
+            .unwrap();
+        assert_eq!(
+            receive_content(&mut wrong.as_slice(), [0; 32], 1024).await,
+            Err(ContentFetchError::Refused("integrity".into()))
+        );
+        let mut missing = Vec::new();
+        answer_content(&mut missing, digest, Ok(None))
+            .await
+            .unwrap();
+        assert_eq!(
+            receive_content(&mut missing.as_slice(), digest, 1024).await,
+            Err(ContentFetchError::Refused("missing".into()))
+        );
+
+        // The relay forwards exactly the announced length and reports the
+        // hash of what it forwarded.
+        let payload = vec![7_u8; CONTENT_CHUNK_BYTES * 2 + 3];
+        let mut forwarded = Vec::new();
+        let hash = forward(
+            &mut payload.as_slice(),
+            &mut forwarded,
+            u64::try_from(payload.len()).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(forwarded, payload);
+        assert_eq!(hash, blake3::hash(&payload));
+    }
+}
