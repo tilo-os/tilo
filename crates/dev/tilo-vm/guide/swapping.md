@@ -38,6 +38,45 @@ defaults to the one named after your branch. Components and their scope
 come from `os/components.toml`
 (`python3 os/scripts/install-components.py --list`).
 
+## Bootstrapping an older daemon
+
+Ordinary slot, control, status and swap operations require the current protocol.
+A protocol-5 dev image can upgrade only its VM-wide daemon through its existing
+authenticated SSH route:
+
+```sh
+TILO_VM=<owned-vm> tilo-vm swap vmd --slot vm --from worktree --builder host --profile dev
+```
+
+Use `TILO_VM_CARGO` for a cargo drop-in that builds remotely, or select
+`--builder remote` with the existing architecture-specific builder configuration.
+No OS image build, raw deployment, new VM, or access-policy change is involved.
+A stopped VM may first need `tilo-vm vm start <owned-vm>`; its readiness
+handshake can report the old protocol while leaving the VM running.
+
+This exception is intentionally limited to version 5, whose hello, status,
+upload, import and layer-list schemas match the audited implementation.
+It negotiates a second version-5 hello only after the normal hello reports
+exactly version 5. It requires the standard state root, a known architecture,
+and no unrecognized capability extensions. Only unscoped storage diagnostics
+and uploaded `vmd` imports are allowed on that connection. No legacy slot,
+control, apply, cached-layer reuse, in-guest build, or arbitrary-path import
+is permitted. Unknown versions and failed SSH authentication remain errors.
+
+The assembler's content hash must match the import result. The imported
+receipt must identify `vmd`, the guest architecture, source commit, lockfile
+and toolchain. The replacement then completes a **current-protocol** handshake
+for the same root and architecture and verifies the stored layer before the
+ordinary VM-wide swap. A wrong component, missing provenance or incompatible
+replacement fails before activation; nothing falls back to applying through
+the old daemon. The run receipt records the negotiated protocol, daemon import,
+handoff and applying layer. If interrupted, inspect that receipt and rerun the
+same command; importing alone does not activate a layer.
+
+Upgrading VM-wide services affects every slot. Bootstrap only a VM you own or
+have explicit permission to upgrade. Image-level upgrades remain
+`tilo-vm vm upgrade` (`tilo-vm guide images`).
+
 ## Build profile
 
 A build from your worktree uses the component's manifest profile (`release`
@@ -108,6 +147,14 @@ and checks the requested source; when its canonical content matches an offer,
 it sends only a checked cache result and no archive. The target verifies the
 stored bytes again before reuse. The receipt records `upload = "skipped"`
 and `layer_reused`. Changed content takes the ordinary streaming/import path.
+For `swap userspace`, an already-active identical generation returns unchanged
+without restarting the session only after rechecking every layer's bytes and
+provenance, the signed cohort, current app selections, selected runtime trust
+and session readiness. Missing or different selections take the normal install
+and refresh path. This avoids resetting live tasks on an exact repeat; it does
+not eliminate remote assembly time. For a small edit, swap just `shell` or the
+app rather than rebuilding the whole userspace cohort.
+
 Older daemons without `layer.verify` also use that path. Cache loss during the
 build causes one retry without reuse; a damaged existing content-addressed
 layer is refused rather than activated or silently overwritten. The first
@@ -118,8 +165,15 @@ drop-in's command line up to the cargo subcommand:
 
 ```toml
 [remote_builders]
-aarch64 = ["remote-cargo", "--on-builder"]   # whatever runs `run` on an aarch64 machine
+x86_64 = ["remote-cargo", "--on-builder"] # any cargo drop-in that runs remotely
+aarch64 = ["remote-cargo", "--on-builder"] # configure it for an aarch64 builder
 ```
+
+Remote assembly and remote VM execution are separate capabilities. Hosting a
+KVM guest on the builder additionally requires an accessible `/dev/kvm`, nested
+virtualization when the builder is itself a guest, and the supported VM adapter.
+Without that hardware, keep the KVM guest local and stream targeted component
+layers from the remote builder; a build cache cannot supply virtualization.
 
 For a device whose architecture is listed there, `--builder remote` is the
 default. For one that is not, `--builder remote` fails and names the line to
@@ -149,6 +203,12 @@ an older one may lack arm64.
 `tilo-install install --allow-self-signed --force`. The user store shadows
 the image's copy, so it is live the next time the app launches; nothing
 restarts. App installs are not generations: `rollback` does not undo them.
+
+The app links the image's own `libruntime_dylib.so`, so the worktree's
+`Cargo.lock` must be the image's. When it is not (your branch is newer than
+the image), `swap app:<dir>` refuses before building and names
+`tilo-vm swap apps+runtime`, which builds the apps with their matching runtime
+and, being a generation, can be rolled back.
 
 ## What restarts
 
@@ -251,11 +311,38 @@ failure restores prior app selections and the prior view through normal recovery
 Account identity and application data are not reset. A receipt distinguishes
 staging, activation and recovery; missing verification fails rather than skipping.
 
+The complete toolkit carries `lib/system-app-cohort.json` in its signed payload.
+It names the exact system application IDs declared by the verified source and
+binds them to that source inventory's digest. Admission requires equality with
+the candidate registry: a missing source member, extra member, duplicate ID or
+changed inventory is refused before activation. An older image can therefore
+retire obsolete system packages by replacing its read-only system registry;
+user-owned packages, held selections and application data are not deleted. Their
+verified old runtimes remain subject to the normal retention checks. Legacy
+layers without signed membership cannot authorize retirement, and cannot serve
+as a source-bound `userspace` member. Switching back restores the previous
+system registry through the existing generation lifecycle.
+
 Older daemons without `userspace.apply` must be updated through the normal daemon
 component swap first. Individual component swaps and `app:<dir>` installs remain
 available for narrower changes; they are not an atomic userspace replacement.
 
 ### Worktree apps and their matching runtime
+
+`tilo-vm swap --slot device apps+runtime` is the loop for unpushed app or
+toolkit changes on a real board laptop, whose sealed image only CI produces.
+With no remote builder configured it builds on this host when the host is a
+Linux machine of the device's architecture (`--builder host` asks for that
+explicitly); otherwise it uses the `[remote_builders]` entry (`--builder remote`).
+`--builder vm` is refused. The same `layer-pack` assembly runs either way, so
+the layer is identical and its provenance records `builder = host` or `remote`.
+Trust is never widened: the cohort is signed with an ephemeral key that is not
+exported, and tilo-vmd accepts it only after verifying the key pins carried in
+the layer, every signed package, the runtime ABI and the loader closure. Nothing
+is added to `/etc/tilo/runtime-bundle-trusted-publishers.txt`, and
+`launcher`/`app-host` keep ignoring `TILO_RUNTIME_BUNDLE_DIR` unless built with
+`dev-overrides`. `tilo-vm rollback` returns to the previous apps and runtime
+unless the user packages it installed require the newer SDK (it says so).
 
 `tilo-vm swap apps+runtime --builder remote` builds every packaged native app and
 its toolkit in one Cargo graph on the configured builder for the slot's actual

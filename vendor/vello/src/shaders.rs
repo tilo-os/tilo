@@ -596,21 +596,24 @@ pub(crate) fn full_shaders(
         None
     };
     let fine_sparse_area = if engine.sparse_fine_enabled() && !options.use_cpu && aa_support.area {
-        Some(unused!(true, add_shader!(
-            fine_sparse_area,
-            [
-                Uniform,
-                BufReadOnly,
-                BufReadOnly,
-                BufReadOnly,
-                Buffer,
-                Image(ImageFormat::Rgba8),
-                ImageRead(ImageFormat::Rgba8),
-                ImageRead(ImageFormat::Rgba8),
-                BufReadOnly,
-            ],
-            CpuShaderType::Missing
-        )))
+        Some(unused!(
+            true,
+            add_shader!(
+                fine_sparse_area,
+                [
+                    Uniform,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    Buffer,
+                    Image(ImageFormat::Rgba8),
+                    ImageRead(ImageFormat::Rgba8),
+                    ImageRead(ImageFormat::Rgba8),
+                    BufReadOnly,
+                ],
+                CpuShaderType::Missing
+            )
+        ))
     } else {
         None
     };

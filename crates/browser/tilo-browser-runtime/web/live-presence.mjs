@@ -417,38 +417,3 @@ export function createRemotePresence({maxSamples = 8} = {}) {
     stats: () => ({...stats}),
   };
 }
-
-/** How often {@link followPlaces} drops members whose presence went stale. */
-export const PLACES_CHECK_MS = 5000;
-
-/**
- * Where a room's other people are: the place each present person's
- * presence names (on a desktop, the strip it shows), one entry per person,
- * sorted. `setPlaces(places)` hears only a changed list; a member whose
- * presence went stale drops out by the next check. Agents are not people
- * here. Returns a stop function.
- */
-export function followPlaces(layer, setPlaces, {
-  every = PLACES_CHECK_MS,
-  setTimer = (callback, delay) => globalThis.setInterval(callback, delay),
-  clearTimer = handle => globalThis.clearInterval(handle),
-} = {}) {
-  let last;
-  const apply = () => {
-    const places = layer.remoteState()
-      .filter(remote => !remote.stale && remote.place && remote.participant?.kind !== 'agent')
-      .map(remote => remote.place)
-      .sort();
-    const key = JSON.stringify(places);
-    if (key === last) return;
-    last = key;
-    setPlaces(places);
-  };
-  const stops = [layer.onPresence(apply), layer.onMember(apply)];
-  const timer = setTimer(apply, every);
-  apply();
-  return () => {
-    for (const stop of stops) stop();
-    clearTimer(timer);
-  };
-}

@@ -55,7 +55,7 @@ fn main() -> Result<(), String> {
     ] {
         for (width, logical_width) in [(600, 600.0), (1100, 1100.0)] {
             let mut app = SettingsApp::with_config_root(output.join("private-config"))
-                .with_category(Category::MouseKeyboard)
+                .with_category(Category::Keyboard)
                 .with_width_hint(logical_width);
             app.observe_physical_input(ui::widget::PhysicalInput::Focused(true));
             app.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(

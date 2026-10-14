@@ -1,0 +1,44 @@
+# What /usr may hold, per image flavour, and what must not be in it at all.
+#
+# "An OS should never take 37 gigs, maybe 10 GB if badly optimized." These are
+# ceilings on the deployed /usr of the image CI just built (each hard-linked
+# file once, bytes of regular files; os/tests/image_size_budget.py), checked on
+# every image build in build-image.yml. The nightly KPI budgets in
+# tools/perf/kpi-budgets.toml watch the whole image over time; this one stops a
+# single change that doubles /usr before it merges.
+#
+# Ratchet, do not raise: the numbers start about 8-10 % above what the cuts in
+# docs/ (windows-compat on demand, split symbols, board firmware) are expected
+# to leave, because the first CI measurement has not run yet. After it has,
+# lower each ceiling to measured + 5 %. Raising one needs the reason in the
+# commit message.
+#
+# flavour = production-<arch> (a generic image), board-<profile> (a board
+# image, which also trims firmware), dev-<arch> (the dev layer on top).
+
+# Files the base image must not carry: they are the Windows compatibility
+# system extension (os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json),
+# which overlays the same paths once a person installs Windows support.
+[moved_to_sysext]
+paths = [
+  "usr/lib/tilo/windows-runners",
+  "usr/share/virtio-win",
+  "usr/bin/FEX",
+  "usr/bin/FEXServer",
+  "usr/share/fex-emu",
+]
+
+[flavour.production-x86_64]
+usr_bytes = 9_000_000_000
+
+[flavour.production-aarch64]
+usr_bytes = 9_000_000_000
+
+[flavour.board-lenovo-83ed]
+usr_bytes = 8_800_000_000
+
+[flavour.dev-x86_64]
+usr_bytes = 10_800_000_000
+
+[flavour.dev-aarch64]
+usr_bytes = 10_800_000_000

@@ -17,7 +17,7 @@ use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::tilo_resource::{self, Effect};
 use ui::time::{Duration, Instant};
-use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
+use ui::widget::{Button, Widget};
 
 use crate::effects::SettingsEffect;
 use crate::host::PaneCx;
@@ -26,7 +26,8 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, error_caption, rows, semantic_status_pill,
+    Body, Item, SettingsSection, StatusTone, card, card_with_action, error_caption, item_row, note,
+    row, rows, semantic_status_pill,
 };
 
 /// Which of the last refresh's lists could not be read, and why.
@@ -534,11 +535,11 @@ impl PrintersModel {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut cards: Vec<El> = Vec::new();
+        let mut cards: Vec<SettingsSection> = Vec::new();
         if let Some(error) = &self.error {
             cards.push(card(
                 &t("settings-printers-attention"),
-                rows(vec![error_caption(error)]),
+                rows(vec![row(error_caption(error))]),
             ));
         }
 
@@ -552,12 +553,12 @@ impl PrintersModel {
             PrinterEffect::RefreshPrinters,
         ));
         let printers = if let Some(error) = &self.read_errors.printers {
-            rows(vec![error_caption(&t_args(
+            rows(vec![row(error_caption(&t_args(
                 "settings-printers-read-error",
                 &[("error", error.as_str().into())],
-            ))])
+            )))])
         } else if self.printers.is_empty() {
-            rows(vec![caption(&t("settings-printers-empty"))])
+            rows(vec![note(&t("settings-printers-empty"))])
         } else {
             rows(self.printers.iter().map(|p| self.printer_row(p)).collect())
         };
@@ -577,7 +578,7 @@ impl PrintersModel {
             PrinterEffect::FindPrinters,
         ));
         let discovery = if self.discovered.is_empty() {
-            rows(vec![caption(&t(if self.discover_rx.is_some() {
+            rows(vec![note(&t(if self.discover_rx.is_some() {
                 "settings-printers-discovering"
             } else {
                 "settings-printers-discover-empty"
@@ -597,12 +598,12 @@ impl PrintersModel {
         ));
 
         let jobs = if let Some(error) = &self.read_errors.jobs {
-            rows(vec![error_caption(&t_args(
+            rows(vec![row(error_caption(&t_args(
                 "settings-printers-jobs-read-error",
                 &[("error", error.as_str().into())],
-            ))])
+            )))])
         } else if self.jobs.is_empty() {
-            rows(vec![caption(&t("settings-printers-no-jobs"))])
+            rows(vec![note(&t("settings-printers-no-jobs"))])
         } else {
             rows(self.jobs.iter().map(|job| self.job_row(job)).collect())
         };
@@ -613,54 +614,39 @@ impl PrintersModel {
         crate::widgets::cards(cards)
     }
 
-    fn scanner_rows(&self) -> El {
+    fn scanner_rows(&self) -> Body {
         if let Some(error) = &self.read_errors.scanners {
-            rows(vec![error_caption(&t_args(
+            rows(vec![row(error_caption(&t_args(
                 "settings-printers-scanners-read-error",
                 &[("error", error.as_str().into())],
-            ))])
+            )))])
         } else if self.scanners.is_empty() {
-            rows(vec![caption(&t("settings-printers-no-scanners"))])
+            rows(vec![note(&t("settings-printers-no-scanners"))])
         } else {
             rows(
                 self.scanners
                     .iter()
                     .map(|s| {
-                        Box::new(
-                            Column::new()
-                                .with_no_padding()
-                                .with_intrinsic_height()
-                                .push(Box::new(
-                                    Text::new(&s.description).with_role(ui::TextRole::Body),
-                                ))
-                                .push(Box::new(
-                                    Text::new(&s.device)
-                                        .with_role(ui::TextRole::Caption)
-                                        .dimmed(),
-                                )),
-                        ) as El
+                        item_row(
+                            &s.description,
+                            Vec::new(),
+                            std::slice::from_ref(&s.device),
+                            Vec::new(),
+                        )
                     })
                     .collect(),
             )
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a queue's three controls, its state and its supplies"
-    )]
-    fn printer_row(&self, printer: &PrinterQueue) -> El {
+    fn printer_row(&self, printer: &PrinterQueue) -> Item {
         let name = printer.name.clone();
         let state = state_label(printer.state);
-        let mut top = Row::new()
-            .push(Box::new(
-                Text::new(&printer.name).with_role(ui::TextRole::Body),
-            ))
-            .push(Box::new(Spacer::new()))
-            .push(semantic_status_pill(&state, state_tone(printer.state)));
+        let pill = semantic_status_pill(&state, state_tone(printer.state));
+        let mut actions: Vec<Button> = Vec::new();
         if !printer.default {
             let make_default = t("settings-printers-make-default");
-            top = top.push(Box::new(self.cx.bind_invocation(
+            actions.push(self.cx.bind_invocation(
                 Button::new(
                     &format!("settings.printers.default.{}", slug(&name)),
                     &make_default,
@@ -668,7 +654,7 @@ impl PrintersModel {
                 PrinterEffect::SetDefaultPrinter {
                     printer: name.clone(),
                 },
-            )));
+            ));
         }
         let paused = printer.state == QueueState::Paused;
         let pause_label = t(if paused {
@@ -676,7 +662,7 @@ impl PrintersModel {
         } else {
             "settings-printers-pause"
         });
-        top = top.push(Box::new(self.cx.bind_invocation(
+        actions.push(self.cx.bind_invocation(
             Button::new(
                 &format!("settings.printers.enabled.{}", slug(&name)),
                 &pause_label,
@@ -685,15 +671,15 @@ impl PrintersModel {
                 printer: name.clone(),
                 paused: !paused,
             },
-        )));
+        ));
         let remove_label = t("settings-printers-remove");
-        top = top.push(Box::new(self.cx.bind_invocation(
+        actions.push(self.cx.bind_invocation(
             Button::new(
                 &format!("settings.printers.remove.{}", slug(&name)),
                 &remove_label,
             ),
             PrinterEffect::RemovePrinter { printer: name },
-        )));
+        ));
         let role = t(if printer.default {
             "settings-printers-role-default"
         } else {
@@ -737,51 +723,24 @@ impl PrintersModel {
             None if printer.telemetry.available => t("settings-printers-supplies-unreported"),
             None => t("settings-printers-ipp-unavailable"),
         };
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(top))
-                .push(Box::new(
-                    Text::new(&detail).with_role(ui::TextRole::Caption).dimmed(),
-                ))
-                .push(Box::new(
-                    Text::new(&supplies)
-                        .with_role(ui::TextRole::Caption)
-                        .dimmed(),
-                )),
-        )
+        item_row(&printer.name, vec![pill], &[detail, supplies], actions)
     }
 
-    fn discovered_row(&self, p: &DiscoveredPrinter) -> El {
+    fn discovered_row(&self, p: &DiscoveredPrinter) -> Item {
         let key = format!("settings.printers.add.{}", slug(&p.uri));
         let add = t("settings-printers-add");
         let location = p
             .location
             .clone()
             .unwrap_or_else(|| t("settings-printers-driverless"));
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(
-                    Row::new()
-                        .push(Box::new(Text::new(&p.name).with_role(ui::TextRole::Body)))
-                        .push(Box::new(Spacer::new()))
-                        .push(Box::new(self.cx.bind_invocation(
-                            Button::new(&key, &add),
-                            PrinterEffect::AddPrinter { uri: p.uri.clone() },
-                        ))),
-                ))
-                .push(Box::new(
-                    Text::new(&location)
-                        .with_role(ui::TextRole::Caption)
-                        .dimmed(),
-                )),
-        )
+        let add_button = self.cx.bind_invocation(
+            Button::new(&key, &add),
+            PrinterEffect::AddPrinter { uri: p.uri.clone() },
+        );
+        item_row(&p.name, Vec::new(), &[location], vec![add_button])
     }
 
-    fn job_row(&self, job: &PrintJob) -> El {
+    fn job_row(&self, job: &PrintJob) -> Item {
         let cancel = format!("settings.printers.job.cancel.{}", slug(&job.id));
         let retry = format!("settings.printers.job.retry.{}", slug(&job.id));
         let size = ui::format::bytes_si(job.size_bytes);
@@ -812,22 +771,17 @@ impl PrintersModel {
             .map_or(String::new(), |reason| format!("\n{reason}"));
         let retry_label = t("settings-printers-retry");
         let cancel_label = t("settings-printers-cancel");
-        let mut action_row = Row::new()
-            .push(Box::new(
-                Text::new(&format!("{} → {}", job.id, job.destination))
-                    .with_role(ui::TextRole::Body),
-            ))
-            .push(Box::new(Spacer::new()));
+        let mut actions: Vec<Button> = Vec::new();
         if matches!(
             job.state,
             Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
         ) {
-            action_row = action_row.push(Box::new(self.cx.bind_invocation(
+            actions.push(self.cx.bind_invocation(
                 Button::new(&retry, &retry_label),
                 PrinterEffect::RetryPrintJob {
                     job: job.id.clone(),
                 },
-            )));
+            ));
         }
         if matches!(
             job.state,
@@ -835,28 +789,22 @@ impl PrintersModel {
                 JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped
             )
         ) {
-            action_row = action_row.push(Box::new(self.cx.bind_invocation(
+            actions.push(self.cx.bind_invocation(
                 Button::new(&cancel, &cancel_label),
                 PrinterEffect::CancelPrintJob {
                     job: job.id.clone(),
                 },
-            )));
+            ));
         }
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(action_row))
-                .push(Box::new(
-                    Text::new(&format!("{}\n{}\n{}", job.owner, size, job.submitted))
-                        .with_role(ui::TextRole::Caption)
-                        .dimmed(),
-                ))
-                .push(Box::new(
-                    Text::new(&format!("{state}\n{progress}{reason}"))
-                        .with_role(ui::TextRole::Caption)
-                        .dimmed(),
-                )),
+        let details = [
+            format!("{}\n{}\n{}", job.owner, size, job.submitted),
+            format!("{state}\n{progress}{reason}"),
+        ];
+        item_row(
+            &format!("{} → {}", job.id, job.destination),
+            Vec::new(),
+            &details,
+            actions,
         )
     }
 }

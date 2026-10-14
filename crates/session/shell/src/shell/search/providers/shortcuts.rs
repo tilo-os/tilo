@@ -104,36 +104,7 @@ impl ShortcutsProvider {
                 {
                     return start_interactive_run(&broker, &caller, room, shortcut, arguments);
                 }
-                let invocation = InvocationId::new();
-                let request = InvokeRequest {
-                    on_behalf_of: None,
-                    invocation,
-                    target: target.clone(),
-                    argument: if arguments.is_empty() {
-                        InvokeArgument::None
-                    } else {
-                        InvokeArgument::Json(arguments)
-                    },
-                    context: None,
-                    confirmation: None,
-                    revision: None,
-                    wait_ms: None,
-                    appearance: None,
-                };
-                let mut admitted =
-                    BrokerActionHost::new(broker.clone()).invoke_job(&caller, request);
-                match admitted.poll_ready() {
-                    PendingPoll::Ready(Ok((job, _))) => Ok(ActionReceipt {
-                        broker_invocation_id: Some(job),
-                        update: broker
-                            .status(job)
-                            .unwrap_or(InvocationUpdate::Accepted { invocation }),
-                    }),
-                    PendingPoll::Ready(Err(error)) => Err(ActionError::Refused(error.to_string())),
-                    PendingPoll::Waiting | PendingPoll::Abandoned => Err(ActionError::Refused(
-                        "the action broker did not admit the shortcut".into(),
-                    )),
-                }
+                invoke_through_broker(&broker, &caller, &target, arguments)
             },
         );
         let open = Rc::clone(&invoke);
@@ -154,6 +125,7 @@ impl ShortcutsProvider {
             None => (descriptor.description.clone(), descriptor.params.clone()),
         };
         Some(SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: descriptor.kind,
             provider_id: PROVIDER_ID.into(),
@@ -185,6 +157,45 @@ struct QuickAction {
     /// The resource's label, for the row.
     label: String,
     arguments: Map<String, Value>,
+}
+
+/// Ask the action broker to run `target` with `arguments` for `caller`, and
+/// answer with the job it admitted.
+fn invoke_through_broker(
+    broker: &AppActionBroker,
+    caller: &Caller,
+    target: &RemoteActionTarget,
+    arguments: Map<String, Value>,
+) -> Result<ActionReceipt, ActionError> {
+    let invocation = InvocationId::new();
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: target.clone(),
+        argument: if arguments.is_empty() {
+            InvokeArgument::None
+        } else {
+            InvokeArgument::Json(arguments)
+        },
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let mut admitted = BrokerActionHost::new(broker.clone()).invoke_job(caller, request);
+    match admitted.poll_ready() {
+        PendingPoll::Ready(Ok((job, _))) => Ok(ActionReceipt {
+            broker_invocation_id: Some(job),
+            update: broker
+                .status(job)
+                .unwrap_or(InvocationUpdate::Accepted { invocation }),
+        }),
+        PendingPoll::Ready(Err(error)) => Err(ActionError::Refused(error.to_string())),
+        PendingPoll::Waiting | PendingPoll::Abandoned => Err(ActionError::Refused(
+            "the action broker did not admit the shortcut".into(),
+        )),
+    }
 }
 
 /// Start a shortcut run for the person at the palette: the run asks them for

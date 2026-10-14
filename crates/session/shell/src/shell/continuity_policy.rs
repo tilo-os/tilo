@@ -8,55 +8,15 @@ use serde_json::{Map, Value};
 
 use super::device_fabric::PersonalFabricAction;
 
-/// Independently switchable continuity data planes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContinuityCapability {
-    Clipboard,
-    Notifications,
-    WifiSettings,
-    Media,
-    DisplayInput,
-    FileTransfer,
-    RealtimeSessions,
-    TypedGamepad,
-    AppContinuations,
-}
-
-impl ContinuityCapability {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Clipboard => "clipboard",
-            Self::Notifications => "notification",
-            Self::WifiSettings => "Wi-Fi/settings",
-            Self::Media => "media",
-            Self::DisplayInput => "display/input",
-            Self::FileTransfer => "file-transfer",
-            Self::RealtimeSessions => "realtime-session",
-            Self::TypedGamepad => "typed-gamepad",
-            Self::AppContinuations => "app-continuation",
-        }
-    }
-}
+pub use settings_store::continuity_privacy::ContinuityCapability;
 
 /// An immutable, typed view of the committed device-local policy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "privacy capabilities are independent opt-in switches"
-)]
 pub struct ContinuityPolicySnapshot {
     enabled: bool,
-    clipboard: bool,
-    notifications: bool,
-    wifi_settings: bool,
-    media: bool,
-    display_input: bool,
     automatic_display_input: bool,
-    file_transfer: bool,
-    realtime_sessions: bool,
-    typed_gamepad: bool,
-    app_continuations: bool,
+    /// Each capability's own switch, one bit per [`ContinuityCapability`].
+    allowed: u16,
 }
 
 impl ContinuityPolicySnapshot {
@@ -69,16 +29,11 @@ impl ContinuityPolicySnapshot {
         let flag = |name: &str| section.get(name).and_then(Value::as_bool).unwrap_or(false);
         Self {
             enabled: flag("enabled"),
-            clipboard: flag("clipboard"),
-            notifications: flag("notifications"),
-            wifi_settings: flag("wifi_settings"),
-            media: flag("media"),
-            display_input: flag("display_input"),
             automatic_display_input: flag("automatic_display_input"),
-            file_transfer: flag("file_transfer"),
-            realtime_sessions: flag("realtime_sessions"),
-            typed_gamepad: flag("typed_gamepad"),
-            app_continuations: flag("app_continuations"),
+            allowed: ContinuityCapability::ALL
+                .into_iter()
+                .filter(|capability| flag(capability.key()))
+                .fold(0, |allowed, capability| allowed | bit(capability)),
         }
     }
 
@@ -100,18 +55,7 @@ impl ContinuityPolicySnapshot {
 
     #[must_use]
     pub const fn permits(self, capability: ContinuityCapability) -> bool {
-        self.enabled
-            && match capability {
-                ContinuityCapability::Clipboard => self.clipboard,
-                ContinuityCapability::Notifications => self.notifications,
-                ContinuityCapability::WifiSettings => self.wifi_settings,
-                ContinuityCapability::Media => self.media,
-                ContinuityCapability::DisplayInput => self.display_input,
-                ContinuityCapability::FileTransfer => self.file_transfer,
-                ContinuityCapability::RealtimeSessions => self.realtime_sessions,
-                ContinuityCapability::TypedGamepad => self.typed_gamepad,
-                ContinuityCapability::AppContinuations => self.app_continuations,
-            }
+        self.enabled && self.allowed & bit(capability) != 0
     }
 
     /// Whether applying `self` must tear down live state for a capability
@@ -237,6 +181,11 @@ impl ContinuityPolicySnapshot {
             None => true,
         }
     }
+}
+
+/// `capability`'s bit in [`ContinuityPolicySnapshot::allowed`].
+const fn bit(capability: ContinuityCapability) -> u16 {
+    1 << capability as u16
 }
 
 /// The policy in a live settings document, parsed once per settings

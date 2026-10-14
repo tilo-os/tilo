@@ -23,6 +23,7 @@ pub mod display;
 pub mod input;
 pub mod layer_hash;
 pub mod manifest;
+pub mod profile;
 
 use std::collections::BTreeMap;
 
@@ -375,6 +376,8 @@ pub const USERSPACE_COMPONENTS: &[&str] = &[
     "apps+runtime",
     "app-host",
     "native-runtime-host",
+    "model-manager",
+    "model-gateway",
     "control",
     "app-cli",
     "ush",
@@ -470,6 +473,9 @@ pub struct Shot {
 pub struct Control {
     pub slot: String,
     pub args: Vec<String>,
+    /// Private action arguments carried only to the control client's stdin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_args: Option<DeviceActions>,
 }
 
 /// Remove what no kept generation references, and evict build dirs.
@@ -1417,6 +1423,7 @@ mod tests {
                 Control {
                     slot: "a".into(),
                     args: vec![],
+                    private_args: None,
                 }
                 .into(),
             ];

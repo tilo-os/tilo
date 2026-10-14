@@ -586,6 +586,20 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
             published_schema(&before, tilo_resource::APPLY)["properties"]["value"]["maximum"],
             15
         );
+        let grouped_edit = |value| {
+            let arguments = serde_json::json!({
+                tilo_resource::GROUP_PARAM: [{
+                    "action": tilo_resource::APPLY,
+                    "args": {tilo_resource::APPLY_PARAM: {"value": value}},
+                }],
+            });
+            tilo_resource::group::build_group::<SchemaReload>(arguments.as_object().unwrap(), 0)
+        };
+        assert!(grouped_edit(15).is_ok());
+        assert!(
+            grouped_edit(16).is_err(),
+            "grouped edits enforce the old limit"
+        );
         // Stand in for the new library's definition, with the same nominal resource type.
         SCHEMA_REVISION.with(|revision| revision.set(true));
         let reloaded = reload_with(
@@ -615,11 +629,19 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
             "agents see the reloaded edit's current argument limits"
         );
         assert_eq!(
-            published_schema(&after, tilo_resource::GROUP).pointer(
-                "/items/oneOf/0/properties/args/properties/action/properties/value/maximum"
-            ),
-            Some(&serde_json::json!(255)),
-            "grouped agent edits use the new schema too"
+            published_schema(&after, tilo_resource::GROUP)
+                .pointer("/items/oneOf/0/properties/args/properties/action/description"),
+            Some(&serde_json::json!(tilo_resource::resource::APPLY_MEMBER)),
+            "grouped agent edits refer to the current apply schema"
+        );
+        assert!(
+            grouped_edit(16).is_ok(),
+            "grouped edits no longer use the old limit"
+        );
+        assert!(grouped_edit(255).is_ok(), "grouped edits use the new limit");
+        assert!(
+            grouped_edit(256).is_err(),
+            "grouped edits enforce the new limit"
         );
         SCHEMA_REVISION.with(|revision| revision.set(false));
         let rejected = reload_with(

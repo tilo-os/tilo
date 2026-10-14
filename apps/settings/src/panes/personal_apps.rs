@@ -21,7 +21,7 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, rows, setting_row_described, value_row};
+use crate::widgets::{card, note, row, rows, setting_row_described, value_row};
 
 /// The most kinds of file and link the published tree lists.
 const MAX_KIND_ROWS: usize = 256;
@@ -387,7 +387,7 @@ impl PersonalAppsPane {
             ));
         }
         let body = if file_rows.is_empty() {
-            rows(vec![caption(&t("settings-personal-apps-empty"))])
+            rows(vec![note(&t("settings-personal-apps-empty"))])
         } else {
             rows(file_rows)
         };
@@ -398,8 +398,8 @@ impl PersonalAppsPane {
                     &t("settings-personal-apps-applies-to"),
                     &t("settings-personal-apps-applies-value"),
                 ),
-                caption(&t("settings-personal-apps-scope-caption")),
-                Box::new(
+                note(&t("settings-personal-apps-scope-caption")),
+                row(Box::new(
                     Button::new(
                         "open-workspace-app-defaults",
                         &t("settings-personal-apps-open-workspace"),
@@ -409,7 +409,7 @@ impl PersonalAppsPane {
                             route: os_actions::WorkspaceSettingsRoute::AppsFiles,
                         });
                     }),
-                ),
+                )),
             ]),
         );
         crate::widgets::cards(vec![

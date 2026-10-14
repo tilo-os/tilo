@@ -41,7 +41,7 @@ use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, error_caption, field_row, rows, setting_row, setting_row_described,
+    Item, caption, card, error_caption, field_row, rows, setting_row, setting_row_described,
 };
 
 /// The compose-key choice that turns it off.
@@ -750,6 +750,12 @@ pub enum InputEffect {
     /// Choose the discovered keyboard assignment to inspect and edit.
     #[effect(idempotent)]
     SelectKeyboardScope { scope: String },
+    /// Make a keyboard that types its own sources type the shared ones again,
+    /// forgetting its own list.
+    UseSharedSources {
+        #[param("The keyboard's device key, as `InspectKeyboardSources` reports it")]
+        scope: String,
+    },
     /// Select a configured source without changing what the keyboard types.
     #[effect(idempotent)]
     SelectConfiguredSource { source: String },
@@ -801,6 +807,13 @@ pub enum InputEffect {
     ApplyPreview,
     /// Add an installed input source and type with it.
     AddSource {
+        #[param("The source's id, such as `us` or `de`")]
+        source: String,
+    },
+    /// Replace one input source by another, in place.
+    ReplaceSource {
+        #[param("The source to replace")]
+        from: String,
         #[param("The source's id, such as `us` or `de`")]
         source: String,
     },
@@ -1158,11 +1171,13 @@ fn apply(
         | E::SetSourceOptionsVisible { .. }
         | E::SetSourceInspectionVisible { .. }
         | E::SelectKeyboardScope { .. }
+        | E::UseSharedSources { .. }
         | E::SelectConfiguredSource { .. }
         | E::OpenSourcePicker
         | E::CloseSourcePicker
         | E::ChooseSourceToAdd { .. }
         | E::ConfirmSourceToAdd
+        | E::ReplaceSource { .. }
         | E::ReorderSource { .. } => {
             return Err("this operation requires the keyboard editor".into());
         }
@@ -1329,7 +1344,7 @@ fn inspect_input_sources(
         serde_json::json!({"id": entry.id, "label": entry.label, "configured": configured,
             "can_add": !configured && crate::input_sources::has_room_for(&prefs.keyboard_layouts, &entry.id)})
     }).collect();
-    let add_picker = (app.selected() == crate::categories::Category::MouseKeyboard)
+    let add_picker = (app.selected() == crate::categories::Category::Keyboard)
         .then(|| input_picker_snapshot(app))
         .flatten();
     Ok(serde_json::json!({"active_source": prefs.keyboard_layout,
@@ -1534,6 +1549,14 @@ fn sample_catalog() -> Vec<CatalogEntry> {
 type DictionaryKey = (String, Option<String>);
 type DictionaryFields = (ui::LocalState<String>, ui::LocalState<String>);
 
+/// Ask the Keyboard page to show what the focused seat really types.
+#[cfg(test)]
+pub(crate) fn show_live_map(area: &InputArea) {
+    let mut editor = area.editor.get();
+    editor.view = keyboard_editor::SourceView::Live;
+    area.editor.set(editor);
+}
+
 pub(crate) struct KeyboardPreviewCache {
     source: String,
     model: String,
@@ -1544,7 +1567,18 @@ pub(crate) struct KeyboardPreviewCache {
 pub(crate) type KeyboardPreviewCacheHandle =
     std::rc::Rc<std::cell::RefCell<Option<KeyboardPreviewCache>>>;
 
+/// Which of the three pages the pane shows: the keyboard (layouts and
+/// typing), the pointing devices, or spelling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InputPage {
+    #[default]
+    Keyboard,
+    Pointing,
+    Spelling,
+}
+
 pub struct MouseKeyboardPane {
+    page: InputPage,
     cx: PaneCx,
     input: Followed<InputPrefs>,
     text: Followed<TextAssistancePrefs>,
@@ -1587,6 +1621,7 @@ impl MouseKeyboardPane {
         let mut last = input.get().clone();
         last.normalise_keyboard_sources();
         let mut pane = Self {
+            page: InputPage::default(),
             cx,
             input,
             text,
@@ -1628,6 +1663,12 @@ impl MouseKeyboardPane {
         pane
     }
 
+    /// Show one page of the input settings.
+    pub(crate) fn with_page(mut self, page: InputPage) -> Self {
+        self.page = page;
+        self
+    }
+
     /// Share only ephemeral physical positions with the owning Settings page.
     pub(crate) fn with_map_input(mut self, input: ui::KeyboardMapInput) -> Self {
         self.map_input = input;
@@ -1658,11 +1699,12 @@ impl MouseKeyboardPane {
         {
             return Ok(cache.map.clone());
         }
-        let map = crate::keyboard_preview::map_with_options(
+        let map = crate::keyboard_preview::map_for_form(
             source,
             &input.keyboard_model,
             t("input-map-title"),
             options.as_deref(),
+            crate::keyboard_preview::device_keyboard_is_compact(),
         )?
         .with_input(self.map_input.clone());
         *cache = Some(KeyboardPreviewCache {
@@ -1674,114 +1716,6 @@ impl MouseKeyboardPane {
         Ok(map)
     }
 
-    fn keyboard_inspection_controls(&self, map: ui::KeyboardMap) -> Vec<El> {
-        let level = self
-            .last
-            .keyboard_preview_level
-            .min(map.level_count().saturating_sub(1));
-        let mut content = Vec::new();
-        content.push(setting_row(
-            &t("input-map-level"),
-            Box::new(
-                self.cx.bind(
-                    id_dropdown(
-                        (0..map.level_count())
-                            .map(|level| {
-                                (
-                                    level.to_string(),
-                                    format!("{} {}", t("input-map-level"), level + 1),
-                                )
-                            })
-                            .collect(),
-                        &level.to_string(),
-                        "input.map.level",
-                        &t("input-map-level"),
-                    ),
-                    effect(InputEffect::SET_PREVIEW_LEVEL),
-                ),
-            ),
-        ));
-        let inspected = self.last.keyboard_inspected_key.clone();
-        content.push(setting_row(
-            &t("input-map-inspect-key"),
-            Box::new(self.cx.bind(
-                id_dropdown(
-                    map.inspection_keys(),
-                    &inspected,
-                    "input.map.inspect-key",
-                    &t("input-map-inspect-key"),
-                ),
-                effect(InputEffect::INSPECT_KEYBOARD_KEY),
-            )),
-        ));
-        let live = self.editor.get().selected.is_none()
-            && (self.editor.get().view == keyboard_editor::SourceView::Live
-                || self.editor.get().view == keyboard_editor::SourceView::Native)
-            && !self.editor.get().adding
-            && self.last.keyboard_preview.is_none();
-        let details = map.clone().with_live_layout(live);
-        let selected = inspected.clone();
-        content.push(Box::new(
-            Text::dynamic(move || match details.inspection_values(&selected) {
-                Some(values) if values.iter().any(|value| !value.is_empty()) => {
-                    format!(
-                        "{}\n{}",
-                        selected,
-                        values
-                            .iter()
-                            .enumerate()
-                            .map(|(level, value)| {
-                                if live {
-                                    format!("{}: {}", t("input-map-current-symbols"), value)
-                                } else {
-                                    format!("{} {}: {}", t("input-map-level"), level + 1, value)
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    )
-                }
-                _ => t("input-map-inspection-unavailable"),
-            })
-            .with_id("input.keyboard-map.details"),
-        ));
-        content.push(Box::new(
-            self.cx.bind(
-                map.with_inspected_key(&inspected)
-                    .with_extra_levels(self.last.keyboard_preview_extra_levels)
-                    .with_preview_level(level)
-                    .with_live_layout(live)
-                    .selectable(),
-                effect(InputEffect::INSPECT_KEYBOARD_KEY),
-            ),
-        ));
-        let Some(map) = content.pop() else {
-            return content;
-        };
-        vec![map, self.keyboard_inspection_section(content)]
-    }
-
-    fn keyboard_inspection_section(&self, content: Vec<El>) -> El {
-        let open = self.editor.get().inspection_open
-            || self.editor.get().view == keyboard_editor::SourceView::Native;
-        let button = self.cx.bind_invocation(
-            Button::new(
-                "input.source.inspection",
-                &t(if open {
-                    "input-source-hide"
-                } else {
-                    "input-source-show"
-                }),
-            ),
-            InputEffect::SetSourceInspectionVisible { visible: !open },
-        );
-        crate::widgets::card_with_action(
-            &t("input-source-inspection"),
-            Box::new(button),
-            rows(if open { content } else { Vec::new() }),
-        )
-    }
-
     fn source_label(&self, id: &str) -> String {
         self.catalog
             .iter()
@@ -1790,34 +1724,30 @@ impl MouseKeyboardPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        // The keyboard layout comes first: it is what most people open this
-        // pane to change.
-        if self.editor.get().adding {
-            return crate::widgets::cards(vec![self.keyboard_add_screen()]);
+        match self.page {
+            InputPage::Keyboard => crate::widgets::cards(self.keyboard_page()),
+            InputPage::Spelling => {
+                crate::widgets::cards(vec![self.spell_checker_card(), self.dictionary_card()])
+            }
+            InputPage::Pointing => {
+                let mut cards = Vec::new();
+                if self.sections.touchpad {
+                    cards.push(self.touchpad_card());
+                    cards.push(self.touchpad_click_scroll_card());
+                }
+                if self.sections.mouse {
+                    cards.push(self.mouse_card());
+                }
+                if self.sections.pointer {
+                    cards.push(self.pointer_options_card());
+                }
+                if self.sections.tablet {
+                    cards.extend(self.tablet_cards());
+                    cards.extend(self.pad_cards());
+                }
+                crate::widgets::cards(cards)
+            }
         }
-        let mut cards = vec![
-            self.keyboard_editor_card(),
-            self.spell_checker_card(),
-            self.dictionary_card(),
-        ];
-        if self.editor.get().scope != settings_store::keyboard_sources::OSK {
-            cards.insert(1, self.keyboard_card());
-        }
-        if self.sections.touchpad {
-            cards.push(self.touchpad_card());
-            cards.push(self.touchpad_click_scroll_card());
-        }
-        if self.sections.mouse {
-            cards.push(self.mouse_card());
-        }
-        if self.sections.pointer {
-            cards.push(self.pointer_options_card());
-        }
-        if self.sections.tablet {
-            cards.extend(self.tablet_cards());
-            cards.extend(self.pad_cards());
-        }
-        crate::widgets::cards(cards)
     }
 
     /// Take in which devices are attached; rebuild when that changes what
@@ -1864,7 +1794,7 @@ impl MouseKeyboardPane {
         field: tilo_resource::Path<InputPrefs, bool>,
         id: &str,
         on: bool,
-    ) -> El {
+    ) -> Item {
         self.cx
             .row(t(label))
             .described(t(description))
@@ -1962,7 +1892,7 @@ impl MouseKeyboardPane {
     /// Everything that is specific to a touchpad, starting with whether it
     /// works at all. The touchpad key on a laptop keyboard flips the same
     /// saved setting.
-    fn touchpad_card(&self) -> Box<dyn Widget> {
+    fn touchpad_card(&self) -> crate::widgets::SettingsSection {
         let last = &self.last;
         card(
             &t("input-touchpad-title"),
@@ -2041,12 +1971,13 @@ impl MouseKeyboardPane {
     /// How a touchpad turns presses and finger movement into clicks and
     /// scrolling. Each choice is applied only to devices whose libinput
     /// driver offers it.
-    fn touchpad_click_scroll_card(&self) -> Box<dyn Widget> {
+    fn touchpad_click_scroll_card(&self) -> crate::widgets::SettingsSection {
         card(
             &t("input-clicking-title"),
             rows(vec![
                 self.cx
                     .row(t("input-click-method"))
+                    .described(t("input-click-method-caption"))
                     .id("input.touchpad_click_method")
                     .keyed_choice(
                         localized_choices(&CLICK_METHOD_CHOICES),
@@ -2057,7 +1988,6 @@ impl MouseKeyboardPane {
                                 .ok_or_else(|| format!("`{id}` is not a click method"))
                         },
                     ),
-                caption(&t("input-click-method-caption")),
                 self.cx
                     .row(t("input-scroll-method"))
                     .id("input.touchpad_scroll_method")
@@ -2075,7 +2005,7 @@ impl MouseKeyboardPane {
     }
 
     /// Mice, trackballs and pointing sticks.
-    fn mouse_card(&self) -> Box<dyn Widget> {
+    fn mouse_card(&self) -> crate::widgets::SettingsSection {
         let last = &self.last;
         card(
             &t("input-mouse-title"),
@@ -2106,7 +2036,7 @@ impl MouseKeyboardPane {
     /// choices still get a specific destination instead of an opaque
     /// "Advanced" bucket: people and assistive agents can tell what will be
     /// changed before opening the card.
-    fn pointer_options_card(&self) -> Box<dyn Widget> {
+    fn pointer_options_card(&self) -> crate::widgets::SettingsSection {
         card(
             &t("input-pointer-title"),
             rows(vec![
@@ -2156,22 +2086,17 @@ impl MouseKeyboardPane {
         )
     }
 
-    fn keyboard_card(&self) -> Box<dyn Widget> {
-        card(
-            &t("input-keyboard-title"),
-            rows(vec![
-                self.cx
-                    .row(t("input-key-repeat"))
-                    .described(self.key_repeat_description())
-                    .id("input.key_repeat")
-                    .named(t("input-key-repeat"))
-                    .slider_verb(
-                        &ui::LocalState::new(self.key_repeat_slider_value()),
-                        InputPrefs::SET_KEY_REPEAT,
-                    ),
-                caption(&t("input-keyboard-caption")),
-            ]),
-        )
+    /// The key repeat row: how soon and how fast a held key repeats.
+    fn key_repeat_row(&self) -> Item {
+        self.cx
+            .row(t("input-key-repeat"))
+            .described(self.key_repeat_description())
+            .id("input.key_repeat")
+            .named(t("input-key-repeat"))
+            .slider_verb(
+                &ui::LocalState::new(self.key_repeat_slider_value()),
+                InputPrefs::SET_KEY_REPEAT,
+            )
     }
 
     /// The normal slider owns one linked speed/delay curve. Imported desktop
@@ -2204,7 +2129,7 @@ impl MouseKeyboardPane {
         }
     }
 
-    fn spell_checker_card(&self) -> Box<dyn Widget> {
+    fn spell_checker_card(&self) -> crate::widgets::SettingsSection {
         card(
             &t("input-spell-title"),
             rows(vec![
@@ -2241,16 +2166,18 @@ impl MouseKeyboardPane {
                             }
                         },
                     ),
-                caption(&t("input-spell-caption")),
+                crate::widgets::note(&t("input-spell-caption")),
             ]),
         )
     }
 
-    fn dictionary_card(&self) -> Box<dyn Widget> {
+    fn dictionary_card(&self) -> crate::widgets::SettingsSection {
         let Some(snapshot) = &self.dictionary else {
             return card(
                 &t("input-dictionary-title"),
-                rows(vec![caption(&t("input-dictionary-unavailable"))]),
+                rows(vec![crate::widgets::note(&t(
+                    "input-dictionary-unavailable",
+                ))]),
             );
         };
         let revision = snapshot.revision;
@@ -2262,7 +2189,7 @@ impl MouseKeyboardPane {
                 .map(move |()| (word.get(), language.get(), revision)),
         );
         let mut children = vec![
-            caption(&t("input-dictionary-caption")),
+            crate::widgets::note(&t("input-dictionary-caption")),
             field_row(
                 &t("input-dictionary-word"),
                 Box::new(
@@ -2274,8 +2201,9 @@ impl MouseKeyboardPane {
                         .with_autocorrect(false),
                 ),
             ),
-            field_row(
+            crate::widgets::field_row_described(
                 &t("input-dictionary-language"),
+                &t("input-dictionary-language-caption"),
                 Box::new(
                     TextInput::from_state(&self.dictionary_language)
                         .with_id("dictionary.language")
@@ -2285,19 +2213,18 @@ impl MouseKeyboardPane {
                         .with_autocorrect(false),
                 ),
             ),
-            caption(&t("input-dictionary-language-caption")),
-            Box::new(add) as Box<dyn Widget>,
+            crate::widgets::row(Box::new(add)),
         ];
         for (index, entry) in snapshot.words.iter().enumerate() {
             children.push(self.dictionary_word_row(index, entry, revision));
         }
-        children.push(Box::new(
+        children.push(crate::widgets::row(Box::new(
             self.cx.bind_invocation(
                 Button::new("dictionary.reset", &t("input-dictionary-reset"))
                     .with_enabled(!snapshot.words.is_empty()),
                 InputEffect::ResetDictionary { revision },
             ),
-        ));
+        )));
         card(&t("input-dictionary-title"), rows(children))
     }
 
@@ -2306,7 +2233,7 @@ impl MouseKeyboardPane {
         index: usize,
         entry: &ui::personal_dictionary::Word,
         revision: u64,
-    ) -> Box<dyn Widget> {
+    ) -> Item {
         let key = (entry.spelling.clone(), entry.language.clone());
         let (word, language) = self
             .dictionary_edits
@@ -2349,7 +2276,8 @@ impl MouseKeyboardPane {
                 revision,
             },
         );
-        Box::new(
+        // A word is edited in place: two fields and two actions on one line.
+        crate::widgets::row(Box::new(
             Row::new()
                 .push(Box::new(
                     TextInput::from_state(&word)
@@ -2368,7 +2296,7 @@ impl MouseKeyboardPane {
                 ))
                 .push(Box::new(save))
                 .push(Box::new(remove)),
-        )
+        ))
     }
 
     fn tablet_config(
@@ -2388,7 +2316,7 @@ impl MouseKeyboardPane {
         clippy::too_many_lines,
         reason = "one declarative row list mirroring the visible tablet card"
     )]
-    fn tablet_cards(&self) -> Vec<El> {
+    fn tablet_cards(&self) -> Vec<crate::widgets::SettingsSection> {
         let outputs = tablet_output_choices();
         self.tablets
             .iter()
@@ -2501,13 +2429,13 @@ impl MouseKeyboardPane {
     /// One card per tablet pad: a shortcut for each of its buttons, then
     /// what each ring and strip does in each mode. Tablet-aware apps get
     /// the unmapped buttons, rings and strips themselves.
-    fn pad_cards(&self) -> Vec<El> {
+    fn pad_cards(&self) -> Vec<crate::widgets::SettingsSection> {
         self.pads
             .iter()
             .map(|device| {
                 let config = self.tablet_config(device);
                 let resource = pad_resource_id(&device.key);
-                let mut items: Vec<El> = (0..device.pad_buttons.min(MAX_PAD_BUTTONS))
+                let mut items: Vec<Item> = (0..device.pad_buttons.min(MAX_PAD_BUTTONS))
                     .map(|button| {
                         let label = t_args(
                             "input-pad-button",
@@ -2534,7 +2462,7 @@ impl MouseKeyboardPane {
                     })
                     .collect();
                 if items.is_empty() {
-                    items.push(caption(&t("input-pad-no-buttons")));
+                    items.push(crate::widgets::note(&t("input-pad-no-buttons")));
                 }
                 for (dial, modes) in pad_dials(device) {
                     for mode in 0..modes {
@@ -2553,7 +2481,7 @@ impl MouseKeyboardPane {
                     }
                 }
                 if !pad_dials(device).is_empty() {
-                    items.push(caption(&t("input-pad-dials-caption")));
+                    items.push(crate::widgets::note(&t("input-pad-dials-caption")));
                 }
                 card(&device_title(device), rows(items))
             })
@@ -2710,12 +2638,7 @@ mod tests {
         let mut host =
             ui::personal_dictionary::TestHost::new(source, "so.tilo.settings", [1; 32]).unwrap();
         app.harness().resize((1200, 2200)).unwrap();
-        let address = crate::categories::Category::MouseKeyboard;
-        app.effect_on(
-            &crate::effects::pane_row_id(address),
-            &crate::effects::open_pane(address),
-        )
-        .unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Spelling);
         app.settle();
         app.harness().click_named("dictionary.word").unwrap();
         app.harness().type_text("Tilo");
@@ -2794,8 +2717,11 @@ mod tests {
         let area = InputArea::new(&cx);
         let mut pane = MouseKeyboardPane::new(cx, &area);
         pane.dictionary = Some(reader.snapshot().unwrap());
-        let frame =
-            ui::headless::FrameHarness::new(ui::State::new(), pane.dictionary_card(), (1100, 760));
+        let frame = ui::headless::FrameHarness::new(
+            ui::State::new(),
+            crate::widgets::cards(vec![pane.dictionary_card()]),
+            (1100, 760),
+        );
         for control in [
             "dictionary.word",
             "dictionary.language",
@@ -2832,14 +2758,7 @@ mod tests {
     }
 
     pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, u32)) {
-        let address = crate::categories::Category::MouseKeyboard;
-        app.effect_on(
-            &crate::effects::pane_row_id(address),
-            &crate::effects::open_pane(address),
-        )
-        .unwrap();
-        app.settle();
-        app.harness().click_named("input.sources.add").unwrap();
+        crate::effects::show_pane(app, crate::categories::Category::Keyboard);
         app.settle();
         for _ in 0..30 {
             app.settle();
@@ -2878,12 +2797,7 @@ mod tests {
             let mut app = TestApp::<SettingsShell>::new().unwrap();
             app.harness().resize(viewport).unwrap();
             app.harness().set_theme(theme);
-            let address = crate::categories::Category::MouseKeyboard;
-            app.effect_on(
-                &crate::effects::pane_row_id(address),
-                &crate::effects::open_pane(address),
-            )
-            .unwrap();
+            crate::effects::show_pane(&mut app, crate::categories::Category::Spelling);
             app.settle();
             assert_eq!(
                 spelling_language_value(&app.harness().inspection().root),
@@ -2929,14 +2843,6 @@ mod tests {
             app.harness().render_png(&out.join("filtered.png"));
             app.harness().key("Return");
             app.settle();
-            assert!(
-                !app.settings::<InputPrefs>()
-                    .get()
-                    .keyboard_layouts
-                    .contains(&"fr".into()),
-                "choosing a preview must not configure a source"
-            );
-            assert!(set(&mut app, InputEffect::ConfirmSourceToAdd));
             tilo_test_env::wait_until("normal typed AddSource completes", || {
                 app.settle();
                 app.settings::<InputPrefs>()
@@ -2945,9 +2851,9 @@ mod tests {
                     .contains(&"fr".into())
             });
             let prefs = app.settings::<InputPrefs>().get();
-            assert_eq!(
+            assert_ne!(
                 prefs.keyboard_layout, active_before,
-                "adding a source preserves the active source"
+                "adding a layout from the page types with it"
             );
             app.harness().render_png(&out.join("selected.png"));
             assert!(app.harness().component_contract_violations().is_empty());
@@ -3370,12 +3276,7 @@ mod tests {
             .unwrap()
             .unwrap()
         };
-        let open = crate::categories::Category::MouseKeyboard;
-        app.effect_on(
-            &crate::effects::pane_row_id(open),
-            &crate::effects::open_pane(open),
-        )
-        .unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Keyboard);
         assert!(set(
             &mut app,
             InputEffect::PreviewLayout {
@@ -3387,6 +3288,7 @@ mod tests {
             InputEffect::InspectKeyboardKey { key: "AD06".into() }
         ));
         let before = app.settings::<InputPrefs>().get();
+        app.settle();
         app.harness().dispatch_to_root(&WindowEvent::Focused(true));
         let preview = read(&mut app);
         assert_eq!(preview["mode"], "preview");

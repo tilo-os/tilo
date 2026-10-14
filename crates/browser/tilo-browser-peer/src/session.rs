@@ -303,6 +303,7 @@ enum Command {
         InputCompletion,
     ),
     Rooms(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
+    Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
     Node(NodeCompletion),
     Compact([u8; 16], Vec<u8>),
     Reconnect,
@@ -344,6 +345,9 @@ pub type InputCompletion = Box<dyn FnOnce(Result<bool, String>) + Send>;
 /// Called once with the session device the node runs beside the host (or
 /// `None`), see [`PeerHandle::node_session_then`].
 pub type NodeCompletion = Box<dyn FnOnce(Result<Option<[u8; 32]>, String>) + Send>;
+/// Called once with who is here, see [`PeerHandle::here_then`].
+pub type HereCompletion =
+    Box<dyn FnOnce(Result<tilo_relay_protocol::web::HereReply, String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::RoomsReply, String>) + Send>;
@@ -801,6 +805,20 @@ impl PeerHandle {
         done: InputCompletion,
     ) -> Result<(), String> {
         self.send(Command::LegacyInput(request, done))
+    }
+
+    /// Post this person's own recent actions ([`crate::carrier::here`]) over
+    /// the current HTTPS session; `done` receives who is here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn here_then(
+        &self,
+        request: tilo_relay_protocol::web::HereRequest,
+        done: HereCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::Here(request, done))
     }
 
     /// Send `request` to the host's room administration over the current
@@ -1610,9 +1628,9 @@ impl Task {
                 true
             }
             Command::LegacyInput(request, done) => {
-                Self::request_legacy_input(request, done, client);
-                true
+                Self::request_legacy_input(request, done, client)
             }
+            Command::Here(request, done) => Self::request_here(request, done, client),
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
             Command::VoiceCall(room, request, op) => self.voice_call(room, request, op, client),
             Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
@@ -1732,11 +1750,12 @@ impl Task {
         }
     }
 
+    /// Always `true`: the session takes it whatever the answer.
     fn request_legacy_input(
         request: tilo_relay_protocol::legacy_window::InputRequest,
         done: InputCompletion,
         client: Option<&Link>,
-    ) {
+    ) -> bool {
         match client {
             Some(Link::Https(link)) => {
                 let http = link.client().clone();
@@ -1751,6 +1770,29 @@ impl Task {
             Some(Link::Iroh(_)) => done(Err("legacy input is sent over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
         }
+        true
+    }
+
+    /// Always `true`: the session takes it whatever the answer.
+    fn request_here(
+        request: tilo_relay_protocol::web::HereRequest,
+        done: HereCompletion,
+        client: Option<&Link>,
+    ) -> bool {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let reply = crate::carrier::here(http.as_ref(), &session, &request).await;
+                    done(reply.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("who is here is served over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+        true
     }
 
     fn request_rooms(

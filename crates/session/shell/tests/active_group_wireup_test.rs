@@ -47,6 +47,7 @@ fn two_strip_two_group_tree() -> (WorkspaceTree, StripGroups, StripGroups) {
         active_tab: id ^ 0xff,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     };
 
     let strip0 = Strip {

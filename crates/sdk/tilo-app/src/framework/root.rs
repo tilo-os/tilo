@@ -158,6 +158,10 @@ fn open_spec() -> tilo_actions::ActionSpec {
     .with_description("Open the app at one item: the anchor of a search hit.")
 }
 
+/// The label of the item view the framework gives an item resource that
+/// presents no view of its own.
+const ITEM_VIEW_LABEL: &str = "Item";
+
 /// `open` on one item resource: show that item, as its search hit would.
 fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
     let encoded = tilo_actions::EncodedAction::encode_operation(
@@ -191,19 +195,19 @@ fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut tilo_actions::Resou
             .iter()
             .any(|existing| existing.id == "open")
     {
-        let spec = item_open_spec(resource.id.as_str());
-        let view_label = if resource.label.trim().is_empty() {
-            spec.label.clone()
-        } else {
-            resource.label.clone()
-        };
-        resource.actions.push(spec);
+        resource.actions.push(item_open_spec(resource.id.as_str()));
         // The opener is also a presentation binding, not just a verb in the
         // catalogue. Keep an app's explicit views; otherwise advertise the
-        // item view that this exact bound opener actually shows.
+        // item view that this exact bound opener actually shows. The view
+        // names what it shows, the item, and not which item: the item's own
+        // label is the resource's, published once with it. Every item's
+        // `open` is then one catalogue entry however many items there are,
+        // where a copy of the item's label made each item's `open`, and its
+        // whole action template, an entry of its own.
         if resource.views.is_empty() {
             resource.views.push(
-                tilo_actions::ResourceViewSpec::new("item", view_label, "open").with_primary(true),
+                tilo_actions::ResourceViewSpec::new("item", ITEM_VIEW_LABEL, "open")
+                    .with_primary(true),
             );
         }
     }
@@ -521,9 +525,11 @@ impl ResourceRoot {
         RootWidget::boxed(Box::new(self))
     }
 
-    /// The root as the widget a past version's preview draws.
-    pub(crate) fn into_root_widget(self) -> RootWidget {
-        RootWidget::new(Box::new(self))
+    /// The root as the widget a past version's preview draws. Boxed here,
+    /// not where the resource's type is known, so its widget table is
+    /// compiled once for every app.
+    pub(crate) fn into_root_widget(self) -> Box<dyn Widget> {
+        Box::new(RootWidget::new(Box::new(self)))
     }
 
     /// The handles of the root that name its resource type, when it is `R`.

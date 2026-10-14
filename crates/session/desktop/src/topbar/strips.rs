@@ -729,6 +729,7 @@ impl TopBarChrome {
                     enabled: true,
                     active: Some(Some(*id) == self.strips.active),
                     dot: false,
+                    mark: false,
                 }
             })
             .collect();
@@ -741,6 +742,7 @@ impl TopBarChrome {
                 enabled: true,
                 active: None,
                 dot: false,
+                mark: false,
             });
         }
         specs

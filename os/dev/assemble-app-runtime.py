@@ -8,6 +8,7 @@ source authority, import, activation and the slot lifecycle.
 import argparse
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import platform
@@ -69,7 +70,8 @@ def private_ancestors(path, outputs):
     return argv
 
 
-def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None, compiler=None):
+def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None, compiler=None,
+                      source_inventory=None):
     """Final-path binds preserve registry paths, with only owned outputs writable."""
     tree = stage / 'tree'
     runtime = tree / 'usr/lib/tilo-runtime'
@@ -111,6 +113,8 @@ def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None,
              '--chdir', str(repo), 'python3', str(Path(__file__).resolve()),
              '--inside', '--repo', str(repo), '--target-dir', str(tools),
              '--profile', profile, '--stage', str(stage)]
+    if source_inventory is not None:
+        argv += ['--source-inventory', source_inventory]
     if app is not None:
         argv += ['--app', app]
     if compiler is not None:
@@ -184,6 +188,19 @@ def publish_runtime_fonts(repo, fonts, catalogs):
     return catalog
 
 
+def source_membership(repo, destination, digest):
+    """Seal the exact source membership inside the signed toolkit payload."""
+    if not re.fullmatch(r'[0-9a-f]{64}', digest):
+        raise ValueError('invalid source inventory digest')
+    ids = [tomllib.loads(path.read_text())['package']['id']
+           for path in sorted((repo / 'apps').glob('*/tilo-app.toml'))]
+    if not ids or len(ids) > 512 or len(set(ids)) != len(ids):
+        raise ValueError('source system application membership is empty, oversized or duplicated')
+    destination.write_text(json.dumps({'schema': 1, 'source_inventory': digest,
+                                      'apps': sorted(ids)}, sort_keys=True) + '\n')
+    return destination
+
+
 def assemble_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
     rows = applications(repo)
@@ -201,6 +218,9 @@ def assemble_inside(args):
     fonts = prepare_runtime_fonts(repo, stage / 'work')
     publish_runtime_fonts(repo, fonts, stage / 'tree/usr/share/tilo/font-catalogs')
     includes = list(dict.fromkeys([toolkit, *engines, std[0], *closure, fonts]))
+    if args.source_inventory is not None:
+        includes.append(source_membership(repo, stage / 'work/system-app-cohort.json',
+                                          args.source_inventory))
     bundle = target / 'release/tilo-runtime-bundle'
     identity = stage / 'work/runtime-identity.json'
     version_file = stage / 'work/runtime-version'
@@ -243,6 +263,71 @@ def assemble_inside(args):
     # Packing happens in a fresh namespace with immutable generated pins.
 
 
+def engine_pins(repo):
+    """The optional runtimes the cohort's apps pin by exact version (the
+    Browser's engine): they ship with the apps or the cohort is refused."""
+    pins = set()
+    for path in sorted((repo / 'apps').glob('*/tilo-app.toml')):
+        manifest = tomllib.loads(path.read_text())
+        pins.update(manifest['package'].get('optional-runtimes', []))
+    for pin in pins:
+        if not re.fullmatch(r'tilo-runtime/[0-9A-Za-z][0-9A-Za-z._+-]*', pin):
+            raise ValueError(f'invalid optional runtime {pin!r}')
+    return sorted(pins)
+
+
+def host_runtime_roots():
+    """Where this host already keeps runtime bundles, read only."""
+    roots = []
+    if os.environ.get('TILO_RUNTIME_BUNDLE_DIR'):
+        roots.append(Path(os.environ['TILO_RUNTIME_BUNDLE_DIR']))
+    data = os.environ.get('XDG_DATA_HOME') or str(Path.home() / '.local/share')
+    roots += [Path(data) / 'tilo-runtime', Path('/usr/lib/tilo-runtime')]
+    return roots
+
+
+def fetch_runtime(reference, destination, app_cli):
+    """Fetch `reference` through the workspace's own verified install (the
+    `app` CLI built with the other tools) into `destination`, never into this
+    person's runtime directory."""
+    destination.mkdir(parents=True, exist_ok=True)
+    run([str(app_cli), 'runtime', 'install', reference],
+        env=dict(os.environ, TILO_RUNTIME_BUNDLE_DIR=str(destination)))
+
+
+def stage_engine_runtimes(repo, stage, bundle, roots=None, fetch=None):
+    """Ship every engine the cohort's apps pin inside the layer, at the exact
+    version, and trust the publisher that signed it. A userspace swap that
+    replaced the Browser without its engine would leave it saying "not
+    installed"; so the engine comes from this host's bundles, else the
+    registry, and the cohort is refused when neither has it."""
+    publishers = set()
+    runtime_root = stage / 'tree/usr/lib/tilo-runtime'
+    for reference in engine_pins(repo):
+        version = reference.split('/', 1)[1]
+        source = next((root / version for root in (host_runtime_roots() if roots is None else roots)
+                       if (root / version / 'bundle.toml').is_file()), None)
+        if source is None:
+            fetched = stage / 'work/engine-fetch'
+            if fetch is None:
+                fetch_runtime(reference, fetched, bundle.parent / 'app')
+            else:
+                fetch(reference, fetched)
+            source = fetched / version
+        if not (source / 'bundle.toml').is_file():
+            raise ValueError(f'the engine {reference} the apps pin is neither on this host nor in the registry')
+        report = run([str(bundle), 'verify', str(source), '--require-signature'], capture=True).stdout
+        found = re.search(r'publisher: ed25519:([0-9a-f]{64})', report)
+        if not found:
+            raise ValueError(f'{reference} is not signed by a publisher')
+        publishers.add(found.group(1))
+        shutil.copytree(source, runtime_root / version, symlinks=True, dirs_exist_ok=True)
+    if len(publishers) > 1:
+        raise ValueError('the cohort pins engines from more than one publisher')
+    if publishers:
+        (stage / 'tree/usr/share/tilo/browser-runtime-publisher.hex').write_text(publishers.pop() + '\n')
+
+
 def package_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
     rows = selected_applications(repo, args.app)
@@ -270,7 +355,9 @@ def prepare(args):
     tools_env = dict(os.environ, CARGO_PROFILE_RELEASE_LTO='off',
                      CARGO_PROFILE_RELEASE_CODEGEN_UNITS='16')
     tools = [cargo, 'build', '--locked', '--release', '-p', 'runtime-bundle',
-             '-p', 'tilo-app-package-cli', '-p', 'install', '-p', 'cli-shim']
+             '-p', 'tilo-app-package-cli', '-p', 'install', '-p', 'cli-shim',
+             # `app runtime install`: the registry fallback for a pinned engine.
+             '-p', 'app-cli']
     if args.compiler_interface_out is not None:
         tools += ['-p', 'tilo-app-cli']
     run(tools, env=tools_env)
@@ -305,7 +392,9 @@ def assemble(args):
                                  if args.compiler_interface_out is not None else None)
         prepare(args)
         run(namespace_command(repo, stage, target, args.profile, app=args.app,
-                              compiler=args.compiler_capture))
+                              compiler=args.compiler_capture, source_inventory=args.source_inventory))
+        if args.app is None:
+            stage_engine_runtimes(repo, stage, target / 'release/tilo-runtime-bundle')
         run(namespace_command(repo, stage, target, args.profile, packaging=True, app=args.app))
         if args.app is not None:
             shutil.copyfile(stage / 'work/selected.tapp', args.tapp_out)
@@ -329,6 +418,7 @@ def main():
     parser.add_argument('--target-dir', type=Path, required=True)
     parser.add_argument('--profile', required=True)
     parser.add_argument('--features')
+    parser.add_argument('--source-inventory', help='verified complete source inventory digest')
     parser.add_argument('--app')
     parser.add_argument('--tapp-out', type=Path)
     parser.add_argument('--dest', type=Path)

@@ -19,11 +19,21 @@ topbar-sharing-count = { $viewers } { $viewers ->
         [one] SIEHT ZU
        *[other] SEHEN ZU
     }
+topbar-watching-count = +{ $count } { $count ->
+        [one] schaut zu
+       *[other] schauen zu
+    }
+topbar-watching-description = { $count } { $count ->
+        [one] Person schaut
+       *[other] Personen schauen
+    } zu, ohne teilzunehmen
 topbar-sharing-surface = Oberfläche { $surface }
 topbar-open-overview = Übersicht öffnen
+topbar-tilo-menu = Tilo-Menü
 topbar-previous-workspace = Vorheriger Arbeitsbereich
 topbar-next-workspace = Nächster Arbeitsbereich
 topbar-workspace-settings = Einstellungen für Arbeitsbereich { $workspace }
+topbar-workspace-host = Gehostet bei { $host }
 topbar-show-clock = Uhr anzeigen
 topbar-show-system-monitor = Systemmonitor anzeigen
 topbar-show-calendar = Kalender anzeigen
@@ -894,6 +904,14 @@ a11y-shell-people-present = Jetzt anwesend
 a11y-shell-people-now = Jetzt: { $activity }
 a11y-shell-people-intent = Absicht: { $status }
 a11y-shell-people-intent-inferred = Absicht, abgeleitet: { $status }
+a11y-shell-people-recent = Zuletzt: { $summary }
+a11y-shell-people-recent-inferred = Zuletzt, zusammengefasst: { $summary }
+a11y-shell-people-recent-toggle = Was { $name } zuletzt gemacht hat
+a11y-shell-people-recent-toggle-description = Eine kurze Zusammenfassung der letzten Minuten ein- oder ausblenden
+a11y-shell-people-watching = { $count } { $count ->
+        [one] Person schaut
+       *[other] Personen schauen
+    } zu, ohne teilzunehmen
 a11y-shell-status-name = Dein Zusammenarbeitsstatus
 a11y-shell-status-inferred = Auf diesem Gerät aus letzten Aktionen abgeleitet
 a11y-shell-status-set = Lege fest, woran du gerade arbeitest
@@ -940,6 +958,10 @@ launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Super+N 
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-here-now = { $count } gerade hier
+people-panel-watching = +{ $count } { $count ->
+        [one] schaut zu
+       *[other] schauen zu
+    }
 people-panel-screen-visible = Bildschirm gerade sichtbar
 people-panel-only-you = Nur du bist hier
 people-panel-status-typing = Gib einen Status ein und drücke dann die Eingabetaste
@@ -1037,6 +1059,16 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Wechseln zu
 overview-panel-new-workspace = Neuer Arbeitsbereich
 browser-new-workspace-name = Arbeitsbereich { $number }
+
+# Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet
+tilo-menu-about = Über diesen Computer
+tilo-about-title = Über diesen Computer
+tilo-about-lead = Das ist Tilo, ein Betriebssystem.
+tilo-about-body-browser = Was du gerade benutzt, läuft in deinem Browser. Tilo kommt bald nativ auf Computer.
+tilo-about-body-native = Es läuft direkt hier, auf diesem Computer.
+tilo-about-link-notify = Benachrichtigt werden
+tilo-about-link-source = Quellcode
+tilo-about-link-community = Community
 
 notification-center-read = Lesen
 notification-center-read-description = Vollständige Benachrichtigung lesen

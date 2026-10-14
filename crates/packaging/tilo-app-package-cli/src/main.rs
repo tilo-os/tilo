@@ -511,6 +511,24 @@ fn main() -> Result<()> {
     }
 }
 
+/// Fill `[package.keywords]` from the app's `search/*.ftl`, which are the
+/// only place the words are written; a manifest that also declares some by
+/// hand is refused rather than merged.
+fn add_search_keywords(manifest: &mut Manifest, manifest_path: &Path) -> Result<()> {
+    let app_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let keywords = tilo_app_package::search_keywords::read(app_dir).map_err(|e| anyhow!(e))?;
+    if !keywords.is_empty() && !manifest.package.keywords.is_empty() {
+        bail!(
+            "{} declares [package.keywords] and has search/*.ftl; keep the words in search/*.ftl only",
+            manifest_path.display()
+        );
+    }
+    if !keywords.is_empty() {
+        manifest.package.keywords = keywords;
+    }
+    Ok(())
+}
+
 fn cmd_pack(
     manifest_path: &Path,
     payload_dir: &Path,
@@ -521,6 +539,7 @@ fn cmd_pack(
     let manifest_src = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("read manifest {}", manifest_path.display()))?;
     let mut manifest = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    add_search_keywords(&mut manifest, manifest_path)?;
 
     let identity = match identity_path {
         Some(p) => load_identity(p)?,
@@ -631,7 +650,8 @@ struct PackDesktopArgs<'a> {
 fn cmd_pack_desktop(args: &PackDesktopArgs<'_>) -> Result<()> {
     let manifest_src = std::fs::read_to_string(args.manifest)
         .with_context(|| format!("read manifest {}", args.manifest.display()))?;
-    let authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    let mut authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    add_search_keywords(&mut authored, args.manifest)?;
     let name = args
         .executable
         .file_name()
