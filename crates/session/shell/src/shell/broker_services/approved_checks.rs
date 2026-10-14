@@ -58,8 +58,7 @@ struct Definitions(Vec<Registered>);
 static DEFINITIONS: OnceLock<Arc<Definitions>> = OnceLock::new();
 
 fn effective_uid() -> u32 {
-    // SAFETY: reads the current process identity; no pointer or mutable state.
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 
 fn load(path: &Path) -> Result<Definitions, String> {

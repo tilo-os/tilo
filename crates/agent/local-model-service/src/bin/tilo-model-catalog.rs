@@ -577,8 +577,7 @@ fn read_signing_key(path: &Path) -> Result<SigningKey, String> {
         if metadata.permissions().mode() & 0o077 != 0 {
             return Err("signing key must not be readable or writable by group/others".into());
         }
-        // SAFETY: geteuid takes no arguments and has no failure mode.
-        let reader = unsafe { libc::geteuid() };
+        let reader = rustix::process::geteuid().as_raw();
         if metadata.uid() != reader {
             return Err(format!(
                 "signing key is owned by uid {}; expected uid {reader}",

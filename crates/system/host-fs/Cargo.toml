@@ -13,6 +13,7 @@ workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 xattr = "1.6.1"
 
 [dev-dependencies]
