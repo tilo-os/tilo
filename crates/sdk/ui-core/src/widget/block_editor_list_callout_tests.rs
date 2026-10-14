@@ -93,6 +93,36 @@ fn access_names(node: &crate::a11y::AccessNode, out: &mut Vec<String>) {
 }
 
 #[test]
+fn bullet_x_height_is_the_top_of_the_faces_x() {
+    let theme = Theme::dark();
+    let mut editor = page(vec![Block::bullet(0, "Item")]);
+    let (_, mut renderer) = lay_out_and_draw(&mut editor, &theme);
+    let measured = editor
+        .marker_x_height
+        .as_ref()
+        .map(|(_, em)| *em)
+        .expect("drawing a bullet measures the face's x-height");
+    let mut style = theme.text(crate::tokens::TextRole::Body);
+    style.scaling = crate::text_render::TextScaling::Resolved;
+    let outline = renderer.glyph_outlines("x", None, &style);
+    let path_top = {
+        use vello::kurbo::Shape as _;
+        -outline
+            .first()
+            .expect("the UI face has an x")
+            .path
+            .bounding_box()
+            .y0
+    };
+    let expected = path_top / f64::from(style.size);
+    assert!(
+        (measured - expected).abs() < 0.005,
+        "x-height {measured} em, the x's outline reaches {expected} em"
+    );
+    assert!((0.3..0.7).contains(&measured), "{measured} em");
+}
+
+#[test]
 fn bullets_numbers_and_boxes_share_one_marker_column() {
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);

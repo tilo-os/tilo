@@ -165,13 +165,13 @@ pub(super) fn x_height_em(
     let mut style = theme.text(TextRole::Body);
     style.scaling = TextScaling::Resolved;
     let size = f64::from(style.size).max(1.0);
+    // The `x`'s ink bounds, not its outline path: the bounds share the outline
+    // walk the renderer already links, where building a path would link a
+    // second copy of the font outline code into every module that draws a
+    // block editor.
     let em = text_renderer
-        .glyph_outlines("x", None, &style)
-        .first()
-        .map(|glyph| {
-            use vello::kurbo::Shape as _;
-            -glyph.path.bounding_box().y0 / size
-        })
+        .first_glyph_ink_bounds("x", &style)
+        .map(|ink| -ink.y0 / size)
         .filter(|em| em.is_finite() && *em > 0.0)
         // Half an em, near every Latin face's, where a face has no outline.
         .unwrap_or(0.5);
