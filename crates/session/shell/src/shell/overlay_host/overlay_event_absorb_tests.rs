@@ -2573,8 +2573,23 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
         assert!(path.is_file(), "fixture missing: {}", path.display());
         let layout = harness.host.qs_notification_layout();
         assert_eq!(harness.host.qs_notification_visible_rows(), 3);
+        let last = {
+            let chrome = harness
+                .host
+                .chrome
+                .as_ref()
+                .expect("the harness has chrome");
+            harness
+                .host
+                .notification_center
+                .semantic_rects(&ChromeNotifications::new(chrome), &layout, "")
+                .into_iter()
+                .find(|(name, _)| name == "notification_row[2]")
+                .expect("the last row shows")
+                .1
+        };
         assert!(
-            (layout.panel().y1 - layout.row(2).y1 - qs::PANEL_PAD).abs() < 1e-6,
+            (layout.panel().y1 - last.y1 - qs::PANEL_PAD).abs() < 1e-6,
             "{theme_name}: a history that fits ends on the panel padding, not a pager band: {:?}",
             layout.panel()
         );
