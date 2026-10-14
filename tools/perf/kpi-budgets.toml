@@ -550,7 +550,7 @@ min_delta = 1.0
 baseline_min_runs = 1
 source = "KPI: Workspace switch, dropped frames (compositor side, headless)"
 
-# Idle wakeups (crates/session/shell/tests/idle_wakeups.rs, #3973): a
+# Idle wakeups (crates/session/shell/examples/idle-wakeups.rs, #3973): a
 # headless dev build on the shared `runner` class with a signed-in desktop,
 # a restored Notes tab and a Terminal, left alone and sampled from /proc over
 # 60 s; context switches per second of every thread of the compositor's

@@ -921,6 +921,33 @@ fn present_for_app_poll(pump_changed: bool, _deadline_due: bool) -> bool {
     pump_changed
 }
 
+/// App-side scheduling for one native tick. Keep the pump's redraw decision
+/// and the post-paint park together: a poll is work, not necessarily pixels,
+/// and its answered deadline must not schedule that same work again.
+struct NativeAppTick {
+    tick_started: Instant,
+    redraw: bool,
+}
+
+impl NativeAppTick {
+    fn after_pump(frame: &FrameBuilder, changed: bool, tick_started: Instant) -> Self {
+        let deadline_due = frame
+            .next_wake_deadline()
+            .is_some_and(|at| at <= tick_started);
+        Self {
+            tick_started,
+            redraw: present_for_app_poll(changed, deadline_due),
+        }
+    }
+
+    fn park_deadline(&self, frame: &FrameBuilder, pipe_ready: bool) -> Option<Instant> {
+        widget_deadline_for_presenter(
+            pipe_ready,
+            widget_park_deadline(self.tick_started, frame.next_wake_deadline()),
+        )
+    }
+}
+
 /// A `wl_surface.frame` on a commit that did not change the tree, the
 /// layout, or an animation is not a present. Release it on its own.
 /// A callback asked for after this tick presented is released too: the
@@ -970,6 +997,10 @@ fn widget_deadline_for_presenter(
 ) -> Option<Instant> {
     widget_deadline.filter(|_| pipe_ready)
 }
+
+#[cfg(test)]
+#[path = "native_idle_work_tests.rs"]
+mod idle_work_tests;
 
 /// A widget deadline wakes the loop once. A widget may keep an overdue
 /// deadline until a paint consumes it, while a due deadline alone does not
@@ -12774,9 +12805,7 @@ pub fn run() {
         let transition_run = frame_builder.chrome().transition_paints_remaining() > 0;
         let still_moving = animation_demand.any() || transition_run;
         let animating = animation_settle.due(still_moving);
-        let widget_deadline_due = frame_builder
-            .next_wake_deadline()
-            .is_some_and(|deadline| deadline <= iter_t0);
+        let app_tick = NativeAppTick::after_pump(&frame_builder, apps_changed, iter_t0);
         let output_presentation_count = state.output_presentation_surfaces.len();
         let presentation_frame_changed = update_output_presentation_repaint_pending(
             &mut output_presentation_repaint_pending,
@@ -12854,7 +12883,7 @@ pub fn run() {
             // it kept the shell busy while apps sat still. The callback is
             // fired after dispatch when this tick will not build a frame,
             // and that answer does not schedule another pump.
-            apps: present_for_app_poll(apps_changed, widget_deadline_due),
+            apps: app_tick.redraw,
             peers: peers_moved,
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
@@ -13936,13 +13965,7 @@ pub fn run() {
             cadence_needed,
             frame_clock.next_deadline(),
             [
-                (
-                    "widget",
-                    widget_deadline_for_presenter(
-                        pipe_ready,
-                        widget_park_deadline(iter_t0, frame_builder.next_wake_deadline()),
-                    ),
-                ),
+                ("widget", app_tick.park_deadline(&frame_builder, pipe_ready)),
                 (
                     "lock-animation",
                     lock_animation_park_deadline(

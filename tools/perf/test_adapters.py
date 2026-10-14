@@ -220,17 +220,15 @@ class WorkspaceSwitch(unittest.TestCase):
         self.assertEqual(nightly, produced)
 
 
-IDLE_GATE = ROOT / "crates/session/shell/tests/idle_wakeups.rs"
+IDLE_GATE = ROOT / "crates/session/shell/examples/idle-wakeups.rs"
 
 
 def idle_log(total: float, shell: float) -> str:
-    # The shape of a --nocapture run: the table on stderr, the line on stdout.
+    # The executable prints the table on stderr and the record on stdout.
     return "\n".join([
-        "running 1 test",
         "idle wakeups over 10.0 s: 3.40/s across 1 processes",
         f"IDLE-WAKEUPS total_per_s={total:.3f} shell_per_s={shell:.3f} loop_ticks_per_s=0.000 "
         "cpu_percent=0.400 window_ms=10012 threads_started=0",
-        "test idle_wakeups::an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget ... ok",
     ])
 
 
