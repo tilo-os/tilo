@@ -216,6 +216,8 @@ tilo-test-env = { path = "../../dev/test-env" }
 # A loopback relay for the idle endpoint test (tests/iroh_idle.rs).
 iroh-relay = { version = "1.0.3", features = ["server"] }
 cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
+cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", features = ["fake-server"] }
+cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", features = ["fake-server"] }
 
 [lints]
 workspace = true
