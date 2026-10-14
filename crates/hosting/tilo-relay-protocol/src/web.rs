@@ -391,6 +391,10 @@ pub struct HereRequest {
     /// characters, possibly empty. Self-asserted like a live participant
     /// label: shown, never trusted for anything else.
     pub label: String,
+    /// The tab id of the desktop window the poster has focused in the
+    /// room's shared desktop, if any. The desktop tree is replicated, so the
+    /// id means the same window to every member.
+    pub window: Option<u64>,
     /// Their recent actions, at most [`MAX_HERE_ACTIONS`].
     pub actions: Vec<HereAction>,
 }
@@ -458,6 +462,8 @@ pub struct HerePerson {
     pub user: [u8; 32],
     /// The display name of their latest post; self-asserted, display only.
     pub label: String,
+    /// The window of their latest post ([`HereRequest::window`]).
+    pub window: Option<u64>,
     /// One line, present tense, e.g. "Drafting the welcome note in Notes";
     /// at most [`MAX_HERE_STATUS_CHARS`] characters.
     pub status: String,
@@ -504,6 +510,7 @@ mod tests {
         let request = |actions| HereRequest {
             workspace_id: 1,
             label: "Ada".into(),
+            window: None,
             actions,
         };
         assert!(request(Vec::new()).validate().is_ok());
