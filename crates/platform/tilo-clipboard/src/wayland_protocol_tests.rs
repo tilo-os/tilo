@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use smithay_client_toolkit::reexports::client;
 use wayland_server::protocol::{
     wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
-    wl_keyboard, wl_seat, wl_surface,
+    wl_keyboard, wl_pointer, wl_seat, wl_surface,
 };
 use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, New, Resource,
@@ -31,6 +31,7 @@ type Operation = Box<dyn FnOnce(&mut Server, &DisplayHandle) + Send>;
 #[derive(Default)]
 struct Seat {
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<wl_pointer::WlPointer>,
     device: Option<wl_data_device::WlDataDevice>,
     surface: Option<wl_surface::WlSurface>,
 }
@@ -128,7 +129,7 @@ impl GlobalDispatch<wl_seat::WlSeat, usize> for Server {
     ) {
         let seat = init.init(resource, *index);
         seat.name(format!("fixture-seat-{index}"));
-        seat.capabilities(wl_seat::Capability::Keyboard);
+        seat.capabilities(wl_seat::Capability::Keyboard | wl_seat::Capability::Pointer);
     }
 }
 
@@ -148,7 +149,22 @@ impl Dispatch<wl_seat::WlSeat, usize> for Server {
             keyboard.keymap(wl_keyboard::KeymapFormat::NoKeymap, empty.as_fd(), 0);
             keyboard.repeat_info(25, 600);
             state.seat(*index).keyboard = Some(keyboard);
+        } else if let wl_seat::Request::GetPointer { id } = request {
+            state.seat(*index).pointer = Some(init.init(id, ()));
         }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for Server {
+    fn request(
+        _: &mut Self,
+        _: &Client,
+        _: &wl_pointer::WlPointer,
+        _: wl_pointer::Request,
+        (): &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
     }
 }
 
@@ -681,6 +697,52 @@ fn production_deadline_closes_both_pipes_without_focus_or_selection_changes() {
 }
 
 #[test]
+fn pointer_leave_does_not_revoke_keyboard_copy_permission() {
+    let h = Harness::new();
+    h.enter(0, 0);
+    h.fence();
+    assert!(
+        h.backend()
+            .set_text(crate::ClipboardTarget::Clipboard, "caption")
+    );
+    let before = h.query(|state| state.publications.len());
+    h.query(|state| {
+        let seat = state.seat(0);
+        let pointer = seat.pointer.as_ref().expect("worker pointer");
+        let surface = seat.surface.as_ref().expect("keyboard-focused surface");
+        pointer.enter(100, surface, 1.0, 1.0);
+        pointer.frame();
+        // Moving onto window chrome does not move keyboard focus. Deliver
+        // Leave between the text and image copies, on the real worker queue.
+        pointer.leave(101, surface);
+        pointer.frame();
+    });
+    h.fence();
+    assert!(h.backend().set_image(1, 1, &[255, 0, 128, 255]));
+    assert!(h.query(move |state| state.publications.len() > before));
+    assert_eq!(h.backend().publication_progress()["acknowledged"], 2);
+    assert_eq!(h.backend().publication_progress()["unfocused"], 0);
+    h.leave(0);
+    h.query(|state| {
+        let pointer = state
+            .seat(0)
+            .pointer
+            .as_ref()
+            .expect("worker pointer")
+            .clone();
+        let surface = &state.surfaces[0];
+        // Pointer focus cannot grant permission after keyboard focus is gone.
+        pointer.enter(102, surface, 1.0, 1.0);
+        pointer.frame();
+    });
+    h.fence();
+    let before_refusal = h.query(|state| state.publications.len());
+    assert!(!h.backend().set_image(1, 1, &[255, 0, 128, 255]));
+    assert_eq!(h.backend().publication_progress()["unfocused"], 1);
+    assert_eq!(h.query(|state| state.publications.len()), before_refusal);
+}
+
+#[test]
 fn image_copy_acknowledgement_follows_server_selection() {
     let harness = Harness::new();
     harness.enter(0, 0);
@@ -821,6 +883,27 @@ fn copy_does_not_publish_after_an_already_sent_keyboard_leave() {
         harness.query(|state| state.publications.is_empty()),
         "refused copy must not publish on later focus"
     );
+}
+
+#[test]
+fn stalled_publication_reports_expiry_without_publishing_late() {
+    let h = Harness::new();
+    h.enter(0, 0);
+    h.fence();
+    h.query(|state| state.hold_flush = true);
+    // Withhold the server's sync response until the public call has returned.
+    // This exercises its actual budget without sleeps or a timing assertion.
+    assert!(!h.backend().set_image(1, 1, &[255, 0, 128, 255]));
+    h.query(|state| state.hold_flush = false);
+    h.fence();
+    let progress = h.backend().publication_progress();
+    assert_eq!(progress["submitted"], 1);
+    assert_eq!(progress["wait_failed"], 1);
+    assert_eq!(progress["expired"], 1);
+    assert_eq!(progress["unfocused"], 0);
+    assert_eq!(progress["published"], 0);
+    assert_eq!(progress["acknowledged"], 0);
+    assert!(h.query(|state| state.publications.is_empty()));
 }
 
 #[test]

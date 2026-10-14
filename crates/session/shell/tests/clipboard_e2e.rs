@@ -1910,8 +1910,25 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         // This is the app-side backend, not HostClipboard: its publication worker
         // owns a second wl_data_device on the app connection and must observe the
         // focused seat before accepting the queued copy.
-        assert!(clipboard.set_text(ClipboardTarget::Clipboard, "app caption"));
-        assert!(clipboard.set_image(2, 1, &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]));
+        assert!(
+            clipboard.set_text(ClipboardTarget::Clipboard, "app caption"),
+            "text publication: {:?}",
+            clipboard.publication_progress(),
+        );
+        app.pointer_target(&compositor);
+        compositor.pointer_move(0.0, 0.0);
+        app.wait_until(
+            |state| !state.pointer_entered,
+            "pointer never left the app for desktop chrome",
+        );
+        assert!(app.state.keyboard_focused);
+        assert!(
+            clipboard.set_image(2, 1, &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]),
+            "image publication after pointer leave: {:?}",
+            clipboard.publication_progress(),
+        );
+        assert_eq!(clipboard.publication_progress()["acknowledged"], 2);
+        assert_eq!(clipboard.publication_progress()["unfocused"], 0);
 
         let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.app-sink");
         sink.assert_is_tilo_compositor();

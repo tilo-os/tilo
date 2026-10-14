@@ -128,7 +128,18 @@ pub struct WaylandClipboard {
     wake: tilo_rt::wake::WakeHandle,
 }
 
+#[derive(Default)]
+struct PublicationProgress {
+    submitted: std::sync::atomic::AtomicU64,
+    expired: std::sync::atomic::AtomicU64,
+    unfocused: std::sync::atomic::AtomicU64,
+    published: std::sync::atomic::AtomicU64,
+    acknowledged: std::sync::atomic::AtomicU64,
+    wait_failed: std::sync::atomic::AtomicU64,
+}
+
 struct PublicationClipboard {
+    progress: Arc<PublicationProgress>,
     sender: smithay_client_toolkit::reexports::calloop::channel::Sender<ClipboardCommand>,
     thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
     alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -145,6 +156,36 @@ enum ClipboardCommand {
 }
 
 impl WaylandClipboard {
+    /// Publication stages observed on the real worker, without inspecting payloads.
+    #[doc(hidden)]
+    pub fn publication_progress(&self) -> std::collections::BTreeMap<&'static str, u64> {
+        use std::sync::atomic::Ordering;
+        let progress = &self.publication.progress;
+        [
+            ("submitted", &progress.submitted),
+            ("expired", &progress.expired),
+            ("unfocused", &progress.unfocused),
+            ("published", &progress.published),
+            ("acknowledged", &progress.acknowledged),
+            ("wait_failed", &progress.wait_failed),
+        ]
+        .into_iter()
+        .map(|(name, count)| (name, count.load(Ordering::Acquire)))
+        .collect()
+    }
+
+    fn await_publication(&self, result: &std::sync::mpsc::Receiver<bool>) -> bool {
+        if let Some(result) = recv_bounded(result, CLIPBOARD_READ_BUDGET) {
+            result
+        } else {
+            self.publication
+                .progress
+                .wait_failed
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+            false
+        }
+    }
+
     /// Attach to the `wl_display` behind `display_ptr`.
     ///
     /// # Safety
@@ -167,10 +208,18 @@ impl WaylandClipboard {
         let worker_pasted = Arc::clone(&pasted);
         let rich = Arc::new(RichClipboard::new());
         let worker_rich = Arc::clone(&rich);
+        let progress = Arc::new(PublicationProgress::default());
+        let worker_progress = Arc::clone(&progress);
         let thread = std::thread::Builder::new()
             .name("tilo-wayland-clipboard".into())
             .spawn(move || {
-                publication_worker(connection, receiver, worker_pasted, worker_rich);
+                publication_worker(
+                    connection,
+                    receiver,
+                    worker_pasted,
+                    worker_rich,
+                    worker_progress,
+                );
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
             })
             .ok();
@@ -188,6 +237,7 @@ impl WaylandClipboard {
                 smithay_clipboard::Clipboard::new(display_ptr)
             }))),
             publication: PublicationClipboard {
+                progress,
                 sender,
                 thread: std::sync::Mutex::new(thread),
                 alive,
@@ -254,6 +304,8 @@ impl WaylandClipboard {
         let worker_pasted = Arc::clone(&pasted);
         let rich = Arc::new(RichClipboard::new());
         let worker_rich = Arc::clone(&rich);
+        let progress = Arc::new(PublicationProgress::default());
+        let worker_progress = Arc::clone(&progress);
         let thread = std::thread::Builder::new()
             .name("tilo-wayland-clipboard-test".into())
             .spawn(move || {
@@ -263,6 +315,7 @@ impl WaylandClipboard {
                     worker_pasted,
                     worker_rich,
                     rich_read_budget,
+                    worker_progress,
                 );
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
             })
@@ -275,6 +328,7 @@ impl WaylandClipboard {
             read_primary: None,
             write_inner: None,
             publication: PublicationClipboard {
+                progress,
                 sender,
                 thread: std::sync::Mutex::new(thread),
                 alive,
@@ -344,7 +398,7 @@ mod image_worker_impl {
     use sctk::{delegate_pointer, delegate_registry, delegate_seat, delegate_touch};
     use smithay_client_toolkit as sctk;
 
-    use super::{ClipboardCommand, PastedImage, RichClipboard};
+    use super::{ClipboardCommand, PastedImage, PublicationProgress, RichClipboard};
 
     #[derive(Debug, Default)]
     struct SeatData {
@@ -352,7 +406,6 @@ mod image_worker_impl {
         pointer: Option<WlPointer>,
         touch: Option<WlTouch>,
         data_device: Option<DataDevice>,
-        has_focus: bool,
         keyboard_focus: bool,
         rich_offer_seen: bool,
         latest_serial: u32,
@@ -382,6 +435,7 @@ mod image_worker_impl {
         rich_pending: Option<PendingRich>,
         plain_pending: Option<PendingPlain>,
         rich_read_budget: tilo_clock::Duration,
+        progress: Arc<PublicationProgress>,
         exit: bool,
     }
 
@@ -408,6 +462,7 @@ mod image_worker_impl {
         pasted: PastedImage,
         rich: Arc<RichClipboard>,
         rich_read_budget: tilo_clock::Duration,
+        progress: Arc<PublicationProgress>,
     ) {
         struct ClearRich(Arc<RichClipboard>);
         impl Drop for ClearRich {
@@ -458,6 +513,7 @@ mod image_worker_impl {
             rich_pending: None,
             plain_pending: None,
             rich_read_budget,
+            progress,
             exit: false,
         };
         let fence_connection = connection.clone();
@@ -465,26 +521,20 @@ mod image_worker_impl {
             if let calloop::channel::Event::Msg(command) = event {
                 match command {
                     ClipboardCommand::SetText(text, reply, deadline) => {
-                        fence_connection.display().sync(
-                            &state.queue_handle,
-                            PendingPublication::new(
-                                PublicationPayload::Text(text),
-                                reply,
-                                deadline,
-                            ),
+                        state.request_publication(
+                            &fence_connection,
+                            PublicationPayload::Text(text),
+                            reply,
+                            deadline,
                         );
-                        let _ = fence_connection.flush();
                     }
                     ClipboardCommand::SetImage(png, reply, deadline) => {
-                        fence_connection.display().sync(
-                            &state.queue_handle,
-                            PendingPublication::new(
-                                PublicationPayload::Image(png),
-                                reply,
-                                deadline,
-                            ),
+                        state.request_publication(
+                            &fence_connection,
+                            PublicationPayload::Image(png),
+                            reply,
+                            deadline,
                         );
-                        let _ = fence_connection.flush();
                     }
                     ClipboardCommand::Exit => state.exit = true,
                     #[cfg(test)]
@@ -591,7 +641,20 @@ mod image_worker_impl {
                 .lock()
                 .ok()
                 .and_then(|mut payload| payload.take());
-            let ok = if tilo_clock::now() < pending.deadline && state.can_publish() {
+            let expired = tilo_clock::now() >= pending.deadline;
+            let focused = state.can_publish();
+            if expired {
+                state
+                    .progress
+                    .expired
+                    .fetch_add(1, std::sync::atomic::Ordering::Release);
+            } else if !focused {
+                state
+                    .progress
+                    .unfocused
+                    .fetch_add(1, std::sync::atomic::Ordering::Release);
+            }
+            let ok = if !expired && focused {
                 match payload {
                     Some(PublicationPayload::Text(text)) => {
                         state.store_text(text);
@@ -607,6 +670,10 @@ mod image_worker_impl {
                 false
             };
             if ok {
+                state
+                    .progress
+                    .published
+                    .fetch_add(1, std::sync::atomic::Ordering::Release);
                 // The new sink may take focus as soon as set_image returns.
                 // Fence set_selection on this connection before reporting a
                 // successful copy, so a caller's next focus change cannot
@@ -628,23 +695,44 @@ mod image_worker_impl {
         for State
     {
         fn event(
-            _: &mut Self,
+            state: &mut Self,
             _: &sctk::reexports::client::protocol::wl_callback::WlCallback,
             _: sctk::reexports::client::protocol::wl_callback::Event,
             published: &PublishedSelection,
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
+            state
+                .progress
+                .acknowledged
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
             let _ = published.reply.send(true);
         }
     }
 
     impl State {
+        fn request_publication(
+            &self,
+            connection: &Connection,
+            payload: PublicationPayload,
+            reply: std::sync::mpsc::Sender<bool>,
+            deadline: tilo_clock::Instant,
+        ) {
+            self.progress
+                .submitted
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+            connection.display().sync(
+                &self.queue_handle,
+                PendingPublication::new(payload, reply, deadline),
+            );
+            let _ = connection.flush();
+        }
+
         fn can_publish(&self) -> bool {
             self.latest_seat
                 .as_ref()
                 .and_then(|seat| self.seats.get(seat))
-                .is_some_and(|seat| seat.has_focus && seat.data_device.is_some())
+                .is_some_and(|seat| seat.keyboard_focus && seat.data_device.is_some())
         }
 
         fn store_text(&mut self, text: Vec<u8>) {
@@ -663,7 +751,7 @@ mod image_worker_impl {
             let Some(seat_data) = self.seats.get(&seat) else {
                 return false;
             };
-            if !seat_data.has_focus {
+            if !seat_data.keyboard_focus {
                 return false;
             }
             if seat_data.data_device.is_none() {
@@ -1508,13 +1596,10 @@ mod image_worker_impl {
                 return;
             };
             for event in events {
-                match event.kind {
-                    PointerEventKind::Enter { serial } => {
-                        data.latest_serial = serial;
-                        data.has_focus = true;
-                    }
-                    PointerEventKind::Leave { .. } => data.has_focus = false,
-                    _ => {}
+                // Pointer leave (for example onto window chrome) does not
+                // revoke keyboard permission to copy from this client.
+                if let PointerEventKind::Enter { serial } = event.kind {
+                    data.latest_serial = serial;
                 }
                 if let PointerEventKind::Press { serial, .. }
                 | PointerEventKind::Release { serial, .. } = event.kind
@@ -1547,7 +1632,6 @@ mod image_worker_impl {
                 return;
             };
             data.latest_serial = serial;
-            data.has_focus = true;
             self.latest_seat = Some(seat);
             self.publish_current();
         }
@@ -1595,14 +1679,7 @@ mod image_worker_impl {
         ) {
         }
 
-        fn cancel(&mut self, _: &Connection, _: &QueueHandle<Self>, touch: &WlTouch) {
-            let Some(touch_data) = touch.data::<TouchData>() else {
-                return;
-            };
-            if let Some(data) = self.seats.get_mut(touch_data.seat()) {
-                data.has_focus = false;
-            }
-        }
+        fn cancel(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlTouch) {}
     }
 
     impl Dispatch<WlKeyboard, WlSeat, State> for State {
@@ -1635,7 +1712,6 @@ mod image_worker_impl {
                 }
                 Event::Enter { serial, .. } => {
                     data.latest_serial = serial;
-                    data.has_focus = true;
                     data.keyboard_focus = true;
                     state.latest_seat = Some(seat.clone());
                     state.activate_rich_seat(seat);
@@ -1653,7 +1729,6 @@ mod image_worker_impl {
                 }
                 Event::Leave { .. } => {
                     data.latest_serial = 0;
-                    data.has_focus = false;
                     data.keyboard_focus = false;
                     state.deactivate_rich_seat(seat);
                 }
@@ -1738,8 +1813,16 @@ fn publication_worker(
     commands: smithay_client_toolkit::reexports::calloop::channel::Channel<ClipboardCommand>,
     pasted: PastedImage,
     rich: Arc<RichClipboard>,
+    progress: Arc<PublicationProgress>,
 ) {
-    image_worker_impl::run(connection, commands, pasted, rich, CLIPBOARD_READ_BUDGET);
+    image_worker_impl::run(
+        connection,
+        commands,
+        pasted,
+        rich,
+        CLIPBOARD_READ_BUDGET,
+        progress,
+    );
 }
 
 impl ClipboardBackend for WaylandClipboard {
@@ -1772,7 +1855,7 @@ impl ClipboardBackend for WaylandClipboard {
                 if ok && let Ok(mut cache) = self.clipboard_cache.lock() {
                     *cache = Some(text.to_owned());
                 }
-                ok && recv_bounded(&result, CLIPBOARD_READ_BUDGET).unwrap_or(false)
+                ok && self.await_publication(&result)
             }
             ClipboardTarget::Primary => {
                 let Some(inner) = self.write_inner.as_ref() else {
@@ -1804,7 +1887,7 @@ impl ClipboardBackend for WaylandClipboard {
         let deadline = publication_deadline();
         let (reply, result) = std::sync::mpsc::channel();
         self.send_publication(ClipboardCommand::SetImage(png, reply, deadline))
-            && recv_bounded(&result, CLIPBOARD_READ_BUDGET).unwrap_or(false)
+            && self.await_publication(&result)
     }
 
     fn rich_text(&self) -> Option<crate::RichTextOffer> {
