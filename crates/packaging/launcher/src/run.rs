@@ -948,14 +948,16 @@ fn start_identity_broker(
     path: &Path,
     store: Option<&Path>,
 ) -> Result<(UnixStream, UnixStream, std::thread::JoinHandle<()>), RunError> {
-    // A launch only reads the identity store. A store record must already be
-    // in the form provisioning leaves it; one that is not fails the launch
-    // and names the step that secures it. An explicit debug record outside
-    // the store loads as written.
-    let identity = if store.is_some_and(|store| path.parent() == Some(store)) {
-        runtime_identity::load_for_launch(path)
+    // A launch only reads the identity store, and only a record's public
+    // fields: the broker answers metadata and refuses every signature, so it
+    // never needs the person's key and never asks the secret provider for it.
+    // A store record must still be in the form provisioning leaves it; one
+    // that is not fails the launch and names the step that secures it. An
+    // explicit debug record outside the store is read as written.
+    let metadata = if store.is_some_and(|store| path.parent() == Some(store)) {
+        runtime_identity::load_metadata_for_launch(path)
     } else {
-        runtime_identity::load_from_path(path.to_path_buf())
+        runtime_identity::load_metadata_from_path(path)
     }
     .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
     let (host, app) =
@@ -966,7 +968,7 @@ fn start_identity_broker(
     let thread = std::thread::Builder::new()
         .name("tilo-identity-broker".into())
         .spawn(move || {
-            if let Err(error) = runtime_identity::broker::serve(host, identity) {
+            if let Err(error) = runtime_identity::broker::serve_metadata(host, &metadata) {
                 tracing::debug!(%error, "identity broker connection ended");
             }
         })
@@ -4747,6 +4749,95 @@ mod identity_resolution_tests {
             assert!(error.to_string().contains("Settings > Users"), "{error}");
             assert_eq!(store_snapshot(&store), before);
             make_read_only(&store, false);
+        }
+    }
+
+    /// Ask the app end of a launch's broker for metadata and to sign, over
+    /// the broker's pinned frames: an operation or status byte, a big-endian
+    /// `u32` length, then the payload.
+    fn ask_broker(app: &mut UnixStream, op: u8, payload: &[u8]) -> (u8, Vec<u8>) {
+        use std::io::{Read, Write};
+
+        app.write_all(&[op]).unwrap();
+        app.write_all(&u32::try_from(payload.len()).unwrap().to_be_bytes())
+            .unwrap();
+        app.write_all(payload).unwrap();
+        let mut head = [0_u8; 5];
+        app.read_exact(&mut head).unwrap();
+        let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]);
+        let mut reply = vec![0_u8; usize::try_from(len).unwrap()];
+        app.read_exact(&mut reply).unwrap();
+        (head[0], reply)
+    }
+
+    #[test]
+    fn a_launch_never_reads_the_identity_secret() {
+        // Each secured record launches, and hands the app the same public
+        // fields its full load reports, after its secret is deleted from the
+        // provider: a launch that touched the provider would fail.
+        for (name, primary) in [("local", local_record()), ("threshold", threshold_record())] {
+            let root = tempfile::tempdir().unwrap();
+            let store = root.path().join("identity");
+            let path = runtime_identity::import_identity_with_provider(
+                &store,
+                "primary",
+                &primary,
+                &runtime_identity::BrokerFileProvider::new(&store),
+            )
+            .unwrap();
+            runtime_identity::set_active_identity(&store, "primary").unwrap();
+            let full = runtime_identity::load_from_path(path.clone()).unwrap();
+            let expected = serde_json::json!({
+                "display_name": full.display_name(),
+                "avatar_color": full.avatar_color(),
+                "group_public_key": full.group_public_key(),
+                "threshold": full.threshold(),
+                "total_shares": full.total_shares(),
+                "share_index": full.share_index(),
+                "single_device": full.is_single_device(),
+            });
+            drop(full);
+
+            let secrets: Vec<_> = std::fs::read_dir(store.join("secrets"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(secrets.len(), 1, "{name}: one secret file");
+            for secret in &secrets {
+                std::fs::remove_file(secret).unwrap();
+            }
+            assert!(
+                runtime_identity::load_from_path(path.clone()).is_err(),
+                "{name}: the secret is gone from its provider"
+            );
+
+            let opts = RunOptions {
+                identity: IdentitySource::Store(store.clone()),
+                ..RunOptions::default()
+            };
+            let resolved = resolve_identity_host_path(&opts).expect("an active record");
+            let (mut app, control, thread) =
+                start_identity_broker(&resolved, identity_store(&opts.identity).as_deref())
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+
+            let (status, metadata) = ask_broker(&mut app, 1, &[]);
+            assert_eq!(status, 0, "{name}");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&metadata).unwrap(),
+                expected,
+                "{name}: the app's metadata is the record's public fields"
+            );
+            let (status, refusal) = ask_broker(&mut app, 2, b"sign this");
+            assert_eq!(status, 1, "{name}: the broker never signs");
+            assert_eq!(
+                refusal,
+                b"the root signing key is never brokered to an application; \
+                  request signatures through the identity service",
+                "{name}"
+            );
+            drop(app);
+            drop(control);
+            thread.join().unwrap();
         }
     }
 
