@@ -124,6 +124,18 @@ fn absolute_folder(folder: &str) -> Result<String, Refusal> {
     }
 }
 
+/// Reject sync mounts even when this action bypasses the Files view. The
+/// receiving device must repeat this check when it executes the queued task.
+#[cfg(test)]
+fn independent_destination<'a>(
+    folder: &str,
+    mounts: impl Iterator<Item = &'a std::path::Path>,
+) -> Result<(), Refusal> {
+    crate::cloud_transfer::pin_destination(folder, mounts)
+        .map(|_| ())
+        .map_err(Refusal::new)
+}
+
 fn file_name(name: &str) -> Result<String, Refusal> {
     let name = name.trim();
     if name.is_empty() || name.contains('/') || name == "." || name == ".." {
@@ -347,6 +359,94 @@ impl FileExplorer {
         queue(cx, ops, device, op)
     }
 
+    /// Copy mounted representations into independent editable files.
+    #[action(undo = Self::revert_queued)]
+    pub fn import_mounted(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The device whose files change")] device: String,
+        #[param("The source files' absolute paths")] paths: Vec<String>,
+        #[param("Absolute path of the destination folder")] folder: String,
+    ) -> Result<(), Refusal> {
+        let op = FileOp::ImportMounted {
+            paths: entry_paths("", &paths)?,
+            folder: absolute_folder(&folder)?,
+        };
+        queue(cx, ops, device, op)
+    }
+
+    /// Import independent local copies from a cloud account; undo removes
+    /// only the local outputs recorded by the transfer.
+    #[action(undo = Self::revert_queued)]
+    pub fn cloud_import(
+        &mut self,
+        cx: &mut ActionCx,
+        ops: &mut Outbox<FileTask, Vec<Change>>,
+        #[param("The device receiving the local copies")] device: String,
+        #[param("A unique ID for this transfer attempt")] job_id: String,
+        #[param("The connected cloud account")] account: String,
+        #[param("Remote entries to import as independent local copies")] entries: Vec<
+            serde_json::Value,
+        >,
+        #[param("Absolute path of the destination folder")] folder: String,
+    ) -> Result<(), Refusal> {
+        // Destination paths and their pinned identity belong to the executing
+        // host. A caller naming another device cannot choose that host's folder.
+        if ui::bound_dispatch::executing_host_device().as_deref() != Some(device.as_str()) {
+            return Err(Refusal::new(
+                "Invoke Files on the receiving device and choose the destination there; cloud import cannot target another device from this host",
+            ));
+        }
+        if job_id.trim().is_empty() {
+            return Err(Refusal::new("a cloud transfer job ID is named"));
+        }
+        if account.trim().is_empty() {
+            return Err(Refusal::new("a cloud account is named"));
+        }
+        let entries: Vec<runtime_fs::cloud::ImportEntry> =
+            serde_json::from_value(serde_json::Value::Array(entries))
+                .map_err(|error| Refusal::new(format!("invalid remote entries: {error}")))?;
+        if entries.is_empty() || entries.len() > MAX_MOVE_ENTRIES {
+            return Err(Refusal::new(format!(
+                "name 1 to {MAX_MOVE_ENTRIES} entries"
+            )));
+        }
+        let folder = absolute_folder(&folder)?;
+        let mounts = accounts::config_root()
+            .map(|root| {
+                crate::remote_accounts::load_in(&root, crate::model::user_home().as_deref())
+            })
+            .unwrap_or_default();
+        let destination = crate::cloud_transfer::pin_destination(
+            &folder,
+            mounts.iter().filter_map(|account| account.mount.as_deref()),
+        )
+        .map_err(Refusal::new)?;
+        let mut ids = std::collections::HashSet::new();
+        for entry in &entries {
+            if entry.id.trim().is_empty() || !ids.insert(&entry.id) {
+                return Err(Refusal::new("remote entries have distinct, nonempty IDs"));
+            }
+            crate::cloud_transfer::valid_name(&entry.name).map_err(Refusal::new)?;
+            if entry.kind == runtime_fs::cloud::ImportKind::Unsupported {
+                return Err(Refusal::new("the remote entry cannot be imported"));
+            }
+        }
+        queue(
+            cx,
+            ops,
+            device,
+            FileOp::CloudImport {
+                job_id,
+                account,
+                entries,
+                folder,
+                destination,
+            },
+        )
+    }
+
     /// Record a paste the native clipboard host already carried out, so it
     /// is in history and undoable like any change: undo asks the host to
     /// take back exactly what it transferred.
@@ -462,11 +562,34 @@ impl FileExplorer {
                 to: folder,
                 create: Some(create),
             }),
+            FileOp::ImportMounted { paths, folder } => {
+                Self::IMPORT_MOUNTED.with(file_explorer::ImportMounted {
+                    device,
+                    paths,
+                    folder,
+                })
+            }
             FileOp::Copy { paths, folder } => Self::COPY_INTO.with(file_explorer::CopyInto {
                 device,
                 from: String::new(),
                 entries: paths,
                 to: folder,
+            }),
+            FileOp::CloudImport {
+                job_id,
+                account,
+                entries,
+                folder,
+                ..
+            } => Self::CLOUD_IMPORT.with(file_explorer::CloudImport {
+                device,
+                job_id,
+                account,
+                entries: entries
+                    .iter()
+                    .map(|entry| serde_json::json!(entry))
+                    .collect(),
+                folder,
             }),
             FileOp::Revert { op } => Self::REVERT.with(Id::from_raw(op)),
             FileOp::ClipboardReceipt { .. } => return None,
@@ -626,8 +749,8 @@ fn native_compensation(state: &FileExplorer, task: &FileTask) -> Option<(String,
 
 /// Carry out `task` on this device, given the record as it stands: a revert
 /// waits until the change it takes back is carried out.
-fn carry_out(state: &FileExplorer, task: &FileTask) -> EffectAnswer {
-    let reverting = match &task.op {
+fn reverting_changes(state: &FileExplorer, task: &FileTask) -> Result<Option<Vec<Change>>, String> {
+    Ok(match &task.op {
         FileOp::Revert { op } => {
             let op = Id::from_raw(op.clone());
             match state.ops.outcome(&op) {
@@ -639,11 +762,51 @@ fn carry_out(state: &FileExplorer, task: &FileTask) -> EffectAnswer {
             }
         }
         _ => None,
+    })
+}
+
+fn carry_out(task: &FileTask, reverting: Option<&[Change]>) -> Effected {
+    let outcome = if matches!(task.op, FileOp::CloudImport { .. }) {
+        crate::cloud_jobs::run(&task.op, reverting)
+    } else {
+        crate::file_ops::execute(&task.op, reverting)
     };
-    Ok(Effected::settled(&crate::file_ops::execute(
-        &task.op,
-        reverting.as_deref(),
-    )))
+    Effected::settled(&outcome)
+}
+
+/// The cloud runner blocks until its worker finishes. Keep both that wait
+/// and progress/cancellation forwarding off the UI thread.
+fn carry_out_cloud(task: &FileTask, progress: ui::framework::Progress) -> Effected {
+    let FileOp::CloudImport { job_id, .. } = &task.op else {
+        return carry_out(task, None);
+    };
+    crate::cloud_jobs::register(job_id);
+    if progress.is_cancelled() {
+        crate::cloud_jobs::cancel(job_id);
+    }
+    std::thread::scope(|scope| {
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        scope.spawn(move || {
+            let mut previous = None;
+            loop {
+                if progress.is_cancelled() {
+                    crate::cloud_jobs::cancel(job_id);
+                }
+                let snapshot = crate::cloud_jobs::snapshot(job_id);
+                if previous.as_ref() != Some(&snapshot) {
+                    progress.report(snapshot.phase.clone(), Some(snapshot.bytes), None);
+                    previous = Some(snapshot);
+                }
+                match finished.recv_timeout(std::time::Duration::from_millis(80)) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    _ => break,
+                }
+            }
+        });
+        let answer = carry_out(task, None);
+        drop(done);
+        answer
+    })
 }
 
 impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
@@ -678,7 +841,14 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                     let Some((operation, redo)) =
                         cx.live().with(|state| native_compensation(state, &task))
                     else {
-                        return cx.live().with(|state| carry_out(state, &task));
+                        let reverting = cx.live().with(|state| reverting_changes(state, &task))?;
+                        if matches!(task.op, FileOp::CloudImport { .. }) {
+                            return Ok(cx.thread(
+                                move |progress| carry_out_cloud(&task, progress),
+                                |(), answer, _| Ok(answer),
+                            ));
+                        }
+                        return Ok(carry_out(&task, reverting.as_deref()));
                     };
                     // The host acts for the invocation that asked for it.
                     let invocation = cx
@@ -892,6 +1062,7 @@ mod tests {
             "trash",
             "move",
             "copy-into",
+            "cloud-import",
             "revert",
         ] {
             assert!(ids.contains(&expected), "missing `{expected}`: {ids:?}");
@@ -1473,6 +1644,233 @@ mod tests {
             }])),
             "what it did reaches every replica"
         );
+    }
+
+    fn import_entry() -> runtime_fs::cloud::ImportEntry {
+        runtime_fs::cloud::ImportEntry {
+            id: "remote-document".into(),
+            name: "document.txt".into(),
+            kind: runtime_fs::cloud::ImportKind::File,
+            revision: Some("revision-1".into()),
+            size: Some(12),
+            content_writable: true,
+        }
+    }
+
+    #[test]
+    fn cloud_import_queues_on_its_device_and_undo_reverts_its_record() {
+        let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let socket = runtime_fs::cloud::default_files_socket().unwrap();
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            use runtime_fs::cloud::{
+                CLOUD_FRAMING, CloudRequest, CloudResponse, ImportReadState, ImportReply,
+                ImportRequest,
+            };
+            let (mut stream, _) = listener.accept().unwrap();
+            while let Some(CloudRequest::Import { request, .. }) = CLOUD_FRAMING
+                .read_value::<_, CloudRequest>(&mut stream)
+                .unwrap()
+            {
+                let reply = match request {
+                    ImportRequest::StartRead { .. } => ImportReply::Preparing {
+                        session: "session".into(),
+                    },
+                    ImportRequest::ReadStatus { .. } => {
+                        ImportReply::ReadState(ImportReadState::Ready { size: 6 })
+                    }
+                    ImportRequest::ReadChunk { .. } => ImportReply::Chunk {
+                        bytes: b"import".to_vec(),
+                        eof: true,
+                    },
+                    ImportRequest::CloseRead { .. } => ImportReply::Closed,
+                    ImportRequest::Browse { .. } => panic!("unexpected request"),
+                };
+                CLOUD_FRAMING
+                    .write_value(&mut stream, &CloudResponse::Import(reply))
+                    .unwrap();
+            }
+        });
+        let folder = root.path().display().to_string();
+        let op = FileOp::CloudImport {
+            job_id: "import-attempt".into(),
+            account: "connected-account".into(),
+            entries: vec![import_entry()],
+            destination: crate::cloud_transfer::pin_destination(&folder, std::iter::empty())
+                .unwrap(),
+            folder,
+        };
+        app.invoke(FileExplorer::queueing("laptop", op.clone()).unwrap())
+            .unwrap();
+        app.settle();
+        server.join().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.state().ops.pending().next().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "import did not settle"
+            );
+            app.settle();
+            std::thread::yield_now();
+        }
+        let state = app.state();
+        let (id, entry) = state.ops.entries().next().unwrap();
+        assert_eq!(entry.value.device, "laptop");
+        assert_eq!(entry.value.op, op);
+        let outcome = entry.settled.as_ref().unwrap();
+        assert!(outcome.is_done(), "{outcome:?}");
+        assert!(matches!(
+            outcome.result().as_slice(),
+            [Change::CloudImported { .. }]
+        ));
+        assert_eq!(
+            std::fs::read(root.path().join(import_entry().name)).unwrap(),
+            b"import"
+        );
+        let id = id.as_str().to_owned();
+        assert!(app.undo());
+        app.settle();
+        assert!(app.state().ops.entries().any(|(_, entry)| {
+            entry.value.device == "laptop"
+                && entry.value.op == FileOp::Revert { op: id.clone() }
+                && entry.settled.as_ref().is_some_and(Settled::is_done)
+        }));
+        assert!(!root.path().join(import_entry().name).exists());
+        std::fs::remove_file(socket).unwrap();
+    }
+
+    #[test]
+    fn cloud_import_refuses_another_device_before_pinning_the_destination() {
+        let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        // This path does not exist on the sender: a destination lookup would
+        // fail differently, proving the host-device check precedes pinning.
+        let folder = root.path().join("receiving-device-folder");
+        let error = app
+            .invoke(FileExplorer::CLOUD_IMPORT.with(file_explorer::CloudImport {
+                job_id: "remote-import-attempt".into(),
+                device: "phone".into(),
+                account: "connected-account".into(),
+                entries: vec![serde_json::json!(import_entry())],
+                folder: folder.display().to_string(),
+            }))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Invoke Files on the receiving device and choose the destination there")
+        );
+        app.settle();
+        assert_eq!(app.state().ops.entries().count(), 0);
+        assert!(!folder.exists());
+    }
+
+    #[test]
+    fn cloud_import_destination_rejects_sync_mounts_and_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        let mount = root.path().join("synced");
+        std::fs::create_dir(&mount).unwrap();
+        let child = mount.join("child");
+        std::fs::create_dir(&child).unwrap();
+        for destination in [&mount, &child] {
+            assert!(
+                independent_destination(
+                    destination.to_str().unwrap(),
+                    std::iter::once(mount.as_path()),
+                )
+                .is_err()
+            );
+        }
+        #[cfg(unix)]
+        {
+            let alias = root.path().join("alias");
+            std::os::unix::fs::symlink(&child, &alias).unwrap();
+            assert!(
+                independent_destination(alias.to_str().unwrap(), std::iter::once(mount.as_path()),)
+                    .is_err()
+            );
+        }
+        assert!(
+            independent_destination(
+                root.path().to_str().unwrap(),
+                std::iter::once(mount.as_path()),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn cloud_import_refuses_invalid_requests_before_queueing() {
+        let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let valid = file_explorer::CloudImport {
+            job_id: "import-attempt".into(),
+            device: "laptop".into(),
+            account: "connected-account".into(),
+            entries: vec![serde_json::json!(import_entry())],
+            folder: root.path().display().to_string(),
+        };
+        let mut invalid = vec![
+            file_explorer::CloudImport {
+                job_id: String::new(),
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                entries: vec![serde_json::json!({"not": "entries"})],
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                device: String::new(),
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                account: String::new(),
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                entries: vec![],
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                folder: "relative".into(),
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                entries: vec![serde_json::json!(import_entry()); MAX_MOVE_ENTRIES + 1],
+                ..valid.clone()
+            },
+            file_explorer::CloudImport {
+                entries: vec![
+                    serde_json::json!(import_entry()),
+                    serde_json::json!(import_entry()),
+                ],
+                ..valid.clone()
+            },
+        ];
+        for (id, name, kind) in [
+            ("", "file.txt", runtime_fs::cloud::ImportKind::File),
+            ("remote", "../escape", runtime_fs::cloud::ImportKind::File),
+            ("remote", "..", runtime_fs::cloud::ImportKind::File),
+            ("remote", "bad\0name", runtime_fs::cloud::ImportKind::File),
+            ("remote", "file", runtime_fs::cloud::ImportKind::Unsupported),
+        ] {
+            let mut request = valid.clone();
+            let mut entry = import_entry();
+            entry.id = id.into();
+            entry.name = name.into();
+            entry.kind = kind;
+            request.entries = vec![serde_json::json!(entry)];
+            invalid.push(request);
+        }
+        for request in invalid {
+            assert!(
+                app.invoke(FileExplorer::CLOUD_IMPORT.with(request))
+                    .is_err()
+            );
+            assert_eq!(app.state().ops.entries().count(), 0);
+        }
     }
 
     /// What the person did to Files reads as the app's sentences.

@@ -1083,6 +1083,10 @@ bluetooth-prompt-a11y-code = Code { $code }
 # Portal-Voreinstellungen: Dateiauswahl-Schaltflächen, Standardaktion von Benachrichtigungen, unbenannte Apps, Aufnahmequellen
 portal-file-save = Speichern
 portal-file-choose-folder = Ordner auswählen
+portal-file-grant-write-folder = Dieser App Lesen und Schreiben im ausgewählten Ordner und seinem Inhalt erlauben
+portal-file-existing-write-folder = Bereits für diese App beschreibbaren Ordner auswählen
+portal-file-allow-write-folder = Lesen und Schreiben erlauben
+portal-file-use-write-folder = Beschreibbaren Ordner verwenden
 portal-file-open = Öffnen
 portal-notification-open = Öffnen
 portal-inhibit-unnamed-app = Eine App

@@ -1080,6 +1080,10 @@ bluetooth-prompt-a11y-code = Code { $code }
 # Portal defaults: file picker buttons, notification default action, unnamed apps, capture sources
 portal-file-save = Save
 portal-file-choose-folder = Choose folder
+portal-file-grant-write-folder = Allow this app to read and write the selected folder and its contents
+portal-file-existing-write-folder = Choose a writable folder already accessible to this app
+portal-file-allow-write-folder = Allow read and write
+portal-file-use-write-folder = Use writable folder
 portal-file-open = Open
 portal-notification-open = Open
 portal-inhibit-unnamed-app = An app

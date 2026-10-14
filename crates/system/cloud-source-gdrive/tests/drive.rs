@@ -137,7 +137,83 @@ fn native_documents_export_and_refuse_media() {
     let download = source.export(&item.id, xlsx).unwrap();
     assert_eq!(download.total, Some(download.range.end));
     download.body.take(1 << 20).read_to_end(&mut body).unwrap();
-    assert!(String::from_utf8(body).unwrap().contains(&xlsx.mime));
+    assert_eq!(body, {
+        mod fixture {
+            include!("fixtures/xlsx.rs");
+        }
+        fixture::BYTES
+    });
+    assert_eq!(cloud_source::tree::base_name(&item), "Budget.xlsx");
+}
+
+#[test]
+fn office_materialization_is_deterministic_bounded_and_revision_checked() {
+    use cloud_source::materialize::materialize;
+
+    let (server, source) = setup();
+    for (kind, extension, fixture) in [
+        ("document", "docx", {
+            mod fixture {
+                include!("fixtures/docx.rs");
+            }
+            fixture::BYTES
+        }),
+        ("spreadsheet", "xlsx", {
+            mod fixture {
+                include!("fixtures/xlsx.rs");
+            }
+            fixture::BYTES
+        }),
+        ("presentation", "pptx", {
+            mod fixture {
+                include!("fixtures/pptx.rs");
+            }
+            fixture::BYTES
+        }),
+    ] {
+        let id = ItemId::new(server.put_native(
+            "root",
+            "Empty",
+            &format!("application/vnd.google-apps.{kind}"),
+        ));
+        let item = source.stat(&id).unwrap();
+        assert_eq!(
+            cloud_source::tree::base_name(&item),
+            format!("Empty.{extension}")
+        );
+        let limit = u64::try_from(fixture.len()).unwrap();
+        let bytes = materialize(&source, &id, item.revision.as_ref(), limit).unwrap();
+        assert_eq!(bytes, fixture);
+        assert!(bytes.starts_with(b"PK\x03\x04"));
+        assert!(bytes.windows(19).any(|part| part == b"[Content_Types].xml"));
+        assert_eq!(materialize(&source, &id, None, limit).unwrap(), bytes);
+        assert!(matches!(
+            materialize(&source, &id, None, limit - 1),
+            Err(Error::TooLarge)
+        ));
+        assert!(matches!(
+            materialize(
+                &source,
+                &id,
+                Some(&cloud_source::Revision::new("stale")),
+                limit
+            ),
+            Err(Error::Conflict { .. })
+        ));
+    }
+    let id = ItemId::new(server.put_native("root", "Form", "application/vnd.google-apps.form"));
+    let item = source.stat(&id).unwrap();
+    assert_eq!(cloud_source::tree::base_name(&item), "Form");
+    assert!(matches!(
+        materialize(&source, &id, None, 4096),
+        Err(Error::Unsupported(_))
+    ));
+    let id = ItemId::new(server.put_file("root", "plain.txt", b"ordinary"));
+    assert_eq!(materialize(&source, &id, None, 8).unwrap(), b"ordinary");
+    assert!(matches!(
+        materialize(&source, &id, None, 7),
+        Err(Error::TooLarge)
+    ));
 }
 
 #[test]

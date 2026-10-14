@@ -55,6 +55,9 @@ pub struct Handshake {
 pub enum PickMode {
     Open,
     Directory,
+    /// A destination directory; older services reject this unknown mode rather
+    /// than silently answering a read-only request.
+    WritableDirectory,
     Save,
 }
 
@@ -369,9 +372,45 @@ fn channel<T: Send + 'static>() -> (impl FnOnce(T) + Send, std::sync::mpsc::Rece
     (deliver, rx)
 }
 
+#[cfg(test)]
+mod directory_contract_tests {
+    use super::*;
+
+    #[test]
+    fn writable_directory_survives_wire_encoding_without_upgrading_read_picks() {
+        for (request, expected) in [
+            (
+                PickRequest::directory("Read folder", "Choose"),
+                PickMode::Directory,
+            ),
+            (
+                PickRequest::writable_directory("Import into folder", "Import here"),
+                PickMode::WritableDirectory,
+            ),
+        ] {
+            let frame = serde_json::to_vec(&pick_request(&request)(7)).unwrap();
+            let Request::Pick {
+                mode,
+                multiple,
+                suggested_name,
+                ..
+            } = serde_json::from_slice::<Request>(&frame).unwrap()
+            else {
+                panic!("not a pick")
+            };
+            assert_eq!(mode, expected);
+            assert!(!multiple);
+            assert_eq!(suggested_name, None);
+        }
+    }
+}
+
 fn pick_request(request: &PickRequest) -> impl FnOnce(u64) -> Request + use<> {
     let (mode, multiple, suggested_name) = match &request.kind {
         PickKind::Open { multiple } => (PickMode::Open, *multiple, None),
+        PickKind::Directory if request.is_writable_directory() => {
+            (PickMode::WritableDirectory, false, None)
+        }
         PickKind::Directory => (PickMode::Directory, false, None),
         PickKind::Save { suggested_name } => (PickMode::Save, false, Some(suggested_name.clone())),
     };

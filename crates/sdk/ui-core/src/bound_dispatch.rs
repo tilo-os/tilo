@@ -3125,6 +3125,8 @@ pub struct CallbackBinding {
         Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
     pub(crate) instance_id: crate::application::InstanceId,
     pub(crate) app_id: String,
+    /// Executing device supplied by the component's HostContext, never its caller.
+    pub(crate) device_id: String,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
     pub(crate) permissions: Rc<RefCell<PermissionContext>>,
@@ -4072,6 +4074,30 @@ type ActiveRecord = (
 thread_local! {
     static ACTIVE: RefCell<Option<ActiveRecord>> = const { RefCell::new(None) };
 }
+thread_local! {
+    static EXECUTING_HOST_DEVICE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+struct ExecutingHostDevice(Option<String>);
+impl ExecutingHostDevice {
+    fn enter(device: &str) -> Self {
+        Self(EXECUTING_HOST_DEVICE.replace(Some(device.to_owned())))
+    }
+}
+impl Drop for ExecutingHostDevice {
+    fn drop(&mut self) {
+        EXECUTING_HOST_DEVICE.replace(self.0.take());
+    }
+}
+
+/// The executing component's host device during a checked record callback.
+/// This is local host identity, not replicated action context or a caller's
+/// requested target device. Outside a component callback it is unavailable.
+#[must_use]
+pub fn executing_host_device() -> Option<String> {
+    EXECUTING_HOST_DEVICE.with_borrow(Clone::clone)
+}
+
 struct ActiveEntry;
 impl Drop for ActiveEntry {
     fn drop(&mut self) {
@@ -4526,6 +4552,7 @@ impl CallbackBinding {
     ) -> Result<R, BoundDispatchError> {
         let active = self.check_record()?;
         let _scope = self.enter()?;
+        let _device = ExecutingHostDevice::enter(&self.device_id);
         if let Some(document) = active {
             if !std::ptr::eq(document, outer) {
                 // Reentry must carry the currently borrowed document, never reconstruct

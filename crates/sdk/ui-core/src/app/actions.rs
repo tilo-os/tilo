@@ -2782,7 +2782,7 @@ impl App {
             if !self.collaboration.manager.is_connected() {
                 return Err(tilo_actions::DoorError::Unavailable {
                     code: "authoritative_host_unavailable".into(),
-                    reason: "Opening staged media requires the workspace action broker".into(),
+                    reason: "Opening an application requires the workspace action broker".into(),
                 });
             }
             let Some(room) = self
@@ -2793,7 +2793,7 @@ impl App {
             else {
                 return Err(tilo_actions::DoorError::Unavailable {
                     code: "authoritative_host_unavailable".into(),
-                    reason: "Opening staged media requires an admitted workspace route".into(),
+                    reason: "Opening an application requires an admitted workspace route".into(),
                 });
             };
             let request_id = self.take_broker_request_id()?;
@@ -2806,7 +2806,7 @@ impl App {
             let request = tilo_actions::remote::InvokeRequest {
                 on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
-                target: tilo_actions::remote::application_open_target(&room, &launch.app_id),
+                target: launch.target(&room),
                 argument: launch.argument(),
                 context: None,
                 confirmation: None,

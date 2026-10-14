@@ -902,6 +902,7 @@ impl HostContext {
             control_domain: self.control_domain.downgrade(),
             instance_id: self.instance_id,
             app_id: self.app_id.clone(),
+            device_id: self.device_id.clone(),
             records: self.records.clone(),
             checkout: self.record.clone(),
             permissions: self.permissions.clone(),

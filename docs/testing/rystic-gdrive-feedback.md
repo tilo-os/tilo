@@ -92,15 +92,27 @@ curl -i -H 'Authorization: Bearer tilo-rystic-gdrive' \
 - **Shared drives absent:** the twin's declared surface excludes `drives.*` and
   shared-drive state. Shared-drive behavior remains covered by fake tests.
 - **Exports are placeholders:** Rystic documents that these are generated from
-  name/description rather than rendered content. This test does not assert
-  Office/PDF validity or count an export placeholder as successful importing.
+  name/description rather than rendered content. A separately enabled strict
+  DOCX contract now reproduces this limit: the production adapter creates a
+  Google Docs entry, selects its advertised Word export and downloads it, but
+  the result is not a ZIP Office Open XML package. Its diagnostic is
+  `DOCX export is not a ZIP Office Open XML package (stand-in bytes)`.
+  The validator checks ZIP integrity, required XML parts, Office content types
+  and relationships, and the WordprocessingML body; it rejects text and forged
+  ZIP prefixes. This is a disclosed fidelity limit, not a request to change the
+  adapter. Genuine export bytes are needed to verify independent offline imports.
+  An empty but valid Office document would support this structural contract;
+  preserving populated content and rendering fidelity needs further coverage.
 - **No rate-limit modeling:** backoff correctness remains a fake-backed test.
 
-Strict vendor contracts assert successful sync and upload, not successful
-reproduction of errors. Run `python3 scripts/test-cloud-rystic.py gdrive
---contracts` to reproduce both failing contracts. The supported import test
-passes separately. These tests should become green when the missing endpoints
-are implemented, without weakening assertions or changing production behavior.
+Strict vendor contracts assert successful sync, upload and a genuine DOCX
+export, not successful reproduction of errors. Run
+`python3 scripts/test-cloud-rystic.py gdrive --contracts` to reproduce the three
+failing contracts on Drive 0.0.3. The supported adapter test passes separately.
+These tests should become green when the endpoints and genuine export packages
+are served, without weakening assertions or changing production behavior.
+The native-export re-run used the versions listed above and cleaned up its
+uniquely owned twin afterward.
 
 ## Credential-free verification
 

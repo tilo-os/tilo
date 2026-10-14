@@ -79,6 +79,7 @@ pub(super) fn mount(
         search_requests: Rc::default(),
         instance_id: instance,
         app_id: APP.into(),
+        device_id: "test-device".into(),
         records: records.clone(),
         checkout: checkout.clone(),
         permissions: Rc::new(RefCell::new(PermissionContext::permissive())),
