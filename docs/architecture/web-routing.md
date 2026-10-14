@@ -556,7 +556,10 @@ written from the environment when the container starts:
 `TILO_WEB_HOME_HOST` (the workspace host's name), `TILO_WEB_HOME_NAME`
 (required with a host) and `TILO_WEB_HOME_APP` (optional) make that host's
 workspace the home; without them a bare visit opens the person's own
-desktop. The bundle lives under `v/<content hash>/` and is cached as
+desktop. `TILO_WEB_ABOUT_NOTIFY`, `TILO_WEB_ABOUT_SOURCE` and
+`TILO_WEB_ABOUT_COMMUNITY` (https URLs) become `about`, the links the
+About sheet behind the top bar's Tilo mark offers; an unset one is not
+offered. The bundle lives under `v/<content hash>/` and is cached as
 immutable; only the entry pages and `entry.json` revalidate.
 
 `?embed=1` on an entry page is the page inside another site (the

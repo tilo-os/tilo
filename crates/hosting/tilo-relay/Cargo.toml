@@ -25,7 +25,7 @@ test-support = []
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
 agents = ["web", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:notes", "dep:canvas", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
-web = ["dep:tilo-moq", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
+web = ["dep:tilo-moq", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 
 [[bin]]
 name = "tilo-relay"
@@ -162,6 +162,10 @@ http-body-util = { version = "0.1", optional = true }
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
+# Who-is-here lines may be summarised by a model provider the operator
+# configures, in the dialects shared with the model gateway.
+tilo-net = { path = "../../platform/tilo-net", features = ["http"], optional = true }
+agent-provider-config = { path = "../../agent/provider-config", optional = true }
 tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
 # A persistent public room keeps its owner and spectator roots in the host's
 # secret store.

@@ -8,6 +8,7 @@ source authority, import, activation and the slot lifecycle.
 import argparse
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import platform
@@ -69,7 +70,8 @@ def private_ancestors(path, outputs):
     return argv
 
 
-def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None, compiler=None):
+def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None, compiler=None,
+                      source_inventory=None):
     """Final-path binds preserve registry paths, with only owned outputs writable."""
     tree = stage / 'tree'
     runtime = tree / 'usr/lib/tilo-runtime'
@@ -111,6 +113,8 @@ def namespace_command(repo, stage, tools, profile, *, packaging=False, app=None,
              '--chdir', str(repo), 'python3', str(Path(__file__).resolve()),
              '--inside', '--repo', str(repo), '--target-dir', str(tools),
              '--profile', profile, '--stage', str(stage)]
+    if source_inventory is not None:
+        argv += ['--source-inventory', source_inventory]
     if app is not None:
         argv += ['--app', app]
     if compiler is not None:
@@ -184,6 +188,19 @@ def publish_runtime_fonts(repo, fonts, catalogs):
     return catalog
 
 
+def source_membership(repo, destination, digest):
+    """Seal the exact source membership inside the signed toolkit payload."""
+    if not re.fullmatch(r'[0-9a-f]{64}', digest):
+        raise ValueError('invalid source inventory digest')
+    ids = [tomllib.loads(path.read_text())['package']['id']
+           for path in sorted((repo / 'apps').glob('*/tilo-app.toml'))]
+    if not ids or len(ids) > 512 or len(set(ids)) != len(ids):
+        raise ValueError('source system application membership is empty, oversized or duplicated')
+    destination.write_text(json.dumps({'schema': 1, 'source_inventory': digest,
+                                      'apps': sorted(ids)}, sort_keys=True) + '\n')
+    return destination
+
+
 def assemble_inside(args):
     repo, target, stage = args.repo, args.target_dir, args.stage
     rows = applications(repo)
@@ -201,6 +218,9 @@ def assemble_inside(args):
     fonts = prepare_runtime_fonts(repo, stage / 'work')
     publish_runtime_fonts(repo, fonts, stage / 'tree/usr/share/tilo/font-catalogs')
     includes = list(dict.fromkeys([toolkit, *engines, std[0], *closure, fonts]))
+    if args.source_inventory is not None:
+        includes.append(source_membership(repo, stage / 'work/system-app-cohort.json',
+                                          args.source_inventory))
     bundle = target / 'release/tilo-runtime-bundle'
     identity = stage / 'work/runtime-identity.json'
     version_file = stage / 'work/runtime-version'
@@ -372,7 +392,7 @@ def assemble(args):
                                  if args.compiler_interface_out is not None else None)
         prepare(args)
         run(namespace_command(repo, stage, target, args.profile, app=args.app,
-                              compiler=args.compiler_capture))
+                              compiler=args.compiler_capture, source_inventory=args.source_inventory))
         if args.app is None:
             stage_engine_runtimes(repo, stage, target / 'release/tilo-runtime-bundle')
         run(namespace_command(repo, stage, target, args.profile, packaging=True, app=args.app))
@@ -398,6 +418,7 @@ def main():
     parser.add_argument('--target-dir', type=Path, required=True)
     parser.add_argument('--profile', required=True)
     parser.add_argument('--features')
+    parser.add_argument('--source-inventory', help='verified complete source inventory digest')
     parser.add_argument('--app')
     parser.add_argument('--tapp-out', type=Path)
     parser.add_argument('--dest', type=Path)
