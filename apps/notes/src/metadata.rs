@@ -130,7 +130,7 @@ fn when(seconds: i64, now: chrono::DateTime<chrono::Local>) -> String {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct NoteDateIndex {
     heads: Vec<ChangeHash>,
     objects: HashMap<SchemaObjectId, PageId>,

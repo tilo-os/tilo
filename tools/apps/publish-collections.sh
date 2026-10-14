@@ -292,7 +292,14 @@ check_media() {
   version=${version##*/}
   if [[ $version =~ ^[0-9a-f]{64}$ ]]; then
     archived_file=$(mktemp "$RUNNER_TEMP/tilo-registry-archive.XXXXXX")
+    # The proxy fetches an archived screenshot from its origin on first
+    # read and can answer that read with a gateway timeout (HTTP 524) while
+    # the same URL serves on the next request. That single answer used to
+    # fail publication after the media uploads had already landed. Retry
+    # transient answers (timeouts, 5xx such as 502-504 and 524), as the HEAD
+    # check above does. A wrong digest or a persistent error still fails.
     if ! curl --fail --silent --show-error --max-filesize 33554432 \
+      --connect-timeout 10 --max-time 180 --retry 4 --retry-delay 2 \
       "$media_url" --output "$archived_file"; then
       rm -f -- "$archived_file"
       return 1

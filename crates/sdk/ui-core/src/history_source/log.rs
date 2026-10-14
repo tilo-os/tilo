@@ -41,7 +41,7 @@ pub struct HistoryLog {
     heads: Vec<ChangeHash>,
     /// The document as of `changes`, its diff cursor at their end.
     replica: AutoCommit,
-    /// `replica`'s qdoc snapshot, the "before" of the next structural
+    /// `replica`'s tilo-doc snapshot, the "before" of the next structural
     /// reading.
     snapshot: Option<DocSnapshot>,
     /// The replica could not apply a change; readings after it fell back to
@@ -49,6 +49,12 @@ pub struct HistoryLog {
     failed: bool,
     /// How many changes this log has read, rebuilds included.
     reads: usize,
+    /// The positions in `changes` of those that take a place in the window:
+    /// every one the source does not pass over.
+    counted: Vec<usize>,
+    /// Moves whenever the rows may have: on every change read that the
+    /// source does not pass over, and on every read from scratch.
+    rows_revision: u64,
 }
 
 /// Everything besides the log itself that a reading depends on.
@@ -56,8 +62,10 @@ pub struct HistoryLog {
 struct Basis {
     max_entries: usize,
     field_paths: bool,
-    /// Whether the document carries the qdoc schema.
+    /// Whether the document carries the tilo-doc schema.
     structural: bool,
+    /// Whether the source passes over some changes.
+    passes_over: bool,
     /// Readings carry translated words: the active locale, and the
     /// catalogue revision, which moves whenever a catalogue is added.
     locale: String,
@@ -112,6 +120,15 @@ impl Meta {
 }
 
 impl HistoryLog {
+    /// Moves whenever the rows may have moved: a change read that the source
+    /// does not pass over, or a read from scratch. While it holds, the
+    /// changes added since were all passed over and the rows are as they
+    /// were.
+    #[must_use]
+    pub const fn rows_revision(&self) -> u64 {
+        self.rows_revision
+    }
+
     /// How many changes this log has read so far, from scratch or appended:
     /// what a reader that should read each change once can be held to.
     #[must_use]
@@ -144,6 +161,7 @@ impl HistoryLog {
             // What `tilo_doc::snapshot::of` checks before it materialises
             // the whole document.
             structural: tilo_doc::model::open(doc, &automerge::ROOT).is_ok(),
+            passes_over: source.pass_over.is_some(),
             locale: crate::i18n::I18nManager::current_locale(),
             catalogue: crate::i18n::I18nManager::revision(),
         };
@@ -178,15 +196,29 @@ impl HistoryLog {
         *self = Self {
             basis: Some(basis),
             reads: self.reads,
+            rows_revision: self.rows_revision.wrapping_add(1),
             ..Self::default()
         };
         let metas: Vec<Meta> = doc.get_changes_meta(&[]).iter().map(Meta::of).collect();
-        let start = metas.len().saturating_sub(max_entries);
-        let mut changes = doc.get_changes(&[]).into_iter();
+        let all = doc.get_changes(&[]);
+        let passed_over: Vec<bool> = all
+            .iter()
+            .map(|change| source.passes_over(change))
+            .collect();
+        // The window starts at its earliest change that takes a place: the
+        // `max_entries`th from the end, counting only those.
+        let start = passed_over
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, passed)| !**passed)
+            .nth(max_entries.saturating_sub(1))
+            .map_or(0, |(position, _)| position);
+        let mut changes = all.into_iter();
         let prefix: Vec<_> = changes.by_ref().take(start).collect();
         let mut metas = metas.into_iter();
-        for meta in metas.by_ref().take(start) {
-            self.push(meta, None);
+        for (meta, passed) in metas.by_ref().take(start).zip(&passed_over) {
+            self.push(meta, *passed);
         }
         self.failed = !prefix.is_empty() && self.replica.apply_incoming(prefix).is_err();
         // Every later change is then indexed as it applies, so each one's
@@ -242,6 +274,7 @@ impl HistoryLog {
         change: automerge::Change,
     ) {
         self.reads = self.reads.saturating_add(1);
+        let passed_over = source.passes_over(&change);
         let patches = if self.failed || self.replica.apply_incoming([change]).is_err() {
             self.failed = true;
             None
@@ -249,9 +282,17 @@ impl HistoryLog {
             Some(self.replica.diff_incremental())
         };
         let current = self.replica_snapshot();
+        if passed_over {
+            // Applied, so the replica, its diff cursor and its snapshot stay
+            // at the log's end; nothing is read of it.
+            self.snapshot = current;
+            self.push(meta, true);
+            return;
+        }
+        self.rows_revision = self.rows_revision.wrapping_add(1);
         let before = self.heads.clone();
         let (hash, time_ms) = (meta.hash, meta.time_ms);
-        self.push(meta, None);
+        self.push(meta, false);
         let after = self.heads.clone();
         let (summary, entry_kind, text_delta) = match (&self.snapshot, &current, &patches) {
             (Some(prev), Some(cur), _) => structural_summary(prev, cur),
@@ -282,11 +323,14 @@ impl HistoryLog {
     /// Add `meta` to the log and move its frontier past it. The log is in
     /// causal order, so a change's dependencies are already in it: they stop
     /// being heads.
-    fn push(&mut self, meta: Meta, reading: Option<Reading>) {
+    fn push(&mut self, meta: Meta, passed_over: bool) {
         self.heads.retain(|head| !meta.deps.contains(head));
         self.heads.push(meta.hash);
         let id = entry_id_from_hash(&meta.hash.to_string());
         self.positions.entry(id).or_insert(self.changes.len());
+        if !passed_over {
+            self.counted.push(self.changes.len());
+        }
         self.changes.push(Logged {
             hash: meta.hash,
             id,
@@ -295,11 +339,11 @@ impl HistoryLog {
             actor: meta.actor,
             time_ms: meta.time_ms,
             message: meta.message,
-            reading,
+            reading: None,
         });
     }
 
-    /// The replica's qdoc snapshot, when the document carries that schema.
+    /// The replica's tilo-doc snapshot, when the document carries that schema.
     fn replica_snapshot(&self) -> Option<DocSnapshot> {
         (self.basis.as_ref().is_some_and(|basis| basis.structural) && !self.failed)
             .then(|| tilo_doc::snapshot::of(&self.replica))
@@ -308,7 +352,12 @@ impl HistoryLog {
 
     /// The rows of the window, as of the last [`Self::follow`].
     fn entries(&self, source: &HistorySource, doc: &AutoCommit) -> Vec<HistoryEntry> {
-        let start = self.changes.len().saturating_sub(source.max_entries);
+        let start = self
+            .counted
+            .len()
+            .checked_sub(source.max_entries)
+            .and_then(|first| self.counted.get(first).copied())
+            .unwrap_or(0);
         let genesis_actor = crate::record::genesis_actor(doc).map(|actor| actor.to_hex_string());
         let schema_genesis = tilo_doc::model::schema_genesis_actor_hex();
         let mut out = Vec::with_capacity(self.changes.len().saturating_sub(start));
@@ -376,6 +425,12 @@ impl HistoryLog {
 impl HistorySource {
     /// [`Self::entries`], reading only the changes `log` has not read yet.
     /// The rows are the same as [`Self::entries`]' for the same document.
+    /// Bring `log` up to `doc`'s committed log without listing the rows:
+    /// [`HistoryLog::rows_revision`] then says whether they moved.
+    pub fn follow(&self, doc: &mut AutoCommit, log: &mut HistoryLog) {
+        super::with_committed_history(doc, |doc| log.follow(self, doc));
+    }
+
     pub fn entries_since(&self, doc: &mut AutoCommit, log: &mut HistoryLog) -> Vec<HistoryEntry> {
         super::with_committed_history(doc, |doc| {
             log.follow(self, doc);

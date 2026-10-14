@@ -7543,6 +7543,7 @@ mod tests {
         // A frame in the clear never leaves.
         let cleartext = tilo_relay_protocol::live::LiveFrame::Presence(
             tilo_relay_protocol::live::PresenceFrame {
+                place: None,
                 seq: 1,
                 sent_at_ms: 1,
                 focus: None,

@@ -278,6 +278,9 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     for channel in &persistent.chat_channels {
         command.arg("--chat-channel").arg(channel);
     }
+    for strip in &persistent.strips {
+        command.arg("--strip").arg(strip);
+    }
     for owner in &persistent.owners {
         command.arg("--owner").arg(owner);
     }
@@ -1251,36 +1254,48 @@ mod tests {
 
     #[test]
     fn the_relay_opens_chat_with_the_channels_the_operator_names() {
-        let channel_args = |vars: &[(&str, &str)]| {
-            let config = Config::from_lookup(|name| {
-                vars.iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            })
-            .unwrap();
-            let command = child_command(&config, Path::new("/state")).unwrap();
-            let args: Vec<String> = command
-                .as_std()
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect();
-            args.windows(2)
-                .filter(|pair| pair[0] == "--chat-channel")
-                .map(|pair| pair[1].clone())
-                .collect::<Vec<_>>()
-        };
+        assert!(relay_args("--chat-channel", &[]).is_empty());
+        assert_eq!(
+            relay_args(
+                "--chat-channel",
+                &[("TILO_ROOMS_CHAT_CHANNELS", "general,show-and-tell")]
+            ),
+            ["general", "show-and-tell"]
+        );
+    }
+
+    #[test]
+    fn the_relay_gives_the_desktop_the_strips_the_operator_names() {
+        assert!(relay_args("--strip", &[]).is_empty());
+        assert_eq!(
+            relay_args("--strip", &[("TILO_ROOMS_STRIPS", "Main,Games night")]),
+            ["Main", "Games night"]
+        );
+    }
+
+    /// The values the relay is started with for `flag`, under the
+    /// persistent room's base configuration and `vars`.
+    fn relay_args(flag: &str, vars: &[(&str, &str)]) -> Vec<String> {
         let base = [
             ("TILO_ROOMS_PERSISTENT", "plaza"),
             ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example"),
         ];
-        assert!(channel_args(&base).is_empty());
-        assert_eq!(
-            channel_args(&[
-                base[0],
-                base[1],
-                ("TILO_ROOMS_CHAT_CHANNELS", "general,show-and-tell"),
-            ]),
-            ["general", "show-and-tell"]
-        );
+        let config = Config::from_lookup(|name| {
+            base.iter()
+                .chain(vars)
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        })
+        .unwrap();
+        let command = child_command(&config, Path::new("/state")).unwrap();
+        let args: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        args.windows(2)
+            .filter(|pair| pair[0] == flag)
+            .map(|pair| pair[1].clone())
+            .collect()
     }
 }

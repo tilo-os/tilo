@@ -160,7 +160,9 @@ containerfile="$repo/os/Containerfile"
 # which compiles it in; the installed path is unchanged.
 # The atomic firstboot file helper is one intentional payload addition in
 # the existing libexec COPY instruction; the layer budget is unchanged.
-expected_contract=e2c242e8adc8513350560d056eddaa04fa659277d18a9af17fad316a79fa3131
+# The boot audit's image signature policy checker is one intentional payload
+# addition beside the audit in the existing libexec COPY instruction.
+expected_contract=48ad12477d1c56560686136eef2479936536cf97259099c9aad18b486f6d5817
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -252,6 +254,7 @@ for path in \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
+  os/usr/libexec/tilo-image-policy-check \
   os/usr/libexec/tilo-extension \
   os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |

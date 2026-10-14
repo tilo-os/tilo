@@ -1061,7 +1061,7 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
                 crate::namespace::ROOT_INO,
                 "test.bin",
                 crate::namespace::ROOT_INO,
-                "test.qdoc",
+                "test.tilo-doc",
             )
             .unwrap();
         let before = fixture.durable_bytes();
@@ -1074,7 +1074,7 @@ async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() 
             .fs
             .rename_named(
                 crate::namespace::ROOT_INO,
-                "test.qdoc",
+                "test.tilo-doc",
                 crate::namespace::ROOT_INO,
                 "test.bin",
             )
@@ -2071,7 +2071,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
                 crate::namespace::ROOT_INO,
                 "test.bin",
                 crate::namespace::ROOT_INO,
-                "test.qdoc",
+                "test.tilo-doc",
             )
             .unwrap();
         assert!(
@@ -2260,10 +2260,10 @@ async fn history_read_current_winner_is_separate_from_exact_restore_receipt() {
     fixture.endpoint.close().await;
 }
 
-/// A `.qdoc` record with two document versions: v1 holds blocks "alpha" (in
+/// An existing `.qdoc` record with two document versions: v1 holds blocks "alpha" (in
 /// part bold) and "beta"; v2, written through the FUSE commit path, extends
 /// "beta".
-struct QdocVersions {
+struct TiloDocVersions {
     fixture: Fixture,
     v1: fs_protocol::FileVersionId,
     v1_bytes: Vec<u8>,
@@ -2271,7 +2271,7 @@ struct QdocVersions {
     alpha: String,
 }
 
-impl QdocVersions {
+impl TiloDocVersions {
     async fn new() -> Self {
         let fixture = Fixture::new().await;
         fixture
@@ -2340,15 +2340,15 @@ fn snapshot_of(bytes: &[u8]) -> tilo_doc::DocSnapshot {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn restores_qdoc_as_new_crdt_revision() {
-    let versions = QdocVersions::new().await;
+async fn restores_tilo_doc_as_new_crdt_revision() {
+    let versions = TiloDocVersions::new().await;
     let fixture = &versions.fixture;
     let record = fixture.fs.ns().record_id_for(fixture.ino).unwrap();
     let before = fixture.history.snapshot(record).unwrap();
     let Outcome::Applied { receipt } = versions.restore(Operation::Restore {
         version_id: versions.v1,
     }) else {
-        panic!("a qdoc restores");
+        panic!("a tilo-doc restores");
     };
 
     let restored = versions.current();
@@ -2404,7 +2404,7 @@ async fn restores_qdoc_as_new_crdt_revision() {
     let Outcome::Applied { receipt: undone } = versions.restore(Operation::Undo {
         restore_intent: receipt.intent_id,
     }) else {
-        panic!("the qdoc restore undoes");
+        panic!("the tilo-doc restore undoes");
     };
     let current = versions.current();
     assert_eq!(snapshot_of(&current), snapshot_of(&versions.v2_bytes));
@@ -2418,7 +2418,7 @@ async fn restores_qdoc_as_new_crdt_revision() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restore_preserves_concurrent_peer_edit() {
-    let versions = QdocVersions::new().await;
+    let versions = TiloDocVersions::new().await;
     // A peer holding v2 extends "alpha" while the restore happens here.
     let peer_bytes = {
         let mut peer = tilo_doc::Document::load(&versions.v2_bytes).unwrap();
@@ -2482,5 +2482,191 @@ async fn namespace_documents_still_have_no_checked_restore_route() {
         fixture.fs.checked_history_review(document),
         Err(Outcome::UnsupportedOwner { .. })
     ));
+    fixture.endpoint.close().await;
+}
+
+/// Write a checked restore request from another thread, as a FUSE worker
+/// would. A request that waited for its download would never answer while
+/// `gate` holds the job, so the wait is bounded; on timeout the gate opens
+/// so the worker can finish before the failure is reported.
+fn submit_unblocked(
+    fs: &QuickFS,
+    ino: u64,
+    request: &[u8],
+    gate: &tokio::sync::Semaphore,
+) -> Result<(), i32> {
+    tokio::task::block_in_place(|| {
+        std::thread::scope(|scope| {
+            let (answered, answer) = std::sync::mpsc::channel();
+            let _worker =
+                scope.spawn(move || answered.send(fs.checked_restore_xattr(ino, request)));
+            let result = answer.recv_timeout(tilo_test_env::hang_bound());
+            if result.is_err() {
+                gate.add_permits(1);
+            }
+            result.expect("the restore request waited for its download")
+        })
+    })
+}
+
+async fn job_settled(
+    fs: &QuickFS,
+    ino: u64,
+    intent: uuid::Uuid,
+) -> Option<fs_protocol::files::HistoryJobStateV1> {
+    let started = std::time::Instant::now();
+    loop {
+        let state = fs.history_job(ino, intent);
+        if !matches!(
+            state,
+            Some(fs_protocol::files::HistoryJobStateV1::Hydrating { .. })
+        ) {
+            return state;
+        }
+        assert!(
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "the history job never settled: {state:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// Move the original version's bytes off this device onto a peer it knows:
+/// its content id, the peer, the router serving it and the peer's store.
+async fn original_only_on_a_peer(
+    fixture: &Fixture,
+) -> (
+    Hash,
+    Endpoint,
+    iroh::protocol::Router,
+    crate::store::ContentStore,
+) {
+    let first = fixture
+        .history
+        .snapshot(fixture.fs.ns().record_id_for(fixture.ino).unwrap())
+        .unwrap()
+        .versions
+        .iter()
+        .find(|version| version.id == fixture.original)
+        .and_then(|version| version.content_hash)
+        .map(|hash| Hash::from(hash.0))
+        .unwrap();
+    let source = Endpoint::bind(presets::Minimal).await.unwrap();
+    let source_store = crate::store::ContentStore::memory();
+    assert_eq!(
+        source_store.write_content(b"first").await.unwrap(),
+        Some(first)
+    );
+    let router = iroh::protocol::Router::builder(source.clone())
+        .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
+        .spawn();
+    let hydrator = &fixture.fs.hydrator;
+    let manifest = hydrator.manifest_index(first).await.unwrap();
+    let mut evicted: std::collections::HashSet<Hash> = manifest
+        .chunks()
+        .iter()
+        .map(|chunk| Hash::from(chunk.hash))
+        .collect();
+    evicted.insert(first);
+    hydrator.store.evict_blobs(&evicted).await.unwrap();
+    assert_eq!(hydrator.local_len(first).await, None);
+    hydrator.add_peer(source.addr());
+    (first, source, router, source_store)
+}
+
+/// Restoring a version whose bytes only a peer holds never waits for them on
+/// the FUSE path. The request answers `EINPROGRESS` while a history job
+/// downloads them and other reads proceed; cancelling the job leaves the file
+/// and its history untouched; the same request commits once the job is ready.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restore_does_not_park_fuse_worker() {
+    use fs_protocol::files::HistoryJobStateV1 as JobState;
+    let fixture = Fixture::new().await;
+    let request = fixture.request();
+    let record = request.review.record_id;
+    let (first, source, router, _source_store) = original_only_on_a_peer(&fixture).await;
+    let hydrator = Arc::clone(&fixture.fs.hydrator);
+
+    let gate = fixture.fs.history_jobs.hold();
+    let bytes = serde_json::to_vec(&request).unwrap();
+    let history_before = fixture.history.snapshot(record).unwrap();
+    let namespace_before = fixture.fs.ns().save();
+
+    // Phase `the_request_answers_while_its_content_downloads`.
+    assert_eq!(
+        submit_unblocked(&fixture.fs, fixture.ino, &bytes, &gate),
+        Err(libc::EINPROGRESS)
+    );
+    assert_eq!(
+        fixture.fs.history_job(fixture.ino, request.intent_id),
+        Some(JobState::Hydrating { done: 0, total: 0 })
+    );
+    assert_eq!(
+        fixture
+            .fs
+            .checked_history_result(fixture.ino, request.intent_id),
+        Outcome::RecoveryPending {
+            intent_id: request.intent_id
+        }
+    );
+    assert_eq!(
+        fixture.fs.read_full_blocking(fixture.ino).unwrap(),
+        b"second"
+    );
+
+    // Phase `cancelling_the_download_writes_nothing`.
+    assert_eq!(
+        fixture
+            .fs
+            .cancel_history_job(fixture.ino, request.intent_id),
+        Ok(())
+    );
+    assert_eq!(
+        fixture.fs.history_job(fixture.ino, request.intent_id),
+        Some(JobState::Cancelled)
+    );
+    assert_eq!(
+        submit_unblocked(&fixture.fs, fixture.ino, &bytes, &gate),
+        Err(EIO)
+    );
+    assert_eq!(fixture.history.snapshot(record).unwrap(), history_before);
+    assert_eq!(fixture.fs.ns().save(), namespace_before);
+    assert_eq!(fixture.journal.lock().unwrap().retained_count(), 0);
+    assert_eq!(hydrator.local_len(first).await, None);
+
+    // Phase `the_same_request_commits_once_its_content_is_local`.
+    assert_eq!(
+        submit_unblocked(&fixture.fs, fixture.ino, &bytes, &gate),
+        Err(libc::EINPROGRESS)
+    );
+    gate.add_permits(1);
+    assert_eq!(
+        job_settled(&fixture.fs, fixture.ino, request.intent_id).await,
+        Some(JobState::Ready)
+    );
+    assert_eq!(
+        submit_unblocked(&fixture.fs, fixture.ino, &bytes, &gate),
+        Ok(())
+    );
+    let Outcome::Applied { receipt } = fixture
+        .fs
+        .checked_history_result(fixture.ino, request.intent_id)
+    else {
+        panic!("the committed restore has a receipt");
+    };
+    assert_eq!(receipt.selected_version, fixture.original);
+    assert_eq!(receipt.restored_revision.byte_len, 5);
+    assert_eq!(
+        fixture.fs.read_full_blocking(fixture.ino).unwrap(),
+        b"first"
+    );
+    assert_eq!(
+        fixture.history.snapshot(record).unwrap().versions.len(),
+        history_before.versions.len().saturating_add(1)
+    );
+    assert_eq!(fixture.fs.history_job(fixture.ino, request.intent_id), None);
+
+    router.shutdown().await.unwrap();
+    source.close().await;
     fixture.endpoint.close().await;
 }

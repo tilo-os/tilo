@@ -13,12 +13,12 @@ name = "tilo_action_policy"
 path = "src/lib.rs"
 
 # Pure data and pure functions: every door, every host, the relay and the
-# browser decide with this crate; web-time preserves the native clock API
-# while accepting the browser's wall clock.
+# browser decide with this crate; tilo-clock's types accept the browser's
+# wall clock as well as the native one.
 
 [dependencies]
 serde.workspace = true
-web-time = "1"
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [dev-dependencies]
 serde_json.workspace = true

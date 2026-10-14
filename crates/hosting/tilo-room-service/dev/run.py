@@ -53,7 +53,9 @@ What it starts (each piece is the production one; only TLS and origins differ):
                 entry.json has the shape container/entrypoint.sh writes, with
                 plain local origins:
                   {"home": {"name", "host": {"origin": <relay>},
-                            "admission": <api>/[, "app"]}}
+                            "admission": <api>/[, "app"]}[, "about"]}
+                with "about" from TILO_WEB_ABOUT_NOTIFY, _SOURCE and
+                _COMMUNITY, as the image writes it.
 
 Building:
   Without --relay-bin/--room-service-bin it builds both release binaries with
@@ -68,8 +70,13 @@ Building:
   Every run prints the paths it used, so the next run can reuse them.
 
 Rebuild only the bundle, then reload:
-  build.sh DIR --bundle desktop      (DIR must be new or empty)
-  Ctrl-C, then rerun with --bundle DIR and the binaries printed at start:
+  build.sh DIR --bundle desktop --profile quick --update [--no-split]
+  `--update` reuses DIR (new, empty, or an earlier quick desktop bundle)
+  and redoes only what changed: seconds for page scripts, about a minute
+  for Rust. `--no-split` leaves the module whole when you are not testing
+  lazy app loading. A quick bundle also builds from a tree without git
+  metadata, such as a synced copy. Ctrl-C, then rerun with --bundle DIR
+  and the binaries printed at start:
     run.py --bundle DIR --relay-bin <scratch>/bin/tilo-relay \\
            --room-service-bin <scratch>/bin/tilo-room-service
   The room keeps its state, so reloading the page continues where it was.
@@ -96,7 +103,7 @@ load compiles the bundle and takes a minute or two there:
 
 Other TILO_ROOMS_* and TILO_RELAY_* variables in the environment reach the
 service unchanged (for example TILO_ROOMS_SEED_APPS, TILO_ROOMS_CHAT_CHANNELS,
-TILO_RELAY_LOG); the ones above are set by this script.
+TILO_ROOMS_STRIPS, TILO_RELAY_LOG); the ones above are set by this script.
 """
 
 
@@ -220,7 +227,13 @@ def entry_json(args, relay_origin, api_origin):
             'admission': f'{api_origin}/'}
     if args.home_app:
         home['app'] = args.home_app
-    return {'home': home}
+    entry = {'home': home}
+    # The About sheet's links, from the same variables the image reads.
+    about = {key: url for key in ('notify', 'source', 'community')
+             if (url := os.environ.get(f'TILO_WEB_ABOUT_{key.upper()}', ''))}
+    if about:
+        entry['about'] = about
+    return entry
 
 
 class Site(http.server.SimpleHTTPRequestHandler):

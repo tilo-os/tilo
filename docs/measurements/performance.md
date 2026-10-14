@@ -29,7 +29,7 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. Dispatch inputs:
-`kpis` selects groups (`fs`, `footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`, `hosting`); `mode: ab` with `ab_base`,
+`kpis` selects groups (`fs`, `footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`, `search`, `hosting`, `browser`); `mode: ab` with `ab_base`,
 `ab_candidate` and `ab_rounds` runs the A/B lane below instead; `accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `synthetic_series` with `synthetic_factor` multiplies a run's values to prove
@@ -49,6 +49,30 @@ VM. They name `renderer=lavapipe`, `virtualization=kvm` and the runner class
 `runner-disk-100g`: software-rendered guest numbers, compared only with each other and
 never quoted as hardware figures. `scripts/vm-acceptance/README.md` ("Performance
 records") lists the KPIs.
+
+The `browser` group qualifies the browser runtime: the release desktop bundle
+(`build.sh --bundle desktop`, the bytes `web-entry.yml` publishes) in headless
+Chrome through `scripts/perf/browser_qualification.mjs`, which first proves the
+page ran exactly that commit's clean bundle on the WebGPU adapter the records
+name, then measures load, first opens, window activation, the demo workload's
+frame intervals and per-frame runtime CPU, and an idle desktop, and reports them
+against the runtime's goals (30 fps minimum and 120 fps for the demo, 50 ms
+activation). The runner has no GPU, and Chrome gives WebGPU no CPU driver but
+its own SwiftShader, so the records name `renderer=swiftshader`. SwiftShader
+takes tens of seconds over a panned FHD frame there, so the nightly run leaves
+the demo out (`--demo-seconds 0`); its frame rate and goals are judged where a
+GPU draws.
+A hardware qualification is the same harness on the machine under test, quiet
+and with the goals enforced:
+
+```bash
+crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/target/qualify" --bundle desktop
+node scripts/perf/browser_qualification.mjs target/qualify --out qualify.json \
+  --renderer gpu --expect-revision "$(git rev-parse HEAD)" --max-load 0.25 --enforce-goals
+```
+
+`--cpu-throttle 4` slows the page's CPU fourfold, a stand-in for older hardware
+on a fast machine; such a run is never this group's series.
 
 The `latency` group is the compositor's side only (headless, no panel).
 Input-to-presentation latency on the reference machines is a weekly,
@@ -105,7 +129,7 @@ fgj workflow run perf-scheduled.yml -R tilo/tilo --hostname code.tilo.so \
 ```
 
 One job per group in `kpis` (`hosting`, `latency`, `render`, `agent`,
-`wakeups`, `fs`, `search`; `footprint` is bytes of published artifacts and has no A/B)
+`wakeups`, `fs`, `search`, `browser`; `footprint` is bytes of published artifacts and has no A/B)
 builds the base and the candidate in one checkout, one after the other, and
 runs that group's existing benchmark on both, alternating, for `ab_rounds`
 rounds on one runner (`tools/perf/ab.py`). Odd rounds run the base first and
