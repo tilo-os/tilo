@@ -7,10 +7,10 @@ name: Perf / room host capacity
 # host's footprint at the deployed caps and the price of 100 concurrent
 # guests per node of tools/perf/prices.toml. A run is recorded in
 # docs/benchmarks/room-host-capacity-2026-10.md; the nightly guards the
-# 300-guest point (perf-scheduled.yml, `hosting-room`).
+# 100-guest point (perf-scheduled.yml, `hosting-room`).
 #
-# Manual dispatch only: a sweep holds a 12-CPU runner for about half an hour,
-# and nothing about a pull request needs it. Never point it at a deployed
+# Manual dispatch only: a full sweep holds a runner-large slot for about 45
+# minutes after its build, and nothing about a pull request needs it. Never point it at a deployed
 # host; the bench starts its own.
 #
 # Built as the room service image builds its relay (room-service-image.yml):
@@ -34,9 +34,10 @@ jobs:
 
   sweep:
     needs: [builder]
-    # 12 CPUs and 32 GiB: the driver's guests and the host share it, and
-    # the host must never be the one starved (the report says how many cores
-    # each used).
+    # The driver's guests and the host share the runner, and the host must
+    # never be the one starved: the report says how many cores each used,
+    # and the machine step records the job's CPU and memory quota (40 CPUs
+    # and 36 GiB on 2026-10-14).
     runs-on: runner-large
     timeout-minutes: 150
     container:

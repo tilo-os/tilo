@@ -81,7 +81,9 @@ def plan(which: str) -> list[Run]:
              for n in (300, 500)]
     # The host's state on memory instead of the runner's disk: whether the
     # room waits on storage (every commit is made durable before it counts).
-    runs += [Run(f"tmpfs-g{n}", "tmpfs", ("--guests", str(n)), (("TMPDIR", "/dev/shm"),)) for n in (100, 300)]
+    # 100 guests only: the job container's /dev/shm is 64 MiB, which 300
+    # guests' state outgrows.
+    runs.append(Run("tmpfs-g100", "tmpfs", ("--guests", "100"), (("TMPDIR", "/dev/shm"),)))
     # Spectators admitted as Viewers of their own: what a watching session
     # costs. The homepage embed's path (one spectator person, every page a
     # device of it) is the `embed` run.
@@ -136,6 +138,8 @@ def bench(command: list[str], log: Path, timeout_s: float,
                 break
             time.sleep(1)
         reader.join()
+        if child.stdout:
+            child.stdout.close()
     return (None if stopped else child.returncode), "".join(output), stopped
 
 
@@ -223,7 +227,11 @@ def node_cost(node: dict[str, Any], prices: dict[str, Any], per_guest: dict[str,
     target = float(prices["target_utilisation"])
     by_cpu = float(node["vcpus"]) * target / per_guest["cores"]
     by_memory = (float(node["memory_gib"]) * 1024.0 * target - idle_mib) / per_guest["mib"]
-    capacity, binding = (by_cpu, "cpu") if by_cpu <= by_memory else (by_memory, "memory")
+    # The node's network port, which the guests' egress may fill first.
+    port = float(node.get("port_mbit_s", 0.0)) * 1e6 / 8
+    egress = per_guest["egress_bytes_s"]
+    by_network = port * target / egress if port and egress > 0 else math.inf
+    capacity, binding = min((by_cpu, "cpu"), (by_memory, "memory"), (by_network, "network"))
     hours = float(prices["hours_per_month"])
     egress_gb_month = per_guest["egress_bytes_s"] * 3600 * hours / 1e9 * capacity
     billable = max(0.0, egress_gb_month - float(node.get("included_egress_gb_month", 0.0)))
@@ -238,6 +246,8 @@ def node_cost(node: dict[str, Any], prices: dict[str, Any], per_guest: dict[str,
 
 
 def summarize(runs: list[dict[str, Any]], prices: dict[str, Any]) -> dict[str, Any]:
+    order = {item.name: index for index, item in enumerate(plan("full"))}
+    runs = sorted(runs, key=lambda run: order.get(run["name"], len(order)))
     ok = [run for run in runs if run.get("report")]
     rows = [row(run) for run in ok]
     by_kind: dict[str, list[dict[str, Any]]] = {}
@@ -265,8 +275,11 @@ def summarize(runs: list[dict[str, Any]], prices: dict[str, Any]) -> dict[str, A
         "guests_per_vcpu": 1 / cores_per_guest if cores_per_guest > 0 else math.inf,
         "egress_kbit_s_per_guest": egress_per_guest * 8 / 1e3,
     }
-    # Only runs whose spectators got in say what a spectator costs.
-    spectators = [r for r in by_kind.get("spectators", []) if r["watching"] > 0]
+    # Only runs whose spectators all got in say what a spectator costs: one
+    # still waiting holds a session and a replay but none of the steady
+    # state, so a partial run's memory is not per spectator.
+    spectators = [r for r in by_kind.get("spectators", [])
+                  if r["watching"] == r["spectators"] and r["joined"] == r["guests"]]
     if len({r["watching"] for r in spectators}) >= 2:
         derived["mib_per_spectator"] = slope([(r["watching"], r["rss_mib_peak"]) for r in spectators])
         derived["cores_per_spectator"] = slope([(r["watching"], r["cpu_cores"]) for r in spectators])
@@ -310,8 +323,10 @@ def markdown(summary: dict[str, Any]) -> str:
     if "mib_per_spectator" in d:
         lines += [f"- MiB per spectator: {d['mib_per_spectator']:.3f}",
                   f"- egress per spectator: {d['egress_kbit_s_per_spectator']:.1f} kbit/s"]
-    lines.append(f"- predicted RSS at {CAP_GUESTS} guests + {CAP_SPECTATORS} spectators: "
-                 f"{d['predicted_rss_mib_at_caps']:.0f} MiB")
+    else:
+        lines.append("- MiB per spectator: not derived, no two spectator runs admitted every spectator")
+    counted = f" + {CAP_SPECTATORS} spectators" if "mib_per_spectator" in d else " (spectators left out)"
+    lines.append(f"- predicted memory at {CAP_GUESTS} guests{counted}: {d['predicted_rss_mib_at_caps']:.0f} MiB")
     if "at_caps" in d:
         c = d["at_caps"]
         lines.append(f"- measured at the caps ({c['joined']} guests, {c['watching']} spectators): "

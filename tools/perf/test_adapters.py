@@ -618,6 +618,11 @@ class HostingLoad(unittest.TestCase):
         budgets = compare.load_budgets(compare.BUDGETS)
         budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("hosting.")}
         produced = {item.kpi for item in adapters.hosting_load(load_report(), self.prices, ENV)}
+        # ... and the room host job, at the guest count the nightly runs.
+        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        [guests] = re.findall(r"tilo-room-load bench --guests (\d+)", workflow)
+        config = {**room_report()["config"], "guests": int(guests)}
+        produced |= {item.kpi for item in adapters.room_load([room_report(config=config, joined=int(guests))], ENV)}
         self.assertTrue(budgeted, "the hosting group has budgets")
         self.assertLessEqual(budgeted, produced)
 
@@ -650,6 +655,49 @@ def browser_report(**changes) -> dict:
         else:
             report[key] = value
     return report
+
+
+ROOM_LOAD = ROOT / "crates/dev/room-load/src"
+
+
+def room_report(join_p99: float = 400.0, rss: int = 700, **changes) -> dict:
+    """A `tilo-room-load bench` report, with the fields the adapter reads."""
+    report = {
+        "config": {"guests": 300, "rooms": 1, "cursor_hz": 30.0, "chat_every_s": 60.0, "host_threads": None},
+        "joined": 300, "chat_rx": 12000, "failures": {},
+        "join_ms": {"p50": 90.0, "p95": 300.0, "p99": join_p99, "max": 500.0},
+        "chat_ms": {"p50": 20.0, "p95": 60.0, "p99": 90.0, "max": 200.0},
+        "host": {"rss_mib_peak": rss, "hold_cpu_cores": 1.5, "machine_cores": 12},
+    }
+    report.update(changes)
+    return report
+
+
+class RoomLoad(unittest.TestCase):
+    def test_each_run_is_one_sample_of_each_kpi(self):
+        records = {item.kpi: item for item in adapters.room_load(
+            [room_report(400.0, 700), room_report(500.0, 720), room_report(450.0, 710)], ENV)}
+        self.assertEqual(set(records), {f"{kpi}.g300" for kpi in adapters.ROOM_LOAD_KPIS})
+        join = records["hosting.room.join_p99_ms.g300"]
+        self.assertEqual((join.n, join.p50, join.max), (3, 450.0, 500.0))
+        self.assertEqual(records["hosting.room.rss_mib_peak.g300"].unit, "MiB")
+        self.assertEqual(records["hosting.room.cpu_percent.g300"].p50, 150.0)
+        self.assertEqual(join.meta["runs"], "3")
+
+    def test_a_run_with_failures_or_missing_guests_is_not_a_measurement(self):
+        for broken in (room_report(failures={"join: no Ready before the timeout": 2}),
+                       room_report(joined=298),
+                       room_report(chat_rx=0)):
+            with self.assertRaises(ValueError):
+                adapters.room_load([room_report(), broken], ENV)
+        with self.assertRaises(ValueError):
+            adapters.room_load([room_report(), room_report(config={**room_report()["config"], "guests": 50})], ENV)
+
+    def test_the_fields_read_are_the_ones_the_bench_writes(self):
+        source = "\n".join(path.read_text(encoding="utf-8") for path in sorted(ROOM_LOAD.glob("*.rs")))
+        for field in ('"p99"', '"rss_mib_peak"', '"hold_cpu_cores"', '"machine_cores"', '"chat_rx"',
+                      '"joined"', '"failures"', '"cursor_hz"', '"chat_every_s"', '"host_threads"'):
+            self.assertIn(field, source)
 
 
 class BrowserQualification(unittest.TestCase):

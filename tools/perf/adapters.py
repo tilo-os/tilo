@@ -89,6 +89,12 @@ Each adapter reads what a benchmark already prints and emits records through
   latency: one per delivered edit), and each provider in
   `tools/perf/prices.toml` adds `hosting.relay.cost_usd_per_collab_hour.<provider>`
   and `hosting.relay.cost_usd_per_user_month.<provider>`, priced per minute.
+- `room-load REPORT_JSON...`: `tilo-room-load bench` reports
+  (`crates/dev/room-load`), one per run of the same configuration. Each run
+  is one sample of `hosting.room.<kpi>.g<guests>` (`ROOM_LOAD_KPIS`): the
+  guests' p99 join and chat delivery, the host's peak resident memory and its
+  CPU during the hold. A run in which a guest failed or did not join is not a
+  measurement and fails the adapter.
 - `browser-qualification REPORT_JSON`: the browser runtime qualification's
   report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
   one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
@@ -545,6 +551,40 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     return records
 
 
+# What one `tilo-room-load bench` report becomes: KPI, unit, and how to read it.
+ROOM_LOAD_KPIS = {
+    "hosting.room.join_p99_ms": ("ms", lambda report: report["join_ms"]["p99"]),
+    "hosting.room.chat_p99_ms": ("ms", lambda report: report["chat_ms"]["p99"]),
+    "hosting.room.rss_mib_peak": ("MiB", lambda report: report["host"]["rss_mib_peak"]),
+    # Cores during the hold, as a share of one CPU.
+    "hosting.room.cpu_percent": ("percent", lambda report: report["host"]["hold_cpu_cores"] * 100.0),
+}
+
+
+def room_load(reports: list[dict[str, Any]], env: dict[str, Any]) -> list[record.Record]:
+    """Records for repeated room-load bench runs of one configuration."""
+    if not reports:
+        raise ValueError("no room-load report")
+    configs = {json.dumps(report["config"], sort_keys=True) for report in reports}
+    if len(configs) != 1:
+        raise ValueError(f"the reports ran different configurations: {sorted(configs)}")
+    config = reports[0]["config"]
+    guests = int(config["guests"])
+    for number, report in enumerate(reports, 1):
+        failures = {**report.get("failures", {}), **report.get("spectators", {}).get("failures", {})}
+        if failures or int(report["joined"]) != guests or int(report["chat_rx"]) == 0:
+            raise ValueError(f"run {number}: {report['joined']} of {guests} guests joined, "
+                             f"{report['chat_rx']} chat changes delivered, failures {failures}")
+    meta = {**env.get("meta", {}), "guests": str(guests), "runs": str(len(reports)),
+            "rooms": str(config["rooms"]), "cursor_hz": str(config["cursor_hz"]),
+            "chat_every_s": str(config["chat_every_s"]), "host_threads": str(config.get("host_threads") or "all"),
+            "machine_cores": str(reports[0]["host"]["machine_cores"])}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(f"{kpi}.g{guests}", unit, [read(report) for report in reports],
+                                meta=meta, **base)
+            for kpi, (unit, read) in ROOM_LOAD_KPIS.items()]
+
+
 # The browser runtime qualification's report samples (scripts/perf/browser_qualification.mjs)
 # and the KPI each becomes, with its unit.
 BROWSER_KPIS = {
@@ -642,6 +682,9 @@ def main(argv: list[str] | None = None) -> int:
     hosting.add_argument("--env-json", required=True, type=Path)
     hosting.add_argument("--prices", type=Path, default=PRICES)
     hosting.add_argument("report", type=Path)
+    rooms = commands.add_parser("room-load", help="records from tilo-room-load bench reports")
+    rooms.add_argument("--env-json", required=True, type=Path)
+    rooms.add_argument("reports", nargs="+", type=Path)
     browser = commands.add_parser("browser-qualification",
                                   help="records from scripts/perf/browser_qualification.mjs's report")
     browser.add_argument("--env-json", required=True, type=Path)
@@ -659,6 +702,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{item.kpi}: p50 ${item.p50:.6f}, max ${item.max:.6f} "
                           f"({item.meta['collaborators_per_vm']} collaborators per VM, "
                           f"bound by {item.meta['binding']})", file=sys.stderr)
+        elif args.command == "room-load":
+            records = room_load([json.loads(path.read_text(encoding="utf-8")) for path in args.reports], env)
         elif args.command == "fs-gate":
             records = fs_gate([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         elif args.command == "workspace-switch":
