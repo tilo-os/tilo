@@ -17,6 +17,7 @@ impl LauncherServices for Launcher {
             package_id: WRITER.into(),
             display_name: "Writer".into(),
             unconfined: false,
+            offers: Vec::new(),
         }]
     }
     fn launch(

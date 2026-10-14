@@ -6870,6 +6870,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                offers: Vec::new(),
             };
             let cmd = build_launch_command(
                 &app,
@@ -6919,6 +6920,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                offers: Vec::new(),
             };
             let cmd = build_launch_command(
                 &app,
@@ -7022,6 +7024,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                offers: Vec::new(),
             };
             let room = RoomId::new();
             let command = build_workspace_agent_command(
@@ -7086,6 +7089,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                offers: Vec::new(),
             };
             assert!(AGENT_COMPANION_PACKAGE_IDS.contains(&app.package_id.as_str()));
             let room = RoomId::new();
@@ -7371,6 +7375,7 @@ mod tests {
                 opens_extensions: Vec::new(),
                 opens_mime_types: Vec::new(),
                 opens_uri_schemes: Vec::new(),
+                offers: Vec::new(),
             });
             // full package id, trailing component, case-insensitivity
             assert_eq!(
@@ -7410,6 +7415,7 @@ mod tests {
             opens_extensions: Vec::new(),
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
+            offers: Vec::new(),
         }
     }
 

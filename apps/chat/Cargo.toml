@@ -64,6 +64,8 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # sender-local path is stored in the chat document.
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 [dev-dependencies]
+# Reads the signed manifest's offers to check them against what the app publishes.
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }

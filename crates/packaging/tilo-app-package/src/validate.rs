@@ -87,6 +87,8 @@ pub enum ManifestError {
     BadProviderScheme(String),
     #[error("invalid resource kind {0:?}")]
     BadResourceKind(String),
+    #[error("offers: {0}")]
+    BadOffer(String),
     #[error("sandbox.services: {0}")]
     BadService(String),
     #[error("publisher.identity: {0}")]
@@ -361,6 +363,7 @@ fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
             return Err(ManifestError::BadResourceKind(kind.clone()));
         }
     }
+    validate_offers(&m.offers)?;
     for (name, req) in &m.sandbox.services {
         registry_types::InterfaceRequirement::new(name, req.version)
             .map_err(|error| ManifestError::BadService(error.to_string()))?;
@@ -547,6 +550,80 @@ fn valid_resource_kind(kind: &str) -> bool {
             (byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
                 && (i != 0 || byte.is_ascii_alphabetic())
         })
+}
+
+/// How many actions one package may offer while it is not running.
+pub const MAX_OFFERS: usize = 64;
+
+/// Resource prefixes an app cannot offer under: `app.` names the host's own
+/// application resources (opening and closing an app), and a
+/// `tilo-ui-bound:` id belongs to one window of one run, so it means nothing
+/// before the app runs.
+const RESERVED_OFFER_RESOURCES: [&str; 2] = ["app.", "tilo-ui-bound:"];
+
+/// `[[offers]]`: stable addresses, a readable label, and each address once.
+fn validate_offers(offers: &[crate::manifest::OfferedAction]) -> Result<(), ManifestError> {
+    if offers.len() > MAX_OFFERS {
+        return Err(ManifestError::BadOffer(format!(
+            "more than {MAX_OFFERS} offered actions"
+        )));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for offer in offers {
+        let address = format!("{}#{}", offer.resource, offer.action);
+        let resource_ok = offer.resource.len() <= 128
+            && offer
+                .resource
+                .starts_with(|c: char| c.is_ascii_alphabetic())
+            && offer.resource.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':' | b'/')
+            })
+            && !RESERVED_OFFER_RESOURCES
+                .iter()
+                .any(|reserved| offer.resource.starts_with(reserved));
+        if !resource_ok {
+            return Err(ManifestError::BadOffer(format!(
+                "{address}: resource must be a stable address the app publishes"
+            )));
+        }
+        if !valid_resource_kind(offer.resource_kind()) {
+            return Err(ManifestError::BadOffer(format!(
+                "{address}: invalid resource-kind {:?}",
+                offer.resource_kind()
+            )));
+        }
+        if !valid_resource_kind(&offer.action) {
+            return Err(ManifestError::BadOffer(format!(
+                "{address}: invalid action id"
+            )));
+        }
+        let line = |text: &str, max: usize| {
+            !text.trim().is_empty()
+                && text.trim() == text
+                && text.len() <= max
+                && !text.contains('\n')
+        };
+        if !line(&offer.label, 80) {
+            return Err(ManifestError::BadOffer(format!(
+                "{address}: label must be one non-empty line of at most 80 bytes"
+            )));
+        }
+        if offer
+            .description
+            .as_deref()
+            .is_some_and(|description| !line(description, 400))
+        {
+            return Err(ManifestError::BadOffer(format!(
+                "{address}: description must be one non-empty line of at most 400 bytes"
+            )));
+        }
+        if !seen.insert(address.clone()) {
+            return Err(ManifestError::BadOffer(format!(
+                "{address} is offered twice"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// How many further runtime bundles one package may ask the launcher to
@@ -899,6 +976,48 @@ mode = "off"
         assert!(matches!(
             validate_manifest(&m),
             Err(ManifestError::BadService(_))
+        ));
+    }
+
+    #[test]
+    fn offered_actions_name_stable_addresses_once() {
+        let offer = |resource: &str, action: &str| crate::manifest::OfferedAction {
+            resource: resource.into(),
+            resource_kind: None,
+            action: action.into(),
+            label: "Show tasks".into(),
+            description: None,
+            kind: crate::manifest::OfferKind::Read,
+            operation: crate::manifest::OfferOperation::View,
+            confirm: false,
+        };
+        let mut m = minimal_runtime_manifest();
+        m.offers = vec![
+            offer("calendar.calendar", "show-tasks"),
+            offer("calendar.calendar", "show-week"),
+        ];
+        assert_eq!(validate_manifest(&m), Ok(()));
+        let refused = |offers: Vec<crate::manifest::OfferedAction>| {
+            let mut m = minimal_runtime_manifest();
+            m.offers = offers;
+            matches!(validate_manifest(&m), Err(ManifestError::BadOffer(_)))
+        };
+        assert!(refused(vec![offer("calendar.calendar", "show-tasks"); 2]));
+        assert!(refused(vec![offer("app.so.tilo.notes", "open")]));
+        assert!(refused(vec![offer("tilo-ui-bound:v1:a:b:c", "invoke")]));
+        assert!(refused(vec![offer("", "show-tasks")]));
+        assert!(refused(vec![offer("calendar calendar", "show-tasks")]));
+        assert!(refused(vec![offer("calendar.calendar", "show tasks")]));
+        let mut unlabelled = offer("calendar.calendar", "show-tasks");
+        unlabelled.label = " ".into();
+        assert!(refused(vec![unlabelled]));
+        let mut two_lines = offer("calendar.calendar", "show-tasks");
+        two_lines.description = Some("one\ntwo".into());
+        assert!(refused(vec![two_lines]));
+        assert!(refused(
+            (0..=MAX_OFFERS)
+                .map(|n| offer("calendar.calendar", &format!("a{n}")))
+                .collect()
         ));
     }
 

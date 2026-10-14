@@ -843,6 +843,51 @@ mod tasks_screen {
         );
     }
 
+    /// What the package manifest offers while Calendar is closed is what
+    /// the running app publishes, at the same address, with the same label,
+    /// kind and confirmation, so launching it from the catalogue lands on a
+    /// real action.
+    #[test]
+    fn the_actions_the_manifest_offers_while_closed_are_published() {
+        use tilo_app_package::manifest::{Manifest, OfferKind, OfferOperation};
+        let manifest =
+            Manifest::from_toml_str(include_str!("../../tilo-app.toml")).expect("the manifest");
+        assert!(!manifest.offers.is_empty(), "Calendar offers actions");
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        let resources = app.harness().resources();
+        for offer in &manifest.offers {
+            let action = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == offer.resource)
+                .and_then(|resource| resource.actions.iter().find(|a| a.id == offer.action))
+                .unwrap_or_else(|| panic!("{}#{} is published", offer.resource, offer.action));
+            assert_eq!(action.label, offer.label);
+            let kind = match offer.kind {
+                OfferKind::Read => ActionKind::Read,
+                OfferKind::Undoable => ActionKind::Undoable,
+                OfferKind::Outside => ActionKind::Outside,
+            };
+            assert_eq!(action.contract.kind, kind, "{}", offer.action);
+            let operation = match offer.operation {
+                OfferOperation::Document => OperationKind::Document,
+                OfferOperation::Effect => OperationKind::Effect,
+                OfferOperation::View => OperationKind::View,
+            };
+            assert_eq!(action.kind, operation, "{}", offer.action);
+            assert_eq!(
+                offer.confirm,
+                action.contract.confirmation != tilo_actions::ConfirmationPolicy::None,
+                "{}",
+                offer.action
+            );
+            assert!(
+                action.params().is_empty(),
+                "{} takes no parameters",
+                offer.action
+            );
+        }
+    }
+
     #[test]
     fn viewers_can_show_tasks_but_cannot_add_tasks() {
         let mut app =
