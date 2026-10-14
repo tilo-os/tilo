@@ -58,6 +58,12 @@ for path in / /entry.json "/v/$version/entry-page.mjs"; do
   sts=$(head_of "$home" "$path" | grep '^strict-transport-security:' || true)
   [[ $sts == 'strict-transport-security: max-age=31536000' ]] || fail "$path must pin HTTPS for this host only: ${sts:-no header}"
 done
+# Only the app itself and the embedder entry-page.mjs posts to may frame it.
+embedder=$(get "$home" "/v/$version/entry-page.mjs" | sed -n "s/^const EMBEDDER = '\(https:[^']*\)';$/\1/p")
+[[ -n $embedder ]] || fail "entry-page.mjs names no EMBEDDER"
+csp=$(head_of "$home" / | grep '^content-security-policy:' || true)
+[[ $csp == "content-security-policy: frame-ancestors 'self' $embedder" ]] \
+  || fail "/ must be framable only by itself and $embedder: ${csp:-no header}"
 # One complete, immutable version: version.json names the version the entry
 # pages import, and every file that version's build.json lists (bar the two
 # entry pages, which live at the top) is served under v/<version>/ with
