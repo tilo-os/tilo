@@ -450,8 +450,8 @@ pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
     CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
     HistorySeenFrontier, HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource,
-    compare_entries, deterministic_narrative, heads_for_entry, participant_display_label,
-    validate_narrative, version_index_for_entry,
+    compare_entries, deterministic_narrative, heads_for_entry, human_label,
+    participant_display_label, validate_narrative, version_index_for_entry,
 };
 pub use live_collaboration::{
     CollaborationExperience, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, PersonPresence,
