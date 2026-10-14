@@ -481,7 +481,7 @@ fn pictures_are_kept_by_digest_and_shown_in_their_note() {
     let digest = blake3::hash(&png).to_hex().to_string();
     let state = notebook.state().unwrap();
     assert_eq!(state.images.get(&digest), Some(&Bytes::of(&png)));
-    let snapshot = image_snapshot(&state, |_| None);
+    let snapshot = image_snapshot(&state.images, |_| None);
     assert_eq!(snapshot.get(&format!("asset:{digest}")), Some(&png));
     assert!(
         texts(&notebook, &page)

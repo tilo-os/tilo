@@ -2240,21 +2240,22 @@ impl Written {
     }
 
     /// Mark the written text as `author`'s, as part of the edit that wrote it.
+    ///
+    /// Every key carries its own mark, even typed straight after `author`'s
+    /// own run. Relying on that run's mark to take the key in instead would
+    /// lose the key to a collaborator typing at the same place at the same
+    /// time: their key's mark, anchored where this key lands, would cover it
+    /// and win.
     fn attribute(&self, dm: &mut DocMut<'_>, author: &str) {
         if self.len == 0 || author.is_empty() {
             return;
         }
-        let span = Span {
-            block: self.block.clone(),
-            start: self.start,
-            end: self.start.saturating_add(self.len),
-        };
-        add_mark_region(
-            dm,
+        dm.mark_author_in(
             self.region,
-            &span,
-            tilo_doc::schema::MARK_AUTHOR,
-            &MarkVal::Str(author.to_owned()),
+            &self.block,
+            self.start,
+            self.start.saturating_add(self.len),
+            author,
         );
     }
 }
