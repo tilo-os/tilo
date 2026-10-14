@@ -715,6 +715,13 @@ pub struct ShellOverlayHost {
     /// Shows the ribbon and the rail while the position they report is
     /// changing, and fades them out once it stops.
     strip_indicators: strip_indicators::StripIndicators,
+    /// A direct strip pan (touchpad or touch) is in progress or settling.
+    /// Its frames, and the frame it comes to rest on, are composited from
+    /// layers drawn before it began, so the chrome they hold (the ribbon and
+    /// the rail) must not change under it: the position it leaves becomes
+    /// the indicators' resting point without showing them. The strip moving
+    /// under the fingers is the feedback there.
+    strip_pan_active: bool,
     /// Off-thread reader for the OS state quick settings displays.
     /// See [`crate::shell::quick_settings::refresh`] for why the reads left the frame.
     qs_refresh: crate::shell::quick_settings::refresh::QsRefresh,
@@ -2443,6 +2450,7 @@ impl ShellOverlayHost {
             strip_ribbon_hover: None,
             strip_rail_hover: None,
             strip_indicators: strip_indicators::StripIndicators::default(),
+            strip_pan_active: false,
             qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
             workspace_rename_submit_held: false,
@@ -6810,6 +6818,7 @@ impl ShellOverlayHost {
         let row: &mut GroupRow = unsafe { &mut *ptr };
         if began {
             row.begin_strip_pan();
+            self.strip_pan_active = true;
         }
         row.update_strip_pan(travel)
     }
@@ -9475,13 +9484,10 @@ impl ShellOverlayHost {
         out
     }
 
-    /// Pan every strip to `scroll` layout pixels.
+    /// Pan every strip to `scroll` layout pixels, as a direct pan does.
     #[cfg(test)]
-    #[allow(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the rows are written through pointers this host owns; `&mut self` keeps the write exclusive"
-    )]
     pub(crate) fn set_strip_scroll_for_test(&mut self, scroll: f64) {
+        self.strip_pan_active = true;
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: as in `strip_row_rect`, and `&mut self` makes the
             // access exclusive.
@@ -10712,6 +10718,15 @@ impl ShellOverlayHost {
     /// Feed the position the ribbon and rail are about to report into
     /// [`Self::strip_indicators`], which shows them while it changes.
     fn prepare_strip_indicators(&mut self, now: Instant) {
+        let pan_settling = || {
+            self.active_strip_id()
+                .and_then(|id| self.group_row_ptrs.get(&id).copied())
+                // SAFETY: see field doc on `group_row_ptrs`.
+                .is_some_and(|ptr| unsafe { &*ptr }.direct_pan_in_progress())
+        };
+        if self.strip_pan_active && pan_settling() {
+            return;
+        }
         let ribbon = self.strip_ribbon();
         let rail = self.strip_rail();
         let strip = self.active_strip_id();
@@ -10727,7 +10742,11 @@ impl ShellOverlayHost {
             scroll_half_px: half_px_steps(scroll),
             hovered: self.strip_ribbon_hover.is_some() || self.strip_rail_hover.is_some(),
         };
-        self.strip_indicators.observe(position, now);
+        if std::mem::take(&mut self.strip_pan_active) {
+            self.strip_indicators.rebase(position);
+        } else {
+            self.strip_indicators.observe(position, now);
+        }
     }
 
     /// The ribbon and rail's opacity at `now`, for tests that navigate and
