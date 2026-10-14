@@ -1443,6 +1443,11 @@ mod component_adapter {
         fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
             self.component.search_providers()
         }
+        fn search_provider_descriptors(
+            &self,
+        ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+            self.component.search_provider_descriptors()
+        }
         fn activate_search_result(
             &mut self,
             action_id: &str,

@@ -19,10 +19,7 @@ fn create(notebook: &mut Replica<Notebook>, parent: Option<PageId>) -> PageId {
 }
 
 fn shown(notebook: &Replica<Notebook>) -> Workspace {
-    Workspace::of(
-        std::rc::Rc::new(notebook.state().unwrap()),
-        &Workspace::default(),
-    )
+    Workspace::of(&notebook.state().unwrap(), &Workspace::default())
 }
 
 /// Every note's parent is a note of the notebook.

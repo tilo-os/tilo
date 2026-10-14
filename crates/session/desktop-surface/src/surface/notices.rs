@@ -121,6 +121,31 @@ impl NotificationHost for NoticeState {
     fn changed(&self) {
         self.touch();
     }
+    /// An ask the host posted shows its choices as buttons: "Not now" and
+    /// the action itself. Other notifications open on a click, as before.
+    fn actions_for(&self, notification: &Notification) -> Vec<(String, String)> {
+        if super::search::is_host_offer(notification) {
+            // Painted secondary first, so the answer ends the row.
+            notification.actions.iter().rev().cloned().collect()
+        } else {
+            Vec::new()
+        }
+    }
+    fn invoke_action(&self, id: u64, key: &str) {
+        if key == crate::notifications::NOT_NOW_ACTION {
+            // Put off, not refused: the ask waits in the centre.
+            self.retire_active(id);
+            return;
+        }
+        if let Some(notification) = self.retire_active(id) {
+            self.outcomes
+                .borrow_mut()
+                .push(NotificationOutcome::Activated {
+                    notification: Box::new(notification),
+                    action: Some(key.to_owned()),
+                });
+        }
+    }
 }
 
 /// A desktop's notifications: the live banners and the retained history
@@ -153,6 +178,27 @@ impl DesktopNotifications {
             self.log.touch();
         }
         taken
+    }
+
+    /// Withdraw every ask for host action `id`, live or retained: the
+    /// host no longer offers it (it was done, perhaps from search).
+    pub fn withdraw_host_action(&self, id: &str) -> bool {
+        let mut log = self.log.log.borrow_mut();
+        let asks: Vec<u64> = log
+            .active()
+            .iter()
+            .chain(log.history())
+            .filter(|notification| super::search::offers(notification, id))
+            .map(|notification| notification.id)
+            .collect();
+        for ask in &asks {
+            let _ = log.take_active(*ask).is_some() || log.take_history(*ask).is_some();
+        }
+        drop(log);
+        if !asks.is_empty() {
+            self.log.touch();
+        }
+        !asks.is_empty()
     }
 
     /// Retire banners whose dwell ran out and forget a lapsed Clear all.
@@ -1071,5 +1117,82 @@ mod tests {
         assert!(!layer.center_open());
         assert!(notifications.take_outcomes().is_empty());
         assert!(layer.open_app.is_none());
+    }
+
+    fn ask() -> Notification {
+        crate::HostAction {
+            id: "keep-identity".into(),
+            title: "Keep with passkey".into(),
+            subtitle: None,
+            source: None,
+        }
+        .notice(
+            "Keep this identity?",
+            "A passkey brings you back on any browser.",
+        )
+    }
+
+    #[test]
+    fn an_ask_shows_not_now_then_its_answer() {
+        let notifications = DesktopNotifications::default();
+        notifications.post(ask());
+        let notice = notifications.log().active()[0].clone();
+        let keys: Vec<String> = notifications
+            .host()
+            .actions_for(&notice)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(keys, ["not-now", "host:keep-identity"]);
+        assert_eq!(
+            notice.default_action_key().as_deref(),
+            Some("host:keep-identity")
+        );
+        // An application's notification still opens on a click.
+        let plain = Notification::new("Tea", "Ready");
+        assert!(notifications.host().actions_for(&plain).is_empty());
+    }
+
+    #[test]
+    fn not_now_keeps_the_ask_in_the_centre_without_answering_it() {
+        let notifications = DesktopNotifications::default();
+        let id = notifications.post(ask());
+        notifications.host().invoke_action(id, "not-now");
+        assert!(notifications.take_outcomes().is_empty());
+        assert_eq!(notifications.counts(), (0, 1));
+        // Chosen later from the centre, it is the action itself.
+        let activation = notifications.host().activate_history(id);
+        assert!(matches!(activation, HistoryActivation::Invoked));
+        assert!(matches!(
+            &notifications.take_outcomes()[..],
+            [NotificationOutcome::Activated { action: Some(action), .. }]
+                if action == "host:keep-identity"
+        ));
+    }
+
+    #[test]
+    fn answering_an_ask_hands_its_action_to_the_host() {
+        let notifications = DesktopNotifications::default();
+        let id = notifications.post(ask());
+        notifications.host().invoke_action(id, "host:keep-identity");
+        assert!(matches!(
+            &notifications.take_outcomes()[..],
+            [NotificationOutcome::Activated { action: Some(action), .. }]
+                if action == "host:keep-identity"
+        ));
+    }
+
+    #[test]
+    fn an_ask_for_an_action_no_longer_offered_is_withdrawn_everywhere() {
+        let notifications = DesktopNotifications::default();
+        notifications.post(ask());
+        let put_off = notifications.post(ask());
+        notifications.host().invoke_action(put_off, "not-now");
+        let other = notifications.post(Notification::new("Tea", "Ready"));
+        assert_eq!(notifications.counts(), (2, 1));
+        assert!(notifications.withdraw_host_action("keep-identity"));
+        assert_eq!(notifications.counts(), (1, 0));
+        assert_eq!(notifications.log().active()[0].id, other);
+        assert!(!notifications.withdraw_host_action("keep-identity"));
     }
 }

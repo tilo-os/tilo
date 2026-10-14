@@ -11,7 +11,8 @@
 //! codec yields no frames and logs why once. The sender only picks a codec
 //! every receiver advertised (see `media::realtime::negotiate`).
 
-use media::realtime::{DecodeOutput, DecoderConfig, RealtimeDecoder, StreamColor};
+use media::realtime::{DecodeOutput, DecoderConfig, PictureWake, RealtimeDecoder, StreamColor};
+use media::{DecodedPicture, RealtimeError};
 use media::{FramePayload, PlanarFormat, StreamCodec};
 
 use crate::collab::colorimetry::{
@@ -86,6 +87,10 @@ pub struct VideoDecoder {
     last_colorimetry: Option<Colorimetry>,
     /// The colorimetry the sender announced for the stream.
     stream_colorimetry: Option<Colorimetry>,
+    /// How long a decode waits for its picture; `None` keeps the media
+    /// decoder's own wait. See [`Self::set_picture_wait`].
+    picture_wait: Option<std::time::Duration>,
+    picture_wake: Option<PictureWake>,
 }
 
 impl VideoDecoder {
@@ -103,6 +108,8 @@ impl VideoDecoder {
             failed: false,
             last_colorimetry: None,
             stream_colorimetry: None,
+            picture_wait: None,
+            picture_wake: None,
         }
     }
 
@@ -168,9 +175,30 @@ impl VideoDecoder {
         }
     }
 
+    /// How long [`Self::decode`] waits for its unit's picture once the
+    /// stream is running. A compositor loop sets zero: the unit is handed
+    /// over and its picture comes out of a later [`Self::decode`] or
+    /// [`Self::take_late_frame`] (see `RealtimeDecoder::set_picture_wait`).
+    pub fn set_picture_wait(&mut self, wait: std::time::Duration) {
+        self.picture_wait = Some(wait);
+        if let Some(d) = self.inner.as_mut() {
+            d.set_picture_wait(wait);
+        }
+    }
+
+    /// Run `wake` on a media thread each time a picture comes out, so the
+    /// loop collects it with [`Self::take_late_frame`] without polling.
+    pub fn set_picture_wake(&mut self, wake: Option<PictureWake>) {
+        self.picture_wake.clone_from(&wake);
+        if let Some(d) = self.inner.as_mut() {
+            d.set_picture_wake(wake);
+        }
+    }
+
     /// Push one access unit; returns the decoded frame if a picture is
     /// ready. `None` covers "waiting for a keyframe", corrupt input and "no
-    /// decoder for this codec here" alike — callers log the packet as dropped.
+    /// decoder for this codec here" alike — callers log the packet as dropped
+    /// — unless [`Self::picture_pending`] says the unit is still decoding.
     pub fn decode(&mut self, unit: &[u8]) -> Option<DecodedFrame> {
         if unit.is_empty() || self.failed {
             return None;
@@ -184,6 +212,10 @@ impl VideoDecoder {
             match RealtimeDecoder::new(config) {
                 Ok(mut d) => {
                     d.set_stream_color(self.stream_colorimetry.map(stream_color));
+                    if let Some(wait) = self.picture_wait {
+                        d.set_picture_wait(wait);
+                    }
+                    d.set_picture_wake(self.picture_wake.clone());
                     self.inner = Some(d);
                 }
                 Err(e) => {
@@ -193,7 +225,37 @@ impl VideoDecoder {
                 }
             }
         }
-        let picture = match self.inner.as_mut()?.decode(unit, None) {
+        let picture = self.inner.as_mut()?.decode(unit, None);
+        self.frame_from(picture)
+    }
+
+    /// Whether an accepted unit's picture is still being decoded: it took
+    /// longer than the decoder's wait and arrives with a later
+    /// [`Self::decode`] or [`Self::take_late_frame`]. A slow picture, not a
+    /// rejected unit.
+    pub fn picture_pending(&self) -> bool {
+        !self.failed
+            && self
+                .inner
+                .as_ref()
+                .is_some_and(RealtimeDecoder::picture_pending)
+    }
+
+    /// The newest picture that finished after its `decode` returned, without
+    /// waiting or decoding anything new.
+    pub fn take_late_frame(&mut self) -> Option<DecodedFrame> {
+        if !self.picture_pending() {
+            return None;
+        }
+        let picture = self.inner.as_mut()?.take_late_picture();
+        self.frame_from(picture)
+    }
+
+    fn frame_from(
+        &mut self,
+        picture: Result<Option<DecodedPicture>, RealtimeError>,
+    ) -> Option<DecodedFrame> {
+        let picture = match picture {
             Ok(p) => p?,
             Err(e) => {
                 tracing::warn!(

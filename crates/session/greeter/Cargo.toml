@@ -39,6 +39,7 @@ chrono = { workspace = true, features = ["clock", "std"] }
 # Battery level and charging state for the status corner, read from sysfs.
 tilo-power-mgmt = { path = "../../system/power", default-features = false }
 workspace-hack = { version = "0.1" }
+tilo-paths.workspace = true
 
 [dev-dependencies]
 tilo-test-env = { path = "../../dev/test-env" }

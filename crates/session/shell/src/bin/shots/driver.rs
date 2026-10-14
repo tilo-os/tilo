@@ -1352,10 +1352,9 @@ impl ShellDriver {
         false
     }
 
-    /// Show that presence attaches to app content. Focus the Files hosted
-    /// window and move Ada's location to its tab.
-    pub fn show_collaborator_in_files_for_shots(&mut self) -> bool {
-        let target = {
+    /// Focus the active workspace's tab titled `title`, returning its id.
+    fn focus_tab_titled(&mut self, title: &str) -> Option<u64> {
+        let (strip, group, tab) = {
             let state = self.chrome();
             let tree = state.tree();
             tree.desktop.active_workspace().and_then(|ws| {
@@ -1364,17 +1363,22 @@ impl ShellDriver {
                         group
                             .tabs
                             .iter()
-                            .find(|tab| tab.title == "Files")
+                            .find(|tab| tab.title == title)
                             .map(|tab| (strip.id, group.id, tab.id))
                     })
                 })
             })
-        };
-        let Some((strip, group, files_tab)) = target else {
+        }?;
+        self.host_mut().focus_window_on_strip(strip, group, tab);
+        Some(tab)
+    }
+
+    /// Show that presence attaches to app content. Focus the Files hosted
+    /// window and move Ada's location to its tab.
+    pub fn show_collaborator_in_files_for_shots(&mut self) -> bool {
+        let Some(files_tab) = self.focus_tab_titled("Files") else {
             return false;
         };
-        self.host_mut()
-            .focus_window_on_strip(strip, group, files_tab);
         self.with_chrome(|state| {
             let mut tree = state.tree_mut();
             if let Some(ada) = tree.desktop.active_workspace_mut().and_then(|ws| {
@@ -2425,26 +2429,37 @@ impl ShellDriver {
         let settled_at = Instant::now()
             .checked_sub(Duration::from_secs(1))
             .unwrap_or_else(Instant::now);
+        // Over a window with no document of its own, so no save status
+        // competes with the banners.
+        let _ = self.focus_tab_titled("Files");
         self.with_chrome(|st| {
-            // Severity ramp in one frame; long dismiss windows so
-            // the still-image scene captures the stack visible.
+            // What a person meets over their work: a collaborator who
+            // needs them, something shared with them, and a failure they
+            // did not cause. Long dismiss windows keep the still-image
+            // scene's stack on screen.
             st.push_notification_full(
-                Notification::new("Switched to workspace Research", "Active tab: Notes")
-                    .with_severity(NotificationSeverity::Info)
+                Notification::new("Ada mentioned you", "“Can you look at the launch notes?”")
+                    .with_app_name("Chat")
+                    .with_from("Ada", "peer:ada")
                     .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
             st.push_notification_full(
-                Notification::new("Slow network", "Peer sync delayed; retrying")
-                    .with_severity(NotificationSeverity::Warning)
+                Notification::new("Lena shared “Q3 plan”", "You can edit it.")
+                    .with_app_name("Files")
+                    .with_from("Lena", "peer:lena")
                     .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
             st.push_notification_full(
-                Notification::new("Permission denied", "Files cannot access /etc/shadow")
-                    .with_severity(NotificationSeverity::Error)
-                    .with_dismiss_after(Duration::from_secs(60))
-                    .with_created_at(settled_at),
+                Notification::new(
+                    "Backup paused",
+                    "The backup drive was disconnected. Reconnect it to continue.",
+                )
+                .with_app_name("Backups")
+                .with_severity(NotificationSeverity::Warning)
+                .with_dismiss_after(Duration::from_secs(60))
+                .with_created_at(settled_at),
             );
         });
     }

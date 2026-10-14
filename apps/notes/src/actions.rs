@@ -347,8 +347,10 @@ pub struct StoredBlock {
     pub code_group: Option<String>,
 }
 
-/// What every note says, by page.
-pub type Bodies = HashMap<PageId, Vec<StoredBlock>>;
+/// What every note says, by page. A note's blocks are shared between the
+/// workspaces that show the same body, so projecting a changed notebook
+/// copies only the notes that changed.
+pub type Bodies = HashMap<PageId, std::sync::Arc<[StoredBlock]>>;
 
 /// Every block of `page` with its Notes formatting and page links, in order.
 #[must_use]
@@ -379,7 +381,7 @@ pub fn page_markdown(workspace: &crate::Workspace, page: PageId) -> String {
     let blocks = workspace
         .bodies
         .get(&page)
-        .map(Vec::as_slice)
+        .map(AsRef::as_ref)
         .unwrap_or_default()
         .iter()
         .map(|block| {
