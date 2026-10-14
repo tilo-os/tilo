@@ -2283,6 +2283,13 @@ impl GroupRow {
         self.pans().iter().any(|pan| pan.snap_in_flight())
     }
 
+    /// A direct pan is under the fingers, or settling after them.
+    pub fn direct_pan_in_progress(&self) -> bool {
+        self.pans()
+            .iter()
+            .any(|pan| pan.strip_pan_origin.is_some() || pan.snap_in_flight())
+    }
+
     #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn set_scroll_x_for_test(&mut self, x: f64) {
         self.pan.scroll_x = x;

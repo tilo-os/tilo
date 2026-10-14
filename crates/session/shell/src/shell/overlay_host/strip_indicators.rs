@@ -61,6 +61,12 @@ impl StripIndicators {
         }
     }
 
+    /// Take `position` as the new resting point without showing them.
+    pub(crate) fn rebase(&mut self, position: StripPosition) {
+        self.hovered = position.hovered;
+        self.last = Some(position);
+    }
+
     /// Show them now, as navigation would.
     pub(crate) fn poke(&mut self, now: Instant) {
         self.changed_at = Some(now);
@@ -99,17 +105,13 @@ impl StripIndicators {
             })
     }
 
-    /// Wakes the loop when the fade begins. Past that the fade's own frames
-    /// run, and the end stays pending (overdue) until the paint pass that
-    /// observes it clears `changed_at`, so the clearing frame is painted.
+    /// Wakes the loop when the fade begins; from there the fade's own
+    /// animation frames carry it to the end. Nothing is owed past the fade
+    /// start: an overdue deadline that only a paint could clear would spin
+    /// the loop whenever nothing else asks for a paint.
     pub(crate) fn next_wake_deadline_at(&self, now: Instant) -> Option<Instant> {
-        let at = self.changed_at?;
-        let fade_start = at.checked_add(STRIP_INDICATOR_HOLD)?;
-        if now < fade_start {
-            Some(fade_start)
-        } else {
-            at.checked_add(STRIP_INDICATOR_SHOWN)
-        }
+        let fade_start = self.changed_at?.checked_add(STRIP_INDICATOR_HOLD)?;
+        (now < fade_start).then_some(fade_start)
     }
 }
 
@@ -155,15 +157,14 @@ mod tests {
         let end = t1 + STRIP_INDICATOR_HOLD + STRIP_INDICATOR_FADE;
         assert_eq!(s.alpha_at(end, false), 0.0);
         assert_eq!(
-            s.next_wake_deadline_at(end),
-            Some(end),
-            "the clearing frame is owed"
+            s.next_wake_deadline_at(mid_fade),
+            None,
+            "the fade's own frames carry it"
         );
-        s.observe(position(0, 40), end);
         assert_eq!(
             s.next_wake_deadline_at(end),
             None,
-            "settled: nothing to wake for"
+            "nothing is owed after it"
         );
         assert!(!s.needs_animation_frame_at(end));
     }
