@@ -101,7 +101,7 @@ load compiles the bundle and takes a minute or two there:
 
 Other TILO_ROOMS_* and TILO_RELAY_* variables in the environment reach the
 service unchanged (for example TILO_ROOMS_SEED_APPS, TILO_ROOMS_CHAT_CHANNELS,
-TILO_RELAY_LOG); the ones above are set by this script.
+TILO_ROOMS_STRIPS, TILO_RELAY_LOG); the ones above are set by this script.
 """
 
 

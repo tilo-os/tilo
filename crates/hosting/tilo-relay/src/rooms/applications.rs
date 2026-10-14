@@ -120,6 +120,106 @@ impl Rooms {
         Ok(result)
     }
 
+    /// Author a room record no app factory makes, such as the shared
+    /// desktop members' pages keep, as its exact current governor: an
+    /// existing record keeps its graph and gains only the change, and an
+    /// absent one starts from it. Members' pages admit it like any member's
+    /// change to that record.
+    ///
+    /// # Errors
+    /// Refuses other certificates, stale custody, sealed or incomplete
+    /// records, failed changes or oversized publication.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the governor record stays locked through durable signed publication"
+    )]
+    pub async fn author_room_record<R>(
+        &self,
+        room: &str,
+        governor: &DeviceCert,
+        (app, record): (&str, &str),
+        change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
+    ) -> Result<R, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        self.authorize(governor, now, "application.author")?;
+        if governor != &self.inner.host.cert {
+            return Err(CollaborationError::new(
+                "record authoring requires exact governor custody",
+            ));
+        }
+        let state = self.room(room).await?;
+        let mut governed = state.lock().await;
+        if governed.peer().authority() != governor {
+            return Err(CollaborationError::new(
+                "record governor differs from current room authority",
+            ));
+        }
+        governed
+            .peer()
+            .check_workspace_administration(governor.device_public_key, system_time(now))?;
+        let existing = governed.peer().document(app, record);
+        let (mut document, heads) = match existing {
+            Some(bytes) => {
+                let heads = governed
+                    .peer()
+                    .plaintext_complete_heads(app, record)
+                    .ok_or_else(|| CollaborationError::new("record is not complete plaintext"))?;
+                let document = automerge::AutoCommit::load(&bytes)
+                    .map_err(|error| CollaborationError::new(error.to_string()))?;
+                (document, Some(heads))
+            }
+            None => (automerge::AutoCommit::new(), None),
+        };
+        let result = change(&mut document)?;
+        if automerge::transaction::Transactable::pending_ops(&document) != 0 {
+            document.commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            );
+        }
+        let mut candidate = governed.peer().clone();
+        match heads {
+            Some(heads) if document.get_heads() == heads => return Ok(result),
+            Some(heads) => {
+                let changes = document.save_after(&heads);
+                if changes.len() > 64 * 1024 {
+                    return Err(CollaborationError::new(
+                        "record authoring exceeds publication limit",
+                    ));
+                }
+                candidate.publish_incremental(
+                    app,
+                    record,
+                    changes,
+                    &self.inner.host.key,
+                    system_time(now),
+                )?;
+            }
+            None if document.get_heads().is_empty() => return Ok(result),
+            None => {
+                let bytes = document.save();
+                if bytes.len() > 64 * 1024 {
+                    return Err(CollaborationError::new(
+                        "record authoring exceeds publication limit",
+                    ));
+                }
+                candidate.publish_document(
+                    app,
+                    record,
+                    bytes,
+                    &self.inner.host.key,
+                    system_time(now),
+                )?;
+            }
+        }
+        let collaboration = governed.collaboration().clone();
+        governed.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
+            Ok(collaboration)
+        })?;
+        self.settle(&mut governed).await?;
+        Ok(result)
+    }
+
     /// Publish the changes a bot's run made to a native record (`""` for
     /// the primary), signed by the bot's own device `bot`, which this
     /// governor holds for a bot it installed. Every member admits them as
