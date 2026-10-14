@@ -255,9 +255,30 @@ struct Desktop {
     generation: String,
     /// What the desktop asked of the page since its last status.
     requests: crate::shell::HostRequests,
+    /// Who is here and what they are doing, as the page reports it.
+    here: tilo_desktop::here::Here,
+    /// Who this page writes as, to find their own steps.
+    author: String,
 }
 
 impl Mount {
+    /// Put who is here on the windows they are in. Remote carets clear a
+    /// member's registrations as they move, so this runs after each.
+    fn apply_here(&mut self) {
+        let Some(desktop) = &self.desktop else {
+            return;
+        };
+        let tree = desktop.handle.read(Clone::clone);
+        let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
+        desktop
+            .here
+            .borrow_mut()
+            .register_windows(&people, self.frame.presence_mut());
+        self.frame.relayout();
+        self.pending = true;
+        self.window.request_redraw();
+    }
+
     fn service_owner_models(&mut self) {
         self.feedback_retry = None;
         if let Some(desktop) = &self.desktop
@@ -921,6 +942,7 @@ fn present_desktop(
     DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
     let generation = format!("mount-{id}");
     let requests = crate::shell::HostRequests::default();
+    let here = tilo_desktop::here::Here::default();
     let wake = proxy()?;
     let shell = crate::shell::BrowserShell::new(
         surface,
@@ -931,6 +953,8 @@ fn present_desktop(
             mac: config.mac,
         },
         Rc::clone(&requests),
+        Rc::clone(&here),
+        shared.clone(),
         Arc::new(move || {
             let _ = wake.send_event(id);
         }),
@@ -946,6 +970,8 @@ fn present_desktop(
             persistence,
             generation,
             requests,
+            here,
+            author: config.author(),
         }),
     })
 }
@@ -2614,10 +2640,135 @@ pub fn remote_presence(
             }
             None => presence.unregister_peer(publisher),
         }
+        m.apply_here();
         m.frame.relayout();
         m.pending = true;
         m.window.request_redraw();
         Ok(())
+    })
+}
+
+/// Who is in the room's live layer now: `{own: {publisher, label, color},
+/// members: [{publisher, kind, label, color, focus, activity}] | null}`,
+/// `members` null while the layer is not live. The bar, the People popover
+/// and the windows show them; nothing is written to the room.
+///
+/// # Errors
+///
+/// Rejects malformed JSON or a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
+    #[derive(serde::Deserialize)]
+    struct People {
+        own: Option<tilo_desktop::here::LiveMember>,
+        members: Option<Vec<tilo_desktop::here::LiveMember>>,
+    }
+    let people: People = serde_json::from_str(people).map_err(error)?;
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        if desktop
+            .here
+            .borrow_mut()
+            .set_members(people.own, people.members)
+        {
+            m.apply_here();
+        }
+        Ok(())
+    })
+}
+
+/// The host's answer to `/here` (`peer.here`): each person's line.
+///
+/// # Errors
+///
+/// Rejects malformed JSON or a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_here(id: u64, lines: &str) -> Result<(), JsValue> {
+    let lines: Vec<tilo_desktop::here::HostLine> = serde_json::from_str(lines).map_err(error)?;
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        if desktop
+            .here
+            .borrow_mut()
+            .set_lines(lines, crate::shell::now_ms())
+        {
+            m.apply_here();
+        }
+        Ok(())
+    })
+}
+
+/// How many spectators follow the room without taking part.
+///
+/// # Errors
+///
+/// Rejects a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_watching(id: u64, watching: u32) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        if desktop.here.borrow_mut().set_watching(watching) {
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
+    })
+}
+
+/// What this page's person is doing, for the page to post to `/here`:
+/// `{window: hex | null, share, actions: [{id, action, resource, app,
+/// at_ms}]}`. `window` is the focused window's tab id; `actions` are their own steps in the active workspace's records since
+/// `since_ms` (titles only), and empty unless they share an automatic
+/// status (`share`).
+///
+/// # Errors
+///
+/// Rejects a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let tree = desktop.handle.read(Clone::clone);
+        let focused = tree.active_workspace().and_then(|workspace| {
+            let strip_id = tree.active_strip.get(&workspace.id).copied()?;
+            let strip = workspace.strips.iter().find(|s| s.id == strip_id)?;
+            let group = tree
+                .active_group_for(strip.id)
+                .and_then(|g| strip.window_groups.iter().find(|w| w.id == g))
+                .or_else(|| strip.window_groups.first())?;
+            group.tabs.iter().find(|tab| tab.id == group.active_tab)
+        });
+        let window = focused.map(|tab| format!("{:x}", tab.id));
+        let share = desktop.here.borrow().sharing() == ui::StatusSharing::Automatic;
+        let actions = if share {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a page clock in milliseconds; negative clamps to zero"
+            )]
+            let since = since_ms.max(0.0) as u64;
+            crate::history::own_recent_actions(&desktop.shared, &tree, &desktop.author, since)
+        } else {
+            Vec::new()
+        };
+        serde_json::to_string(&serde_json::json!({
+            "window": window,
+            "share": share,
+            "actions": actions,
+        }))
+        .map_err(error)
     })
 }
 
@@ -2630,6 +2781,7 @@ pub fn remote_presence(
 pub fn remote_presence_gone(id: u64, publisher: &str) -> Result<(), JsValue> {
     with_mount(id, |m| {
         m.frame.presence_mut().unregister_peer(publisher);
+        m.apply_here();
         m.frame.relayout();
         m.pending = true;
         m.window.request_redraw();

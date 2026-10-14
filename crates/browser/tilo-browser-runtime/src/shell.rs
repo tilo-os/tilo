@@ -15,6 +15,11 @@
 //! [`ChromeIntent`]s, applied as the surface's own navigation commands on the
 //! next update pass. What only the embedding page can do (inviting someone)
 //! is queued as a [`HostRequest`] for the mount's status.
+//!
+//! Who is here comes from the page ([`crate::here`]): their avatars join
+//! the bar's from a copy of the tree, the bar's avatars open the People
+//! popover with each person's place, status and recent summary, and the
+//! windows they are in carry their faces.
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -24,12 +29,15 @@ use tilo_desktop::chrome::{
     ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, TopBarWidget,
     TopBarWidgets,
 };
+use tilo_desktop::collaborators::{
+    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, RosterRow, RosterStatus,
+};
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadCopy};
 use tilo_desktop::overview::{OverviewHost, room_cards};
 use tilo_desktop::overview_panel::{OverviewPanel, OverviewPick};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop::window_switcher::WindowSource;
-use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceId};
+use tilo_desktop_model::{DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::{ActivityView, Command};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::kurbo::{Affine, Point, Rect};
@@ -68,9 +76,12 @@ pub(crate) struct HostOffers {
 /// intents it raised since the last update pass.
 struct PageChrome {
     handle: DesktopHandle,
+    shared: crate::desktop::Shared,
+    here: tilo_desktop::here::Here,
     intents: RefCell<Vec<ChromeIntent>>,
-    /// `(tree revision, minute)` the snapshot revision was last bumped for.
-    seen: Cell<(u64, i64)>,
+    /// `(tree revision, minute, who-is-here revision)` the snapshot revision
+    /// was last bumped for.
+    seen: Cell<(u64, i64, u64)>,
     revision: Cell<u64>,
     wake: Arc<dyn Fn() + Send + Sync>,
 }
@@ -78,7 +89,11 @@ struct PageChrome {
 impl DesktopChromeSource for PageChrome {
     fn snapshot(&self) -> DesktopChromeSnapshot {
         let clock = clock_snapshot();
-        let seen = (self.handle.revision(), clock.unix_seconds.div_euclid(60));
+        let seen = (
+            self.handle.revision(),
+            clock.unix_seconds.div_euclid(60),
+            self.here.borrow().revision(),
+        );
         if self.seen.get() != seen {
             self.seen.set(seen);
             self.revision.set(self.revision.get().wrapping_add(1));
@@ -91,18 +106,76 @@ impl DesktopChromeSource for PageChrome {
             topbar_widgets: Some(TopBarWidgets {
                 widgets: vec![TopBarWidget::Clock, TopBarWidget::Calendar],
             }),
+            watching: self.here.borrow().watching(),
             ..DesktopChromeSnapshot::default()
         }
     }
 
+    /// The surface's tree with who is here as the active workspace's
+    /// collaborators, for the bar's avatars.
     fn tree(&self) -> DesktopTree {
-        self.handle.read(Clone::clone)
+        let mut tree = self.handle.read(Clone::clone);
+        let people = self.people(&tree);
+        tilo_desktop::here::overlay_collaborators(&mut tree, &people);
+        tree
     }
 
     fn intent(&self, intent: ChromeIntent) -> bool {
         self.intents.borrow_mut().push(intent);
         (self.wake)();
         true
+    }
+}
+
+impl PageChrome {
+    /// Who is here, placed in `tree`.
+    fn people(&self, tree: &DesktopTree) -> Vec<tilo_desktop::here::Person> {
+        here_people(&self.here, &self.shared, tree)
+    }
+}
+
+/// Who is here, placed in `tree` and the records its windows show.
+pub(crate) fn here_people(
+    here: &tilo_desktop::here::Here,
+    shared: &crate::desktop::Shared,
+    tree: &DesktopTree,
+) -> Vec<tilo_desktop::here::Person> {
+    let records: Vec<(TabId, String)> = shared
+        .bound_records()
+        .into_iter()
+        .map(|(tab, checkout)| (tab, checkout.id.as_str().to_owned()))
+        .collect();
+    let app_name = |app: &str| crate::desktop::known_application(app).map(str::to_owned);
+    here.borrow().people(tree, &records, &app_name, now_ms())
+}
+
+/// Unix milliseconds.
+pub(crate) fn now_ms() -> u64 {
+    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or_default()
+}
+
+/// One person as the People popover lists them.
+fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
+    let status = |line: &tilo_desktop::here::Line| RosterStatus {
+        text: line.text.clone(),
+        automatic: line.automatic,
+    };
+    RosterRow {
+        id: person.id.clone(),
+        label: person.label.clone(),
+        initial: person
+            .label
+            .chars()
+            .next()
+            .map_or('\u{2022}', |c| c.to_uppercase().next().unwrap_or(c)),
+        color: theme.tokens.colors.presence.of_rgb(person.rgb),
+        is_agent: person.agent,
+        role: None,
+        invited: false,
+        activity: person.place.clone(),
+        status: person.status.as_ref().map(status),
+        recent: person.recent.as_ref().map(status),
+        followable: false,
     }
 }
 
@@ -218,6 +291,13 @@ pub(crate) struct BrowserShell {
     empty: Rc<Cell<bool>>,
     offers: HostOffers,
     requests: HostRequests,
+    /// The People popover the bar's avatars open.
+    people: CollaboratorsOverlay,
+    people_open: bool,
+    /// The person whose recent summary the popover shows.
+    expanded: Option<String>,
+    /// The pointer, in logical pixels, for the popover's targets.
+    cursor: Option<Point>,
 }
 
 impl BrowserShell {
@@ -227,12 +307,16 @@ impl BrowserShell {
         generation: String,
         offers: HostOffers,
         requests: HostRequests,
+        here: tilo_desktop::here::Here,
+        shared: crate::desktop::Shared,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         let chrome = Rc::new(PageChrome {
             handle: handle.clone(),
+            shared,
+            here,
             intents: RefCell::default(),
-            seen: Cell::new((u64::MAX, 0)),
+            seen: Cell::new((u64::MAX, 0, 0)),
             revision: Cell::new(0),
             wake,
         });
@@ -260,6 +344,102 @@ impl BrowserShell {
             empty,
             offers,
             requests,
+            people: CollaboratorsOverlay::default(),
+            people_open: false,
+            expanded: None,
+            cursor: None,
+        }
+    }
+
+    fn draw_people(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tree = self.handle.read(Clone::clone);
+        let rows: Vec<RosterRow> = self
+            .chrome
+            .people(&tree)
+            .iter()
+            .map(|person| roster_row(person, theme))
+            .collect();
+        if self
+            .expanded
+            .as_ref()
+            .is_some_and(|id| !rows.iter().any(|row| row.id == *id))
+        {
+            self.expanded = None;
+        }
+        let here = self.chrome.here.borrow();
+        let own_label = here.own_label().unwrap_or("You").to_owned();
+        let own_rgb = here
+            .own_rgb()
+            .unwrap_or_else(|| ui::presence::user_color(&own_label));
+        let own_status = here.own_status();
+        let watching = usize::try_from(here.watching()).unwrap_or(usize::MAX);
+        let sharing = here.sharing();
+        drop(here);
+        let own_initial = own_label
+            .chars()
+            .next()
+            .map_or('\u{2022}', |c| c.to_uppercase().next().unwrap_or(c));
+        self.people.draw(
+            scene,
+            transform,
+            text,
+            theme,
+            &CollaboratorsModel {
+                host: self.rect,
+                rows: &rows,
+                own_initial,
+                own_color: theme.tokens.colors.presence.of_rgb(own_rgb),
+                unavailable: None,
+                may_invite: self.offers.invite,
+                followed_id: None,
+                following_pairs: &[],
+                own_status: None,
+                own_activity: own_status.as_ref().map(|line| line.text.as_str()),
+                own_status_automatic: false,
+                status_sharing: sharing,
+                status_editing: false,
+                status_editable: false,
+                status_selection: ui::text_selection::Selection::default(),
+                screen_exposure: None,
+                expanded_id: self.expanded.as_deref(),
+                watching,
+            },
+            self.cursor,
+        );
+    }
+
+    fn apply_people_hit(&mut self, hit: CollaboratorsHit) {
+        match hit {
+            CollaboratorsHit::Dismiss => self.people_open = false,
+            CollaboratorsHit::Invite => {
+                self.people_open = false;
+                self.invite();
+            }
+            CollaboratorsHit::RoomActivity => {
+                self.people_open = false;
+                self.activity();
+            }
+            CollaboratorsHit::SetStatusSharing(mode) => {
+                self.chrome.here.borrow_mut().set_sharing(mode);
+            }
+            CollaboratorsHit::ToggleDetails(index) => {
+                let tree = self.handle.read(Clone::clone);
+                let id = self.chrome.people(&tree).get(index).map(|p| p.id.clone());
+                self.expanded = if self.expanded == id { None } else { id };
+            }
+            CollaboratorsHit::PreviousPeople | CollaboratorsHit::NextPeople => {
+                let tree = self.handle.read(Clone::clone);
+                let count = self.chrome.people(&tree).len();
+                self.people
+                    .change_people_page(hit == CollaboratorsHit::NextPeople, count);
+            }
+            _ => {}
         }
     }
 
@@ -328,7 +508,12 @@ impl BrowserShell {
                     open: !open || matches!(intent, ChromeIntent::ShowQuickSettings),
                 });
             }
-            ChromeIntent::ToggleCollaborators => self.invite(),
+            ChromeIntent::ToggleCollaborators => {
+                self.people_open = !self.people_open;
+                if !self.people_open {
+                    self.people.clear();
+                }
+            }
             ChromeIntent::ToggleOverview => self.toggle_overview(),
             _ => {}
         }
@@ -688,6 +873,11 @@ impl Widget for BrowserShell {
         self.overview.draw(scene, transform, text, theme, presence);
         // Last, so what the bar opens below its band stays above windows.
         self.bar.draw(scene, transform, text, theme, presence);
+        if self.people_open {
+            self.draw_people(scene, transform, text, theme);
+        } else {
+            self.people.clear();
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -695,6 +885,44 @@ impl Widget for BrowserShell {
         let [_, bar, area, overview] = nodes[..] else {
             return;
         };
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = Some(Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            ));
+        } else if matches!(event, WindowEvent::CursorLeft { .. }) {
+            self.cursor = None;
+        }
+        // The open popover takes the keyboard and the pointer over it; a
+        // press elsewhere closes it, and the bar's avatars toggle it.
+        if self.people_open || self.people.wants_pointer_capture() {
+            let on_bar = self
+                .cursor
+                .is_some_and(|point| point.y < tilo_desktop::topbar::TOPBAR_HEIGHT_PX);
+            let hit = self
+                .people
+                .handle_event(event, ctx, self.people_open, self.cursor);
+            if let Some(hit) = hit {
+                if !(hit == CollaboratorsHit::Dismiss && on_bar) {
+                    self.apply_people_hit(hit);
+                }
+                *ctx.handled = !(hit == CollaboratorsHit::Dismiss && on_bar);
+            }
+            if let WindowEvent::KeyboardInput { event: key, .. } = event
+                && self.people_open
+                && !*ctx.handled
+                && key.state == ElementState::Pressed
+                && let Some(hit) = self
+                    .people
+                    .key(&key.logical_key, ctx.modifiers.state().shift_key())
+            {
+                self.apply_people_hit(hit);
+                *ctx.handled = true;
+            }
+            if *ctx.handled {
+                return;
+            }
+        }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && self.chord(key, ctx.modifiers)
         {
@@ -742,6 +970,7 @@ impl Widget for BrowserShell {
 
     fn needs_redraw(&self) -> bool {
         self.drawn_minute.get() != minute()
+            || (self.people_open && self.people.needs_animation_frame())
             || [
                 &self.backdrop as &dyn Widget,
                 &self.bar,
@@ -765,6 +994,11 @@ impl Widget for BrowserShell {
         ]
         .iter()
         .filter_map(|child| child.next_wake_deadline())
+        .chain(
+            self.people_open
+                .then(|| self.people.next_wake_deadline())
+                .flatten(),
+        )
         .chain(std::iter::once(clock))
         .min()
     }
