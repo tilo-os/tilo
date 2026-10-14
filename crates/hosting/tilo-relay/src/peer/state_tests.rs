@@ -10,6 +10,8 @@
     clippy::too_many_lines,
     reason = "each test spells out one end-to-end scenario"
 )]
+mod keystroke;
+
 use super::private_transport_tests::certified_device;
 use super::*;
 use crate::{
@@ -18,7 +20,6 @@ use crate::{
 };
 use tilo_user_identity::{RevocationList, UserIdentity};
 
-mod keystroke;
 mod recovery;
 
 struct Fixture {
