@@ -2652,9 +2652,7 @@ fn spawn_agent_mcp(
     let computer =
         std::sync::Arc::new(tilo_runtime::computer::Computer::new(agent_socket, scratch));
     // Viewer invitations keep their ledger with the session's durable state.
-    let viewer_state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+    let viewer_state = tilo_paths::xdg::state_home()
         .map(|state| state.join("tilo"))
         .filter(|path| std::fs::create_dir_all(path).is_ok());
     let viewer = match viewer_state.map(|state| tilo_runtime::viewer::start_from_env(&state)) {
