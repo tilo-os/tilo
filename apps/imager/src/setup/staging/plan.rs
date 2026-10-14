@@ -24,7 +24,7 @@ pub struct Basis {
     pub firmware: FirmwareFacts,
 }
 
-pub use staging_handoff::{Extent, HostOs};
+pub use staging_handoff_model::{Extent, HostOs};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Shrink {
