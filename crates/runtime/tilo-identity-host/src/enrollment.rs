@@ -269,21 +269,19 @@ pub fn redeem(
             "a certificate cannot start to be valid in the future",
         ));
     }
-    match fleet {
-        Some(fleet) => fleet.redeem_locked(nonces, request, sign),
-        None => {
-            let issuer = request
-                .local_issuer
-                .ok_or_else(|| refused("issuer not enrolled"))?;
-            check_issuer(token, issuer, false, request.now_ns)?;
-            if nonces.is_consumed(&token.nonce)? {
-                return Err(refused("enrollment token has already been consumed"));
-            }
-            let cert = certify(request, sign)?;
-            nonces.claim(&token.nonce, request.device_public_key)?;
-            Ok(cert)
-        }
+    if let Some(fleet) = fleet {
+        return fleet.redeem_locked(nonces, request, sign);
     }
+    let issuer = request
+        .local_issuer
+        .ok_or_else(|| refused("issuer not enrolled"))?;
+    check_issuer(token, issuer, false, request.now_ns)?;
+    if nonces.is_consumed(&token.nonce)? {
+        return Err(refused("enrollment token has already been consumed"));
+    }
+    let cert = certify(request, sign)?;
+    nonces.claim(&token.nonce, request.device_public_key)?;
+    Ok(cert)
 }
 
 /// The root-signed certificate `request` asks for, verified.
@@ -344,6 +342,23 @@ mod tests {
         }
     }
 
+    impl Fixture {
+        /// A personal-device code minted by this device, as text and decoded.
+        fn mint(&self) -> (String, EnrollmentToken) {
+            let encoded = self
+                .store
+                .mint_enrollment(
+                    &self.identity_id,
+                    DeviceCapabilities::member(),
+                    self.issued_at_ns,
+                    self.issued_at_ns.saturating_add(5_000),
+                )
+                .expect("token");
+            let token = tilo_user_identity::decode_enrollment_token(&encoded).expect("decode");
+            (encoded, token)
+        }
+    }
+
     fn device(seed: u8) -> [u8; 32] {
         ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
             .verifying_key()
@@ -375,15 +390,7 @@ mod tests {
                 .map_err(|e| io::Error::other(e.to_string()))
         };
 
-        let encoded = store
-            .mint_enrollment(
-                &fixture.identity_id,
-                DeviceCapabilities::member(),
-                now,
-                now + 5_000,
-            )
-            .expect("token");
-        let token = tilo_user_identity::decode_enrollment_token(&encoded).expect("decode");
+        let (encoded, token) = fixture.mint();
         let cert = redeem(
             Some(store),
             &store.nonces(),
@@ -416,14 +423,7 @@ mod tests {
             "{error}"
         );
 
-        let encoded = store
-            .mint_enrollment(
-                &fixture.identity_id,
-                DeviceCapabilities::member(),
-                now,
-                now + 5_000,
-            )
-            .expect("second token");
+        let (encoded, token) = fixture.mint();
         store
             .complete_enrollment(
                 &fixture.identity_id,
@@ -434,7 +434,6 @@ mod tests {
                 now,
             )
             .expect("fleet redemption");
-        let token = tilo_user_identity::decode_enrollment_token(&encoded).expect("decode");
         let replay = redeem(
             None,
             &store.nonces(),
@@ -478,15 +477,7 @@ mod tests {
         let fixture = fixture();
         let store = &fixture.store;
         let now = fixture.issued_at_ns;
-        let encoded = store
-            .mint_enrollment(
-                &fixture.identity_id,
-                DeviceCapabilities::member(),
-                now,
-                now + 5_000,
-            )
-            .expect("token");
-        let token = tilo_user_identity::decode_enrollment_token(&encoded).expect("decode");
+        let (_, token) = fixture.mint();
         let (root, _) = store.identity(&fixture.identity_id).expect("root");
         let sign = |digest: &[u8]| {
             root.sign(digest)
@@ -546,7 +537,7 @@ mod tests {
 
         // Revoked, or never allowed to admit.
         assert!(check_issuer(&token, &issuer, true, now).is_err());
-        let mut member = issuer.clone();
+        let mut member = issuer;
         member.capabilities = DeviceCapabilities::member();
         assert!(check_issuer(&token, &resigned(member), false, now).is_err());
         assert!(
