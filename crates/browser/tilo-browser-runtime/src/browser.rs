@@ -54,9 +54,10 @@ thread_local! {
 }
 
 /// Schedule a frame for every desktop: an application posted or withdrew a
-/// notification. Runs inside application code, so it reaches the mounts
-/// only through the event loop.
-fn wake_desktops() {
+/// notification, or the Activity pane's code arrived. Runs inside
+/// application code or a future, so it reaches the mounts only through the
+/// event loop.
+pub(crate) fn wake_desktops() {
     let ids = DESKTOPS.with_borrow(Clone::clone);
     LOOP.with_borrow(|proxy| {
         if let Some(proxy) = proxy {
