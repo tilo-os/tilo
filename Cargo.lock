@@ -8017,6 +8017,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-clock",
  "tilo-desktop-entry",
+ "tilo-files",
  "tilo-paths",
  "tilo-rt",
  "tilo-sandbox-core",

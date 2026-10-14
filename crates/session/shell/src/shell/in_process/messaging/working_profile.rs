@@ -295,7 +295,7 @@ fn fd_path(file: &File) -> PathBuf {
 fn validate_directory(file: &File) -> io::Result<()> {
     let metadata = file.metadata()?;
     if !metadata.is_dir()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || !tilo_files::native::private::owned_by_me(&metadata)
         || !tilo_files::native::private::is_owner_only(&metadata)
     {
         return Err(io::ErrorKind::PermissionDenied.into());
