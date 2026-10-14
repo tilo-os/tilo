@@ -108,22 +108,7 @@ impl ShortcutsProvider {
             },
         );
         let open = Rc::clone(&invoke);
-        let (subtitle, params) = match quick {
-            // The bound input is not asked for again.
-            Some(quick) => (
-                Some(t_args(
-                    "search-shortcut-run-on",
-                    &[("resource", quick.label.as_str().into())],
-                )),
-                descriptor
-                    .params
-                    .iter()
-                    .filter(|param| !quick.arguments.contains_key(param.name.as_ref()))
-                    .cloned()
-                    .collect(),
-            ),
-            None => (descriptor.description.clone(), descriptor.params.clone()),
-        };
+        let (subtitle, params) = subtitle_and_params(&descriptor, quick);
         Some(SearchResult {
             shortcut: None,
             kind: ResourceKind::Action,
@@ -149,6 +134,29 @@ impl ShortcutsProvider {
             on_invoke: Some(invoke),
             on_begin_invoke: None,
         })
+    }
+}
+
+/// A row's subtitle and the inputs it still asks for: a quick action names
+/// the resource it runs on and does not ask for its bound input again.
+fn subtitle_and_params(
+    descriptor: &tilo_actions::ActionDescriptor,
+    quick: Option<&QuickAction>,
+) -> (Option<String>, Vec<tilo_actions::ActionParam>) {
+    match quick {
+        Some(quick) => (
+            Some(t_args(
+                "search-shortcut-run-on",
+                &[("resource", quick.label.as_str().into())],
+            )),
+            descriptor
+                .params
+                .iter()
+                .filter(|param| !quick.arguments.contains_key(param.name.as_ref()))
+                .cloned()
+                .collect(),
+        ),
+        None => (descriptor.description.clone(), descriptor.params.clone()),
     }
 }
 

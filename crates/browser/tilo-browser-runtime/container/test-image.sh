@@ -52,6 +52,21 @@ version=$(grep -o "v/[0-9a-f]\{20\}/entry-page.mjs" <<<"$page" | head -1 | cut -
 [[ -n $version ]] || fail "the entry page imports no versioned entry-page.mjs"
 grep -q "'../v/$version/entry-page.mjs'" <<<"$(get "$home" /app/)" || fail "the app entry points elsewhere"
 grep -q '^cache-control: no-cache' <(head_of "$home" /) || fail "/ must revalidate"
+# One complete, immutable version: version.json names the version the entry
+# pages import, and every file that version's build.json lists (bar the two
+# entry pages, which live at the top) is served under v/<version>/ with
+# exactly the bytes it records. A missing or substituted file fails here
+# rather than in a visitor's tab when an app's module is first fetched.
+[[ $(get "$home" /version.json | jq -r .version) == "$version" ]] || fail "version.json names another version than the entry page imports"
+listed=$(get "$home" "/v/$version/build.json" \
+  | jq -r '.files | to_entries[] | select(.key != "index.html" and .key != "app/index.html") | "\(.value) \(.key)"')
+[[ $(wc -l <<<"$listed") -gt 1 ]] || fail "build.json lists no files"
+# -g: font names carry [ ], which curl would otherwise read as a glob.
+served=$("$engine" exec -i "$home" sh -c '
+  while read -r hash name; do
+    printf "%s %s\n" "$(curl -fsSg -H "Accept-Encoding: identity" "http://127.0.0.1:8080/v/$1/$name" | sha256sum | cut -d" " -f1)" "$name"
+  done' sh "$version" <<<"$listed")
+[[ $served == "$listed" ]] || fail "v/$version/ differs from its build.json: $(diff <(echo "$listed") <(echo "$served") | head -5)"
 # The arrival screen's lines, which arrival.mjs fetches beside itself.
 for locale in en-US de-DE; do
   grep -q '^arrival-label-tip = ' <<<"$(get "$home" "/v/$version/locales/$locale.ftl")" \

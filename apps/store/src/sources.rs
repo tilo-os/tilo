@@ -164,33 +164,48 @@ fn preferred_locale() -> String {
         .unwrap_or_else(|| "en".into())
 }
 
+/// The source label of an installed Tilo app no repository currently
+/// describes; the details page explains why, once.
+pub const INSTALLED_ON_DEVICE: &str = "Installed on this device";
+
 /// Turn an installed Tilo package into a local-only Store row.
 ///
-/// A verified catalogue entry normally supplies the richer description and
+/// A verified catalogue entry normally supplies the description, artwork and
 /// update metadata. That entry is not guaranteed to be reachable forever,
 /// though: a user must still be able to launch, pin, or remove software that
 /// is already on their device while its registry is offline or has withdrawn
-/// it. This deliberately publishes no download URL or claimed latest version,
-/// so the UI cannot offer an update based on stale or invented metadata.
-pub fn installed_tilo_to_store_item(entry: &InstalledPackage) -> StoreItem {
+/// it. The package's own signed manifest (`about`) still names and files the
+/// app, and the installed tree has a size, so the row says what the app is.
+/// It publishes no download URL or claimed latest version, so the UI cannot
+/// offer an update based on stale or invented metadata.
+pub fn installed_tilo_to_store_item(
+    entry: &InstalledPackage,
+    about: Option<&app_host::client::PackageAbout>,
+) -> StoreItem {
+    let locale = preferred_locale();
     StoreItem {
         bot: None,
         id: entry.id.clone(),
-        // Package ids are the only durable local display metadata available
-        // from app-host's list endpoint. Do not manufacture a publisher name
-        // or copy one from an unrelated catalogue row.
-        name: entry.id.clone(),
-        description: "Installed on this device. Catalogue details are unavailable.".into(),
+        name: about.map_or_else(
+            || package_store::display_name_for_package_id(&entry.id),
+            |about| about.name_for(&locale).to_owned(),
+        ),
+        // The manifest has no description. Saying so on every row is noise;
+        // the details page names the repository that has not answered.
+        description: String::new(),
         tagline: String::new(),
         supported_languages: Vec::new(),
-        categories: Vec::new(),
+        categories: about
+            .and_then(|about| about.category.clone())
+            .into_iter()
+            .collect(),
         icon_url: None,
         screenshot_urls: Vec::new(),
         homepage_url: None,
         source_url: None,
         install_ref_path: None,
         source: StoreSource::Tilo {
-            registry_name: "Installed on this device".into(),
+            registry_name: INSTALLED_ON_DEVICE.into(),
         },
         // app-host accepts only packages whose signature and declared package
         // identity verified at installation. This is not a current registry
@@ -201,7 +216,7 @@ pub fn installed_tilo_to_store_item(entry: &InstalledPackage) -> StoreItem {
             released_at_unix: 0,
             download_url: None,
             root_hash_hex: None,
-            size_bytes: 0,
+            size_bytes: entry.payload_bytes,
             runtime: None,
         }],
         publisher_pubkey_hex: (!entry.publisher_key_hex.trim().is_empty())
@@ -510,7 +525,7 @@ pub fn distinct_categories(items: &[StoreItem]) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::registry_client::TrustLevel;
     use ed25519_dalek::SigningKey;
@@ -626,7 +641,12 @@ mod tests {
         );
     }
 
-    fn tilo_entry(id: &str, name: &str, version: &str, publisher: [u8; 32]) -> RegistryEntry {
+    pub(crate) fn tilo_entry(
+        id: &str,
+        name: &str,
+        version: &str,
+        publisher: [u8; 32],
+    ) -> RegistryEntry {
         let mut e = RegistryEntry {
             package_id: id.into(),
             kind: registry_types::EntryKind::App,
@@ -666,7 +686,7 @@ mod tests {
         e
     }
 
-    fn installed_package(
+    pub(crate) fn installed_package(
         id: impl Into<String>,
         version: impl Into<String>,
         publisher_key_hex: impl Into<String>,
@@ -734,7 +754,7 @@ mod tests {
         );
     }
 
-    fn verified(entry: RegistryEntry) -> VerifiedEntry {
+    pub(crate) fn verified(entry: RegistryEntry) -> VerifiedEntry {
         VerifiedEntry {
             entry,
             trust: TrustLevel::PublisherSigned,
@@ -797,14 +817,14 @@ mod tests {
 
         // Case `locally_installed_tilo_item_stays_actionable_without_catalogue_metadata`.
         {
-            let item = installed_tilo_to_store_item(&installed_package(
-                "so.tilo.offline",
-                "1.2.3",
-                "ab".repeat(32),
-                true,
-                true,
-            ));
-            assert_eq!(item.name, "so.tilo.offline");
+            let item = installed_tilo_to_store_item(
+                &installed_package("so.tilo.offline", "1.2.3", "ab".repeat(32), true, true),
+                None,
+            );
+            // Without a manifest the id still yields a readable name, never
+            // the raw reverse-DNS id or a sentence about missing metadata.
+            assert_eq!(item.name, "Offline");
+            assert!(item.description.is_empty());
             assert!(item.installed.is_installed());
             assert!(item.installed.is_pinned());
             assert!(!item.installed.update_available());
