@@ -427,6 +427,7 @@ files = [
   { from = "tilo-home-peer-control", to = "/usr/libexec/tilo-home-peer-control", mode = "0755" },
   # A node (docs/node-machine.md).
   { from = "@manifest/usr/lib/tilo/node-relay.toml", to = "/usr/lib/tilo/node-relay.toml", mode = "0644" },
+  { from = "@manifest/usr/lib/sysusers.d/tilo-relay.conf", to = "/usr/lib/sysusers.d/tilo-relay.conf", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-relay@.service", to = "/usr/lib/systemd/system/tilo-node-relay@.service", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session-key@.service", to = "/usr/lib/systemd/system/tilo-node-session-key@.service", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.service", to = "/usr/lib/systemd/system/tilo-node-session@.service", mode = "0644" },

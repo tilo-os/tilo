@@ -2186,7 +2186,13 @@ COPY \
     os/usr/lib/systemd/system/tilo-relay-firstboot.service \
     os/usr/lib/systemd/system/tilo-network-start.service \
     os/usr/lib/systemd/system/tilo-network-start.target \
+    os/usr/lib/systemd/system/tilo-node-relay@.service \
+    os/usr/lib/systemd/system/tilo-node-session-key@.service \
+    os/usr/lib/systemd/system/tilo-node-session@.service \
+    os/usr/lib/systemd/system/tilo-node-session@.path \
     /usr/lib/systemd/system/
+# A node's relay (docs/node-machine.md).
+COPY os/usr/lib/tilo/node-relay.toml /usr/lib/tilo/node-relay.toml
 COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf \
     /usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf
 COPY os/usr/lib/NetworkManager/conf.d/20-tilo-wake.conf \
@@ -2414,12 +2420,16 @@ COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpf
 # The device-trust group, which must exist before tmpfiles-setup runs so
 # the identity directory can be created with it. See the snippet for why
 # the device key is group-owned rather than owned by one component.
+# The relay's static account: a desktop set up as a node runs the relay
+# (tilo-node-relay@) under it, as the host image runs tilo-relay.service.
 COPY \
     os/usr/lib/sysusers.d/tilo-local-model.conf \
     os/usr/lib/sysusers.d/tilo-identity.conf \
+    os/usr/lib/sysusers.d/tilo-relay.conf \
     /usr/lib/sysusers.d/
 RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
- && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf
+ && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf \
+ && systemd-sysusers /usr/lib/sysusers.d/tilo-relay.conf
 
 # xdg-desktop-portal backend registration.
 #
