@@ -683,12 +683,23 @@ fn sync_status_reads_as_quiet_text_before_the_rows_trailing_controls() {
         rect.x0 >= g.content_column.x0,
         "stays in the content column's row"
     );
+    let slot = h.root::<NavShell>().header_status_slot();
+    assert!(slot.width() > 0.0, "room is left for a save status");
+    assert!(
+        slot.x1 < rect.x0 && slot.y1 <= g.header_height,
+        "{slot:?} sits in the row before the sync status {rect:?}"
+    );
 
     assert!(h.root_mut::<NavShell>().set_sync_status(None));
     settle(&mut h, 1280, 800);
     assert!(
         status(&h).and_then(|(_, node)| node).is_none(),
         "nothing to announce"
+    );
+    let slot = h.root::<NavShell>().header_status_slot();
+    assert!(
+        slot.x1 <= g.history.x0 && slot.x1 > rect.x0,
+        "without a sync status the save status takes its place: {slot:?}"
     );
 }
 

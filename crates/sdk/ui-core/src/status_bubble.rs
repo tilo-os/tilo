@@ -399,8 +399,11 @@ pub struct SaveNotice {
 /// succeeds or it is dismissed. An app reports the state and routes clicks;
 /// it never pins a bubble open or paints its own save pill.
 ///
-/// Both float in the bottom-trailing corner of the area they report on,
-/// clear of its scroll bar gutter.
+/// Given the document's header row ([`SaveStatusSurface::set_header_slot`]),
+/// the save's progress is quiet text there, beside the title, covering none
+/// of the document. Without one, and for a failure's card, they float in the
+/// bottom-trailing corner of the area they report on, clear of its scroll
+/// bar gutter.
 ///
 /// [`ACKNOWLEDGEMENT_HOLD`]: crate::widget::acknowledgement::ACKNOWLEDGEMENT_HOLD
 #[derive(Clone, Debug)]
@@ -425,6 +428,10 @@ pub struct SaveStatusSurface {
     notified: bool,
     /// A notification to take down, not yet taken by the host.
     withdraw: bool,
+    /// Room in the document's header row ([`Self::set_header_slot`]).
+    slot: Rect,
+    /// Where the status last painted in [`Self::slot`].
+    in_slot: Rect,
 }
 
 impl Default for SaveStatusSurface {
@@ -444,6 +451,8 @@ impl Default for SaveStatusSurface {
             unseen_since: None,
             notified: false,
             withdraw: false,
+            slot: Rect::ZERO,
+            in_slot: Rect::ZERO,
         }
     }
 }
@@ -452,6 +461,16 @@ impl SaveStatusSurface {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Say the save's progress in `slot`, the room the document's header
+    /// row leaves beside its title (`NavShell::header_status_slot`), instead
+    /// of floating over the document's corner where it would cover what
+    /// the person reads. A failure's card still floats: it carries a reason
+    /// and two choices. Where the slot is too narrow for what there is to
+    /// say, the corner is used after all.
+    pub fn set_header_slot(&mut self, slot: Rect) {
+        self.slot = slot;
     }
 
     /// Report the save state. A change shows it; the same state again does
@@ -562,19 +581,30 @@ impl SaveStatusSurface {
     }
 
     /// A notification to raise about a save that gave up while nobody
-    /// painted the document, once, at `now`. The host posts it and routes
-    /// its action to [`Self::retry_from_notice`]; [`Self::take_withdrawal`]
+    /// painted the document, once, at `now`. It names the `document` (its
+    /// title, if it has one) and says the changes are still in `app`, since
+    /// whoever reads it is somewhere else. The host posts it and routes its
+    /// action to [`Self::retry_from_notice`]; [`Self::take_withdrawal`]
     /// says when to take it down.
-    pub fn take_notice(&mut self, now: Instant) -> Option<SaveNotice> {
+    pub fn take_notice(
+        &mut self,
+        now: Instant,
+        document: Option<&str>,
+        app: &str,
+    ) -> Option<SaveNotice> {
         self.advance(now);
         let unseen = self.unseen_since?;
         if self.notified || now.saturating_duration_since(unseen) < UNSEEN_GRACE {
             return None;
         }
         self.notified = true;
+        let title = match document.map(str::trim).filter(|title| !title.is_empty()) {
+            Some(document) => crate::i18n!("save-status-not-saved-named", "document" => document),
+            None => crate::i18n!("save-status-not-saved"),
+        };
         Some(SaveNotice {
-            title: crate::i18n!("save-status-not-saved"),
-            body: crate::i18n!("save-status-not-saved-detail"),
+            title,
+            body: crate::i18n!("save-status-not-saved-notice", "app" => app),
             action: crate::i18n!("save-status-retry"),
         })
     }
@@ -605,6 +635,13 @@ impl SaveStatusSurface {
     ) -> bool {
         if self.failure().is_some() {
             return false;
+        }
+        if !self.in_slot.is_zero_area() {
+            let gutter = f64::from(theme.tokens.spacing.s2);
+            let over = self.in_slot.inflate(gutter, gutter).contains(p);
+            return self
+                .bubble
+                .set_hover(!self.bubble.text.is_empty() && over, now);
         }
         let corner = Self::corner(area, theme);
         self.bubble.pointer_moved(corner, p, tr, theme, now)
@@ -842,8 +879,13 @@ impl SaveStatusSurface {
             self.notified = false;
         }
         let corner = Self::corner(area, theme);
+        self.in_slot = Rect::ZERO;
         if self.gave_up() {
             self.hit = crate::widget::toast::ToastCardHit::default();
+            if let Some(rect) = self.paint_gave_up_in_slot(scene, transform, tr, theme) {
+                self.in_slot = rect;
+                return Some(rect);
+            }
             return Some(self.paint_gave_up(scene, transform, tr, theme, corner));
         }
         self.retry_rect = Rect::ZERO;
@@ -854,6 +896,11 @@ impl SaveStatusSurface {
             self.hit = crate::widget::toast::ToastCardHit::default();
             if !self.bubble.is_visible(now) {
                 self.bubble.shown_at = None;
+            }
+            if self.slot_fits(tr, theme) {
+                let painted = self.paint_in_slot(scene, transform, tr, theme, now);
+                self.in_slot = painted.unwrap_or_default();
+                return painted;
             }
             return self.bubble.paint(scene, transform, tr, theme, corner, now);
         };
@@ -877,6 +924,132 @@ impl SaveStatusSurface {
             return None;
         }
         (!self.hit.card_rect.is_zero_area()).then_some(self.hit.card_rect)
+    }
+
+    /// Whether the header slot can say anything legible: a caption of four
+    /// line heights at least, like the sync status beside it.
+    fn slot_fits(&self, tr: &mut TextRenderer, theme: &Theme) -> bool {
+        let (_, line) = tr.measure_style("Ag", None, &theme.text(TextRole::Caption));
+        self.slot.height() > 0.0 && self.slot.width() >= f64::from(line) * 4.0
+    }
+
+    /// The bubble's text as quiet caption text, right-aligned in the header
+    /// slot and fading as the bubble does; `None` when there is nothing to
+    /// say. See [`Self::slot_fits`].
+    fn paint_in_slot(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        now: Instant,
+    ) -> Option<Rect> {
+        let slot = self.slot;
+        let style = theme.text(TextRole::Caption);
+        let alpha = self.bubble.alpha_in(theme, now);
+        if alpha <= 0.0 || self.bubble.text.is_empty() {
+            return None;
+        }
+        let text = self.bubble.text.clone();
+        let (w, _) = tr.measure_style(&text, None, &style);
+        let text = if f64::from(w) > slot.width() {
+            tr.elide_to_width_style(&text, crate::num::f32_of_f64(slot.width()), &style)
+        } else {
+            text
+        };
+        let (w, h) = tr.measure_style(&text, None, &style);
+        let (w, h) = (f64::from(w), f64::from(h));
+        let rect = Rect::new(
+            slot.x1 - w,
+            slot.center().y - h / 2.0,
+            slot.x1,
+            slot.center().y + h / 2.0,
+        );
+        let faded = alpha < 1.0;
+        if faded {
+            scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, transform, &rect);
+        }
+        tr.draw_style(
+            scene,
+            &text,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate(Vec2::new(rect.x0, rect.y0)),
+            None,
+            &style,
+        );
+        if faded {
+            scene.pop_layer();
+        }
+        Some(rect)
+    }
+
+    /// "Not saved" after a warning mark, then a compact "Try again", where
+    /// the save's progress showed in the header slot. `None` when the slot
+    /// cannot hold all three (the bubble floats instead).
+    fn paint_gave_up_in_slot(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<Rect> {
+        use crate::widget::{Button, ButtonFace, ControlSize};
+        let slot = self.slot;
+        let label = self.bubble.text().to_owned();
+        let retry = crate::i18n!("save-status-retry");
+        let style = theme.text(TextRole::Caption);
+        let (label_w, label_h) = tr.measure_style(&label, None, &style);
+        let face = |rect: Rect| {
+            ButtonFace::new(rect, &retry)
+                .control_size(ControlSize::Small)
+                .icon(crate::icons::Icon::RotateCw)
+        };
+        let button_w = face(Rect::ZERO).intrinsic_width(tr, theme);
+        let button_h = ButtonFace::height(ControlSize::Small, theme);
+        let icon = f64::from(theme.tokens.metrics.icon_sm);
+        let mark_gap = f64::from(theme.tokens.metrics.icon_label_gap);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let width = icon + mark_gap + f64::from(label_w) + gap + button_w;
+        if slot.height() < button_h || slot.width() < width {
+            return None;
+        }
+        let cy = slot.center().y;
+        let x0 = slot.x1 - width;
+        crate::icons::Icon::TriangleAlert.draw(
+            scene,
+            transform,
+            Rect::new(x0, cy - icon / 2.0, x0 + icon, cy + icon / 2.0),
+            theme.tokens.colors.semantic.warning,
+        );
+        let label_h = f64::from(label_h);
+        tr.draw_style(
+            scene,
+            &label,
+            theme.tokens.colors.text_primary,
+            transform.pre_translate(Vec2::new(x0 + icon + mark_gap, cy - label_h / 2.0)),
+            None,
+            &style,
+        );
+        self.retry_rect = Rect::new(
+            slot.x1 - button_w,
+            cy - button_h / 2.0,
+            slot.x1,
+            cy + button_h / 2.0,
+        );
+        let hovered = self.hovered_action() == Some(SaveAction::Retry);
+        Button::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            &face(self.retry_rect).hovered(hovered),
+        );
+        Some(Rect::new(
+            x0,
+            cy - button_h / 2.0,
+            slot.x1,
+            cy + button_h / 2.0,
+        ))
     }
 
     /// "Not saved" with a compact "Try again" button, in the bubble where
@@ -906,7 +1079,9 @@ impl SaveStatusSurface {
         let inset = f64::from(s.s1);
         let pad_x = f64::from(s.s3);
         let gap = f64::from(s.s2);
-        let width = pad_x + f64::from(label_w) + gap + button_w + inset;
+        let icon = f64::from(theme.tokens.metrics.icon_sm);
+        let mark = icon + f64::from(theme.tokens.metrics.icon_label_gap);
+        let width = pad_x + mark + f64::from(label_w) + gap + button_w + inset;
         let height = pill_height(theme).max(button_h + 2.0 * inset);
         let gutter = f64::from(s.s4);
         let x1 = corner.x1 - gutter;
@@ -923,12 +1098,24 @@ impl SaveStatusSurface {
             .tokens
             .colors
             .text_primary;
+        let cy = rect.center().y;
+        crate::icons::Icon::TriangleAlert.draw(
+            scene,
+            transform,
+            Rect::new(
+                rect.x0 + pad_x,
+                cy - icon / 2.0,
+                rect.x0 + pad_x + icon,
+                cy + icon / 2.0,
+            ),
+            theme.tokens.colors.semantic.warning,
+        );
         let ty = centered_text_top(rect.y0, rect.height(), f64::from(label_h));
         tr.draw_style(
             scene,
             &label,
             ink,
-            transform.pre_translate(Vec2::new(rect.x0 + pad_x, ty)),
+            transform.pre_translate(Vec2::new(rect.x0 + pad_x + mark, ty)),
             None,
             &style,
         );
@@ -954,6 +1141,9 @@ impl SaveStatusSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The document the tests' notifications name.
+    const DOC: Option<&str> = Some("Launch checklist");
 
     #[test]
     fn status_bubble_geometry_reveal_linger_and_fade_follow_pokes_and_hover() {
@@ -1315,7 +1505,7 @@ mod tests {
 
         let given_up = t0 + SAVE_GIVE_UP;
         // The frame the wake asks for: the host's own tick first, then paint.
-        assert_eq!(surface.take_notice(given_up), None);
+        assert_eq!(surface.take_notice(given_up, DOC, "Notes"), None);
         let bubble = paint(&mut surface, given_up).expect("the bubble is painted");
         assert!(surface.gave_up());
         assert_eq!(surface.bubble_text(), "Not saved");
@@ -1330,7 +1520,7 @@ mod tests {
         assert_eq!(node.name.as_deref(), Some("Not saved"));
         assert_eq!(node.children[0].name.as_deref(), Some("Try again"));
         assert_eq!(
-            surface.take_notice(given_up + UNSEEN_GRACE * 5),
+            surface.take_notice(given_up + UNSEEN_GRACE * 5, DOC, "Notes"),
             None,
             "in view, the bubble says it and nothing is notified"
         );
@@ -1355,6 +1545,50 @@ mod tests {
         assert!(!surface.gave_up());
     }
 
+    /// Given the header row's room, the save's progress says itself there,
+    /// and "Not saved" with its warning mark and "Try again" stays in it:
+    /// nothing floats over the document.
+    #[test]
+    fn a_save_says_itself_in_the_header_row_not_over_the_document() {
+        crate::i18n::I18nManager::init("en-US");
+        let theme = Theme::default();
+        let mut tr = TextRenderer::new();
+        let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let slot = Rect::new(300.0, 0.0, 1100.0, 48.0);
+        let t0 = Instant::now();
+        let mut surface = SaveStatusSurface::new();
+        surface.set_header_slot(slot);
+        surface.set(SaveState::Saving, t0);
+        let mut scene = Scene::new();
+        let mut at = |surface: &mut SaveStatusSurface, now| {
+            surface.paint(&mut scene, Affine::IDENTITY, &mut tr, &theme, area, now)
+        };
+        let saving = at(&mut surface, t0 + SAVE_NOTICEABLE).expect("Saving… shows");
+        assert!(slot.contains(saving.origin()) && saving.x1 <= slot.x1);
+        assert!(
+            (saving.x1 - slot.x1).abs() < 0.5,
+            "against the trailing end"
+        );
+        let retrying = at(&mut surface, t0 + SAVE_STALL).expect("Retrying… shows");
+        assert!(retrying.y1 <= slot.y1 && retrying.x1 <= slot.x1);
+        let not_saved = at(&mut surface, t0 + SAVE_GIVE_UP).expect("Not saved shows");
+        assert!(surface.gave_up());
+        assert!(not_saved.y0 >= slot.y0 && not_saved.y1 <= slot.y1);
+        assert!(not_saved.x0 >= slot.x0 && not_saved.x1 <= slot.x1);
+        assert!(not_saved.contains(surface.retry_rect.center()));
+        assert_eq!(
+            surface.click(surface.retry_rect.center()),
+            Some(SaveAction::Retry)
+        );
+
+        // Too narrow for "Not saved" and "Try again": the corner after all.
+        let mut surface = SaveStatusSurface::new();
+        surface.set_header_slot(Rect::new(300.0, 0.0, 340.0, 48.0));
+        surface.set(SaveState::Saving, t0);
+        let floating = at(&mut surface, t0 + SAVE_GIVE_UP).expect("Not saved shows");
+        assert!(floating.y1 > slot.y1, "{floating:?} floats in the corner");
+    }
+
     /// A save that gives up while nothing paints the document raises a
     /// notification with "Try again"; it comes down once the document says
     /// it in place, or the save lands.
@@ -1365,25 +1599,26 @@ mod tests {
         let mut surface = SaveStatusSurface::new();
         surface.set(SaveState::Saving, t0);
         // Out of sight: only the host's tick runs, never paint.
-        assert_eq!(surface.take_notice(t0 + SAVE_STALL), None);
+        assert_eq!(surface.take_notice(t0 + SAVE_STALL, DOC, "Notes"), None);
         assert!(
             surface.take_retry(),
             "the retry is asked for out of sight too"
         );
         let given_up = t0 + SAVE_GIVE_UP;
-        assert_eq!(surface.take_notice(given_up), None, "a frame may yet come");
+        assert_eq!(
+            surface.take_notice(given_up, DOC, "Notes"),
+            None,
+            "a frame may yet come"
+        );
         assert_eq!(surface.next_wake_deadline(), Some(given_up + UNSEEN_GRACE));
         let notice = surface
-            .take_notice(given_up + UNSEEN_GRACE)
+            .take_notice(given_up + UNSEEN_GRACE, DOC, "Notes")
             .expect("nobody painted it: notify");
-        assert_eq!(notice.title, "Not saved");
-        assert_eq!(
-            notice.body,
-            "Your changes are still here. Try again to save them."
-        );
+        assert_eq!(notice.title, "Launch checklist wasn't saved");
+        assert_eq!(notice.body, "Your changes are still in Notes.");
         assert_eq!(notice.action, "Try again");
         assert_eq!(
-            surface.take_notice(given_up + UNSEEN_GRACE * 3),
+            surface.take_notice(given_up + UNSEEN_GRACE * 3, DOC, "Notes"),
             None,
             "once"
         );
@@ -1396,8 +1631,11 @@ mod tests {
         let t1 = given_up + Duration::from_secs(5);
         surface.advance(t1);
         let given_up = t1 + SAVE_GIVE_UP;
-        surface.take_notice(given_up);
-        assert!(surface.take_notice(given_up + UNSEEN_GRACE).is_some());
+        surface.take_notice(given_up, DOC, "Notes");
+        let untitled = surface
+            .take_notice(given_up + UNSEEN_GRACE, None, "Notes")
+            .expect("notified again");
+        assert_eq!(untitled.title, "Not saved", "a document without a title");
         surface.set(SaveState::Saved, given_up + UNSEEN_GRACE * 2);
         assert!(surface.take_withdrawal(), "a save that lands takes it down");
     }

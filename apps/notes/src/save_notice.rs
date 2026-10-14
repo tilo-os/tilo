@@ -73,12 +73,14 @@ impl SaveNotices {
             .clone()
     }
 
-    /// Raise or take down what `surface` asks at `now`, and take a "Try
-    /// again" chosen on the notification. Returns whether the person asked
-    /// to try again, so the note's changes are submitted once more.
+    /// Raise or take down what `surface` asks at `now` about the note
+    /// titled `title`, and take a "Try again" chosen on the notification.
+    /// Returns whether the person asked to try again, so the note's changes
+    /// are submitted once more.
     pub(crate) fn deliver(
         &mut self,
         surface: &mut ui::SaveStatusSurface,
+        title: Option<&str>,
         now: ui::time::Instant,
     ) -> bool {
         let asked = retries().asked.remove(&self.id);
@@ -90,10 +92,11 @@ impl SaveNotices {
         {
             tracing::debug!(%error, "withdrawing the note's save notification");
         }
-        if let Some(notice) = surface.take_notice(now) {
+        if let Some(notice) = surface.take_notice(now, title, &ui::i18n!("notes-title")) {
             let notification = ui::notify::Notification::new(self.tag(), notice.title, notice.body)
                 .with_activation(format!("{RETRY}{}", self.id))
-                .with_action(notice.action);
+                .with_action(notice.action)
+                .with_severity(ui::notify::Severity::Warning);
             if let Err(error) = self.notifier().show(&notification) {
                 tracing::warn!(%error, "telling the person a note was not saved");
             }

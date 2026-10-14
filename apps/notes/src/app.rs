@@ -789,7 +789,10 @@ impl NotesApp {
     /// Raise, take down or answer the notification of a save that gave up
     /// while the note was out of sight.
     fn deliver_save_notice(&mut self, now: ui::time::Instant) {
-        if self.save_notices.deliver(&mut self.save_surface, now) {
+        if self
+            .save_notices
+            .deliver(&mut self.save_surface, self.main.title(), now)
+        {
             self.save_retry = true;
             self.self_dirty = true;
         }
@@ -833,11 +836,11 @@ impl NotesApp {
         self.refresh_status();
     }
 
-    /// Draw the transient floating status bubble at the bottom-right of the
-    /// window — the reclaimed home of the old bottom status strip. It shows
-    /// on a status change or while the pointer hovers the bottom-right band,
-    /// then fades. All colours come from the theme (via `draw_pill`).
-    /// Returns where it painted, `self.rect` when it painted without saying.
+    /// Draw the save status: in the header row beside the note's title,
+    /// where it covers none of the note, and a failed save's card in the
+    /// bottom-right corner. It shows on a status change or while the pointer
+    /// rests on it, then fades. Returns where it painted, `self.rect` when
+    /// it painted without saying.
     fn draw_status_bubble(
         &mut self,
         scene: &mut Scene,
@@ -847,6 +850,8 @@ impl NotesApp {
     ) -> Option<Rect> {
         let now = ui::time::now();
         let before = scene.encoding().draw_tags.len();
+        self.save_surface
+            .set_header_slot(self.shell.header_status_slot());
         let painted = self
             .save_surface
             .paint(scene, transform, tr, theme, self.rect, now);
@@ -4107,8 +4112,11 @@ mod tests {
         app.deliver_save_notice(later());
         let shown = out_of_sight.shown();
         assert_eq!(shown.len(), 1, "nothing painted it: notify");
-        assert_eq!(shown[0].title, "Not saved");
+        let title = app.main.title().expect("the seeded note has a title");
+        assert_eq!(shown[0].title, format!("{title} wasn't saved"));
+        assert_eq!(shown[0].body, "Your changes are still in Notes.");
         assert_eq!(shown[0].action.as_deref(), Some("Try again"));
+        assert_eq!(shown[0].severity, ui::notify::Severity::Warning);
         let tag = shown[0].tag.clone();
         // The retry the stall asked for on the way.
         app.take_save_retry_request();

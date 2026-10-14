@@ -68,8 +68,24 @@ pub struct Notification {
     pub activation: Option<String>,
     /// What choosing the notification does, in the person's words ("Try
     /// again"), for a host that shows the activation as a button. Without
-    /// one the host says it opens the app.
+    /// one a click opens the app.
     pub action: Option<String>,
+    /// How much it asks of the person: a host marks a warning or an error
+    /// the way it marks its own.
+    pub severity: Severity,
+}
+
+/// How much a notification asks of the person.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Severity {
+    /// News: something happened.
+    #[default]
+    Info,
+    /// Something went wrong that the person can put right, such as a save
+    /// that did not go through.
+    Warning,
+    /// Something failed that needs the person now.
+    Error,
 }
 
 impl Notification {
@@ -80,6 +96,7 @@ impl Notification {
             body: body.into(),
             activation: None,
             action: None,
+            severity: Severity::Info,
         }
     }
 
@@ -95,6 +112,13 @@ impl Notification {
     #[must_use]
     pub fn with_action(mut self, label: impl Into<String>) -> Self {
         self.action = Some(label.into());
+        self
+    }
+
+    /// Mark it as a warning or an error.
+    #[must_use]
+    pub fn with_severity(mut self, severity: Severity) -> Self {
+        self.severity = severity;
         self
     }
 }
