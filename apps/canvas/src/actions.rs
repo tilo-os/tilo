@@ -502,6 +502,7 @@ pub enum CanvasAction {
     EditLayer(EditLayer),
     RemoveLayer(RemoveLayer),
     Draw(Draw),
+    Chart(crate::chart::Chart),
     Paint(Paint),
     EditMarks(Box<EditMarks>),
     RemoveMarks(RemoveMarks),
@@ -1146,7 +1147,7 @@ fn placed_shape(art: &Artwork, mark: &NewMark) -> Result<Shape, ActionError> {
 }
 
 impl Draw {
-    fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+    pub(crate) fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
         let layer = target_layer(art, self.layer.as_deref())?;
         // A refusal names the mark it is about by the id its caller gave it
         // (or its place), so the one wrong mark can be repaired.
@@ -1905,6 +1906,7 @@ impl tilo_actions::Action for CanvasAction {
                 Ok(())
             }
             Self::Draw(draw) => draw.apply(doc, &art),
+            Self::Chart(chart) => chart.apply(doc, &art),
             Self::Paint(paint) => paint.apply(doc, &art),
             Self::EditMarks(edit) => edit.apply(doc, &art),
             Self::RemoveMarks(remove) => {

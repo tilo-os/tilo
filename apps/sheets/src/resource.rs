@@ -297,7 +297,21 @@ fn new_sheet(count: usize, titled: bool) -> ActionDecl<SheetsWorkbook> {
                 "rows",
                 ParamType::Array,
                 "Its first content: rows of values from A1, \"=…\" a formula, an ISO date such as \
-                 \"2026-10-22\" a real date",
+                 \"2026-10-22\" a real date; or use columns and records",
+            ),
+            ActionParam::optional(
+                "columns",
+                ParamType::Array,
+                "Header names written as row 1, which records are keyed by, e.g. [\"Item\", \
+                 \"Price\", \"Qty\", \"Total\"]",
+            ),
+            ActionParam::optional(
+                "records",
+                ParamType::Array,
+                "Rows from row 2 as objects keyed by columns, e.g. [{\"Item\": \"Venue\", \
+                 \"Price\": 145, \"Qty\": 8, \"Total\": \"=[Price]*[Qty]\"}]; a key left out \
+                 leaves its cell empty. In a formula [Header] is that column's cell in the same row \
+                 and {row} the row's number (\"=B{row}*C{row}\")",
             ),
             ActionParam::optional(
                 "formats",
@@ -324,17 +338,14 @@ fn new_sheet(count: usize, titled: bool) -> ActionDecl<SheetsWorkbook> {
                 .map(str::trim)
                 .filter(|title| !titled && !title.is_empty())
                 .map(str::to_owned);
-            let rows = args.array("rows");
-            if rows.is_none() && title.is_none() {
+            let content = first_cells(args)?;
+            if content.is_none() && title.is_none() {
                 return Ok(add_sheet_action(&name));
             }
             // A sheet and its content in one change, as an import makes
             // them; a new workbook's blank first sheet gives way to it, and
             // the workbook takes the name it is given in the same change.
-            let mut cells = match rows {
-                Some(rows) => crate::cell_actions::cells_from_rows((0, 0), rows)?,
-                None => Vec::new(),
-            };
+            let mut cells = content.unwrap_or_default();
             if let Some(formats) = args.object("formats") {
                 cells = crate::cell_actions::with_formats(cells, formats)?;
             }
@@ -355,6 +366,32 @@ fn new_sheet(count: usize, titled: bool) -> ActionDecl<SheetsWorkbook> {
         "Add a sheet at the end of the workbook, with its content when given; naming the \
          workbook too when it has no name yet.",
     )
+    // With content it answers it, as a cell edit does; a blank sheet, null.
+    .returns(tilo_actions::ResultSpec::Json {
+        schema: crate::cell_actions::edit_result_schema(),
+    })
+}
+
+/// A new sheet's first content: `rows` from A1, or `columns` as its header
+/// row with `records` keyed by them under it; `None` when it has none.
+fn first_cells(
+    args: &tilo_actions::ActionArgs,
+) -> Result<Option<Vec<crate::actions::CellWrite>>, String> {
+    let records = args.array("records");
+    match (args.array("rows"), args.array("columns")) {
+        (Some(_), Some(_)) => Err("give `rows` or `columns` with `records`, not both".into()),
+        (Some(_), None) if records.is_some() => {
+            Err("`records` are keyed by `columns`: give those instead of `rows`".into())
+        }
+        (Some(rows), None) => crate::cell_actions::cells_from_rows((0, 0), rows).map(Some),
+        (None, Some(columns)) => {
+            crate::records::new_sheet_cells(columns, records.unwrap_or_default()).map(Some)
+        }
+        (None, None) if records.is_some() => {
+            Err("`records` need `columns`: the header names, in order".into())
+        }
+        (None, None) => Ok(None),
+    }
 }
 
 /// The workbook's naming: the spreadsheet's name, as its label shows it.
@@ -473,6 +510,14 @@ impl Resource for SheetsWorkbook {
             .map_err(|error| ModelError::invalid(error.to_string()))?;
         }
         Ok(())
+    }
+
+    /// A new sheet answers its content as `read-cells` shows it, so the
+    /// caller sees what its formulas compute without reading it back.
+    fn answer(doc: &Doc, action: &str, changes: &[automerge::Patch]) -> Option<serde_json::Value> {
+        (action == "new-sheet")
+            .then(|| crate::cell_actions::changed_sheet_result(doc, changes))
+            .flatten()
     }
 
     fn bound_declarations(state: &SheetsState) -> Vec<ActionDecl<Self>> {
@@ -1103,6 +1148,179 @@ mod tests {
         let summary = exported[0].rows[0][0].as_ref().unwrap();
         assert_eq!(summary.formula.as_deref(), Some("=Rates!B1*10"));
         assert_eq!(summary.raw, "15", "the cached value reads the other sheet");
+    }
+
+    /// A sheet's content by column header: a record that leaves a value out
+    /// leaves that one cell empty, so its formula still lands in its own
+    /// column; `[Header]` and `{row}` formulas read their record's row, and
+    /// the new sheet answers what they compute.
+    #[test]
+    fn records_write_by_header_so_a_left_out_value_shifts_nothing() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        let answer = app
+            .call(
+                "new-sheet",
+                serde_json::json!({
+                    "name": "Budget",
+                    "columns": ["Item", "Per person", "People", "Total"],
+                    "records": [
+                        {"Item": "Venue", "Per person": 145, "Total": "=[Per person]*[People]"},
+                        {"Item": "Food", "Per person": 30, "People": 8, "Total": "=B{row}*C{row}"},
+                        {"Item": "Band", "People": 1, "Total": "=[per person]*[People]+5"},
+                    ],
+                }),
+            )
+            .unwrap()
+            .expect("the new sheet answers");
+        assert_eq!(answer["range"], "A1:D4");
+        assert_eq!(
+            answer["rows"],
+            serde_json::json!([
+                ["Item", "Per person", "People", "Total"],
+                ["Venue", 145.0, null, 0.0],
+                ["Food", 30.0, 8.0, 240.0],
+                ["Band", null, 1.0, 5.0],
+            ])
+        );
+        assert_eq!(
+            answer["formulas"],
+            serde_json::json!({"D2": "=B2*C2", "D3": "=B3*C3", "D4": "=B4*C4+5"})
+        );
+        let state = app.state();
+        assert_eq!(state.sheets.len(), 1, "the blank sheet gave way");
+        let raw = |a1: &str| {
+            state.sheets[0]
+                .snapshot
+                .raw
+                .get(&crate::model::a1_to_addr(a1).unwrap())
+                .cloned()
+        };
+        assert_eq!(raw("C2"), None, "the left-out People stays empty");
+
+        // The existing positional rows still answer as before.
+        let rows = app
+            .call(
+                "new-sheet",
+                serde_json::json!({"name": "Plain", "rows": [[2, "=A1*3"]]}),
+            )
+            .unwrap()
+            .expect("answers");
+        assert_eq!(rows["rows"], serde_json::json!([[2.0, 6.0]]));
+    }
+
+    /// A record key, or a formula's `[Header]`, that no column names is
+    /// refused naming the columns, and nothing is written.
+    #[test]
+    fn an_unknown_record_key_is_refused_naming_the_columns() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        for (args, says) in [
+            (
+                serde_json::json!({"columns": ["Item", "Cost"], "records": [{"Item": "a", "Price": 3}]}),
+                "no column `Price`; the columns are `Item`, `Cost`",
+            ),
+            (
+                serde_json::json!({"columns": ["Item", "Cost"], "records": [{"Cost": "=[Price]*2"}]}),
+                "no column `Price`",
+            ),
+            (
+                serde_json::json!({"records": [{"Item": "a"}]}),
+                "need `columns`",
+            ),
+            (
+                serde_json::json!({"rows": [[1]], "columns": ["Item"]}),
+                "not both",
+            ),
+        ] {
+            let error = app.call("new-sheet", args).unwrap_err().to_string();
+            assert!(error.contains(says), "{error}");
+        }
+        assert!(app.state().sheets[0].snapshot.raw.is_empty());
+
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Budget", "columns": ["Item", "Cost"]}),
+        )
+        .unwrap();
+        let error = app
+            .call(
+                "set-records",
+                serde_json::json!({"sheet": "Budget", "records": [{"Itme": "Venue"}]}),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no column `Itme`; the columns are `Item`, `Cost`"),
+            "{error}"
+        );
+    }
+
+    /// `set-records` writes into an existing sheet by the headers of its
+    /// first row: into a data row it names, keeping the cells a record leaves
+    /// out, or appended after the last row; it answers what it wrote.
+    #[test]
+    fn set_records_updates_and_appends_by_header() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Budget", "rows": [
+                ["Item", "Per person", "People", "Total"],
+                ["Venue", 145, 8, "=B2*C2"],
+                ["Food", 30, 8, "=B3*C3"],
+            ]}),
+        )
+        .unwrap();
+        let updated = app
+            .call(
+                "set-records",
+                serde_json::json!({"sheet": "Budget", "row": 2, "records": [{"People": 10}]}),
+            )
+            .unwrap()
+            .expect("the edit answers");
+        assert_eq!(updated["range"], "C3");
+        assert_eq!(updated["rows"], serde_json::json!([[10.0]]));
+
+        let appended = app
+            .call(
+                "set-records",
+                serde_json::json!({"sheet": "Budget", "records": [
+                    {"Item": "Band", "Total": "=[Per person]*[People]", "People": 2, "Per person": 50},
+                    {"Item": "Sum", "People": "=SUM(C2:C4)", "Total": "={row}*10"},
+                ]}),
+            )
+            .unwrap()
+            .expect("the edit answers");
+        assert_eq!(appended["range"], "A4:D5");
+        assert_eq!(
+            appended["rows"],
+            serde_json::json!([["Band", 50.0, 2.0, 100.0], ["Sum", null, 20.0, 50.0]])
+        );
+        assert_eq!(
+            appended["formulas"],
+            serde_json::json!({"D4": "=B4*C4", "C5": "=SUM(C2:C4)", "D5": "=5*10"})
+        );
+
+        // The sheet's own action does the same, by its first row's headers.
+        let sheet = app.state().sheets[0].id.clone();
+        let own = app
+            .call_on(
+                &crate::actions::sheet_resource_id(&sheet),
+                "set-records",
+                serde_json::json!({"row": 1, "records": [{"Item": "Hall"}]}),
+            )
+            .unwrap()
+            .expect("answers");
+        assert_eq!(own["range"], "A2");
+        assert_eq!(own["rows"], serde_json::json!([["Hall"]]));
+
+        let mut blank = TestApp::<SheetsShell>::new().unwrap();
+        let error = blank
+            .call(
+                "set-records",
+                serde_json::json!({"sheet": "Sheet1", "records": [{"Item": "x"}]}),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no headers in row 1"), "{error}");
     }
 
     /// Reading a sheet the workbook does not have is refused naming the

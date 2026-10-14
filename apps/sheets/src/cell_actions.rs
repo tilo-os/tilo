@@ -34,13 +34,13 @@ pub static READERS: [RegisteredSemanticReader; 1] = [RegisteredSemanticReader::n
 
 /// The most cells one read returns; a larger range asks for a smaller one.
 pub const MAX_READ_CELLS: usize = 4096;
-const MAX_WRITES: usize = 16 * 1024;
+pub(crate) const MAX_WRITES: usize = 16 * 1024;
 
 const FORMATS: [&str; 7] = [
     "general", "number", "currency", "percent", "date", "time", "text",
 ];
 
-fn invalid(message: impl Into<String>) -> EncodedAction {
+pub(crate) fn invalid(message: impl Into<String>) -> EncodedAction {
     EncodedAction {
         type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
         payload: message.into().into_bytes(),
@@ -113,19 +113,8 @@ pub(crate) fn cells_from_rows(
             .as_array()
             .ok_or("each row must be an array of values")?;
         for (dc, value) in (0u32..).zip(row) {
-            if let Some(raw) = raw_of(value)? {
-                let date = value.as_str().and_then(crate::infer::iso_date_entry);
-                let (raw, fmt) = match date {
-                    Some(date) => (date.raw, Some(date.format.as_str())),
-                    None => (raw, None),
-                };
-                cells.push(CellWrite {
-                    col: start.0.saturating_add(dc),
-                    row: start.1.saturating_add(dr),
-                    raw,
-                    fmt,
-                });
-            }
+            let at = (start.0.saturating_add(dc), start.1.saturating_add(dr));
+            cells.extend(cell_write(at, value)?);
         }
     }
     if cells.is_empty() {
@@ -135,6 +124,27 @@ pub(crate) fn cells_from_rows(
         return Err(format!("at most {MAX_WRITES} cells per call"));
     }
     Ok(cells)
+}
+
+/// The write of JSON `value` into the cell at `(col, row)`, as
+/// [`cells_from_rows`] reads it; `None` for null, which leaves the cell.
+///
+/// # Errors
+///
+/// `value` is not a string, number, boolean or null.
+pub(crate) fn cell_write(
+    (col, row): (u32, u32),
+    value: &serde_json::Value,
+) -> Result<Option<CellWrite>, String> {
+    let Some(raw) = raw_of(value)? else {
+        return Ok(None);
+    };
+    let date = value.as_str().and_then(crate::infer::iso_date_entry);
+    let (raw, fmt) = match date {
+        Some(date) => (date.raw, Some(date.format.as_str())),
+        None => (raw, None),
+    };
+    Ok(Some(CellWrite { col, row, raw, fmt }))
 }
 
 /// `cells` with the formats `formats` gives their ranges (`{"D2:D5":
@@ -504,6 +514,7 @@ pub fn sheet_actions(
     let mut specs = vec![
         read_cells_spec(sheet_id),
         set_cells_spec(sheet, sheet_id),
+        crate::records::set_records_spec(sheet, sheet_id, std::sync::Arc::clone(&info)),
         format_cells_spec(sheet_id),
         sort_rows_spec(sheet, sheet_id, info),
         delete_rows_spec(sheet_id),
@@ -764,7 +775,13 @@ fn range_content(
 
 /// The cell edits that answer with the range they changed, so a caller sees
 /// the values it produced without reading them back.
-pub const ANSWERING_EDITS: [&str; 4] = ["set-cells", "format-cells", "sort-rows", "delete-rows"];
+pub const ANSWERING_EDITS: [&str; 5] = [
+    "set-cells",
+    "set-records",
+    "format-cells",
+    "sort-rows",
+    "delete-rows",
+];
 
 /// The most cells an edit answers with; a larger change answers its first
 /// rows and names the whole range for `read-cells`.
@@ -786,6 +803,16 @@ pub fn edit_result(
     if !ANSWERING_EDITS.contains(&action) {
         return None;
     }
+    changed_range(doc, sheet_id, changes)
+}
+
+/// The range of sheet `sheet_id` that `changes` touched, as [`edit_result`]
+/// answers it.
+fn changed_range(
+    doc: &AutoCommit,
+    sheet_id: &str,
+    changes: &[automerge::Patch],
+) -> Option<serde_json::Value> {
     let sheet = SheetsDoc::sheet_index_by_resource_id(doc, sheet_id)?;
     let touched = SheetsDoc::changed_cells(doc, sheet, changes);
     let (first, rest) = touched.split_first()?;
@@ -829,10 +856,19 @@ pub fn workbook_edit_result(
     if !ANSWERING_EDITS.contains(&action) {
         return None;
     }
+    changed_sheet_result(doc, changes)
+}
+
+/// The range `changes` touched in the first sheet whose cells they touched,
+/// as [`edit_result`] answers it: a new sheet's content, too.
+pub fn changed_sheet_result(
+    doc: &AutoCommit,
+    changes: &[automerge::Patch],
+) -> Option<serde_json::Value> {
     (0..SheetsDoc::sheet_count(doc))
         .find(|&idx| !SheetsDoc::changed_cells(doc, idx, changes).is_empty())
         .and_then(|idx| SheetsDoc::sheet_resource_id(doc, idx))
-        .and_then(|sheet_id| edit_result(doc, &sheet_id, action, changes))
+        .and_then(|sheet_id| changed_range(doc, &sheet_id, changes))
 }
 
 pub fn read_result_schema() -> &'static serde_json::Value {

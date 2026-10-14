@@ -160,6 +160,17 @@ pub struct ParticipantConfig {
     pub content: tilo_content::ContentStore,
 }
 
+/// The turns a task is planned again on once every step ran, each at most
+/// once.
+#[derive(Default)]
+struct FollowUps {
+    /// After a plan of reads alone, with what they found.
+    after_reads: bool,
+    /// The check of the result against the request: a check that cannot
+    /// plan leaves the task done, never failed.
+    checking: bool,
+}
+
 struct Running {
     id: String,
     /// The task as it was given, which a re-plan is shown beside the rest.
@@ -194,8 +205,8 @@ struct Running {
     /// Whether a step changed a record or made content: a plan of reads
     /// alone has done nothing the request asked for yet.
     changed: bool,
-    /// Whether the task was already planned again after its reads.
-    replanned_after_reads: bool,
+    /// The turns the task was planned again on once its steps ran.
+    follow_ups: FollowUps,
     /// The steps that ran, briefly, oldest first: what a repair must not
     /// do again.
     ran: Vec<String>,
@@ -256,24 +267,32 @@ impl Running {
             .or_else(|| self.produced.last())
     }
 
-    /// When every step ran and they only read (a plan of reads alone, from
-    /// a model that meant to plan with what they answer), plan the rest
-    /// once more with what they found. Steps written out run as written.
-    fn plan_again_after_reads(&mut self) {
-        if self.steps.is_empty()
-            && self.acted > 0
-            && !self.changed
-            && !self.replanned_after_reads
-            && !self.request.trim_start().starts_with(['[', '{'])
+    /// When every step ran: a model plan of reads alone is planned once
+    /// more with what they found; a model plan that made or changed
+    /// something is checked once against the request when `checks_work`.
+    /// Steps written out run as written.
+    fn plan_more(&mut self, checks_work: bool) {
+        if !self.steps.is_empty()
+            || self.acted == 0
+            || self.request.trim_start().starts_with(['[', '{'])
         {
-            self.replanned_after_reads = true;
-            self.steps.push_back(Step {
-                app: String::new(),
-                record: None,
-                action: StepAction::Continue(READS_ANSWERED.to_owned()),
-                carries: false,
-            });
+            return;
         }
+        let rest = if !self.changed && !self.follow_ups.after_reads {
+            self.follow_ups.after_reads = true;
+            READS_ANSWERED
+        } else if self.changed && checks_work && !self.follow_ups.checking {
+            self.follow_ups.checking = true;
+            CHECK_WORK
+        } else {
+            return;
+        };
+        self.steps.push_back(Step {
+            app: String::new(),
+            record: None,
+            action: StepAction::Continue(rest.to_owned()),
+            carries: false,
+        });
     }
 
     /// A task that starts with `steps`, and what was read while planning
@@ -293,7 +312,7 @@ impl Running {
             touched: Vec::new(),
             acted: 0,
             changed: false,
-            replanned_after_reads: false,
+            follow_ups: FollowUps::default(),
             ran: Vec::new(),
         };
         for seen in read {
@@ -362,6 +381,13 @@ fn unknown_action(address: &ActionAddress, offered: &[ActionDescriptor]) -> Stri
     reason
 }
 
+/// What a task whose steps made or changed something is checked with, once,
+/// when its planner checks work.
+const CHECK_WORK: &str = "Check what this task made against the request, item by item: each value, \
+     name, date, element, file and export it asks for. Read back what you changed where it is not \
+     shown. If anything asked for is missing or wrong, plan only the steps that fix it, without \
+     redoing what is right. If everything is as asked, plan no steps.";
+
 /// What a task whose plan was only reads is planned again with.
 const READS_ANSWERED: &str = "The reads above have answered. Now plan the steps that make or change \
      what the request asks for, using what they found. If the request asks for nothing to be \
@@ -405,6 +431,12 @@ pub struct AgentParticipant {
     catalogue: AppCatalogue,
     /// The planner, on a thread of its own.
     planning: planning::Planning,
+    /// Whether a task this agent's model planned is checked against its
+    /// request once its steps ran (the planner's profile says).
+    checks_work: bool,
+    /// The task last planned again after "nothing offered fits" opened the
+    /// room's documents: once per task.
+    reopened_for: Option<String>,
     /// When the plan the agent now carries out was ready, until its first
     /// step ran.
     plan_ready_at: Option<Instant>,
@@ -501,6 +533,8 @@ impl AgentParticipant {
         if !identity.delegation.permits_workspace(workspace_id) {
             return Err("the agent is not delegated this room".into());
         }
+        let checks_work = planner.checks_work();
+
         let planning = planning::Planning::start(planner, Arc::clone(&control))?;
         let peer = PeerHandle::start(
             PeerConfig {
@@ -535,6 +569,8 @@ impl AgentParticipant {
             workspace_id,
             catalogue,
             planning,
+            checks_work,
+            reopened_for: None,
             plan_ready_at: None,
             apps: BTreeMap::new(),
             content: config.content,
@@ -800,7 +836,7 @@ impl AgentParticipant {
             return false;
         }
         take_news(running, &mut self.news);
-        running.plan_again_after_reads();
+        running.plan_more(self.checks_work);
         let Some(step) = running.steps.pop_front() else {
             let (id, done) = (running.id.clone(), running.done());
             self.running = None;
@@ -903,6 +939,39 @@ impl AgentParticipant {
     /// when `request` (the task as it was given) comes beside it. Steps
     /// written out in the task are taken at once; anything else goes to the
     /// planner's thread, and the plan is taken when it wakes the loop.
+    /// After a first plan found nothing that fits `text`, open the room's
+    /// documents of the apps it may use (those the task names first) and
+    /// plan it once more, so a model sees their operations rather than
+    /// giving up on a document it never opened. Returns whether it did.
+    fn reopen_for(&mut self, task: &str, text: &str) -> bool {
+        const MOST_OPENED: usize = 4;
+        if self.reopened_for.as_deref() == Some(task) {
+            return false;
+        }
+        let mut routes: Vec<DocumentRoute> = self
+            .unopened
+            .people_first()
+            .into_iter()
+            .filter(|route| {
+                self.identity.delegation.permits_app(&route.app_id)
+                    && !self.apps.contains_key(route)
+            })
+            .collect();
+        routes.sort_by_key(|route| !crate::model::task_names_app(text, &route.app_id));
+        routes.truncate(MOST_OPENED);
+        if routes.is_empty() {
+            return false;
+        }
+        self.reopened_for = Some(task.to_owned());
+        for route in routes {
+            if let Err(error) = self.open(&route.app_id, Some(&route.record)) {
+                tracing::debug!(%error, app = %route.app_id, "agent: a room document did not open");
+            }
+        }
+        self.plan(task.to_owned(), text, None);
+        true
+    }
+
     fn plan(&mut self, id: String, text: &str, request: Option<String>) {
         let continues = request.is_some();
         let context = self.plan_context(text, request);
@@ -984,11 +1053,16 @@ impl AgentParticipant {
                 }
             }
             Err(error) => {
+                if !continues && error.starts_with(NOTHING_LEFT) && self.reopen_for(&task, &text) {
+                    return;
+                }
                 let finished = if running_it {
                     self.running
                         .take()
                         .filter(|running| {
-                            continues && running.acted > 0 && error.starts_with(NOTHING_LEFT)
+                            continues
+                                && running.acted > 0
+                                && (running.follow_ups.checking || error.starts_with(NOTHING_LEFT))
                         })
                         .map(|running| running.done())
                 } else {
@@ -2138,19 +2212,19 @@ mod tests {
         let mut running =
             Running::new("t1".into(), "build the deck".into(), Vec::new(), Vec::new());
         running.acted = 2;
-        running.plan_again_after_reads();
+        running.plan_more(false);
         assert!(matches!(
             running.steps.front().map(|step| &step.action),
             Some(StepAction::Continue(rest)) if rest == READS_ANSWERED
         ));
         running.steps.clear();
-        running.plan_again_after_reads();
+        running.plan_more(false);
         assert!(running.steps.is_empty(), "only once");
 
         let mut edited = Running::new("t2".into(), "build the deck".into(), Vec::new(), Vec::new());
         edited.acted = 1;
         edited.changed = true;
-        edited.plan_again_after_reads();
+        edited.plan_more(false);
         assert!(edited.steps.is_empty());
 
         let mut written = Running::new(
@@ -2160,7 +2234,7 @@ mod tests {
             Vec::new(),
         );
         written.acted = 1;
-        written.plan_again_after_reads();
+        written.plan_more(false);
         assert!(written.steps.is_empty());
     }
 
@@ -2233,5 +2307,29 @@ mod tests {
             reason.ends_with("`delete-sheet` is on sheets.workbook"),
             "{reason}"
         );
+    }
+
+    /// A model plan that changed something is checked once against its
+    /// request when the planner checks work, and not otherwise.
+    #[test]
+    fn a_plan_that_made_something_is_checked_once() {
+        let mut running =
+            Running::new("t1".into(), "build the deck".into(), Vec::new(), Vec::new());
+        running.acted = 3;
+        running.changed = true;
+        running.plan_more(false);
+        assert!(
+            running.steps.is_empty(),
+            "no check unless the planner checks work"
+        );
+        running.plan_more(true);
+        assert!(matches!(
+            running.steps.front().map(|step| &step.action),
+            Some(StepAction::Continue(rest)) if rest == CHECK_WORK
+        ));
+        assert!(running.follow_ups.checking);
+        running.steps.clear();
+        running.plan_more(true);
+        assert!(running.steps.is_empty(), "checked once");
     }
 }

@@ -183,6 +183,8 @@ impl PlanModel for GatewayModel {
 /// Explicit steps as written; anything else planned by a model.
 pub struct ModelPlanner {
     model: Box<dyn PlanModel>,
+    /// Whether its tasks are checked against their requests once done.
+    checks_work: bool,
     /// The rest this planner last handed back as a
     /// [`StepAction::Continue`], and how many re-plans in a row led to it.
     continued: Option<(String, usize)>,
@@ -194,8 +196,17 @@ impl ModelPlanner {
     pub fn new(model: Box<dyn PlanModel>) -> Self {
         Self {
             model,
+            checks_work: false,
             continued: None,
         }
+    }
+
+    /// This planner, with its tasks checked against their requests once
+    /// their steps ran when `on`.
+    #[must_use]
+    pub fn checking_work(mut self, on: bool) -> Self {
+        self.checks_work = on;
+        self
     }
 }
 
@@ -727,6 +738,10 @@ fn read_offered(
 impl Planner for ModelPlanner {
     fn plan(&mut self, task: &str, context: &PlanContext) -> Result<Vec<Step>, String> {
         self.plan_reading(task, context, &mut NoReads)
+    }
+
+    fn checks_work(&self) -> bool {
+        self.checks_work
     }
 
     fn plan_reading(
@@ -2459,7 +2474,23 @@ impl ModelChoice {
         // One plan may take several reasoning turns; a minute cut real
         // models off mid-plan.
         let timeout = std::time::Duration::from_secs(600);
-        ModelPlanner::new(match self {
+        let checks_work = match self {
+            Self::OpenAi { model, .. } | Self::Anthropic { model, .. } => {
+                let provider = if matches!(self, Self::OpenAi { .. }) {
+                    crate::profile::Provider::OpenAi
+                } else {
+                    crate::profile::Provider::Anthropic
+                };
+                crate::profile::Profile::resolve(model, provider, &|name| {
+                    std::env::var(name)
+                        .ok()
+                        .filter(|value| !value.trim().is_empty())
+                })
+                .check_work
+            }
+            _ => false,
+        };
+        let planner = ModelPlanner::new(match self {
             Self::Scripted => Box::new(ScriptedModel),
             Self::OpenAi {
                 base_url,
@@ -2519,7 +2550,8 @@ impl ModelChoice {
                 Some(selection) => Box::new(GatewayModel::new(selection, timeout)),
                 None => Box::new(Unconfigured),
             },
-        })
+        });
+        planner.checking_work(checks_work)
     }
 
     /// A short description for logs and status.

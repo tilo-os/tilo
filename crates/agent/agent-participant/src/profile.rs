@@ -25,6 +25,10 @@ pub const PRESET_ENV: &str = "TILO_AGENT_PRESET";
 /// ([`ModelClass`]): `small`, `medium`, `large` or `very-large`.
 pub const MODEL_CLASS_ENV: &str = "TILO_AGENT_MODEL_CLASS";
 
+/// Turns the check of a finished task against its request on (`on`, `1`)
+/// or off (anything else), whatever the preset says.
+pub const CHECK_WORK_ENV: &str = "TILO_AGENT_CHECK_WORK";
+
 /// How large a planning model is, as its latency and price follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelClass {
@@ -117,6 +121,9 @@ pub struct Profile {
     pub reasoning_effort: Option<String>,
     /// After how long a call is sent again; `None` never.
     pub hedge_after: Option<Duration>,
+    /// Whether a task's result is checked against its request once its
+    /// steps ran: one more planning turn, which fixes what is missing.
+    pub check_work: bool,
 }
 
 impl Profile {
@@ -145,6 +152,9 @@ impl Profile {
             service_tier: tier,
             reasoning_effort: Some("low".to_owned()),
             hedge_after: hedge_ms.map(Duration::from_millis),
+            // Small and medium models skip or get wrong a part of a long
+            // request more often; the check costs one planning turn.
+            check_work: matches!(class, ModelClass::Small | ModelClass::Medium),
         }
     }
 
@@ -171,6 +181,12 @@ impl Profile {
         }
         if let Some(effort) = explicit(crate::model::REASONING_EFFORT_ENV) {
             profile.reasoning_effort = Some(effort);
+        }
+        if let Some(check) = explicit(CHECK_WORK_ENV) {
+            profile.check_work = matches!(
+                check.trim().to_ascii_lowercase().as_str(),
+                "1" | "on" | "true" | "yes"
+            );
         }
         if let Some(hedge) = explicit(crate::model::HEDGE_ENV) {
             // `0` or anything not a number (`off`) turns the preset's
@@ -241,5 +257,32 @@ mod tests {
         assert_eq!(profile.hedge_after, None);
         let none = Profile::resolve("gpt-6-luna", Provider::OpenAi, &|_| None);
         assert_eq!(none, Profile::default());
+    }
+
+    /// Small and medium models check their work by default; larger ones do
+    /// not; the environment turns it either way.
+    #[test]
+    fn small_and_medium_models_check_their_work() {
+        let none = |_: &str| None;
+        for (model, checks) in [
+            ("claude-haiku-5-5", true),
+            ("gpt-5.6-terra", true),
+            ("claude-opus-5-5", false),
+            ("gpt-6-astra", false),
+        ] {
+            let preset = |name: &str| (name == PRESET_ENV).then(|| "balanced".to_owned());
+            assert_eq!(
+                Profile::resolve(model, Provider::OpenAi, &preset).check_work,
+                checks,
+                "{model}"
+            );
+        }
+        assert!(!Profile::resolve("claude-haiku-5-5", Provider::Anthropic, &none).check_work);
+        let off = |name: &str| match name {
+            PRESET_ENV => Some("fastest".to_owned()),
+            CHECK_WORK_ENV => Some("off".to_owned()),
+            _ => None,
+        };
+        assert!(!Profile::resolve("gpt-6-luna", Provider::OpenAi, &off).check_work);
     }
 }

@@ -341,6 +341,13 @@ pub trait Planner: Send {
         let _ = reads;
         self.plan(task, context)
     }
+
+    /// Whether a task this planner planned is checked against its request
+    /// once its steps ran (one more planning turn that fixes what is
+    /// missing). A planner that does not say, does not.
+    fn checks_work(&self) -> bool {
+        false
+    }
 }
 
 /// Reads the steps from the task: one JSON object or an array of them.

@@ -19,6 +19,7 @@ pub mod answer;
 pub mod author;
 pub mod background;
 pub mod brushes;
+pub mod chart;
 pub mod content;
 pub mod content_geometry;
 pub mod described;

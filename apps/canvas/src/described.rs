@@ -39,6 +39,10 @@ pub fn label(action: &CanvasAction, doc: &Doc) -> Option<String> {
             },
             marks => count(marks.len(), "shape", "shapes", "Draw"),
         },
+        CanvasAction::Chart(chart) => match chart.title.as_deref() {
+            Some(title) if !title.is_empty() => format!("Draw chart {}", quoted(title)),
+            _ => "Draw chart".to_owned(),
+        },
         CanvasAction::EditMarks(edit) => edit_marks(edit, &names),
         CanvasAction::RemoveMarks(remove) => {
             if remove.along.is_some() {

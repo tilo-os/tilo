@@ -738,6 +738,13 @@ impl Resource for ArtworkResource {
             })
             .describe("Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Answers the new ids; or give your own. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.")
             .answering(),
+            decl::<crate::chart::Chart>(
+                "chart",
+                "Draw chart",
+                "Bar chart from numbers; use it, not hand-computed rects. Equal bars, one baseline, lengths exactly value/max of box.",
+                CanvasAction::Chart,
+            )
+            .answering(),
             ActionDecl::new("edit-marks", "Edit marks", params_of::<EditMarks>(), |args, _now| {
                 let mut edit: EditMarks = read_args(args)?;
                 if let Some(shape) = &mut edit.shape {
