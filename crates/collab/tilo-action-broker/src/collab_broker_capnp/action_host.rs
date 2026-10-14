@@ -2680,7 +2680,10 @@ impl CapnpBrokerState {
                 Some(Ok(output)) => {
                     tilo_actions::InvocationUpdate::Succeeded { invocation, output }
                 }
-                Some(Err(error)) => tilo_actions::InvocationUpdate::Failed { invocation, error },
+                Some(Err(error)) => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: *error,
+                },
                 None => tilo_actions::InvocationUpdate::Failed {
                     invocation,
                     error: tilo_actions::ActionFailure {

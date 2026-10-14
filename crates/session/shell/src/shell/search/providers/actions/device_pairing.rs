@@ -300,8 +300,7 @@ mod tests {
                 APPROVE_PARAMS,
                 values
                     .into_iter()
-                    .map(|(name, value)| (name.to_string(), value))
-                    .collect::<Vec<_>>(),
+                    .map(|(name, value)| (name.to_string(), value)),
             )
             .expect("binds")
         };
