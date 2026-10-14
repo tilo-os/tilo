@@ -546,9 +546,7 @@ quick-xml = "0.41.0"
 roxmltree = "0.21"
 capnp = "0.26"
 capnp-rpc = "0.26"
-capnpc = "0.26"
 base64 = "0.22.1"
-bs58 = "0.5.1"
 data-encoding = "2.10"
 data-encoding-macro = "0.1.19"
 hex = "0.4.3"
@@ -577,9 +575,8 @@ sha2 = "0.11"
 # Gravatar paths and the Drive fake's checksums.
 md-5 = "0.11"
 hmac = "0.13"
-# SRP-6a for the iCloud sign-in (cloud-source-icloud).
+# SRP-6a for the iCloud sign-in (tilo-crypto `srp`).
 pbkdf2 = "0.13"
-num-bigint = "0.5"
 blake3 = "1.8.5"
 # Raw AEAD and password-KDF crates are for `crates/system/tilo-seal` only;
 # `tools/policy/check_crypto_dependencies.py` rejects any other direct user.

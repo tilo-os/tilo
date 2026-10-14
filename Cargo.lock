@@ -9268,6 +9268,7 @@ dependencies = [
  "hex",
  "image",
  "reqwest 0.13.4",
+ "rquickjs",
  "runtime-dylib",
  "rustypipe",
  "serde",
