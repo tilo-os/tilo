@@ -26,11 +26,22 @@ fn notification_center_enlarged_header_sizes_from_the_actual_native_width() {
     );
     let layout = h.host.qs_notification_layout();
     assert_eq!(layout.panel().width(), 320.0);
-    assert_eq!(layout.visible_rows(3), 3);
-    assert!(
-        (layout.row(2).y1 + qs::PANEL_PAD - layout.panel().y1).abs() < 1e-6,
-        "the native sizing caller must reserve the wrapped header before counting rows"
-    );
+    {
+        let chrome = h.host.chrome.as_ref().expect("the harness has chrome");
+        let notifications = ChromeNotifications::new(chrome);
+        let center = &h.host.notification_center;
+        assert_eq!(center.visible_rows(&notifications, &layout), 3);
+        let last = center
+            .semantic_rects(&notifications, &layout, "")
+            .into_iter()
+            .find(|(name, _)| name == "notification_row[2]")
+            .expect("the last row shows")
+            .1;
+        assert!(
+            (last.y1 + qs::PANEL_PAD - layout.panel().y1).abs() < 1e-6,
+            "the native sizing caller must reserve the wrapped header before counting rows"
+        );
+    }
     h.host.handle_shell_quick_settings_drill_in_click(
         layout.clear().center(),
         &crate::shell::quick_settings::QsLevel::Notifications,

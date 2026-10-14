@@ -6,8 +6,9 @@
 //! steward's frames in chain order ([`crate::member`]).
 //!
 //! The steward does not decide who may read the channel. Its caller computes
-//! the device set the access policy allows (the certified devices of every
-//! room member, plus live service members) and [`ChannelSteward::reconcile`]
+//! the device set the access policy allows for this channel (the certified
+//! devices of every room member, plus live service members, less those a
+//! Read Deny on the channel's record withholds) and [`ChannelSteward::reconcile`]
 //! moves the MLS group there: devices that lost access are removed first,
 //! then allowed devices with a pending access request are admitted.
 //!

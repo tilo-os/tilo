@@ -75,6 +75,8 @@ run 'Apps declare the capabilities their code uses' \
 run 'Browser desktop registry matches app manifests' python3 tools/web/generate_web_desktop.py --check
 run 'Raw cryptography stays behind tilo-seal' \
   python3 tools/policy/check_crypto_dependencies.py
+run 'Own crates use one RustCrypto generation' \
+  python3 tools/policy/check_crypto_generation.py
 run 'Automerge apply contract' python3 tools/policy/check_automerge_apply_contract.py
 run 'Document content stays behind the document layer' \
   python3 tools/policy/check_document_engine_boundary.py
@@ -84,8 +86,13 @@ run 'Shared app runtime carries no OS internals or dead weight' \
   python3 tools/policy/check_runtime_dylib_surface.py
 run 'Browser wasm32 builds stay off the workspace-hack' \
   python3 tools/policy/check_wasm_workspace_hack.py
+run 'No new interpreter scripts in the OS image' \
+  python3 tools/policy/check_image_interpreters.py
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py
+run 'rustls is the only TLS stack' python3 tools/policy/check_tls_stack.py
 run 'No setup-specific references' python3 tools/policy/check_setup_neutral.py
+run 'Vendored crates carry licence and provenance' \
+  python3 tools/policy/check_vendor_provenance.py
 run 'At most eight parameters, no escape hatch' \
   python3 tools/policy/check_too_many_arguments.py
 

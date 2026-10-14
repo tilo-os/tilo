@@ -10,9 +10,6 @@ use crate::time::{Duration, Instant};
 use std::sync::{Mutex, OnceLock};
 
 pub const SETTINGS_SECTION: &str = "text_assistance";
-pub const CHECK_SPELLING_KEY: &str = "check_spelling";
-pub const AUTO_CORRECT_KEY: &str = "auto_correct";
-pub const SPELLING_LANGUAGE_KEY: &str = "spelling_language";
 
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::Model,

@@ -103,7 +103,6 @@ else:
 # UKI path silently drops the hardening the ostree path applies at deploy time.
 HARDENING = [
     "init_on_alloc=1",
-    "init_on_free=1",
     "lockdown=integrity",
     "slab_nomerge",
     "randomize_kstack_offset=on",

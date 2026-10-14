@@ -65,7 +65,8 @@ containerfile="$repo/os/Containerfile"
 # copied unchanged, so it no longer needs the compile stage's intermediate
 # cache.
 # tilo-esp-write and its unit, the only writer of the read-only ESP, are
-# deliberate additions.
+# deliberate additions. The helper is now compiled: it arrives from the
+# esp-write component at the same path and mode instead of from the context.
 # The virtio-only Cage session wrapper is installed as a single executable;
 # physical GPU sessions still use the ordinary greeter command.
 # tilo-hidepid.service is a deliberate removal: a global hidepid /proc hides
@@ -160,7 +161,9 @@ containerfile="$repo/os/Containerfile"
 # which compiles it in; the installed path is unchanged.
 # The atomic firstboot file helper is one intentional payload addition in
 # the existing libexec COPY instruction; the layer budget is unchanged.
-expected_contract=e2c242e8adc8513350560d056eddaa04fa659277d18a9af17fad316a79fa3131
+# The boot audit's image signature policy checker is one intentional payload
+# addition beside the audit in the existing libexec COPY instruction.
+expected_contract=ed56f1b877f988031dd9ededa99f293caa65b4b40ce36393fcafc5e73f8e799c
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -252,6 +255,7 @@ for path in \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
+  os/usr/libexec/tilo-image-policy-check \
   os/usr/libexec/tilo-extension \
   os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |

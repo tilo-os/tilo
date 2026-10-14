@@ -3,7 +3,6 @@
 import hashlib
 import importlib.util
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -14,7 +13,6 @@ from unittest.mock import patch
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import layer_artifacts as artifacts  # noqa: E402
-import profile_cohort as profile  # noqa: E402
 from acceptance.vm import VmError  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("acceptance_run", HERE / "run.py")
@@ -235,63 +233,6 @@ class HandoffTests(unittest.TestCase):
         producer = workflow.split("Produce exact-source signed cohort layers", 1)[1].split("Build the fixture-matching", 1)[0]
         self.assertNotIn("secrets.", producer)
         self.assertNotIn("remote_builders", producer)
-
-
-class CacheObservationTests(unittest.TestCase):
-    def test_signal_exit_keeps_shell_status_and_raw_observation(self):
-        root = Path(__file__).resolve().parents[2] / "target/cohort-cache-tests"
-        root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=root) as directory:
-            output = Path(directory) / "observation.json"
-            with patch.object(profile, "cache_snapshot", return_value={"available": False}), \
-                 patch.object(profile.subprocess, "run", return_value=subprocess.CompletedProcess([], -15)):
-                self.assertEqual(profile.run_profile(output, ["produce"]), 143)
-            self.assertEqual(json.loads(output.read_text())["producer_exit_code"], -15)
-
-    def test_totals_keep_rust_and_native_compilers(self):
-        value = {"stats": {"cache_hits": {"counts": {"Rust": 8, "C/C++": 2}},
-                           "cache_misses": {"counts": {"Rust": 3}}}}
-        self.assertEqual(profile.totals(value), {"cache_hits": 10, "cache_misses": 3})
-        value["stats"]["cache_hits"]["counts"]["Rust"] = True
-        with self.assertRaises(ValueError):
-            profile.totals(value)
-
-    def test_unavailable_or_reset_counters_are_unknown(self):
-        ready = {"available": True, "cache_hits": 10, "cache_misses": 3}
-        self.assertIsNone(profile.delta({"available": False}, ready))
-        self.assertIsNone(profile.delta(ready, {**ready, "cache_hits": 9}))
-        self.assertEqual(profile.delta(ready, {**ready, "cache_hits": 12}),
-                         {"cache_hits": 2, "cache_misses": 0})
-
-    def test_failed_stats_do_not_publish_raw_backend_output(self):
-        response = subprocess.CompletedProcess([], 1, b"private backend token", b"private error")
-        with patch.dict(os.environ, {"RUSTC_WRAPPER": "/ci-tools/sccache"}, clear=True), \
-             patch.object(profile.subprocess, "run", return_value=response):
-            observed = profile.cache_snapshot()
-        self.assertFalse(observed["available"])
-        self.assertNotIn("private", json.dumps(observed))
-
-    def test_real_producer_stdout_and_exit_survive_unavailable_cache(self):
-        root = Path(__file__).resolve().parents[2] / "target/cohort-cache-tests"
-        root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=root) as directory:
-            output = Path(directory) / "observation.json"
-            producer = Path(profile.__file__).with_name("layer_artifacts.py")
-            env = {**os.environ, "RUSTC_WRAPPER": "/nonexistent/sccache", "SCCACHE_GHA_VERSION": "tilo/apps/v2/x86_64"}
-            env["TEST_PRIVATE_TOKEN"] = "must-not-be-recorded"
-            for arguments in (["--help"], ["produce"]):
-                original = subprocess.run([sys.executable, str(producer), *arguments],
-                                          env=env, capture_output=True)
-                observed = subprocess.run([sys.executable, profile.__file__, "--telemetry", str(output),
-                                           "--", *arguments], env=env, capture_output=True)
-                self.assertEqual(observed.returncode, original.returncode)
-                self.assertEqual(observed.stdout, original.stdout)
-                telemetry = json.loads(output.read_text())
-                self.assertEqual(telemetry["producer_exit_code"], original.returncode)
-                self.assertIsNone(telemetry["delta"])
-                self.assertEqual(telemetry["configured_namespace"], "tilo/apps/v2/x86_64")
-                self.assertNotIn("must-not-be-recorded", output.read_text())
-
 
 
 if __name__ == "__main__":

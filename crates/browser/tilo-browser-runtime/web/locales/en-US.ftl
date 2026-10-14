@@ -8,6 +8,7 @@
 #   arrival-tip-*          a tip, on the desktop and on a full-tab app
 #   arrival-desktop-tip-*  a tip about the desktop, on the desktop only
 #   …-mac                  the same tip worded for a Mac
+#   arrival-label-tip      the dim label before every tip
 # A tip ships only once what it says works in the browser.
 
 ## Old computers
@@ -48,9 +49,11 @@ arrival-joke-taking-our-time = Taking our time…
 arrival-joke-shy-gpu = Warming up the GPU (it’s shy)…
 
 ## Tips
+# Shown dim before each tip; jokes have none.
+arrival-label-tip = Tip
 arrival-desktop-tip-find-app = Ctrl+K finds any app
 arrival-desktop-tip-find-app-mac = ⌘K finds any app
-arrival-desktop-tip-sideways-wheel = Spin the sideways wheel to move along the strip
+arrival-desktop-tip-scroll-sideways = Scroll sideways to move between windows
 arrival-tip-saved = Everything here is saved as you go
 arrival-tip-operating-system = Tilo is an operating system. This one runs in your browser.
 # Tips that wait for their features to work in the browser, added here once

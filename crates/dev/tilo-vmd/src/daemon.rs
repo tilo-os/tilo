@@ -11,7 +11,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde::Serialize;
 use tilo_vm_protocol::{
     Action, AppInstallResult, ApplyResult, AwakeLease, BaseInfo, BootConfirmResult, ComponentInfo,
-    DEVICE_SLOT, GcResult, HelloResult, InputAction, InputResult, Issue, KeptLayer,
+    DEVICE_SLOT, GcResult, HelloResult, ImageChange, InputAction, InputResult, Issue, KeptLayer,
     LayerImportResult, LayerSource, LayerUploadBeginResult, LayerUploadChunkResult, Lease,
     LogsResult, Manifest, OutputSpec, Owner, PROTOCOL_VERSION, Policy, Provenance, Request, Scope,
     SeatResult, ShotResult, SlotCreateResult, SlotFile, SlotInfo, SlotKind, SlotRmResult,
@@ -21,6 +21,7 @@ use tilo_vm_protocol::{
 use crate::apply::{self, Apply, GREETER_UNIT, Restarts, Session, SessionChange};
 use crate::awake;
 use crate::error::DaemonError;
+use crate::image;
 use crate::layers::LayerStore;
 use crate::locks::{Guard, Locks};
 use crate::slots::{self, Generation, SlotRecord, SlotStore};
@@ -537,9 +538,51 @@ impl Daemon {
         self.slots.load_with(name, device)
     }
 
+    /// Put the slots back on `booted` when their generations were made on
+    /// another image; see [`crate::image`]. `merge` says whether
+    /// `systemd-sysext` has merged the layers yet.
+    ///
+    /// # Errors
+    /// A held VM lock, and I/O failures.
+    pub fn reconcile_image(
+        &mut self,
+        booted: &str,
+        merge: image::Merge,
+    ) -> Result<Option<ImageChange>, DaemonError> {
+        image::ensure_root(&self.root)?;
+        let _vm = self.locks.vm_exclusive()?;
+        image::reconcile(&self.root, &self.slots, self.apply.as_mut(), booted, merge)
+    }
+
     /// Bring every slot back after the VM boots; see [`restore_slots`].
-    pub fn restore(&mut self) -> Vec<Issue> {
-        let issues = restore_slots(&self.slots, &self.layers, &self.locks, self.apply.as_mut());
+    /// First, slots made on another image than `booted` go back to it (when
+    /// the early-boot reconcile has not done so already) and the layers an
+    /// image change left behind are deleted.
+    pub fn restore(&mut self, booted: Option<&str>) -> Vec<Issue> {
+        let mut issues = Vec::new();
+        if let Some(booted) = booted {
+            let reconciled = self
+                .reconcile_image(booted, image::Merge::Done)
+                .and_then(|_| {
+                    let _vm = self.locks.vm_exclusive()?;
+                    image::collect_dropped_layers(&self.root, &self.slots, &self.layers, GC_MIN_AGE)
+                });
+            if let Err(error) = reconciled {
+                issues.push(Issue {
+                    slot: VM_SLOT.into(),
+                    problem: format!(
+                        "the slots could not be put back on the booted image {booted}: {error}"
+                    ),
+                    hint: "tilo-vm doctor; the next boot tries again".into(),
+                });
+            }
+        }
+        issues.extend(restore_slots(
+            &self.slots,
+            &self.layers,
+            &self.locks,
+            self.apply.as_mut(),
+        ));
         self.seat_issues = Some(issues.clone());
         issues
     }
@@ -884,6 +927,8 @@ impl Daemon {
             seat0,
             storage: self.storage(),
             issues: self.issues()?,
+            image_change: image::last_change(&self.root),
+            slots_image: image::slots_image(&self.root),
         })
     }
 

@@ -612,6 +612,8 @@ impl AclVisibleRecordIndex {
 
 #[path = "checked_restore.rs"]
 mod checked_restore;
+#[path = "history_jobs.rs"]
+mod history_jobs;
 #[path = "history_read.rs"]
 mod history_read;
 pub mod native_ops;
@@ -700,6 +702,9 @@ pub struct QuickFS {
     /// Signed exact-record projection used by partial-share network sessions.
     record_publisher: Option<Arc<crate::record_publisher::RecordPublisher>>,
     replacement_transactions: Option<ReplacementTransactionRuntime>,
+    /// Downloads behind restores and conflict resolutions whose content is
+    /// not local yet, so no FUSE worker waits for them.
+    history_jobs: history_jobs::HistoryJobs,
     checked_history_workspace: Option<uuid::Uuid>,
     mount_lifetime: uuid::Uuid,
     /// Run after a record group is durable, to persist what depends on it.
@@ -762,6 +767,7 @@ impl QuickFS {
             history: None,
             record_publisher: None,
             replacement_transactions: None,
+            history_jobs: history_jobs::HistoryJobs::default(),
             checked_history_workspace: None,
             mount_lifetime: uuid::Uuid::new_v4(),
             durability_hook: std::sync::OnceLock::new(),
@@ -1189,17 +1195,15 @@ impl QuickFS {
     /// Exactly `len` bytes of committed content `base` from `offset`: local
     /// bytes directly, the rest from a peer.
     fn read_base_blocking(&self, base: Hash, offset: u64, len: u64) -> io::Result<Vec<u8>> {
-        let hydrator = Arc::clone(&self.hydrator);
-        let rt = hydrator.runtime_handle.clone();
-        let bytes = tokio::task::block_in_place(|| {
-            rt.block_on(async move {
+        let hydrator = &self.hydrator;
+        let bytes = hydrator
+            .block_on(async {
                 match hydrator.read_local(base, offset, len).await {
                     Some(bytes) => Ok(bytes),
                     None => hydrator.read(base, offset, len).await,
                 }
             })
-        })
-        .map_err(|error| io::Error::other(error.to_string()))?;
+            .map_err(|error| io::Error::other(error.to_string()))?;
         if bytes.len() as u64 != len {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -1223,14 +1227,11 @@ impl QuickFS {
         let StagedRead::Missing(missing) = read else {
             return Ok(read);
         };
-        let hydrator = Arc::clone(&self.hydrator);
-        let rt = hydrator.runtime_handle.clone();
-        Ok(
-            match tokio::task::block_in_place(|| rt.block_on(missing.finish_local(&hydrator))) {
-                Ok(bytes) => StagedRead::Ready(bytes),
-                Err(missing) => StagedRead::Missing(missing),
-            },
-        )
+        let hydrator = &self.hydrator;
+        Ok(match hydrator.block_on(missing.finish_local(hydrator)) {
+            Ok(bytes) => StagedRead::Ready(bytes),
+            Err(missing) => StagedRead::Missing(missing),
+        })
     }
 
     /// [`Self::read_stage`], waiting for ranges a peer has to supply.
@@ -1247,9 +1248,7 @@ impl QuickFS {
     }
 
     fn finish_blocking(hydrator: &Arc<Hydrator>, missing: MissingRanges) -> io::Result<Vec<u8>> {
-        let hydrator = Arc::clone(hydrator);
-        let rt = hydrator.runtime_handle.clone();
-        tokio::task::block_in_place(|| rt.block_on(missing.finish(&hydrator)))
+        hydrator.block_on(missing.finish(hydrator))
     }
 
     /// `truncate` of a file nobody has open: commit its first `new_size`
@@ -1577,10 +1576,11 @@ impl QuickFS {
         };
         // Local bytes are answered inline; bytes a peer must supply are
         // left to the caller to hydrate off the FUSE worker.
-        let hydrator = Arc::clone(&self.hydrator);
-        let rt = hydrator.runtime_handle.clone();
         let size = u64::from(size);
-        match tokio::task::block_in_place(|| rt.block_on(hydrator.read_local(hash, offset, size))) {
+        match self
+            .hydrator
+            .block_on(self.hydrator.read_local(hash, offset, size))
+        {
             Some(data) => ReadPlan::Local(data),
             None => ReadPlan::Remote(hash),
         }
@@ -1777,9 +1777,10 @@ impl QuickFS {
         }
         let path = passthrough.dir.join(hash.to_hex());
         if !path.exists() {
-            let hydrator = Arc::clone(&self.hydrator);
-            let rt = hydrator.runtime_handle.clone();
-            match tokio::task::block_in_place(|| rt.block_on(hydrator.export_local(hash, &path))) {
+            match self
+                .hydrator
+                .block_on(self.hydrator.export_local(hash, &path))
+            {
                 Ok(true) => {}
                 Ok(false) => return None,
                 Err(error) => {
@@ -1834,12 +1835,7 @@ impl QuickFS {
             // A hashless (empty) file is trivially local.
             return Some(SyncState::Local);
         };
-        let hydrator = self.hydrator.clone();
-        let rt = hydrator.runtime_handle.clone();
-        let state = tokio::task::block_in_place(|| {
-            rt.block_on(async move { hydrator.sync_state(hash).await })
-        });
-        Some(state)
+        Some(self.hydrator.block_on(self.hydrator.sync_state(hash)))
     }
 
     /// Attribute/entry TTL: zero for documents (size is computed live from
@@ -3112,16 +3108,14 @@ impl QuickFS {
         let Some(content_hash) = version.content_hash else {
             return Ok(Vec::new());
         };
-        let hydrator = self.hydrator.clone();
-        let runtime = hydrator.runtime_handle.clone();
+        // Bounded: a preview reads at most one byte past its limit.
         let limit = u64::try_from(fs_protocol::MAX_HISTORY_PREVIEW_BYTES)
             .unwrap_or(u64::MAX)
             .saturating_add(1);
-        let bytes = tokio::task::block_in_place(|| {
-            runtime
-                .block_on(async move { hydrator.read(Hash::from(content_hash.0), 0, limit).await })
-        })
-        .map_err(|_| EIO)?;
+        let bytes = self
+            .hydrator
+            .block_on(self.hydrator.read(Hash::from(content_hash.0), 0, limit))
+            .map_err(|_| EIO)?;
         if bytes.len() > fs_protocol::MAX_HISTORY_PREVIEW_BYTES {
             return Err(libc::E2BIG);
         }
@@ -3174,15 +3168,14 @@ impl QuickFS {
             let Some(hash) = version.content_hash else {
                 return Ok(Vec::new());
             };
-            let hydrator = self.hydrator.clone();
-            let handle = hydrator.runtime_handle.clone();
+            // Bounded: one byte past the largest input a merge accepts.
             let limit = u64::try_from(crate::conflict_merge::MAX_MERGE_INPUT_BYTES)
                 .unwrap_or(u64::MAX)
                 .saturating_add(1);
-            let bytes = tokio::task::block_in_place(|| {
-                handle.block_on(async move { hydrator.read(Hash::from(hash.0), 0, limit).await })
-            })
-            .map_err(|_| EIO)?;
+            let bytes = self
+                .hydrator
+                .block_on(self.hydrator.read(Hash::from(hash.0), 0, limit))
+                .map_err(|_| EIO)?;
             if bytes.len() > crate::conflict_merge::MAX_MERGE_INPUT_BYTES {
                 return Err(libc::E2BIG);
             }
@@ -3334,25 +3327,13 @@ impl QuickFS {
             .find(|version| version.id == version_id)
             .cloned()
             .ok_or(EINVAL)?;
-        let data = match selected.content_hash {
-            Some(content_hash) => {
-                let hydrator = self.hydrator.clone();
-                let runtime = hydrator.runtime_handle.clone();
-                tokio::task::block_in_place(|| {
-                    runtime.block_on(async move {
-                        hydrator.read(Hash::from(content_hash.0), 0, u64::MAX).await
-                    })
-                })
-                .map_err(|_| EIO)?
-            }
-            None => Vec::new(),
-        };
-        let result_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
-        if result_hash.map(|hash| *hash.as_bytes()) != selected.content_hash.map(|hash| hash.0) {
-            return Err(EIO);
-        }
+        // The selected member is already content-addressed: once it is
+        // local, the result points at it by hash, without reading it back.
+        self.history_content_local(ino, conflict_id, &[selected.content_hash])?;
+        let byte_len = self.local_version_len(selected.content_hash).ok_or(EIO)?;
+        let result_hash = selected.content_hash.map(|hash| Hash::from(hash.0));
         let result_snapshot = self
-            .replacement_snapshot(ino, result_hash, data.len() as u64)
+            .replacement_snapshot(ino, result_hash, byte_len)
             .ok_or(EIO)?;
 
         // The signed replica requires a resolution result to descend from
@@ -3502,28 +3483,43 @@ impl QuickFS {
         {
             return Err(EINVAL);
         }
-        let load = |version_id| -> Result<Vec<u8>, i32> {
-            let version = state
+        let content = |version_id| -> Result<Option<fs_protocol::ContentHash>, i32> {
+            state
                 .versions
                 .iter()
                 .find(|value| value.id == version_id)
-                .ok_or(EINVAL)?;
-            match version.content_hash {
-                Some(hash) => {
-                    let hydrator = self.hydrator.clone();
-                    let handle = hydrator.runtime_handle.clone();
-                    tokio::task::block_in_place(|| {
-                        handle.block_on(async move {
-                            hydrator.read(Hash::from(hash.0), 0, u64::MAX).await
-                        })
-                    })
-                    .map_err(|_| EIO)
-                }
-                None => Ok(Vec::new()),
-            }
+                .map(|version| version.content_hash)
+                .ok_or(EINVAL)
         };
         let first_id = *conflict.versions.first().ok_or(EINVAL)?;
         let second_id = *conflict.versions.get(1).ok_or(EINVAL)?;
+        let document = matches!(extension.as_str(), "qdoc" | "tilo-doc");
+        let base_id = if document {
+            None
+        } else {
+            Some(
+                crate::conflict_merge::exact_common_base(&state.versions, first_id, second_id)
+                    .map_err(|_| libc::ENOTSUP)?,
+            )
+        };
+        let mut inputs = vec![content(first_id)?, content(second_id)?];
+        if let Some(base_id) = base_id {
+            inputs.push(content(base_id)?);
+        }
+        self.history_content_local(ino, conflict_id, &inputs)?;
+        // An input the merge would refuse for its size is not read into
+        // memory at all.
+        let load = |version_id| -> Result<Vec<u8>, i32> {
+            let version = content(version_id)?;
+            let len = self.local_version_len(version).ok_or(EIO)?;
+            if usize::try_from(len)
+                .ok()
+                .is_none_or(|len| len > crate::conflict_merge::MAX_MERGE_INPUT_BYTES)
+            {
+                return Err(libc::ENOTSUP);
+            }
+            self.local_version_bytes(version).ok_or(EIO)
+        };
         let first = crate::conflict_merge::ExactMergeInput {
             version_id: first_id,
             bytes: load(first_id)?,
@@ -3532,21 +3528,7 @@ impl QuickFS {
             version_id: second_id,
             bytes: load(second_id)?,
         };
-        let merged = if matches!(extension.as_str(), "qdoc" | "tilo-doc") {
-            let preflight = crate::conflict_merge::preflight_exact(first, second, None);
-            let crate::conflict_merge::MergePreflight::Safe { result, .. } = preflight else {
-                // A failed preflight is deliberately indistinguishable from
-                // an unsupported merge at the FUSE boundary: the open signed
-                // conflict remains untouched for Keep Both / manual review.
-                return Err(libc::ENOTSUP);
-            };
-            (result.codec == crate::conflict_merge::DeterministicMergeCodec::TiloDocAutomergeV1)
-                .then_some(result)
-                .ok_or(libc::ENOTSUP)?
-        } else {
-            let base_id =
-                crate::conflict_merge::exact_common_base(&state.versions, first_id, second_id)
-                    .map_err(|_| libc::ENOTSUP)?;
+        let merged = if let Some(base_id) = base_id {
             let preflight = crate::conflict_merge::preflight_exact(
                 first,
                 second,
@@ -3559,6 +3541,17 @@ impl QuickFS {
                 return Err(libc::ENOTSUP);
             };
             (result.codec == crate::conflict_merge::DeterministicMergeCodec::PlainUtf8ThreeWayV1)
+                .then_some(result)
+                .ok_or(libc::ENOTSUP)?
+        } else {
+            let preflight = crate::conflict_merge::preflight_exact(first, second, None);
+            let crate::conflict_merge::MergePreflight::Safe { result, .. } = preflight else {
+                // A failed preflight is deliberately indistinguishable from
+                // an unsupported merge at the FUSE boundary: the open signed
+                // conflict remains untouched for Keep Both / manual review.
+                return Err(libc::ENOTSUP);
+            };
+            (result.codec == crate::conflict_merge::DeterministicMergeCodec::TiloDocAutomergeV1)
                 .then_some(result)
                 .ok_or(libc::ENOTSUP)?
         };
@@ -3758,19 +3751,10 @@ impl QuickFS {
         if current.content_hash != current_revision.content_hash {
             return Err(EBUSY);
         }
-        let selected_data = match selected.content_hash {
-            Some(content_hash) => {
-                let hydrator = self.hydrator.clone();
-                let runtime = hydrator.runtime_handle.clone();
-                tokio::task::block_in_place(|| {
-                    runtime.block_on(async move {
-                        hydrator.read(Hash::from(content_hash.0), 0, u64::MAX).await
-                    })
-                })
-                .map_err(|_| EIO)?
-            }
-            None => Vec::new(),
-        };
+        // The sibling points at the selected member by hash; only its length
+        // is needed, once its bytes are local.
+        self.history_content_local(ino, conflict_id, &[selected.content_hash])?;
+        let selected_len = self.local_version_len(selected.content_hash).ok_or(EIO)?;
         let timestamp_ms = conflict
             .versions
             .iter()
@@ -3805,7 +3789,7 @@ impl QuickFS {
             Ok(fs_protocol::ContentHash(*blake3::hash(&bytes).as_bytes()))
         };
         let source_metadata_hash = metadata_hash(source_path, current_revision.byte_len)?;
-        let target_metadata_hash = metadata_hash(target_path, selected_data.len() as u64)?;
+        let target_metadata_hash = metadata_hash(target_path, selected_len)?;
         let mut parents = state.heads.clone();
         parents.extend(conflict.versions.iter().copied());
         parents.sort_unstable();
@@ -3880,7 +3864,7 @@ impl QuickFS {
                 record_id: target_record,
                 version_id: target_version_id,
                 content_hash: selected.content_hash,
-                byte_len: selected_data.len() as u64,
+                byte_len: selected_len,
                 metadata_hash: target_metadata_hash,
             }),
             proposed_version: target_version,
@@ -4195,14 +4179,12 @@ impl QuickFS {
         existing_request: Option<EvictionRequestId>,
     ) -> Result<EvictionRequestId, i32> {
         let coordinator = self.eviction_coordinator()?;
-        tokio::task::block_in_place(|| {
-            self.hydrator.runtime_handle.block_on(async {
-                coordinator
-                    .prepare(record_id, mode, existing_request, None)
-                    .await
-                    .map(|(request_id, _)| request_id)
-                    .map_err(|_| EBUSY)
-            })
+        self.hydrator.block_on(async {
+            coordinator
+                .prepare(record_id, mode, existing_request, None)
+                .await
+                .map(|(request_id, _)| request_id)
+                .map_err(|_| EBUSY)
         })
     }
 
@@ -4236,21 +4218,17 @@ impl QuickFS {
             return;
         };
         let queue = queue.clone();
-        let requests = tokio::task::block_in_place(|| {
-            self.hydrator
-                .runtime_handle
-                .block_on(async { queue.lock().await.requests().cloned().collect::<Vec<_>>() })
-        });
+        let requests = self
+            .hydrator
+            .block_on(async { queue.lock().await.requests().cloned().collect::<Vec<_>>() });
         for request in requests {
             if matches!(request.state, EvictionRequestState::Completed { .. }) {
                 // Reuse the exact-version guard. A completed old-version
                 // request must not erase residency for a newer current file.
                 if let Ok(coordinator) = self.eviction_coordinator() {
-                    let _ = tokio::task::block_in_place(|| {
-                        self.hydrator
-                            .runtime_handle
-                            .block_on(coordinator.observe_once(request.record_id, request.id))
-                    });
+                    let _ = self
+                        .hydrator
+                        .block_on(coordinator.observe_once(request.record_id, request.id));
                 }
                 continue;
             }
@@ -4396,35 +4374,23 @@ impl QuickFS {
     /// cache); `None` otherwise, so making a preview never pulls content
     /// from the network.
     fn local_content_blocking(&self, hash: Hash) -> Option<Vec<u8>> {
-        use fs_protocol::SyncState;
-        let hydrator = self.hydrator.clone();
-        let rt = hydrator.runtime_handle.clone();
-        tokio::task::block_in_place(|| {
-            rt.block_on(async move {
-                if hydrator.sync_state(hash).await != SyncState::Local {
-                    return None;
-                }
-                hydrator.read(hash, 0, u64::MAX).await.ok()
-            })
-        })
+        self.hydrator
+            .block_on(self.hydrator.read_local(hash, 0, u64::MAX))
     }
 
     /// Read a raw blob (the thumbnail), serving it locally or hydrating it from
     /// a peer — the small transfer that lets a preview arrive before content.
     fn read_blob_blocking(&self, hash: Hash) -> Option<Vec<u8>> {
-        let hydrator = self.hydrator.clone();
-        let rt = hydrator.runtime_handle.clone();
-        tokio::task::block_in_place(|| {
-            rt.block_on(async move { hydrator.read_blob(hash, 0, u64::MAX).await.ok() })
-        })
+        self.hydrator
+            .block_on(self.hydrator.read_blob(hash, 0, u64::MAX))
+            .ok()
     }
 
     /// Ingest the thumbnail PNG as a content-addressed blob, returning its hash.
     fn ingest_blob_blocking(&self, png: &[u8]) -> Option<Hash> {
-        let store = self.hydrator.store.clone();
-        let rt = self.hydrator.runtime_handle.clone();
-        let data = png.to_vec();
-        tokio::task::block_in_place(|| rt.block_on(async move { store.ingest(data).await.ok() }))
+        self.hydrator
+            .block_on(self.hydrator.store.ingest(png.to_vec()))
+            .ok()
     }
 
     /// Bind this mount to a workspace ACL, enforcing per-identity access for
@@ -4745,23 +4711,17 @@ impl QuickFS {
         source: VersionSource<'_>,
         previous: Option<Hash>,
     ) -> io::Result<Option<(Hash, u64)>> {
-        let store = self.hydrator.store.clone();
-        let rt = self.hydrator.runtime_handle.clone();
+        let store = &self.hydrator.store;
         let stored = match source {
             VersionSource::Bytes(data) => {
                 let len = data.len() as u64;
-                let data = data.to_vec();
-                tokio::task::block_in_place(|| {
-                    rt.block_on(async move { store.write_content_after(&data, previous).await })
-                })
-                .map(|hash| hash.map(|hash| (hash, len)))
+                self.hydrator
+                    .block_on(store.write_content_after(data, previous))
+                    .map(|hash| hash.map(|hash| (hash, len)))
             }
-            VersionSource::File { path, manifest } => {
-                let path = path.to_path_buf();
-                tokio::task::block_in_place(|| {
-                    rt.block_on(async move { store.publish_file(&path, manifest, previous).await })
-                })
-            }
+            VersionSource::File { path, manifest } => self
+                .hydrator
+                .block_on(store.publish_file(path, manifest, previous)),
         };
         stored.map_err(|e| io::Error::other(e.to_string()))
     }
@@ -4783,12 +4743,9 @@ impl QuickFS {
         let Some(hash) = hash else {
             return Ok(Vec::new());
         };
-        let hydrator = self.hydrator.clone();
-        let rt = hydrator.runtime_handle.clone();
-        tokio::task::block_in_place(|| {
-            rt.block_on(async move { hydrator.read(hash, 0, u64::MAX).await })
-        })
-        .map_err(|e| io::Error::other(e.to_string()))
+        self.hydrator
+            .block_on(self.hydrator.read(hash, 0, u64::MAX))
+            .map_err(|e| io::Error::other(e.to_string()))
     }
 
     /// Ingest `data` as the new content of `ino` and broadcast the change.
@@ -6752,6 +6709,22 @@ impl Filesystem for QuickFS {
             }
             return;
         }
+        if let Some(id) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(fs_protocol::files::HISTORY_JOB_XATTR_PREFIX))
+        {
+            let result = match uuid::Uuid::parse_str(id) {
+                Ok(id) if value == fs_protocol::files::HISTORY_JOB_CANCEL => {
+                    self.cancel_history_job(ino.0, id)
+                }
+                _ => Err(EINVAL),
+            };
+            match result {
+                Ok(()) => reply.ok(),
+                Err(errno) => reply.error(to_errno(errno)),
+            }
+            return;
+        }
         if name.to_str() == Some(fs_protocol::AVAILABILITY_CONTROL_XATTR) {
             let result = match value {
                 b"retry" => self.retry_transfer(ino.0),
@@ -6872,6 +6845,19 @@ impl Filesystem for QuickFS {
             match serde_json::to_vec(&projection) {
                 Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
                 Err(_) => reply.error(to_errno(EIO)),
+            }
+            return;
+        }
+        if let Some(id) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(fs_protocol::files::HISTORY_JOB_XATTR_PREFIX))
+        {
+            match uuid::Uuid::parse_str(id)
+                .map_err(|_| EINVAL)
+                .and_then(|id| self.history_job_xattr(ino.0, id))
+            {
+                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                Err(errno) => reply.error(to_errno(errno)),
             }
             return;
         }

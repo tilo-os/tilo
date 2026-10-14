@@ -264,8 +264,7 @@ jobs:
         run: |
           set -euo pipefail
           /usr/local/bin/tilo-vm-artifact swap-artifact --help >/dev/null
-          digest=$(python3 scripts/vm-acceptance/profile_cohort.py \
-            --telemetry "$WORK/report/cohort-cache.json" -- produce \
+          digest=$(python3 scripts/vm-acceptance/layer_artifacts.py produce \
             --repo "$WORK/src" --directory "$WORK/cohort-produced" \
             --source "$SOURCE" --builder-image "$BUILDER_IMAGE" \
             --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \

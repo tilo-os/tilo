@@ -21,14 +21,8 @@ fn digest(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 fn invocation(value: &str) -> bool {
-    value.len() == 36
-        && value.bytes().enumerate().all(|(index, b)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                b == b'-'
-            } else {
-                b.is_ascii_digit() || (b'a'..=b'f').contains(&b)
-            }
-        })
+    crate::valid_uuid(value)
+        && !value.bytes().any(|b| b.is_ascii_uppercase())
         && value != "00000000-0000-0000-0000-000000000000"
 }
 

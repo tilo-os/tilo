@@ -60,6 +60,7 @@ fn editor_text_width(width: f64) -> f32 {
 
 mod responsive;
 use responsive::ResponsiveBar;
+mod strips;
 
 /// Persistent chrome is deliberately a little taller than the original
 /// concept's 40 px sketch.  Forty pixels forced the navigation and status
@@ -276,7 +277,9 @@ struct CacheFingerprint {
     workspace_total: usize,
     collaborator_initials: Vec<char>,
     collaborator_names: Vec<String>,
+    collaborator_agents: Vec<bool>,
     collaborator_overflow: usize,
+    watching: u32,
     sharing: (usize, usize, usize),
     center_widget: CenterWidget,
     widgets: [Option<TopBarWidget>; 3],
@@ -297,6 +300,7 @@ struct CacheFingerprint {
     clock_activity: Option<(String, u64, bool, bool)>,
     app_tray_revision: u64,
     continuity: Option<String>,
+    strips: strips::StripsKey,
     tilo_mark: Option<bool>,
     host_label: Option<String>,
 }
@@ -580,6 +584,8 @@ pub struct TopBarChrome {
     /// Same index as `collaborator_initials`. Resolved from
     /// `cursor_color` when present, else [`ui::presence::user_color`].
     collaborator_colors: Vec<Color>,
+    /// Same index as `collaborator_initials`: drawn with the agent mark.
+    collaborator_agents: Vec<bool>,
     /// Collaborators beyond the three avatars; nonzero paints a "+N" chip.
     collaborator_overflow: usize,
     /// Copied off the chrome on each revision bump. Empty until
@@ -676,6 +682,9 @@ pub struct TopBarChrome {
     /// Set when the bar draws and advanced by `update` once reached, so an
     /// idle desktop still wakes to repaint the clock.
     time_wake: Option<Instant>,
+    /// The active workspace's strips as named places, when the host
+    /// reports who is where.
+    strips: strips::StripSwitcher,
 }
 
 /// Seconds the centre band's time reading stays the same for.
@@ -945,6 +954,7 @@ impl TopBarChrome {
             collaborator_initials: Vec::new(),
             collaborator_names: Vec::new(),
             collaborator_colors: Vec::new(),
+            collaborator_agents: Vec::new(),
             collaborator_overflow: 0,
             status: crate::chrome::SystemStatus::default(),
             chrome: None,
@@ -1002,6 +1012,7 @@ impl TopBarChrome {
             focused: false,
             focused_control: None,
             time_wake: None,
+            strips: strips::StripSwitcher::default(),
         };
         this.sync_from_tree(tree);
         this
@@ -1026,7 +1037,9 @@ impl TopBarChrome {
             workspace_total: self.workspace_total,
             collaborator_initials: self.collaborator_initials.clone(),
             collaborator_names: self.collaborator_names.clone(),
+            collaborator_agents: self.collaborator_agents.clone(),
             collaborator_overflow: self.collaborator_overflow,
+            watching: self.watching(),
             sharing: self.sharing_summary(),
             center_widget: self.center_widget,
             widgets: std::array::from_fn(|index| self.widget_config.widgets.get(index).copied()),
@@ -1053,6 +1066,7 @@ impl TopBarChrome {
             }),
             app_tray_revision: self.app_tray_revision(),
             continuity: self.continuity_label(),
+            strips: self.strips_key(),
             tilo_mark: self.tilo_mark,
             host_label: self.host_label.clone(),
         }
@@ -1168,6 +1182,19 @@ impl TopBarChrome {
             center_y,
             stack_right_x,
         );
+        let watching = self.draw_watching_chip(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
+        let stack_right_x = if watching.is_zero_area() {
+            stack_right_x
+        } else {
+            watching.x0 - f64::from(theme.tokens.spacing.s2)
+        };
         let slot_count = self.draw_avatar_chips(
             scene,
             transform,
@@ -1176,14 +1203,25 @@ impl TopBarChrome {
             center_y,
             stack_right_x,
         );
-        self.draw_avatar_stack_bounds(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            (center_y, stack_right_x),
-            slot_count,
-        );
+        if watching.is_zero_area() || slot_count > 0 {
+            self.draw_avatar_stack_bounds(
+                scene,
+                transform,
+                theme,
+                text_renderer,
+                (center_y, stack_right_x),
+                slot_count,
+            );
+        }
+        // Spectators and avatars are one People control: the chip alone
+        // still opens it, and the Invite stand-in never paints beside it.
+        if !watching.is_zero_area() {
+            self.avatar_stack_rect = if slot_count > 0 {
+                self.avatar_stack_rect.union(watching)
+            } else {
+                watching
+            };
+        }
         let continuity = self.continuity_label();
         self.draw_continuity_chip(
             scene,
@@ -1296,6 +1334,8 @@ impl TopBarChrome {
         self.collaborator_initials.clear();
         self.collaborator_names.clear();
         self.collaborator_colors.clear();
+        self.collaborator_agents.clear();
+        let now = tilo_clock::unix_now();
         // Shared helper so the overflow chip and the wheel-disc's
         // active-card dot count agree.
         let peer_count = roster.iter().filter(present).count();
@@ -1316,8 +1356,13 @@ impl TopBarChrome {
                 .copied()
                 .unwrap_or_else(|| user_color(&c.id));
             self.collaborator_colors.push(Color::from_rgb8(r, g, b));
+            self.collaborator_agents
+                .push(crate::collaborators::collaborator_is_agent(
+                    active_ws, c, now,
+                ));
         }
         self.collaborator_overflow = peer_count.saturating_sub(3);
+        self.sync_strips(tree);
     }
 
     /// The host's clock reading, already formatted — and pinned by the host
@@ -1549,7 +1594,15 @@ impl TopBarChrome {
     fn collaborators_visible(&self) -> bool {
         !self.collaborator_initials.is_empty()
             || self.collaborator_overflow > 0
+            || self.watching() > 0
             || self.sharing_summary().0 > 0
+    }
+
+    /// People following the room without taking part, from the host.
+    fn watching(&self) -> u32 {
+        self.chrome
+            .as_ref()
+            .map_or(0, |chrome| chrome.snapshot().watching)
     }
 
     /// The empty-room Invite pill stands in for the avatar stack.
@@ -1893,7 +1946,8 @@ impl TopBarChrome {
             Self::CONTROL_COLLABORATORS if self.invite_visible() => t("topbar-invite"),
             Self::CONTROL_COLLABORATORS => {
                 let named = self.sharing_viewers();
-                if named.is_empty() {
+                let watching = self.watching();
+                let name = if named.is_empty() {
                     t("topbar-show-collaborators")
                 } else {
                     let viewers = named
@@ -1932,6 +1986,14 @@ impl TopBarChrome {
                     t_args(
                         "topbar-collaborators-visible",
                         &[("viewers", viewers.into())],
+                    )
+                };
+                if watching == 0 {
+                    name
+                } else {
+                    format!(
+                        "{name}; {}",
+                        t_args("topbar-watching-description", &[("count", watching.into())])
                     )
                 }
             }
@@ -2423,6 +2485,24 @@ impl TopBarChrome {
         format!("{visible_name}{position_suffix}")
     }
 
+    /// How wide the workspace name may grow in `room`. Named strips follow
+    /// the pill, so the name leaves them their width down to a short
+    /// name's.
+    fn workspace_label_budget(
+        &self,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        room: f64,
+    ) -> f32 {
+        let strips = self.strips_natural_width(text_renderer, theme);
+        let strips_room = if strips > 0.0 {
+            strips + f64::from(theme.tokens.spacing.s2)
+        } else {
+            0.0
+        };
+        ui::num::f32_of_f64((room - strips_room).max(room.min(96.0)).clamp(32.0, 260.0))
+    }
+
     /// Workspace-name pill (click toggles workspace settings) and its
     /// trailing gear glyph, starting at `x`.
     fn draw_workspace_pill(
@@ -2456,8 +2536,11 @@ impl TopBarChrome {
         let gear = SMALL_GLYPH_PX;
         let pill_chrome = pad * 3.0 + gear;
         let breathing = f64::from(tokens.spacing.s4);
-        let label_budget =
-            ui::num::f32_of_f64((center_left - x - pill_chrome - breathing).clamp(32.0, 260.0));
+        let label_budget = self.workspace_label_budget(
+            text_renderer,
+            theme,
+            center_left - x - pill_chrome - breathing,
+        );
         let ws_label = self.workspace_label(text_renderer, &ws_text_style, label_budget);
         let (ws_w, ws_h) = text_renderer.measure_style(
             &ws_label,
@@ -3992,6 +4075,30 @@ impl TopBarChrome {
                 .get(i)
                 .copied()
                 .unwrap_or(colors.intent.inverted);
+            if self.collaborator_agents.get(i).copied().unwrap_or(false) {
+                // Software is never drawn as a person: the shared agent mark,
+                // seated on the same ring so the stack still separates.
+                let ring = f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0;
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.surfaces.overlay,
+                    None,
+                    &RoundedRect::from_rect(
+                        rect.inflate(ring, ring),
+                        f64::from(theme.tokens.radii.detail),
+                    ),
+                );
+                ui::agent_identity::draw_agent_identity_mark(
+                    scene,
+                    transform,
+                    rect,
+                    colors.presence.of(fill),
+                    theme,
+                    ui::agent_identity::AgentIdentityStyle::Solid,
+                );
+                continue;
+            }
             // The ring reads against the bar it's drawn on.
             ui::widget::AvatarFace::new(&initial.to_string(), "")
                 .presence(fill)
@@ -4104,6 +4211,63 @@ impl TopBarChrome {
             &style.with_weight(TextWeight::Semibold),
         );
         self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
+    }
+
+    /// A compact "+N watching" chip for spectators, right of the avatars,
+    /// ending at `right_x`. Returns its pointer target (zero when nobody is
+    /// watching): the bar's control height, like the avatar stack's.
+    fn draw_watching_chip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        right_x: f64,
+    ) -> Rect {
+        let watching = self.watching();
+        if watching == 0 {
+            return Rect::ZERO;
+        }
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let label = t_args("topbar-watching-count", &[("count", watching.into())]);
+        let style = tokens
+            .typography
+            .style(TextRole::Caption)
+            .with_weight(TextWeight::Medium);
+        let (label_w, label_h) = text_renderer.measure_style(&label, None, &style);
+        let pad = f64::from(tokens.spacing.s2);
+        let pill = Rect::new(
+            right_x - f64::from(label_w) - pad * 2.0,
+            center_y - 12.0,
+            right_x,
+            center_y + 12.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(pill, f64::from(tokens.radii.detail)),
+        );
+        text_renderer.draw_style(
+            scene,
+            &label,
+            colors.text_dim,
+            at(
+                transform,
+                (pill.x0 + pad, center_y - f64::from(label_h) / 2.0),
+            ),
+            None,
+            &style,
+        );
+        Rect::new(
+            pill.x0,
+            center_y - BAR_CONTROL_PX / 2.0,
+            pill.x1,
+            center_y + BAR_CONTROL_PX / 2.0,
+        )
     }
 
     /// Sets [`Self::avatar_stack_rect`] to either the drawn chip stack's
@@ -5492,6 +5656,10 @@ impl TopBarChrome {
             *handled = true;
             return;
         }
+        if self.strip_press(point) {
+            *handled = true;
+            return;
+        }
         self.handle_left_click(handled);
     }
 }
@@ -5676,6 +5844,19 @@ impl Widget for TopBarChrome {
                 center_y,
                 after_chevrons,
             );
+            let center_left =
+                f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
+            self.draw_strip_places(
+                scene,
+                transform,
+                theme,
+                text_renderer,
+                center_y,
+                (
+                    self.ws_pill_rect.x1 + f64::from(theme.tokens.spacing.s2),
+                    center_left - f64::from(theme.tokens.spacing.s4),
+                ),
+            );
 
             self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
             if !self.is_compact() {
@@ -5711,6 +5892,9 @@ impl Widget for TopBarChrome {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.handle_strip_naming_event(event, ctx) {
+            return;
+        }
         if self.responsive.active && !self.widget_editing {
             if matches!(event, WindowEvent::Focused(false)) {
                 self.responsive.toolbar.set_focus(false);
@@ -5910,6 +6094,7 @@ impl Widget for TopBarChrome {
             ),
         ];
         rects.extend(self.editor_test_rects());
+        rects.extend(self.strip_test_rects());
         if !self.responsive.active {
             rects.extend(app_tray);
         }
@@ -5993,6 +6178,7 @@ impl Widget for TopBarChrome {
         if let Some(clock) = self.clock_accessibility_node() {
             children.push(clock);
         }
+        children.extend(self.strip_accessibility());
         Some(
             AccessNode::new(Role::Toolbar)
                 .with_semantic_key(if self.is_compact() {
@@ -6067,6 +6253,9 @@ impl Widget for TopBarChrome {
         ) {
             return false;
         }
+        if let Some(performed) = self.strip_semantic_action(target) {
+            return performed;
+        }
         match target {
             "clock.overlay.toggle" => {
                 self.publish_clock_activity_command("toggle", "toggle-stopwatch");
@@ -6108,6 +6297,9 @@ impl Widget for TopBarChrome {
                 return Some(winit::window::CursorIcon::Grab);
             }
         }
+        if self.strip_hit(point) {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
         self.control_targets()
             .into_iter()
             .any(|target| self.control_rect(target).contains(point))
@@ -6122,6 +6314,7 @@ impl Widget for TopBarChrome {
 
     fn set_focus(&mut self, focused: bool) {
         if !focused {
+            self.cancel_strip_naming();
             self.cancel_editor_drag();
             self.editor_submit_key = None;
             self.editor_pointer_release = None;
@@ -7743,6 +7936,83 @@ mod tests {
     }
 
     #[test]
+    fn spectators_and_marked_agents_read_in_the_avatar_stack() {
+        let mut tree = DesktopTree {
+            workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let paint = |bar: &mut TopBarChrome| {
+            let theme = Theme::default();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+            let vp = taffy
+                .new_with_children(
+                    Style {
+                        size: Size::from_lengths(1600.0, 40.0),
+                        ..Default::default()
+                    },
+                    &[node],
+                )
+                .unwrap();
+            taffy
+                .compute_layout_with_measure(
+                    vp,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(1600.0),
+                        height: taffy::AvailableSpace::Definite(40.0),
+                    },
+                    |_, _, _, _, _| taffy::Size::ZERO,
+                )
+                .unwrap();
+            bar.apply_layout(&taffy, node, Point::ORIGIN);
+            bar.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::default(),
+            );
+        };
+
+        // Spectators alone: the chip is the People control, not Invite.
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        chrome.borrow_mut().watching = 2;
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        paint(&mut bar);
+        assert!(bar.collaborator_initials().is_empty());
+        assert!(bar.avatar_stack_rect.height() >= BAR_CONTROL_PX);
+        let node = bar.accessibility().expect("topbar semantics");
+        assert!(
+            node.children
+                .iter()
+                .all(|child| child.name.as_deref() != Some("Invite")),
+            "an audience is not an empty room"
+        );
+        assert!(
+            node.children.iter().any(|child| child
+                .name
+                .as_deref()
+                .is_some_and(|name| name.contains("2 people watching"))),
+            "the bar names its spectators"
+        );
+        bar.last_cursor = Some(bar.avatar_stack_rect.center());
+        let mut handled = false;
+        bar.handle_left_click(&mut handled);
+        assert!(handled && chrome.borrow().overlays.collaborators);
+
+        // A hosted roster marks software by role id; it draws as an agent.
+        let mut agent = tilo_desktop_model::Collaborator::new("scribe", "Scribe");
+        agent.role_id = Some(crate::collaborators::AGENT_ROLE_MARKER.into());
+        tree.workspaces[0].collaborators =
+            vec![agent, tilo_desktop_model::Collaborator::new("ada", "Ada")];
+        let mut bar = TopBarChrome::from_tree(&tree);
+        bar.sync_from_tree(&tree);
+        assert_eq!(bar.collaborator_agents, vec![true, false]);
+    }
+
+    #[test]
     fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
         let mut tree = DesktopTree {
             workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
@@ -8582,6 +8852,7 @@ mod fixture {
         pub glance: ActivityGlance,
         pub clock_activity: Option<ClockActivity>,
         pub active_exposures: Vec<ActiveExposure>,
+        pub watching: u32,
         pub intents: Vec<ChromeIntent>,
     }
     impl State {
@@ -8617,6 +8888,7 @@ mod fixture {
                 glance: ActivityGlance::default(),
                 clock_activity: None,
                 active_exposures: Vec::new(),
+                watching: 0,
                 intents: Vec::new(),
             })))
         }
@@ -8642,6 +8914,7 @@ mod fixture {
                 activity_glance: state.glance.clone(),
                 clock_activity: state.clock_activity.clone(),
                 active_exposures: state.active_exposures.clone(),
+                watching: state.watching,
                 ..Default::default()
             }
         }

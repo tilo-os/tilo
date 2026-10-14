@@ -256,6 +256,8 @@ struct Mount {
     replica_changed: Rc<std::cell::Cell<bool>>,
     /// The focus presence last reported to the page.
     focus_presence: RefCell<Option<serde_json::Value>>,
+    /// The last `livePlace` the page was told.
+    live_place: RefCell<Option<serde_json::Value>>,
 }
 
 struct Desktop {
@@ -266,9 +268,30 @@ struct Desktop {
     generation: String,
     /// What the desktop asked of the page since its last status.
     requests: crate::shell::HostRequests,
+    /// Who is here and what they are doing, as the page reports it.
+    here: tilo_desktop::here::Here,
+    /// Who this page writes as, to find their own steps.
+    author: String,
 }
 
 impl Mount {
+    /// Put who is here on the windows they are in. Remote carets clear a
+    /// member's registrations as they move, so this runs after each.
+    fn apply_here(&mut self) {
+        let Some(desktop) = &self.desktop else {
+            return;
+        };
+        let tree = desktop.handle.read(Clone::clone);
+        let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
+        desktop
+            .here
+            .borrow_mut()
+            .register_windows(&people, self.frame.presence_mut());
+        self.frame.relayout();
+        self.pending = true;
+        self.window.request_redraw();
+    }
+
     fn service_owner_models(&mut self) {
         self.feedback_retry = None;
         if let Some(desktop) = &self.desktop
@@ -720,8 +743,12 @@ impl ApplicationHandler<u64> for Runner {
                         _ => {}
                     }
                     let start = m.metric_start();
+                    let passes = m.frame.relayout_frames();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.metric_end("input", start);
+                    if m.frame.relayout_frames() != passes {
+                        m.note_measured();
+                    }
                     m.pending = true;
                     m.window.request_redraw();
                 }
@@ -932,6 +959,11 @@ fn present_desktop(
     DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
     let generation = format!("mount-{id}");
     let requests = crate::shell::HostRequests::default();
+    let room = crate::shell::Room {
+        authors: Rc::clone(&shared.authors),
+        author: config.author(),
+    };
+    let here = tilo_desktop::here::Here::default();
     let wake = proxy()?;
     let shell = crate::shell::BrowserShell::new(
         surface,
@@ -944,6 +976,9 @@ fn present_desktop(
             about: config.about.clone(),
         },
         Rc::clone(&requests),
+        Rc::clone(&here),
+        shared.clone(),
+        room,
         Arc::new(move || {
             let _ = wake.send_event(id);
         }),
@@ -959,6 +994,8 @@ fn present_desktop(
             persistence,
             generation,
             requests,
+            here,
+            author: config.author(),
         }),
     })
 }
@@ -1187,6 +1224,10 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             .map_err(|e| error(format!("{e:?}")))?;
     }
     frame.set_input_scale(dpr).map_err(error)?;
+    // Every input asks for a redraw on the next animation frame, which
+    // presents what the harness last laid out: a trackpad's wheel events
+    // outpace frames, so each is dispatched at once and laid out there.
+    frame.set_coalesce_wheel_frames(true);
     if desktop.is_some() {
         // The desktop's own search answers the command chord.
         frame.set_caller_palette_enabled(false);
@@ -1253,6 +1294,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         peer: config.peer,
         replica_changed,
         focus_presence: RefCell::new(None),
+        live_place: RefCell::new(None),
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
     emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
@@ -1535,6 +1577,17 @@ impl Mount {
         self.metrics.borrow_mut().end(stage, start);
     }
 
+    /// With frame metrics on, name the widgets that made the layout pass
+    /// just run re-solve sizes, when it did without recomposing: a pass
+    /// that only moved laid-out content (a pan) names none.
+    fn note_measured(&self) {
+        let stats = self.frame.last_relayout();
+        if stats.measured && !stats.rebuilt && self.metrics.borrow().enabled() {
+            let requesters = self.frame.layout_measure_requesters();
+            self.metrics.borrow_mut().measured(requesters);
+        }
+    }
+
     // ResizeObserver/winit is the sole source of viewport notifications.
     // Reading the pair again at redraw also covers scale/size event ordering
     // and changes that occurred while GPU initialization was pending.
@@ -1729,6 +1782,9 @@ impl Mount {
             },
             stage,
         );
+        if polled {
+            self.note_measured();
+        }
         if host_changed && !polled {
             let stage = self.metric_start();
             self.frame
@@ -1844,6 +1900,32 @@ impl Mount {
         )
     }
 
+    /// Where this person is on the desktop, for the room's presence:
+    /// `{focus, place}`, the record of the focused window (the desktop's
+    /// own record where no window is focused or it has none yet) and the
+    /// strip shown. `None` for a single application.
+    fn live_place_value(&self) -> Option<serde_json::Value> {
+        let desktop = self.desktop.as_ref()?;
+        let (focus, place) = desktop.handle.read(|tree| {
+            let place = tree.active_workspace().and_then(|workspace| {
+                tilo_desktop_surface::navigation::active_strip(tree, workspace)
+            });
+            let focus = tilo_desktop_surface::navigation::active_route(tree)
+                .and_then(|route| desktop.shared.live_record_of(tree, route.tab));
+            (focus, place)
+        });
+        let (app, record) = focus.unwrap_or_else(|| {
+            (
+                crate::desktop::DESKTOP_PACKAGE.to_owned(),
+                crate::replication::DESKTOP_RECORD.to_owned(),
+            )
+        });
+        Some(serde_json::json!({
+            "focus": {"app": app, "record": record},
+            "place": place.map(|strip| strip.0.to_string()),
+        }))
+    }
+
     fn publish(&self, id: u64) {
         let ime = self.frame.ime_window().map(|i| {
             serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})
@@ -1904,6 +1986,16 @@ impl Mount {
                 presence.clone().unwrap_or(serde_json::Value::Null),
             );
             *self.focus_presence.borrow_mut() = presence;
+        }
+        let place = self.live_place_value();
+        if *self.live_place.borrow() != place
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert(
+                "livePlace".into(),
+                place.clone().unwrap_or(serde_json::Value::Null),
+            );
+            *self.live_place.borrow_mut() = place;
         }
         let mut text = value.to_string();
         if let crate::semantics_status::SemanticsDecision::Deliver { .. } = decision {
@@ -2363,11 +2455,21 @@ pub fn desktop_set_host_actions(id: u64, actions: &str) -> Result<(), JsValue> {
     let actions: Vec<tilo_desktop_surface::HostAction> =
         serde_json::from_str(actions).map_err(error)?;
     with_mount(id, |m| {
-        m.desktop
+        let desktop = m
+            .desktop
             .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?
-            .handle
-            .set_host_actions(actions);
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        // An ask for an action no longer offered was answered some other way.
+        let mut withdrew = false;
+        for gone in desktop.handle.set_host_actions(actions) {
+            withdrew |= desktop
+                .persistence
+                .notifications
+                .withdraw_host_action(&gone);
+        }
+        if withdrew {
+            m.window.request_redraw();
+        }
         Ok(())
     })
 }
@@ -2726,10 +2828,144 @@ pub fn remote_presence(
             }
             None => presence.unregister_peer(publisher),
         }
+        m.apply_here();
         m.frame.relayout();
         m.pending = true;
         m.window.request_redraw();
         Ok(())
+    })
+}
+
+/// Who is in the room's live layer now: `{own: {publisher, label, color},
+/// members: [{publisher, kind, label, color, focus, activity}] | null}`,
+/// `members` null while the layer is not live. The bar, the People popover
+/// and the windows show them; nothing is written to the room.
+///
+/// # Errors
+///
+/// Rejects malformed JSON or a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
+    #[derive(serde::Deserialize)]
+    struct People {
+        own: Option<tilo_desktop::here::LiveMember>,
+        members: Option<Vec<tilo_desktop::here::LiveMember>>,
+    }
+    let people: People = serde_json::from_str(people).map_err(error)?;
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        if desktop
+            .here
+            .borrow_mut()
+            .set_members(people.own, people.members)
+        {
+            // The bar reads the strips' counts in its update pass, which a
+            // bare redraw skips: without the wake it would paint them only
+            // on its next other change, such as the clock's minute.
+            desktop.shared.wake();
+            m.apply_here();
+        }
+        Ok(())
+    })
+}
+
+/// The host's answer to `/here` (`peer.here`): each person's line.
+///
+/// # Errors
+///
+/// Rejects malformed JSON or a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_here(id: u64, lines: &str) -> Result<(), JsValue> {
+    let lines: Vec<tilo_desktop::here::HostLine> = serde_json::from_str(lines).map_err(error)?;
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        if desktop
+            .here
+            .borrow_mut()
+            .set_lines(lines, crate::shell::now_ms())
+        {
+            m.apply_here();
+        }
+        Ok(())
+    })
+}
+
+/// How many spectators follow the room without taking part.
+///
+/// # Errors
+///
+/// Rejects a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_watching(id: u64, watching: u32) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        if desktop.here.borrow_mut().set_watching(watching) {
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
+    })
+}
+
+/// What this page's person is doing, for the page to post to `/here`:
+/// `{window: hex | null, share, actions: [{id, action, resource, app,
+/// at_ms}]}`. `window` is the focused window's tab id; `actions` are their own steps in the active workspace's records since
+/// `since_ms` (titles only), and empty unless they share an automatic
+/// status (`share`).
+///
+/// # Errors
+///
+/// Rejects a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let tree = desktop.handle.read(Clone::clone);
+        let focused = tree.active_workspace().and_then(|workspace| {
+            // A person who has not moved yet is shown the first strip, as
+            // the composition draws it.
+            let strip = tree
+                .active_strip
+                .get(&workspace.id)
+                .and_then(|id| workspace.strips.iter().find(|s| s.id == *id))
+                .or_else(|| workspace.strips.first())?;
+            let group = tree
+                .active_group_for(strip.id)
+                .and_then(|g| strip.window_groups.iter().find(|w| w.id == g))
+                .or_else(|| strip.window_groups.first())?;
+            group.tabs.iter().find(|tab| tab.id == group.active_tab)
+        });
+        let window = focused.map(|tab| format!("{:x}", tab.id));
+        let share = desktop.here.borrow().sharing() == ui::StatusSharing::Automatic;
+        let actions = if share {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a page clock in milliseconds; negative clamps to zero"
+            )]
+            let since = since_ms.max(0.0) as u64;
+            crate::history::own_recent_actions(&desktop.shared, &tree, &desktop.author, since)
+        } else {
+            Vec::new()
+        };
+        serde_json::to_string(&serde_json::json!({
+            "window": window,
+            "share": share,
+            "actions": actions,
+        }))
+        .map_err(error)
     })
 }
 
@@ -2742,6 +2978,7 @@ pub fn remote_presence(
 pub fn remote_presence_gone(id: u64, publisher: &str) -> Result<(), JsValue> {
     with_mount(id, |m| {
         m.frame.presence_mut().unregister_peer(publisher);
+        m.apply_here();
         m.frame.relayout();
         m.pending = true;
         m.window.request_redraw();
@@ -3058,7 +3295,7 @@ pub fn take_frame_metrics() -> Result<String, JsValue> {
             .iter_mut()
             .map(|(id, mount)| {
                 let mut metrics = mount.metrics.borrow_mut();
-                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "layoutPasses": mount.frame.take_profile_samples(), "lastRelayout": format!("{:?}", mount.frame.last_relayout())})
+                serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "requesters": metrics.take_requesters(), "measuredBy": metrics.take_measured_by(), "layoutPasses": mount.frame.take_profile_samples(), "lastRelayout": format!("{:?}", mount.frame.last_relayout())})
             })
             .collect();
         serde_json::to_string(&samples).map_err(error)

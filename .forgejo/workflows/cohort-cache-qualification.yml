@@ -1,0 +1,125 @@
+name: Native cohort / cache qualification
+
+# Producer and same-run artifact verification only. This job never installs
+# a disk, connects to libvirt or starts a VM. Desktop acceptance remains in
+# vm-acceptance.yml, unchanged. Heavy qualification is explicitly dispatched.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - tools/ci/profile_cohort.py
+      - tools/tests/test_cohort_cache.py
+      - .forgejo/workflows/cohort-cache-qualification.yml
+  workflow_dispatch:
+    inputs:
+      components:
+        description: Maintained userspace components; apps+runtime includes its paired cohort.
+        required: false
+        default: apps+runtime
+
+concurrency:
+  group: cohort-cache-${{ github.event_name }}-${{ github.ref }}-${{ github.event.inputs.components }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    runs-on: runner-quality
+    timeout-minutes: 10
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Exercise producer provenance and cache observation without VMs
+        run: |
+          python3 tools/tests/test_cohort_cache.py
+          python3 scripts/vm-acceptance/test_layer_artifacts.py
+
+  builder:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
+
+  producer:
+    if: github.event_name == 'workflow_dispatch'
+    needs: [tests, builder]
+    runs-on: runner-disk-100g
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      ARCH: x86_64
+      WORK: /var/tmp/cohort-cache-${{ github.run_id }}-${{ github.run_attempt }}
+      SOURCE: ${{ github.sha }}
+      BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+      COMPONENTS: ${{ github.event.inputs.components }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Require the genuine clean native source
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test "$(git rev-parse HEAD)" = "$SOURCE"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          test ! -e "$WORK"
+          mkdir -p "$WORK/report"
+      - name: Build the maintained layer packer
+        run: |
+          set -euo pipefail
+          cargo build --locked -p tilo-vm
+      - name: Produce exact-source layers and observe the existing cache
+        id: cohort
+        timeout-minutes: 100
+        run: |
+          set -euo pipefail
+          # Bound each report/layer file to 4 GiB; oversize data fails closed.
+          ulimit -f 4194304
+          digest=$(python3 tools/ci/profile_cohort.py \
+            --telemetry "$WORK/report/cohort-cache.json" -- produce \
+            --repo "$PWD" --directory "$WORK/produced" \
+            --source "$SOURCE" --builder-image "$BUILDER_IMAGE" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --components "$COMPONENTS" --packer "$PWD/target/debug/tilo-vm")
+          printf '%s\n' "$digest" > "$WORK/report/receipt-sha256"
+          cp "$WORK/produced/manifest.json" "$WORK/report/manifest.json"
+          echo "receipt-sha256=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: native-cohort-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ env.WORK }}/produced/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 2
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: native-cohort-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ env.WORK }}/received
+      - name: Verify the authenticated same-run handoff and measured counters
+        env:
+          RECEIPT_SHA256: ${{ steps.cohort.outputs.receipt-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 scripts/vm-acceptance/layer_artifacts.py verify \
+            --directory "$WORK/received" --source "$SOURCE" --builder-image "$BUILDER_IMAGE" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --components "$COMPONENTS" --receipt-sha256 "$RECEIPT_SHA256"
+          python3 tools/ci/profile_cohort.py --telemetry "$WORK/report/cohort-cache.json" --check-telemetry
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: cohort-cache-evidence-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ env.WORK }}/report/
+          if-no-files-found: error
+          retention-days: 2
+      - name: Remove only this run's temporary handoff
+        if: always()
+        run: |
+          set -euo pipefail
+          test "$WORK" = "/var/tmp/cohort-cache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -rf -- "$WORK"

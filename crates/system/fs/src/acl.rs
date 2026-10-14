@@ -39,8 +39,11 @@
 //! every program already handles.
 //!
 //! Ancestor visibility asks the *real* decision function about the
-//! granted path itself, so a `Restrict` that removes a grant removes its
-//! ancestors' visibility too.
+//! granted path itself, so an expired or revoked grant takes its
+//! ancestors' visibility with it. A `Restrict` never does: it narrows
+//! writing, and `Read` is the floor it cannot go below
+//! ([`collab_types::Access::Read`]). Visibility narrows by granting
+//! narrower paths.
 
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -130,8 +133,8 @@ impl CapBinding {
 
     /// The paths this binding's *grants* nominate for reading — candidates
     /// worth asking [`Self::permits`] about when deciding whether an
-    /// ancestor directory has to exist. A `Restrict` isn't consulted here
-    /// since it can only take a path away, in `permits`.
+    /// ancestor directory has to exist. A `Restrict` nominates nothing: it
+    /// only narrows writing, which `permits` decides.
     fn read_nominations(&self) -> impl Iterator<Item = &str> {
         self.read_nominations_for(&self.actor)
     }
@@ -397,9 +400,9 @@ impl WorkspaceAcl {
     /// Does `peer` hold a read grant on *anything* here? The admission
     /// question, deliberately the coarsest one — what the sync and content
     /// planes can answer before knowing which path a request will concern. A
-    /// peer that reads nothing is a stranger, served nothing at all. A
-    /// `Restrict` that empties a peer's grants makes this `false` just as
-    /// surely as never granting anything did.
+    /// peer that reads nothing is a stranger, served nothing at all. Only
+    /// live grants make this `true`; a `Restrict` cannot make it `false`,
+    /// since it never removes reading.
     pub fn reads_anything(&self, peer: &IdentityKey) -> bool {
         let direct = self.entries.iter().any(|e| &e.identity == peer && e.read);
         direct || {
@@ -423,8 +426,8 @@ impl WorkspaceAcl {
     /// identity holding nothing sees an empty directory, not an erroring mount.
     ///
     /// Ancestry is decided against the *granted* paths, each re-checked
-    /// through [`Self::permits`], so a `Restrict` that removes a grant
-    /// removes its ancestors' visibility too.
+    /// through [`Self::permits`], so a grant that has expired removes its
+    /// ancestors' visibility too. A `Restrict` leaves visibility alone.
     pub fn visible(&self, identity: &IdentityKey, path: &str) -> bool {
         if path == "/" {
             return true;

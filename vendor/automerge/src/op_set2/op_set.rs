@@ -33,6 +33,7 @@ mod index;
 mod insert;
 mod mark_index;
 mod marks;
+mod op_id_index;
 mod op_iter;
 mod op_query;
 mod top_op;
@@ -62,6 +63,8 @@ pub(crate) struct OpSet {
     pub(crate) obj_info: ObjIndex,
     cols: Columns,
     pub(crate) text_encoding: TextEncoding,
+    // TILO(op-id-index)
+    id_index: op_id_index::OpIdIndex,
 }
 
 impl OpSet {
@@ -82,6 +85,7 @@ impl OpSet {
             cols: Columns::default(),
             obj_info: ObjIndex::default(),
             text_encoding: encoding,
+            id_index: Default::default(),
         }
     }
 
@@ -240,6 +244,9 @@ impl OpSet {
     pub(crate) fn splice<O: OpLike>(&mut self, pos: usize, ops: &[O]) -> usize {
         let added = self.cols.splice(pos, ops, self.text_encoding);
         self.splice_objects(ops);
+        // TILO(op-id-index): the ops `Columns::splice` stored.
+        let stored = ops.iter().filter(|o| O::action(o) != Action::Delete);
+        self.id_index.inserted(pos, stored.map(|o| o.id()));
         added
     }
 
@@ -248,6 +255,7 @@ impl OpSet {
             self.undo_succ(&op.undo);
         }
         self.cols.remove_ops(op.pos, &[op]);
+        self.id_index.clear(); // TILO(op-id-index)
         if op.obj_info().is_some() {
             self.obj_info.remove(op.id());
         }
@@ -828,10 +836,49 @@ impl OpSet {
     }
 
     fn get_op_id_pos(&self, id: OpId) -> Option<usize> {
+        // TILO(op-id-index): a position the index gives is used once the id
+        // there is checked; anything else searches the column, as before.
+        let found = match self.id_index.find(id) {
+            Some(None) => None,
+            Some(Some(pos)) if self.op_id_at(pos) == Some(id) => Some(pos),
+            _ => {
+                self.id_index.searched(self.cols.id_ctr.slab_count());
+                return self.scan_op_id_pos(id);
+            }
+        };
+        #[cfg(any(test, feature = "slow_path_assertions"))]
+        assert_eq!(found, self.scan_op_id_pos(id), "op id index for {id:?}");
+        found
+    }
+
+    fn scan_op_id_pos(&self, id: OpId) -> Option<usize> {
         self.cols
             .id_ctr
             .find_by_value(id.counter() as u32)
             .find(|&pos| self.cols.id_actor.get(pos) == Some(id.actoridx()))
+    }
+
+    // TILO(op-id-index)
+    fn op_id_at(&self, pos: usize) -> Option<OpId> {
+        let ctr = self.cols.id_ctr.get(pos)?;
+        let actor = self.cols.id_actor.get(pos)?;
+        Some(OpId::new(u64::from(ctr), actor.0 as usize))
+    }
+
+    /// TILO(op-id-index): index where each op is, if the document's ids
+    /// are scattered enough that searching for them is slow, so that the
+    /// lookups of an apply need not search.
+    pub(crate) fn index_op_ids(&mut self) {
+        let len = self.len();
+        let slabs = self.cols.id_ctr.slab_count();
+        if !self.id_index.wants_counters(len, slabs) {
+            return;
+        }
+        let mut index = std::mem::take(&mut self.id_index);
+        if index.decide(len, slabs, self.cols.id_ctr.iter()) {
+            index.build(len, self.id_iter_range(&(0..len)));
+        }
+        self.id_index = index;
     }
 
     pub(crate) fn seek_list_opid(
@@ -1190,6 +1237,7 @@ impl OpSet {
             cols: Columns::default(),
             obj_info: ObjIndex::default(),
             text_encoding,
+            id_index: Default::default(),
         }
     }
 
@@ -1214,6 +1262,7 @@ impl OpSet {
             cols,
             obj_info: ObjIndex::default(),
             text_encoding: TextEncoding::platform_default(),
+            id_index: Default::default(),
         }
     }
 
@@ -1230,6 +1279,7 @@ impl OpSet {
             cols,
             obj_info: ObjIndex::default(),
             text_encoding,
+            id_index: Default::default(),
         };
 
         Ok(op_set)
@@ -1495,6 +1545,7 @@ impl OpSet {
     }
 
     pub(crate) fn rewrite_with_new_actor(&mut self, idx: usize) {
+        self.id_index.clear(); // TILO(op-id-index)
         self.cols.rewrite_with_new_actor(idx);
         self.cols.index.mark.rewrite_with_new_actor(idx);
         self.obj_info = ObjIndex(
@@ -1508,6 +1559,7 @@ impl OpSet {
 
     pub(crate) fn remove_actor(&mut self, idx: usize) {
         self.actors.remove(idx);
+        self.id_index.clear(); // TILO(op-id-index)
         self.cols.rewrite_without_actor(idx);
         self.obj_info = ObjIndex(
             self.obj_info

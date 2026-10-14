@@ -536,8 +536,7 @@ impl QuickFS {
         let store = std::sync::Arc::clone(&self.hydrator.store);
         store.defer_sync();
         let value = apply();
-        let rt = self.hydrator.runtime_handle.clone();
-        if let Err(error) = rt.block_on(store.end_deferred_sync()) {
+        if let Err(error) = self.hydrator.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
         let mut durable = if let Some(deferral) = deferral
@@ -725,12 +724,9 @@ impl QuickFS {
         let Some(hash) = view.hash else {
             return Ok(Vec::new());
         };
-        let hydrator = self.hydrator.clone();
-        let rt = hydrator.runtime_handle.clone();
-        tokio::task::block_in_place(|| {
-            rt.block_on(async move { hydrator.read(hash, offset, len).await })
-        })
-        .map_err(|_| EIO)
+        self.hydrator
+            .block_on(self.hydrator.read(hash, offset, len))
+            .map_err(|_| EIO)
     }
 
     /// The entries of the directory at `rel`, as [`Self::tree_snapshot`]
