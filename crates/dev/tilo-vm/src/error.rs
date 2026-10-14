@@ -193,7 +193,7 @@ pub enum CliError {
     },
     #[error("this host is {host} but the VM would be {requested}")]
     ArchMismatch { host: String, requested: String },
-    #[error("{place} has {free} free, below the {floor} floor")]
+    #[error("not enough space on {place}: {free} is free, and tilo-vm keeps at least {floor} free")]
     LowDisk {
         place: String,
         free: String,
@@ -240,7 +240,7 @@ pub enum CliError {
     VmRunning { vm: String },
     #[error("the VM disk {path} already exists")]
     DiskExists { path: String },
-    #[error("{place} has {free} free, but {what} needs {needed}")]
+    #[error("not enough space on {place}: {what} needs {needed}, {free} is free")]
     NoSpace {
         place: String,
         free: String,
@@ -495,7 +495,7 @@ impl CliError {
                 "pass another path with --disk, or delete that file if no registered VM uses it (tilo-vm vm list)".into()
             }
             Self::NoSpace { .. } => {
-                "free space on that filesystem and rerun; an interrupted download resumes".into()
+                "free space there and rerun: what was already downloaded is reused, so a retry fetches only the rest (in a VM, tilo-vm gc --dry-run shows what it can delete)".into()
             }
             Self::ForgeAuth { token: None, .. } => {
                 "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea, then rerun. Disk downloads read only these".into()
