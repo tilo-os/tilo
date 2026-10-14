@@ -200,6 +200,9 @@ pub struct DesktopChromeSnapshot {
     pub active_exposures: Vec<ActiveExposure>,
     /// The person's centre widgets; `None` until the host has read them.
     pub topbar_widgets: Option<TopBarWidgets>,
+    /// People following the room without taking part (spectators). The bar
+    /// counts them beside the avatars so an audience is never invisible.
+    pub watching: u32,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChromeIntent {
