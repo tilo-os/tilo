@@ -265,6 +265,20 @@ needs or reuses prebuilt binaries and a bundle, prints the URL to open and
 stops everything on Ctrl-C; `dev/run.py --help` describes the edit loop and
 driving it with headless Chromium.
 
+`dev/auth-e2e.mjs` checks getting in on that stack, end to end, in headless
+Chrome: a fresh browser's first visit through the door, a reload, a second
+and a new tab, a damaged link, another person's invitation (spent, and one
+issued for someone else), and a host set up again with its stale link. It
+starts `run.py` from prebuilt binaries and a bundle and writes
+`summary.json` and `summary.md`; the `Browser / authentication` workflow
+runs it nightly and on demand.
+
+```sh
+node crates/hosting/tilo-room-service/dev/auth-e2e.mjs --bundle DIR \
+  --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
+  --out target/auth-e2e [--allow-dev]
+```
+
 For short-lived rooms, serve the output of
 `crates/browser/tilo-browser-runtime/scripts/build.sh DIR --bundle desktop`
 plus `web/*` as `TILO_ROOMS_ASSETS`, and run `target/release/tilo-room-service`
