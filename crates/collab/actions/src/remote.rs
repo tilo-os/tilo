@@ -890,7 +890,14 @@ impl InvocationState {
 }
 
 /// Why a host would not do what was asked. Every variant means nothing ran.
+///
+/// On the wire it keeps the shape peers decoded before
+/// [`Self::StaleRevision`] existed: that variant travels as the
+/// [`Self::InvalidRequest`] those peers sent and understand, and such a
+/// refusal from them reads back as it. A variant an older peer cannot
+/// decode would fail its whole frame.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[serde(from = "WireHostError", into = "WireHostError")]
 pub enum ActionHostError {
     /// The host serves no actions right now (no live apps, service off).
     #[error("remote actions are unavailable: {reason}")]
@@ -908,6 +915,11 @@ pub enum ActionHostError {
     /// The request is malformed for this action (arguments, input).
     #[error("invalid request: {reason}")]
     InvalidRequest { reason: String },
+    /// The target changed since the revision the request named, or the one
+    /// its host resolved it against: list it again and invoke what is
+    /// offered now.
+    #[error("invalid request: {}", STALE_REVISION_REASON)]
+    StaleRevision,
     /// The invocation id is unknown to this caller.
     #[error("no such invocation")]
     UnknownInvocation,
@@ -932,10 +944,88 @@ impl ActionHostError {
             Self::NotPermitted => "not_permitted",
             Self::ConfirmationRequired => "action_confirmation_required",
             Self::InvalidRequest { .. } => "invalid_arguments",
+            Self::StaleRevision => "stale_revision",
             Self::UnknownInvocation => "unknown_invocation",
             Self::InvocationConflict => "invocation_conflict",
             Self::NotCancellable { .. } => "not_cancellable",
             Self::Refused { .. } => "refused",
+        }
+    }
+
+    /// Whether the host refused a directory action that asks for
+    /// confirmation because the request named no revision
+    /// ([`CONFIRMED_ACTION_NEEDS_REVISION`]).
+    #[must_use]
+    pub fn needs_revision(&self) -> bool {
+        matches!(self, Self::InvalidRequest { reason } if reason == CONFIRMED_ACTION_NEEDS_REVISION)
+    }
+}
+
+/// What [`ActionHostError::StaleRevision`] says, and the reason it carries
+/// on the wire as an [`ActionHostError::InvalidRequest`].
+pub const STALE_REVISION_REASON: &str = "the target changed since that revision; list it again";
+
+/// The reasons hosts gave a stale revision before it had a variant: such a
+/// refusal from a peer that still sends one reads as
+/// [`ActionHostError::StaleRevision`].
+const UNTYPED_STALE_REVISION_REASONS: [&str; 4] = [
+    STALE_REVISION_REASON,
+    "the action changed since that revision; list it again",
+    "the room changed since that revision",
+    "the catalogue changed since that revision",
+];
+
+/// [`ActionHostError`] as it travels: only variants every peer decodes.
+#[derive(Serialize, Deserialize)]
+#[serde(rename = "ActionHostError")]
+enum WireHostError {
+    Unavailable { reason: String },
+    UnknownAction,
+    NotPermitted,
+    ConfirmationRequired,
+    InvalidRequest { reason: String },
+    UnknownInvocation,
+    InvocationConflict,
+    NotCancellable { reason: String },
+    Refused { reason: String },
+}
+
+impl From<ActionHostError> for WireHostError {
+    fn from(error: ActionHostError) -> Self {
+        match error {
+            ActionHostError::Unavailable { reason } => Self::Unavailable { reason },
+            ActionHostError::UnknownAction => Self::UnknownAction,
+            ActionHostError::NotPermitted => Self::NotPermitted,
+            ActionHostError::ConfirmationRequired => Self::ConfirmationRequired,
+            ActionHostError::InvalidRequest { reason } => Self::InvalidRequest { reason },
+            ActionHostError::StaleRevision => Self::InvalidRequest {
+                reason: STALE_REVISION_REASON.to_owned(),
+            },
+            ActionHostError::UnknownInvocation => Self::UnknownInvocation,
+            ActionHostError::InvocationConflict => Self::InvocationConflict,
+            ActionHostError::NotCancellable { reason } => Self::NotCancellable { reason },
+            ActionHostError::Refused { reason } => Self::Refused { reason },
+        }
+    }
+}
+
+impl From<WireHostError> for ActionHostError {
+    fn from(error: WireHostError) -> Self {
+        match error {
+            WireHostError::InvalidRequest { reason } | WireHostError::Refused { reason }
+                if UNTYPED_STALE_REVISION_REASONS.contains(&reason.as_str()) =>
+            {
+                Self::StaleRevision
+            }
+            WireHostError::Unavailable { reason } => Self::Unavailable { reason },
+            WireHostError::UnknownAction => Self::UnknownAction,
+            WireHostError::NotPermitted => Self::NotPermitted,
+            WireHostError::ConfirmationRequired => Self::ConfirmationRequired,
+            WireHostError::InvalidRequest { reason } => Self::InvalidRequest { reason },
+            WireHostError::UnknownInvocation => Self::UnknownInvocation,
+            WireHostError::InvocationConflict => Self::InvocationConflict,
+            WireHostError::NotCancellable { reason } => Self::NotCancellable { reason },
+            WireHostError::Refused { reason } => Self::Refused { reason },
         }
     }
 }
@@ -1633,6 +1723,73 @@ mod tests {
 
     use super::*;
     use crate::{ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind};
+
+    /// A stale revision is typed in this build and travels in the shape
+    /// every peer decodes: an older peer reads the invalid request it always
+    /// sent, and the reasons older hosts gave it read back as the variant.
+    #[test]
+    fn a_stale_revision_is_typed_and_travels_as_older_peers_read_it() {
+        let encoded = serde_json::to_value(ActionHostError::StaleRevision).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({"InvalidRequest": {"reason": STALE_REVISION_REASON}})
+        );
+        assert_eq!(
+            serde_json::from_value::<ActionHostError>(encoded).unwrap(),
+            ActionHostError::StaleRevision
+        );
+        assert_eq!(ActionHostError::StaleRevision.code(), "stale_revision");
+        for (variant, reason) in [
+            (
+                "InvalidRequest",
+                "the action changed since that revision; list it again",
+            ),
+            ("Refused", "the room changed since that revision"),
+            ("Refused", "the catalogue changed since that revision"),
+        ] {
+            let sent = serde_json::json!({ variant: { "reason": reason } });
+            assert_eq!(
+                serde_json::from_value::<ActionHostError>(sent).unwrap(),
+                ActionHostError::StaleRevision,
+                "{variant}: {reason}"
+            );
+        }
+        // Only those exact reasons: a refusal that merely mentions a
+        // revision is the refusal it is.
+        let other = ActionHostError::Refused {
+            reason: "the call changed since that revision, honestly".into(),
+        };
+        let round_trip: ActionHostError =
+            serde_json::from_value(serde_json::to_value(&other).unwrap()).unwrap();
+        assert_eq!(round_trip, other);
+        let needs = ActionHostError::InvalidRequest {
+            reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),
+        };
+        assert!(needs.needs_revision());
+        assert!(!ActionHostError::StaleRevision.needs_revision());
+    }
+
+    /// A failure's structured details travel beside its message.
+    #[test]
+    fn a_failure_with_details_round_trips() {
+        let update = InvocationUpdate::Failed {
+            invocation: InvocationId::new(),
+            error: ActionFailure {
+                code: "invalid_arguments".into(),
+                message: "argument `pageSize` must be at most 64".into(),
+                details: Some(serde_json::json!({
+                    "param": "pageSize",
+                    "violation": {"kind": "maximum", "bound": 64}
+                })),
+                retryable: false,
+            },
+        };
+        let encoded = serde_json::to_string(&update).unwrap();
+        assert_eq!(
+            serde_json::from_str::<InvocationUpdate>(&encoded).unwrap(),
+            update
+        );
+    }
 
     #[test]
     fn a_bot_is_its_own_principal_acting_for_its_installer() {
