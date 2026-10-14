@@ -41,12 +41,13 @@ async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
         .expect("answered")
 }
 
+/// What worker `worker` advertises at `now`.
 fn advertisement(
     worker: [u8; 32],
     power: PowerAvailability,
     active: u32,
+    now: u64,
 ) -> ComputeWorkerAdvertisement {
-    let now = tilo_clock::unix_now_ms();
     ComputeWorkerAdvertisement {
         version: COMPUTE_TRANSPORT_SCHEMA_VERSION,
         worker,
@@ -76,7 +77,12 @@ fn placement(state_root: &std::path::Path) -> ComputeActions {
     ] {
         runtime
             .compute
-            .advertise(worker, WORKSPACE, now, advertisement(worker, power, active))
+            .advertise(
+                worker,
+                WORKSPACE,
+                now,
+                advertisement(worker, power, active, now),
+            )
             .unwrap();
     }
     let workspaces = Arc::new(tokio::sync::Mutex::new(HashMap::from([(
