@@ -75,10 +75,7 @@ struct WakeSender<T> {
 
 impl<T> Clone for WakeSender<T> {
     fn clone(&self) -> Self {
-        Self {
-            sender: self.sender.clone(),
-            waker: self.waker.clone(),
-        }
+        Self { sender: self.sender.clone(), waker: self.waker.clone() }
     }
 }
 
@@ -111,12 +108,12 @@ impl<T> PeekableReceiver<T> {
             Ok(v) => {
                 self.first = Some(v);
                 true
-            }
+            },
             Err(TryRecvError::Empty) => false,
             Err(TryRecvError::Disconnected) => {
                 warn!("Channel was disconnected when checking incoming");
                 false
-            }
+            },
         }
     }
 
@@ -170,9 +167,7 @@ pub struct EventLoopProxy<T: 'static> {
 
 impl<T: 'static> Clone for EventLoopProxy<T> {
     fn clone(&self) -> Self {
-        EventLoopProxy {
-            user_sender: self.user_sender.clone(),
-        }
+        EventLoopProxy { user_sender: self.user_sender.clone() }
     }
 }
 
@@ -222,9 +217,8 @@ impl<T: 'static> EventLoop<T> {
 
         let ime = ime.ok().map(RefCell::new);
 
-        let randr_event_offset = xconn
-            .select_xrandr_input(root)
-            .expect("Failed to query XRandR extension");
+        let randr_event_offset =
+            xconn.select_xrandr_input(root).expect("Failed to query XRandR extension");
 
         let xi2ext = xconn
             .xcb_connection()
@@ -314,10 +308,8 @@ impl<T: 'static> EventLoop<T> {
         // Set initial device event filter.
         window_target.update_listen_device_events(true);
 
-        let root_window_target = RootAEL {
-            p: PlatformActiveEventLoop::X(window_target),
-            _marker: PhantomData,
-        };
+        let root_window_target =
+            RootAEL { p: PlatformActiveEventLoop::X(window_target), _marker: PhantomData };
 
         let event_processor = EventProcessor {
             target: root_window_target,
@@ -371,18 +363,13 @@ impl<T: 'static> EventLoop<T> {
             activation_receiver: PeekableReceiver::from_recv(activation_token_channel),
             user_receiver: PeekableReceiver::from_recv(user_channel),
             user_sender,
-            state: EventLoopState {
-                x11_readiness: Readiness::EMPTY,
-            },
+            state: EventLoopState { x11_readiness: Readiness::EMPTY },
         }
     }
 
     pub fn create_proxy(&self) -> EventLoopProxy<T> {
         EventLoopProxy {
-            user_sender: WakeSender {
-                sender: self.user_sender.clone(),
-                waker: self.waker.clone(),
-            },
+            user_sender: WakeSender { sender: self.user_sender.clone(), waker: self.waker.clone() },
         }
     }
 
@@ -398,13 +385,13 @@ impl<T: 'static> EventLoop<T> {
             match self.pump_events(None, &mut event_handler) {
                 PumpStatus::Exit(0) => {
                     break Ok(());
-                }
+                },
                 PumpStatus::Exit(code) => {
                     break Err(EventLoopError::ExitFailure(code));
-                }
+                },
                 _ => {
                     continue;
-                }
+                },
             }
         };
 
@@ -470,17 +457,15 @@ impl<T: 'static> EventLoop<T> {
                 ControlFlow::Poll => Some(Duration::ZERO),
                 ControlFlow::WaitUntil(wait_deadline) => {
                     Some(wait_deadline.saturating_duration_since(start))
-                }
+                },
             };
 
             min_timeout(control_flow_timeout, timeout)
         };
 
         self.state.x11_readiness = Readiness::EMPTY;
-        if let Err(error) = self
-            .event_loop
-            .dispatch(timeout, &mut self.state)
-            .map_err(std::io::Error::from)
+        if let Err(error) =
+            self.event_loop.dispatch(timeout, &mut self.state).map_err(std::io::Error::from)
         {
             tracing::error!("Failed to poll for events: {error:?}");
             let exit_code = error.raw_os_error().unwrap_or(1);
@@ -492,23 +477,14 @@ impl<T: 'static> EventLoop<T> {
         // to be considered here
         let cause = match self.control_flow() {
             ControlFlow::Poll => StartCause::Poll,
-            ControlFlow::Wait => StartCause::WaitCancelled {
-                start,
-                requested_resume: None,
-            },
+            ControlFlow::Wait => StartCause::WaitCancelled { start, requested_resume: None },
             ControlFlow::WaitUntil(deadline) => {
                 if Instant::now() < deadline {
-                    StartCause::WaitCancelled {
-                        start,
-                        requested_resume: Some(deadline),
-                    }
+                    StartCause::WaitCancelled { start, requested_resume: Some(deadline) }
                 } else {
-                    StartCause::ResumeTimeReached {
-                        start,
-                        requested_resume: deadline,
-                    }
+                    StartCause::ResumeTimeReached { start, requested_resume: deadline }
                 }
-            }
+            },
         };
 
         // False positive / spurious wake ups could lead to us spamming
@@ -520,10 +496,7 @@ impl<T: 'static> EventLoop<T> {
         // running a loop iteration.
         // If we don't have any pending `_receiver`
         if !self.has_pending()
-            && !matches!(
-                &cause,
-                StartCause::ResumeTimeReached { .. } | StartCause::Poll
-            )
+            && !matches!(&cause, StartCause::ResumeTimeReached { .. } | StartCause::Poll)
             && timeout.is_none()
         {
             return;
@@ -549,11 +522,9 @@ impl<T: 'static> EventLoop<T> {
 
         // Empty activation tokens.
         while let Ok((window_id, serial)) = self.activation_receiver.try_recv() {
-            let token = self
-                .event_processor
-                .with_window(window_id.0 as xproto::Window, |window| {
-                    window.generate_activation_token()
-                });
+            let token = self.event_processor.with_window(window_id.0 as xproto::Window, |window| {
+                window.generate_activation_token()
+            });
 
             match token {
                 Some(Ok(token)) => {
@@ -565,11 +536,11 @@ impl<T: 'static> EventLoop<T> {
                         },
                     };
                     callback(event, &self.event_processor.target)
-                }
+                },
                 Some(Err(e)) => {
                     tracing::error!("Failed to get activation token: {}", e);
-                }
-                None => {}
+                },
+                None => {},
             }
         }
 
@@ -591,10 +562,7 @@ impl<T: 'static> EventLoop<T> {
             for window_id in windows {
                 let window_id = crate::window::WindowId(window_id);
                 callback(
-                    Event::WindowEvent {
-                        window_id,
-                        event: WindowEvent::RedrawRequested,
-                    },
+                    Event::WindowEvent { window_id, event: WindowEvent::RedrawRequested },
                     &self.event_processor.target,
                 );
             }
@@ -614,19 +582,18 @@ impl<T: 'static> EventLoop<T> {
 
         while unsafe { self.event_processor.poll_one_event(xev.as_mut_ptr()) } {
             let mut xev = unsafe { xev.assume_init() };
-            self.event_processor
-                .process_event(&mut xev, |window_target, event| {
-                    if let Event::WindowEvent {
-                        window_id: crate::window::WindowId(wid),
-                        event: WindowEvent::RedrawRequested,
-                    } = event
-                    {
-                        let window_target = EventProcessor::window_target(window_target);
-                        window_target.redraw_sender.send(wid).unwrap();
-                    } else {
-                        callback(event, window_target);
-                    }
-                });
+            self.event_processor.process_event(&mut xev, |window_target, event| {
+                if let Event::WindowEvent {
+                    window_id: crate::window::WindowId(wid),
+                    event: WindowEvent::RedrawRequested,
+                } = event
+                {
+                    let window_target = EventProcessor::window_target(window_target);
+                    window_target.redraw_sender.send(wid).unwrap();
+                } else {
+                    callback(event, window_target);
+                }
+            });
         }
     }
 
@@ -679,9 +646,7 @@ impl ActiveEventLoop {
     }
 
     pub(crate) fn create_custom_cursor(&self, cursor: CustomCursorSource) -> RootCustomCursor {
-        RootCustomCursor {
-            inner: PlatformCustomCursor::X(CustomCursor::new(self, cursor.inner)),
-        }
+        RootCustomCursor { inner: PlatformCustomCursor::X(CustomCursor::new(self, cursor.inner)) }
     }
 
     pub fn listen_device_events(&self, allowed: DeviceEvents) {
@@ -761,9 +726,7 @@ impl ActiveEventLoop {
 
 impl<T: 'static> EventLoopProxy<T> {
     pub fn send_event(&self, event: T) -> Result<(), EventLoopClosed<T>> {
-        self.user_sender
-            .send(event)
-            .map_err(|e| EventLoopClosed(e.0))
+        self.user_sender.send(event).map_err(|e| EventLoopClosed(e.0))
     }
 }
 
@@ -783,11 +746,7 @@ impl<'a> DeviceInfo<'a> {
             if info.is_null() || count == 0 {
                 None
             } else {
-                Some(DeviceInfo {
-                    xconn,
-                    info,
-                    count: count as usize,
-                })
+                Some(DeviceInfo { xconn, info, count: count as usize })
             }
         }
     }
@@ -835,10 +794,7 @@ impl Window {
         attribs: WindowAttributes,
     ) -> Result<Self, RootOsError> {
         let window = Arc::new(UnownedWindow::new(event_loop, attribs)?);
-        event_loop
-            .windows
-            .borrow_mut()
-            .insert(window.id(), Arc::downgrade(&window));
+        event_loop.windows.borrow_mut().insert(window.id(), Arc::downgrade(&window));
         Ok(Window(window))
     }
 }
@@ -848,10 +804,7 @@ impl Drop for Window {
         let window = self.deref();
         let xconn = &window.xconn;
 
-        if let Ok(c) = xconn
-            .xcb_connection()
-            .destroy_window(window.id().0 as xproto::Window)
-        {
+        if let Ok(c) = xconn.xcb_connection().destroy_window(window.id().0 as xproto::Window) {
             c.ignore_error();
         }
     }
@@ -911,14 +864,11 @@ impl fmt::Display for X11Error {
             ),
             X11Error::MissingExtension(s) => write!(f, "Missing X11 extension: {s}"),
             X11Error::NoSuchVisual(visualid) => {
-                write!(
-                    f,
-                    "Could not find a matching X11 visual for ID `{visualid:x}`"
-                )
-            }
+                write!(f, "Could not find a matching X11 visual for ID `{visualid:x}`")
+            },
             X11Error::XsettingsParse(err) => {
                 write!(f, "Failed to parse xsettings: {err:?}")
-            }
+            },
         }
     }
 }
@@ -1054,27 +1004,21 @@ impl Device {
                 let ty = unsafe { (*class_ptr)._type };
                 if ty == ffi::XIScrollClass {
                     let info = unsafe { &*(class_ptr as *const ffi::XIScrollClassInfo) };
-                    scroll_axes.push((
-                        info.number,
-                        ScrollAxis {
-                            increment: info.increment,
-                            orientation: match info.scroll_type {
-                                ffi::XIScrollTypeHorizontal => ScrollOrientation::Horizontal,
-                                ffi::XIScrollTypeVertical => ScrollOrientation::Vertical,
-                                _ => unreachable!(),
-                            },
-                            position: 0.0,
+                    scroll_axes.push((info.number, ScrollAxis {
+                        increment: info.increment,
+                        orientation: match info.scroll_type {
+                            ffi::XIScrollTypeHorizontal => ScrollOrientation::Horizontal,
+                            ffi::XIScrollTypeVertical => ScrollOrientation::Vertical,
+                            _ => unreachable!(),
                         },
-                    ));
+                        position: 0.0,
+                    }));
                 }
             }
         }
 
-        let mut device = Device {
-            _name: name.into_owned(),
-            scroll_axes,
-            attachment: info.attachment,
-        };
+        let mut device =
+            Device { _name: name.into_owned(), scroll_axes, attachment: info.attachment };
         device.reset_scroll_position(info);
         device
     }
@@ -1085,10 +1029,8 @@ impl Device {
                 let ty = unsafe { (*class_ptr)._type };
                 if ty == ffi::XIValuatorClass {
                     let info = unsafe { &*(class_ptr as *const ffi::XIValuatorClassInfo) };
-                    if let Some(&mut (_, ref mut axis)) = self
-                        .scroll_axes
-                        .iter_mut()
-                        .find(|&&mut (axis, _)| axis == info.number)
+                    if let Some(&mut (_, ref mut axis)) =
+                        self.scroll_axes.iter_mut().find(|&&mut (axis, _)| axis == info.number)
                     {
                         axis.position = info.value;
                     }

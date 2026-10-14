@@ -200,7 +200,6 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::RealtimeCommand { .. }
             | CollabRequest::Hello { .. }
             | CollabRequest::PublishActions { .. }
-            | CollabRequest::PublishActionSurface { .. }
             | CollabRequest::ReportContinuation { .. }
             | CollabRequest::ReportPlayback { .. }
             | CollabRequest::ClearContinuation { .. }

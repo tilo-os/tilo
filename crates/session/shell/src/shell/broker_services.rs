@@ -806,7 +806,7 @@ impl LauncherServices for NativeLauncher {
             Binding::Answer => Phase::BindingAnswer,
             Binding::Admitted => Phase::BindingAdmitted,
             Binding::Refused => Phase::BindingRefused,
-            Binding::Abandoned => Phase::BindingAbandoned,
+            Binding::TimedOut => Phase::BindingTimedOut,
         };
         super::launcher::LaunchSession::current()
             .launch_history
@@ -2293,7 +2293,6 @@ mod tests {
             package_id: id.into(),
             display_name: "Writer".into(),
             localized_names: std::collections::BTreeMap::default(),
-            keywords: Vec::new(),
             category: None,
             version: "1".into(),
             manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
