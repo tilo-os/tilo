@@ -112,6 +112,7 @@ impl Stats {
             "join_ms": {
                 "p50": quantile(&mut join, 0.5),
                 "p95": quantile(&mut join, 0.95),
+                "p99": quantile(&mut join, 0.99),
                 "max": quantile(&mut join, 1.0),
             },
             "join_ms_mean_by_tenth": join_by_tenth,
@@ -135,6 +136,7 @@ impl Stats {
             "chat_ms": {
                 "p50": quantile(&mut chat, 0.5),
                 "p95": quantile(&mut chat, 0.95),
+                "p99": quantile(&mut chat, 0.99),
                 "max": quantile(&mut chat, 1.0),
             },
             "chat_p95_ms_by_sent_s": chat_p95_by_sent_s,

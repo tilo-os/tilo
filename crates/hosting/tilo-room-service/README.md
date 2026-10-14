@@ -283,7 +283,9 @@ uses it with `PUBLIC_TILO_ROOMS_URL=http://localhost:8790`.
   which the Containerfile sets from the revision label; `unknown` outside an
   image), to compare with the revision of the pinned digest.
   `tilo_rooms_*`: rooms, online guests and
-  spectators, `joins_total`, `join_failures_total{reason}`, mode, browser
+  spectators, the persistent room's caps (`max_guests`, `max_spectators`, so
+  an alert divides by the running value rather than a copy of it),
+  `joins_total`, `join_failures_total{reason}`, mode, browser
   error counters, and the relay's own counters read from the snapshot each
   relay persists every second (`relay_up`, `relay_sessions`,
   `relay_live_drops_total`, `relay_records_total`, `relay_record_bytes_total`,

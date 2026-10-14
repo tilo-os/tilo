@@ -46,6 +46,8 @@ pub struct Shared {
     pub service: Plain,
     pub host_cert: DeviceCert,
     pub stats: Arc<Stats>,
+    /// What the spectators measured, apart from the guests.
+    pub spectator_stats: Arc<Stats>,
     pub started: Instant,
     pub stop: tokio::sync::watch::Receiver<bool>,
 }
@@ -58,7 +60,7 @@ fn exponential(mean_ms: f64) -> Duration {
 /// What the room service tells a visitor past its cap.
 const FULL: &str = "the room is full";
 
-fn now_ms(started: Instant) -> u64 {
+pub fn now_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
@@ -186,26 +188,7 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
     if shared.args.cursor_hz > 0.0
         && let Some(desktop) = desktop
     {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let asked = peer.live_grant_then(
-            desktop,
-            Box::new(move |grant| {
-                let _ = sender.send(grant);
-            }),
-        );
-        match (asked, receiver.await) {
-            (Ok(()), Ok(Ok(grant))) => {
-                match Live::open(shared.relay.clone(), &grant.token, stats.clone()).await {
-                    Ok(opened) => {
-                        stats.live_open.fetch_add(1, Ordering::Relaxed);
-                        live = Some(opened);
-                    }
-                    Err(error) => stats.fail(error),
-                }
-            }
-            (Err(error), _) | (_, Ok(Err(error))) => stats.fail(format!("live grant: {error}")),
-            (_, Err(_)) => stats.fail("live grant: dropped"),
-        }
+        live = open_live(&peer, desktop, &shared.relay, &stats).await;
     }
 
     let tick = if shared.args.cursor_hz > 0.0 {
@@ -264,45 +247,99 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
             }
             next_chat = Some(now + exponential(shared.args.chat_every * 1000.0));
         }
-        for event in peer.drain() {
-            match event {
-                PeerEvent::Document(document) => match document.mutation() {
-                    Some(DocumentMutation::Incremental(bytes)) if bytes.len() >= 8 => {
-                        let mut at = [0u8; 8];
-                        at.copy_from_slice(bytes.get(..8).unwrap_or(&[0; 8]));
-                        let sent = u64::from_be_bytes(at);
-                        if sent < joined_at {
-                            stats.chat_history();
-                        } else {
-                            let latency = now_ms(shared.started).saturating_sub(sent);
-                            stats.chat(sent, latency as f64);
-                        }
-                    }
-                    other => stats.fail(format!(
-                        "document without a readable change (sealed: {}, mutation: {})",
-                        document.decrypted_payload.is_some(),
-                        other.is_some()
-                    )),
-                },
-                PeerEvent::DocumentRejected(reason) => {
-                    stats.fail(format!("document rejected: {reason}"));
-                }
-                PeerEvent::Committed { .. } => {
-                    stats.committed.fetch_add(1, Ordering::Relaxed);
-                }
-                _ => {}
-            }
-        }
-        let failures = peer.status().failures.len();
-        if failures > seen_failures {
-            stats
-                .session_failures
-                .fetch_add((failures - seen_failures) as u64, Ordering::Relaxed);
-            for failure in peer.status().failures.iter().skip(seen_failures) {
-                stats.fail(format!("session: {} {}", failure.code, failure.message));
-            }
-        }
-        seen_failures = failures;
+        seen_failures = take_events(&peer, &stats, shared.started, joined_at, seen_failures);
     }
     peer.close();
+}
+
+/// Open the live plane of `workspace` with the session's live grant, counting
+/// what its stream delivers into `stats`.
+pub async fn open_live(
+    peer: &PeerHandle,
+    workspace: u64,
+    relay: &Arc<Plain>,
+    stats: &Arc<Stats>,
+) -> Option<Live> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let asked = peer.live_grant_then(
+        workspace,
+        Box::new(move |grant| {
+            let _ = sender.send(grant);
+        }),
+    );
+    match (asked, receiver.await) {
+        (Ok(()), Ok(Ok(grant))) => {
+            match Live::open(relay.clone(), &grant.token, stats.clone()).await {
+                Ok(opened) => {
+                    stats.live_open.fetch_add(1, Ordering::Relaxed);
+                    Some(opened)
+                }
+                Err(error) => {
+                    stats.fail(error);
+                    None
+                }
+            }
+        }
+        (Err(error), _) | (_, Ok(Err(error))) => {
+            stats.fail(format!("live grant: {error}"));
+            None
+        }
+        (_, Err(_)) => {
+            stats.fail("live grant: dropped");
+            None
+        }
+    }
+}
+
+/// Count what the session delivered since the last call: chat changes with
+/// their delivery time (or as history, when sent before `joined_at`),
+/// commits, rejections, and session failures beyond the `seen` first ones.
+/// Returns the failures seen so far.
+pub fn take_events(
+    peer: &PeerHandle,
+    stats: &Stats,
+    started: Instant,
+    joined_at: u64,
+    seen: usize,
+) -> usize {
+    for event in peer.drain() {
+        match event {
+            PeerEvent::Document(document) => match document.mutation() {
+                Some(DocumentMutation::Incremental(bytes)) if bytes.len() >= 8 => {
+                    let mut at = [0u8; 8];
+                    at.copy_from_slice(bytes.get(..8).unwrap_or(&[0; 8]));
+                    let sent = u64::from_be_bytes(at);
+                    if sent < joined_at {
+                        stats.chat_history();
+                    } else {
+                        let latency = now_ms(started).saturating_sub(sent);
+                        stats.chat(sent, latency as f64);
+                    }
+                }
+                other => stats.fail(format!(
+                    "document without a readable change (sealed: {}, mutation: {})",
+                    document.decrypted_payload.is_some(),
+                    other.is_some()
+                )),
+            },
+            PeerEvent::DocumentRejected(reason) => {
+                stats.fail(format!("document rejected: {reason}"));
+            }
+            PeerEvent::Committed { .. } => {
+                stats.committed.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
+    let session = peer.status();
+    let failures = session.failures.len();
+    if failures > seen {
+        stats
+            .session_failures
+            .fetch_add((failures - seen) as u64, Ordering::Relaxed);
+        for failure in session.failures.iter().skip(seen) {
+            stats.fail(format!("session: {} {}", failure.code, failure.message));
+        }
+    }
+    failures
 }
