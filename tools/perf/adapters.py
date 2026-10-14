@@ -81,6 +81,12 @@ Each adapter reads what a benchmark already prints and emits records through
   latency: one per delivered edit), and each provider in
   `tools/perf/prices.toml` adds `hosting.relay.cost_usd_per_collab_hour.<provider>`
   and `hosting.relay.cost_usd_per_user_month.<provider>`, priced per minute.
+- `browser-qualification REPORT_JSON`: the browser runtime qualification's
+  report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
+  one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
+  frame interval and frame's runtime CPU is a sample, and each round's idle
+  frame rate one. The report must name the env's renderer, commit and profile,
+  and an unthrottled page.
 
 Usage:
 
@@ -94,6 +100,7 @@ Usage:
     python3 tools/perf/adapters.py framework-scroll --env-json env.json framework-scroll.log >> results.jsonl
     python3 tools/perf/adapters.py framework-focus --env-json env.json framework-focus.log >> results.jsonl
     python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
+    python3 tools/perf/adapters.py browser-qualification --env-json env.json browser.json >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
 drifted must not turn into a silently empty night.
@@ -498,6 +505,58 @@ def hosting_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, 
     return records
 
 
+# The browser runtime qualification's report samples (scripts/perf/browser_qualification.mjs)
+# and the KPI each becomes, with its unit.
+BROWSER_KPIS = {
+    "load_ms": ("browser.load.desktop_presented", "ms"),
+    "open_ms": ("browser.open.first_frame", "ms"),
+    "open_ready_ms": ("browser.open.ready", "ms"),
+    "activate_ms": ("browser.activate.first_frame", "ms"),
+    "demo_interval_ms": ("browser.demo.frame_interval", "ms"),
+    "demo_work_ms": ("browser.demo.frame_work", "ms"),
+    "idle_per_s": ("browser.idle.presented_per_s", "per_s"),
+}
+
+
+def browser_qualification(report: dict[str, Any], env: dict[str, Any],
+                          require_clean: bool = True) -> list[record.Record]:
+    """Records for one browser runtime qualification report.
+
+    The report must have measured the environment the records claim: its
+    WebGPU adapter is the env's renderer, its bundle a build of the env's
+    commit in the env's profile, clean unless `require_clean=False` (the A/B
+    lane, whose output directory sits untracked in the checkout it builds),
+    and its page CPU unthrottled: a throttled run stands in for older
+    hardware and is never this series.
+    """
+    if report.get("schema") != 1:
+        raise ValueError(f"browser qualification report schema {report.get('schema')!r}, not 1")
+    bundle, workload = report["bundle"], report["workload"]
+    if report["renderer"] != env["renderer"]:
+        raise ValueError(f"the report measured on {report['renderer']}, not the env's {env['renderer']}")
+    if bundle["profile"] != env["profile"]:
+        raise ValueError(f"the bundle is a {bundle['profile']} build, not the env's {env['profile']}")
+    if bundle["revision"] != env["commit"] or (require_clean and bundle["dirty"]):
+        raise ValueError(f"the bundle was built from {bundle['revision']}"
+                         f"{' (dirty)' if bundle['dirty'] else ''}, not {env['commit']}")
+    if workload.get("cpuThrottle", 1) != 1:
+        raise ValueError(f"the page's CPU was throttled {workload['cpuThrottle']}x")
+    samples = report["samples"]
+    missing = [field for field in BROWSER_KPIS if not samples.get(field)]
+    if missing:
+        raise ValueError(f"the report has no samples for {missing}")
+    adapter = report.get("adapter") or {}
+    meta = {**env.get("meta", {}), "bundle_digest": bundle["digest"], "runtime_sha256": bundle["runtimeSha256"],
+            "browser": report["browser"]["product"],
+            "adapter": " ".join(str(value) for value in adapter.values() if value) or "unknown",
+            "viewport": "{width}x{height}@{deviceScaleFactor}".format(**report["viewport"]),
+            "rounds": str(workload["rounds"]), "apps": ",".join(workload["apps"]),
+            "input_hz": str(workload["inputHz"])}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, unit, samples[field], meta=meta, **base)
+            for field, (kpi, unit) in BROWSER_KPIS.items()]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -534,10 +593,16 @@ def main(argv: list[str] | None = None) -> int:
     hosting.add_argument("--env-json", required=True, type=Path)
     hosting.add_argument("--prices", type=Path, default=PRICES)
     hosting.add_argument("report", type=Path)
+    browser = commands.add_parser("browser-qualification",
+                                  help="records from scripts/perf/browser_qualification.mjs's report")
+    browser.add_argument("--env-json", required=True, type=Path)
+    browser.add_argument("report", type=Path)
     args = parser.parse_args(argv)
     try:
         env = record.load_env(args.env_json)
-        if args.command == "hosting-load":
+        if args.command == "browser-qualification":
+            records = browser_qualification(json.loads(args.report.read_text(encoding="utf-8")), env)
+        elif args.command == "hosting-load":
             records = hosting_load(json.loads(args.report.read_text(encoding="utf-8")),
                                    tomllib.loads(args.prices.read_text(encoding="utf-8")), env)
             for item in records:
