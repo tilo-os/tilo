@@ -2964,6 +2964,7 @@ mod two_sessions {
                     active_tab: desk_tab(id),
                     width: WindowWidth::Fraction(250),
                     maximized: false,
+                    focus_history: Vec::new(),
                 })
                 .collect(),
         }];

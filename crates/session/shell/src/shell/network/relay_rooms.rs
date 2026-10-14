@@ -2,6 +2,21 @@
 //! creates its room on the person's home relay, which then issues every
 //! invitation, admits whoever redeems one and publishes the room's
 //! governance; this device holds the room like any member does.
+//!
+//! A room this device holds is administered through the room's own
+//! governance actions (provider `tilo.workspace`), on the room's relay
+//! session: the surface an agent, a script or a screen reader uses, decided
+//! by the relay as it decides every other door. The catalogue of a session
+//! does not list that provider, so every invocation names it.
+//!
+//! The relay's `tilo-room-admin/1` door is still asked for what those
+//! actions do not carry: creating, listing and entering rooms on a host
+//! (host operations, not one room's governance), the invitations this
+//! device redeems into a room it is enrolling into and the one issued in
+//! the same step that shares it (nothing carries an action to a room before
+//! this device holds it), a member's own namespace claim and effect
+//! receipt, which are not governance, and an app's authorship of a room a
+//! host governs (a host operation, the host's person's own).
 use super::{
     NetCmd, PendingInvitation, RegisteredHomePeer, ShellNetwork, persist_pending_invitations,
     registered_home_peer_addrs, relay_topics_for_home_peers, room_topic_id,
@@ -11,15 +26,20 @@ use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::{RoomId, WorkspaceId};
 use std::sync::Mutex;
 use std::time::Duration;
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_peer_state::join::{self, MemberRole};
 use tilo_relay_session::rooms::{
-    CancelInvitationRequest, IssueInvitationRequest, RoomCommand, RoomReply,
+    GrantAppAuthorshipRequest, IssueInvitationRequest, RoomCommand, RoomReply,
 };
 use tilo_user_identity::DeviceCert;
 
 /// How long one exchange with a relay's room authority may take.
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(15);
+/// The room governance action that issues an invitation.
+const INVITE: &str = tilo_action_policy::roles::governance::INVITE;
+/// The room governance action that cancels an unredeemed invitation.
+const CANCEL_INVITATION: &str = "invitation.cancel";
 /// How long the invitation this device redeems into a room it just shared
 /// stays redeemable.
 const OWN_INVITATION_SECONDS: u64 = 600;
@@ -53,7 +73,24 @@ pub(super) struct State {
 }
 
 /// A room this device's person administers on the relay governing it.
-pub(super) struct AdministeredRoom {
+pub(super) enum AdministeredRoom {
+    /// Held here: asked through its governance actions.
+    Held(HeldRoom),
+    /// Not held here yet: asked at the relay's host door.
+    Unheld(Box<UnheldRoom>),
+}
+
+/// A relay-governed room this device holds: its governance answers on the
+/// room's relay session, from the relay's own device.
+pub(super) struct HeldRoom {
+    room: RoomId,
+    /// The relay's own device, the room's governor.
+    host: iroh::EndpointId,
+}
+
+/// A room on a relay of this person's that this device does not hold yet,
+/// so has no session to it: the relay's host door, as `certificate`.
+pub(super) struct UnheldRoom {
     relay: iroh::EndpointAddr,
     room: String,
     certificate: DeviceCert,
@@ -64,6 +101,65 @@ const fn member_role(role: InviteRole) -> MemberRole {
         InviteRole::Viewer => MemberRole::Viewer,
         InviteRole::Commenter => MemberRole::Commenter,
         InviteRole::Editor => MemberRole::Editor,
+    }
+}
+
+/// The name the room governance actions give `role`.
+const fn role_name(role: InviteRole) -> &'static str {
+    match role {
+        InviteRole::Viewer => "viewer",
+        InviteRole::Commenter => "commenter",
+        InviteRole::Editor => "editor",
+    }
+}
+
+/// The arguments of the governance invitation `role`, for `recipient`
+/// only when named, called `invitee`, redeemable `lifetime` seconds.
+fn invite_arguments(
+    role: InviteRole,
+    recipient: Option<[u8; 32]>,
+    invitee: Option<&str>,
+    lifetime: u64,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("role".into(), role_name(role).into());
+    if let Some(recipient) = recipient {
+        arguments.insert("recipient".into(), hex::encode(recipient).into());
+    }
+    if let Some(invitee) = invitee {
+        arguments.insert("invitee_name".into(), invitee.into());
+    }
+    arguments.insert("expires_in_seconds".into(), lifetime.into());
+    // A relay that predates seconds reads hours: never shorter than asked.
+    arguments.insert("expires_in_hours".into(), lifetime.div_ceil(3_600).into());
+    arguments
+}
+
+/// The id and the signed invitation the governance invitation answered.
+fn issued_invitation(output: &serde_json::Value) -> Result<([u8; 32], Vec<u8>), String> {
+    let field = |name: &str| {
+        output
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("the relay's invitation has no `{name}`"))
+    };
+    let mut id = [0; 32];
+    hex::decode_to_slice(field("invite")?, &mut id)
+        .map_err(|_| "the relay named an invalid invitation id".to_string())?;
+    let signed = hex::decode(field("invitation")?)
+        .map_err(|_| "the relay sent an invalid invitation".to_string())?;
+    Ok((id, signed))
+}
+
+/// What a governance invocation's receipt comes to.
+fn receipt_value(status: ReceiptStatus) -> Result<serde_json::Value, String> {
+    match status {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+        ReceiptStatus::Rejected { error } => Err(format!("the relay refused: {error}")),
+        ReceiptStatus::Failed { error } => Err(error.message),
+        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
+            Err("the relay did not finish the request".into())
+        }
     }
 }
 
@@ -88,13 +184,51 @@ impl ShellNetwork {
                 let (hint, _) =
                     IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
                         .map_err(|error| error.to_string())?;
-                Ok(AdministeredRoom {
-                    relay: hint.endpoint_addr,
-                    room: room.to_string(),
-                    certificate,
-                })
+                if !view.governor().capabilities.can_act_as_host
+                    || &hint.host_device_certificate != view.governor()
+                {
+                    return Err("no relay governs the room".into());
+                }
+                let host = iroh::EndpointId::from_bytes(&view.governor().device_public_key)
+                    .map_err(|error| error.to_string())?;
+                Ok(AdministeredRoom::Held(HeldRoom { room, host }))
             })
             .ok()
+    }
+
+    /// Invoke `action` of `target`'s governance with `arguments`, as this
+    /// device, and answer what it produced.
+    fn govern(
+        &self,
+        target: &HeldRoom,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        let request = crate::network::actor::room_governance::Request {
+            ws: room_topic_id(target.room),
+            host: target.host,
+            invoke: InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                // The room's provider is named: no catalogue lists it.
+                target: RemoteActionTarget::room_governance(&target.room.to_string(), action),
+                argument: InvokeArgument::Json(arguments),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            },
+            reply,
+        };
+        self.cmd_tx
+            .try_send(NetCmd::RoomGovernance(Box::new(request)))
+            .map_err(|_| "the network queue is unavailable")?;
+        let status = answer
+            .recv_timeout(ADMIN_TIMEOUT)
+            .map_err(|_| "the relay did not answer in time")??;
+        receipt_value(status)
     }
 
     /// Ask the room authority at `relay` and wait for its answer.
@@ -252,6 +386,78 @@ impl ShellNetwork {
         }
     }
 
+    /// Have the host governing `room` let `app` author the room's records,
+    /// as `caller`, this device: what opening an app there for the first time
+    /// asks. `None` when no host governs the room: a device governing it
+    /// decides through its own owner. Answers the governance generation the
+    /// host committed it in.
+    pub(crate) async fn grant_app_authorship_at_host(
+        &self,
+        room: RoomId,
+        caller: &DeviceCert,
+        app: &str,
+    ) -> Option<Result<u64, String>> {
+        let route = self.native_owner().and_then(|owner| {
+            owner.with_current(room, |view| {
+                if !view.governor().capabilities.can_act_as_host {
+                    return Ok(None);
+                }
+                let identity = self
+                    .host_identity
+                    .as_ref()
+                    .ok_or("native identity unavailable")?;
+                let (certificate, _) = identity.current_native_material(view.workspace())?;
+                if view.device() != &certificate || caller != &certificate {
+                    return Err("app authorship caller differs from admitted native custody".into());
+                }
+                let (hint, _) =
+                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                        .map_err(|error| error.to_string())?;
+                if hint.room != room.to_string()
+                    || &hint.governing_authority != view.governor()
+                    || &hint.host_device_certificate != view.governor()
+                {
+                    return Err("app authorship host differs from current admitted governor".into());
+                }
+                Ok(Some((hint.endpoint_addr, certificate)))
+            })
+        });
+        let (relay, certificate) = match route {
+            Ok(None) => return None,
+            Ok(Some(route)) => route,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(
+            async {
+                let (reply, answer) = std::sync::mpsc::sync_channel(1);
+                self.cmd_tx
+                    .try_send(NetCmd::RoomAdmin {
+                        relay,
+                        certificate,
+                        command: Box::new(RoomCommand::GrantAppAuthorship {
+                            room: room.to_string(),
+                            request: GrantAppAuthorshipRequest {
+                                request_id: request_id()?,
+                                app: app.to_owned(),
+                            },
+                        }),
+                        reply,
+                    })
+                    .map_err(|_| "the network queue is unavailable")?;
+                let response =
+                    tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
+                        .await
+                        .map_err(|_| "app authorship reply worker stopped")?
+                        .map_err(|_| "the host did not answer the app authorship in time")??;
+                match response {
+                    RoomReply::Governance { generation } => Ok(generation),
+                    _ => Err("the host answered the app authorship with something else".into()),
+                }
+            }
+            .await,
+        )
+    }
+
     /// Have the relay issue an invitation to `target`. Answers the
     /// invitation's text, its id and when it expires.
     fn invite_to_relay_room(
@@ -263,6 +469,29 @@ impl ShellNetwork {
         expiry_seconds_from_now: u64,
     ) -> Result<(String, [u8; 32], u64), String> {
         let expiry = tilo_clock::unix_now().saturating_add(expiry_seconds_from_now);
+        let (id, signed) = match target {
+            AdministeredRoom::Held(held) => issued_invitation(&self.govern(
+                held,
+                INVITE,
+                invite_arguments(role, recipient, invitee, expiry_seconds_from_now),
+            )?)?,
+            AdministeredRoom::Unheld(unheld) => {
+                self.invite_at_host_door(unheld, role, recipient, invitee, expiry)?
+            }
+        };
+        Ok((join::encode_invitation_text(&signed), id, expiry))
+    }
+
+    /// Have the relay issue an invitation to a room this device does not
+    /// hold yet, at its host door, expiring at `expiry` (Unix seconds).
+    fn invite_at_host_door(
+        &self,
+        target: &UnheldRoom,
+        role: InviteRole,
+        recipient: Option<[u8; 32]>,
+        invitee: Option<&str>,
+        expiry: u64,
+    ) -> Result<([u8; 32], Vec<u8>), String> {
         let reply = self.room_admin(
             target.relay.clone(),
             target.certificate.clone(),
@@ -281,11 +510,7 @@ impl ShellNetwork {
         let RoomReply::Invitation(issued) = reply else {
             return Err("the relay did not issue an invitation".into());
         };
-        Ok((
-            join::encode_invitation_text(&issued.signed_invitation),
-            issued.invite_id,
-            expiry,
-        ))
+        Ok((issued.invite_id, issued.signed_invitation))
     }
 
     /// Issue an invitation to `target` and keep it among the pending ones
@@ -299,7 +524,12 @@ impl ShellNetwork {
         expiry_seconds_from_now: u64,
     ) -> Result<String, String> {
         let invitee = invitee.map(str::trim).filter(|name| !name.is_empty());
-        let room = RoomId::parse(&target.room).ok_or("the relay named an invalid room")?;
+        let room = match target {
+            AdministeredRoom::Held(held) => held.room,
+            AdministeredRoom::Unheld(unheld) => {
+                RoomId::parse(&unheld.room).ok_or("the relay named an invalid room")?
+            }
+        };
         let (token, id, expiry_unix_seconds) =
             self.invite_to_relay_room(target, role, recipient, invitee, expiry_seconds_from_now)?;
         let mut pending = self
@@ -333,20 +563,12 @@ impl ShellNetwork {
         room: RoomId,
         invitation: [u8; 32],
     ) -> Result<bool, String> {
-        let Some(target) = self.administered_room(room) else {
+        let Some(AdministeredRoom::Held(target)) = self.administered_room(room) else {
             return Ok(false);
         };
-        self.room_admin(
-            target.relay,
-            target.certificate,
-            RoomCommand::Cancel {
-                room: target.room,
-                request: CancelInvitationRequest {
-                    request_id: request_id()?,
-                    invite_id: invitation,
-                },
-            },
-        )?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("invite".into(), hex::encode(invitation).into());
+        self.govern(&target, CANCEL_INVITATION, arguments)?;
         Ok(true)
     }
 
@@ -393,15 +615,19 @@ impl ShellNetwork {
                 room: summary.room.clone(),
             },
         )?;
-        let target = AdministeredRoom {
+        let user = certificate.user_public_key;
+        // This device does not hold the room until it redeems this
+        // invitation, and the one the share is for is issued before then:
+        // both at the host door.
+        let target = AdministeredRoom::Unheld(Box::new(UnheldRoom {
             relay: home.addr,
             room: summary.room,
             certificate,
-        };
+        }));
         let (own, _, _) = self.invite_to_relay_room(
             &target,
             InviteRole::Editor,
-            Some(target.certificate.user_public_key),
+            Some(user),
             None,
             OWN_INVITATION_SECONDS,
         )?;
@@ -522,11 +748,11 @@ impl ShellNetwork {
                 room: summary.room.clone(),
             },
         )?;
-        let target = AdministeredRoom {
+        let target = AdministeredRoom::Unheld(Box::new(UnheldRoom {
             relay: relay.clone(),
             room: summary.room.clone(),
             certificate: certificate.clone(),
-        };
+        }));
         let (own, _, _) = self.invite_to_relay_room(
             &target,
             InviteRole::Editor,
@@ -622,6 +848,45 @@ mod tests {
                 .expect("other person")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn an_invitation_asks_the_rooms_action_for_exactly_what_was_chosen() {
+        let arguments = invite_arguments(InviteRole::Commenter, Some([7; 32]), Some("Grace"), 600);
+        assert_eq!(
+            serde_json::Value::Object(arguments),
+            serde_json::json!({
+                "role": "commenter",
+                "recipient": hex::encode([7; 32]),
+                "invitee_name": "Grace",
+                "expires_in_seconds": 600,
+                "expires_in_hours": 1,
+            })
+        );
+        let open = invite_arguments(InviteRole::Viewer, None, None, 3_601);
+        assert!(!open.contains_key("recipient") && !open.contains_key("invitee_name"));
+        assert_eq!(open["expires_in_hours"], 2, "never shorter than asked");
+    }
+
+    #[test]
+    fn the_rooms_answer_is_the_invitation_it_issued_or_why_not() {
+        let issued = receipt_value(ReceiptStatus::Completed {
+            output: tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({
+                    "invite": hex::encode([3; 32]),
+                    "invitation": hex::encode([1, 2, 3]),
+                })),
+                resources: Vec::new(),
+            },
+        })
+        .expect("completed");
+        assert_eq!(issued_invitation(&issued), Ok(([3; 32], vec![1, 2, 3])));
+        assert!(issued_invitation(&serde_json::json!({ "invite": "zz" })).is_err());
+        let refused = receipt_value(ReceiptStatus::Rejected {
+            error: tilo_actions::remote::ActionHostError::UnknownAction,
+        });
+        assert!(refused.is_err());
+        assert!(receipt_value(ReceiptStatus::Accepted).is_err());
     }
 
     #[test]

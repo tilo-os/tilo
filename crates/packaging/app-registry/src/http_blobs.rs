@@ -20,28 +20,39 @@
 //! any of the checks above, which see only decompressed bytes: compression
 //! changes how many bytes cross the network, never what is verified.
 //!
-//! An installer's [`BlobFetcher`] keeps [`IN_FLIGHT`] requests going while it
-//! hands the sink one object: a runtime is about thirty objects, and fetched
-//! one after another each costs a full round trip before its first byte.
+//! A blob is located in one round trip: its twin and its chunk list are asked
+//! for together, since the registry keeps one or the other. Asked in turn
+//! (twin, raw, chunk list), a chunked blob cost three full round trips to a
+//! registry far away before its first chunk was requested.
+//!
+//! An installer's [`BlobFetcher`] keeps [`IN_FLIGHT`] blobs being located and
+//! [`IN_FLIGHT`] chunks being fetched while it hands the sink one object: a
+//! runtime is about thirty objects, and fetched one after another each costs
+//! a full round trip before its first byte. The chunks form one stream across
+//! blobs, so the next blob's first chunks are already on their way while the
+//! last chunks of this one arrive, instead of a round trip's pause between
+//! every two chunked blobs.
 //! Delivery stays in order. Memory is bounded by objects, not by the
-//! package: at most [`IN_FLIGHT`] blobs being located ahead, plus, while a
-//! chunked blob is delivered, [`IN_FLIGHT`] of its chunks ahead, plus the
-//! object being delivered — each at most [`MAX_OBJECT_BYTES`], in practice
-//! at most [`tilo_app_package::chunks::CHUNK_BYTES`].
+//! package: at most [`IN_FLIGHT`] blobs located ahead and as many more being
+//! located, [`IN_FLIGHT`] chunks ahead, and the object being delivered — each
+//! at most [`MAX_OBJECT_BYTES`], in practice at most
+//! [`tilo_app_package::chunks::CHUNK_BYTES`].
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::time::Duration;
 use tilo_app_package::chunks::{
-    ChunkList, ChunkRef, ChunkedReader, MAX_CHUNK_LIST_BYTES, MAX_OBJECT_BYTES, Reassembly,
+    CHUNKS_SUFFIX, ChunkList, ChunkRef, ChunkedReader, MAX_CHUNK_LIST_BYTES, MAX_OBJECT_BYTES,
+    Reassembly,
 };
 use tilo_app_package::compressed;
 use tilo_app_package::{BlobFetcher, BlobHash, BlobSink, PackageFetcher, PackageId};
 
 /// Requests an installer keeps going ahead of the object it is delivering.
-pub const IN_FLIGHT: usize = 4;
+pub const IN_FLIGHT: usize = 8;
 
 /// A registry server serving payload blobs at `<base>/blobs/<hash>`.
 #[derive(Clone, Debug)]
@@ -159,6 +170,12 @@ impl HttpBlobs {
         else {
             return Self::get_bounded(client, url, limit).await;
         };
+        Self::decompress(twin, limit, &twin_url).await.map(Some)
+    }
+
+    /// The object a twin fetched from `twin_url` stands for, at most `limit`
+    /// bytes. The caller verifies them.
+    async fn decompress(twin: Bytes, limit: u64, twin_url: &str) -> Result<Bytes> {
         // Decompressing a large chunk is CPU work; keep it off the task that
         // drives the other requests in flight.
         let bytes = tokio::task::spawn_blocking(move || {
@@ -168,30 +185,51 @@ impl HttpBlobs {
         .await
         .context("decompress task")?
         .map_err(|error| anyhow!("{twin_url}: {error}"))?;
-        Ok(Some(Bytes::from(bytes)))
+        Ok(Bytes::from(bytes))
     }
 
     /// The whole blob `hash`, or its chunk list when the registry keeps it
     /// as chunks.
+    ///
+    /// The registry keeps a blob whole, with a compressed twin beside it, or
+    /// as chunks with a chunk list, so the twin and the list are asked for at
+    /// once and one of them answers: one round trip either way. Only an
+    /// object stored before twins existed takes a second, for its raw bytes.
     async fn locate(&self, client: &reqwest::Client, hash: &BlobHash) -> Result<Stored> {
         let url = format!("{}/blobs/{hash}", self.base_url);
-        if let Some(body) = Self::get_object(client, &url, MAX_OBJECT_BYTES).await? {
-            if blake3::hash(&body).as_bytes() != hash.as_bytes() {
-                return Err(anyhow!(
-                    "{url} served bytes that do not hash to the payload blob"
-                ));
-            }
-            return Ok(Stored::Whole(body));
-        }
-        let list_url = format!("{}/blobs/{hash}.chunks", self.base_url);
-        let Some(list) = Self::get_bounded(client, &list_url, MAX_CHUNK_LIST_BYTES).await? else {
+        let twin_url = format!("{url}{}", compressed::SUFFIX);
+        let list_url = format!("{url}{CHUNKS_SUFFIX}");
+        let (twin, list) = tokio::join!(
+            Self::get_bounded(
+                client,
+                &twin_url,
+                compressed::compressed_bound(MAX_OBJECT_BYTES)
+            ),
+            Self::get_bounded(client, &list_url, MAX_CHUNK_LIST_BYTES),
+        );
+        let body = match twin? {
+            Some(twin) => Some(Self::decompress(twin, MAX_OBJECT_BYTES, &twin_url).await?),
+            None => match list? {
+                Some(list) => {
+                    let list = ChunkList::decode(&list, hash)
+                        .with_context(|| format!("decode {list_url}"))?;
+                    return Ok(Stored::Chunked(list));
+                }
+                None => Self::get_bounded(client, &url, MAX_OBJECT_BYTES).await?,
+            },
+        };
+        let Some(body) = body else {
             bail!(
                 "registry {} has payload blob {hash} neither whole nor as chunks",
                 self.base_url
             );
         };
-        let list = ChunkList::decode(&list, hash).with_context(|| format!("decode {list_url}"))?;
-        Ok(Stored::Chunked(list))
+        if blake3::hash(&body).as_bytes() != hash.as_bytes() {
+            return Err(anyhow!(
+                "{url} served bytes that do not hash to the payload blob"
+            ));
+        }
+        Ok(Stored::Whole(body))
     }
 
     /// One chunk's bytes, at most its listed length. The caller verifies
@@ -262,59 +300,6 @@ impl HttpBlobs {
             .enable_all()
             .build()
     }
-
-    /// Deliver one located blob to `sink`: whole, or chunk by verified
-    /// chunk with up to [`IN_FLIGHT`] of the following chunks requested.
-    fn deliver(
-        &self,
-        runtime: &tokio::runtime::Runtime,
-        client: &reqwest::Client,
-        hash: &BlobHash,
-        stored: Stored,
-        sink: &mut dyn BlobSink,
-    ) -> std::io::Result<()> {
-        match stored {
-            Stored::Whole(bytes) => sink.accept(hash, bytes.len() as u64, &mut bytes.as_ref()),
-            Stored::Chunked(list) => {
-                let len = list.len;
-                let mut ahead = Ahead::new(
-                    runtime,
-                    list.chunks.clone().into_iter().map(|chunk| {
-                        let blobs = self.clone();
-                        let client = client.clone();
-                        async move {
-                            let bytes = blobs.fetch_chunk(&client, &chunk).await?;
-                            Ok((chunk.hash, bytes))
-                        }
-                    }),
-                );
-                let mut reader = ChunkedReader::new(list, |chunk: &ChunkRef| {
-                    let (fetched, bytes) = ahead.next().ok_or_else(|| {
-                        std::io::Error::other(format!("payload blob {hash} has no chunk left"))
-                    })??;
-                    // The window runs in list order; a mismatch is a bug here,
-                    // and Reassembly would refuse the bytes anyway.
-                    if fetched != chunk.hash {
-                        return Err(std::io::Error::other(format!(
-                            "chunk {} arrived where {} was expected",
-                            fetched, chunk.hash
-                        )));
-                    }
-                    Ok(bytes.to_vec())
-                });
-                sink.accept(hash, len, &mut reader)?;
-                // A sink that stopped early still gets no unverified blob:
-                // finish verifying what it did not read.
-                std::io::copy(&mut reader, &mut std::io::sink())?;
-                if !reader.is_complete() {
-                    return Err(std::io::Error::other(format!(
-                        "payload blob {hash} did not complete"
-                    )));
-                }
-                Ok(())
-            }
-        }
-    }
 }
 
 impl PackageFetcher for HttpBlobs {
@@ -330,21 +315,120 @@ impl BlobFetcher for HttpBlobs {
     fn fetch(&self, hashes: &[BlobHash], sink: &mut dyn BlobSink) -> std::io::Result<()> {
         let runtime = Self::runtime()?;
         let client = Self::client().map_err(std::io::Error::other)?;
-        let mut located = Ahead::new(
+        let feed = RefCell::new(Feed {
+            located: Ahead::new(
+                &runtime,
+                hashes.iter().copied().map(|hash| {
+                    let blobs = self.clone();
+                    let client = client.clone();
+                    async move { blobs.locate(&client, &hash).await }
+                }),
+            ),
+            blobs: VecDeque::new(),
+            chunks: VecDeque::new(),
+        });
+        // One window over the chunks of every blob, in delivery order. It
+        // stops taking blobs off the locate window while IN_FLIGHT located
+        // blobs wait for delivery, so a long run of whole blobs is not held
+        // in memory to find the next chunk.
+        let mut chunks = Ahead::new(
             &runtime,
-            hashes.iter().copied().map(|hash| {
-                let blobs = self.clone();
-                let client = client.clone();
-                async move { blobs.locate(&client, &hash).await }
+            std::iter::from_fn(|| {
+                let mut feed = feed.borrow_mut();
+                loop {
+                    if let Some(chunk) = feed.chunks.pop_front() {
+                        let blobs = self.clone();
+                        let client = client.clone();
+                        return Some(async move {
+                            let bytes = blobs.fetch_chunk(&client, &chunk).await?;
+                            Ok((chunk.hash, bytes))
+                        });
+                    }
+                    if feed.blobs.len() > IN_FLIGHT || !feed.pull() {
+                        return None;
+                    }
+                }
             }),
         );
         for hash in hashes {
-            let stored = located.next().ok_or_else(|| {
-                std::io::Error::other(format!("payload blob {hash} was not requested"))
-            })??;
-            self.deliver(&runtime, &client, hash, stored, sink)?;
+            let stored = {
+                let mut feed = feed.borrow_mut();
+                loop {
+                    if let Some(stored) = feed.blobs.pop_front() {
+                        break stored;
+                    }
+                    if !feed.pull() {
+                        break Err(std::io::Error::other(format!(
+                            "payload blob {hash} was not requested"
+                        )));
+                    }
+                }
+            }?;
+            match stored {
+                Stored::Whole(bytes) => {
+                    sink.accept(hash, bytes.len() as u64, &mut bytes.as_ref())?;
+                }
+                Stored::Chunked(list) => {
+                    let len = list.len;
+                    let mut reader = ChunkedReader::new(list, |chunk: &ChunkRef| {
+                        let (fetched, bytes) = chunks.next().ok_or_else(|| {
+                            std::io::Error::other(format!("payload blob {hash} has no chunk left"))
+                        })??;
+                        // The window runs in list order; a mismatch is a bug
+                        // here, and Reassembly would refuse the bytes anyway.
+                        if fetched != chunk.hash {
+                            return Err(std::io::Error::other(format!(
+                                "chunk {} arrived where {} was expected",
+                                fetched, chunk.hash
+                            )));
+                        }
+                        Ok(bytes.to_vec())
+                    });
+                    sink.accept(hash, len, &mut reader)?;
+                    // A sink that stopped early still gets no unverified
+                    // blob: finish verifying what it did not read.
+                    std::io::copy(&mut reader, &mut std::io::sink())?;
+                    if !reader.is_complete() {
+                        return Err(std::io::Error::other(format!(
+                            "payload blob {hash} did not complete"
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
+    }
+}
+
+/// The blobs [`BlobFetcher::fetch`] has taken off its locate window and not
+/// delivered yet, and the chunks of those that are chunked, not yet
+/// requested.
+struct Feed<'r, I, F>
+where
+    I: Iterator<Item = F>,
+    F: Future<Output = Result<Stored>> + Send + 'static,
+{
+    located: Ahead<'r, I, F>,
+    blobs: VecDeque<std::io::Result<Stored>>,
+    chunks: VecDeque<ChunkRef>,
+}
+
+impl<I, F> Feed<'_, I, F>
+where
+    I: Iterator<Item = F>,
+    F: Future<Output = Result<Stored>> + Send + 'static,
+{
+    /// Take the next located blob, queueing its chunks; `false` after the
+    /// last.
+    fn pull(&mut self) -> bool {
+        let Some(located) = self.located.next() else {
+            return false;
+        };
+        if let Ok(Stored::Chunked(list)) = &located {
+            self.chunks.extend(list.chunks.iter().copied());
+        }
+        self.blobs.push_back(located);
+        true
     }
 }
 
@@ -445,26 +529,72 @@ mod tests {
         bytes
     }
 
+    /// A server answering each path with its scripted responses in turn
+    /// (404 once a path's script is used up), on a thread per connection;
+    /// returns its URL and how many requests it has answered.
+    fn scripted(
+        script: Vec<(String, Vec<Vec<u8>>)>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let script: std::collections::HashMap<String, VecDeque<Vec<u8>>> = script
+            .into_iter()
+            .map(|(path, responses)| (path, responses.into()))
+            .collect();
+        let script = std::sync::Arc::new(std::sync::Mutex::new(script));
+        let answered = std::sync::Arc::new(AtomicUsize::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let count = answered.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let (script, count) = (script.clone(), count.clone());
+                std::thread::spawn(move || {
+                    let mut request = [0; 2048];
+                    let read = stream.read(&mut request).unwrap_or(0);
+                    let text = String::from_utf8_lossy(&request[..read]).to_string();
+                    let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let reply = script
+                        .lock()
+                        .unwrap()
+                        .get_mut(&path)
+                        .and_then(VecDeque::pop_front)
+                        .unwrap_or_else(not_found);
+                    count.fetch_add(1, Ordering::SeqCst);
+                    let _ = stream.write_all(&reply);
+                });
+            }
+        });
+        (format!("http://{address}"), answered)
+    }
+
+    /// The twin and chunk-list requests of a blob the registry keeps raw,
+    /// from before twins existed, followed by its raw `responses`.
+    fn raw_only(hash: &BlobHash, responses: Vec<Vec<u8>>) -> Vec<(String, Vec<Vec<u8>>)> {
+        vec![
+            (format!("/blobs/{hash}.zst"), vec![not_found()]),
+            (format!("/blobs/{hash}.chunks"), vec![not_found()]),
+            (format!("/blobs/{hash}"), responses),
+        ]
+    }
+
     #[tokio::test]
     async fn interrupted_payload_is_retried_then_verified() {
         let body = b"verified runtime payload";
         let hash = BlobHash::of(body);
-        let (url, worker) = server(vec![
-            not_found(),
-            response(body.len(), b"partial"),
-            response(body.len(), body),
-        ]);
+        let (url, answered) = scripted(raw_only(
+            &hash,
+            vec![response(body.len(), b"partial"), response(body.len(), body)],
+        ));
         let blobs = HttpBlobs::new(url).fetch_all(&[hash]).await.unwrap();
         assert_eq!(blobs, vec![Bytes::from_static(body)]);
-        assert_eq!(worker.join().unwrap(), 3);
+        assert_eq!(answered.load(std::sync::atomic::Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
     async fn permanent_interruption_stops_after_three_attempts_with_source_error() {
-        let mut responses = vec![not_found()];
-        responses.extend(vec![response(20, b"partial"); 3]);
-        let (url, worker) = server(responses);
         let hash = BlobHash::of(b"expected");
+        let (url, answered) = scripted(raw_only(&hash, vec![response(20, b"partial"); 3]));
         let error = HttpBlobs::new(url)
             .fetch_all(&[hash])
             .await
@@ -476,7 +606,7 @@ mod tests {
             error.contains("body"),
             "underlying transport error missing: {error}"
         );
-        assert_eq!(worker.join().unwrap(), 4);
+        assert_eq!(answered.load(std::sync::atomic::Ordering::SeqCst), 5);
     }
 
     #[tokio::test]
@@ -544,15 +674,15 @@ mod tests {
         assert!(error.contains("after 1 HTTP attempt(s)"), "{error}");
         assert_eq!(worker.join().unwrap(), 1);
 
-        let (url, worker) = server(vec![not_found(), response(7, b"corrupt")]);
         let hash = BlobHash::of(b"correct");
+        let (url, answered) = scripted(raw_only(&hash, vec![response(7, b"corrupt")]));
         let error = HttpBlobs::new(url)
             .fetch_all(&[hash])
             .await
             .unwrap_err()
             .to_string();
         assert!(error.contains("do not hash to the payload blob"), "{error}");
-        assert_eq!(worker.join().unwrap(), 2);
+        assert_eq!(answered.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 
     /// A server answering every request on its own thread after `delay`:
@@ -628,6 +758,121 @@ mod tests {
         for ((_, body), expected) in sink.0.iter().zip(&bodies) {
             assert_eq!(body, expected);
         }
+    }
+
+    /// A server that answers after `delay` and records the most requests it
+    /// ever had open at once.
+    fn counting_server(
+        objects: std::collections::HashMap<String, Vec<u8>>,
+        delay: Duration,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let peak = std::sync::Arc::new(AtomicUsize::new(0));
+        let open = std::sync::Arc::new(AtomicUsize::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = peak.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let (objects, open, peak) = (objects.clone(), open.clone(), seen.clone());
+                std::thread::spawn(move || {
+                    let mut request = [0; 2048];
+                    let read = stream.read(&mut request).unwrap_or(0);
+                    let text = String::from_utf8_lossy(&request[..read]).to_string();
+                    let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let now_open = open.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+                    peak.fetch_max(now_open, Ordering::SeqCst);
+                    std::thread::sleep(delay);
+                    open.fetch_sub(1, Ordering::SeqCst);
+                    let reply = match objects.get(&path) {
+                        Some(body) => response(body.len(), body),
+                        None => not_found(),
+                    };
+                    let _ = stream.write_all(&reply);
+                });
+            }
+        });
+        (format!("http://{address}"), peak)
+    }
+
+    #[test]
+    fn requests_in_flight_are_bounded_by_the_window() {
+        let bodies: Vec<Vec<u8>> = (0..40u8).map(|n| vec![n; 64]).collect();
+        let hashes: Vec<BlobHash> = bodies.iter().map(|body| BlobHash::of(body)).collect();
+        let objects = hashes
+            .iter()
+            .zip(&bodies)
+            .map(|(hash, body)| (format!("/blobs/{hash}.zst"), twin(body)))
+            .collect();
+        let (url, peak) = counting_server(objects, Duration::from_millis(100));
+        let mut sink = Collected::default();
+        HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
+        let peak = peak.load(std::sync::atomic::Ordering::SeqCst);
+        // The object being delivered plus the window ahead of it, each
+        // located by asking for its twin and its chunk list at once.
+        assert!(
+            peak <= 2 * (IN_FLIGHT + 1),
+            "peak {peak} exceeds the window"
+        );
+        assert!(peak >= IN_FLIGHT, "peak {peak}: the window was not used");
+        assert_eq!(sink.0.len(), hashes.len());
+    }
+
+    /// A runtime-shaped payload — large libraries kept as chunks between
+    /// small whole files — from a registry a round trip away. Each chunked
+    /// blob is located in one round trip, and its chunks follow the previous
+    /// blob's without a pause, so the whole payload costs about one round
+    /// trip to locate and one per window of chunks. Located in three round
+    /// trips and fetched blob by blob, the same payload took twice as long.
+    #[test]
+    fn a_chunked_payload_streams_without_a_round_trip_per_blob() {
+        const ROUND_TRIP: Duration = Duration::from_millis(150);
+        let mut objects = std::collections::HashMap::new();
+        let mut hashes = Vec::new();
+        let mut expected = Vec::new();
+        for blob in 0..3_u8 {
+            let bytes: Vec<u8> = (0..60_u32)
+                .map(|index| u8::try_from(index % 251).unwrap() ^ blob)
+                .collect();
+            let hash = BlobHash::of(&bytes);
+            let pieces: Vec<&[u8]> = bytes.chunks(10).collect();
+            let chunks = pieces
+                .iter()
+                .map(|piece| ChunkRef {
+                    hash: BlobHash::of(piece),
+                    len: piece.len() as u64,
+                })
+                .collect();
+            for piece in &pieces {
+                objects.insert(format!("/blobs/{}.zst", BlobHash::of(piece)), twin(piece));
+            }
+            objects.insert(
+                format!("/blobs/{hash}.chunks"),
+                ChunkList::new(hash, bytes.len() as u64, 10, chunks).encode(),
+            );
+            hashes.push(hash);
+            expected.push((hash, bytes));
+            let small = vec![blob; 32];
+            objects.insert(format!("/blobs/{}.zst", BlobHash::of(&small)), twin(&small));
+            hashes.push(BlobHash::of(&small));
+            expected.push((BlobHash::of(&small), small));
+        }
+        let url = slow_server(objects, ROUND_TRIP);
+        let mut sink = Collected::default();
+        let started = std::time::Instant::now();
+        HttpBlobs::new(url).fetch(&hashes, &mut sink).unwrap();
+        let elapsed = started.elapsed();
+        eprintln!(
+            "perf 3 chunked blobs of 6 chunks and 3 whole blobs, {ROUND_TRIP:?} round trip: {elapsed:?}"
+        );
+        assert_eq!(sink.0, expected);
+        // Locating, then 18 chunks in windows of IN_FLIGHT + 1.
+        assert!(
+            elapsed < ROUND_TRIP * 4,
+            "the payload took {elapsed:?}, {:.1} round trips",
+            elapsed.as_secs_f64() / ROUND_TRIP.as_secs_f64()
+        );
     }
 
     #[test]

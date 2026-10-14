@@ -174,7 +174,9 @@ impl PeerRefusal {
                 .to_string(),
             Self::LaunchedApp(package) => format!(
                 "`{package}` was launched by this session, and an app acts through its own \
-                 collaboration connection and grants, never with the device admin's authority"
+                 collaboration connection and grants, never with the device admin's authority; \
+                 an agent running inside it connects to the session's agent door instead \
+                 (`tilo-runtime-mcp --connect`), as an agent the person admits"
             ),
         }
     }
@@ -204,8 +206,7 @@ pub(crate) fn authorize(stream: &UnixStream) -> Result<(), PeerRefusal> {
         shares_namespaces: super::native::peer_shares_host_security_namespaces(pid),
         launched_app: crate::shell::launcher::verified_package_for_descendant(pid),
     };
-    // SAFETY: `geteuid` has no failure mode.
-    peer_decision(&peer, unsafe { libc::geteuid() })
+    peer_decision(&peer, rustix::process::geteuid().as_raw())
 }
 
 /// Tell a refused client why, in the protocol's own error shape, then let
@@ -257,8 +258,7 @@ fn process_groups() -> Vec<libc::gid_t> {
     // SAFETY: `groups` holds exactly `count` entries.
     let written = unsafe { libc::getgroups(count, groups.as_mut_ptr()) };
     groups.truncate(usize::try_from(written).unwrap_or(0));
-    // SAFETY: `getegid` has no failure mode.
-    groups.push(unsafe { libc::getegid() });
+    groups.push(rustix::process::getegid().as_raw());
     groups
 }
 

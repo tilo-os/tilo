@@ -9,7 +9,9 @@
  *    (`entry.json` beside the desktop page, written by the web host: `home`
  *    is the workspace a bare entry opens instead of the person's own desktop,
  *    `tickets` names where guest tickets are redeemed; absent, a bare entry
- *    is the person's own desktop and takes no tickets);
+ *    is the person's own desktop and takes no tickets; under a home, a bare
+ *    desktop entry reopens the workspace the person last chose instead,
+ *    `deps.chosenWorkspace`);
  * 3. gets into the room (`admission.mjs`);
  * 4. mounts the desktop or the one app, and shows the target through the
  *    view door (`open-target.mjs`);
@@ -109,6 +111,23 @@ export function homeRoute({location, mode, home = null}) {
   return {mode: home.app ? mode : 'desktop', target};
 }
 
+/** A bare desktop entry under a web host's home workspace, when the person
+ * last chose another of their workspaces (`chosen`, `{origin, room}`):
+ * that room's route; `null` otherwise, and always in an embed. */
+export function chosenRoute({location, mode, home = null, chosen = null}) {
+  const bare = location.hash === '' || location.hash === '#';
+  if (!bare || !home || mode !== 'desktop' || !chosen?.room) return null;
+  return {mode, target: {scope: {kind: 'room', host: new URL(chosen.origin).origin, room: chosen.room}}};
+}
+
+/** Whether `a` and `b` name the same room (or both the person's own desktop). */
+function sameScope(a, b) {
+  if (a?.kind !== b?.kind) return false;
+  if (a.kind !== 'room') return true;
+  const origin = host => { try { return new URL(host).origin; } catch { return host; } };
+  return origin(a.host) === origin(b.host) && (a.room ?? null) === (b.room ?? null);
+}
+
 /** The route the page was opened with. A bare entry opens the web host's
  * home workspace (its room is learned on admission), or else, on the
  * desktop, the person's own desktop. */
@@ -177,13 +196,19 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   void linked.catch(() => {});
   let route;
   try {
-    route = homeRoute({location: window.location, mode, home: entry.home})
+    route = chosenRoute({location: window.location, mode, home: entry.home, chosen: deps.chosenWorkspace?.() ?? null})
+      ?? homeRoute({location: window.location, mode, home: entry.home})
       ?? initialRoute({link: await linked, location: window.location, mode, home: entry.home});
   } catch (error) {
     say(error?.message ?? String(error));
     throw error;
   }
+  // The app in front (a home workspace's, or the link's) is what the first
+  // frame shows: its code downloads beside the runtime, not after it.
+  if (route.target.app) deps.prefetchApplication?.(route.target.app);
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
+  // The page hears which room it is getting into, under which entry, before admission.
+  deps.onScope?.({scope: route.target.scope, entry});
   const {peer} = await admit({
     scope: route.target.scope, secrets, tickets: entry.tickets,
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
@@ -205,13 +230,15 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // A listed workspace is shown under its listed name, not its room id.
   const scope = route.target.scope;
   const listed = scope.kind === 'room' ? workspaceAt(workspaces, scope.host) : null;
+  // The desktop offers Invite in a room the page can invite to.
+  const invite = peer?.room && deps.onInvite ? {onInvite: deps.onInvite} : {};
   const host = scopeHost(scope);
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop,
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
       // The room service's spectator count, for the desktop's "watching".
       ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
-      ...diagnostics},
+      ...invite, ...diagnostics},
     onStatus: titled(window, diagnostics.onStatus)});
   if (shown.redirect) {
     window.location.replace(link.format({mode: shown.redirect, target: route.target}));
@@ -219,6 +246,13 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   }
   const router = startRouter({window, link, initial: route, navigation: shown.navigation,
     show: next => {
+      // Another room is another peer and another desktop (Back or Forward
+      // across a switch of workspace, a hand-edited fragment): load it anew,
+      // never inside the mount of the room in front.
+      if (!sameScope(next.target.scope, route.target.scope)) {
+        window.location.reload();
+        return Promise.resolve();
+      }
       // One app full tab mounts one app and record; another is another mount.
       if (mode === 'app' && (next.target.app !== route.target.app || next.target.record !== route.target.record)) {
         window.location.reload();

@@ -700,7 +700,12 @@ impl Service {
             (&Method::GET, ["metrics"]) => self.metrics(request.headers()).await,
             (&Method::GET, ["mode"]) => Self::json(
                 StatusCode::OK,
-                &serde_json::json!({"mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str()}),
+                &serde_json::json!({
+                    "mode": ops::get().map_or(Mode::Normal, ops::Ops::mode).as_str(),
+                    // Public like the web entry's version.json: which build
+                    // answers here, for drift reports from outside the cluster.
+                    "revision": ops::get().map_or(ops::UNKNOWN_REVISION, ops::Ops::revision),
+                }),
             ),
             (&Method::POST, ["errors"]) => self.client_error(request.into_body()).await,
             (&Method::POST, ["rooms"]) => match Self::paused() {
@@ -789,7 +794,13 @@ async fn main() -> Result<()> {
         }
         None => Mode::Normal,
     };
-    ops::install(config.state.clone(), initial);
+    let ops = ops::install(config.state.clone(), initial);
+    if let Some(settings) = &config.persistent {
+        ops.set_caps(
+            u64::try_from(config.max_guests).unwrap_or(u64::MAX),
+            u64::try_from(settings.max_spectators).unwrap_or(u64::MAX),
+        );
+    }
     let identity = tls::HostIdentity::generate()?;
     let api = TcpListener::bind(config.api).await?;
     let persistent = match &config.persistent {

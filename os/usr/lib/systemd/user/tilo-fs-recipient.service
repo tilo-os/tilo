@@ -4,6 +4,9 @@ Documentation=https://github.com/tilo/tilo
 PartOf=graphical-session.target
 
 [Service]
+# Session-critical: file access the person is waiting on (see
+# os/etc/systemd/user/session.slice.d).
+Slice=session.slice
 Type=simple
 # The launcher connects to this per-user socket and passes only the connected
 # descriptor into sandboxed Files. Bearer URIs never enter process arguments.

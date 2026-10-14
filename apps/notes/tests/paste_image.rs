@@ -41,9 +41,10 @@ fn png(width: u32, height: u32, noisy: bool) -> Vec<u8> {
 fn images(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, Vec<u8>)> {
     let store = app.content();
     app.read_document(|doc| {
-        let assets = notes::notebook::image_snapshot(&notes::read::notebook(doc), |digest| {
-            store.read(digest)
-        });
+        let assets =
+            notes::notebook::image_snapshot(&notes::read::notebook(doc).images, |digest| {
+                store.read(digest)
+            });
         read::page_block_snapshots(doc, page)
             .into_iter()
             .filter_map(|(_, text)| {
@@ -85,6 +86,35 @@ fn ctrl_v_puts_a_copied_image_in_the_note() {
     );
     assert!(app.undo(), "pasting is undoable");
     assert!(images(&app, page).is_empty());
+}
+
+/// A pasted screenshot is drawn, not left as an empty plate: the image block
+/// is laid out as soon as it exists, and the store must not keep that first
+/// look (before the notebook's bytes reached the snapshot) as a failure.
+#[test]
+fn a_pasted_screenshot_decodes_for_drawing() {
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    let (mut app, page) = note();
+    recorder.copy_image_elsewhere(ClipboardImage {
+        mime: "image/png",
+        bytes: png(64, 48, false),
+    });
+    paste(&mut app);
+    let pasted = images(&app, page);
+    let source = pasted[0]
+        .0
+        .split("](")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches(')')
+        .to_owned();
+    for _ in 0..3 {
+        app.harness().relayout();
+    }
+    let drawn =
+        crate::framework_support::surface(&mut app, |notes| notes.image_decoded_for_test(&source));
+    assert!(drawn, "{source} never decoded");
 }
 
 #[test]

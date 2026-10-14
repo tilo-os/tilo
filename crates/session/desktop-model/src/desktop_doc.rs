@@ -648,6 +648,7 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[(u64, String, Ve
             active_tab,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         return;
     };
@@ -724,6 +725,20 @@ pub fn append_workspace(
 /// Record which workspace is showing.
 pub fn set_active(doc: &mut AutoCommit, workspace_id: WorkspaceId) {
     let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(workspace_id.raw()));
+}
+
+/// Whether `change` did nothing but record which workspace is showing, as
+/// [`set_active`] does on every workspace switch: one operation, putting the
+/// root key. Every workspace's content is as the changes before it left it.
+pub fn only_sets_active(change: &automerge::Change) -> bool {
+    use automerge::legacy::{Key, ObjectId, OpType};
+    change.len() == 1
+        && change.decode().operations.first().is_some_and(|op| {
+            op.obj == ObjectId::Root
+                && !op.insert
+                && matches!(op.action, OpType::Put(_))
+                && matches!(&op.key, Key::Map(key) if key == ACTIVE_KEY)
+        })
 }
 
 /// Record a workspace's room. `false` when the document does not hold the

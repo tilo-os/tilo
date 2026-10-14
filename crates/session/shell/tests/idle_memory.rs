@@ -19,7 +19,7 @@
 )]
 
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::idle_wakeups::{Desktop, SETTLE, running, wait_until_gone};
 
@@ -32,6 +32,12 @@ use crate::idle_wakeups::{Desktop, SETTLE, running, wait_until_gone};
 /// lavapipe's (`ralloc_size`: the NIR it keeps for every compute pipeline,
 /// which a hardware driver does not hold), ~31 MiB the compositor's own
 /// Rust heap and ~4 MiB LLVM's. The budget is that plus a margin.
+///
+/// Fedora 44's glibc backs every thread's arena with transparent huge pages,
+/// which put it at 172-180 MiB (118 MiB of them 2 MiB arenas of the
+/// shader-compile threads); started the way the session starts it, with
+/// `glibc.malloc.hugetlb=0` (`launcher::hardening::NO_HUGE_PAGES_TUNABLES`),
+/// it holds 67 MiB here.
 const IDLE_ANON_BUDGET_MIB: u64 = 150;
 
 /// One mapping of `/proc/<pid>/smaps`, the fields this report sums.
@@ -155,8 +161,7 @@ fn print_report(report: &serde_json::Value) {
 
 #[test]
 fn an_idle_empty_desktop_stays_within_its_memory_budget() {
-    let started = Instant::now();
-    let desktop = Desktop::start_with(&shell::shell::state::WorkspaceTree::bootstrap_default());
+    let desktop = Desktop::start_with(shell::shell::state::WorkspaceTree::bootstrap_default());
     // A person looks at their desktop: frames are rasterised, as on DRM.
     let watched = desktop.control(&serde_json::json!({"op": "watch", "watching": true}));
     assert!(watched.get("err").is_none(), "watch refused: {watched}");
@@ -176,9 +181,21 @@ fn an_idle_empty_desktop_stays_within_its_memory_budget() {
         );
     }
     // The desktop a person leaves: past the trim that returns startup's
-    // scratch (`heap_trim::STARTUP_SETTLED` after the compositor started).
-    let steady = started + shell::shell::heap_trim::STARTUP_SETTLED + SETTLE;
-    std::thread::sleep(steady.saturating_duration_since(Instant::now()));
+    // scratch, whenever startup finishes on this machine, then settled.
+    let trimmed_by = tilo_test_env::hang_deadline();
+    loop {
+        let reply = desktop.control(&serde_json::json!({"op": "process_memory"}));
+        if reply["answer"]["startup_trimmed"].as_bool() == Some(true) {
+            break;
+        }
+        assert!(
+            Instant::now() < trimmed_by,
+            "the startup trim never ran. Log:\n{}",
+            desktop.log_tail()
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    std::thread::sleep(SETTLE);
     let reply = desktop.control(&serde_json::json!({"op": "process_memory"}));
     let report = reply
         .get("answer")

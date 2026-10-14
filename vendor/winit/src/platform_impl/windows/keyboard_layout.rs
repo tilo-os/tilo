@@ -268,7 +268,7 @@ impl LayoutCache {
             Entry::Vacant(entry) => {
                 let layout = Self::prepare_layout(locale_id);
                 (locale_id, entry.insert(layout))
-            },
+            }
         }
     }
 
@@ -277,9 +277,18 @@ impl LayoutCache {
         let filter_out_altgr = layout.has_alt_graph && key_pressed(VK_RMENU);
         let mut mods = ModifiersState::empty();
         mods.set(ModifiersState::SHIFT, key_pressed(VK_SHIFT));
-        mods.set(ModifiersState::CONTROL, key_pressed(VK_CONTROL) && !filter_out_altgr);
-        mods.set(ModifiersState::ALT, key_pressed(VK_MENU) && !filter_out_altgr);
-        mods.set(ModifiersState::SUPER, key_pressed(VK_LWIN) || key_pressed(VK_RWIN));
+        mods.set(
+            ModifiersState::CONTROL,
+            key_pressed(VK_CONTROL) && !filter_out_altgr,
+        );
+        mods.set(
+            ModifiersState::ALT,
+            key_pressed(VK_MENU) && !filter_out_altgr,
+        );
+        mods.set(
+            ModifiersState::SUPER,
+            key_pressed(VK_LWIN) || key_pressed(VK_RWIN),
+        );
         mods
     }
 
@@ -341,7 +350,9 @@ impl LayoutCache {
             let scancode = unsafe { MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC_EX, locale_id as HKL) };
             let unicode = Self::to_unicode_string(&key_state, vk, scancode, locale_id);
             if let ToUnicodeResult::Str(s) = unicode {
-                layout.numlock_on_keys.insert(vk as VIRTUAL_KEY, Key::Character(SmolStr::new(s)));
+                layout
+                    .numlock_on_keys
+                    .insert(vk as VIRTUAL_KEY, Key::Character(SmolStr::new(s)));
             }
         }
 
@@ -381,7 +392,7 @@ impl LayoutCache {
                     _ => {
                         keys_for_this_mod.insert(key_code, preliminary_key);
                         continue;
-                    },
+                    }
                 }
 
                 let unicode = Self::to_unicode_string(&key_state, vk, scancode, locale_id);
@@ -391,7 +402,7 @@ impl LayoutCache {
                         // println!("{:?} - {:?} produced dead {:?}", key_code, mod_state,
                         // dead_char);
                         Key::Dead(dead_char)
-                    },
+                    }
                     ToUnicodeResult::None => {
                         let has_alt = mod_state.contains(WindowsModifiers::ALT);
                         let has_ctrl = mod_state.contains(WindowsModifiers::CONTROL);
@@ -403,7 +414,7 @@ impl LayoutCache {
                             // Just use the unidentified key, we got earlier
                             preliminary_key
                         }
-                    },
+                    }
                 };
 
                 // Check for alt graph.
@@ -877,7 +888,7 @@ fn vkey_to_non_char_key(
             } else {
                 Key::Named(NamedKey::Alt)
             }
-        },
+        }
         VK_BROWSER_BACK => Key::Named(NamedKey::BrowserBack),
         VK_BROWSER_FORWARD => Key::Named(NamedKey::BrowserForward),
         VK_BROWSER_REFRESH => Key::Named(NamedKey::BrowserRefresh),
@@ -967,7 +978,7 @@ fn vkey_to_non_char_key(
                 // Also see: https://github.com/pyfisch/keyboard-types/issues/9
                 Key::Unidentified(native_code)
             }
-        },
+        }
         VK_OEM_COPY => Key::Named(NamedKey::Copy),
         VK_OEM_AUTO => Key::Named(NamedKey::Hankaku),
         VK_OEM_ENLW => Key::Named(NamedKey::Zenkaku),

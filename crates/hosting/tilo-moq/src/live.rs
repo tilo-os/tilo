@@ -46,8 +46,6 @@ use std::time::{Duration, Instant};
 
 /// Exact WebTransport path of the live relay on the host's QUIC endpoint.
 pub const LIVE_PATH: &str = "/moq/live";
-/// WebTransport subprotocol; identical to voice.
-pub const LIVE_PROTOCOL: &str = carrier::PROTOCOL;
 /// First namespace tuple component of every live track.
 pub const NAMESPACE_ROOT: &str = "tilo-live";
 /// Latest-value datagram track.

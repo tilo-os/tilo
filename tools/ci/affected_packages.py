@@ -43,6 +43,16 @@ from ci import suites as path_suites
 # tilo-app-package/tests/{app_manifests,verify_attest} and tilo-doc-codecs/tests/{convergence,office_roundtrip}.
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "tilo-app-package", "tilo-doc", "tilo-doc-codecs"}
+# The desktop smoke (crates/session/shell/tests/desktop_smoke.rs) drives a real
+# headless compositor through a whole session and fails when its main loop stops
+# turning. Whatever the change, if it can alter the desktop (the package is in
+# the checked closure), the smoke runs: with the package's whole test run when
+# that is scheduled anyway, otherwise as just this filter. The shell test target
+# is already built for the former, so the gate costs a build only for changes
+# that reach the shell through a foundation crate.
+DESKTOP_GATE = {
+    "shell": path_suites.ReaderScope((), "it", "binary(it) and test(desktop_smoke::)"),
+}
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
 # Snapshot pins CI publishes and signs (kernel only; RPM snapshots resolve by
 # fingerprint). A pull request that changes only these changes no code:
@@ -61,6 +71,7 @@ NON_COMPILING_DOCS = {
     "tools/dev/remote-source-prepare.md",
     "docs/ci-emergency-relief.md",
     "docs/headless-testing.md",
+    "docs/policies.md",
 }
 # These orchestration/validation helpers are exercised by the mandatory quality
 # job's tools/policy/run.sh unittest discovery. They are not Rust build
@@ -94,6 +105,9 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/suites.py": "tools/tests/test_suites.py",
     "tools/ci/suites.toml": "tools/tests/test_suites.py",
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
+    "tools/policy/added_line_policy.py": "tools/tests/test_added_line_policy.py",
+    "tools/policy/check_commit_policy.py": "tools/tests/test_commit_hooks.py",
+    "scripts/scan-secrets.sh": "tools/tests/test_added_line_policy.py",
     "tools/policy/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/policy/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
     "tools/policy/check_workflow_actions.py": "tools/tests/test_workflow_actions.py",
@@ -179,6 +193,15 @@ GLOBAL_PREFIXES = (
     ".config/",
     "vendor/",
 )
+# Vendored crates that carry Tilo patches, with the paths their own tests read.
+# The workspace builds them only as path dependencies, so Cargo selection never
+# runs their tests; check.yml's `vendored` job does
+# (tools/ci/test-vendored-crates.sh) when one of these paths or the runner
+# changes, and ci-nightly.yml runs every one.
+VENDORED_TEST_CRATES = {
+    "vendor/automerge": ("vendor/automerge/", "vendor/automerge-test/"),
+}
+VENDORED_TEST_RUNNER = "tools/ci/test-vendored-crates.sh"
 HEAVY_PACKAGES = {
     "browser",
     "ebook",
@@ -649,6 +672,14 @@ def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
     }
 
 
+def vendored_test_crates(changes: list[str], run_all: bool = False) -> list[str]:
+    """The VENDORED_TEST_CRATES whose tests `changes` reach, or all of them."""
+    if run_all or VENDORED_TEST_RUNNER in changes:
+        return sorted(VENDORED_TEST_CRATES)
+    return sorted(crate for crate, inputs in VENDORED_TEST_CRATES.items()
+                  if any(path.startswith(inputs) for path in changes))
+
+
 def make_plan(
     metadata: dict,
     root: Path,
@@ -806,6 +837,18 @@ def make_plan(
         reason += "; re-check limited to what the base branch changed since the last green run"
     scoped_tests = {name: scope for name, scope in reader_scopes.items()
                     if scope is not None and name in selected and name not in tested}
+    for name, gate in DESKTOP_GATE.items():
+        if name not in selected or name in tested:
+            continue
+        reading = scoped_tests.get(name)
+        if reading is None:
+            scoped_tests[name] = gate
+        elif reading.test == gate.test:
+            scoped_tests[name] = path_suites.ReaderScope(
+                reading.inputs, reading.test, f"({reading.filter}) or ({gate.filter})")
+        else:
+            raise ValueError(f"{name}: a scope on test target {reading.test!r} cannot be "
+                             f"combined with the desktop gate on {gate.test!r}")
     shard_limit = (shard_count if force_full else
                    min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
     effective_shards = useful_shard_count(selected, packages, shard_limit)
@@ -860,7 +903,12 @@ def make_plan(
               if suite_manifest is not None and not pin_only else [])
     if only is not None:
         suites = [suite for suite in suites if suite in set(only["suites"])]
-    android = sorted(android_apps(packages) & selected)
+    # Vendored crates' own tests follow their files alone, not pushes to main:
+    # explicit full runs and the nightly run all of them.
+    vendored = vendored_test_crates(changes, run_all=force_full) if not pin_only else []
+    if only is not None:
+        vendored = [crate for crate in vendored if crate in set(only.get("vendored", ()))]
+    android =sorted(android_apps(packages) & selected)
     wasm = sorted(browser_crates(packages) & selected)
     examples = example_apps(packages, root)
     web_examples = sorted(
@@ -874,6 +922,9 @@ def make_plan(
         "pins_required": pin_only,
         "pins": pins if pin_only else [],
         "suites": suites,
+        # Vendored crates whose own tests check.yml's `vendored` job runs.
+        "vendored_required": bool(vendored),
+        "vendored": vendored,
         # Selected apps with an Android host example; check.yml's `android`
         # job type-checks them for the Android targets.
         "android_required": bool(android),
@@ -929,6 +980,8 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")
         handle.write(f"suites_required={'true' if plan['suites_required'] else 'false'}\n")
         handle.write(f"suites={' '.join(plan['suites'])}\n")
+        handle.write(f"vendored_required={'true' if plan['vendored_required'] else 'false'}\n")
+        handle.write(f"vendored_crates={' '.join(plan['vendored'])}\n")
         handle.write(f"pins_required={'true' if plan['pins_required'] else 'false'}\n")
         handle.write(f"pins={' '.join(plan['pins'])}\n")
         handle.write(f"android_required={'true' if plan['android_required'] else 'false'}\n")
@@ -959,7 +1012,8 @@ def recheck_scope(root: Path, metadata: dict, tested_base: str, base: str,
                       resolved_inputs=resolve_manifest_inputs(root, tested_base, base, metadata, changes))
     if delta["full"]:
         return None
-    return {"packages": set(delta["reached"]), "suites": set(delta["suites"])}
+    return {"packages": set(delta["reached"]), "suites": set(delta["suites"]),
+            "vendored": set(delta["vendored"])}
 
 
 def main() -> int:

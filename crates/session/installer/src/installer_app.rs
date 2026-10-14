@@ -106,17 +106,8 @@ pub const FIDO2_LABELS: [&str; 2] = ["No security key", "Enroll security key"];
 /// The heading of the media codecs opt-in.
 pub const CODECS_TITLE: &str = "Play more video and audio formats";
 
-/// The Media step's one large button. Nothing is chosen until it is pressed.
-pub const CODECS_INSTALL: &str = "Install";
-
-/// The quiet way past the Media step without choosing the formats.
-pub const CODECS_SKIP: &str = "Not now";
-
 /// What the Media step says once Install was pressed, above its Undo.
 pub const CODECS_CHOSEN: &str = "Chosen: installed once the new system is online";
-
-/// Withdraws the choice before the install starts.
-pub const CODECS_UNDO: &str = "Undo";
 
 /// The one short line under the title. The installer only records the
 /// choice; the installed system downloads the formats once it is online.

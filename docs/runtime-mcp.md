@@ -13,9 +13,9 @@ cargo build -p shell --bin tilo-runtime-mcp --no-default-features
 ```
 
 In an installed layout, app startup attaches to a runtime host beside the app,
-then on `PATH`. Inside the Tilo desktop (`XDG_CURRENT_DESKTOP=tilo`, which the
-Tilo login exports) that is only the session's `tilo-runtime-mcp`, so an app
-never attaches to a second authority beside it. Elsewhere — stock macOS or a
+then on `PATH`. Inside the Tilo desktop (`XDG_CURRENT_DESKTOP` names `tilo`
+among its colon-separated entries; the Tilo login exports `tilo:GNOME`) that is
+only `tilo-runtime-mcp`, so an app never prefers the standalone host there. Elsewhere — stock macOS or a
 foreign Linux desktop — the standalone `tilo-runtime` comes first, then
 `tilo-runtime-mcp`. Packages built by `scripts/browser/package.py` carry
 `tilo-runtime`. In a source checkout on a foreign desktop, build the host once:
@@ -86,7 +86,123 @@ The first ordinary app may start the daemon before the assistant connects. A
 `--connect` client can also start it when no app is running. Stdio EOF ends only
 that proxy connection.
 
+A profile named with `--profile` or `TILO_RUNTIME_PROFILE`, or `--standalone`,
+always selects this standalone runtime.
 
+### Inside a Tilo session
+
+Inside a Tilo login, `--connect` with no profile relays to the desktop itself:
+the session's **agent door** at `$XDG_RUNTIME_DIR/tilo-session/agent.sock`.
+It never starts a standalone daemon there — a second, empty authority beside
+the desktop would answer every question about it wrongly. When the door is
+missing (first login not complete, or a compositor too old to serve it) the
+client fails with `the desktop's agent door isn't available: <reason>` and how
+to go on; `--standalone` runs a separate runtime anyway.
+
+Whether a process is inside a Tilo login does not rest on
+`XDG_CURRENT_DESKTOP`, which a terminal multiplexer, `ssh` or a service
+manager can each drop. The environment names the desktop (`tilo` among its
+colon-separated entries) **or** the account's runtime directory holds the
+compositor's own sockets (`agent.sock` or `admin-control.sock` in
+`$XDG_RUNTIME_DIR/tilo-session/`; `/run/user/<uid>` when the variable is gone
+too). The environment can only add to that evidence, never subtract. The same
+test decides which host an app launched from such a terminal attaches to.
+
+```sh
+claude mcp add tilo -- tilo-runtime-mcp --connect
+```
+
+The door serves this login's own processes only: same account, same user and
+mount namespaces. A sandboxed app is refused and uses its own collaboration
+connection. A process inside an app the session launched — the terminal an
+agent runs in — is admitted to ask, and that app is named in the question.
+
+Nothing a client sends after its `initialize` is read until the person
+answers, in trusted chrome: "Claude Code (node, pid N) in
+org.alacritty.Alacritty — Work in “Home” as the agent claude-code". The same
+decision is the `permission-prompts` provider's `allow-once@…`,
+`allow-session@…`, `allow-always@…` and `deny@…` actions, so the owner can
+also answer remotely; those take optional `agent` (an existing agent member,
+or a new one by that name) and `preset` parameters. A refusal reaches the
+client as a JSON-RPC error on its `initialize`, and the connection closes.
+
+Admitting a client makes it an agent member of the workspace in front of the
+person, through the same membership Settings → Agents shows and removes. Its
+connection is then served the MCP tools as `Caller::local_agent(agent)` in that
+workspace's room, in an execution of its own: every query and invocation
+passes the broker's ordinary gate and is attributed to `agent:<id>`. An agent
+holds no role, so it reaches only what the person grants it there (Settings →
+Agents → Review access); removing it ends both its catalogue and its authority
+at once. There are no pixel (`computer`) tools on the door.
+
+"This session" and "Always" remember that this client — the executable the
+kernel names, under the client name it gives — is that agent, and let it in
+without asking wherever that agent is still a member. "Always" is kept in
+`$XDG_STATE_HOME/tilo/agent-door-bindings.json` (0600), never in the
+replicated workspace document, and only a workspace owner may give it. Any
+process of the same account can claim the same name, so a remembered client is
+a convenience against repeated prompts, not a credential: what it can do is
+still exactly the agent's grants.
+
+
+
+### The agent tools
+
+An agent on the door is offered five tools, addressed by **path** and answered
+as text. A path is `app/resource/resource#action`: the app (`notes`, the last
+part of its id), resources by their title, kind or the app's own key
+(`Todo`, `body`, `notes.page:3fa2…`), any case, and the action after `#`. A
+name containing `/`, `#` or `\` writes it with a leading backslash. Paths are
+resolved against the live directory on every call, so they mean the same thing
+after the compositor restarts; the opaque ids the broker mints per publication
+(`tilo-ui-bound:v1:<uuid>:<uuid>:<hex>`) are never shown and need never be
+sent. A resource published beside its owner rather than inside it (a note's
+body) is found under the owner when its key names the owner's id; where a title
+fits two resources the owner gets it.
+
+| Tool | Answers | Example |
+| --- | --- | --- |
+| `tilo_ls` | apps; an app's resources and actions; one action's parameters | `{}` · `{path: "notes"}` · `{path: "notes/Todo#rename"}` |
+| `tilo_read` | a resource as compact text: markdown with `{#block id}`, a list of what an app holds | `{path: "notes/Todo"}` |
+| `tilo_do` | the action's result, waited for (default 5 s) | `{path: "notes/Todo/body#append-paragraph", args: {text: "Buy milk"}}` |
+| `tilo_find` | ranked one-line hits, ready to pass to `tilo_do` | `{query: "checklist add", app: "notes"}` |
+| `tilo_status` | how a pending invocation went; `cancel: true` stops it | `{invocation_id}` |
+
+```text
+> tilo_ls {path: "notes"}
+notes  (so.tilo.notes)
+Notebook/  notes.notebook
+Todo/  notes.page
+Groceries/  notes.page
+#new-page(title?)  New note
+#read(item?)
+
+> tilo_read {path: "notes/Todo"}
+# Todo
+- [ ] milk {#b1}
+- [x] bread {#b2}
+## Later {#b3}
+
+> tilo_do {path: "notes/Todo/body#append-paragraph", args: {text: "call mom"}}
+ok
+{"block":"b9"}
+```
+
+`tilo_do` answers `ok` with the action's result, `failed: <code>: <message>`
+(with the action's parameters after an `invalid_arguments`), or `pending <id>`
+when it ran past `wait_ms`; there is no receipt to poll for an action that
+finishes. `calls: [{path, args}, …]` runs several in order and stops at the
+first failure. `notes#open` starts an installed app and lists it. `tilo_find`
+searches apps by name, then resources, then actions named as searched, then
+actions described so; it does not search files. Listings
+carry names and one-line labels only; `tilo_ls path#action` gives an action's
+parameters when it is wanted. Results are text, with no structured copy beside them. Measured (the
+`mcp_agent` tests keep these in bounds): the agent tool list is 2,900 bytes of
+JSON against 4,546 for the classic one, and a four-block Notes page reads as 71
+bytes of markdown against 370 for the structured `read` answer of the same page.
+
+A client that parses directory rows (peer ids, `tilo_query`'s grouped pages)
+is served the **classic** tools, below, anywhere but the door.
 
 ## Agent host (MCP beside local relay)
 
@@ -281,16 +397,23 @@ first keeps the named revision, each later one reads the directory as it
 is then, and the first that does not succeed stops the rest. The answer is
 `results`, plus `stopped` at that call's index. The same `invocation_id`
 never runs the batch twice: the first step uses it, and each later step's
-id is derived from it. A number outside the range its
-action declares (`pageSize: 200` where the signature says `1..64`) fails
-validation before the action runs; the bridge then runs the call once more
-with the bound the refusal named and adds `adjusted` to the answer
-(`"pageSize 200 is out of range; used 64"`), so the caller need not retry.
+id is derived from it. One call is one invocation: the bridge never runs
+it again under another id. A number outside the range its action declares
+(`pageSize: 200` where the signature says `1..64`) fails validation before
+the action runs, and the failure carries the bound as data
+(`update.error.details`: `{"param": "pageSize", "violation": {"kind":
+"maximum", "bound": 64}}`) beside its message; the answer's `hint` names it
+(`"pageSize must be at most 64; call again with a value in range, such as
+64"`) and the caller decides whether to call again. The bridge decides by the
+host's typed refusal, never its wording: a target not offered, an action
+asking for confirmation and a stale revision (`stale_revision`) are each a
+variant of their own.
 Pass content resource references returned by one successful action as typed
 arguments to a freshly discovered action in another app. The runtime contains
 no Photos/Writer workflow branch and never treats `Accepted` as `Succeeded`.
 A failed invocation is not replayed merely because a text argument matches a
-session handle.
+session handle: the answer's `hint` names the handle and the id it stands
+for, for the caller to pass if it meant the resource.
 
 ### Opening an app
 
@@ -309,9 +432,12 @@ nothing, so the reply waits up to 3 s more for one that lists a resource.
 `arguments: {"path": "/abs/file"}` also opens that file. The workspace's own
 launch opens content only by hash, read through an authenticated app's scope,
 and a launch argument would bypass the instance's typed surface, so the bridge
-launches the app empty and then invokes the instance's own `open` action taking
-a `path` (or, for an app with none, `import-<extension>`, as Sheets offers for
-CSV). The app reads the file inside its sandbox, so only files the workspace
+launches the app empty and then invokes the action the instance declares as
+opening paths (`ActionSpec::opens_path`, `#[effect(opens_path = "csv")]`;
+tagged `open:path`, with `open:path-ext:<extension>` for the types it is
+declared for), preferring one declared for the file's extension, as Sheets
+declares its imports. An action is never chosen by its name: one that only
+takes a `path`, such as Windows' ISO import, is not an opener. The app reads the file inside its sandbox, so only files the workspace
 granted it open; nothing is granted on the way. The reply's `opened` carries
 that invocation's update and the resource and action it used, or an `error`
 naming why the file is not open (the app started empty either way). Workspace

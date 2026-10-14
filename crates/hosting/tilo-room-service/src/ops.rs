@@ -9,6 +9,10 @@
 //! paths `tilo_relay_protocol::metrics` defines; other processes of the pod
 //! may drop text files into `<state>/metrics.d`. `/metrics` reads the
 //! snapshots and appends the text files under a freshness gauge.
+//!
+//! The page also says which source revision the running binary was built
+//! from (`tilo_rooms_build_info`), so a rollout that did not happen, or a pod
+//! left on an older image, shows beside the digest the deployment pins.
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -39,6 +43,11 @@ const FIELD_MAX: usize = 1024;
 /// Reports per second across all visitors, and the burst allowed.
 const REPORT_RATE: f64 = 20.0;
 const REPORT_BURST: f64 = 50.0;
+/// The image's source revision, set by its Containerfile from the same build
+/// argument as the `org.opencontainers.image.revision` label.
+const SOURCE_REVISION_ENV: &str = "TILO_SOURCE_REVISION";
+/// What a build without a valid revision reports.
+pub const UNKNOWN_REVISION: &str = "unknown";
 
 /// How much of the persistent room is open to visitors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,9 +153,13 @@ pub struct Ops {
     failures: [AtomicU64; 7],
     guests: AtomicU64,
     spectators: AtomicU64,
+    /// The persistent room's admission caps; 0 when there is none.
+    max_guests: AtomicU64,
+    max_spectators: AtomicU64,
     reports: AtomicU64,
     reports_dropped: AtomicU64,
     report_bucket: Mutex<Bucket>,
+    revision: String,
 }
 
 static OPS: OnceLock<Ops> = OnceLock::new();
@@ -172,13 +185,22 @@ impl Ops {
             failures: Default::default(),
             guests: AtomicU64::new(0),
             spectators: AtomicU64::new(0),
+            max_guests: AtomicU64::new(0),
+            max_spectators: AtomicU64::new(0),
             reports: AtomicU64::new(0),
             reports_dropped: AtomicU64::new(0),
             report_bucket: Mutex::new(Bucket {
                 tokens: REPORT_BURST,
                 at: now,
             }),
+            revision: source_revision(std::env::var(SOURCE_REVISION_ENV).ok().as_deref()),
         }
+    }
+
+    /// The commit this binary was built from: 40 lowercase hex digits, or
+    /// [`UNKNOWN_REVISION`] outside a published image.
+    pub fn revision(&self) -> &str {
+        &self.revision
     }
 
     /// The current mode: the operator's `mode` file wins over the
@@ -210,6 +232,13 @@ impl Ops {
         self.spectators.store(spectators, Ordering::Relaxed);
     }
 
+    /// The persistent room's caps, so an alert can compare the online
+    /// counts with them instead of a copy of the deployment's numbers.
+    pub fn set_caps(&self, max_guests: u64, max_spectators: u64) {
+        self.max_guests.store(max_guests, Ordering::Relaxed);
+        self.max_spectators.store(max_spectators, Ordering::Relaxed);
+    }
+
     /// Takes one report token; false when reports arrive too fast
     /// across all visitors.
     pub fn admit_report(&self) -> bool {
@@ -234,10 +263,40 @@ impl Ops {
         taken
     }
 
+    /// The persistent room's caps, when there is one.
+    fn render_caps(&self, out: &mut String) {
+        for (name, help, cap) in [
+            (
+                "tilo_rooms_max_guests",
+                "Guests the persistent room admits (TILO_ROOMS_MAX_GUESTS).",
+                &self.max_guests,
+            ),
+            (
+                "tilo_rooms_max_spectators",
+                "Spectators the persistent room admits (TILO_ROOMS_MAX_SPECTATORS).",
+                &self.max_spectators,
+            ),
+        ] {
+            let cap = load(cap);
+            if cap > 0 {
+                metric(out, "gauge", name, help);
+                sample(out, name, "", cap);
+            }
+        }
+    }
+
     /// The `/metrics` page. `rooms` is how many rooms run now.
     pub fn render(&self, rooms: usize) -> String {
         let mut out = String::new();
         let mode = self.mode();
+        metric(
+            &mut out,
+            "gauge",
+            "tilo_rooms_build_info",
+            "1, labelled with the source revision the running image was built from.",
+        );
+        let label = format!("{{revision=\"{}\"}}", self.revision);
+        sample(&mut out, "tilo_rooms_build_info", &label, 1);
         metric(&mut out, "gauge", "tilo_rooms_rooms", "Rooms running.");
         sample(&mut out, "tilo_rooms_rooms", "", rooms);
         metric(
@@ -269,6 +328,7 @@ impl Ops {
             "",
             load(&self.spectators),
         );
+        self.render_caps(&mut out);
         metric(
             &mut out,
             "counter",
@@ -321,6 +381,22 @@ impl Ops {
         dirs.extend(rooms.iter().map(|room| room_textfile_dir(room)));
         textfiles(&mut out, &dirs);
         out
+    }
+}
+
+/// A full commit id, or [`UNKNOWN_REVISION`]: the value becomes a metric
+/// label and a JSON field, so nothing else from the environment passes.
+fn source_revision(value: Option<&str>) -> String {
+    match value {
+        Some(revision)
+            if revision.len() == 40
+                && revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) =>
+        {
+            revision.to_owned()
+        }
+        _ => UNKNOWN_REVISION.to_owned(),
     }
 }
 
@@ -482,12 +558,11 @@ fn textfiles(out: &mut String, dirs: &[PathBuf]) {
         else {
             continue;
         };
-        let Ok(meta) = entry.metadata() else { continue };
-        if meta.len() > TEXTFILE_MAX {
+        let Ok(Some(bytes)) = tilo_files::native::bounded::read(&path, TEXTFILE_MAX) else {
             continue;
-        }
+        };
         let age = age_of(&path).map_or(0, |age| age.as_secs());
-        if let Ok(text) = std::fs::read_to_string(&path) {
+        if let Ok(text) = String::from_utf8(bytes) {
             files.entry(name).or_insert((text, age));
         }
     }
@@ -629,15 +704,23 @@ mod tests {
             "tilo_rooms_bridge_queue_depth 3",
         )
         .unwrap();
-        let ops = Ops::new(state.to_owned(), Mode::Normal);
+        let mut ops = Ops::new(state.to_owned(), Mode::Normal);
+        ops.revision = source_revision(Some(REVISION));
         ops.joined();
         ops.join_failed(JoinFailure::Full);
         ops.set_online(5, 9);
+        assert!(!ops.render(1).contains("tilo_rooms_max_guests"));
+        ops.set_caps(500, 2000);
         let page = ops.render(1);
         for expected in [
+            "# TYPE tilo_rooms_build_info gauge",
+            "tilo_rooms_build_info{revision=\"353db50e31c9c661b080b9dfefe17688d4a8b2f0\"} 1",
             "tilo_rooms_rooms 1",
             "tilo_rooms_online_guests 5",
             "tilo_rooms_online_spectators 9",
+            "# TYPE tilo_rooms_max_guests gauge",
+            "tilo_rooms_max_guests 500",
+            "tilo_rooms_max_spectators 2000",
             "tilo_rooms_joins_total 1",
             "tilo_rooms_join_failures_total{reason=\"full\"} 1",
             "tilo_rooms_relay_up 1",
@@ -649,6 +732,31 @@ mod tests {
         ] {
             assert!(page.contains(expected), "{expected} missing from\n{page}");
         }
+    }
+
+    const REVISION: &str = "353db50e31c9c661b080b9dfefe17688d4a8b2f0";
+
+    #[test]
+    fn the_build_revision_is_a_full_commit_or_unknown() {
+        assert_eq!(source_revision(Some(REVISION)), REVISION);
+        for invalid in [
+            None,
+            Some(""),
+            Some("353db50e31c9"),
+            Some("353DB50E31C9C661B080B9DFEFE17688D4A8B2F0"),
+            Some("353db50e31c9c661b080b9dfefe17688d4a8b2f0\"} 1\nevil 1"),
+            Some("g53db50e31c9c661b080b9dfefe17688d4a8b2f0"),
+        ] {
+            assert_eq!(source_revision(invalid), UNKNOWN_REVISION, "{invalid:?}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut ops = Ops::new(dir.path().to_owned(), Mode::Normal);
+        ops.revision = source_revision(None);
+        assert_eq!(ops.revision(), UNKNOWN_REVISION);
+        assert!(
+            ops.render(0)
+                .contains("tilo_rooms_build_info{revision=\"unknown\"} 1")
+        );
     }
 
     #[test]

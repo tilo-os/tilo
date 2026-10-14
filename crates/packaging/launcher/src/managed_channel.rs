@@ -488,7 +488,7 @@ fn receive_credentials(socket: &UnixStream) -> Result<([u8; 32], u32), String> {
         let credential = received
             .credential
             .ok_or("kernel sender credential missing")?;
-        if credential.pid <= 0 || credential.uid != unsafe { libc::geteuid() } {
+        if credential.pid <= 0 || credential.uid != rustix::process::geteuid().as_raw() {
             return Err("wrong kernel sender identity".into());
         }
         let pid = credential.pid.unsigned_abs();

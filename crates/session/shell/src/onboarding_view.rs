@@ -194,10 +194,7 @@ fn load_progress(identity_dir: &std::path::Path) -> std::io::Result<Option<Persi
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        if metadata.uid() != unsafe { libc::geteuid() }
-            || metadata.permissions().mode() & 0o077 != 0
-        {
+        if !tilo_files::native::private::private_to_me(&metadata) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "onboarding progress must be private and owned by this user",

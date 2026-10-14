@@ -77,8 +77,7 @@ fn take(dir: &Path, budget: usize, want: usize) -> Vec<FileLock> {
 fn slot_dir() -> Option<PathBuf> {
     #[cfg(unix)]
     let base = {
-        // SAFETY: getuid has no preconditions and cannot fail.
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         let run = PathBuf::from(format!("/run/user/{uid}"));
         if run.is_dir() {
             run

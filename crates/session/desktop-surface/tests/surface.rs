@@ -787,6 +787,57 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
     assert!((pan_offset(&handle) - before).abs() < 0.01);
 }
 
+/// A browser page presents on animation frames, and a trackpad's wheel
+/// events outpace them: each event pans the strip at once, and the next
+/// frame moves the laid-out windows there without solving any size.
+#[test]
+fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
+    let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
+    driver.set_coalesce_wheel_frames(true);
+    let first_window_x = |driver: &ui::headless::FrameHarness| {
+        find(&driver.inspection().root, "WindowGroup").unwrap().rect[0]
+    };
+    let drawn = first_window_x(&driver);
+    let start = pan_offset(&handle);
+    let frames = driver.relayout_frames();
+    for _ in 0..3 {
+        driver.send_host_event(&ui::winit::event::WindowEvent::MouseWheel {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+                ui::winit::dpi::PhysicalPosition::new(-10.0, 0.0),
+            ),
+            phase: ui::winit::event::TouchPhase::Moved,
+        });
+    }
+    assert_eq!(driver.relayout_frames(), frames, "a wheel lays nothing out");
+    assert!(driver.frame_schedule().queued_work, "it asks for a frame");
+
+    assert!(driver.poll_frame().unwrap());
+    assert_eq!(
+        driver.relayout_frames(),
+        frames + 1,
+        "one frame for all three"
+    );
+    let stats = driver.last_relayout();
+    assert!(
+        !stats.rebuilt && !stats.measured,
+        "a pan only re-applies positions: {stats:?}, asked by {:?}",
+        driver.layout_measure_requesters()
+    );
+    assert!(
+        (pan_offset(&handle) - start - 30.0).abs() < 0.01,
+        "each wheel panned the strip 1:1"
+    );
+    assert!(
+        (drawn - first_window_x(&driver) - 30.0).abs() < 0.01,
+        "the windows are laid out where the strip panned to"
+    );
+    assert!(
+        !driver.frame_schedule().queued_work,
+        "the frame took the wheels' work"
+    );
+}
+
 #[test]
 fn a_trackpad_swipe_the_strip_cannot_follow_is_the_apps() {
     let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);

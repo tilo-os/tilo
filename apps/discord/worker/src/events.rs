@@ -545,9 +545,7 @@ impl Guild {
 /// Wall-clock Unix milliseconds.
 #[must_use]
 pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+    i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

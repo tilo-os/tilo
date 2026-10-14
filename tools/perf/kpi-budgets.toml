@@ -38,7 +38,7 @@ min_delta = 0.0
 # Perf / scheduled (.forgejo/workflows/perf-scheduled.yml): one job per group,
 # selected by its `kpis` input; its `compare` job runs with the default lane.
 [lanes.perf-scheduled]
-groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting"]
+groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting", "browser"]
 
 # Dev / VM acceptance (.forgejo/workflows/vm-acceptance.yml): the installed
 # desktop in a KVM guest. Its R04 measures compositor CPU per painted frame on
@@ -550,7 +550,7 @@ min_delta = 1.0
 baseline_min_runs = 1
 source = "KPI: Workspace switch, dropped frames (compositor side, headless)"
 
-# Idle wakeups (crates/session/shell/tests/idle_wakeups.rs, #3973): a
+# Idle wakeups (crates/session/shell/examples/idle-wakeups.rs, #3973): a
 # headless dev build on the shared `runner` class with a signed-in desktop,
 # a restored Notes tab and a Terminal, left alone and sampled from /proc over
 # 60 s; context switches per second of every thread of the compositor's
@@ -1301,6 +1301,152 @@ p99_tolerance = 2.0
 min_delta = 40.0
 source = "framework-scaling focus, an agent call adding one item end to end, 2,500 items (reported)"
 
+# Notes input latency: the notes-latency example
+# (apps/notes/examples/notes-latency.rs) opens Notes over a 27-note,
+# 838-block notebook and sends each input through the host's input path,
+# through adapters.py notes-latency in the render job. `to_frame_ms` runs from
+# the input to the end of the host frame that shows it (input handling, sync,
+# layout, the scene and the accessibility walk), `to_raster_ms` on to GPU
+# completion of that frame's damage; every input is a sample, checked against
+# the editor's canonical body. On an M5 Max, release, 200 keys back to back:
+# to frame p50 4.2-5.4 ms typing, 4.8-5.3 Enter, 5.3-5.8 Backspace, 2.7-2.9
+# a wheel step and 4.7-5.2 opening a note; to raster 3-4 ms more on Metal.
+# The ceilings are the 60 Hz frame (16.7 ms): to frame at p99, to raster at
+# p50, since lavapipe rasterises on the shared runner's CPU. Reported, not
+# enforced; the relative rule catches regressions once three runs are stored.
+
+[kpi."render.notes_latency.type.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a typed character to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.type.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a typed character to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.enter.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, Enter splitting a block to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.enter.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, Enter splitting a block to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.backspace.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, Backspace joining a block to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.backspace.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, Backspace joining a block to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.scroll.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a 40 px wheel step in a 136-block note to the frame that shows it (reported)"
+
+[kpi."render.notes_latency.scroll.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a 40 px wheel step in a 136-block note to its frame rasterised (lavapipe; reported)"
+
+[kpi."render.notes_latency.open.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a note's open action to the frame that shows it bound, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.open.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a note's open action to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+# The pointer moving a few pixels over the long note, and a host frame with no
+# input at all (what a caret blink or another window's animation costs Notes).
+# An idle frame publishes no accessibility change and walks no widgets; on an
+# M5 Max, release, it is 0.25-0.28 ms to frame (0.64-0.66 ms while every frame
+# rebuilt the semantic tree), a pointer move 0.7 ms.
+
+[kpi."render.notes_latency.pointer.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+baseline_min_runs = 3
+source = "notes-latency, a pointer move over a 136-block note to the frame that shows it (reported)"
+
+[kpi."render.notes_latency.pointer.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a pointer move over a 136-block note to its frame rasterised (lavapipe; reported)"
+
+[kpi."render.notes_latency.idle.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.25
+baseline_min_runs = 3
+source = "notes-latency, a host frame with no input over a 136-block note, accessibility walk included (reported)"
+
+[kpi."render.notes_latency.idle.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+baseline_min_runs = 3
+source = "notes-latency, a host frame with no input over a 136-block note, rasterised where it changed (lavapipe; reported)"
+
 # The installed desktop: Dev / VM acceptance's nightly run on the newest
 # published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
 # (scripts/vm-acceptance, acceptance/records.py). Those runs compare and publish
@@ -1746,3 +1892,106 @@ unit = "usd"
 p50 = 0.001
 enforce = true
 source = "KPI: Relay cost per active collaborator-hour"
+
+# A public room host at 100 guests: crates/dev/room-load, three runs on
+# runner-large (perf-scheduled.yml, `hosting-room`; adapters.py room-load),
+# each run one sample. 100 is the largest room the capacity sweep of
+# 2026-10-14 (docs/benchmarks/room-host-capacity-2026-10.md, Perf / room host
+# capacity run 112979) admitted whole: there, 100 guests joined with join p99
+# 9.9 s and chat delivery p99 5.5 s, the host's process tree peaked at
+# 122 MiB and used 1.14 cores; past about 250 members joins time out at any
+# arrival rate. The ceilings are about twice those, with the relay CPU's
+# tolerances: join and delivery time at this size swing between runs (join
+# p99 5.7 s in the sweep's first run), and a guest that did not join fails
+# the adapter outright. Raise the point to 300 guests once the room admits
+# them.
+[kpi."hosting.room.join_p99_ms.g100"]
+unit = "ms"
+p50 = 20000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2000.0
+source = "room-load: guests' p99 time from /join to the room's Ready, per run"
+
+[kpi."hosting.room.chat_p99_ms.g100"]
+unit = "ms"
+p50 = 12000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "room-load: p99 delivery of chat changes sent while their receiver was in the room, per run"
+
+[kpi."hosting.room.rss_mib_peak.g100"]
+unit = "MiB"
+p50 = 250.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "room-load: peak proportional memory of the host's process tree (relay and Automerge workers)"
+
+[kpi."hosting.room.cpu_percent.g100"]
+unit = "percent"
+p50 = 250.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "room-load: the host's process tree's CPU during the hold, as a share of one core"
+
+# Browser runtime (scripts/perf/browser_qualification.mjs): the release
+# desktop bundle (build.sh --bundle desktop, the bytes web-entry.yml
+# publishes) in headless Chrome for Testing on the shared `runner` class, one
+# fresh-context round at 960x540. The runner has no GPU, and Chrome offers
+# WebGPU no CPU driver but its own SwiftShader (it renders its page on
+# lavapipe, but its WebGPU adapter stays SwiftShader). So these records are
+# compared only with each other and never quoted as hardware figures, and the
+# ceilings are reported, never enforced; the relative rule catches regressions
+# of the runtime's own work. They time the page's side of each step (a frame
+# presented is a frame submitted). SwiftShader takes tens of seconds for a
+# panned FHD frame on this runner and queues its work behind the page (a first
+# FHD round took 20 minutes, a second never finished in two hours), hence one
+# small round. The demo workload is left out (--demo-seconds 0), so its frame
+# rate and the 30 and 120 fps goals are judged where a GPU draws (a hardware qualification: --renderer gpu --enforce-goals,
+# docs/measurements/performance.md). The ceilings are the runtime's goals: a
+# window activated within 50 ms and first opened within 250 ms
+# (crates/browser/tilo-web-desktop/scripts/open-times.mjs), its own code
+# drawing within a second (the limit of an uninterrupted flow of thought); the
+# desktop's first frame within 2.5 s of navigation (the web's "good" Largest
+# Contentful Paint), which SwiftShader's pipeline compiles alone exceed; an
+# idle desktop presenting at most two frames a second (idle.mjs). Timing KPIs
+# need three stored runs before comparison, as the latency group's do:
+# wall-clock on the shared runner varies between nights on identical code.
+
+[kpi."browser.load.desktop_presented"]
+unit = "ms"
+p99 = 2500.0
+baseline_min_runs = 3
+source = "navigation to the desktop's first presented frame, fresh browser context (headless, SwiftShader)"
+
+[kpi."browser.open.first_frame"]
+unit = "ms"
+p99 = 250.0
+baseline_min_runs = 3
+source = "launch command to the first frame presenting the new window, first open (headless, SwiftShader)"
+
+[kpi."browser.open.ready"]
+unit = "ms"
+p99 = 1000.0
+baseline_min_runs = 3
+source = "launch command to the first frame after the app's own code (its split-off module) is instantiated, first open (headless, SwiftShader)"
+
+[kpi."browser.activate.first_frame"]
+unit = "ms"
+p99 = 50.0
+baseline_min_runs = 3
+source = "select command to the first frame with the window active (headless, SwiftShader)"
+
+[kpi."browser.idle.presented_per_s"]
+unit = "per_s"
+max = 2.0
+min_delta = 0.5
+baseline_min_runs = 1
+source = "frames an idle desktop of the demo windows presents per second (headless, SwiftShader)"

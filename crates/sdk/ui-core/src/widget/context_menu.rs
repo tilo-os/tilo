@@ -1109,6 +1109,10 @@ impl Widget for ContextMenu {
         self.platform = conventions;
     }
 
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1129,6 +1133,13 @@ impl Widget for ContextMenu {
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
+    }
+
+    /// Both lengths are fixed when the node is built and it measures
+    /// nothing: there is never a size for the layout solver to re-solve,
+    /// open or closed.
+    fn layout_needs_measure(&self) -> bool {
+        false
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

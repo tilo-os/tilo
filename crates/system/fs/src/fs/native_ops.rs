@@ -536,8 +536,7 @@ impl QuickFS {
         let store = std::sync::Arc::clone(&self.hydrator.store);
         store.defer_sync();
         let value = apply();
-        let rt = self.hydrator.runtime_handle.clone();
-        if let Err(error) = rt.block_on(store.end_deferred_sync()) {
+        if let Err(error) = self.hydrator.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
         let mut durable = if let Some(deferral) = deferral
@@ -567,8 +566,11 @@ impl QuickFS {
         // Taken before the namespace is persisted: a full save moves the
         // incremental cursor past the batch.
         let batch = self.ns().end_incremental_batch();
-        if durable && let Some(hook) = self.durability_hook.get() {
-            hook();
+        if durable
+            && let Some(hook) = self.durability_hook.get()
+            && let Err(error) = hook()
+        {
+            eprintln!("the namespace placing the changeset stays pending: {error}");
         }
         drop(gate);
         let mut deltas = self
@@ -614,12 +616,6 @@ impl QuickFS {
         if any {
             self.wake_pinned_hydration();
         }
-    }
-
-    /// Sets what runs after each changeset (persisting the namespace that
-    /// places its records). Set once.
-    pub fn set_durability_hook(&self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
-        let _ = self.durability_hook.set(hook);
     }
 
     /// The current time as the record plane stamps it.
@@ -725,12 +721,9 @@ impl QuickFS {
         let Some(hash) = view.hash else {
             return Ok(Vec::new());
         };
-        let hydrator = self.hydrator.clone();
-        let rt = hydrator.runtime_handle.clone();
-        tokio::task::block_in_place(|| {
-            rt.block_on(async move { hydrator.read(hash, offset, len).await })
-        })
-        .map_err(|_| EIO)
+        self.hydrator
+            .block_on(self.hydrator.read(hash, offset, len))
+            .map_err(|_| EIO)
     }
 
     /// The entries of the directory at `rel`, as [`Self::tree_snapshot`]

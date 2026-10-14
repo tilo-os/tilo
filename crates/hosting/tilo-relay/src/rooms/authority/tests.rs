@@ -297,6 +297,162 @@ async fn roles_and_removals_follow_the_rooms_policy() {
         reason = "Relay::shutdown consumes the relay after the assertions"
     )
 )]
+async fn an_administrator_governs_within_their_role_without_further_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = view_read_relay(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms().unwrap();
+    let room = rooms.create("Team").await.unwrap().room;
+    let ada = admit(rooms, &room, &owner, 1).await;
+    let bo = admit(rooms, &room, &owner, 2).await;
+    let cy = admit(rooms, &room, &owner, 3).await;
+    set_role(rooms, &room, &owner, &cy, MemberRole::Viewer).await;
+
+    rooms
+        .set_member_administrator(&room, &owner, [50; 32], ada.user_public_key)
+        .await
+        .unwrap();
+    // The co-owner invites, up to their own role, with no grant beyond the
+    // owner making them an administrator.
+    let issued = rooms
+        .issue(&room, &ada, invitation(51, MemberRole::Editor))
+        .await
+        .unwrap();
+    assert!(
+        rooms
+            .pending(&room, &ada)
+            .await
+            .unwrap()
+            .iter()
+            .any(|pending| pending.invite_id == issued.invite_id)
+    );
+    let above = rooms
+        .issue(&room, &ada, invitation(52, MemberRole::Moderator))
+        .await
+        .unwrap_err();
+    assert!(above.to_string().contains("Moderator"), "{above}");
+    assert!(matches!(
+        rooms
+            .page_rooms(&ada, RoomsRequest::Requests { room: room.clone() })
+            .await,
+        RoomsReply::Requests(_)
+    ));
+
+    // They set roles up to their own and remove those ranked below them,
+    // never a fellow Editor.
+    set_role(rooms, &room, &ada, &cy, MemberRole::Commenter).await;
+    assert!(
+        rooms
+            .set_member_role(
+                &room,
+                &ada,
+                role_request(&bo, MemberRole::Moderator, [53; 32])
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        rooms
+            .remove_member(
+                &room,
+                &ada,
+                RemoveMemberRequest {
+                    request_id: [54; 32],
+                    user_public_key: bo.user_public_key,
+                },
+            )
+            .await
+            .is_err()
+    );
+    rooms
+        .remove_member(
+            &room,
+            &ada,
+            RemoveMemberRequest {
+                request_id: [55; 32],
+                user_public_key: cy.user_public_key,
+            },
+        )
+        .await
+        .unwrap();
+
+    // They run the room's calls.
+    let end = CallOperation::End {
+        call: [9; 32],
+        epoch: 1,
+    };
+    let answer = rooms.voice_call(&room, &peer(&ada), &end).await;
+    assert!(
+        answer
+            .as_ref()
+            .err()
+            .is_some_and(|reason| reason.contains("unknown call")),
+        "{answer:?}"
+    );
+
+    // An Editor by role alone still governs nothing, and the owner unmaking
+    // the administrator takes it all back.
+    assert!(
+        rooms
+            .issue(&room, &bo, invitation(56, MemberRole::Viewer))
+            .await
+            .is_err()
+    );
+    set_role(rooms, &room, &owner, &ada, MemberRole::Editor).await;
+    assert!(
+        rooms
+            .issue(&room, &ada, invitation(57, MemberRole::Viewer))
+            .await
+            .is_err()
+    );
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions"
+    )
+)]
+async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = view_read_relay(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms().unwrap();
+    let room = rooms.create("Team").await.unwrap().room;
+    let ada = admit(rooms, &room, &owner, 1).await;
+    let who = hex::encode(ada.user_public_key);
+    // An administrator's grant as rooms held it before: on the room's
+    // resource, where the Editor's own Deny outranked it.
+    let legacy = Grant::new(
+        roles::administrator_grant_id(&who).as_str(),
+        Subject::Person(who),
+        roles::room_resource(&room),
+        KindSet::ALL,
+        Answer::Allow,
+        Subject::Person(hex::encode(owner.user_public_key)),
+    );
+    rooms
+        .put_room_grants(&room, &owner, [60; 32], vec![legacy])
+        .await
+        .unwrap();
+    rooms
+        .issue(&room, &ada, invitation(61, MemberRole::Editor))
+        .await
+        .unwrap();
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions"
+    )
+)]
 async fn what_no_room_decides_stays_the_relay_persons() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();

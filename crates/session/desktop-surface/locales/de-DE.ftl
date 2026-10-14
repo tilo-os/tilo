@@ -88,6 +88,20 @@ topbar-clock-add-one-minute = Eine Minute hinzufügen
 topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation
+topbar-strips = Leisten in diesem Arbeitsbereich
+topbar-strip-count = { $name } · { $count }
+topbar-strip-go = Zu { $name } wechseln, { $count ->
+    [0] niemand dort
+    [one] eine Person dort
+   *[other] { $count } Personen dort
+}
+topbar-strip-add = Leiste hinzufügen
+topbar-strips-more-label = +{ $count }
+topbar-strips-more = { $count ->
+    [one] Eine weitere Leiste
+   *[other] { $count } weitere Leisten
+}, zu { $name } wechseln
+topbar-strip-name-placeholder = Leiste benennen
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
@@ -585,6 +599,7 @@ notification-dnd-held = { $status } · { $count } zurückgehalten
 notification-stack-a11y = Benachrichtigungen
 notification-group-system = System
 notification-center-undo = Rückgängig
+notification-not-now = Später
 notification-app-failed-title = Eine App konnte nicht geöffnet werden
 notification-service-unavailable = Das ist auf diesem Desktop noch nicht verfügbar
 
@@ -1114,7 +1129,8 @@ activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen
 activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
 activity-morning-description = Ausgewählte Morgenquellen · Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
-activity-morning-unavailable = Quelle in diesem Arbeitsbereich nicht verfügbar · keine aktuellen Nachweise
+activity-morning-unavailable = Diese Quelle ist hier nicht verfügbar
+activity-morning-source-unnamed = Gewählte Quelle
 activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
 
 activity-morning-open = Morgenquelle öffnen

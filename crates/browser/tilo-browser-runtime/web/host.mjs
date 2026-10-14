@@ -61,6 +61,35 @@ export function prepareGpu(){
   if(!navigator.gpu||webgpuRefusal()||isWebKit(navigator))return;
   void ready().then(()=>runtime.prepare_gpu()).catch(()=>{});
 }
+/** Decode an image's bytes with the browser's own decoders into unpremultiplied
+ * RGBA, scaled down to fit `maxDimension` on either side: the page's module
+ * carries no image decoders of its own. */
+async function decodeImage(bytes,maxDimension){
+  const source=await createImageBitmap(new Blob([bytes]),{premultiplyAlpha:'none'});
+  try{
+    const scale=Math.min(1,maxDimension/Math.max(source.width,source.height));
+    const width=Math.max(1,Math.round(source.width*scale)),height=Math.max(1,Math.round(source.height*scale));
+    const canvas=new OffscreenCanvas(width,height);
+    const context=canvas.getContext('2d',{willReadFrequently:true});
+    context.imageSmoothingQuality='high';
+    context.drawImage(source,0,0,width,height);
+    return {width,height,rgba:new Uint8Array(context.getImageData(0,0,width,height).data.buffer)};
+  }finally{source.close();}
+}
+/** Fetch and compile the module of application `app` beside the runtime's
+ * own, so the app the page is about to show does not wait for the start
+ * module before its code even starts to download. A bundle that splits its
+ * apps (the desktop bundle) names each app's module in `apps.json`; any
+ * other bundle, an unknown app or a failed fetch leaves it to the app's
+ * first open, as without this. */
+export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js')}={}){
+  void (async()=>{
+    const listing=await fetch(new URL('apps.json',import.meta.url));
+    if(!listing.ok)return;
+    const module=(await listing.json()).applications?.find(entry=>entry.id===app)?.module;
+    if(typeof module==='string')(await load()).prefetch(module);
+  })().catch(()=>{});
+}
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
@@ -92,7 +121,7 @@ export async function mountDesktop(target,options={}) {
   // What only this page can do for the person (keeping their identity): offered in desktop search and on banners.
   delete config.hostActions;delete config.onHostAction;
   let unsubscribeDesktopCommits;
-  let liveOverlay,liveCursors,liveCarets,here,legacyWindows,nodeApps;
+  let liveOverlay,liveCursors,liveCarets,here,legacyWindows,nodeApps,livePlace=null;
   // The room's live layer as this mount publishes through it (a certified
   // peer's `live` view: only the mount acted in last speaks), else the peer's.
   const liveLayer=()=>typeof options.live==='function'?options.live():options.peer?.live;
@@ -154,6 +183,7 @@ export async function mountDesktop(target,options={}) {
     nativeCatalogue.pump();
     for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
+    if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null});}
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
       desktopOwnership=Boolean(runtime.desktop_input_ownership&&runtime.desktop_navigation_snapshot?.(id));
       runtimeReady=true;
@@ -182,7 +212,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;inputScope.capture();}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,windows:()=>{const shown=runtime.desktop_record_windows?.(id);return shown?JSON.parse(shown):undefined;}});liveCarets=followRemoteCarets(layer,()=>id,active);}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],onError:error=>report({nodeAppsError:String(error)})});}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,localFocus:()=>livePlace?.focus??null,windows:()=>{const shown=runtime.desktop_record_windows?.(id);return shown?JSON.parse(shown):undefined;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],onError:error=>report({nodeAppsError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
@@ -200,22 +230,23 @@ export async function mountDesktop(target,options={}) {
   }
   const assets=createAssetRecovery({active,report,
     retry:()=>false,
-    complete:(request,bytes)=>runtime.complete_asset(id,request.loader,request.url,bytes),
-    load:async request=>{
-      if(options.loadAsset)return options.loadAsset(request.url,listeners.signal);
-      const url=new URL(request.url,location.href);
-      if(!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
-      // A cross-origin image goes through the host's fetch proxy when it offers
-      // one (tilo-net's wire protocol v1), else directly where the site allows
-      // it; the page's cookies never go to another origin.
-      const proxy=url.origin===location.origin?undefined:globalThis.__tiloFetchProxy;
-      const response=typeof proxy==='string'
-        ?await fetch(`${new URL(proxy,location.href).href}?url=${encodeURIComponent(url.href)}`,{signal:listeners.signal,credentials:'same-origin',headers:{'x-tilo-proxy':'1'}})
-        :await fetch(url,{signal:listeners.signal,credentials:url.origin===location.origin?'same-origin':'omit'});
-      if(!response.ok)throw Error(`asset HTTP ${response.status}`);
-      return new Uint8Array(await response.arrayBuffer());
-    }
+    complete:(request,image)=>runtime.complete_asset(id,request.loader,request.url,image?.width??0,image?.height??0,image?.rgba),
+    load:async request=>decodeImage(await fetchAsset(request),request.maxDimension),
   });
+  async function fetchAsset(request){
+    if(options.loadAsset)return options.loadAsset(request.url,listeners.signal);
+    const url=new URL(request.url,location.href);
+    if(!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
+    // A cross-origin image goes through the host's fetch proxy when it offers
+    // one (tilo-net's wire protocol v1), else directly where the site allows
+    // it; the page's cookies never go to another origin.
+    const proxy=url.origin===location.origin?undefined:globalThis.__tiloFetchProxy;
+    const response=typeof proxy==='string'
+      ?await fetch(`${new URL(proxy,location.href).href}?url=${encodeURIComponent(url.href)}`,{signal:listeners.signal,credentials:'same-origin',headers:{'x-tilo-proxy':'1'}})
+      :await fetch(url,{signal:listeners.signal,credentials:url.origin===location.origin?'same-origin':'omit'});
+    if(!response.ok)throw Error(`asset HTTP ${response.status}`);
+    return new Uint8Array(await response.arrayBuffer());
+  }
   async function loadAssets(){
     if(!active())return;
     await Promise.allSettled(JSON.parse(runtime.asset_requests(id)).map(request=>assets.request(request)));
