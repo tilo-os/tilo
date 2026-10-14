@@ -23,6 +23,7 @@ name = "runtime_bundle"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Installs share the bundle root's collection lock; a collection holds it alone.
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
