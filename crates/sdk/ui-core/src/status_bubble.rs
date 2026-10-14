@@ -311,13 +311,20 @@ pub enum SaveAction {
     Dismiss,
 }
 
-/// A document's save status, on the framework's status surfaces (HIG §7c):
-/// "Saving…" and "Saved" are a change worth noticing once, so they show in
-/// the transient [`StatusBubble`]; a failed save is an error the person must
-/// act on, so it is an error toast (danger icon, the reason, a "Try again"
-/// action and a close button) that stays until the save succeeds or it is
-/// dismissed. An app reports the state and routes clicks; it never pins a
-/// bubble open or paints its own save pill.
+/// A document's save status, on the framework's status surfaces (HIG §7c).
+///
+/// Saving is the system's job, not the person's: the state behind a
+/// document is a CRDT the system stores continuously, so "Saving…" and
+/// "Saved" are not news and never show. Autosave cycles through them after
+/// every burst of typing, and a bubble for each cycle is noise. What shows
+/// is what the person has to know: a failed save is an error toast (danger
+/// icon, the reason, a "Try again" action and a close button) that stays
+/// until the save succeeds or it is dismissed, and the save that then
+/// succeeds is a one-time "Saved" in the transient [`StatusBubble`]. The
+/// state itself stays readable through [`Self::state`] for an app's
+/// accessibility status and automation. An app reports the state and
+/// routes clicks; it never pokes, pins a bubble open or paints its own save
+/// pill.
 ///
 /// Both float in the bottom-trailing corner of the area they report on,
 /// clear of its scroll bar gutter.
@@ -325,8 +332,9 @@ pub enum SaveAction {
 pub struct SaveStatusSurface {
     bubble: StatusBubble,
     state: Option<SaveState>,
-    /// What the saved bubble adds about the document ("142 words").
-    detail: Option<String>,
+    /// A save failed and none has succeeded since: the next "Saved" is
+    /// news.
+    recovering: bool,
     dismissed: bool,
     hit: crate::widget::toast::ToastCardHit,
     hover: Option<Point>,
@@ -338,52 +346,43 @@ impl SaveStatusSurface {
         Self::default()
     }
 
-    /// Report the save state. A change shows it; the same state again does
-    /// nothing, so calling this every frame is fine. Returns whether what
-    /// is shown changed.
+    /// Report the save state; calling this every frame is fine. Only a
+    /// failure, and the save that recovers from it, show; "Saving…" and
+    /// "Saved" in the ordinary autosave cycle change nothing on screen.
+    /// Returns whether what is shown changed.
     pub fn set(&mut self, state: SaveState, now: Instant) -> bool {
         if self.state.as_ref() == Some(&state) {
             return false;
         }
-        let was_failed = self.failure().is_some();
+        let shown_before = (self.failure().is_some(), self.bubble.is_visible(now));
         self.dismissed = false;
+        let recovered = self.recovering && state == SaveState::Saved;
+        // A retry passes through "Saving…" before it lands.
+        self.recovering = match state {
+            SaveState::Failed(_) => true,
+            SaveState::Saving => self.recovering,
+            SaveState::Saved | SaveState::Idle => false,
+        };
         self.state = Some(state);
-        let text = self.bubble_label();
-        if !text.is_empty() {
-            self.bubble.show(&text, now);
+        if recovered {
+            self.bubble.set_text(&crate::i18n!("save-status-saved"));
+            self.bubble.poke(now);
+        } else if self.failure().is_none() {
+            // The next autosave cycle makes a shown recovery stale.
+            self.bubble = StatusBubble::new().with_linger(self.bubble.linger);
         }
-        was_failed != self.failure().is_some() || !text.is_empty()
+        shown_before != (self.failure().is_some(), self.bubble.is_visible(now))
     }
 
-    /// What the bubble says for the current state: the state, and after
-    /// "Saved" the document's [`Self::set_detail`].
-    fn bubble_label(&self) -> String {
-        match &self.state {
-            Some(SaveState::Saving) => crate::i18n!("save-status-saving"),
-            Some(SaveState::Saved) => match &self.detail {
-                Some(detail) => format!("{}, {detail}", crate::i18n!("save-status-saved")),
-                None => crate::i18n!("save-status-saved"),
-            },
-            _ => String::new(),
-        }
+    /// The save state last reported, for an app's accessibility status and
+    /// automation: what is never shown is still there to be asked.
+    #[must_use]
+    pub fn state(&self) -> Option<&SaveState> {
+        self.state.as_ref()
     }
 
-    /// Say something about the saved document after "Saved" (a note's
-    /// length). It reads current while the bubble shows and never reopens
-    /// it on its own.
-    pub fn set_detail(&mut self, detail: Option<String>) {
-        if self.detail == detail {
-            return;
-        }
-        self.detail = detail;
-        let text = self.bubble_label();
-        if !text.is_empty() {
-            self.bubble.set_text(&text);
-        }
-    }
-
-    /// Show the bubble again (another document opened under it). A
-    /// showing failure needs no reminder.
+    /// Show the recovery bubble again (a screenshot staging it). Nothing
+    /// else has a bubble, and a showing failure needs no reminder.
     pub fn poke(&mut self, now: Instant) -> bool {
         if self.failure().is_some() || self.bubble.text().is_empty() {
             return false;
@@ -391,9 +390,9 @@ impl SaveStatusSurface {
         self.bubble.poke(now)
     }
 
-    /// The pointer moved to `p` over `area`: resting on the bubble's corner
-    /// pins it open (see [`StatusBubble::pointer_moved`]). Returns whether
-    /// visibility changed.
+    /// The pointer moved to `p` over `area`: resting on a showing bubble's
+    /// corner pins it open (see [`StatusBubble::pointer_moved`]); a hidden
+    /// one stays hidden. Returns whether visibility changed.
     pub fn hover_bubble(
         &mut self,
         area: Rect,
@@ -402,7 +401,7 @@ impl SaveStatusSurface {
         theme: &Theme,
         now: Instant,
     ) -> bool {
-        if self.failure().is_some() {
+        if self.failure().is_some() || !(self.bubble.hovered || self.bubble.is_visible(now)) {
             return false;
         }
         let corner = Self::corner(area, theme);
@@ -732,6 +731,8 @@ mod tests {
         let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let now = Instant::now();
         let mut surface = SaveStatusSurface::new();
+        // Autosave shows nothing; the save that ends a failure shows "Saved".
+        surface.set(SaveState::Failed("Disk full".into()), now);
         surface.set(SaveState::Saved, now);
         let deadline = surface.next_wake_deadline().expect("saved must expire");
         let mut scene = Scene::new();
@@ -769,28 +770,47 @@ mod tests {
         );
     }
 
-    /// Saving and saved are transient bubble text; a failure is an error
-    /// card with "Try again" that stays until the save succeeds or it is
-    /// dismissed, painted in danger and never as the bubble.
+    /// Autosave is invisible: "Saving…" and "Saved" never show, however
+    /// often they cycle. A failure is an error card with "Try again" that
+    /// stays until the save succeeds or it is dismissed, painted in danger
+    /// and never as the bubble.
     #[test]
-    fn a_failed_save_is_an_error_with_an_action_and_success_is_transient() {
+    fn autosave_is_invisible_and_a_failed_save_is_an_error_with_an_action() {
         crate::i18n::I18nManager::init("en-US");
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let t0 = Instant::now();
         let mut surface = SaveStatusSurface::new();
-        assert!(surface.set(SaveState::Saved, t0));
-        assert!(surface.failure().is_none() && surface.is_visible(t0));
-        let later = t0 + DEFAULT_LINGER + Duration::from_millis(10);
-        assert!(!surface.is_visible(later), "saved fades by itself");
+        let mut now = t0;
+        for _ in 0..5 {
+            for state in [SaveState::Saving, SaveState::Saved] {
+                assert!(!surface.set(state, now), "nothing shown changes");
+                assert!(!surface.is_visible(now), "autosave shows nothing");
+                assert!(!surface.needs_frame(now) && surface.next_wake_deadline().is_none());
+                assert!(!surface.poke(now), "nor does a poke");
+                now += Duration::from_millis(400);
+            }
+        }
+        assert_eq!(surface.state(), Some(&SaveState::Saved), "but it is known");
+        let mut scene = Scene::new();
+        assert_eq!(
+            surface.paint(&mut scene, Affine::IDENTITY, &mut tr, &theme, area, now),
+            None,
+            "and nothing is painted"
+        );
+        assert!(
+            !surface.hover_bubble(area, Point::new(1200.0, 780.0), &mut tr, &theme, now),
+            "resting on the corner reveals nothing"
+        );
+        assert!(!surface.is_visible(now));
+        let later = now;
 
         assert!(surface.set(SaveState::Failed("Disk full".into()), later));
         assert_eq!(surface.failure(), Some("Disk full"));
         let much_later = later + DEFAULT_LINGER * 4;
         assert!(surface.is_visible(much_later), "a failure stays");
         assert!(!surface.needs_frame(much_later), "and asks for no frames");
-        let mut scene = Scene::new();
         let card = surface
             .paint(
                 &mut scene,
@@ -816,30 +836,45 @@ mod tests {
         let dismiss = surface.hit.secondary_action_rect;
         assert_eq!(surface.click(dismiss.center()), Some(SaveAction::Dismiss));
         assert!(surface.failure().is_none(), "dismissed");
-        assert!(surface.set(SaveState::Saving, much_later));
-        assert!(surface.is_visible(much_later));
+        assert!(!surface.is_visible(much_later));
     }
 
+    /// The save that ends a failure is news once: the retry's "Saving…"
+    /// shows nothing, the "Saved" after it a transient bubble, and the next
+    /// autosave cycle is quiet again.
     #[test]
-    fn the_saved_bubble_carries_a_quiet_detail_and_the_failure_its_actions() {
+    fn recovering_from_a_failure_says_saved_once() {
         crate::i18n::I18nManager::init("en-US");
         let t0 = Instant::now();
         let mut surface = SaveStatusSurface::new();
-        surface.set_detail(Some("3 words".into()));
-        surface.set(SaveState::Saved, t0);
-        assert!(surface.bubble.text().ends_with(", 3 words"));
+        surface.set(SaveState::Failed("Disk full".into()), t0);
+        assert!(surface.set(SaveState::Saving, t0), "the failure gives way");
+        assert!(!surface.is_visible(t0), "the retry in flight is quiet");
+        assert!(surface.set(SaveState::Saved, t0), "the recovery shows");
+        assert!(surface.is_visible(t0) && surface.failure().is_none());
+        assert_eq!(surface.bubble.text(), crate::i18n!("save-status-saved"));
+        assert!(surface.next_wake_deadline().is_some(), "and hides itself");
         let later = t0 + DEFAULT_LINGER + Duration::from_millis(10);
-        surface.set_detail(Some("4 words".into()));
-        assert!(
-            surface.bubble.text().ends_with(", 4 words"),
-            "reads current"
-        );
-        assert!(
-            !surface.is_visible(later),
-            "but a new count does not reopen it"
-        );
-        assert!(surface.poke(later), "another page does");
+        assert!(!surface.is_visible(later));
 
+        let t1 = later;
+        surface.set(SaveState::Saving, t1);
+        surface.set(SaveState::Saved, t1);
+        assert!(!surface.is_visible(t1), "recovered once, quiet after");
+
+        surface.set(SaveState::Failed("Disk full".into()), t1);
+        surface.set(SaveState::Saved, t1);
+        assert!(surface.is_visible(t1), "a direct recovery shows too");
+        surface.set(SaveState::Saving, t1);
+        assert!(!surface.is_visible(t1), "typing on retires it at once");
+    }
+
+    #[test]
+    fn the_failure_offers_its_actions_to_assistive_technology() {
+        crate::i18n::I18nManager::init("en-US");
+        let later = Instant::now();
+        let mut surface = SaveStatusSurface::new();
+        surface.set(SaveState::Saved, later);
         assert!(
             surface.accessibility("doc.save").is_none(),
             "nothing to act on"

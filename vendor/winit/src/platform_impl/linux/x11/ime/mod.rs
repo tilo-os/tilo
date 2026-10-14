@@ -67,8 +67,10 @@ impl Ime {
             let mut inner = Box::new(ImeInner::new(xconn, potential_input_methods, event_sender));
             let inner_ptr = Box::into_raw(inner);
             let client_data = inner_ptr as _;
-            let destroy_callback =
-                ffi::XIMCallback { client_data, callback: Some(xim_destroy_callback) };
+            let destroy_callback = ffi::XIMCallback {
+                client_data,
+                callback: Some(xim_destroy_callback),
+            };
             inner = unsafe { Box::from_raw(inner_ptr) };
             inner.destroy_callback = destroy_callback;
             (inner, client_data)
@@ -97,7 +99,9 @@ impl Ime {
             inner.im = Some(input_method);
             Ok(Ime { xconn, inner })
         } else {
-            Err(ImeCreationError::OpenFailure(Box::new(inner.potential_input_methods)))
+            Err(ImeCreationError::OpenFailure(Box::new(
+                inner.potential_input_methods,
+            )))
         }
     }
 
@@ -131,8 +135,15 @@ impl Ime {
                 )?
             };
 
-            let event = if context.is_allowed() { ImeEvent::Enabled } else { ImeEvent::Disabled };
-            self.inner.event_sender.send((window, event)).expect("Failed to send enabled event");
+            let event = if context.is_allowed() {
+                ImeEvent::Enabled
+            } else {
+                ImeEvent::Disabled
+            };
+            self.inner
+                .event_sender
+                .send((window, event))
+                .expect("Failed to send enabled event");
 
             Some(context)
         };

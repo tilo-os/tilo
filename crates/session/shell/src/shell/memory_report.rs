@@ -356,6 +356,7 @@ pub fn report() -> Value {
         "malloc": malloc_stats(),
         "threads": threads,
         "mappings": breakdown(&maps, &exe, page_size()),
+        "startup_trimmed": crate::shell::heap_trim::startup_trimmed(),
         "page_monitor": std::path::Path::new("/proc/self/smaps_rollup").exists(),
     })
 }

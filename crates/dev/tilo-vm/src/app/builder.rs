@@ -228,6 +228,29 @@ impl App {
         self.build_layer_remote_cached(remote, vm, component, builder, inputs, &extra, true)
     }
 
+    /// The same assembly run by this host's own cargo (`--builder host` for
+    /// `apps+runtime` on a machine of the device's architecture): the layer
+    /// still comes out of `layer-pack`, so it is byte-for-byte what a remote
+    /// builder sends, but its provenance says `host`.
+    pub(super) fn build_layer_local_pack(
+        &mut self,
+        remote: &mut Remote,
+        vm: &Resolved,
+        component: &Component,
+    ) -> Result<String, CliError> {
+        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        self.runner.cwd = Some(worktree.root.clone());
+        let metadata = self.cargo_metadata()?;
+        let extra = build::dev_features(&metadata, &component.packages);
+        let inputs = crate::source_inputs::Snapshot::create(&worktree, &component.name)?;
+        self.build_layer_remote_cached(remote, vm, component, &[], &inputs, &extra, true)
+            .map(|member| member.layer)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one build-and-stream sequence: provenance, cache probe, upload and receipt stay in order"
+    )]
     fn build_layer_remote_cached(
         &mut self,
         remote: &mut Remote,
@@ -242,6 +265,9 @@ impl App {
         let mut provenance = inputs.provenance.clone();
         provenance.component.clone_from(&component.name);
         inputs.unchanged(&worktree.root)?;
+        // An empty builder command is this host's own cargo (`--builder host`).
+        let label = if builder.is_empty() { "host" } else { "remote" };
+        provenance.builder = Some(label.to_owned());
         let inventory = inputs
             .file
             .path()
@@ -261,8 +287,13 @@ impl App {
         }
         if !self.json {
             eprintln!(
-                "tilo-vm: building {} on the remote builder ({}); the layer streams to {} without touching this disk",
+                "tilo-vm: building {} with {} ({}); the layer streams to {} without touching this disk",
                 component.name,
+                if label == "host" {
+                    "this host's cargo"
+                } else {
+                    "the remote builder"
+                },
                 line.display(),
                 vm.name
             );

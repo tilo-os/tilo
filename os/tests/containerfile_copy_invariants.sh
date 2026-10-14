@@ -157,13 +157,24 @@ containerfile="$repo/os/Containerfile"
 # tilo-network-start.service replaces tilo-network-start.timer: the network is
 # queued once logins are allowed instead of at OnBootSec=0, where it held the
 # greeter through network.target.
+# The session-priority polkit rule (set-property on session scopes only) ships
+# beside the other policies; it is the one payload row added by the interactive
+# priority policy. Its unit drop-ins ride the existing /etc/systemd/ COPY.
+# Windows compatibility is a system extension (windows-compat-sysext), not
+# rootfs content: Proton, the Steam runtime, the virtio-win media, the FEX
+# payload and the x86 guest are no longer copied into /usr here.
 # The installer locale list is copied from the install-profile-model crate,
 # which compiles it in; the installed path is unchanged.
 # The atomic firstboot file helper is one intentional payload addition in
 # the existing libexec COPY instruction; the layer budget is unchanged.
+# The runtime and browser-runtime publisher keys arrive in the
+# runtime-image-payload tree, from the same builder result as the runtimes
+# they sign, instead of from native-builder-payload: buildkit could serve that
+# stage from an earlier invocation's cache while the builder re-ran and signed
+# the runtime with a fresh key. The installed paths are unchanged.
 # The boot audit's image signature policy checker is one intentional payload
 # addition beside the audit in the existing libexec COPY instruction.
-expected_contract=ed56f1b877f988031dd9ededa99f293caa65b4b40ce36393fcafc5e73f8e799c
+expected_contract=5f9949a545b5d443cdf299c0093447d2d3a1c2fffa6cf6947a65137b502f9d0b
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -175,8 +186,8 @@ actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" 
 # mask an earlier payload at the same path. Directory-content copies remain
 # single-source entries and were intentionally not consolidated.
 # Two directory-content copies share /usr/ as their destination, with disjoint
-# trees: the Windows provider's (provider.json; on ARM also the FEX payload
-# and the x86 guest under /usr/lib/tilo/windows-runners), and the assembled
+# trees: the Windows provider's (provider.json only; its payload is the
+# windows-compat sysext), and the assembled
 # runtime tree
 # (/usr/lib/tilo-runtime, /usr/share/fonts/tilo, /usr/share/tilo/font-catalogs),
 # which must be one COPY so its hard links stay one layer's.

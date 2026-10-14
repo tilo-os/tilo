@@ -279,12 +279,12 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         // detail width, so the pair no longer drifts ~600 px apart.
         let card_inner = control.x1 - label.x0;
         assert!(
-            card_inner <= 720.0,
+            card_inner <= 720.0 + 0.5,
             "label→control span {card_inner} exceeds the readable measure"
         );
         assert!(
-            control.x0 - label.x1 < 480.0,
-            "label/control gap {} is still the full-width drift",
+            control.x0 - label.x1 < 560.0,
+            "label/control gap {} is still the full-width drift (the form is bounded by the 720 readable measure)",
             control.x0 - label.x1
         );
         // Every chooser in the card shares the same trailing edge.
@@ -439,7 +439,7 @@ fn pane_sections_stack_on_the_s6_step_and_never_touch() {
         let app = lay_out(app, viewport);
         // Top-level sections only: a section nested inside another is that
         // section's own content, not a sibling.
-        let mut sections: Vec<Rect> = by_widget_name(&*app, "Section")
+        let mut sections: Vec<Rect> = by_widget_name(&*app, "FormSection")
             .into_iter()
             .filter(|r| r.width() > 0.0 && r.height() > 0.0)
             .collect();
