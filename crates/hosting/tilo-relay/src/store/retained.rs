@@ -21,6 +21,8 @@ use tilo_automerge_isolate::{Applied, Dependencies};
 use tilo_relay_store::durable::SELECTION_PREFIX;
 #[cfg(unix)]
 pub(crate) use tilo_relay_store::durable::stamp;
+#[cfg(feature = "agents")]
+use tilo_relay_store::durable::sync_file_once;
 pub(crate) use tilo_relay_store::durable::{
     GenerationGc, create_dir, current, durable_write, sync_dir, sync_dir_once,
 };
