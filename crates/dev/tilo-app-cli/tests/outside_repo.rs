@@ -328,6 +328,30 @@ fn json_result(command: &mut Command, what: &str) -> serde_json::Value {
     document["result"].take()
 }
 
+/// A directory removed before use and when the test ends.
+#[cfg(test)]
+struct OutsideDir(PathBuf);
+
+#[cfg(test)]
+impl OutsideDir {
+    fn create(path: PathBuf) -> Self {
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("remove {}: {error}", path.display()),
+        }
+        std::fs::create_dir_all(&path).expect("outside directory");
+        Self(path)
+    }
+}
+
+#[cfg(test)]
+impl Drop for OutsideDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod registry {
     use std::collections::BTreeMap;
@@ -484,29 +508,5 @@ mod registry {
                 .and_then(|code| code.parse().ok())
                 .unwrap_or_else(|| panic!("no HTTP status in {response:?}"))
         }
-    }
-}
-
-/// A directory removed before use and when the test ends.
-#[cfg(test)]
-struct OutsideDir(PathBuf);
-
-#[cfg(test)]
-impl OutsideDir {
-    fn create(path: PathBuf) -> Self {
-        match std::fs::remove_dir_all(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => panic!("remove {}: {error}", path.display()),
-        }
-        std::fs::create_dir_all(&path).expect("outside directory");
-        Self(path)
-    }
-}
-
-#[cfg(test)]
-impl Drop for OutsideDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
