@@ -137,6 +137,8 @@ mod input_device_settings;
 mod input_method_wire;
 #[path = "interaction_test.rs"]
 mod interaction_test;
+#[path = "key_repeat_wire.rs"]
+mod key_repeat_wire;
 #[path = "keyboard_focus_wire.rs"]
 mod keyboard_focus_wire;
 #[path = "keyboard_layout_wire.rs"]
