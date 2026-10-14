@@ -292,6 +292,12 @@ impl Widget for AcknowledgementLayer {
 
     crate::rect_geometry!();
 
+    /// The layer covers the surface whatever it says, so nothing in it ever
+    /// changes its size: once laid out it has nothing to measure.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,

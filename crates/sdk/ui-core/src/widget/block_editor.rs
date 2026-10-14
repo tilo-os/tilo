@@ -7266,6 +7266,13 @@ impl Widget for BlockStackLeaf {
         self.editor().is_some_and(Widget::layout_needs_measure)
     }
 
+    /// Its size is the editor's stack, so it can change only when the editor
+    /// reports a change (a leaf would otherwise always claim one).
+    fn is_layout_dirty(&self) -> bool {
+        self.editor()
+            .is_some_and(|editor| editor.is_layout_dirty() || editor.layout_needs_measure())
+    }
+
     fn name(&self) -> &'static str {
         "BlockStack"
     }
