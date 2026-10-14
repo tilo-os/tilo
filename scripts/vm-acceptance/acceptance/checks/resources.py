@@ -837,6 +837,13 @@ def idle_apps(ctx, res):
     opened = _open_several(ctx)
     res.metrics["opened"] = opened
     m = measure(ctx, ctx.config["idle_seconds"], "R02")
+    # Each window's frame state as the idle window ended (presented, last
+    # frame, size against its tile): a window that never presents keeps the
+    # desktop painting, and the trace names only its widget.
+    try:
+        ctx.write("R02-foreign-frames.json", json.dumps(ctx.vm.foreign_frames(), indent=1))
+    except VmError as e:
+        ctx.write("R02-foreign-frames.json", json.dumps({"error": str(e)}))
     m["guest_ram_used_mib"] = guest_ram_used_mib(ctx)
     # Seconds from opening Terminal to its shell running: the window opened after it.
     m["terminal_shell_s"] = ctx.facts.get("terminal_shell_s")
