@@ -39,7 +39,10 @@ pub(crate) async fn view_read_relay(
     .unwrap()
 }
 
-fn signed_pre_admission(room: &str, token: &[u8]) -> tilo_relay_protocol::rooms::PreAdmission {
+pub(crate) fn signed_pre_admission(
+    room: &str,
+    token: &[u8],
+) -> tilo_relay_protocol::rooms::PreAdmission {
     use ed25519_dalek::Signer as _;
     use sha2::Digest as _;
     let owner = SigningKey::from_bytes(&[1; 32]);
@@ -90,7 +93,7 @@ async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redee
 }
 
 /// A person's device certificate, as a guest's browser makes one.
-fn guest_device() -> (SigningKey, DeviceCert) {
+pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&rand::random());
     let key = SigningKey::from_bytes(&rand::random());
     let mut cert = DeviceCert {

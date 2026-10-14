@@ -320,9 +320,6 @@ mod linux {
                     PointerEventKind::Enter { .. } => {
                         self.record_event("EVENT:ENTER");
                     }
-                    PointerEventKind::Leave { .. } => {
-                        self.record_event("EVENT:LEAVE");
-                    }
                     PointerEventKind::Press { .. } => {
                         let (x, y) = event.position;
                         self.record_event(format!("EVENT:CLICK AT {x:.1},{y:.1}"));

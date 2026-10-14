@@ -6,7 +6,9 @@
 //! caller chooses, such as the room's default record every member's first
 //! window of the app opens.
 
+use super::authority::RoomOp;
 use super::{CollaborationError, Rooms, system_time};
+use crate::host_authority::HostOperation;
 use tilo_agent_participant::{AppCatalogue, ConfinedReplica, Seed};
 use tilo_user_identity::DeviceCert;
 
@@ -53,7 +55,12 @@ impl Rooms {
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
     ) -> Result<R, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(governor, now, "application.author")?;
+        self.authorize(
+            governor,
+            None,
+            RoomOp::Host(HostOperation::AuthorApplications),
+            now,
+        )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
                 "application authoring requires exact governor custody",
@@ -141,7 +148,12 @@ impl Rooms {
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
     ) -> Result<R, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(governor, now, "application.author")?;
+        self.authorize(
+            governor,
+            None,
+            RoomOp::Host(HostOperation::AuthorApplications),
+            now,
+        )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
                 "record authoring requires exact governor custody",
@@ -245,7 +257,12 @@ impl Rooms {
         changes: &[u8],
     ) -> Result<(), CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(governor, now, "application.author")?;
+        self.authorize(
+            governor,
+            None,
+            RoomOp::Host(HostOperation::AuthorApplications),
+            now,
+        )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
                 "bot publication requires exact governor custody",
@@ -332,7 +349,12 @@ impl Rooms {
         record: &str,
     ) -> Result<bool, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(governor, now, "application.prepare")?;
+        self.authorize(
+            governor,
+            None,
+            RoomOp::Host(HostOperation::AuthorApplications),
+            now,
+        )?;
         if governor != &self.inner.host.cert {
             return Err(CollaborationError::new(
                 "application creation requires exact governor custody",

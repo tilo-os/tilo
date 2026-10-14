@@ -245,6 +245,15 @@ use crate::shell::state::{
     ResourceRef, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
 };
 
+/// The `key` entry of a portal request's options (a D-Bus `a{sv}`) as `T`;
+/// `None` when it is absent or of another type.
+pub(crate) fn option<T: TryFrom<zbus::zvariant::OwnedValue>>(
+    options: &HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+) -> Option<T> {
+    T::try_from(options.get(key)?.try_clone().ok()?).ok()
+}
+
 /// Identity of the sandboxed app that issued a portal request.
 ///
 /// Production fills this in from the bridge tag + per-workspace PID→app
@@ -1271,7 +1280,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     let inhibit = InhibitBackend::with_lifecycle(ctx.clone(), inhibit_registry, lifecycle.clone());
     let inhibit_monitors = inhibit.monitor_handle();
     input_capture.spawn_signal_emitter();
-    let secret = SecretBackend::new(ctx.clone(), connection.clone());
+    let secret = SecretBackend::new(ctx.clone());
     let usb = UsbBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
 
     connection.object_server().at(OBJECT_PATH, fc).await?;

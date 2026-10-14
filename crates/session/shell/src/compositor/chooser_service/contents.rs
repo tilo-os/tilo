@@ -379,7 +379,6 @@ mod tests {
         let scope = PickerScope {
             initial_dir: root.path().into(),
             roots: vec![root.path().into()],
-            home: None,
         };
         let connection = ConnectionGrants::default();
         let roots = anchor_scope(&scope).unwrap();

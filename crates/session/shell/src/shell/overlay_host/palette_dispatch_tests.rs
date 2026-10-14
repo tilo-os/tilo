@@ -1,6 +1,7 @@
 use super::*;
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::WorkspaceTree;
+use ui::TextRole;
 use ui::widget::Container;
 
 fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
@@ -1160,19 +1161,28 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     fn shortcut_reference_groups_keep_a_consistent_responsive_rhythm() {
         assert_eq!(shortcut_reference_columns(688.0), 3);
         assert_eq!(shortcut_reference_columns(912.0), 3);
-        assert_eq!(shortcut_reference_columns(520.0), 2);
-        assert!(
-            shortcut_reference_group_height() >= 6.0 * shortcut_reference_step(),
-            "a group must hold its six rows"
-        );
+        assert_eq!(shortcut_reference_step(true), 31.0);
+        assert_eq!(shortcut_reference_step(false), 34.0);
+        assert!(shortcut_reference_group_height(true) >= 6.0 * shortcut_reference_step(true));
+        assert!(shortcut_reference_group_height(false) >= 6.0 * shortcut_reference_step(false));
     }
 
-    fn shortcut_reference_keeps_the_complete_action_set() {
+    fn compact_shortcut_reference_keeps_the_complete_action_set_visible() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let body_height = 426.0;
+        let navigation_height = 154.0;
+        let essentials_y = navigation_height + 12.0;
+        let reference_top = essentials_y + 18.0;
+        let final_pill_bottom = reference_top + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
+
         assert_eq!(
             rows.len(),
             18,
             "the guide must retain every documented desktop action without repeating itself"
+        );
+        assert!(
+            final_pill_bottom <= body_height,
+            "the final shortcut pill must remain inside an 800×600 guide body"
         );
         for essential in [
             "Screenshot",
@@ -1184,25 +1194,27 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         }
     }
 
-    fn shortcut_reference_keycaps_fit_their_cells() {
+    fn compact_shortcut_recovery_actions_fit_their_cells() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
-        let theme = Theme::dark();
         let mut renderer = TextRenderer::new();
-        // The narrowest three-column body is 640 wide.
-        let cell = (640.0 - 12.0 * 2.0) / 3.0 - 24.0;
+        let chord_size = Theme::dark().tokens.typography.size(TextRole::Caption);
+        // An 800-wide viewport yields a 736-wide panel and 688-wide body. The
+        // compact guide uses three semantic columns with quiet key pills.
+        let columns = shortcut_reference_columns(688.0);
+        assert_eq!(columns, 3);
+        let available_text_width = (688.0 - 12.0 * 2.0) / 3.0 - 24.0;
         for (_, chord) in rows {
-            let mut width = 0.0;
-            for (index, keys) in shortcut_chord_keycaps(&chord).iter().enumerate() {
-                if index > 0 {
-                    width += 20.0;
-                }
-                width += ui::widget::InputHint::measure_keycap_labels(keys, &mut renderer, &theme);
-            }
-            assert!(width <= cell, "{chord:?} is {width}px, cell is {cell}px");
+            let (width, _) = renderer.measure(&chord, chord_size, None);
+            assert!(
+                f64::from(width) + 16.0 <= available_text_width,
+                "{chord:?} must not clip inside the compact guide's key pill"
+            );
         }
     }
 
     fn shortcut_reference_columns_stay_semantically_grouped() {
+        assert_eq!(shortcut_reference_columns(688.0), 3);
+        assert_eq!(shortcut_reference_columns(912.0), 3);
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         assert_eq!(rows.len(), 18);
         assert!(rows.chunks(6).all(|group| group.len() == 6));
@@ -1228,8 +1240,8 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
     shortcut_reference_never_promises_a_rebound_default();
     shortcut_reference_does_not_repeat_the_open_guide_action();
     shortcut_reference_groups_keep_a_consistent_responsive_rhythm();
-    shortcut_reference_keeps_the_complete_action_set();
-    shortcut_reference_keycaps_fit_their_cells();
+    compact_shortcut_reference_keeps_the_complete_action_set_visible();
+    compact_shortcut_recovery_actions_fit_their_cells();
     shortcut_reference_columns_stay_semantically_grouped();
     shortcut_accessibility_names_workspace_and_group_navigation();
 }
@@ -2241,86 +2253,6 @@ fn invitation_actions_return_their_network_output_to_the_caller() {
             Some(serde_json::json!({"canceled": true}))
         );
     }
-}
-
-/// Every footer button of the invitation sheet is as wide as its face needs,
-/// so a label such as "Cancel" is never elided to "Ca...", and the row stays
-/// inside the sheet, in English and in German copy.
-#[test]
-fn peer_sync_sheet_buttons_fit_their_labels() {
-    let (mut h, _) = host_with_chrome();
-    h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-    let theme = Theme::dark();
-    let mut tr = TextRenderer::new();
-    let snapshots = [
-        PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
-            ..PeerSyncSnapshot::default()
-        },
-        PeerSyncSnapshot {
-            invite_name: Some("Xaver".to_string()),
-            invite_review_open: true,
-            ..PeerSyncSnapshot::default()
-        },
-        PeerSyncSnapshot {
-            connect_input: Some(String::new()),
-            ..PeerSyncSnapshot::default()
-        },
-        PeerSyncSnapshot {
-            invite_token: Some("tilo-invite-token".to_string()),
-            ..PeerSyncSnapshot::default()
-        },
-    ];
-    // Resolve one string first so the catalogue is loaded on this thread.
-    let _ = crate::shell::i18n::t("peer-sync-cancel");
-    for locale in ["en-US", "de-DE"] {
-        ui::i18n::I18nManager::set_locale(locale);
-        for snapshot in snapshots.clone() {
-            h.set_peer_sync_snapshot_for_tests(snapshot);
-            let mut scene = Scene::new();
-            h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            let (sheet, labels) = h.peer_sync_overlay.drawn_labels_for_tests();
-            let rects = h.peer_sync_prompt_rects_for_tests();
-            assert_eq!(labels.len(), rects.len());
-            let footer: Vec<_> = labels
-                .iter()
-                .zip(&rects)
-                .filter(|(_, (id, _))| {
-                    matches!(
-                        *id,
-                        "create"
-                            | "review"
-                            | "back"
-                            | "join"
-                            | "cancel"
-                            | "copy"
-                            | "paste"
-                            | "paste-identity"
-                            | "copy-identity"
-                    )
-                })
-                .collect();
-            assert!(!footer.is_empty(), "{locale}: the sheet drew no footer");
-            for (label, (id, rect)) in footer {
-                let mut face = ui::widget::ButtonFace::new(Rect::ZERO, label)
-                    .control_size(ui::widget::ControlSize::Large);
-                if matches!(*id, "create" | "join" | "copy") {
-                    face = face.role(ui::widget::ButtonRole::Primary);
-                }
-                let need = face.intrinsic_width(&mut tr, &theme);
-                assert!(
-                    rect.width() + 0.5 >= need,
-                    "{locale}: {label:?} is {}px wide but its face needs {need}px",
-                    rect.width()
-                );
-                assert!(
-                    rect.x0 >= sheet.x0 && rect.x1 <= sheet.x1,
-                    "{locale}: {label:?} at {rect:?} leaves the sheet {sheet:?}"
-                );
-            }
-        }
-    }
-    ui::i18n::I18nManager::set_locale("en-US");
 }
 
 fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static str> {

@@ -25,7 +25,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
 use ui::time::{Duration, Instant};
-use ui::widget::{Button, ProgressBar, Row, Text, TextInput, Widget};
+use ui::widget::{Button, ProgressBar, Row, Spacer, TextInput, Widget};
 use zeroize::Zeroize;
 
 use crate::effects::{SettingsEffect, effect};
@@ -35,8 +35,7 @@ use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    Item, SettingsSection, StatusTone, card, card_with_action, field_row, note, row, rows,
-    semantic_status_pill, value_row,
+    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, value_row,
 };
 
 /// The person's agent providers, as their settings hold them: the hosted
@@ -1025,52 +1024,56 @@ impl AgentModelsModel {
         self.changed = true;
     }
 
-    fn accelerator_card(&self) -> Option<SettingsSection> {
+    fn accelerator_card(&self) -> Option<El> {
         let setup = self.snapshot.accelerator_setup.as_ref()?;
         let match_label = t("agent-accel-match");
         let mut body = vec![value_row(&match_label, &setup.boot_pack_id)];
         let (status, tone) = match &setup.status {
             AcceleratorSetupState::Available => {
-                body.push(note(&t("agent-accel-available")));
-                body.push(row(Box::new(Row::new().push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new("agent-models-accelerator-setup", &t("agent-accel-setup")),
-                        AgentModelsEffect::SetUpAccelerator,
-                    ),
-                )))));
+                body.push(caption(&t("agent-accel-available")));
+                body.push(Box::new(
+                    Row::new()
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new("agent-models-accelerator-setup", &t("agent-accel-setup")),
+                            AgentModelsEffect::SetUpAccelerator,
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ));
                 (t("agent-accel-ready"), StatusTone::Neutral)
             }
             AcceleratorSetupState::Queued => {
-                body.push(row(Box::new(
+                body.push(Box::new(
                     ProgressBar::indeterminate().with_label(t("agent-accel-preparing")),
-                )));
-                body.push(note(&t("agent-accel-queued-caption")));
+                ));
+                body.push(caption(&t("agent-accel-queued-caption")));
                 (t("agent-accel-queued"), StatusTone::Neutral)
             }
             AcceleratorSetupState::Staging => {
-                body.push(row(Box::new(
+                body.push(Box::new(
                     ProgressBar::indeterminate().with_label(t("agent-accel-staging-label")),
-                )));
-                body.push(note(&t("agent-accel-staging-caption")));
+                ));
+                body.push(caption(&t("agent-accel-staging-caption")));
                 (t("agent-accel-staging"), StatusTone::Warning)
             }
             AcceleratorSetupState::RestartRequired => {
-                body.push(note(&t("agent-accel-restart-caption")));
+                body.push(caption(&t("agent-accel-restart-caption")));
                 (t("agent-accel-restart"), StatusTone::Warning)
             }
             AcceleratorSetupState::Active => {
-                body.push(note(&t("agent-accel-active-caption")));
+                body.push(caption(&t("agent-accel-active-caption")));
                 (t("agent-accel-active"), StatusTone::Success)
             }
             AcceleratorSetupState::Error { message } => {
-                body.push(note(message));
-                body.push(note(&t("agent-accel-error-retry")));
-                body.push(row(Box::new(Row::new().push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new("agent-models-accelerator-retry", &t("agent-accel-retry")),
-                        AgentModelsEffect::SetUpAccelerator,
-                    ),
-                )))));
+                body.push(caption(message));
+                body.push(caption(&t("agent-accel-error-retry")));
+                body.push(Box::new(
+                    Row::new()
+                        .push(Box::new(self.cx.bind_invocation(
+                            Button::new("agent-models-accelerator-retry", &t("agent-accel-retry")),
+                            AgentModelsEffect::SetUpAccelerator,
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ));
                 (t("agent-status-attention"), StatusTone::Warning)
             }
         };
@@ -1081,7 +1084,7 @@ impl AgentModelsModel {
         ))
     }
 
-    fn push_recommendation_confirm(&self, body: &mut Vec<Item>, package: &LocalModelPackage) {
+    fn push_recommendation_confirm(&self, body: &mut Vec<El>, package: &LocalModelPackage) {
         self.push_confirm(
             body,
             package,
@@ -1098,7 +1101,7 @@ impl AgentModelsModel {
     /// invokes `cancel`.
     fn push_confirm(
         &self,
-        body: &mut Vec<Item>,
+        body: &mut Vec<El>,
         package: &LocalModelPackage,
         controls: (&str, &str),
         cancel_effect: AgentModelsEffect,
@@ -1122,8 +1125,8 @@ impl AgentModelsModel {
             value_row(&source, &package.source),
             value_row(&revision, &package.revision),
             value_row(&license, &package.license),
-            note(&accept),
-            row(Box::new(
+            caption(&accept),
+            Box::new(
                 Row::new()
                     .push(Box::new(self.cx.bind_invocation(
                         Button::new(controls.0, &accept_btn),
@@ -1135,12 +1138,13 @@ impl AgentModelsModel {
                     .push(Box::new(self.cx.bind_invocation(
                         Button::new(controls.1, &cancel),
                         cancel_effect,
-                    ))),
-            )),
+                    )))
+                    .push(Box::new(Spacer::new())),
+            ),
         ]);
     }
 
-    fn recommendation_card(&self) -> SettingsSection {
+    fn recommendation_card(&self) -> El {
         let hardware = &self.snapshot.hardware;
         let fit_label = fit_label(hardware.fit);
         let mem = gib(i64::from(hardware.memory_gib));
@@ -1162,16 +1166,21 @@ impl AgentModelsModel {
             let value = gib(i64::from(storage));
             body.push(value_row(&label, &value));
         }
-        body.push(note(&hardware.reason));
+        body.push(caption(&hardware.reason));
         let Some(package) = &self.snapshot.recommendation else {
             let rec_model = t("agent-rec-model");
             let waiting = t("agent-rec-waiting");
             body.push(value_row(&rec_model, &waiting));
-            body.push(note(&t("agent-rec-waiting-caption")));
+            body.push(caption(&t("agent-rec-waiting-caption")));
             let unavailable = t("agent-setup-unavailable");
-            body.push(row(Box::new(Row::new().push(Box::new(
-                Button::new("agent-models-setup-unavailable", &unavailable).with_enabled(false),
-            )))));
+            body.push(Box::new(
+                Row::new()
+                    .push(Box::new(
+                        Button::new("agent-models-setup-unavailable", &unavailable)
+                            .with_enabled(false),
+                    ))
+                    .push(Box::new(Spacer::new())),
+            ));
             return card_with_action(
                 &t("agent-rec-title"),
                 semantic_status_pill(&t("agent-service-unavailable"), StatusTone::Warning),
@@ -1181,28 +1190,30 @@ impl AgentModelsModel {
         let rec_model = t("agent-rec-model");
         body.extend([
             value_row(&rec_model, &package.name),
-            note(&package.description),
+            caption(&package.description),
         ]);
         if self.reviewing.with(|reviewing| *reviewing) {
             self.push_recommendation_confirm(&mut body, package);
         } else {
             let setup = t("agent-setup-device");
-            body.push(row(Box::new(
-                Row::new().push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new("agent-models-setup-local", &setup).with_enabled(
-                            self.manager_available
-                                && hardware.fit != HardwareFit::Unsupported
-                                && self
-                                    .snapshot
-                                    .accelerator_setup
-                                    .as_ref()
-                                    .is_none_or(|setup| !setup.status.blocks_model_setup()),
+            body.push(Box::new(
+                Row::new()
+                    .push(Box::new(
+                        self.cx.bind_invocation(
+                            Button::new("agent-models-setup-local", &setup).with_enabled(
+                                self.manager_available
+                                    && hardware.fit != HardwareFit::Unsupported
+                                    && self
+                                        .snapshot
+                                        .accelerator_setup
+                                        .as_ref()
+                                        .is_none_or(|setup| !setup.status.blocks_model_setup()),
+                            ),
+                            AgentModelsEffect::ReviewModelDownload { show: true },
                         ),
-                        AgentModelsEffect::ReviewModelDownload { show: true },
-                    ),
-                )),
-            )));
+                    ))
+                    .push(Box::new(Spacer::new())),
+            ));
         }
         card_with_action(
             &t("agent-rec-title"),
@@ -1218,13 +1229,13 @@ impl AgentModelsModel {
         clippy::too_many_lines,
         reason = "every install phase of the card stays beside its controls"
     )]
-    fn in_process_card(&self, model: &InProcessLocalModel) -> SettingsSection {
+    fn in_process_card(&self, model: &InProcessLocalModel) -> El {
         let package = &model.package;
         let widget_token = token(&package.id);
         let mut body = vec![
             value_row(&t("agent-inprocess-model"), &package.name),
-            note(&package.description),
-            note(&t("agent-inprocess-caption")),
+            caption(&package.description),
+            caption(&t("agent-inprocess-caption")),
         ];
         let confirming = self
             .reviewing_local
@@ -1259,12 +1270,12 @@ impl AgentModelsModel {
                         "agent-progress-downloading",
                         &[("name", package.name.as_str().into())],
                     );
-                    body.push(row(Box::new(
+                    body.push(Box::new(
                         ProgressBar::new(phase_progress(phase).unwrap_or(0.0)).with_label(progress),
-                    )));
+                    ));
                     let done = byte_size(*downloaded_bytes);
                     let total = byte_size(*total_bytes);
-                    body.push(note(&t_args(
+                    body.push(caption(&t_args(
                         "agent-download-progress",
                         &[("done", done.as_str().into()), ("total", total.into())],
                     )));
@@ -1274,10 +1285,8 @@ impl AgentModelsModel {
                         "agent-progress-installing",
                         &[("name", package.name.as_str().into())],
                     );
-                    body.push(row(Box::new(
-                        ProgressBar::indeterminate().with_label(progress),
-                    )));
-                    body.push(note(message));
+                    body.push(Box::new(ProgressBar::indeterminate().with_label(progress)));
+                    body.push(caption(message));
                 }
                 Some(LocalModelPhase::Ready { .. }) => {
                     body.push(value_row(
@@ -1285,18 +1294,18 @@ impl AgentModelsModel {
                         &byte_size(package.installed_bytes),
                     ));
                     body.push(value_row(&t("agent-license"), &package.license));
-                    body.push(note(&t("agent-inprocess-ready-caption")));
+                    body.push(caption(&t("agent-inprocess-ready-caption")));
                 }
                 Some(LocalModelPhase::Error { message }) => {
-                    body.push(note(message));
-                    body.push(note(&t("agent-inprocess-error-caption")));
+                    body.push(caption(message));
+                    body.push(caption(&t("agent-inprocess-error-caption")));
                 }
             }
-            let mut buttons = Row::new();
+            let mut row = Row::new();
             let installable = model.installable();
             let removable = model.removable();
             if installable {
-                buttons = buttons.push(Box::new(
+                row = row.push(Box::new(
                     self.cx.bind_invocation(
                         Button::new(
                             &format!("agent-models-inprocess-setup-{widget_token}"),
@@ -1311,7 +1320,7 @@ impl AgentModelsModel {
                 ));
             }
             if removable {
-                buttons = buttons.push(Box::new(self.cx.bind_invocation(
+                row = row.push(Box::new(self.cx.bind_invocation(
                     Button::new(
                         &format!("agent-models-inprocess-remove-{widget_token}"),
                         &action_label(ModelAction::Remove),
@@ -1322,7 +1331,7 @@ impl AgentModelsModel {
                 )));
             }
             if installable || removable {
-                body.push(row(Box::new(buttons)));
+                body.push(Box::new(row.push(Box::new(Spacer::new()))));
             }
         }
         let (status, tone) = match &model.phase {
@@ -1337,7 +1346,7 @@ impl AgentModelsModel {
         )
     }
 
-    fn model_card(&self, model: &InstalledLocalModel) -> SettingsSection {
+    fn model_card(&self, model: &InstalledLocalModel) -> El {
         let status = phase_status(&model.phase);
         let storage = byte_size(model.package.installed_bytes);
         let status_label = t("agent-model-status");
@@ -1357,13 +1366,13 @@ impl AgentModelsModel {
                     "agent-progress-downloading",
                     &[("name", model.package.name.as_str().into())],
                 );
-                body.push(row(Box::new(
+                body.push(Box::new(
                     ProgressBar::new(phase_progress(&model.phase).unwrap_or(0.0))
                         .with_label(progress),
-                )));
+                ));
                 let done = byte_size(*downloaded_bytes);
                 let total = byte_size(*total_bytes);
-                body.push(note(&t_args(
+                body.push(caption(&t_args(
                     "agent-download-progress",
                     &[("done", done.as_str().into()), ("total", total.into())],
                 )));
@@ -1373,29 +1382,29 @@ impl AgentModelsModel {
                     "agent-progress-installing",
                     &[("name", model.package.name.as_str().into())],
                 );
-                body.push(row(Box::new(match percent {
+                body.push(Box::new(match percent {
                     Some(_) => ProgressBar::new(phase_progress(&model.phase).unwrap_or(0.0))
                         .with_label(progress),
                     None => ProgressBar::indeterminate().with_label(progress),
-                })));
-                body.push(note(message));
+                }));
+                body.push(caption(message));
             }
             LocalModelPhase::Error { message } => {
-                body.push(note(message));
-                body.push(note(&t("agent-error-retry-caption")));
+                body.push(caption(message));
+                body.push(caption(&t("agent-error-retry-caption")));
             }
             LocalModelPhase::Ready { running: true, .. } => {
-                body.push(note(&t("agent-ready-running-caption")));
+                body.push(caption(&t("agent-ready-running-caption")));
             }
             LocalModelPhase::Ready { running: false, .. } => {
-                body.push(note(&t("agent-ready-stopped-caption")));
+                body.push(caption(&t("agent-ready-stopped-caption")));
             }
         }
         let actions = available_actions(&model.phase);
         if !actions.is_empty() {
-            let mut buttons = Row::new();
+            let mut row = Row::new();
             for action in actions {
-                buttons = buttons.push(Box::new(self.cx.bind_invocation(
+                row = row.push(Box::new(self.cx.bind_invocation(
                     Button::new(
                         &format!(
                             "agent-models-{}-{}",
@@ -1407,7 +1416,7 @@ impl AgentModelsModel {
                     model_effect(model, action),
                 )));
             }
-            body.push(row(Box::new(buttons)));
+            body.push(Box::new(row.push(Box::new(Spacer::new()))));
         }
         card_with_action(
             &model.package.name,
@@ -1448,10 +1457,10 @@ impl AgentModelsModel {
         clippy::too_many_lines,
         reason = "the hosted-provider editor keeps each credential and endpoint control together"
     )]
-    fn hosted_profiles(&self) -> SettingsSection {
+    fn hosted_profiles(&self) -> El {
         let config = self.providers.get().config.clone();
-        let mut body: Vec<Item> = vec![note(&t("agent-hosted-intro"))];
-        body.push(row(Box::new(
+        let mut body: Vec<El> = vec![caption(&t("agent-hosted-intro"))];
+        body.push(Box::new(
             Row::new()
                 .push(Box::new(self.cx.bind_invocation(
                     Button::new("agent-models-add-anthropic", &t("agent-add-anthropic")),
@@ -1465,8 +1474,9 @@ impl AgentModelsModel {
                     AgentModelsEffect::AddProvider {
                         protocol: "openai-compatible".into(),
                     },
-                ))),
-        )));
+                )))
+                .push(Box::new(Spacer::new())),
+        ));
         for profile in config
             .profiles
             .iter()
@@ -1491,35 +1501,26 @@ impl AgentModelsModel {
                 .lock()
                 .map(|value| value.clone())
                 .unwrap_or_default();
-            body.push(field_row(
-                &t("agent-placeholder-name"),
-                Box::new(
-                    TextInput::local()
-                        .with_id(&format!("agent-models-label-{profile_id}"))
-                        .with_external_buffer(Arc::clone(&fields.label))
-                        .with_initial_value(&label)
-                        .with_placeholder(t("agent-placeholder-name")),
-                ),
+            body.push(Box::new(
+                TextInput::local()
+                    .with_id(&format!("agent-models-label-{profile_id}"))
+                    .with_external_buffer(Arc::clone(&fields.label))
+                    .with_initial_value(&label)
+                    .with_placeholder(t("agent-placeholder-name")),
             ));
-            body.push(field_row(
-                &t("agent-placeholder-url"),
-                Box::new(
-                    TextInput::local()
-                        .with_id(&format!("agent-models-url-{profile_id}"))
-                        .with_external_buffer(Arc::clone(&fields.endpoint))
-                        .with_initial_value(&endpoint)
-                        .with_placeholder(t("agent-placeholder-url")),
-                ),
+            body.push(Box::new(
+                TextInput::local()
+                    .with_id(&format!("agent-models-url-{profile_id}"))
+                    .with_external_buffer(Arc::clone(&fields.endpoint))
+                    .with_initial_value(&endpoint)
+                    .with_placeholder(t("agent-placeholder-url")),
             ));
-            body.push(field_row(
-                &t("agent-placeholder-model"),
-                Box::new(
-                    TextInput::local()
-                        .with_id(&format!("agent-models-model-{profile_id}"))
-                        .with_external_buffer(Arc::clone(&fields.model))
-                        .with_initial_value(&model)
-                        .with_placeholder(t("agent-placeholder-model")),
-                ),
+            body.push(Box::new(
+                TextInput::local()
+                    .with_id(&format!("agent-models-model-{profile_id}"))
+                    .with_external_buffer(Arc::clone(&fields.model))
+                    .with_initial_value(&model)
+                    .with_placeholder(t("agent-placeholder-model")),
             ));
             let alternate_protocol = match profile.protocol {
                 ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
@@ -1534,7 +1535,7 @@ impl AgentModelsModel {
             let read = |field: &Arc<Mutex<String>>| {
                 field.lock().map(|value| value.clone()).unwrap_or_default()
             };
-            body.push(row(Box::new(
+            body.push(Box::new(
                 Row::new()
                     .push(Box::new(self.cx.bind(
                         Button::new(
@@ -1586,8 +1587,9 @@ impl AgentModelsModel {
                         AgentModelsEffect::RemoveProvider {
                             provider: profile_id.clone(),
                         },
-                    ))),
-            )));
+                    )))
+                    .push(Box::new(Spacer::new())),
+            ));
             let protocol = t("agent-protocol");
             body.push(value_row(&protocol, profile.protocol.label()));
             let buffer = self.key_buffer(&profile_id);
@@ -1598,24 +1600,21 @@ impl AgentModelsModel {
                 None => (false, None),
             };
             if let Some(error) = configured_error {
-                body.push(row(crate::widgets::error_caption(&t_args(
+                body.push(crate::widgets::error_caption(&t_args(
                     "agent-key-read-error",
                     &[("error", error.into())],
-                ))));
+                )));
             }
-            body.push(field_row(
-                &t("agent-placeholder-key"),
-                Box::new(
-                    TextInput::local()
-                        .with_id(&format!("agent-models-api-key-{profile_id}"))
-                        .with_external_buffer(buffer)
-                        .with_initial_value(&initial)
-                        .with_secret(true)
-                        .with_placeholder(t("agent-placeholder-key")),
-                ),
-            ));
-            body.push(row(Box::new(
+            body.push(Box::new(
                 Row::new()
+                    .push(Box::new(
+                        TextInput::local()
+                            .with_id(&format!("agent-models-api-key-{profile_id}"))
+                            .with_external_buffer(buffer)
+                            .with_initial_value(&initial)
+                            .with_secret(true)
+                            .with_placeholder(t("agent-placeholder-key")),
+                    ))
                     .push(Box::new(self.cx.bind_invocation(
                         Button::new(
                             &format!("agent-models-set-api-key-{profile_id}"),
@@ -1638,18 +1637,18 @@ impl AgentModelsModel {
                         AgentModelsEffect::RemoveProviderKey {
                             provider: profile_id.clone(),
                         },
-                    ))),
-            )));
-            // why: a key-status sentence or badge is a status line, not a label/control pair.
-            body.push(row(if configured {
-                Box::new(Text::new(&t("agent-key-stored")).dimmed())
+                    )))
+                    .push(Box::new(Spacer::new())),
+            ));
+            body.push(if configured {
+                caption(&t("agent-key-stored"))
             } else if self.needs_key(profile) {
                 semantic_status_pill(&t("agent-key-needed"), StatusTone::Warning)
             } else {
-                Box::new(Text::new(&t("agent-key-none")).dimmed())
-            }));
+                caption(&t("agent-key-none"))
+            });
             if profile.default_model.is_some() {
-                body.push(row(Box::new(self.cx.bind_invocation(
+                body.push(Box::new(self.cx.bind_invocation(
                     Button::new(
                         &format!("agent-models-default-{profile_id}"),
                         &if config.default_profile.as_deref() == Some(&profile.id) {
@@ -1661,11 +1660,11 @@ impl AgentModelsModel {
                     AgentModelsEffect::SetDefaultProvider {
                         provider: profile_id.clone(),
                     },
-                ))));
+                )));
             }
         }
         for issue in config.validation_errors() {
-            body.push(note(&t_args(
+            body.push(caption(&t_args(
                 "agent-config-issue",
                 &[("message", issue.message.as_str().into())],
             )));
@@ -1712,9 +1711,9 @@ impl AgentModelsModel {
         fields
     }
 
-    fn request_limits_card(&self) -> SettingsSection {
+    fn request_limits_card(&self) -> El {
         let config = self.providers.get().config.clone();
-        let mut body = vec![note(&t("agent-request-limits-caption"))];
+        let mut body = vec![caption(&t("agent-request-limits-caption"))];
         for profile in &config.profiles {
             for selected in &profile.models {
                 body.push(value_row(profile.display_label(), selected.display_label()));
@@ -1745,21 +1744,19 @@ impl AgentModelsModel {
                     ),
                 ] {
                     let initial = buffer.lock().map(|value| value.clone()).unwrap_or_default();
-                    body.push(field_row(
-                        &t(label),
-                        Box::new(
-                            TextInput::local()
-                                .with_id(&format!("agent-model-limit-{name}-{widget_id}"))
-                                .with_accessible_name(t(label))
-                                .with_external_buffer(buffer)
-                                .with_initial_value(&initial)
-                                .with_placeholder(t("agent-context-unknown")),
-                        ),
+                    body.push(value_row(&t(label), ""));
+                    body.push(Box::new(
+                        TextInput::local()
+                            .with_id(&format!("agent-model-limit-{name}-{widget_id}"))
+                            .with_accessible_name(t(label))
+                            .with_external_buffer(buffer)
+                            .with_initial_value(&initial)
+                            .with_placeholder(t("agent-context-unknown")),
                     ));
                 }
                 let provider = profile.id.clone();
                 let model = selected.id.clone();
-                body.push(row(Box::new(
+                body.push(Box::new(
                     Row::new()
                         .push(Box::new(self.cx.bind(
                             Button::new(
@@ -1788,8 +1785,9 @@ impl AgentModelsModel {
                                 runtime_context_tokens: None,
                                 plan_timeout_ms: None,
                             },
-                        ))),
-                )));
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ));
             }
         }
         card(&t("agent-request-limits-title"), rows(body))
@@ -1804,7 +1802,7 @@ impl AgentModelsModel {
         let mut cards = vec![card(
             &private_title,
             rows(vec![
-                note(&t("agent-private-caption")),
+                caption(&t("agent-private-caption")),
                 value_row(&local_inf, &local_gw),
                 value_row(&downloads, &downloads_v),
             ]),
@@ -1812,14 +1810,14 @@ impl AgentModelsModel {
         if !self.manager_available {
             cards.push(card(
                 &t("agent-service-down-title"),
-                rows(vec![note(&t("agent-service-down-body"))]),
+                caption(&t("agent-service-down-body")),
             ));
             cards.push(self.hosted_profiles());
             cards.push(self.request_limits_card());
             return crate::widgets::cards(cards);
         }
         if let Some(notice) = &self.notice {
-            cards.push(card(&t("agent-service-title"), rows(vec![note(notice)])));
+            cards.push(card(&t("agent-service-title"), caption(notice)));
         }
         if let Some(accelerator) = self.accelerator_card() {
             cards.push(accelerator);
@@ -1842,7 +1840,7 @@ impl AgentModelsModel {
         if self.snapshot.models.is_empty() {
             cards.push(card(
                 &t("agent-models-empty-title"),
-                rows(vec![note(&t("agent-models-empty"))]),
+                caption(&t("agent-models-empty")),
             ));
         } else {
             for model in &self.snapshot.models {

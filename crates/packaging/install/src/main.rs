@@ -421,14 +421,6 @@ enum Error {
     )]
     RuntimeDependencyMissing { package: String, runtime: String },
     #[error(
-        "{package} pins runtime `{runtime}` and this device does not have it, so the \
-         installed copy would stop working with it. Install them together: `app install \
-         {package}` (or `app update`) fetches the runtime first, or install the runtime \
-         package with `tilo-install install <runtime.tapp>`.\n  Or install anyway: add \
-         --ignore-missing-runtime"
-    )]
-    OptionalRuntimeMissing { package: String, runtime: String },
-    #[error(
         "{package} {version} needs system interfaces this Tilo does not provide: {unmet}.\n  \
          It was built for another version of Tilo. Update the system first, or keep the \
          version you have."
@@ -783,12 +775,9 @@ fn install_checked(
 }
 
 fn runtime_status(checked: &Checked) -> Result<Option<(String, bool)>, Error> {
-    checked.runtime_ref().map(bundle_status).transpose()
-}
-
-/// The version `raw` (`<name>/<version>`) names, and whether its bundle is
-/// installed for this user or in the image.
-fn bundle_status(raw: &str) -> Result<(String, bool), Error> {
+    let Some(raw) = checked.runtime_ref() else {
+        return Ok(None);
+    };
     let (_, version) = raw
         .split_once('/')
         .ok_or_else(|| Error::RuntimeReferenceMalformed(raw.to_string()))?;
@@ -799,18 +788,7 @@ fn bundle_status(raw: &str) -> Result<(String, bool), Error> {
         .cloned()
         .chain([system])
         .any(|p| p.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists());
-    Ok((version.to_string(), present))
-}
-
-/// The optional runtimes `checked` pins that are not installed.
-fn missing_optional_runtimes(checked: &Checked) -> Result<Vec<String>, Error> {
-    let mut missing = Vec::new();
-    for raw in tilo_app_package::desktop::optional_runtime_dependencies(&checked.manifest) {
-        if !bundle_status(raw)?.1 {
-            missing.push(raw.clone());
-        }
-    }
-    Ok(missing)
+    Ok(Some((version.to_string(), present)))
 }
 
 fn checked_admission(
@@ -868,17 +846,6 @@ fn fits_os(checked: &Checked) -> Result<(), Error> {
 /// bundle here (with a fix command) beats discovering
 /// `RuntimeBundleMissing` at first launch.
 fn satisfy_runtime(checked: &Checked, flags: &RuntimeFlags) -> Result<(), Error> {
-    // The runtimes an app pins by exact version travel with it, whichever
-    // path installs it: an app replaced while its engine is absent would
-    // open to "not installed" until someone fetched the engine by hand.
-    if !flags.ignore_missing_runtime
-        && let Some(runtime) = missing_optional_runtimes(checked)?.into_iter().next()
-    {
-        return Err(Error::OptionalRuntimeMissing {
-            package: checked.id().to_string(),
-            runtime,
-        });
-    }
     let Some((version, present)) = runtime_status(checked)? else {
         return Ok(());
     };
@@ -1204,7 +1171,6 @@ fn install_runtime_package(
     let root = dest
         .parent()
         .ok_or_else(|| Error::RuntimeBundle(format!("{} has no parent", dest.display())))?;
-    fs::create_dir_all(root)?;
     let bundles = runtime_bundle::gc::BundleRoot::new(root);
     let _collection_held_off = bundles.install_lock()?;
     let keep = |bundles: &runtime_bundle::gc::BundleRoot| -> Result<(), Error> {
