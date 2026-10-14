@@ -1,6 +1,7 @@
 use super::*;
 use std::io::Write as _;
 use std::os::unix::process::CommandExt as _;
+use std::time::Duration;
 
 const CHILD: &str = "TILO_EXECUTING_PEER_TEST_FD";
 const TEST: &str = "process_binding::linux::tests::executing_peer_child";
@@ -53,7 +54,7 @@ fn producer_packets_require_the_original_task_and_no_extra_rights() {
     let (_owned, proof) = UnixStream::pair().expect("current producer proof");
     let nonce = [83; 32];
     send_answer(&app, &nonce, &proof).unwrap();
-    let peer = receive(&host, &nonce, unsafe { libc::geteuid() }).unwrap();
+    let peer = receive(&host, &nonce, rustix::process::geteuid().as_raw()).unwrap();
     app.write_all(b"original").unwrap();
     let mut bytes = [0; 64];
     assert_eq!(peer.receive_packet(&host, &mut bytes).unwrap(), 8);
@@ -79,7 +80,10 @@ fn producer_packets_require_the_original_task_and_no_extra_rights() {
             Ok(())
         });
     }
-    let mut other = command.spawn().unwrap();
+    let mut other = {
+        let _spawning = crate::spawning();
+        command.spawn().unwrap()
+    };
     assert!(peer.receive_packet(&host, &mut bytes).is_err());
     assert!(other.wait().unwrap().success());
 }
@@ -108,6 +112,7 @@ fn child(socket: &UnixStream, proof: Option<&UnixStream>) -> std::process::Child
             Ok(())
         });
     }
+    let _spawning = crate::spawning();
     command.spawn().expect("real child")
 }
 #[test]
@@ -116,7 +121,8 @@ fn executing_peer_pins_child_not_socket_launcher_and_rejects_reused_launch_start
     let nonce = [51; 32];
     challenge(&mut host, &nonce);
     let mut child = child(&app, None);
-    let peer = receive(&host, &nonce, unsafe { libc::geteuid() }).expect("kernel-attested child");
+    let peer =
+        receive(&host, &nonce, rustix::process::geteuid().as_raw()).expect("kernel-attested child");
     assert_eq!(peer.pid(), child.id());
     assert_ne!(peer.pid(), std::process::id());
     assert!(peer.current());
@@ -132,9 +138,12 @@ fn executing_peer_pins_child_not_socket_launcher_and_rejects_reused_launch_start
         !peer.current(),
         "a exited task cannot regain custody through numeric PID reuse"
     );
-    let mut restarted = std::process::Command::new("/bin/true")
-        .spawn()
-        .expect("new process");
+    let mut restarted = {
+        let _spawning = crate::spawning();
+        std::process::Command::new("/bin/true")
+            .spawn()
+            .expect("new process")
+    };
     assert!(
         !peer.current(),
         "a new application process cannot revive an old kernel handle"
@@ -148,7 +157,7 @@ fn executing_peer_refuses_an_inherited_launcher_proof_from_a_different_sender() 
     let nonce = [71; 32];
     challenge(&mut host, &nonce);
     let mut child = child(&app, Some(&proof));
-    let error = receive(&host, &nonce, unsafe { libc::geteuid() })
+    let error = receive(&host, &nonce, rustix::process::geteuid().as_raw())
         .err()
         .expect("foreign creator refused");
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
@@ -185,7 +194,7 @@ fn executing_peer_refuses_wrong_nonce_user_missing_extra_or_non_socket_rights() 
             .expect("actual ancillary message"),
             32
         );
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         let expected_uid = if case == 1 { uid.wrapping_add(1) } else { uid };
         assert!(
             receive(&host, &[31; 32], expected_uid).is_err(),

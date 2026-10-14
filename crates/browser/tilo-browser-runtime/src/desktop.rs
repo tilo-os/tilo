@@ -28,13 +28,13 @@ use ui::widget::TileHost;
 
 /// Applications the page can open, in launcher order: every application
 /// the bundle registered from its manifests (`ui::application::registry`),
-/// else the built-in Scratch, so a runtime without apps still opens one.
+/// else the built-in Scratch, so a runtime without apps still opens one. A
+/// bundle whose apps are all still deferred has apps, just none loaded yet.
 pub(crate) fn applications() -> Vec<&'static ApplicationDefinition> {
-    let registered = ui::application::registry::applications();
-    let mut applications = if registered.is_empty() {
+    let mut applications = if ui::application::registry::catalogue().is_empty() {
         vec![crate::scratch::definition()]
     } else {
-        registered
+        ui::application::registry::applications()
     };
     if !applications
         .iter()

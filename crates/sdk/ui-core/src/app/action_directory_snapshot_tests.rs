@@ -401,10 +401,10 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
         let surveyed = semantics.get();
         assert!(surveyed > 0);
         let mut resources = app.publication_resources();
-        resources[0].actions.push(ActionSpec::prompted(
+        resources[0].actions.push(ActionSpec::prompted_param(
             "prompt",
             "Prompt",
-            "Value",
+            tilo_actions::ActionParam::required("value", tilo_actions::ParamType::Text, "Value"),
             "",
             ExecutionLocus::ClientLocal,
             |_| panic!("discovery must not execute an action-input closure"),

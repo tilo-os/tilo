@@ -14,8 +14,9 @@
 //! (host operations, not one room's governance), the invitations this
 //! device redeems into a room it is enrolling into and the one issued in
 //! the same step that shares it (nothing carries an action to a room before
-//! this device holds it), and a member's own namespace claim and effect
-//! receipt, which are not governance.
+//! this device holds it), a member's own namespace claim and effect
+//! receipt, which are not governance, and an app's authorship of a room a
+//! host governs (a host operation, the host's person's own).
 use super::{
     NetCmd, PendingInvitation, RegisteredHomePeer, ShellNetwork, persist_pending_invitations,
     registered_home_peer_addrs, relay_topics_for_home_peers, room_topic_id,
@@ -28,7 +29,9 @@ use std::time::Duration;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_peer_state::join::{self, MemberRole};
-use tilo_relay_session::rooms::{IssueInvitationRequest, RoomCommand, RoomReply};
+use tilo_relay_session::rooms::{
+    GrantAppAuthorshipRequest, IssueInvitationRequest, RoomCommand, RoomReply,
+};
 use tilo_user_identity::DeviceCert;
 
 /// How long one exchange with a relay's room authority may take.
@@ -381,6 +384,78 @@ impl ShellNetwork {
             RoomReply::Governance { .. } => Ok(()),
             _ => Err("effect governor returned an unexpected answer".into()),
         }
+    }
+
+    /// Have the host governing `room` let `app` author the room's records,
+    /// as `caller`, this device: what opening an app there for the first time
+    /// asks. `None` when no host governs the room: a device governing it
+    /// decides through its own owner. Answers the governance generation the
+    /// host committed it in.
+    pub(crate) async fn grant_app_authorship_at_host(
+        &self,
+        room: RoomId,
+        caller: &DeviceCert,
+        app: &str,
+    ) -> Option<Result<u64, String>> {
+        let route = self.native_owner().and_then(|owner| {
+            owner.with_current(room, |view| {
+                if !view.governor().capabilities.can_act_as_host {
+                    return Ok(None);
+                }
+                let identity = self
+                    .host_identity
+                    .as_ref()
+                    .ok_or("native identity unavailable")?;
+                let (certificate, _) = identity.current_native_material(view.workspace())?;
+                if view.device() != &certificate || caller != &certificate {
+                    return Err("app authorship caller differs from admitted native custody".into());
+                }
+                let (hint, _) =
+                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
+                        .map_err(|error| error.to_string())?;
+                if hint.room != room.to_string()
+                    || &hint.governing_authority != view.governor()
+                    || &hint.host_device_certificate != view.governor()
+                {
+                    return Err("app authorship host differs from current admitted governor".into());
+                }
+                Ok(Some((hint.endpoint_addr, certificate)))
+            })
+        });
+        let (relay, certificate) = match route {
+            Ok(None) => return None,
+            Ok(Some(route)) => route,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(
+            async {
+                let (reply, answer) = std::sync::mpsc::sync_channel(1);
+                self.cmd_tx
+                    .try_send(NetCmd::RoomAdmin {
+                        relay,
+                        certificate,
+                        command: Box::new(RoomCommand::GrantAppAuthorship {
+                            room: room.to_string(),
+                            request: GrantAppAuthorshipRequest {
+                                request_id: request_id()?,
+                                app: app.to_owned(),
+                            },
+                        }),
+                        reply,
+                    })
+                    .map_err(|_| "the network queue is unavailable")?;
+                let response =
+                    tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
+                        .await
+                        .map_err(|_| "app authorship reply worker stopped")?
+                        .map_err(|_| "the host did not answer the app authorship in time")??;
+                match response {
+                    RoomReply::Governance { generation } => Ok(generation),
+                    _ => Err("the host answered the app authorship with something else".into()),
+                }
+            }
+            .await,
+        )
     }
 
     /// Have the relay issue an invitation to `target`. Answers the

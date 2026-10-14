@@ -292,8 +292,7 @@ mod tests {
         std::fs::copy(&canonical, &attacker).unwrap();
         // Native test containers run as root; the child deliberately matches
         // systemd's unprivileged uid-only map instead of mapping host root.
-        // SAFETY: getuid is infallible and chown receives a nul-terminated path.
-        let caller = unsafe { libc::getuid() };
+        let caller = rustix::process::getuid().as_raw();
         let uid = if caller == 0 { 1000 } else { caller };
         if caller == 0 {
             let path = std::ffi::CString::new(attacker.as_os_str().as_encoded_bytes()).unwrap();

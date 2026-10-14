@@ -1041,6 +1041,8 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
     assert!(observed, "canonical retained PTY output/prompt absent");
 }
 
+#[cfg(unix)]
+mod inherited_control_wire;
 #[test]
 fn native_resource_terminal_inspector_is_acknowledged_through_the_mounted_root() {
     use std::io::{Read, Write};

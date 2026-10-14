@@ -21,6 +21,7 @@ fn tree_with_n_groups(n: u64) -> (DesktopTree, StripId, Vec<GroupId>) {
             active_tab: 0,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         })
         .collect();
     let mut ws = Workspace::new(ws_id, "Test");

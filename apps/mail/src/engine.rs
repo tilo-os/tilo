@@ -791,9 +791,7 @@ pub mod live {
         } else {
             account.imap_port
         };
-        let tcp = tokio::net::TcpStream::connect((host, port))
-            .await
-            .map_err(|e| classify_conn_failure(&e.to_string()))?;
+        let tcp = crate::connect::tcp(host, port).await?;
         let connector = tokio_rustls::TlsConnector::from(tls);
         let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| format!("invalid IMAP host name: {e}"))?;
@@ -1026,8 +1024,7 @@ pub mod live {
         tls_override: Option<lettre::transport::smtp::client::TlsParameters>,
     ) -> Result<(), String> {
         use lettre::transport::smtp::authentication::{Credentials, Mechanism};
-        use lettre::transport::smtp::client::{Tls, TlsParameters};
-        use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+        use lettre::transport::smtp::client::TlsParameters;
 
         let host = account.smtp_host.trim();
         if host.is_empty() {
@@ -1043,16 +1040,6 @@ pub mod live {
             None => TlsParameters::new(host.to_string())
                 .map_err(|e| classify_conn_failure(&e.to_string()))?,
         };
-        // 465 → implicit TLS (Wrapper); anything else (587/25) → STARTTLS upgrade.
-        let tls = if port == 465 {
-            Tls::Wrapper(params)
-        } else {
-            Tls::Required(params)
-        };
-        let builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
-            .port(port)
-            .tls(tls);
-
         let (creds_l, mech) = match creds {
             AuthCreds::Password { user, pass } => (
                 Credentials::new(user.clone(), pass.clone()),
@@ -1063,17 +1050,23 @@ pub mod live {
                 Mechanism::Xoauth2,
             ),
         };
-        let mailer: AsyncSmtpTransport<Tokio1Executor> = builder
-            .credentials(creds_l)
-            .authentication(vec![mech])
-            .build();
-
         let envelope = build_envelope(account, draft)?;
-        mailer
-            .send_raw(&envelope, mime)
-            .await
-            .map_err(|e| classify_conn_failure(&e.to_string()))?;
-        Ok(())
+        // 465 → implicit TLS; anything else (587/25) → a required STARTTLS
+        // upgrade. The connection races the host's addresses.
+        let mut connection = crate::connect::smtp(host, port, build_tls_config(), params).await?;
+        let sent = async {
+            connection
+                .auth(&[mech], &creds_l)
+                .await
+                .map_err(|e| classify_conn_failure(&e.to_string()))?;
+            connection
+                .send(&envelope, mime)
+                .await
+                .map_err(|e| classify_conn_failure(&e.to_string()))
+        }
+        .await;
+        let _ = connection.quit().await;
+        sent.map(drop)
     }
 
     /// Construct the SMTP envelope (return-path + recipients) from the account

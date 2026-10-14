@@ -83,6 +83,43 @@ pub enum InputSpec {
     },
 }
 
+impl ActionDescriptor {
+    /// The parameter this action's one line of typed text goes into, when it
+    /// is a prompted action: what an agent or a host holding only the
+    /// descriptor learns instead of assuming a name.
+    #[must_use]
+    pub fn prompt_param(&self) -> Option<&str> {
+        match self.input {
+            InputSpec::Text { .. } => self
+                .params
+                .iter()
+                .find(|param| param.required)
+                .or_else(|| self.params.first())
+                .map(|param| param.name.as_ref()),
+            InputSpec::None => None,
+        }
+    }
+
+    /// `arguments` as this action takes them. A text argument on the wire
+    /// (`InvokeArgument::Text`) names no parameter and reaches a host as a lone
+    /// [`PROMPTED_PARAM`](crate::PROMPTED_PARAM); it is moved under this
+    /// action's own prompt parameter. Anything else is returned as given.
+    #[must_use]
+    pub fn bind_prompt_text(
+        &self,
+        mut arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        if arguments.len() == 1
+            && let Some(name) = self.prompt_param()
+            && name != crate::PROMPTED_PARAM
+            && let Some(text) = arguments.remove(crate::PROMPTED_PARAM)
+        {
+            arguments.insert(name.to_owned(), text);
+        }
+        arguments
+    }
+}
+
 impl InputSpec {
     fn of(input: &ActionInput) -> Self {
         match input {
@@ -800,10 +837,10 @@ mod tests {
         vec![
             Resource::new("notes.note:1", "notes.note", "Harbour")
                 .with_action(ActionSpec::immediate("star", "Star", NOTE_TYPE, star_does).unwrap())
-                .with_action(ActionSpec::prompted(
+                .with_action(ActionSpec::prompted_param(
                     "retitle",
                     "Rename",
-                    "New title",
+                    ActionParam::required("title", crate::ParamType::Text, "New title"),
                     "title",
                     ExecutionLocus::ClientLocal,
                     move |text| encoded(&retitle_does(text)),
@@ -995,6 +1032,37 @@ mod tests {
         assert_eq!(doc.get_heads(), before, "a refused call left no change");
         assert!(doc.get(&ROOT, "title").unwrap().is_none());
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
+    }
+
+    /// A text argument on the wire names no parameter; the descriptor says
+    /// where it goes.
+    #[test]
+    fn a_wire_text_argument_goes_under_the_actions_own_prompt_parameter() {
+        let tree = open();
+        let described = survey(&tree);
+        let retitle_spec = described.iter().find(|d| d.address == retitle()).unwrap();
+        assert_eq!(retitle_spec.prompt_param(), Some("title"));
+        let lone = serde_json::json!({ crate::PROMPTED_PARAM: "Ledger" })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            retitle_spec.bind_prompt_text(lone.clone()),
+            serde_json::json!({"title": "Ledger"})
+                .as_object()
+                .unwrap()
+                .clone()
+        );
+        // Already named, or more than one argument: left as given.
+        let named = serde_json::json!({"title": "Ledger"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(retitle_spec.bind_prompt_text(named.clone()), named);
+        // An action that collects no text has no prompt parameter.
+        let star_spec = described.iter().find(|d| d.address == star()).unwrap();
+        assert_eq!(star_spec.prompt_param(), None);
+        assert_eq!(star_spec.bind_prompt_text(lone.clone()), lone);
     }
 
     /// An action the app never registered a decoder for cannot be run, even

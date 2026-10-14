@@ -91,6 +91,36 @@ class SelectorTests(unittest.TestCase):
         self.assertTrue(any("-p tilo-web-desktop" in row["test_packages"]
                             for row in plan["matrix"]["include"]))
 
+    def test_the_desktop_gate_runs_whenever_a_change_reaches_the_desktop(self):
+        gate = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(desktop_smoke::)")
+        saved = ci_select.DESKTOP_GATE
+        self.addCleanup(setattr, ci_select, "DESKTOP_GATE", saved)
+        # "leaf" stands in for the shell: the end of the dependency chain.
+        ci_select.DESKTOP_GATE = {"leaf": gate}
+        with self.subTest(phase="a foundation change reaching it without testing it still runs the smoke"):
+            plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
+            self.assertIn("leaf", plan["selected"])
+            self.assertNotIn("leaf", plan["tested"])
+            self.assertEqual(plan["scoped_tests"], {"leaf": "--test it -E 'binary(it) and test(desktop_smoke::)'"})
+            rows = [json.loads(row["scoped_tests"]) for row in plan["matrix"]["include"] if row["scoped_tests"]]
+            self.assertEqual(rows, [[{"package": "leaf", "test": "it", "filter": gate.filter}]])
+        with self.subTest(phase="a change to it tests all of it, and the smoke is part of that"):
+            plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/main.rs"], 2)
+            self.assertIn("leaf", plan["tested"])
+            self.assertEqual(plan["scoped_tests"], {})
+        with self.subTest(phase="a change that cannot reach it does not run it"):
+            plan = ci_select.make_plan(self.metadata, self.root, ["qdoc/src/lib.rs"], 2)
+            self.assertNotIn("leaf", plan["selected"])
+            self.assertEqual(plan["scoped_tests"], {})
+        with self.subTest(phase="a reading scope on the same target is joined, not replaced"):
+            manifest = ci_select.path_suites.parse(
+                '[[cargo]]\npackage = "leaf"\ninputs = ["os/x.json"]\nreaders = ["leaf/tests/audit.rs"]\n'
+                'scope = { inputs = ["os/x.json"], test = "it", filter = "test(/^audit::/)" }\n')
+            plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs", "os/x.json"], 2,
+                                       suite_manifest=manifest)
+            self.assertEqual(plan["scoped_tests"], {
+                "leaf": "--test it -E '(test(/^audit::/)) or (binary(it) and test(desktop_smoke::))'"})
+
     def test_a_recheck_keeps_only_what_the_base_changes_reach(self):
         with self.subTest(phase="the plan narrows to packages the base's own changes reach"):
             self.setUp()
@@ -325,6 +355,65 @@ class SelectorTests(unittest.TestCase):
             ["wasm_required=true", "wasm_packages=-p leaf",
              "wasm_required=false", "wasm_packages="],
         )
+
+    def test_vendored_crate_tests_follow_their_own_files_only(self):
+        self.setUp()
+        def plan(changes, **options):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2, **options)
+        every = sorted(ci_select.VENDORED_TEST_CRATES)
+        self.assertIn("vendor/automerge", every)
+        for changes, options in (
+                (["vendor/automerge/src/op_set2/op_set/op_id_index.rs"], {}),
+                (["vendor/automerge/Cargo.toml", "base/src/lib.rs"], {}),
+                # The helpers its tests assert through.
+                (["vendor/automerge-test/src/lib.rs"], {}),
+                ([ci_select.VENDORED_TEST_RUNNER], {}),
+                (["base/src/lib.rs"], {"force_full": True})):
+            with self.subTest(changes=changes, options=options):
+                reached = plan(changes, **options)
+                self.assertTrue(reached["vendored_required"])
+                self.assertEqual(reached["vendored"],
+                                 every if changes[0] == ci_select.VENDORED_TEST_RUNNER
+                                 or options else ["vendor/automerge"])
+        # Workspace crates, the workspace lock, other vendored crates and a push
+        # to main that runs every path suite leave them to the nightly.
+        for changes, options in ((["base/src/lib.rs"], {}), (["Cargo.lock"], {}),
+                                 (["vendor/automerge-other/src/lib.rs"], {}),
+                                 (["vendor/iroh/src/lib.rs"], {}),
+                                 (["crates/doc/tilo-automerge/src/lib.rs"], {}),
+                                 (["base/src/lib.rs"], {"all_suites": True})):
+            with self.subTest(changes=changes, options=options):
+                unrelated = plan(changes, **options)
+                self.assertFalse(unrelated["vendored_required"])
+                self.assertEqual(unrelated["vendored"], [])
+        # A re-check runs them only if the base's own changes reached them.
+        fork = ["vendor/automerge/src/lib.rs"]
+        self.assertEqual(plan(fork, only={"packages": set(), "suites": set(),
+                                          "vendored": {"vendor/automerge"}})["vendored"],
+                         ["vendor/automerge"])
+        self.assertEqual(plan(fork, only={"packages": set(), "suites": set(),
+                                          "vendored": set()})["vendored"], [])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            ci_select.emit_github(plan(fork), output)
+            ci_select.emit_github(plan(["base/src/lib.rs"]), output)
+            lines = output.read_text().splitlines()
+        self.assertEqual(
+            [line for line in lines if line.startswith("vendored_")],
+            ["vendored_required=true", "vendored_crates=vendor/automerge",
+             "vendored_required=false", "vendored_crates="],
+        )
+        # Every registered crate exists, runs as its own workspace, and is
+        # what the runner tests when given no argument.
+        for crate, inputs in ci_select.VENDORED_TEST_CRATES.items():
+            with self.subTest(crate=crate):
+                self.assertIn(f"{crate}/", inputs)
+                self.assertIn("[workspace]",
+                              (REPO_ROOT / crate / "Cargo.toml").read_text().splitlines())
+                for path in inputs:
+                    self.assertTrue((REPO_ROOT / path).is_dir(), path)
+        runner = (REPO_ROOT / ci_select.VENDORED_TEST_RUNNER).read_text()
+        self.assertIn("from ci.affected_packages import VENDORED_TEST_CRATES", runner)
 
     def test_wasm_lane_builds_selected_examples_and_all_when_the_web_build_changes(self):
         self.setUp()

@@ -266,6 +266,9 @@ impl Transport for Session {
         let connection = self.connection.clone();
         // Run after the composer's effect, through the registered local door.
         wasm_bindgen_futures::spawn_local(async move {
+            // The report goes in through Chat's own action, whose code a
+            // bundle that splits its apps fetches only when first needed.
+            ui::application::registry::load("so.tilo.chat").await;
             match crate::replication::submit_feedback(id, &admission, &submission) {
                 Ok(()) => {
                     let _ = connection.borrow_mut().request(Some(submission));

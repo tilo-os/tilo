@@ -5,8 +5,8 @@
 //! recapture.
 
 use super::{
-    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
-    RemoveMemberRequest, RoomAdminRequest, RoomCommand, RoomReply, RoomSummary,
+    CancelInvitationRequest, GrantAppAuthorshipRequest, IssueInvitationRequest, IssuedInvitation,
+    PendingInvitation, RemoveMemberRequest, RoomAdminRequest, RoomCommand, RoomReply, RoomSummary,
     SetMemberRoleRequest,
 };
 use tilo_peer_state::GovernedMember;
@@ -52,6 +52,10 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "ClaimTopologyNamespace",
         "092430303030303030302d303030302d303030302d303030302d3030303030303030303030312a",
+    ),
+    (
+        "GrantAppAuthorship",
+        "0a2430303030303030302d303030302d303030302d303030302d3030303030303030303030310b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0d736f2e74696c6f2e6e6f746573",
     ),
 ];
 
@@ -218,6 +222,16 @@ fn commands() -> Vec<(&'static str, RoomCommand)> {
             RoomCommand::ClaimTopologyNamespace {
                 room: room(),
                 salt: 42,
+            },
+        ),
+        (
+            "GrantAppAuthorship",
+            RoomCommand::GrantAppAuthorship {
+                room: room(),
+                request: GrantAppAuthorshipRequest {
+                    request_id: [11; 32],
+                    app: "so.tilo.notes".into(),
+                },
             },
         ),
     ]
@@ -410,7 +424,8 @@ fn room_admin_wire_cases_cover_every_variant() {
             | RoomCommand::SetRole { .. }
             | RoomCommand::Remove { .. }
             | RoomCommand::RecordEffectReceipt { .. }
-            | RoomCommand::ClaimTopologyNamespace { .. } => {}
+            | RoomCommand::ClaimTopologyNamespace { .. }
+            | RoomCommand::GrantAppAuthorship { .. } => {}
         }
     }
     for (_, reply) in replies() {
@@ -425,6 +440,6 @@ fn room_admin_wire_cases_cover_every_variant() {
             | RoomReply::Refused(_) => {}
         }
     }
-    assert_eq!(commands().len(), 10);
+    assert_eq!(commands().len(), 11);
     assert_eq!(replies().len(), 8);
 }

@@ -276,3 +276,158 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
         vec![child_id]
     );
 }
+
+/// The strip state a dialog must leave alone: which workspace, strip and
+/// group are active (what the viewport follows) and how many groups exist.
+fn strip_view(state: &shell::compositor::state::State) -> String {
+    let tree = state.workspace_tree.read();
+    let workspace = tree.desktop.active;
+    let strip = tree.desktop.active_strip.get(&workspace).copied();
+    let group = strip.and_then(|strip| tree.desktop.active_group_for(strip));
+    let groups: usize = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|ws| ws.strips.iter())
+        .map(|strip| strip.window_groups.len())
+        .sum();
+    let view = format!("{workspace:?} {strip:?} {group:?} {groups}");
+    drop(tree);
+    view
+}
+
+/// What a host-service prompt (gcr-prompter's keyring unlock) sends: no
+/// parent, no dialog hint, the id announced after `get_toplevel`.
+#[test]
+fn a_parentless_system_prompt_is_a_sheet_and_leaves_the_strip_alone() {
+    let mut h = Harness::new();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let qh = h.queue.handle();
+
+    let mut keep = Vec::new();
+    for app in ["org.example.Editor", "org.example.Browser"] {
+        let surface = compositor.create_surface(&qh, ());
+        let xdg = wm.get_xdg_surface(&surface, &qh, ());
+        let top = xdg.get_toplevel(&qh, ());
+        top.set_app_id(app.into());
+        surface.commit();
+        h.pump();
+        keep.push((surface, xdg, top));
+    }
+    let tabs = foreign_tabs(&h.state);
+    assert_eq!(tabs.len(), 2);
+    let focused = tabs[1].0;
+    h.state.set_client_keyboard_focus(Some(focused));
+    h.pump();
+
+    let before = strip_view(&h.state);
+
+    let prompt = compositor.create_surface(&qh, ());
+    let prompt_xdg = wm.get_xdg_surface(&prompt, &qh, ());
+    let prompt_top = prompt_xdg.get_toplevel(&qh, ());
+    prompt_top.set_app_id("gcr-prompter".into());
+    prompt.commit();
+    h.pump();
+
+    assert_eq!(
+        foreign_tabs(&h.state).len(),
+        2,
+        "a system prompt is never a tab"
+    );
+    assert_eq!(
+        strip_view(&h.state),
+        before,
+        "the strip did not change or pan"
+    );
+    let sheets = store().sheets_over(focused);
+    assert_eq!(
+        sheets.len(),
+        1,
+        "the prompt is a sheet over the focused window"
+    );
+    drop(keep);
+}
+
+#[test]
+fn a_system_prompt_with_no_window_to_sit_on_is_a_system_modal_overlay() {
+    let mut h = Harness::new();
+    h.state.output_size = (1000, 800);
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let qh = h.queue.handle();
+    let before = strip_view(&h.state);
+
+    let prompt = compositor.create_surface(&qh, ());
+    let prompt_xdg = wm.get_xdg_surface(&prompt, &qh, ());
+    let prompt_top = prompt_xdg.get_toplevel(&qh, ());
+    prompt_top.set_app_id("gcr-prompter".into());
+    prompt.commit();
+    h.pump();
+
+    assert!(foreign_tabs(&h.state).is_empty(), "never a tab");
+    assert_eq!(strip_view(&h.state), before, "the strip did not move");
+    assert!(h.state.has_system_modal());
+    let id = h.state.top_system_modal().expect("the prompt");
+    assert!(!store().is_sheet(id));
+    assert!(
+        h.state.is_transient_surface(id),
+        "painted and hit above the desktop"
+    );
+
+    store().publish_rgba(id, &opaque(300, 200), 300, 200);
+    assert_eq!(
+        h.state.system_modal_surfaces(),
+        vec![(id, Rect::new(350.0, 300.0, 650.0, 500.0))],
+        "centred on the output"
+    );
+}
+
+#[test]
+fn modal_and_fixed_size_dialogs_that_name_no_parent_are_sheets() {
+    let mut h = Harness::new();
+    h.state.output_size = (1000, 800);
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let dialogs = h.bind::<xdg_wm_dialog_v1::XdgWmDialogV1>("xdg_wm_dialog_v1", 1);
+    let qh = h.queue.handle();
+
+    let window = compositor.create_surface(&qh, ());
+    let window_xdg = wm.get_xdg_surface(&window, &qh, ());
+    let window_top = window_xdg.get_toplevel(&qh, ());
+    window_top.set_app_id("org.example.Editor".into());
+    window.commit();
+    h.pump();
+    let host = foreign_tabs(&h.state)[0].0;
+    h.state.set_client_keyboard_focus(Some(host));
+    let before = strip_view(&h.state);
+
+    // xdg_dialog_v1 modal, no parent, an app id nobody listed.
+    let modal = compositor.create_surface(&qh, ());
+    let modal_xdg = wm.get_xdg_surface(&modal, &qh, ());
+    let modal_top = modal_xdg.get_toplevel(&qh, ());
+    modal_top.set_app_id("org.example.Whatever".into());
+    dialogs.get_xdg_dialog(&modal_top, &qh, ()).set_modal();
+    modal.commit();
+    h.pump();
+
+    // A fixed-size window: min == max.
+    let fixed = compositor.create_surface(&qh, ());
+    let fixed_xdg = wm.get_xdg_surface(&fixed, &qh, ());
+    let fixed_top = fixed_xdg.get_toplevel(&qh, ());
+    fixed_top.set_app_id("org.example.Other".into());
+    fixed_top.set_min_size(320, 200);
+    fixed_top.set_max_size(320, 200);
+    fixed.commit();
+    h.pump();
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+
+    assert_eq!(foreign_tabs(&h.state).len(), 1, "neither dialog is a tab");
+    assert_eq!(strip_view(&h.state), before, "the strip did not move");
+    assert_eq!(
+        store().sheets_over(host).len(),
+        2,
+        "both are sheets on the focused window"
+    );
+}

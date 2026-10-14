@@ -122,19 +122,19 @@ RUN --network=none \
     --mount=type=bind,from=windows-fex-input,source=/,target=/fex,ro \
     --mount=type=bind,from=windows-guest-input,source=/,target=/guest,ro \
     test "$(uname -m)" = aarch64 \
-    && mkdir -p /out/usr/share/tilo/windows /out/usr/lib/tilo/windows-runners \
+    && mkdir -p /out/usr/share/tilo/windows /payload/usr/lib/tilo/windows-runners \
     && python3 /tilo/windows_provider.py validate \
       --fex-ref "$FEX_PAYLOAD_REF" --guest-ref "$WINDOWS_GUEST_REF" \
       --fex-root /fex --guest-root /guest/rootfs \
       --source-pin /tilo/fex-source.env --wine-pin /tilo/wine-source.json \
       > /out/usr/share/tilo/windows/provider.json \
-    && cp -a /fex/usr/. /out/usr/ \
-    && cp -a /guest/rootfs /out/usr/lib/tilo/windows-runners/x86
+    && cp -a /fex/usr/. /payload/usr/ \
+    && cp -a /guest/rootfs /payload/usr/lib/tilo/windows-runners/x86
 
 FROM ${BASE_REF} AS windows-provider-x86_64-1
 COPY os/dev/windows_provider.py /tilo/
 RUN --network=none test "$(uname -m)" = x86_64 \
-    && mkdir -p /out/usr/share/tilo/windows \
+    && mkdir -p /out/usr/share/tilo/windows /payload \
     && python3 /tilo/windows_provider.py inputs --arch x86_64 \
        > /out/usr/share/tilo/windows/provider.json
 
@@ -142,7 +142,7 @@ RUN --network=none test "$(uname -m)" = x86_64 \
 # architecture but aarch64, so an x86_64 build selecting this fails here.
 FROM ${BASE_REF} AS windows-provider-off
 COPY os/dev/windows_provider.py /tilo/
-RUN --network=none mkdir -p /out/usr/share/tilo/windows \
+RUN --network=none mkdir -p /out/usr/share/tilo/windows /payload \
     && python3 /tilo/windows_provider.py absent --arch "$(uname -m)" \
        > /out/usr/share/tilo/windows/provider.json
 FROM windows-provider-off AS windows-provider-aarch64-0
@@ -220,6 +220,34 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     && mkdir -p /out/catalogues/bottles-programs \
     && tar -xzf /tilo-assets/bottles-programs-d1160b8.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
     && chmod -R a-w /out/catalogues/bottles-programs
+
+
+# ---- Windows compatibility system extension ------------------------------
+# Everything Windows apps need that is large: the FEX payload and the x86 guest
+# root (ARM), Proton, the Steam runtime and the virtio-win media, about 3.1 GB.
+# It is packed here as tilo-windows-compat.raw, a sysext overlaying those exact
+# /usr paths, and is NOT part of the OS image. build-image.yml exports the
+# `windows-compat-sysext` target, publishes the image next to the signed
+# manifest tools/extensions/sysext_image.py writes, and a device installs it
+# when its owner first enables Windows apps or creates a Windows VM
+# (/usr/share/tilo/system-extensions/sysext.d/windows-compat.json).
+FROM ${BASE_REF} AS windows-compat-sysext-build
+COPY --from=windows-provider /payload/ /tree/
+COPY --from=virtio-win-media /out/virtio-win.iso /tree/usr/share/virtio-win/virtio-win.iso
+COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /tree/usr/share/virtio-win/installer/virtio-win-guest-tools.exe
+COPY --from=windows-compat-artifacts /out/proton/ /tree/usr/lib/tilo/windows-runners/proton/
+COPY --from=windows-compat-artifacts /out/steam-runtime/ /tree/usr/lib/tilo/windows-runners/steam-runtime/
+COPY --from=windows-provider /out/usr/share/tilo/windows/provider.json /provider.json
+COPY os/dev/windows_provider.py os/dev/build-windows-compat-sysext.sh /tilo/
+# The native FEX binaries are checked against the hashes the provider record
+# pinned, and their dynamic-linker closure against the base plus this payload.
+# /out is made first: the shell opens the descriptor before the packer runs.
+RUN --network=none python3 /tilo/windows_provider.py host --manifest /provider.json --root /tree \
+    && mkdir -p /out \
+    && /tilo/build-windows-compat-sysext.sh /tree /out/tilo-windows-compat.raw > /out/descriptor.json
+
+FROM scratch AS windows-compat-sysext
+COPY --from=windows-compat-sysext-build /out/ /
 
 
 # ---- AirPlay sender ---------------------------------------------------------
@@ -366,6 +394,7 @@ COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs
 COPY tools/test-assets.py /build/tools/test-assets.py
 COPY tools/font-catalog.py /build/tools/font-catalog.py
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
+COPY os/hardware/profiles/lenovo-83ed/input/keyboard.json os/hardware/profiles/lenovo-83ed/input/mouse.json os/hardware/profiles/lenovo-83ed/input/touchpad.json /build/os/hardware/profiles/lenovo-83ed/input/
 COPY scripts/browser/build-host.py scripts/browser/cef-lock.json /build/scripts/browser/
 COPY \
     os/scripts/cargo-freshness.sh \
@@ -373,6 +402,7 @@ COPY \
     os/scripts/cargo-timings-summary.py \
     os/scripts/verify-elf-hardening.sh \
     os/scripts/pack-apps.sh \
+    os/scripts/check-shipped-runtimes.sh \
     os/scripts/stamp-runtime.sh \
     os/scripts/install-env-runtime.sh \
     /build/os/scripts/
@@ -706,9 +736,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        else \
          DESKTOP_RELEASE_ARGS="-p shell --bin shell --bin tilo-runtime-mcp -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-sibling-unlock -p tilo-esp-write -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody -p legacy-vm" \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-sibling-unlock -p tilo-esp-write -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p tilo-secret-service -p system-extension -p compat-service -p account-custody -p legacy-vm" \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
-    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-sibling-unlock --bin tilo-esp-write --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-legacy --bin tilo-account-credential" \
+    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-sibling-unlock --bin tilo-esp-write --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-legacy --bin tilo-account-credential" \
     # The thin-app profile compiles each crate as one codegen unit, for tapp
     # size. Built in the image without LTO (a dev build) the runtime and its
     # dependencies take 16: one unit made fs alone compile for ten minutes.
@@ -750,7 +780,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in shell tilo-runtime-mcp tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-relay-environment tilo-relay-offers tilo-legacy tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-sibling-unlock tilo-esp-write tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential; do \
+    && for b in shell tilo-runtime-mcp tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-relay-environment tilo-relay-offers tilo-legacy tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-secret-service tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-sibling-unlock tilo-esp-write tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime-mcp) continue ;; esac; \
          if [ ! -x "target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
@@ -787,6 +817,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/tilo-model-manager \
           target/release/tilo-speech-worker \
           target/release/tilo-model-gateway \
+          target/release/tilo-secret-service \
           target/release/tilo-system-extension-manager \
           target/release/tilo-greeter \
           target/release/tilo-installer \
@@ -1001,7 +1032,11 @@ ARG CHROMIUM_RUNTIME_VERSION
 RUN --mount=type=secret,id=browser_runtime_identity \
     : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
-         test -x /out/chromium-engine/chromium/tilo-chromium-host \
+         pinned="$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \
+              /build/crates/sdk/ui-core/src/webview/chromium/runtime.rs)" \
+         && test -n "$pinned" \
+         && test "$pinned" = "${CHROMIUM_RUNTIME_VERSION}" \
+         && test -x /out/chromium-engine/chromium/tilo-chromium-host \
          && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
               test -s /run/secrets/browser_runtime_identity \
               && actual="$(/out/tilo-runtime-bundle key pubkey \
@@ -1128,16 +1163,24 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && test -s /out/tilo/tilo-logo.png \
     && dnf clean all
 
+# The runtimes travel with their publishers' keys from the one builder result:
+# a non-publishing build signs them with keys it generates, so a key taken from
+# another stage (native-builder-payload, which buildkit may serve from an
+# earlier invocation's cache while the builder re-runs) would not be theirs.
 FROM ${BASE_REF} AS runtime-image-payload
 RUN --network=none \
     --mount=type=bind,from=builder,source=/usr/lib/tilo-runtime,target=/tilo-runtime,ro \
     --mount=type=bind,from=builder,source=/out/runtime-version,target=/tilo-runtime-version,ro \
+    --mount=type=bind,from=builder,source=/out/runtime-bundle-publisher.hex,target=/tilo-runtime-publisher.hex,ro \
+    --mount=type=bind,from=builder,source=/out/browser-runtime-publisher.hex,target=/tilo-browser-runtime-publisher.hex,ro \
     --mount=type=bind,from=os-fonts,source=/out/fonts,target=/tilo-os-fonts,ro \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
     --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/tilo-src/hardlink-identical.py,ro \
     mkdir -p /image/usr/lib /image/usr/share/tilo/font-catalogs /image/usr/share/fonts \
     && cp -a /tilo-runtime /image/usr/lib/tilo-runtime \
+    && cp /tilo-runtime-publisher.hex /image/usr/share/tilo/runtime-bundle-publisher.hex \
+    && cp /tilo-browser-runtime-publisher.hex /image/usr/share/tilo/browser-runtime-publisher.hex \
     && fonts="/image/usr/lib/tilo-runtime/$(cat /tilo-runtime-version)/lib/fonts" \
     && catalog="$(sha256sum "$fonts/manifest.toml" | cut -d ' ' -f1)" \
     && python3 /tilo-src/tools/font-catalog.py link "$fonts" \
@@ -1233,7 +1276,7 @@ COPY dist/session/tilo-flight-recorder.py /usr/libexec/tilo-flight-recorder
 COPY dist/session/tilo-session-report.py /usr/libexec/tilo-session-report
 
 FROM scratch AS remote-capture-files
-COPY os/etc/tilo/desktop.toml /etc/tilo/desktop.toml
+COPY os/etc/tilo/desktop.toml os/etc/tilo/cache-gc.toml /etc/tilo/
 COPY os/etc/modprobe.d/tilo-remote-camera.conf /etc/modprobe.d/tilo-remote-camera.conf
 COPY os/etc/modules-load.d/tilo-remote-camera.conf os/etc/modules-load.d/tilo-ddc.conf /etc/modules-load.d/
 
@@ -1537,8 +1580,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && gst-inspect-1.0 rtpstreampay >/dev/null \
     # Display manager + fingerprint auth (pam_fprintd for the greeter; the
     # greeter's PAM stack references it via a tolerant `-auth` line).  The same
-    # PAM stack unlocks Secret Service at password login, so an existing Tilo
-    # identity is available before the compositor probes it.
+    # PAM stack unlocks the old GNOME login keyring at password login so
+    # tilo-secret-service can import it once; Tilo's own store, sealed under the
+    # device identity, serves org.freedesktop.secrets after any login method.
     #
     # `polkit` is required so the greeter's power menu can drive
     # logind: `systemctl suspend` / `reboot` / `poweroff` issue the
@@ -1547,6 +1591,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # It also ships `polkit-agent-helper-1` (and its activation socket), which the
     # compositor's authentication agent drives to run PAM for administrator
     # prompts from pkexec, GNOME Disks, virt-manager and system Flatpak installs.
+    #
+    # GNOME Keyring's own D-Bus activation file for org.freedesktop.secrets is
+    # not installed at all: tilo-secret-service ships the file at that path
+    # (below), and an image file that differs from the package that owns it fails
+    # verify-rpm-files.sh. rpm's netshared-path rule skips the one path at
+    # install time and records it as not installed, so the package never
+    # owns bytes the image replaces.
+    && printf '%s\n' '%_netsharedpath /usr/share/dbus-1/services/org.freedesktop.secrets.service' \
+        > /etc/rpm/macros.tilo-secret-service \
     && dnf install -y --setopt=reposdir=/repo \
     greetd \
     fprintd \
@@ -1554,6 +1607,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     gnome-keyring \
     gnome-keyring-pam \
     polkit \
+    && rm -f /etc/rpm/macros.tilo-secret-service \
+    && test ! -e /usr/share/dbus-1/services/org.freedesktop.secrets.service \
     && dnf clean all \
     # System utilities. Wi-Fi needs NetworkManager's separately packaged plugin
     # and cfg80211's signed regulatory database; neither is supplied by the base
@@ -2067,14 +2122,29 @@ RUN cp -a /etc/selinux/targeted /var/tmp/tilo-sestore \
  && rm -f /var/tmp/tilo-active-selinux-modules \
  && echo "all packaged add-on and tilo-base SELinux modules loaded"
 
+# Tilo's own Secret Service owns org.freedesktop.secrets and the portal Secret
+# backend. GNOME Keyring stays installed only so the first password login can
+# read an existing login keyring once (tilo-secret-service imports it); nothing
+# of it may claim the bus name or serve the portal, or two providers would
+# race for libsecret's clients and one would sit locked after a fingerprint or
+# automatic login.
+RUN rm -f /usr/share/xdg-desktop-portal/portals/gnome-keyring.portal \
+          /usr/share/dbus-1/services/org.freedesktop.impl.portal.Secret.service \
+          /etc/xdg/autostart/gnome-keyring-secrets.desktop \
+    && systemctl --global mask gnome-keyring-daemon.service gnome-keyring-daemon.socket
+COPY os/usr/share/dbus-1/services/org.freedesktop.secrets.service \
+    /usr/share/dbus-1/services/org.freedesktop.secrets.service
 COPY \
     os/usr/lib/systemd/user/tilo-models.service \
     os/usr/lib/systemd/user/tilo-models.socket \
     os/usr/lib/systemd/user/tilo-model-gateway.service \
     os/usr/lib/systemd/user/tilo-model-gateway.socket \
+    os/usr/lib/systemd/user/tilo-secret-service.service \
     os/usr/lib/systemd/user/tilo-app-host.socket \
     os/usr/lib/systemd/user/tilo-projector.service \
     os/usr/lib/systemd/user/tilo-projector.socket \
+    os/usr/lib/systemd/user/tilo-cache-gc.service \
+    os/usr/lib/systemd/user/tilo-cache-gc.timer \
     /usr/lib/systemd/user/
 COPY \
     os/usr/lib/systemd/system/tilo-relay.service \
@@ -2097,6 +2167,7 @@ COPY \
     os/etc/polkit-1/rules.d/49-tilo-disk-unlock.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules \
+    os/etc/polkit-1/rules.d/49-tilo-session-priority.rules \
     /etc/polkit-1/rules.d/
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.
@@ -2193,6 +2264,8 @@ COPY \
     os/usr/lib/systemd/system/tilo-growfs-sysroot.timer \
     os/usr/lib/systemd/system/tilo-firstboot-user.service \
     os/usr/lib/systemd/system/tilo-flatpak-defaults.service \
+    os/usr/lib/systemd/system/tilo-cache-gc.service \
+    os/usr/lib/systemd/system/tilo-cache-gc.timer \
     os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
     os/usr/lib/systemd/system/tilo-session-recovery.service \
     /usr/lib/systemd/system/
@@ -2527,15 +2600,22 @@ COPY --from=extension-files / /
 ARG TILO_WITH_WINDOWS
 LABEL org.tilo.with-windows="${TILO_WITH_WINDOWS}"
 COPY --from=windows-provider /out/usr/ /usr/
+# The payload is validated where it is packed (windows-compat-sysext); this
+# image only checks the record it carries is the one that payload was built from.
 RUN --network=none --mount=type=bind,source=os/dev/windows_provider.py,target=/tilo-windows-provider.py,ro \
-    python3 /tilo-windows-provider.py host --manifest /usr/share/tilo/windows/provider.json
-COPY --from=virtio-win-media /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso
-COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /usr/share/virtio-win/installer/virtio-win-guest-tools.exe
-
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["provider"] in ("none","fex-traditional-wine","native-wine"), d["provider"]' \
+      /usr/share/tilo/windows/provider.json
+# Windows compatibility on demand: the FEX payload, the x86 guest root, Proton,
+# the Steam runtime and the virtio-win media (about 3.1 GB, a quarter of /usr)
+# are NOT in this image. They are the signed system extension built by the
+# windows-compat-sysext stage, which a person installs with an explicit
+# action the first time they enable Windows apps or create a Windows VM
+# (tilo-extension install:windows-compat). It overlays the same /usr paths, so
+# nothing that names them changes. What stays here is small: the UMU launcher,
+# the catalogues, the provider record with the payload's pinned hashes, and the
+# contracts the host needs to explain an absent payload.
 COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/tilo-umu-run
 COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
-COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/tilo/windows-runners/proton/
-COPY --from=windows-compat-artifacts /out/steam-runtime/ /usr/lib/tilo/windows-runners/steam-runtime/
 COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/tilo/windows/catalogues/
 COPY os/usr/share/tilo/windows/fex-emulator.json os/usr/share/tilo/windows/fex-graphics-provider.json /usr/share/tilo/windows/
 # The VM is defined only after an owner supplies installation media. These
@@ -2598,6 +2678,8 @@ RUN systemctl enable greetd.service && \
        /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
     systemctl enable tilo-flatpak-defaults.service && \
+    systemctl enable tilo-cache-gc.timer && \
+    systemctl --global enable tilo-cache-gc.timer && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
     systemctl enable tilo-fs-start.timer fs-identity.path && \
@@ -2750,9 +2832,11 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # Because the tilo-kernel repo is a distinct OCI image (KERNEL_RPMS_REF),
 # we mount it alongside the frozen repo, write a two-repo dnf config on
 # the fly, and swap kernel-core → tilo-kernel-core.  --nogpgcheck: our
-# in-house RPMs aren't signed by Fedora's key; provenance for the whole
-# image is verified via cosign against the existing registry.tilo.so/tilo/tilo-kernel repository
-# (see os/etc/containers/policy.json).
+# in-house RPMs aren't signed by Fedora's key. The image build verifies the
+# digest-pinned tilo-kernel image's cosign signature and provenance before
+# consuming it (os/dev/verify-kernel-provenance.sh, run by build-image.yml);
+# os/etc/containers/policy.json has no tilo-kernel scope, and an installed
+# machine never pulls that image.
 #
 # An initramfs is mandatory, and the static drivers do not remove the need
 # for one: unlocking an encrypted root takes early USERSPACE (device-mapper
@@ -3042,7 +3126,9 @@ COPY --from=component-files /image/windows/ /
 # comments. The baked publisher is the only entry by default; operators
 # can extend it via `echo <hex> >> /etc/tilo/runtime-bundle-trusted-publishers.txt`.
 # The same tree carries the font catalog's two other names, hard links to the
-# runtime's fonts, so the bytes are in this one layer (runtime-image-payload).
+# runtime's fonts, so the bytes are in this one layer (runtime-image-payload),
+# and the publishers of the runtimes it carries (runtime-bundle-publisher.hex,
+# browser-runtime-publisher.hex), from the same builder result as the bundles.
 COPY --from=runtime-image-payload /image/usr/ /usr/
 # registry-runtime-publisher.hex is the publisher of the runtimes the Tilo
 # registry offers. An app installed or updated from the Store is linked against
@@ -3050,8 +3136,6 @@ COPY --from=runtime-image-payload /image/usr/ /usr/
 # Store installs that runtime beside it; the launcher mounts it only when its
 # publisher is trusted here.
 COPY --from=native-builder-payload \
-    /out/runtime-bundle-publisher.hex \
-    /out/browser-runtime-publisher.hex \
     /out/registry-runtime-publisher.hex \
     /out/app-publisher.hex \
     /usr/share/tilo/

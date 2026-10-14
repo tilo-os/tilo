@@ -4115,6 +4115,10 @@ impl Widget for ChatApp {
         // Native capture/transport belongs to the shell's lease-bound service.
     }
 
+    fn composition_follows_allocation(&self) -> bool {
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
