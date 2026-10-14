@@ -215,7 +215,7 @@ class Guest(unittest.TestCase):
         import subprocess
         text = (ROOT / 'usr/libexec/tilo-install').read_text(encoding='utf-8')
         start = text.index('# Only the transient backend owns this lock.')
-        end = text.index('# --- parse args', start)
+        end = text.index('# TILO_VM_CODE_REFRESH_PROBE_V1:', start)
         self.assertGreater(start, text.index('if [ -z "${TILO_INSTALL_TRANSIENT:-}" ]; then'))
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / 'code-refresh'
