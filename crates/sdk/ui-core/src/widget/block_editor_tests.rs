@@ -1448,8 +1448,18 @@ fn code_fences_copy_highlight_and_render_formulas() {
         assert!(!editor.take_edit_ops().is_empty());
     }
 
+    fn accessibility_root_is_the_document_node_without_its_blocks() {
+        let mut editor = BlockEditor::from_markdown("# Title\n\nBody\n\n- item\n");
+        editor.set_focus(true);
+        let mut full = Widget::accessibility(&editor).unwrap();
+        assert!(!full.children.is_empty());
+        full.children.clear();
+        assert_eq!(Widget::accessibility_root(&editor), Some(full));
+    }
+
     code_copy_targets_are_bounded_and_copy_complete_runs();
     fenced_languages_get_ephemeral_syntax_roles();
+    accessibility_root_is_the_document_node_without_its_blocks();
     formula_fence_reserves_preview_below_editable_source();
     formula_mode_is_persisted_and_visual_edits_emit_native_source();
 }

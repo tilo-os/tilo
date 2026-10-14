@@ -1014,6 +1014,11 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         Some(tree)
     }
 
+    /// Only adds children to the editor's node, so its root is the editor's.
+    fn accessibility_root(&self) -> Option<ui::a11y::AccessNode> {
+        self.editor.accessibility_root()
+    }
+
     fn perform_semantic_action(
         &mut self,
         target: &str,
