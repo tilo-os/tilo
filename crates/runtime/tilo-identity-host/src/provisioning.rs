@@ -579,15 +579,7 @@ fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
 /// should join. Absent when the process has no home or state directory.
 #[must_use]
 pub fn personal_rooms_export_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".local/state"))
-        })?;
-    Some(base.join("tilo").join("personal-rooms.json"))
+    Some(tilo_paths::xdg::state_home()?.join("tilo/personal-rooms.json"))
 }
 
 fn relay_is_dialable(
