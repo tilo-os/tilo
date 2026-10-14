@@ -22,6 +22,7 @@ use crate::mesh::{
     ComputeAccelerator, DeviceKey, DeviceRole, PowerAvailability, ServerAdvertisement,
     ServiceCapabilities,
 };
+use crate::placement::{ComputeRequirements, NoEligibleWorker, Placement, place_compute_job};
 use crate::store::{StoreError, WorkspaceStore};
 
 pub const COMPUTE_TRANSPORT_SCHEMA_VERSION: u16 = 1;
@@ -263,6 +264,32 @@ impl ComputeTransportState {
         advertisement.validate(authenticated_worker, now_ms)?;
         self.workers.insert(authenticated_worker, advertisement);
         Ok(())
+    }
+
+    /// Choose the worker for a job needing `needs` among the workers
+    /// advertising in this workspace, by the same eligibility rule
+    /// [`Self::accept_request`] admits by. An advertisement that no longer
+    /// validates (expired, or never fresh) counts as offline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoEligibleWorker`], with each advertised worker's reason,
+    /// when none can take the job.
+    pub fn place(
+        &self,
+        needs: &ComputeRequirements<'_>,
+        now_ms: u64,
+    ) -> Result<Placement, NoEligibleWorker> {
+        let advertised = self
+            .workers
+            .iter()
+            .map(|(worker, advertisement)| {
+                let mut server = advertisement.server_advertisement();
+                server.online = advertisement.validate(*worker, now_ms).is_ok();
+                server
+            })
+            .collect::<Vec<_>>();
+        place_compute_job(needs, &advertised)
     }
 
     pub fn remove_worker(&mut self, worker: &DeviceKey) {
@@ -663,6 +690,63 @@ mod tests {
             ComputeRouteOutcome::Route([2; 32])
         );
         (state, store)
+    }
+
+    #[test]
+    fn placement_names_a_worker_the_relay_then_admits_the_job_for() {
+        let root = tempfile::tempdir().unwrap();
+        let store = open_store(root.path());
+        let mut state = ComputeTransportState::default();
+        let needs = spec();
+        assert!(
+            state
+                .place(&needs.requirements(), 200)
+                .unwrap_err()
+                .considered
+                .is_empty(),
+            "nothing advertised, nothing placed"
+        );
+
+        // A busy worker on battery and an idle one on external power.
+        let mut laptop = advertisement(false);
+        laptop.worker = [5; 32];
+        laptop.power = PowerAvailability::Battery(60);
+        laptop.active_assignments = 1;
+        state.advertise([5; 32], 7, 200, laptop).unwrap();
+        state
+            .advertise([2; 32], 7, 200, advertisement(false))
+            .unwrap();
+        let placement = state.place(&needs.requirements(), 200).unwrap();
+        assert_eq!(placement.worker, [2; 32]);
+        let mut placed = needs.clone();
+        placed.worker = placement.worker;
+        assert_eq!(
+            state
+                .accept_request([1; 32], 7, 200, &store, &placed)
+                .unwrap(),
+            ComputeRouteOutcome::Route([2; 32])
+        );
+
+        // A GPU job is passed over by both, with the reason; once the
+        // advertisements expire, every worker is offline.
+        let mut gpu = needs.clone();
+        gpu.limits.gpu = true;
+        let refused = state.place(&gpu.requirements(), 200).unwrap_err();
+        assert!(
+            refused
+                .considered
+                .iter()
+                .all(|candidate| candidate.verdict == Err(crate::placement::Ineligible::NoGpu)),
+            "{refused}"
+        );
+        let expired = state.place(&needs.requirements(), 10_000).unwrap_err();
+        assert!(
+            expired
+                .considered
+                .iter()
+                .all(|candidate| candidate.verdict == Err(crate::placement::Ineligible::Offline)),
+            "{expired}"
+        );
     }
 
     #[test]
