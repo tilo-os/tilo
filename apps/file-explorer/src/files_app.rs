@@ -6278,13 +6278,16 @@ impl CommandRunner for SystemRunner {
 }
 
 /// Presentation-side lower bound for the daemon's fail-closed merge codecs.
-/// The daemon still validates exact bytes and may reject a malformed tilo-doc,
+/// The daemon still validates exact bytes and may reject a malformed serialized document,
 /// invalid UTF-8, overlapping edits, or a stale signed conflict.
 fn merge_supported_path(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "txt" | "tilo-doc")
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "txt" | "qdoc" | "tilo-doc"
+            )
         })
 }
 
