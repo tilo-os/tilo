@@ -10,7 +10,6 @@
 use std::cmp::Reverse;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use tilo_search::Frecency;
 
@@ -54,12 +53,6 @@ fn usage() -> MutexGuard<'static, Usage> {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
 /// The usage key of a row: its provider and id.
 #[must_use]
 pub fn key(provider_id: &str, id: &str) -> String {
@@ -68,7 +61,7 @@ pub fn key(provider_id: &str, id: &str) -> String {
 
 /// Remember that the row `provider_id`/`id` was chosen now.
 pub fn record(provider_id: &str, id: &str) {
-    record_at(&key(provider_id, id), now());
+    record_at(&key(provider_id, id), tilo_clock::unix_now());
 }
 
 fn record_at(key: &str, at: u64) {
@@ -98,7 +91,7 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 pub fn boost(provider_id: &str, id: &str) -> i32 {
     usage()
         .frecency
-        .boost(&key(provider_id, id), now(), MAX_BOOST)
+        .boost(&key(provider_id, id), tilo_clock::unix_now(), MAX_BOOST)
 }
 
 /// Order `rows` by score, equal scores by usage. Stable, so rows equal in
@@ -129,7 +122,7 @@ pub fn order_ties_after(mut rows: Vec<SearchResult>) -> Vec<SearchResult> {
 #[cfg(test)]
 pub(crate) fn record_for_test(provider_id: &str, id: &str, uses: u32) {
     for _ in 0..uses {
-        record_at(&key(provider_id, id), now());
+        record_at(&key(provider_id, id), tilo_clock::unix_now());
     }
 }
 

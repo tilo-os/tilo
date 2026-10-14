@@ -24,7 +24,6 @@ use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use tilo_seal::{Context, Label, SymmetricKey, envelope};
 use tilo_user_identity::persist::{IdentityPaths, PersistError, load_device_key};
@@ -159,12 +158,6 @@ fn load_or_create_salt(path: &Path) -> io::Result<Zeroizing<[u8; 32]>> {
     read(path)
 }
 
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
 /// An item's place in the vault.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ItemRef {
@@ -255,7 +248,7 @@ impl Store {
 
     fn open_now(&self) -> std::result::Result<Open, Locked> {
         let key = self.keys.release()?;
-        let now = now();
+        let now = tilo_clock::unix_now();
         let vault = match std::fs::read(&self.path) {
             Ok(bytes) => {
                 let plain =
@@ -294,7 +287,7 @@ impl Store {
             inner.open = Some(self.open_now()?);
         }
         let open = inner.open.as_mut().ok_or(Locked::NoIdentity)?;
-        open.now = now();
+        open.now = tilo_clock::unix_now();
         let result = work(open);
         if open.dirty {
             // A change that cannot be saved is reported, and stays pending
