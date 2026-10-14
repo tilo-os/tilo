@@ -58,6 +58,7 @@ use std::path::PathBuf;
 mod app;
 mod caps;
 mod location;
+pub mod login;
 pub mod session;
 
 pub use app::{AppPaths, DEFAULT_PROFILE, default_profile, set_default_profile};

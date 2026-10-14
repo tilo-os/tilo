@@ -13,8 +13,7 @@ use std::os::unix::net::UnixListener;
 use std::path::Path;
 
 pub use tilo_control::{
-    ADMIN_CONTROL_SOCKET_FILE, TEST_CONTROL_ENV, TEST_CONTROL_RUNTIME_SUBDIR,
-    TEST_CONTROL_SOCKET_FILE, admin_socket_path, default_socket_path,
+    TEST_CONTROL_ENV, TEST_CONTROL_SOCKET_FILE, admin_socket_path, default_socket_path,
 };
 
 /// Bind a listener at `path` that only this user can connect to.

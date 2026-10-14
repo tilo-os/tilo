@@ -13211,6 +13211,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-paths",
  "tilo-test-env",
  "tokio",
  "tokio-util",
@@ -16609,6 +16610,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "serde_json",
+ "tilo-paths",
  "workspace-hack",
 ]
 
@@ -17744,6 +17746,7 @@ dependencies = [
 name = "tilo-paths"
 version = "0.1.0"
 dependencies = [
+ "rustix 1.1.4",
  "tilo-platform-caps",
  "windows-sys 0.61.2",
  "workspace-hack",
