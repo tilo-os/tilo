@@ -10,6 +10,11 @@ topbar-sharing-session-controls = SESSION CONTROLS · { $name }
 topbar-sharing-session-viewing = SESSION VIEWING · { $name }
 topbar-sharing-count-controlling = { $controllers } CONTROL · { $viewers } VIEWING
 topbar-sharing-count = { $viewers } VIEWING
+topbar-watching-count = +{ $count } watching
+topbar-watching-description = { $count } { $count ->
+        [one] person
+       *[other] people
+    } watching without joining
 topbar-sharing-surface = surface { $surface }
 topbar-open-overview = Open overview
 topbar-tilo-menu = Tilo menu
@@ -864,6 +869,14 @@ a11y-shell-people-present = Present now
 a11y-shell-people-now = Now: { $activity }
 a11y-shell-people-intent = Intent: { $status }
 a11y-shell-people-intent-inferred = Intent, inferred: { $status }
+a11y-shell-people-recent = Recently: { $summary }
+a11y-shell-people-recent-inferred = Recently, summarized: { $summary }
+a11y-shell-people-recent-toggle = What { $name } did recently
+a11y-shell-people-recent-toggle-description = Show or hide a short summary of the last few minutes
+a11y-shell-people-watching = { $count } { $count ->
+        [one] person
+       *[other] people
+    } watching without joining
 a11y-shell-status-name = Your collaboration status
 a11y-shell-status-inferred = Inferred on this device from recent semantic actions
 a11y-shell-status-set = Set what you are trying to accomplish
@@ -910,6 +923,7 @@ launchpad-keyboard-hint = Arrow keys move  ·  Enter opens  ·  Super+N shows ev
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-here-now = { $count } here now
+people-panel-watching = +{ $count } watching
 people-panel-screen-visible = Screen visible now
 people-panel-only-you = Only you are here
 people-panel-status-typing = Type a status, then press Enter

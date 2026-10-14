@@ -19,6 +19,14 @@ topbar-sharing-count = { $viewers } { $viewers ->
         [one] SIEHT ZU
        *[other] SEHEN ZU
     }
+topbar-watching-count = +{ $count } { $count ->
+        [one] schaut zu
+       *[other] schauen zu
+    }
+topbar-watching-description = { $count } { $count ->
+        [one] Person schaut
+       *[other] Personen schauen
+    } zu, ohne teilzunehmen
 topbar-sharing-surface = Oberfläche { $surface }
 topbar-open-overview = Übersicht öffnen
 topbar-tilo-menu = Tilo-Menü
@@ -882,6 +890,14 @@ a11y-shell-people-present = Jetzt anwesend
 a11y-shell-people-now = Jetzt: { $activity }
 a11y-shell-people-intent = Absicht: { $status }
 a11y-shell-people-intent-inferred = Absicht, abgeleitet: { $status }
+a11y-shell-people-recent = Zuletzt: { $summary }
+a11y-shell-people-recent-inferred = Zuletzt, zusammengefasst: { $summary }
+a11y-shell-people-recent-toggle = Was { $name } zuletzt gemacht hat
+a11y-shell-people-recent-toggle-description = Eine kurze Zusammenfassung der letzten Minuten ein- oder ausblenden
+a11y-shell-people-watching = { $count } { $count ->
+        [one] Person schaut
+       *[other] Personen schauen
+    } zu, ohne teilzunehmen
 a11y-shell-status-name = Dein Zusammenarbeitsstatus
 a11y-shell-status-inferred = Auf diesem Gerät aus letzten Aktionen abgeleitet
 a11y-shell-status-set = Lege fest, woran du gerade arbeitest
@@ -928,6 +944,10 @@ launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Super+N 
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-here-now = { $count } gerade hier
+people-panel-watching = +{ $count } { $count ->
+        [one] schaut zu
+       *[other] schauen zu
+    }
 people-panel-screen-visible = Bildschirm gerade sichtbar
 people-panel-only-you = Nur du bist hier
 people-panel-status-typing = Gib einen Status ein und drücke dann die Eingabetaste
