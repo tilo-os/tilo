@@ -18,6 +18,7 @@ use crate::{
 };
 use tilo_user_identity::{RevocationList, UserIdentity};
 
+mod keystroke;
 mod recovery;
 
 struct Fixture {
