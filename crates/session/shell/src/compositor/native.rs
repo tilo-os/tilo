@@ -11309,18 +11309,21 @@ pub fn run() {
         }
         input_steps.step("settings");
         input_methods.follow_input(&mut state, &test_control_ctx.input);
-        input_methods.tick(&mut state);
+        input_steps.step("input-method-follow");
+        input_methods.tick_with_steps(&mut state, |step| input_steps.step(step));
         if let Some(rotation) = device_rotation
             .as_ref()
             .and_then(|changes| changes.try_iter().last())
         {
             backend.set_device_rotation(Some(rotation));
         }
+        input_steps.step("device-rotation");
         if let Some(confirmation) = state.output_management.take_confirmation() {
             frame_builder
                 .host_mut()
                 .show_display_confirmation(confirmation.transaction, confirmation.tool);
         }
+        input_steps.step("display-confirmation");
         for notice in state.output_management.take_notices() {
             match notice {
                 crate::compositor::output_management::DisplayToolNotice::ReappliedAfterRevert {
@@ -11333,7 +11336,7 @@ pub fn run() {
 
         // Re-derive everything depending on the output set once, after the whole
         // batch — a dock plug raises several udev edges, and per-edge re-derivation would advertise globals the next edge immediately supersedes.
-        input_steps.step("input-methods");
+        input_steps.step("display-notices");
         let output_geometry_changed = std::mem::take(&mut outputs_dirty);
         if output_geometry_changed {
             let outs = backend.outputs().to_vec();

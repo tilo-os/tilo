@@ -348,7 +348,6 @@ qs-action-failed = { $action } failed
 qs-action-failed-refreshing = { $error }. The current device state is being refreshed.
 qs-bluetooth-connect-failed = Could not connect { $device }
 qs-bluetooth-disconnect-failed = Could not disconnect { $device }
-qs-bluetooth-disconnected = Disconnected { $device } from this device
 qs-vpn-change-failed = Could not change { $profile }
 
 # Portal and permission sheets: app choice, global shortcuts, reviews, administrator access, network secrets, app-action grants
@@ -562,63 +561,16 @@ host-qs-change-failed-state-restored = The control was restored to the current d
 # Workspace history outcomes
 host-history-partial-undo-title = Partially undid the selected work
 host-history-partial-undo-body = Later collaborator edits were preserved. History shows which parts were left intact.
-host-history-reverted-title = Reverted a room change
-host-history-reverted-body = Written forward: the version you reverted from is still in the history.
-host-history-compared-title = Comparison ready
-host-history-compared-body = The exact causal before/after state is shown in History.
-host-history-named-title = Named a version
-host-history-named-body = Saved in this workspace's history, so everyone here sees it.
-host-history-task-updated-title = Task Center updated
-host-history-task-updated-body = The task and its audit trail are shared with this workspace.
-host-review-activity-title = Review workspace activity
-host-review-activity-body = History is open so you can inspect the related changes before deciding.
 
 # Call handoff between devices
 host-call-handoff-title = Call handoff
-host-call-handoff-approved = Approved once; this device is preparing its local media
-host-call-handoff-declined = Declined on this device
 host-call-handoff-waiting = Waiting for explicit approval on { $device }; this call stays live here
 host-call-move-failed = Could not move call
 
 # Devices and media: what an action in the drill-in did
 host-fabric-notice-title = Devices & media
 host-fabric-action-failed = Could not complete device action
-host-fabric-certified-display = certified display
-host-fabric-the-display = the display
-host-fabric-calibration-applied = Applied the proposed placement for { $device }
-host-fabric-calibration-dismissed = Dismissed the placement suggestion for { $device }
-host-fabric-calibration-restored = Restored the previous placement for { $device }
-host-fabric-audio-allowed = Allowed { $source } to play here for this session
-host-fabric-audio-declined = Declined audio from { $source }
-host-fabric-speaker-joined = Joined { $group } as the { $role }
-host-fabric-speaker-declined = Declined to join { $group }
-host-fabric-speaker-stopped = Stopped playing on { $group }
-host-fabric-speaker-playing = Playing on { $group }
 host-fabric-speaker-playing-media = Playing on { $group }; the media keeps playing from here
-host-fabric-speaker-left = This device left { $group }
-host-fabric-speaker-listen-allowed = { $group } can calibrate with this microphone
-host-fabric-speaker-listen-declined = { $group } will not use this microphone
-host-fabric-speaker-listen-stopped = { $group } can no longer use this microphone
-host-fabric-audio-route-dismissed = Dismissed interrupted { $route }
-host-fabric-audio-route-stopped = Stopped routing { $route }
-host-fabric-input-allowed = Allowed { $app } to use this input once
-host-fabric-input-declined = Declined remote input for { $app }
-host-fabric-input-focused-app-allowed = Allowed the focused app to use this remote input once
-host-fabric-input-stopped = Stopped the remote input session
-host-fabric-pairing-approved = Approved pairing { $accessory } for this handoff
-host-fabric-pairing-declined = Declined pairing { $accessory }
-host-fabric-handoff-retrying = Retrying handoff of { $accessory }
-host-fabric-handoff-cancelling = Cancelling handoff of { $accessory }
-host-fabric-controller-allowed = Allowed { $controller } from { $device } for this session
-host-fabric-controller-declined = Declined controller from { $device }
-host-fabric-controller-stopped = Stopped forwarding { $controller }
-host-fabric-media-move-cancelled = Cancelled moving { $title } to { $device }
-host-fabric-media-retrying = Retrying { $title } on { $device }
-host-fabric-output-routed = Audio is now routed to { $output }
-host-fabric-input-selected = Recording from { $input }
-host-fabric-tethering-allowed = Allowed { $device } to use this phone's connection
-host-fabric-tethering-declined = Declined tethering for { $device }
-host-fabric-tethering-disconnected = Disconnected tethering with { $device }
 host-fabric-asked-capture = Asked { $device } to share its { $input } once
 host-fabric-asked-audio = Asked { $device } to allow this audio once; playback stays local until approved
 host-fabric-asked-tethering = Asked { $device } to share its connection
@@ -629,7 +581,6 @@ host-fabric-place-left = { $device } will sit left of this display after it conf
 host-fabric-place-right = { $device } will sit right of this display after it confirms
 host-fabric-place-above = { $device } will sit above this display after it confirms
 host-fabric-place-below = { $device } will sit below this display after it confirms
-host-fabric-control-revoked = { $device } can no longer control this device
 host-fabric-control-granted = { $device } may control this device for 15 minutes
 
 # Accessibility tree: workspace overlays
@@ -1471,15 +1422,6 @@ search-action-permission-roles-subtitle = Manage reusable least-privilege worksp
 # Search: what a shell action did
 search-action-tab-close-failed = Can't close this tab
 search-action-tab-split-failed = Can't split this tab
-search-action-device-list-copied = Device list copied
-search-action-device-list-copied-body = { $count ->
-    [one] 1 device
-   *[other] { $count } devices
-}
-search-action-enrollment-copied = Enrollment token copied
-search-action-enrollment-copied-body = It expires in five minutes and cannot admit further devices.
-search-action-home-server-copied = Home-server setup code copied
-search-action-home-server-copied-body = It expires in five minutes and grants full workspace replication.
 search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
 
@@ -1493,8 +1435,6 @@ search-apps-verification-pending = Registry verification pending
 search-apps-store-subtitle = App Store · { $trust } · { $detail }
 search-apps-view-in-store = View { $app } in App Store
 search-apps-store-failed = Couldn't open App Store for { $app }
-search-apps-opening = Opening { $app }
-search-apps-opening-body = Loading…
 
 # Search: continuity actions across your certified devices
 search-continuity-certified-device = certified device

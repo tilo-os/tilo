@@ -1,4 +1,4 @@
-//! Immutable body-text pages over the actual qdoc layout. Not a public action or authority witness.
+//! Immutable body-text pages over the actual tilo-doc layout. Not a public action or authority witness.
 pub mod action;
 pub mod changes;
 pub mod markdown;

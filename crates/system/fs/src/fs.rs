@@ -3016,7 +3016,7 @@ impl QuickFS {
                     .map(|(_, ext)| ext.to_ascii_lowercase())
             })
             .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "tilo-doc" | "qdoc") {
+        if !matches!(extension.as_str(), "txt" | "tilo-doc") {
             return Err(libc::ENOTSUP);
         }
         let state = history.snapshot(record_id).ok_or(EINVAL)?;
@@ -3330,7 +3330,7 @@ impl QuickFS {
                     .map(|(_, ext)| ext.to_ascii_lowercase())
             })
             .ok_or(libc::ENOTSUP)?;
-        if !matches!(extension.as_str(), "txt" | "tilo-doc" | "qdoc") {
+        if !matches!(extension.as_str(), "txt" | "tilo-doc") {
             return Err(libc::ENOTSUP);
         }
         let state = history.snapshot(record_id).ok_or(EINVAL)?;
@@ -3395,7 +3395,7 @@ impl QuickFS {
             version_id: second_id,
             bytes: load(second_id)?,
         };
-        let merged = if matches!(extension.as_str(), "tilo-doc" | "qdoc") {
+        let merged = if matches!(extension.as_str(), "tilo-doc") {
             let preflight = crate::conflict_merge::preflight_exact(first, second, None);
             let crate::conflict_merge::MergePreflight::Safe { result, .. } = preflight else {
                 // A failed preflight is deliberately indistinguishable from
@@ -3403,7 +3403,7 @@ impl QuickFS {
                 // conflict remains untouched for Keep Both / manual review.
                 return Err(libc::ENOTSUP);
             };
-            (result.codec == crate::conflict_merge::DeterministicMergeCodec::QdocAutomergeV1)
+            (result.codec == crate::conflict_merge::DeterministicMergeCodec::TiloDocAutomergeV1)
                 .then_some(result)
                 .ok_or(libc::ENOTSUP)?
         } else {
@@ -3483,8 +3483,8 @@ impl QuickFS {
         };
         participant.projection_hash = participant.computed_projection_hash().map_err(|_| EIO)?;
         let codec = match merged.codec {
-            crate::conflict_merge::DeterministicMergeCodec::QdocAutomergeV1 => {
-                fs_protocol::ConflictMergeCodecV1::QdocAutomergeV1
+            crate::conflict_merge::DeterministicMergeCodec::TiloDocAutomergeV1 => {
+                fs_protocol::ConflictMergeCodecV1::TiloDocAutomergeV1
             }
             crate::conflict_merge::DeterministicMergeCodec::PlainUtf8ThreeWayV1 => {
                 fs_protocol::ConflictMergeCodecV1::PlainUtf8ThreeWayV1

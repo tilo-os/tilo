@@ -27,7 +27,7 @@ chrono = { workspace = true, features = ["std"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 regex = "1"
-uuid = { version = "1.23.1", features = ["v4", "serde", "js"] }
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
 thiserror.workspace = true
 blake3.workspace = true
 # Appearance names are compared and stored NFC-normalized.
@@ -41,3 +41,11 @@ tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
+
+# A browser page draws invocation ids from `crypto.getRandomValues`; a
+# `tilo_no_js` build has no page and takes getrandom's configured backend.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown", not(tilo_no_js)))'.dependencies]
+uuid = { version = "1.23.1", features = ["js"] }
+
+[target.'cfg(all(target_family = "wasm", target_os = "unknown", tilo_no_js))'.dependencies]
+uuid = { version = "1.23.1", features = ["rng-getrandom"] }

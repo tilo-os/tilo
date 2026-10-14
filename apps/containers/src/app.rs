@@ -971,7 +971,6 @@ impl ContainersApp {
         } else if !self.live {
             self.engine.images.retain(|i| i.reference() != reference);
             self.engine_changed();
-            self.show_toast(format!("Removed {reference}"), false);
         } else {
             self.show_toast("Podman isn't running", true);
         }
@@ -1023,7 +1022,7 @@ impl ContainersApp {
                 vec!["volume".into(), "create".into(), name.into()],
             ) {
                 match result {
-                    Ok(()) => self.show_toast(format!("Created volume {name}"), false),
+                    Ok(()) => {}
                     Err(error) => {
                         self.show_toast(format!("Couldn't create the volume: {error}"), true);
                     }
@@ -1032,7 +1031,7 @@ impl ContainersApp {
                 return;
             }
             match podman::create_volume(name) {
-                Ok(()) => self.show_toast(format!("Created volume {name}"), false),
+                Ok(()) => {}
                 Err(e) => self.show_toast(format!("Couldn't create the volume: {e}"), true),
             }
             self.spawn_refresh();
@@ -1048,7 +1047,6 @@ impl ContainersApp {
             });
             self.engine.volumes.sort_by(|a, b| a.name.cmp(&b.name));
             self.engine_changed();
-            self.show_toast(format!("Created volume {name}"), false);
         }
     }
 
@@ -1064,7 +1062,6 @@ impl ContainersApp {
         } else if !self.live {
             self.engine.volumes.retain(|v| v.name != name);
             self.engine_changed();
-            self.show_toast(format!("Removed volume {name}"), false);
         } else {
             self.show_toast("Podman isn't running", true);
         }
