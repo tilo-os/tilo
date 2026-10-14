@@ -530,8 +530,7 @@ fn run_handoff() {
         seen.contains("USR_READ_ONLY"),
         "/usr must be read-only in the guest:\n{seen}"
     );
-    // SAFETY: `geteuid` cannot fail.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     assert!(
         seen.contains(&format!("UID_{uid}_")),
         "the guest must run as the real uid {uid}:\n{seen}"
