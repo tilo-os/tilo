@@ -34,7 +34,7 @@ def qualification_image(output, env, cohort):
         context = Path(scratch) / 'context'
         prerequisites = qualifier.fixed_module(ROOT / 'os/scripts/installer-receive-fixture/prerequisite-image.py',
                                                'capture_prerequisites')
-        prerequisites.assemble(context)
+        prerequisites.assemble(context, env['TILO_CAPTURE_QUALIFIER_BASE'])
         for role, destination in qualifier.BINDINGS.items():
             target = context / 'rootfs' / destination.lstrip('/')
             target.parent.mkdir(parents=True, exist_ok=True)

@@ -7,8 +7,16 @@ No candidate executable is taken from the prerequisite image.
 Create an exclusive context with:
 
 ```sh
-python3 os/scripts/installer-receive-fixture/prerequisite-image.py --output /tmp/tilo-native-prerequisite-context
+python3 os/scripts/installer-receive-fixture/prerequisite-image.py \
+  --output "${TMPDIR:?}/tilo-native-prerequisite-context"
 ```
+
+If the historical local base is unavailable, use `--base` with an independently
+verified immutable Fedora image ID or registry digest reference (never a mutable
+tag). The generated recipe and source manifest record that exact base. Resolve
+and verify the registry manifest before pulling, retain the recipe, and tag the
+resulting prerequisite image so ordinary dangling-image cleanup cannot remove
+it during qualification.
 
 The generated Containerfile installs normal Fedora Flatpak, OSTree, D-Bus,
 Polkit, UDisks, udev, Secret Service, PAM and storage dependencies. It retains
@@ -27,7 +35,8 @@ ported without changing their bytes. The preparer only collects the actual
 image Bash/sleep ELF dependency closure into the private source namespace;
 it does not download a runtime or execute an app.
 
-Build the generated context in the existing builder's rootful Podman store.
+Build the generated context in the operator's rootless Podman store. This is a
+text-only qualification prerequisite container, not a Tilo OS image build.
 The build emits `/usr/share/tilo-native-prerequisites/source-inputs.json` with
 each installed text source hash and `/usr/share/tilo-native-prerequisites/observed-readiness.json`
 with actual tools, maintained PAM hashes and installed RPM versions. Run
