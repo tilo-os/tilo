@@ -2013,7 +2013,14 @@ impl App {
         ) {
             (true, None, Some(disk)) => {
                 let name = format!("Tilo Dev ({})", args.name);
-                crate::hypervisor::utm_import_template(&mut self.runner, &name, disk)?;
+                crate::hypervisor::utm_import_template(
+                    &mut self.runner,
+                    (&name, disk),
+                    (
+                        args.memory_mb.unwrap_or(crate::hypervisor::UTM_MEMORY_MB),
+                        args.cpus.unwrap_or(crate::hypervisor::UTM_CPUS),
+                    ),
+                )?;
                 self.receipt
                     .set("utm-template", json!({ "name": name, "disk": disk }));
                 Some(name)

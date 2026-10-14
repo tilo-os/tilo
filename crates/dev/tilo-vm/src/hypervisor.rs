@@ -862,24 +862,30 @@ impl Hypervisor for Qemu {
 
 pub struct Utm;
 
+/// What a UTM VM gets unless `--memory-mb`/`--cpus` say otherwise: building
+/// the shell in the VM needs more than the other adapters' default (a
+/// release link of `tilo-relay` alone was killed at 6 GiB).
+pub const UTM_MEMORY_MB: u32 = 16384;
+pub const UTM_CPUS: u32 = 8;
+
 /// Import `disk` (qcow2) into UTM as the template VM `name`: an aarch64 guest
-/// on Apple's hypervisor with UEFI and one virtio disk, on UTM's shared
-/// network. UTM copies the disk into the VM's bundle.
+/// on Apple's hypervisor with UEFI, `memory_mb` and `cpus`, and one virtio
+/// disk, on UTM's shared network. UTM copies the disk into the VM's bundle.
 ///
 /// # Errors
 ///
 /// UTM refused the import, or `osascript` could not run.
 pub fn utm_import_template(
     runner: &mut dyn Runner,
-    name: &str,
-    disk: &str,
+    (name, disk): (&str, &str),
+    (memory_mb, cpus): (u32, u32),
 ) -> Result<(), CliError> {
     let quote = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
     let lines = [
         format!("set diskFile to POSIX file \"{}\"", quote(disk)),
         "tell application \"UTM\"".to_owned(),
         format!(
-            "make new virtual machine with properties {{backend:qemu, configuration:{{name:\"{}\", architecture:\"aarch64\", memory:6144, cpu cores:6, hypervisor:true, uefi:true, drives:{{{{interface:virtio, source:diskFile}}}}}}}}",
+            "make new virtual machine with properties {{backend:qemu, configuration:{{name:\"{}\", architecture:\"aarch64\", memory:{memory_mb}, cpu cores:{cpus}, hypervisor:true, uefi:true, drives:{{{{interface:virtio, source:diskFile}}}}}}}}",
             quote(name)
         ),
         "end tell".to_owned(),
