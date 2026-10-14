@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────┐
-//! │ document  Outline / Files  Bold Italic Math  Save Export PDF │
+//! │ document  Outline  B I Math Cite Section  Save Export PDF   │
 //! ├───────────────────────────┬──────────────────────────────┤
 //! │ source editor             │      rendered preview         │
 //! │ (code, line numbers,      │  (scrollable pages + thumbs)  │
@@ -335,7 +335,7 @@ impl TypstApp {
             dragging_preview: false,
             splitter: SplitHandle::new(
                 SplitOrientation::Horizontal,
-                SplitRatio::new(0.46).with_bounds(0.18, 0.82),
+                SplitRatio::new(0.47).with_bounds(0.18, 0.82),
             )
             .with_label("Resize the source and the preview"),
             dirty: true,
@@ -1085,6 +1085,7 @@ impl TypstApp {
             0,
             self.err_count + self.warn_count,
             self.show_diagnostics,
+            self.navigation.visible(),
             matches!(self.compact_view, CompactPane::Preview),
         );
         self.chrome
@@ -2261,7 +2262,7 @@ mod tests {
     fn toolbar_navigation_and_formatting_use_real_local_operations() {
         let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
         app.harness().resize((1440, 810)).unwrap();
-        let outline = app.harness().a11y_node_named("Outline / Files").unwrap();
+        let outline = app.harness().a11y_node_named("Outline").unwrap();
         app.harness()
             .perform_a11y_action(outline, &ui::a11y::Action::Activate)
             .unwrap();
@@ -2743,7 +2744,7 @@ mod tests {
                 "Open",
                 "Save",
                 "Export PDF",
-                "Outline / Files",
+                "Outline",
                 "Bold",
                 "Italic",
                 "Math",
@@ -2798,6 +2799,20 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn wide_outline_layout_balances_navigation_source_and_preview() {
+        for scale in [1.0, 1.5] {
+            let (mut app, _doc) = fresh();
+            app.layout_theme = Theme::dark().with_ui_scale(scale);
+            app.navigation.open();
+            app.layout_in(Rect::new(0.0, 0.0, 1440.0, 810.0));
+            assert!(!app.compact);
+            assert!((app.navigation.rect().width() - 208.0).abs() < 0.01);
+            assert!((app.editor_rect.width() / 1440.0 - 0.40).abs() < 0.01);
+            assert!((app.preview_rect.width() / 1440.0 - 0.45).abs() < 0.01);
+        }
+    }
+
     #[test]
     fn resize_reflows_between_split_and_compact() {
         // The responsive contract: layout is re-derived from the *current* width
@@ -2894,7 +2909,7 @@ mod tests {
                 .with_widget(|surface: &mut TypstApp| surface.chrome.toolbar_names())
                 .unwrap();
             for wanted in [
-                "Outline / Files",
+                "Outline",
                 "Bold",
                 "Italic",
                 "Math",

@@ -19,7 +19,7 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::toggle_group::{Segment, SegmentedFace, ToggleGroup};
 use ui::widget::toolbar::{Orientation, Toolbar};
-use ui::widget::{Button, ControlSize, Text, Widget};
+use ui::widget::{Button, ButtonRole, ControlSize, Text, Widget};
 
 /// What a control asked the editor to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +47,7 @@ type Queue = Rc<RefCell<Vec<Command>>>;
 
 /// The position of the Problems toggle among the toolbar's items.
 const PROBLEMS_ITEM: usize = 1;
+const OUTLINE_ITEM: usize = 0;
 
 /// What the toolbar was built for; it is rebuilt when the Problems label or
 /// the toggle's state would differ.
@@ -54,6 +55,7 @@ const PROBLEMS_ITEM: usize = 1;
 struct ToolbarFor {
     problems: usize,
     shown: bool,
+    outline_shown: bool,
 }
 
 pub struct Chrome {
@@ -110,6 +112,7 @@ fn build_toolbar(
     queue: &Queue,
     problems: usize,
     shown: bool,
+    outline_shown: bool,
     actions: Option<&ui::framework::Actions<crate::resource::Workspace>>,
 ) -> Toolbar {
     use crate::actions::TypstEffect;
@@ -118,20 +121,31 @@ fn build_toolbar(
     // priority: document navigation leads, formatting follows, and the file
     // commands, which have shortcuts, fold into the More menu first.
     Toolbar::new(Orientation::Horizontal)
-        .push_button("Outline / Files", command(queue, Command::ToggleOutline))
+        .push_toggle(
+            "Outline",
+            outline_shown,
+            command(queue, Command::ToggleOutline),
+        )
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Outline)))
         .push_toggle(&label, shown, command(queue, Command::ToggleProblems))
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Problems)))
         .push_separator()
-        .push_button("Bold", command(queue, Command::Bold))
+        .push_button("B", command(queue, Command::Bold))
+        .with_accessible_name("Bold")
+        .with_button_role(ButtonRole::Secondary)
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Bold)))
-        .push_button("Italic", command(queue, Command::Italic))
+        .push_button("I", command(queue, Command::Italic))
+        .with_accessible_name("Italic")
+        .with_button_role(ButtonRole::Secondary)
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Italic)))
         .push_button("Math", command(queue, Command::Math))
+        .with_button_role(ButtonRole::Secondary)
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Math)))
         .push_button("Cite", command(queue, Command::Cite))
+        .with_button_role(ButtonRole::Secondary)
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Cite)))
         .push_button("Section", command(queue, Command::Section))
+        .with_button_role(ButtonRole::Secondary)
         .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Section)))
         .push_separator()
         .push_icon(Icon::Minus, "Zoom out", command(queue, Command::ZoomOut))
@@ -188,9 +202,10 @@ impl Chrome {
         let toolbar_for = ToolbarFor {
             problems: 0,
             shown: false,
+            outline_shown: false,
         };
         Self {
-            toolbar: build_toolbar(&queue, 0, false, None),
+            toolbar: build_toolbar(&queue, 0, false, false, None),
             toolbar_for,
             document,
             document_name,
@@ -214,6 +229,7 @@ impl Chrome {
             &self.queue,
             self.toolbar_for.problems,
             self.toolbar_for.shown,
+            self.toolbar_for.outline_shown,
             Some(actions),
         );
         self.close_problems = actions.bind_effect_invocation(
@@ -237,6 +253,7 @@ impl Chrome {
         current: usize,
         problems: usize,
         problems_shown: bool,
+        outline_shown: bool,
         preview_shown: bool,
     ) {
         let name = names.get(current).copied().unwrap_or_default();
@@ -244,8 +261,10 @@ impl Chrome {
         let wanted = ToolbarFor {
             problems,
             shown: problems_shown,
+            outline_shown,
         };
         if wanted != self.toolbar_for {
+            self.toolbar.set_active(OUTLINE_ITEM, outline_shown);
             self.toolbar.set_active(PROBLEMS_ITEM, problems_shown);
             self.toolbar
                 .set_label(PROBLEMS_ITEM, &problems_label(problems));
@@ -488,5 +507,36 @@ impl Chrome {
             .find(|node| node.action_target.as_deref() == Some("toolbar.overflow"))
             .and_then(|node| node.bounds)
             .map(ui::a11y::AccessBounds::to_rect)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outline_face_tracks_visibility_without_rebuilding_bound_commands() {
+        let mut chrome = Chrome::new();
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        for shown in [false, true, false] {
+            chrome.sync(&["note.typ"], 0, 0, false, shown, false);
+            chrome.place(
+                Rect::new(0.0, 0.0, 1440.0, 60.0),
+                false,
+                1,
+                &mut text,
+                &theme,
+            );
+            let outline = chrome
+                .toolbar_nodes()
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some("Outline"))
+                .unwrap();
+            assert_eq!(outline.role, ui::a11y::Role::ToggleButton);
+            assert_eq!(outline.state.checked, Some(shown));
+            assert!(chrome.toolbar_names().iter().any(|name| name == "Bold"));
+            assert!(chrome.toolbar_names().iter().any(|name| name == "Italic"));
+        }
     }
 }

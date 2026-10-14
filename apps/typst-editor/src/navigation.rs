@@ -251,6 +251,12 @@ impl Navigation {
 
     pub(crate) fn layout(&mut self, body: Rect, theme: &Theme) -> Rect {
         self.drawer.scale_for(theme);
+        // Keep navigation compact at UI zoom; enlarged text still gets room.
+        let width = f64::from(theme.tokens.metrics.sidebar_min_width + theme.tokens.spacing.s2)
+            / f64::from(theme.ui_scale)
+            * f64::from(theme.text_growth());
+        self.drawer
+            .set_docked_width(width / theme.responsive_scale());
         let remaining = self.drawer.resolve(body);
         self.list.inner_mut().place_at(self.drawer.list_rect());
         remaining

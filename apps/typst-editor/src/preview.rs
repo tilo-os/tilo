@@ -26,7 +26,7 @@ use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::text_selection::{Selection, extend_span_drag, line_boundaries, word_boundaries};
 use ui::theme::Theme;
-use ui::tokens::{Spacing, TextRole};
+use ui::tokens::TextRole;
 use ui::widget::{
     Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, Image, ImageFit,
     SmallContentAlign, ViewportState,
@@ -49,10 +49,12 @@ struct Metrics {
 }
 
 impl Metrics {
-    fn of(spacing: &Spacing) -> Self {
+    fn of(theme: &Theme) -> Self {
+        let spacing = &theme.tokens.spacing;
         Self {
             page_gap_pt: f64::from(spacing.s6),
-            view_pad: f64::from(spacing.s6),
+            // Paper margins are viewport space, not text-sized chrome.
+            view_pad: f64::from(spacing.s4) / f64::from(theme.ui_scale),
             thumb_w: f64::from(spacing.s16 + spacing.s3),
             thumb_gap: f64::from(spacing.s3),
         }
@@ -157,7 +159,7 @@ impl Default for PreviewPane {
         Self {
             rect: Rect::ZERO,
             viewport: ViewportState::new()
-                .with_padding(Metrics::of(&Spacing::default()).view_pad)
+                .with_padding(Metrics::of(&Theme::default()).view_pad)
                 .with_zoom_bounds(0.1, 8.0)
                 .with_alignment(SmallContentAlign::Center, SmallContentAlign::Start),
             images: Vec::new(),
@@ -174,7 +176,7 @@ impl Default for PreviewPane {
             fit_width: true,
             current: 0,
             empty: Empty::Compiling,
-            metrics: Metrics::of(&Spacing::default()),
+            metrics: Metrics::of(&Theme::default()),
             page_pt: Vec::new(),
             page_text: Vec::new(),
             banner_h: 0.0,
@@ -238,7 +240,7 @@ impl PreviewPane {
     /// Follow `theme`'s spacing scale: the page gap, the viewport padding and
     /// the thumbnail strip. Re-stacks the pages when the scale changed.
     pub fn apply_theme(&mut self, theme: &Theme) {
-        let metrics = Metrics::of(&theme.tokens.spacing);
+        let metrics = Metrics::of(theme);
         if metrics == self.metrics {
             return;
         }
@@ -1374,6 +1376,29 @@ mod tests {
             );
         }
         assert!(!PreviewPane::new().jump_to_heading("Hello"));
+    }
+
+    #[test]
+    fn default_fit_width_fills_resized_panes_with_tight_paper_margins() {
+        for scale in [1.0, 1.5] {
+            let mut p = pane();
+            p.apply_theme(&Theme::dark().with_ui_scale(scale));
+            for width in [640.0, 480.0, 720.0] {
+                p.set_rect(Rect::new(800.0, 60.0, 800.0 + width, 760.0));
+                let left = p.viewport.content_point_to_screen(Point::ZERO);
+                let right = p.viewport.content_point_to_screen(Point::new(200.0, 0.0));
+                assert!((left.x - p.rect.x0 - 16.0).abs() < 0.01);
+                assert!((p.rect.x1 - right.x - 16.0).abs() < 0.01);
+                assert_eq!(p.viewport.scroll_y(), 0.0);
+                assert!(p.fit_width);
+            }
+            p.zoom_in();
+            let custom = p.viewport.zoom();
+            p.set_rect(Rect::new(800.0, 60.0, 1400.0, 760.0));
+            assert_eq!(p.viewport.zoom(), custom, "manual zoom survives resizing");
+            p.fit_width();
+            assert_eq!(p.viewport.zoom(), p.viewport.fit_width_zoom());
+        }
     }
 
     #[test]

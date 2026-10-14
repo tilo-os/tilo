@@ -56,6 +56,8 @@ pub struct ToolbarCommand {
     pub glyph: Option<GlyphPainter>,
     /// `Some` for a toggle; `Some(true)` paints the lift.
     pub active: Option<bool>,
+    /// Shared button face; plain by default, raised for distinct command keys.
+    pub role: super::ButtonRole,
     /// What assistive technology and the More menu call it, when that
     /// differs from the label (a toggle labelled "Aa" is "Match case").
     pub accessible_name: Option<String>,
@@ -84,6 +86,7 @@ impl ToolbarCommand {
             swatch: None,
             glyph: None,
             active: None,
+            role: super::ButtonRole::Plain,
             accessible_name: None,
             enabled: true,
             dot: false,
@@ -382,6 +385,16 @@ impl Toolbar {
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         if let Some(command) = self.last_command() {
             command.accessible_name = Some(name.to_string());
+        }
+        self
+    }
+
+    /// Choose the shared button face for the last pushed command. Overflow
+    /// retains the same action and accessible name, independent of its face.
+    #[must_use]
+    pub fn with_button_role(mut self, role: super::ButtonRole) -> Self {
+        if let Some(command) = self.last_command() {
+            command.role = role;
         }
         self
     }
@@ -2288,8 +2301,8 @@ impl Toolbar {
         self.gap = theme.tokens.spacing.s3;
     }
 
-    /// One command, painted as a plain button: bare at rest, a lift of the
-    /// ground under the pointer, and a full lift while a toggle is on.
+    /// Commands use the shared button painter: plain by default, optionally
+    /// raised, and lifted while a toggle is on.
     fn draw_button(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2312,7 +2325,12 @@ impl Toolbar {
             Some(name) => face.accessible_name(name),
             None => face,
         }
-        .role(crate::widget::ButtonRole::Plain)
+        .role(match target {
+            Target::Item(index) => self
+                .command(index)
+                .map_or(super::ButtonRole::Plain, |c| c.role),
+            Target::Overflow => super::ButtonRole::Plain,
+        })
         .toggled(active)
         .disabled(!enabled)
         .hovered(enabled && self.hovered == Some(target))
@@ -2817,6 +2835,29 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count()
+    }
+
+    #[test]
+    fn raised_commands_paint_distinct_faces_and_keep_accessible_names() {
+        let command = || {
+            Toolbar::new(Orientation::Horizontal)
+                .push_button("B", || {})
+                .with_accessible_name("Bold")
+        };
+        let mut plain = lay_out(command(), 400.0);
+        let mut raised = lay_out(
+            command().with_button_role(crate::widget::ButtonRole::Secondary),
+            400.0,
+        );
+        assert!(count_color_fills(&render(&mut raised)) > count_color_fills(&render(&mut plain)));
+        assert_eq!(plain.item_rects, raised.item_rects);
+        let node = Widget::accessibility(&raised).unwrap();
+        assert_eq!(node.children[0].name.as_deref(), Some("Bold"));
+        assert_eq!(node.children[0].role, Role::Button);
+        let mut text = TextRenderer::new();
+        raised.lay_out_in(Rect::new(0.0, 0.0, 1.0, 40.0), &mut text, &Theme::dark());
+        assert!(raised.has_overflow());
+        assert_eq!(raised.command(0).unwrap().name(), "Bold");
     }
 
     #[test]

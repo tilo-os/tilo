@@ -2,7 +2,7 @@
 //!
 //! cargo build --locked -p typst-editor --example showcase
 //! target/debug/examples/showcase output.png 1.5 dark [output.mp4]
-//! Put a symlink to crates/sdk/ui-core/assets/fonts beside this binary first.
+//! Link a prepared fixture font catalog beside this binary as `fonts` first.
 //! Video requires ffmpeg with libx264; the default video path is beside the PNG.
 
 use std::io::Write;
@@ -15,10 +15,10 @@ use typst_editor::samples::{DEFAULT_INDEX, SAMPLES};
 use ui::framework::testing::TestApp;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::capability::presence_key;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
-use vello::kurbo::{Affine, CubicBez, ParamCurve, Point, Rect};
+use vello::kurbo::{Affine, BezPath, CubicBez, ParamCurve, Point, Stroke};
+use vello::peniko::{Color, Fill};
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, WindowEvent};
 
@@ -58,10 +58,7 @@ fn capture(
     let key = presence_key(app.surface_mut::<TypstApp>().source_widget())
         .ok_or("the source editor exposes no presence scope")?;
     let sample = SAMPLES.get(DEFAULT_INDEX).ok_or("missing capture sample")?;
-    let caret = sample
-        .source
-        .find("A good transition")
-        .ok_or("capture document has no abstract")?;
+    let caret = abstract_caret(sample.source)?;
     app.harness().update_presence(|presence| {
         presence.set_display_name(ui::UserId(ADA.into()), "Ada");
         presence.set_caret(&key, ui::UserId(ADA.into()), caret);
@@ -84,8 +81,6 @@ fn capture(
     // Use stable segment ordering for repeatable headless captures;
     // the fine rasterizer remains the production GPU renderer.
     let mut renderer = OffscreenRenderer::try_new_with_cpu_preprocessing(size.0, size.1)?;
-    let mut text = TextRenderer::new();
-    text.set_text_scale(theme.text_scale);
     let mut encoder = Recording::start(video, size)?;
     let epoch = ui::time::now();
     let mut clicked = false;
@@ -111,16 +106,12 @@ fn capture(
             .ok_or("recording clock overflow")?;
         ui::time::testing::with_monotonic_time(at, || {
             let point = cursor_at(curve, seconds);
-            // The very same position drives hit-testing and the shared peer
-            // overlay. The click goes through the real hosted event route;
+            // The local arrow and hit-testing use the same position.
+            // The click goes through the real hosted event route;
             // no screenshot-only preview or prearranged scroll replaces it.
             app.harness().send(&WindowEvent::CursorMoved {
                 device_id: DeviceId::dummy(),
                 position: PhysicalPosition::new(point.x, point.y),
-            });
-            app.harness().update_presence(|presence| {
-                presence.upsert_remote_cursor(ADA.into(), pointer_position(point), Some("Ada"));
-                true
             });
             let just_clicked = !clicked && seconds >= 2.0;
             if just_clicked {
@@ -130,10 +121,6 @@ fn capture(
                         "outline click did not move the source caret",
                     ));
                 }
-                app.harness().update_presence(|presence| {
-                    presence.set_caret(&key, ui::UserId(ADA.into()), heading_byte);
-                    true
-                });
                 clicked = true;
             }
             let just_edited = !edited && seconds >= 2.4;
@@ -142,6 +129,14 @@ fn capture(
                 edited = true;
             }
             app.harness().relayout();
+            let presence = app.harness().presence();
+            if !presence.remote_cursors.is_empty()
+                || presence.caret_for(&key, &ui::UserId(ADA.into())) != Some(caret)
+            {
+                return Err(std::io::Error::other(
+                    "local pointer changed remote author presence",
+                ));
+            }
             let background = theme.tokens.colors.surfaces.content;
             // Import the harness's captured backdrop into the reusable
             // renderer when the composition changes. Ordinary cursor frames
@@ -149,15 +144,30 @@ fn capture(
             if frame == 0 || just_clicked || just_edited {
                 let _ = app.harness().render_rgba_with(&mut renderer, background);
             }
-            let scene = capture_scene(app, &mut text, theme);
+            let scene = capture_scene(app, point);
             if frame == 0 {
-                renderer.render_png(app.harness().scene(), background, output);
+                renderer.render_png(&scene, background, output);
             }
             encoder.write(&renderer.render_resilient(&scene, background))
         })?;
     }
     encoder.finish()?;
     Ok(())
+}
+
+fn abstract_caret(source: &str) -> std::io::Result<usize> {
+    let caret = source
+        .find("A good transition")
+        .ok_or_else(|| std::io::Error::other("capture document has no abstract"))?;
+    if source
+        .get(..caret)
+        .is_none_or(|prefix| prefix.lines().count() != 10)
+    {
+        return Err(std::io::Error::other(
+            "the remote caret must stay on Abstract line 10",
+        ));
+    }
+    Ok(caret)
 }
 
 fn append_heading(
@@ -192,31 +202,29 @@ fn append_heading(
     Ok(())
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "bounded window coordinates fit f32 with subpixel precision"
-)]
-fn pointer_position(point: Point) -> [f32; 2] {
-    [point.x as f32, point.y as f32]
-}
-
-fn capture_scene(
-    app: &mut TestApp<TypstEditorShell>,
-    text: &mut TextRenderer,
-    theme: &Theme,
-) -> Scene {
-    let harness = app.harness();
-    let mut scene = harness.scene().clone();
-    // The live window host, rather than an app widget, owns this overlay.
-    // A headless capture uses that same shared presence painter explicitly.
-    ui::presence::draw_remote_presence(
-        &mut scene,
-        Affine::scale(f64::from(ui::offscreen::capture_device_scale())),
-        Rect::new(0.0, 0.0, f64::from(VIEWPORT.0), f64::from(VIEWPORT.1)),
-        text,
-        theme,
-        harness.presence(),
+fn capture_scene(app: &mut TestApp<TypstEditorShell>, point: Point) -> Scene {
+    let mut scene = app.harness().scene().clone();
+    // Headless captures have no OS cursor. Paint only the local arrow here;
+    // Ada remains the file-scoped caret painted by draw_peer_caret_labeled.
+    let mut arrow = BezPath::new();
+    arrow.move_to((0.0, 0.0));
+    arrow.line_to((0.0, 20.0));
+    arrow.line_to((5.5, 15.0));
+    arrow.line_to((10.0, 23.0));
+    arrow.line_to((14.0, 21.0));
+    arrow.line_to((9.5, 13.0));
+    arrow.line_to((17.0, 13.0));
+    arrow.close_path();
+    let transform = Affine::translate((point.x, point.y))
+        .then_scale(f64::from(ui::offscreen::capture_device_scale()));
+    scene.stroke(
+        &Stroke::new(2.5),
+        transform,
+        Color::from_rgb8(24, 24, 24),
+        None,
+        &arrow,
     );
+    scene.fill(Fill::NonZero, transform, Color::WHITE, None, &arrow);
     scene
 }
 
@@ -304,7 +312,7 @@ mod tests {
     fn cursor_has_one_smooth_stroke_and_stable_endpoint_holds() {
         let start = Point::new(600.0, 200.0);
         let end = Point::new(100.0, 350.0);
-        let curve = CubicBez::new(start, (500.0, 250.0), (200.0, 400.0), end);
+        let curve = CubicBez::new(start, (500.0, 250.0).into(), (200.0, 400.0).into(), end);
         assert_eq!(cursor_at(curve, 0.0), start);
         assert_eq!(cursor_at(curve, 0.45), start);
         assert_eq!(cursor_at(curve, 2.0), end);
