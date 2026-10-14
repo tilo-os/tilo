@@ -172,7 +172,7 @@ const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
 static STARTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// A line the compositor printed, with when the test read it.
-type Log = Arc<Mutex<Vec<(Instant, String)>>>;
+pub(crate) type Log = Arc<Mutex<Vec<(Instant, String)>>>;
 
 pub(crate) struct Desktop {
     child: Child,
@@ -186,20 +186,35 @@ impl Desktop {
     /// Notes tab saved in its session; returns once its control socket
     /// answers with a laid-out frame.
     fn start() -> Self {
-        Self::start_with(&notes_desktop())
+        Self::start_with(notes_desktop())
     }
 
     /// The same with `tree` as the saved session (`idle_memory` starts an
     /// empty desktop).
-    pub(crate) fn start_with(tree: &shell::shell::state::WorkspaceTree) -> Self {
-        Self::start_with_env(tree, &[])
+    pub(crate) fn start_with(tree: shell::shell::state::WorkspaceTree) -> Self {
+        Self::start_configured(tree, &[], false)
+    }
+
+    /// [`Self::start_with`], serving the agent door at
+    /// `tilo-session/agent.sock` in its runtime directory (where a client
+    /// inside the login looks) when `door`.
+    pub(crate) fn start_with_door(tree: shell::shell::state::WorkspaceTree, door: bool) -> Self {
+        Self::start_configured(tree, &[], door)
     }
 
     /// [`Self::start_with`] with `env` added to the compositor's
     /// environment (`workspace_switch_cost` turns on the frame trace).
     pub(crate) fn start_with_env(
-        tree: &shell::shell::state::WorkspaceTree,
+        tree: shell::shell::state::WorkspaceTree,
         env: &[(&str, &std::ffi::OsStr)],
+    ) -> Self {
+        Self::start_configured(tree, env, false)
+    }
+
+    fn start_configured(
+        tree: shell::shell::state::WorkspaceTree,
+        env: &[(&str, &std::ffi::OsStr)],
+        door: bool,
     ) -> Self {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path, so the runtime dir stays short.
@@ -213,15 +228,13 @@ impl Desktop {
         let _ = std::fs::remove_dir_all(&runtime_dir);
         std::fs::create_dir_all(&runtime_dir).expect("create the private runtime dir");
         let state_path = runtime_dir.join("state.json");
-        // Through a writer of its own, dropped here: the writer that saves a
-        // state file keeps its exclusive lease, and the compositor must own
-        // its session's file. Holding it here refused every save the
-        // compositor made ("file lease is busy").
-        let mut seed = tree.clone();
-        drop(std::mem::take(&mut seed.native_runtime));
-        shell::shell::persist::save_tree_to(&seed, &state_path).expect("seed the saved session");
-        drop(seed);
-        seed_tab_records(&runtime_dir, tree);
+        shell::shell::persist::save_tree_to(&tree, &state_path).expect("seed the saved session");
+        seed_tab_records(&runtime_dir, &tree);
+        // Saving made this tree the state file's writer: it holds the file's
+        // `.writer-lock` until it is dropped. The compositor is the only writer
+        // of the session it restores, so release it before that starts, or the
+        // compositor runs without its durable owner ("file lease is busy").
+        drop(tree);
         let identity_root = seed_identity(&runtime_dir);
         let control = runtime_dir.join("ctl");
 
@@ -235,7 +248,7 @@ impl Desktop {
                 Path::new(&cache).join("gst-registry.bin"),
             );
         }
-        let mut child = command
+        command
             .args(["--mode", "native", "--backend", "headless"])
             .env("XDG_RUNTIME_DIR", &runtime_dir)
             .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
@@ -259,6 +272,20 @@ impl Desktop {
             // Every round of channel-key questions is logged, so the gate counts
             // the rounds the shovel starts, not how often contention woke it.
             .env("RUST_LOG", "warn,tilo::collab::key_rounds=debug")
+            // As the session starts the compositor (os/usr/libexec/tilo-session):
+            // glibc reads its tunables when a process starts.
+            .env(
+                "GLIBC_TUNABLES",
+                launcher::hardening::NO_HUGE_PAGES_TUNABLES,
+            )
+            .envs(env.iter().copied());
+        if door {
+            command.env(
+                "TILO_AGENT_DOOR",
+                runtime_dir.join("tilo-session/agent.sock"),
+            );
+        }
+        let mut child = command
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .envs(env.iter().copied())
@@ -297,7 +324,25 @@ impl Desktop {
             log,
         };
         desktop.wait_for("a laid-out first frame", |targets| !targets.is_empty());
+        // A compositor that cannot take its own state file's writer lease runs
+        // without its durable owner and its collaboration service: nothing
+        // published to the broker, and every app that waits for it stays dark.
+        let busy = matching(&desktop.log, &["file lease is busy"], 3);
+        assert!(
+            busy.is_empty(),
+            "the compositor found its state file's writer lease taken:\n{busy}"
+        );
         desktop
+    }
+
+    /// The control socket.
+    pub(crate) fn control_path(&self) -> &Path {
+        &self.control
+    }
+
+    /// The private runtime directory the compositor runs in.
+    pub(crate) fn runtime_dir(&self) -> &Path {
+        &self.runtime_dir
     }
 
     pub(crate) fn pid(&self) -> u32 {
@@ -320,6 +365,11 @@ impl Desktop {
 
     /// The last lines the compositor printed, leaving out its per-iteration
     /// `paint-tick` lines, which the report summarises.
+    /// The compositor's log, shared with the thread that fills it.
+    pub(crate) fn log_handle(&self) -> Log {
+        Arc::clone(&self.log)
+    }
+
     pub(crate) fn log_tail(&self) -> String {
         self.log
             .lock()
@@ -386,6 +436,23 @@ impl Desktop {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
+}
+
+/// The last `count` lines of `log` holding any of `needles`.
+pub(crate) fn matching(log: &Log, needles: &[&str], count: usize) -> String {
+    log.lock()
+        .map(|log| {
+            let mut found: Vec<&str> = log
+                .iter()
+                .rev()
+                .map(|(_, line)| line.as_str())
+                .filter(|line| needles.iter().any(|needle| line.contains(needle)))
+                .take(count)
+                .collect();
+            found.reverse();
+            found.join("\n")
+        })
+        .unwrap_or_default()
 }
 
 impl Drop for Desktop {

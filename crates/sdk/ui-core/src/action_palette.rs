@@ -3108,10 +3108,14 @@ mod tests {
                 )
                 .unwrap(),
             )
-            .with_action(ActionSpec::prompted(
+            .with_action(ActionSpec::prompted_param(
                 "rename",
                 "Rename",
-                "New name",
+                tilo_actions::ActionParam::required(
+                    "value",
+                    tilo_actions::ParamType::Text,
+                    "New name",
+                ),
                 "e.g. Widget",
                 ExecutionLocus::ClientLocal,
                 |s: &str| {

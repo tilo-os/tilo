@@ -253,15 +253,28 @@ impl crate::CommandEncoder for super::CommandEncoder {
             let dst_layout = conv::derive_image_layout(bar.usage.to, bar.texture.format);
             dst_stages |= dst_stage;
 
-            vk_barriers.push(
-                vk::ImageMemoryBarrier::default()
-                    .image(bar.texture.raw)
-                    .subresource_range(range)
-                    .src_access_mask(src_access)
-                    .dst_access_mask(dst_access)
-                    .old_layout(src_layout)
-                    .new_layout(dst_layout),
-            );
+            let mut barrier = vk::ImageMemoryBarrier::default()
+                .image(bar.texture.raw)
+                .subresource_range(range)
+                .src_access_mask(src_access)
+                .dst_access_mask(dst_access)
+                .old_layout(src_layout)
+                .new_layout(dst_layout);
+            // The first use of an image a foreign producer wrote acquires it
+            // from the foreign queue family (Tilo patch), so its contents and
+            // compression metadata survive the layout change.
+            if matches!(bar.texture.memory, super::TextureMemory::ForeignExternal)
+                && bar.usage.from == wgt::TextureUses::UNINITIALIZED
+                && self
+                    .device
+                    .enabled_extensions
+                    .contains(&super::adapter::FOREIGN_QUEUE_FAMILY)
+            {
+                barrier = barrier
+                    .src_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
+                    .dst_queue_family_index(self.device.family_index);
+            }
+            vk_barriers.push(barrier);
         }
 
         if !vk_barriers.is_empty() {

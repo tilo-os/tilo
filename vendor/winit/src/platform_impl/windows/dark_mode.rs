@@ -64,7 +64,11 @@ pub fn try_theme(hwnd: HWND, preferred_theme: Option<Theme>) -> Theme {
             None => should_use_dark_mode(),
         };
 
-        let theme = if is_dark_mode { Theme::Dark } else { Theme::Light };
+        let theme = if is_dark_mode {
+            Theme::Dark
+        } else {
+            Theme::Light
+        };
         let theme_name = match theme {
             Theme::Dark => DARK_THEME_NAME.as_ptr(),
             Theme::Light => LIGHT_THEME_NAME.as_ptr(),
@@ -155,7 +159,11 @@ fn should_apps_use_dark_mode() -> bool {
 }
 
 fn is_high_contrast() -> bool {
-    let mut hc = HIGHCONTRASTA { cbSize: 0, dwFlags: 0, lpszDefaultScheme: ptr::null_mut() };
+    let mut hc = HIGHCONTRASTA {
+        cbSize: 0,
+        dwFlags: 0,
+        lpszDefaultScheme: ptr::null_mut(),
+    };
 
     let ok = unsafe {
         SystemParametersInfoA(

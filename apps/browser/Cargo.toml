@@ -40,6 +40,8 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 host-info = { path = "../../crates/system/host-info" }
 sha2.workspace = true
 base64.workspace = true
+# CRX3 proofs are RSA PKCS#1 v1.5 or ECDSA P-256 signatures over SHA-256.
+ring = "0.17"
 url.workspace = true
 
 # Extension packages: .xpi (Firefox) and .crx (Chrome) are zip archives

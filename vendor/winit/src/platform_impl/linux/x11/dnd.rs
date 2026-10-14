@@ -51,7 +51,13 @@ pub struct Dnd {
 
 impl Dnd {
     pub fn new(xconn: Arc<XConnection>) -> Result<Self, X11Error> {
-        Ok(Dnd { xconn, version: None, type_list: None, source_window: None, result: None })
+        Ok(Dnd {
+            xconn,
+            version: None,
+            type_list: None,
+            source_window: None,
+            result: None,
+        })
     }
 
     pub fn reset(&mut self) {
@@ -73,13 +79,13 @@ impl Dnd {
             DndState::Rejected => (0, atoms[DndNone]),
         };
         self.xconn
-            .send_client_msg(target_window, target_window, atoms[XdndStatus] as _, None, [
-                this_window,
-                accepted,
-                0,
-                0,
-                action as _,
-            ])?
+            .send_client_msg(
+                target_window,
+                target_window,
+                atoms[XdndStatus] as _,
+                None,
+                [this_window, accepted, 0, 0, action as _],
+            )?
             .ignore_error();
 
         Ok(())
@@ -97,13 +103,13 @@ impl Dnd {
             DndState::Rejected => (0, atoms[DndNone]),
         };
         self.xconn
-            .send_client_msg(target_window, target_window, atoms[XdndFinished] as _, None, [
-                this_window,
-                accepted,
-                action as _,
-                0,
-                0,
-            ])?
+            .send_client_msg(
+                target_window,
+                target_window,
+                atoms[XdndFinished] as _,
+                None,
+                [this_window, accepted, action as _, 0, 0],
+            )?
             .ignore_error();
 
         Ok(())
@@ -140,7 +146,8 @@ impl Dnd {
         window: xproto::Window,
     ) -> Result<Vec<c_uchar>, util::GetPropertyError> {
         let atoms = self.xconn.atoms();
-        self.xconn.get_property(window, atoms[XdndSelection], atoms[TextUriList])
+        self.xconn
+            .get_property(window, atoms[XdndSelection], atoms[TextUriList])
     }
 
     pub fn parse_data(&self, data: &mut [c_uchar]) -> Result<Vec<PathBuf>, DndDataParseError> {

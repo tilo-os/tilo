@@ -136,7 +136,10 @@ pub(crate) fn get_monitor_info(hmonitor: HMONITOR) -> Result<MONITORINFOEXW, io:
     let mut monitor_info: MONITORINFOEXW = unsafe { mem::zeroed() };
     monitor_info.monitorInfo.cbSize = mem::size_of::<MONITORINFOEXW>() as u32;
     let status = unsafe {
-        GetMonitorInfoW(hmonitor, &mut monitor_info as *mut MONITORINFOEXW as *mut MONITORINFO)
+        GetMonitorInfoW(
+            hmonitor,
+            &mut monitor_info as *mut MONITORINFOEXW as *mut MONITORINFO,
+        )
     };
     if status == false.into() {
         Err(io::Error::last_os_error())
@@ -153,7 +156,11 @@ impl MonitorHandle {
     #[inline]
     pub fn name(&self) -> Option<String> {
         let monitor_info = get_monitor_info(self.0).unwrap();
-        Some(decode_wide(&monitor_info.szDevice).to_string_lossy().to_string())
+        Some(
+            decode_wide(&monitor_info.szDevice)
+                .to_string_lossy()
+                .to_string(),
+        )
     }
 
     #[inline]
@@ -197,7 +204,10 @@ impl MonitorHandle {
         get_monitor_info(self.0)
             .map(|info| {
                 let rc_monitor = info.monitorInfo.rcMonitor;
-                PhysicalPosition { x: rc_monitor.left, y: rc_monitor.top }
+                PhysicalPosition {
+                    x: rc_monitor.left,
+                    y: rc_monitor.top,
+                }
             })
             .unwrap_or(PhysicalPosition { x: 0, y: 0 })
     }
@@ -220,7 +230,7 @@ impl MonitorHandle {
             Err(error) => {
                 tracing::warn!("Error from get_monitor_info: {error}");
                 return modes.into_iter().map(mod_map);
-            },
+            }
         };
 
         let device_name = monitor_info.szDevice.as_ptr();

@@ -196,10 +196,28 @@ pub fn ruleset_spec(args: &ShimArgs) -> RulesetSpec {
 /// the calling process — never call it from unit tests.
 fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, LandlockBuildError> {
     sandbox_core::landlock::restrict_self(&ruleset_spec(args), |path, e| {
-        eprintln!(
-            "tilo-sandbox-exec: skipping rule for {} (open failed: {e})",
+        if let Some(line) = skipped_rule_notice(path, e) {
+            eprintln!("{line}");
+        }
+    })
+}
+
+/// What to print when a rule's path cannot be opened. A path that does not
+/// exist is the ordinary case: the plan lists optional device nodes
+/// (`/dev/nvidia*`, `/usr/share/nvidia`) that most machines lack, and such a
+/// path is unreachable and cannot be granted, so there is nothing to report.
+/// Printing it on every launch buried the one line that explained a failed
+/// launch in the session log. Any other open failure (permissions, I/O) is
+/// still reported.
+fn skipped_rule_notice(path: &std::path::Path, error: &landlock::PathFdError) -> Option<String> {
+    let missing = std::error::Error::source(error)
+        .and_then(|source| source.downcast_ref::<std::io::Error>())
+        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+    (!missing).then(|| {
+        format!(
+            "tilo-sandbox-exec: skipping rule for {} (open failed: {error})",
             path.display()
-        );
+        )
     })
 }
 
@@ -528,6 +546,22 @@ mod tests {
     use super::*;
     use crate::landlock::FS_ABI;
     use landlock::CompatLevel;
+
+    #[test]
+    fn a_missing_optional_device_node_is_not_reported_but_other_failures_are() {
+        let missing = landlock::PathFd::new("/dev/nvidia-tilo-test-missing").unwrap_err();
+        assert_eq!(
+            skipped_rule_notice(std::path::Path::new("/dev/nvidia0"), &missing),
+            None,
+            "an absent path is normal and must not flood the session log"
+        );
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let not_a_directory = file.path().join("child");
+        let refused = landlock::PathFd::new(&not_a_directory).unwrap_err();
+        let notice = skipped_rule_notice(&not_a_directory, &refused)
+            .expect("a path that fails for another reason is still reported");
+        assert!(notice.contains("skipping rule for"), "{notice}");
+    }
 
     #[test]
     fn the_shim_hands_the_app_its_entry_and_exec_marks() {

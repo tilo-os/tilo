@@ -68,7 +68,10 @@ impl TabletState {
         // that declines pads has no use for.
         let manager = globals.bind(queue_handle, 1..=1, GlobalData)?;
         let cursor_shapes = globals.bind(queue_handle, 1..=1, GlobalData).ok();
-        Ok(Self { manager, cursor_shapes })
+        Ok(Self {
+            manager,
+            cursor_shapes,
+        })
     }
 
     /// The tablet seat of `seat`.
@@ -155,11 +158,21 @@ impl ToolState {
             events.push((window, sample.clone()));
             events.push((window, event));
         };
-        let button = |button, state| WindowEvent::MouseInput { device_id, state, button };
+        let button = |button, state| WindowEvent::MouseInput {
+            device_id,
+            state,
+            button,
+        };
         if moved {
             let position: PhysicalPosition<f64> =
                 LogicalPosition::new(self.position.0, self.position.1).to_physical(scale_factor);
-            pointer(&mut events, WindowEvent::CursorMoved { device_id, position });
+            pointer(
+                &mut events,
+                WindowEvent::CursorMoved {
+                    device_id,
+                    position,
+                },
+            );
         }
         let mut changes = Vec::with_capacity(pending.buttons.len() + 2);
         if pending.down {
@@ -217,11 +230,18 @@ fn window_of(
     let data = surface.data::<SurfaceData>()?;
     // A tool over a subsurface such as a client-side decoration is not over
     // the window's content.
-    if data.parent_surface().is_some_and(|parent| parent != surface) {
+    if data
+        .parent_surface()
+        .is_some_and(|parent| parent != surface)
+    {
         return None;
     }
     let window_id = wayland::make_wid(surface);
-    state.windows.borrow().contains_key(&window_id).then_some(window_id)
+    state
+        .windows
+        .borrow()
+        .contains_key(&window_id)
+        .then_some(window_id)
 }
 
 impl Dispatch<ZwpTabletManagerV2, GlobalData, WinitState> for TabletState {
@@ -286,8 +306,10 @@ impl Dispatch<ZwpTabletToolV2, TabletToolData, WinitState> for TabletState {
         match event {
             zwp_tablet_tool_v2::Event::Type { tool_type } => {
                 inner.eraser = tool_type == WEnum::Value(zwp_tablet_tool_v2::Type::Eraser);
-            },
-            zwp_tablet_tool_v2::Event::ProximityIn { serial, surface, .. } => {
+            }
+            zwp_tablet_tool_v2::Event::ProximityIn {
+                serial, surface, ..
+            } => {
                 match window_of(state, &surface) {
                     Some(window) => inner.pending.entered = Some(window),
                     None => inner.pending.entered_elsewhere = true,
@@ -295,56 +317,63 @@ impl Dispatch<ZwpTabletToolV2, TabletToolData, WinitState> for TabletState {
                 inner.pending.left = false;
                 inner.pressure = 0.0;
                 if inner.cursor.is_none() {
-                    inner.cursor =
-                        state.tablet.as_ref().and_then(|tablet| tablet.cursor_shapes.as_ref()).map(
-                            |shapes| shapes.get_tablet_tool_v2(tool, queue_handle, GlobalData),
-                        );
+                    inner.cursor = state
+                        .tablet
+                        .as_ref()
+                        .and_then(|tablet| tablet.cursor_shapes.as_ref())
+                        .map(|shapes| shapes.get_tablet_tool_v2(tool, queue_handle, GlobalData));
                 }
                 if let Some(cursor) = &inner.cursor {
                     cursor.set_shape(serial, Shape::Default);
                 }
-            },
+            }
             zwp_tablet_tool_v2::Event::ProximityOut => inner.pending.left = true,
             zwp_tablet_tool_v2::Event::Down { .. } => inner.pending.down = true,
             zwp_tablet_tool_v2::Event::Up => inner.pending.up = true,
             zwp_tablet_tool_v2::Event::Motion { x, y } => {
                 inner.position = (x, y);
                 inner.pending.moved = true;
-            },
+            }
             zwp_tablet_tool_v2::Event::Pressure { pressure } => {
                 inner.pressure = pressure_fraction(pressure);
                 inner.pending.moved = true;
-            },
+            }
             zwp_tablet_tool_v2::Event::Tilt { tilt_x, tilt_y } => {
                 inner.tilt = (tilt_x, tilt_y);
                 inner.pending.moved = true;
-            },
-            zwp_tablet_tool_v2::Event::Button { button, state: button_state, .. } => {
+            }
+            zwp_tablet_tool_v2::Event::Button {
+                button,
+                state: button_state,
+                ..
+            } => {
                 if let Some(mouse) = tool_button(button) {
                     let pressed =
                         button_state == WEnum::Value(zwp_tablet_tool_v2::ButtonState::Pressed);
                     inner.pending.buttons.push((mouse, pressed));
                 }
-            },
+            }
             zwp_tablet_tool_v2::Event::Frame { .. } => {
                 let device_id =
                     crate::event::DeviceId(crate::platform_impl::DeviceId::Wayland(DeviceId));
                 let windows = state.windows.borrow();
                 let events = inner.frame(device_id, |window| {
-                    windows.get(&window).map(|window| window.lock().unwrap().scale_factor())
+                    windows
+                        .get(&window)
+                        .map(|window| window.lock().unwrap().scale_factor())
                 });
                 drop(windows);
                 for (window, event) in events {
                     state.events_sink.push_window_event(event, window);
                 }
-            },
+            }
             zwp_tablet_tool_v2::Event::Removed => {
                 if let Some(cursor) = inner.cursor.take() {
                     cursor.destroy();
                 }
                 tool.destroy();
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 }
@@ -382,7 +411,7 @@ impl Dispatch<ZwpTabletPadGroupV2, GlobalData, WinitState> for TabletState {
             zwp_tablet_pad_group_v2::Event::Ring { ring } => ring.destroy(),
             zwp_tablet_pad_group_v2::Event::Strip { strip } => strip.destroy(),
             zwp_tablet_pad_group_v2::Event::Dial { dial } => dial.destroy(),
-            _ => {},
+            _ => {}
         }
     }
 
@@ -436,16 +465,21 @@ mod tests {
         events
             .iter()
             .map(|(_, event)| match event {
-                WindowEvent::PenSample { pressure, tilt, eraser, .. } => {
+                WindowEvent::PenSample {
+                    pressure,
+                    tilt,
+                    eraser,
+                    ..
+                } => {
                     format!(
                         "pen {pressure:.2} {:?} {}",
                         tilt,
                         if *eraser { "eraser" } else { "tip" }
                     )
-                },
+                }
                 WindowEvent::CursorMoved { position, .. } => {
                     format!("move {} {}", position.x, position.y)
-                },
+                }
                 WindowEvent::MouseInput { state, button, .. } => format!("{button:?} {state:?}"),
                 WindowEvent::CursorEntered { .. } => "enter".into(),
                 WindowEvent::CursorLeft { .. } => "leave".into(),
@@ -466,7 +500,10 @@ mod tests {
         tool.pending.entered = Some(window);
         tool.position = (10.0, 20.0);
         tool.tilt = (30.0, -15.0);
-        assert_eq!(frame(&mut tool), ["enter", "pen 0.00 (30.0, -15.0) tip", "move 20 40"]);
+        assert_eq!(
+            frame(&mut tool),
+            ["enter", "pen 0.00 (30.0, -15.0) tip", "move 20 40"]
+        );
 
         tool.pending.down = true;
         tool.pressure = pressure_fraction(32768);
@@ -484,24 +521,38 @@ mod tests {
         // Pressing harder in place is a motion with the new pressure.
         tool.pressure = 1.0;
         tool.pending.moved = true;
-        assert_eq!(frame(&mut tool), ["pen 1.00 (30.0, -15.0) tip", "move 20 40"]);
+        assert_eq!(
+            frame(&mut tool),
+            ["pen 1.00 (30.0, -15.0) tip", "move 20 40"]
+        );
 
         tool.pending.up = true;
         tool.pressure = 0.0;
-        assert_eq!(frame(&mut tool), ["pen 0.00 (30.0, -15.0) tip", "Left Released"]);
+        assert_eq!(
+            frame(&mut tool),
+            ["pen 0.00 (30.0, -15.0) tip", "Left Released"]
+        );
 
         tool.pending.left = true;
         assert_eq!(frame(&mut tool), ["leave"]);
-        assert!(frame(&mut tool).is_empty(), "out of proximity the tool is nowhere");
+        assert!(
+            frame(&mut tool).is_empty(),
+            "out of proximity the tool is nowhere"
+        );
     }
 
     #[test]
     fn leaving_proximity_releases_what_the_tool_held() {
         let window = WindowId::from(7);
-        let mut tool = ToolState { eraser: true, ..ToolState::default() };
+        let mut tool = ToolState {
+            eraser: true,
+            ..ToolState::default()
+        };
         tool.pending.entered = Some(window);
         tool.pending.down = true;
-        tool.pending.buttons.push((tool_button(BTN_STYLUS).unwrap(), true));
+        tool.pending
+            .buttons
+            .push((tool_button(BTN_STYLUS).unwrap(), true));
         tool.pressure = 0.25;
         assert_eq!(
             frame(&mut tool),
@@ -547,7 +598,11 @@ mod tests {
         assert_eq!(tool_button(BTN_STYLUS), Some(MouseButton::Right));
         assert_eq!(tool_button(BTN_STYLUS2), Some(MouseButton::Middle));
         assert_eq!(tool_button(BTN_LEFT), Some(MouseButton::Left));
-        assert_eq!(tool_button(0x149), None, "a third barrel button clicks nothing");
+        assert_eq!(
+            tool_button(0x149),
+            None,
+            "a third barrel button clicks nothing"
+        );
         assert_eq!(pressure_fraction(65535), 1.0);
         assert_eq!(pressure_fraction(0), 0.0);
     }

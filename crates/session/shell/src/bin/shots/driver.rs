@@ -2470,6 +2470,7 @@ impl ShellDriver {
                         active_tab: tid,
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     };
                     strip.window_groups.push(group);
                 }
@@ -2555,6 +2556,7 @@ impl ShellDriver {
                     active_tab: tid,
                     width: half,
                     maximized: false,
+                    focus_history: Vec::new(),
                 });
                 strip_id = Some(strip.id);
                 sibling = Some(gid);
@@ -2616,6 +2618,7 @@ impl ShellDriver {
                             active_tab: tid,
                             width: WindowWidth::Normal,
                             maximized: false,
+                            focus_history: Vec::new(),
                         });
                         ws.strips.push(strip);
                     }

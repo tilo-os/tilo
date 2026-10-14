@@ -19,9 +19,19 @@ impl NotesApp {
             let document = cx.document().ok_or("the editor document is unavailable")?;
             return Ok(Effected::value(self.editor_observation(&document)));
         }
+        if let NotesEffect::FindText { text, page } = &effect {
+            let document = cx.document().ok_or("the notebook is unavailable")?;
+            return Ok(Effected::value(actions::find_text(&document, text, *page)?));
+        }
         let state = Workspace::of(&cx.live().get(), &self.workspace);
         match effect {
-            NotesEffect::InspectEditor => Err("the editor document is unavailable".into()),
+            NotesEffect::InspectEditor | NotesEffect::FindText { .. } => {
+                Err("the editor document is unavailable".into())
+            }
+            NotesEffect::FindPage { title } => Ok(Effected::value(actions::find_pages(
+                &state.data.pages,
+                &title,
+            ))),
             NotesEffect::ImportMarkdownFile => Ok(Self::choose_markdown(cx)),
             NotesEffect::ImportMarkdownContent { title, body } => {
                 let title = title.trim();

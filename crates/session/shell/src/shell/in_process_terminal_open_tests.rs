@@ -16,10 +16,18 @@ fn hosted_terminal_delayed_open_keeps_host_keyboard_input_responsive() {
     let (request_sent, request_received) = mpsc::channel();
     let (release, delayed) = mpsc::channel();
     let supervisor = std::thread::spawn(move || {
-        let mut request = String::new();
-        std::io::BufReader::new(&server)
-            .read_line(&mut request)
+        // The persistent-control handshake precedes every open: read the
+        // client's hello and answer ready, then read the open request from the
+        // same buffered reader.
+        let mut reader = std::io::BufReader::new(&server);
+        let mut hello = String::new();
+        reader.read_line(&mut hello).unwrap();
+        assert!(hello.contains("\"op\":\"hello\""), "{hello}");
+        (&server)
+            .write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")
             .unwrap();
+        let mut request = String::new();
+        reader.read_line(&mut request).unwrap();
         request_sent.send(request).unwrap();
         // A bound only for a broken test, not simulated startup latency.
         if delayed.recv_timeout(Duration::from_secs(10)).is_ok() {

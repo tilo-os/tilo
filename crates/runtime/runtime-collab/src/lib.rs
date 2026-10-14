@@ -77,6 +77,8 @@ pub enum DisplayOrigin {
 
 mod action_directory;
 pub use action_directory::*;
+mod surface_delta;
+pub use surface_delta::*;
 pub mod audio_output;
 pub mod committed_document;
 #[cfg(feature = "client")]
@@ -1423,6 +1425,28 @@ impl ChannelHandle {
                 write_exported_action(list.reborrow().get(idx), a)?;
             }
         }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// [`Self::publish_actions`] as a delta against what this connection
+    /// has already published: each distinct catalogue entry crosses once and
+    /// each resource's action as only its own fields. The broker expands it
+    /// into the same surface, so readers cannot tell the two apart.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call, or if the broker refuses the delta (it does not
+    /// apply to what the broker holds); the caller then sends a delta with
+    /// `reset` set.
+    pub async fn publish_action_surface(
+        &self,
+        app_id: &str,
+        delta: &SurfaceDelta,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_action_surface_request();
+        write_surface_delta(req.get(), app_id, delta)?;
         req.send().promise.await?;
         Ok(())
     }
