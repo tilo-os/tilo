@@ -18,7 +18,7 @@ use ui_core::history_mode::restore::{
 };
 use ui_core::history_mode::{
     FrozenRootPreview, HistoryDefinition, HistoryPresentation, HistoryPreview,
-    HistoryScopeDefinition, PreviewInput,
+    HistoryScopeDefinition, PreviewInput, PreviewView,
 };
 use ui_core::vello::kurbo::Rect;
 
@@ -207,18 +207,29 @@ fn readable<R: Resource>(doc: &AutoCommit) -> Result<(), String> {
 fn preview<A: ResourceApp>(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
     let root = past_root::<A>(&doc)?;
-    Ok(Box::new(
-        past_preview::<A>(root, doc).with_view(input.initial_view),
+    Ok(open_preview(
+        root,
+        doc,
+        <A::Resource as Resource>::LABEL,
+        input.initial_view,
     ))
 }
 
-/// `root` drawing `doc`, the past version it was built over.
-fn past_preview<A: ResourceApp>(root: ResourceRoot, doc: AutoCommit) -> FrozenRootPreview {
-    FrozenRootPreview::new(
-        Box::new(root.into_root_widget()),
-        doc,
-        <A::Resource as Resource>::LABEL,
-    )
+/// History's preview of `root` drawing `doc`, opened at `view`. Not generic
+/// over the app, so it and the preview's table are compiled once.
+fn open_preview(
+    root: ResourceRoot,
+    doc: AutoCommit,
+    label: &'static str,
+    view: PreviewView,
+) -> Box<dyn HistoryPreview> {
+    Box::new(past_preview(root, doc, label).with_view(view))
+}
+
+/// `root` drawing `doc`, the past version it was built over; `label` is
+/// the shown resource's [`Resource::LABEL`].
+fn past_preview(root: ResourceRoot, doc: AutoCommit, label: &'static str) -> FrozenRootPreview {
+    FrozenRootPreview::new(root.into_root_widget(), doc, label)
 }
 
 /// `A`'s root over `doc`, a frozen past version: read-only, keeping
@@ -272,7 +283,7 @@ pub(crate) fn render_past<A: ResourceApp>(
         .typed::<A::Resource>()
         .map(|typed| typed.live.clone())
         .ok_or_else(|| format!("{} drew another resource", A::TITLE))?;
-    let mut preview = past_preview::<A>(root, doc);
+    let mut preview = past_preview(root, doc, <A::Resource as Resource>::LABEL);
     let theme = ui_core::Theme::dark();
     let mut text = ui_core::text_render::TextRenderer::new();
     let bounds = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
@@ -317,7 +328,7 @@ pub(crate) fn draw_past<A: ResourceApp>(
         Ok(())
     }
     let root = past_root::<A>(&doc)?;
-    let preview = past_preview::<A>(root, doc);
+    let preview = past_preview(root, doc, <A::Resource as Resource>::LABEL);
     draw_preview(preview, bounds, scene, transform, theme)
 }
 
@@ -488,7 +499,7 @@ mod tests {
                 AppStorage::for_app(PageApp::ID),
                 crate::framework::settings::Hosted::default(),
             );
-            let mut preview = past_preview::<PageApp>(root, frozen);
+            let mut preview = past_preview(root, frozen, Page::LABEL);
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
             preview
