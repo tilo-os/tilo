@@ -335,8 +335,7 @@ mod tests {
             let runtime = tempfile::tempdir().expect("tempdir");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_RUNTIME_DIR", runtime.path());
-            let fb = FrameBuilder::new((800, 600));
-            let chrome = fb.chrome_handle();
+            let chrome = FrameBuilder::new((800, 600)).chrome_handle();
             let broker = spawn_session_collab_broker(&chrome, None)
                 .expect("the compositor must be able to bind its own collab socket");
 
@@ -391,13 +390,11 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_RUNTIME_DIR", runtime.path());
 
-            let first_fb = FrameBuilder::new((800, 600));
-            let first_chrome = first_fb.chrome_handle();
+            let first_chrome = FrameBuilder::new((800, 600)).chrome_handle();
             let first =
                 spawn_session_collab_broker(&first_chrome, None).expect("first broker binds");
 
-            let second_fb = FrameBuilder::new((800, 600));
-            let second_chrome = second_fb.chrome_handle();
+            let second_chrome = FrameBuilder::new((800, 600)).chrome_handle();
             let second = spawn_session_collab_broker(&second_chrome, None);
 
             assert!(
