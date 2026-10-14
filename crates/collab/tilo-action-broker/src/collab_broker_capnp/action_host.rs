@@ -1951,9 +1951,7 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         reply: Option<ActionDirectoryBridgeReply>,
     ) -> Result<u64, ActionHostError> {
-        let stale = || ActionHostError::InvalidRequest {
-            reason: "the action changed since that revision; list it again".into(),
-        };
+        let stale = || ActionHostError::StaleRevision;
         let (row, resolved) = match reply {
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
                 runtime_collab::ActionDirectoryResolution::Found { row, revision },

@@ -242,9 +242,7 @@ impl AgentParticipant {
             .as_ref()
             .is_some_and(|revision| *revision != self.revision())
         {
-            return Err(reject(ActionHostError::Refused {
-                reason: "the catalogue changed since that revision".into(),
-            }));
+            return Err(reject(ActionHostError::StaleRevision));
         }
         let target = &request.target;
         if workspace_provider_room(&target.provider) == Some(self.room.as_str()) {
@@ -334,9 +332,12 @@ pub(crate) fn door_outcome(error: &DoorError) -> Outcome {
         DoorError::ConfirmationRequired => Outcome::Rejected(ActionHostError::ConfirmationRequired),
         DoorError::MissingArgument(_)
         | DoorError::UnexpectedArgument(_)
-        | DoorError::InvalidArguments(_) => Outcome::Rejected(ActionHostError::InvalidRequest {
-            reason: error.to_string(),
-        }),
+        | DoorError::InvalidArguments(_)
+        | DoorError::ArgumentOutOfRange { .. } => {
+            Outcome::Rejected(ActionHostError::InvalidRequest {
+                reason: error.to_string(),
+            })
+        }
         DoorError::Unavailable { reason, .. } => Outcome::Rejected(ActionHostError::Unavailable {
             reason: reason.clone(),
         }),
