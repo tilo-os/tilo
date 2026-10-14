@@ -272,41 +272,10 @@ block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Kopiert
 block-editor-code-keyboard-hint = Ctrl+Enter: darunter schreiben · Ctrl+Shift+Enter: darüber schreiben · Tab / Shift+Tab: einrücken / ausrücken · Ctrl+Shift+C: Code kopieren
 widget-breadcrumb = Pfad
-
-widget-filepicker-cancel = Abbrechen
-widget-filepicker-open = Öffnen
-widget-filepicker-save = Speichern
-widget-filepicker-choose-folder = Ordner auswählen
-widget-filepicker-replace = Ersetzen
-widget-filepicker-replace-title = „{ $name }“ ersetzen?
-widget-filepicker-replace-body = Hier existiert bereits eine Datei namens „{ $name }“. Beim Ersetzen wird ihr Inhalt überschrieben.
-widget-filepicker-replace-question = Hier existiert bereits eine Datei namens „{ $name }“. Ersetzen?
-widget-filepicker-replace-detail = Beim Ersetzen wird ihr Inhalt überschrieben.
-widget-filepicker-up = Nach oben
-widget-filepicker-places = Orte
-widget-filepicker-files = Dateien
-widget-filepicker-folders = Ordner
-widget-filepicker-file-type = Dateityp
-widget-filepicker-all-files = Alle Dateien
-widget-filepicker-name-label = Name
-widget-filepicker-name-accessible = Dateiname
-widget-filepicker-name-placeholder = Dateiname …
-widget-filepicker-column-name = Name
-widget-filepicker-column-size = Größe
-widget-filepicker-column-modified = Geändert
-widget-filepicker-empty = Dieser Ordner ist leer
-widget-filepicker-place-home = Persönlicher Ordner
-widget-filepicker-place-documents = Dokumente
-widget-filepicker-place-downloads = Downloads
-widget-filepicker-place-pictures = Bilder
-widget-filepicker-place-music = Musik
-widget-filepicker-place-videos = Videos
-
 widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken
 widget-maximized-restore = Wiederherstellen
-widget-maximized-fullscreen = Vollbild
 tree-rename-field = Umbenennen
 tree-move-up = Nach oben verschieben
 tree-move-down = Nach unten verschieben
@@ -429,10 +398,11 @@ day-tomorrow = Morgen
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
 
-save-status-saved = Gespeichert
+save-status-saving = Wird gespeichert…
 save-status-stalled = Noch nicht gespeichert. Neuer Versuch…
 save-status-not-saved = Nicht gespeichert
 save-status-not-saved-detail = Deine Änderungen sind noch da. Versuche erneut, sie zu speichern.
+save-status-saved = Gespeichert
 save-status-failed = Speichern fehlgeschlagen
 save-status-retry = Erneut versuchen
 save-status-dismiss = Schließen
@@ -495,13 +465,6 @@ device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getr
 
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
-
-terminal-service-control-unavailable = Die Shell-Verbindung ist nicht verfügbar.
-terminal-service-protocol-unavailable = Aktualisiere den Shell-Dienst, bevor du in diesem Fenster eine Sitzung öffnest.
-terminal-service-invalid-session = Der Shell-Dienst hat eine ungültige Sitzung zurückgegeben.
-terminal-service-missing-lease = Die Shell-Sitzung hat keine Verbindung für ihre Laufzeit bereitgestellt.
-terminal-service-missing-terminal = Die Shell-Sitzung hat kein Terminal bereitgestellt.
-terminal-service-invalid-lease = Die Verbindung der Shell-Sitzung konnte nicht überprüft werden.
 
 # Shown instead of an app's view while its record does not read as the app expects.
 framework-unreadable = Dies kann nicht geöffnet werden

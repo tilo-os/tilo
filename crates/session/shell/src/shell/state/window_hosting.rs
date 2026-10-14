@@ -113,7 +113,6 @@ mod tests {
             active_tab: 10,
             width: WindowWidth::Normal,
             maximized: false,
-            focus_history: Vec::new(),
         });
         strip
     }

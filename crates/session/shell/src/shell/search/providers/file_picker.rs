@@ -148,7 +148,6 @@ impl SearchProvider for FilePickerProvider {
             let subject = subject.clone();
             let expected = subject.id;
             SearchResult {
-                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: if name == "inspect" {
                     tilo_actions::OperationKind::View

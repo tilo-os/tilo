@@ -60,7 +60,6 @@ pub mod netgate;
 #[cfg(target_os = "linux")]
 pub mod owned_service;
 pub mod performance;
-pub mod priority;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod provider_sandbox;

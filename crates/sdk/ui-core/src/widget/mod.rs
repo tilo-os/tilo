@@ -2461,19 +2461,6 @@ pub trait Widget {
         !has_children || dirty
     }
 
-    /// Whether this widget composes its children from the size it was last
-    /// allocated (it reads its own rect while building its layout: a compact
-    /// layout under a width, a count of columns, an inset from a drawer).
-    /// A window resize then needs a second composition against the new
-    /// allocation, as well as the re-solve every resize gets. Widgets that
-    /// compose independently of their allocation, or that report
-    /// `take_structure_dirty` themselves when a new allocation changes what
-    /// they show, keep the default: a resize re-solves the retained tree in
-    /// place instead of recomposing all of it.
-    fn composition_follows_allocation(&self) -> bool {
-        false
-    }
-
     /// Whether a `layout_dirty` frame needs taffy to **re-solve** sizes
     /// (`compute_layout`) rather than just reposition already-solved boxes.
     /// [`Scrollable`] is the motivating override: it translates its origin
