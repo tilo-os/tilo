@@ -648,7 +648,8 @@ fn helper_failures_are_reported_once_and_reaped() {
     }
     // phase: malformed_output_terminates_and_reaps_helper
     {
-        let (dir, host) = helper_fixture("printf '\\001\\000\\000\\000\\011'\nexec cat >/dev/null");
+        let (dir, host) =
+            helper_fixture("printf '\\001\\000\\000\\000\\011'\nexec 3>&1; exec cat >/dev/null");
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         std::thread::sleep(Duration::from_millis(300));
         assert!(engine.shared.failed.load(Ordering::Acquire));
@@ -657,7 +658,7 @@ fn helper_failures_are_reported_once_and_reaped() {
     }
     // phase: rejected_navigation_is_visible_and_does_not_change_current_uri
     {
-        let (dir, host) = helper_fixture("exec cat >/dev/null");
+        let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         *engine.shared.uri.lock().unwrap() = "https://old.example".into();
         // Model the helper reporting failure before this new navigation attempt.
@@ -666,6 +667,57 @@ fn helper_failures_are_reported_once_and_reaped() {
         engine.send(WebViewCommand::Navigate("https://new.example".into()));
         assert_eq!(*engine.shared.uri.lock().unwrap(), "https://old.example");
         assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed {uri,error} if uri == "https://new.example" && error.contains("not queued"))));
+    }
+}
+
+/// A Browser window left open costs the CPU nothing: the engine host's
+/// supervisor sleeps until the host exits, fails or is asked to stop,
+/// rather than waking on a timer to look. Its exit is still seen at once,
+/// even when a process the host started keeps its output open.
+#[test]
+#[cfg(target_os = "linux")]
+fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
+    fn checks(engine: &ChromiumEngine) -> u32 {
+        engine.shared.supervisor_checks.load(Ordering::Relaxed)
+    }
+    fn wait_for(what: &str, done: impl Fn() -> bool) {
+        let began = std::time::Instant::now();
+        while !done() {
+            assert!(began.elapsed() < crate::HANG_BOUND, "{what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    // phase: an_idle_host_is_looked_at_once
+    {
+        // Keeps its output open (fd 3) while it idles on its input.
+        let (dir, host) = helper_fixture("exec 3>&1\nexec cat >/dev/null");
+        let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+        wait_for("the supervisor starts once the host is ready", || {
+            checks(&engine) >= 1
+        });
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(checks(&engine), 1, "an idle host woke its supervisor");
+        assert!(!engine.shared.failed.load(Ordering::Acquire));
+    }
+    // phase: an_exit_wakes_the_supervisor_though_the_output_stays_open
+    {
+        let (dir, host) = helper_fixture("sleep 5 &\nsleep 0.3\nexit 0");
+        let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+        let began = std::time::Instant::now();
+        wait_for("the host's exit is reported", || {
+            engine.shared.failed.load(Ordering::Acquire)
+        });
+        // The orphaned `sleep` holds the output for 5 s: only the exit
+        // itself can have woken the supervisor this soon.
+        assert!(began.elapsed() < Duration::from_secs(3));
+        assert_eq!(
+            checks(&engine),
+            2,
+            "the supervisor looked other than at its exit"
+        );
+        assert!(engine.drain_events().iter().any(
+            |event| matches!(event, WebViewEvent::LoadFailed { error, .. } if error == "Chromium engine exited")
+        ));
     }
 }
 
@@ -981,7 +1033,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             .map(|byte| format!("\\{:03o}", byte))
             .collect();
         let (dir, host) = helper_fixture(&format!(
-            "profile=${{1#--profile=}}\nwhile [ ! -f \"$profile/ack-close\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec cat >/dev/null"
+            "profile=${{1#--profile=}}\nwhile [ ! -f \"$profile/ack-close\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec 3>&1\nexec cat >/dev/null"
         ));
         let profile = dir.path().join("profile");
         let first = ChromiumEngine::with_host(&host, &profile).unwrap();
@@ -1002,7 +1054,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
     }
     // phase: hiding_retains_last_frame_for_recomposed_tab_until_next_paint
     {
-        let (dir, host) = helper_fixture("exec cat >/dev/null");
+        let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         *engine.frames().lock().unwrap() = Some(super::super::Frame {
             trace_id: None,
@@ -1028,7 +1080,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
         // Detach frees the route before Drop. Create the replacement while the
         // owner Arc still lives so a Drop reservation cannot hide a leak.
         let (dir, host) = helper_fixture(&format!(
-            "profile=${{1#--profile=}}\nwhile [ ! -f \"$profile/detach-ready\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec cat >/dev/null"
+            "profile=${{1#--profile=}}\nwhile [ ! -f \"$profile/detach-ready\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec 3>&1; exec cat >/dev/null"
         ));
         let first = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         let detached = first.create_tab().unwrap();
@@ -1072,7 +1124,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
                 "while [ ! -f \"$profile/ack-{tab}\" ]; do sleep 0.01; done\nprintf '{encoded}'\n"
             ));
         }
-        script.push_str("exec cat >/dev/null");
+        script.push_str("exec 3>&1; exec cat >/dev/null");
         let (dir, host) = helper_fixture(&script);
         let profile = dir.path().join("profile");
         let first = ChromiumEngine::with_host(&host, &profile).unwrap();
@@ -1284,7 +1336,7 @@ fn poisoned_queues_and_routes_fail_closed_without_panicking() {
 fn poisoned_tab_state_never_panics_or_poisons_routes() {
     // phase: poisoned_tab_routes_do_not_panic_during_engine_drop
     {
-        let (dir, host) = helper_fixture("exec cat >/dev/null");
+        let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         let routes = engine.runtime.routes.clone();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1295,7 +1347,7 @@ fn poisoned_tab_state_never_panics_or_poisons_routes() {
     }
     // phase: poisoned_tab_waker_returns_creation_error_without_poisoning_routes
     {
-        let (dir, host) = helper_fixture("exec cat >/dev/null");
+        let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = engine.shared.waker.lock().unwrap();
@@ -1334,7 +1386,7 @@ fn poisoned_tab_state_never_panics_or_poisons_routes() {
     }
     // phase: poisoned_new_tab_queue_preserves_already_admitted_requests
     {
-        let (dir, host) = helper_fixture("exec cat >/dev/null");
+        let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut requests = engine.shared.open_tabs.lock().unwrap();
@@ -1430,7 +1482,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                 result: Err(PageFailure::new("unavailable", "missing runtime")),
             }]
         );
-        let (dir, host) = helper_fixture("exec cat >/dev/null");
+        let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         engine.send(WebViewCommand::Page {
             request_id: 8,

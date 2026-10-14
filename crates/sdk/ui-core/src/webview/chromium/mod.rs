@@ -50,6 +50,11 @@ struct Shared {
     navigation_commands: Mutex<()>,
     stopping: AtomicBool,
     failed: AtomicBool,
+    /// Wakes the host's supervisor when `failed` or `stopping` is set.
+    supervisor_bell: SupervisorBell,
+    /// How often the host's supervisor has looked at it: once at start and
+    /// once per change, never on a timer while the host runs.
+    supervisor_checks: AtomicU32,
     /// Set on the owner for another process's tab: its host events and
     /// frames go to that process instead of this endpoint.
     remote: Option<Arc<shared::Outbox>>,
@@ -152,7 +157,7 @@ impl Shared {
             return;
         }
         if matches!(event, WebViewEvent::TabClosed | WebViewEvent::TabDetached) {
-            self.stopping.store(true, Ordering::Release);
+            self.stop();
         }
         if matches!(
             event,
@@ -222,8 +227,14 @@ impl Shared {
         self.wake();
     }
 
+    fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        self.supervisor_bell.ring();
+    }
+
     fn fail(&self, message: String) {
         if !self.stopping.load(Ordering::Acquire) && !self.failed.swap(true, Ordering::AcqRel) {
+            self.supervisor_bell.ring();
             self.fail_navigations(&message);
             self.text_input.lock_recover().unavailable();
             let uri = self.uri.lock().map(|uri| uri.clone()).unwrap_or_default();
@@ -375,7 +386,7 @@ impl Runtime {
 }
 impl Drop for Runtime {
     fn drop(&mut self) {
-        self.process.stopping.store(true, Ordering::Release);
+        self.process.stop();
         if self.link.is_some() {
             // The command writer sends what is queued, then hangs up; the
             // owner closes whatever this process left open.
@@ -470,6 +481,8 @@ impl UnavailableEngine {
                 navigation_commands: Mutex::default(),
                 stopping: AtomicBool::new(false),
                 failed: AtomicBool::new(false),
+                supervisor_bell: SupervisorBell::default(),
+                supervisor_checks: AtomicU32::new(0),
                 remote: None,
             },
         })
@@ -633,8 +646,14 @@ fn supervise_child(
     supervisor_queue: &CommandQueue,
     supervisor_private_root: Option<&Path>,
 ) {
+    // The bell hangs before the first look, so a change after it rings.
+    let (watch, bell) = tilo_process::child::ExitWatch::new(&child);
+    supervisor_shared.supervisor_bell.hang(bell);
     let mut shutdown_started = None;
     loop {
+        supervisor_shared
+            .supervisor_checks
+            .fetch_add(1, Ordering::Relaxed);
         match child.try_wait() {
             Ok(Some(_)) => {
                 supervisor_shared.fail("Chromium engine exited".into());
@@ -654,19 +673,43 @@ fn supervise_child(
             let _ = child.wait();
             break;
         }
+        let mut deadline = None;
         if supervisor_shared.stopping.load(Ordering::Acquire) {
             let began = shutdown_started.get_or_insert_with(crate::time::now);
-            if began.elapsed() >= Duration::from_secs(35) {
+            let Some(left) = HOST_SHUTDOWN_GRACE.checked_sub(began.elapsed()) else {
                 let _ = child.kill();
                 let _ = child.wait();
                 break;
-            }
+            };
+            deadline = Some(left);
         }
-        std::thread::sleep(Duration::from_millis(100));
+        watch.wait(deadline);
     }
     supervisor_queue.close();
     if let Some(root) = supervisor_private_root {
         cleanup_private_root(root);
+    }
+}
+
+/// How long a host asked to shut down has to exit before it is killed.
+const HOST_SHUTDOWN_GRACE: Duration = Duration::from_secs(35);
+
+/// Wakes a host's supervisor when what it acts on changes: the host failing
+/// or a shutdown starting. With the host's own exit, which the supervisor's
+/// [`ExitWatch`](tilo_process::child::ExitWatch) sees, that is everything it
+/// waits for, so a running Browser costs no timer wakeups.
+#[derive(Default)]
+struct SupervisorBell(Mutex<Option<tilo_process::child::Bell>>);
+
+impl SupervisorBell {
+    fn ring(&self) {
+        if let Some(bell) = self.0.lock_recover().as_ref() {
+            bell.ring();
+        }
+    }
+
+    fn hang(&self, bell: tilo_process::child::Bell) {
+        *self.0.lock_recover() = Some(bell);
     }
 }
 
