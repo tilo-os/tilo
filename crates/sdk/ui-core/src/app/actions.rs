@@ -94,6 +94,8 @@ impl App {
 
     /// Invalidate declarations derived from document or widget-local state.
     fn invalidate_widget_resource_cache(&mut self) {
+        // What the widgets declare changed, and so may their semantics.
+        self.mark_semantic_tree_stale();
         // At `u64::MAX` there is no fresh key to issue. Eviction still makes
         // each later materialisation a new snapshot, so it cannot alias a
         // retained tree that happened to have the same terminal generation.
@@ -4340,6 +4342,8 @@ impl App {
     /// that component's own frame: for a test, or a host, reaching into the
     /// mounted app between frames. `None` without a mounted component.
     pub fn with_component_root<U>(&mut self, f: impl FnOnce(&mut dyn Widget) -> U) -> Option<U> {
+        // Whatever `f` does to it is no change the tracking sees.
+        self.mark_semantic_tree_stale();
         let bound = self
             .root_widget
             .as_any_mut()?

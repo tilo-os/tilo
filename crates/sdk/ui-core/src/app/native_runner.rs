@@ -2520,6 +2520,7 @@ impl AppHandler {
         };
         let mut handled = false;
         let mut focus_target = None;
+        app.mark_semantic_tree_stale();
         app.track_pointer_buttons(&event);
         app.refresh_controls_before_input(&event);
         let resources_before = app.resource_input_mark(&event);

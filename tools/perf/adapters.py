@@ -79,9 +79,10 @@ Each adapter reads what a benchmark already prints and emits records through
   `apps/notes/examples/notes-latency.rs`: Notes over a 27-note, 838-block
   notebook, each input sent through the host's input path and timed to the
   end of the host frame that shows it and to the GPU raster of that frame.
-  Each workload (`type`, `enter`, `backspace`, `scroll`, `open`) becomes
-  `render.notes_latency.<workload>.to_frame_ms` and `.to_raster_ms`, every
-  input a sample. A run without raster timings (no GPU) fails.
+  Each workload (`type`, `enter`, `backspace`, `scroll`, `pointer`, `idle`,
+  `open`) becomes `render.notes_latency.<workload>.to_frame_ms` and
+  `.to_raster_ms`, every input (or input-free frame) a sample. A run without
+  raster timings (no GPU) fails.
 - `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
   (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
   becomes `<kpi>.n<collaborators>`, one sample per measured minute (fan-out
@@ -386,7 +387,7 @@ def framework_scroll(logs: list[str], env: dict[str, Any]) -> list[record.Record
 
 NOTES_LATENCY_PREFIX = "NOTES-LATENCY "
 # The example's workloads, each a pair of KPIs.
-NOTES_LATENCY_WORKLOADS = ("type", "enter", "backspace", "scroll", "open")
+NOTES_LATENCY_WORKLOADS = ("type", "enter", "backspace", "scroll", "pointer", "idle", "open")
 
 
 def notes_latency(logs: list[str], env: dict[str, Any]) -> list[record.Record]:

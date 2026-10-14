@@ -16,14 +16,18 @@
 //! * **to frame**: from the input to the end of the host frame that shows
 //!   it (app input handling, sync, layout, the scene and the a11y walk);
 //! * **to raster**: the same plus the GPU raster of that frame's damage, to
-//!   GPU completion. Without a GPU this column is absent.
+//!   GPU completion. Without a GPU this column is absent;
+//!
+//! and the p50 of the accessibility walk alone (`a11y`), the part of the
+//! frame the host spends reading the app's semantic tree.
 //!
 //! Workloads: a character typed into the open note's first block, Enter
 //! splitting a block and Backspace joining it back (each moves every block
-//! below), the wheel scrolling the long note, and opening one note after
-//! another through the notebook's `open` action (what a search hit or an
-//! agent's call does), timed to the frame that shows the note bound and
-//! adopted.
+//! below), the wheel scrolling the long note, the pointer moving over it,
+//! a host frame with no input at all (`idle`: what a caret blink or another
+//! window's animation costs this app), and opening one note after another
+//! through the notebook's `open` action (what a search hit or an agent's
+//! call does), timed to the frame that shows the note bound and adopted.
 //!
 //! Every sample is checked through the Notes editor observer: the canonical
 //! body and the body the editor draws must agree after each input and the
@@ -41,7 +45,8 @@
 //! ```
 //!
 //! `keys=N` sets the samples per typing workload (default 200), `opens=N` the
-//! note opens (default 40), `scrolls=N` the wheel steps (default 120) and
+//! note opens (default 40), `scrolls=N` the wheel steps, pointer moves and
+//! idle frames (default 120 each) and
 //! `interval=MS` the idle time between keys, during which the host keeps
 //! drawing frames as a display would (default 0: back to back). The last
 //! line is `NOTES-LATENCY {json}` with every figure, in milliseconds.
@@ -133,6 +138,8 @@ struct Host {
     damage: SurfaceDamage,
     scene: Scene,
     gpu: Option<OffscreenRenderer>,
+    /// The accessibility walk of the last frame, in milliseconds.
+    walk_ms: f64,
 }
 
 impl Host {
@@ -141,6 +148,7 @@ impl Host {
             damage: SurfaceDamage::copying(),
             scene: Scene::new(),
             gpu: OffscreenRenderer::try_new(WIDTH, HEIGHT).ok(),
+            walk_ms: 0.0,
         }
     }
 
@@ -155,7 +163,9 @@ impl Host {
                 break;
             }
         }
+        let walk = Instant::now();
         let _ = app.refresh_semantic_tree();
+        self.walk_ms = millis(walk);
     }
 
     /// Present the last frame on the GPU target where it changed, and wait
@@ -206,18 +216,24 @@ impl Host {
 struct Sample {
     frame_ms: f64,
     raster_ms: Option<f64>,
+    /// The accessibility walk within `frame_ms`.
+    walk_ms: f64,
 }
 
-/// Send `event` and draw the frame that shows it, timed.
-fn timed(app: &mut App, host: &mut Host, event: WindowEvent) -> Sample {
+/// Send `event` (none: a frame with no input) and draw the frame that shows
+/// it, timed.
+fn timed(app: &mut App, host: &mut Host, event: Option<WindowEvent>) -> Sample {
     let start = Instant::now();
-    app.surface_input(&Region, event, false);
+    if let Some(event) = event {
+        app.surface_input(&Region, event, false);
+    }
     host.frame(app);
     let frame_ms = millis(start);
     host.present(app);
     Sample {
         frame_ms,
         raster_ms: host.gpu.is_some().then(|| millis(start)),
+        walk_ms: host.walk_ms,
     }
 }
 
@@ -337,10 +353,12 @@ fn open(app: &mut App, host: &mut Host, page: notes::PageId) -> Result<Sample, F
         host.frame(app);
         if shows(&observe(app)?, &wanted) {
             let frame_ms = millis(start);
+            let walk_ms = host.walk_ms;
             host.present(app);
             return Ok(Sample {
                 frame_ms,
                 raster_ms: host.gpu.is_some().then(|| millis(start)),
+                walk_ms,
             });
         }
         host.present(app);
@@ -359,7 +377,11 @@ fn typing(
     let mut samples = Vec::new();
     for index in 0..options.keys {
         let key = Key::Character(if index % 6 == 5 { " " } else { "a" }.into());
-        samples.push(timed(app, host, key_input(&key, ElementState::Pressed)));
+        samples.push(timed(
+            app,
+            host,
+            Some(key_input(&key, ElementState::Pressed)),
+        ));
         app.surface_input(&Region, key_input(&key, ElementState::Released), false);
         host.draw(app);
         length = length.saturating_add(1);
@@ -385,7 +407,11 @@ fn enter_and_backspace(
             (NamedKey::Backspace, &mut backspaces, length),
         ] {
             let key = Key::Named(key);
-            samples.push(timed(app, host, key_input(&key, ElementState::Pressed)));
+            samples.push(timed(
+                app,
+                host,
+                Some(key_input(&key, ElementState::Pressed)),
+            ));
             app.surface_input(&Region, key_input(&key, ElementState::Released), false);
             host.draw(app);
             require(app, page, expected, "Enter and Backspace")?;
@@ -395,13 +421,18 @@ fn enter_and_backspace(
     Ok((enters, backspaces))
 }
 
-/// Scroll the long note down and back up with the wheel, a step a sample.
-fn scrolling(app: &mut App, host: &mut Host, options: &Options) -> Result<Vec<Sample>, Failure> {
-    let editor = observe(app)?
+/// Where the editor's top left corner is.
+fn editor_origin(app: &App) -> Result<(f64, f64), Failure> {
+    observe(app)?
         .get("editor_rect")
         .and_then(serde_json::Value::as_array)
         .and_then(|rect| Some((rect.first()?.as_f64()?, rect.get(1)?.as_f64()?)))
-        .ok_or("the editor has no bounds")?;
+        .ok_or_else(|| "the editor has no bounds".into())
+}
+
+/// Scroll the long note down and back up with the wheel, a step a sample.
+fn scrolling(app: &mut App, host: &mut Host, options: &Options) -> Result<Vec<Sample>, Failure> {
+    let editor = editor_origin(app)?;
     app.surface_input(
         &Region,
         cursor_moved(editor.0 + 80.0, editor.1 + 200.0),
@@ -419,14 +450,34 @@ fn scrolling(app: &mut App, host: &mut Host, options: &Options) -> Result<Vec<Sa
         samples.push(timed(
             app,
             host,
-            WindowEvent::MouseWheel {
+            Some(WindowEvent::MouseWheel {
                 device_id: ui::winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::PixelDelta(ui::winit::dpi::PhysicalPosition::new(0.0, dy)),
                 phase: TouchPhase::Moved,
-            },
+            }),
         ));
     }
     Ok(samples)
+}
+
+/// Move the pointer over the long note's text, a few pixels a sample, as a
+/// hand resting on the mouse does.
+fn pointing(app: &mut App, host: &mut Host, options: &Options) -> Result<Vec<Sample>, Failure> {
+    let editor = editor_origin(app)?;
+    let mut samples = Vec::new();
+    for step in 0..options.scrolls {
+        let x = editor.0 + 80.0 + f64::from(u8::try_from(step.checked_rem(7).unwrap_or_default())?);
+        samples.push(timed(app, host, Some(cursor_moved(x, editor.1 + 200.0))));
+    }
+    Ok(samples)
+}
+
+/// Host frames with no input: the app is at rest and asked to draw, as when
+/// another window animates or a caret blinks.
+fn idling(app: &mut App, host: &mut Host, options: &Options) -> Vec<Sample> {
+    (0..options.scrolls)
+        .map(|_| timed(app, host, None))
+        .collect()
 }
 
 /// p50, p99 and the largest of `values` (nearest rank), and the values.
@@ -457,8 +508,10 @@ fn report(name: &str, samples: &[Sample]) -> serde_json::Value {
         .iter()
         .filter_map(|sample| sample.raster_ms)
         .collect();
+    let walk: Vec<f64> = samples.iter().map(|sample| sample.walk_ms).collect();
     let frame = summary(&frame);
     let raster = (!raster.is_empty()).then(|| summary(&raster));
+    let walk = summary(&walk);
     let cell = |figures: Option<&serde_json::Value>| {
         figures.map_or_else(
             || "        -        -        -".to_owned(),
@@ -473,12 +526,13 @@ fn report(name: &str, samples: &[Sample]) -> serde_json::Value {
         )
     };
     println!(
-        "{name:<12}{:>8}{}{}",
+        "{name:<12}{:>8}{}{}{:>9.3}",
         samples.len(),
         cell(Some(&frame)),
-        cell(raster.as_ref())
+        cell(raster.as_ref()),
+        walk["p50"].as_f64().unwrap_or(0.0),
     );
-    serde_json::json!({ "to_frame_ms": frame, "to_raster_ms": raster })
+    serde_json::json!({ "to_frame_ms": frame, "to_raster_ms": raster, "a11y_walk_ms": walk })
 }
 
 fn run(app: &mut App, options: &Options) -> Result<serde_json::Value, Failure> {
@@ -516,6 +570,8 @@ fn run(app: &mut App, options: &Options) -> Result<serde_json::Value, Failure> {
     let typed = typing(app, &mut host, &page, options)?;
     let (enters, backspaces) = enter_and_backspace(app, &mut host, &page, options)?;
     let scrolled = scrolling(app, &mut host, options)?;
+    let pointed = pointing(app, &mut host, options)?;
+    let idled = idling(app, &mut host, options);
 
     println!(
         "Notes input latency, {PAGES} notes / {BLOCKS} blocks, {WIDTH}x{HEIGHT} at scale 1, {} build, {}",
@@ -527,14 +583,16 @@ fn run(app: &mut App, options: &Options) -> Result<serde_json::Value, Failure> {
         std::env::consts::ARCH,
     );
     println!(
-        "{:<12}{:>8}{:>27}{:>27}",
-        "workload", "samples", "to frame p50/p99/max ms", "to raster p50/p99/max ms"
+        "{:<12}{:>8}{:>27}{:>27}{:>9}",
+        "workload", "samples", "to frame p50/p99/max ms", "to raster p50/p99/max ms", "a11y p50"
     );
     let workloads = serde_json::json!({
         "type": report("type", &typed),
         "enter": report("enter", &enters),
         "backspace": report("backspace", &backspaces),
         "scroll": report("scroll", &scrolled),
+        "pointer": report("pointer", &pointed),
+        "idle": report("idle", &idled),
         "open": report("open", &opens),
     });
     if host.gpu.is_none() {
