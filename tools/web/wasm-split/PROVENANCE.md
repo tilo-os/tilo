@@ -29,9 +29,14 @@ time:
   slot where they have one. An `#[inline]` function gets one copy per codegen
   unit, all under the same name, so name pairing could install a copy with
   another signature into a table slot.
-- Data stays in the main module, and split modules carry none. Code-to-data
-  edges also come through name pairing, and a static wrongly attributed to a
-  split module was cleared while main still read it.
+- Static data is placed by `src/data.rs`, not by the call graph. Upstream
+  cleared a data symbol from the main module when the call graph put it in a
+  split module, but code-to-data edges come through name pairing, and a
+  static wrongly attributed was cleared while main still read it. Now a
+  function's references are read from the immediates in its bindgened code,
+  matched against the addresses the linked module's relocations produced,
+  and a static moves into a split module or shared chunk, at its own
+  address, only when no other module's code or data can reach it.
 - Every function the kept part of the main module still references (through
   its code or the call graph) stays, even when the split analysis missed it.
 

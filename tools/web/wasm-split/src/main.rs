@@ -6,9 +6,11 @@
 //! wasm-bindgen output made from it (`BINDGENED`), and writes into `PKG_DIR`:
 //!
 //! - `NAME_bg.wasm`: the start module, replacing the wasm-bindgen output;
-//! - `NAME.<module>.wasm`: what only one split point reaches (an app);
+//! - `NAME.<module>.wasm`: what only one split point reaches (an app), code
+//!   and the static data only that code reaches (src/data.rs);
 //! - `NAME.shared<N>.wasm`: code several split points share but the start
-//!   module does not, loaded before any module that needs it;
+//!   module does not, with the static data only that code reaches, loaded
+//!   before any module that needs it;
 //! - `__wasm_split.js`: the loaders the start module imports, one per split
 //!   point, which fetch and instantiate a module into the start module's
 //!   memory and function table and then call back into it;
@@ -23,7 +25,10 @@
 //! `./__wasm_split.js`, `…_export_…` exported); see
 //! crates/browser/tilo-web-desktop/src/split.rs.
 
+mod data;
 mod split;
+#[cfg(test)]
+mod tests;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
