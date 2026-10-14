@@ -168,7 +168,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
                     relay_url: None,
                 },
                 cert: browser,
-                host_cert: node,
+                host_cert: node.clone(),
                 revocations: RevocationList::new(),
             },
             Arc::new(browser_key),
