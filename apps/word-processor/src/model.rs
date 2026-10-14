@@ -561,7 +561,7 @@ fn author(cx: &ActionCx) -> String {
     cx.author().unwrap_or_default().to_owned()
 }
 
-/// When a comment or reply was written, as the ISO-8601 time qdoc stores.
+/// When a comment or reply was written, as the ISO-8601 time tilo-doc stores.
 fn date(cx: &ActionCx) -> String {
     iso_time(cx.now_ms())
 }
@@ -709,7 +709,7 @@ impl Document {
     }
 }
 
-/// The body of the Writer document `doc` as a qdoc [`tilo_doc::Document`].
+/// The body of the Writer document `doc` as a tilo-doc [`tilo_doc::Document`].
 ///
 /// # Errors
 /// Returns why `doc` holds no Writer document.

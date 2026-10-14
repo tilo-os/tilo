@@ -3256,6 +3256,10 @@ pub struct CapnpBrokerState {
     // Retain result authorization even when the host has no durable journal.
     // Entries share the completed invocation cache's bounded lifetime.
     checkpoint_jobs: Mutex<HashMap<u64, (String, String, tilo_actions::ActionContract)>>,
+    /// Jobs whose action's contract declares untrusted content, so every
+    /// observation of them says so. They share the completed invocation
+    /// cache's bounded lifetime.
+    untrusted_jobs: Mutex<std::collections::HashSet<u64>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     /// Confirmations people gave on their own device for an invocation
     /// someone acting for them makes; see [`Self::witness_confirmation`].
@@ -3731,6 +3735,9 @@ impl CapnpBrokerState {
                 if let Ok(mut checkpoints) = self.checkpoint_jobs.lock() {
                     checkpoints.remove(&oldest);
                 }
+                if let Ok(mut untrusted) = self.untrusted_jobs.lock() {
+                    untrusted.remove(&oldest);
+                }
             }
         }
     }
@@ -4040,6 +4047,7 @@ impl CapnpBrokerState {
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 checkpoint_jobs: Mutex::new(HashMap::new()),
+                untrusted_jobs: Mutex::default(),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 witnessed_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
@@ -5620,6 +5628,12 @@ impl CapnpBrokerState {
                     ),
                 );
         }
+        if offered.1.contract.carries_untrusted_content() {
+            self.untrusted_jobs
+                .lock()
+                .map_err(|_| "untrusted job registry unavailable")?
+                .insert(id);
+        }
         self.spend_once_grants(&offered.0.route.cluster_id, &spent);
         // Keep acceptance before an immediately completing application's first
         // update. Sending to the unbounded app queue and bounded observation
@@ -5989,6 +6003,13 @@ impl CapnpBrokerState {
             witnessed.remove(token);
         }
         matches
+    }
+
+    /// Whether job `id`'s action declares untrusted content.
+    pub fn untrusted_job(&self, id: u64) -> bool {
+        self.untrusted_jobs
+            .lock()
+            .is_ok_and(|untrusted| untrusted.contains(&id))
     }
 
     pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {

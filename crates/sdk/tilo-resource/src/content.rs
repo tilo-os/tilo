@@ -17,7 +17,7 @@
 use std::cell::RefCell;
 
 use tilo_content::ContentStore;
-use tilo_rt::wake::WakeHandle;
+use tilo_wake::WakeHandle;
 
 thread_local! {
     static STORES: RefCell<Vec<(WakeHandle, ContentStore)>> = const { RefCell::new(Vec::new()) };
@@ -55,10 +55,7 @@ mod tests {
 
     #[test]
     fn each_window_reads_its_own_store() {
-        let (one, two) = (
-            tilo_rt::wake::WakeScope::new(),
-            tilo_rt::wake::WakeScope::new(),
-        );
+        let (one, two) = (tilo_wake::WakeScope::new(), tilo_wake::WakeScope::new());
         let (first, second) = (ContentStore::memory(), ContentStore::memory());
         register(&one.handle(), first.clone());
         register(&two.handle(), second);

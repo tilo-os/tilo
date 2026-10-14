@@ -201,9 +201,9 @@ impl Catalog {
     ///
     /// # Errors
     ///
-    /// See [`Catalog::list`].
+    /// See [`Catalog::layers`].
     pub fn find(&self, app_id: &str) -> Result<Option<InstalledPackage>, CatalogError> {
-        Ok(self.list()?.into_iter().find(|row| row.id == app_id))
+        Ok(self.layers(app_id)?.running().cloned())
     }
 
     /// The visible package whose signed root is `id`. A shadowed system

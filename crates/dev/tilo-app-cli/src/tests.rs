@@ -4492,13 +4492,16 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         let mut child = spawn_dev_binary(
             temp.path(),
             &executable,
-            &[OsString::from("--document"), OsString::from("A file.qdoc")],
+            &[
+                OsString::from("--document"),
+                OsString::from("A file.tilo-doc"),
+            ],
         )
         .unwrap();
         assert!(child.wait().unwrap().success());
         assert_eq!(
             std::fs::read_to_string(output).unwrap(),
-            format!("{}\n--document\nA file.qdoc\n", temp.path().display())
+            format!("{}\n--document\nA file.tilo-doc\n", temp.path().display())
         );
     }
 }
@@ -5091,14 +5094,17 @@ fn rebuilt_dev_binary_receives_app_arguments_and_app_working_directory() {
     let mut child = spawn_dev_binary(
         temp.path(),
         &executable,
-        &[OsString::from("--document"), OsString::from("A file.qdoc")],
+        &[
+            OsString::from("--document"),
+            OsString::from("A file.tilo-doc"),
+        ],
     )
     .unwrap();
     assert!(child.wait().unwrap().success());
     assert_eq!(
         std::fs::read_to_string(output).unwrap(),
         format!(
-            "{}\n--document\nA file.qdoc\n",
+            "{}\n--document\nA file.tilo-doc\n",
             temp.path().canonicalize().unwrap().display()
         )
     );

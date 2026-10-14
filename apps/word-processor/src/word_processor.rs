@@ -1,4 +1,4 @@
-//! `WordProcessor` — a rich-text editor over a `qdoc` document living in a host
+//! `WordProcessor` — a rich-text editor over a `tilo-doc` document living in a host
 //! `AutoCommit` (e.g. `ui::State.doc`). This module holds the **editing model**:
 //! a caret `(block_id, char_offset)` and the keyboard edit operations
 //! (insert / Enter-split / Backspace-merge / caret motion) expressed as
@@ -127,7 +127,7 @@ pub struct WordProcessor {
     header_caret: Option<(Caret, Option<Caret>)>,
     footer_caret: Option<(Caret, Option<Caret>)>,
     /// Shared byte-safe horizontal edit core for the active block. The
-    /// surrounding model still owns block splits/merges and qdoc structure.
+    /// surrounding model still owns block splits/merges and tilo-doc structure.
     edit_core: EditCore,
     /// Where the document's binary inputs (its images) live. The document only references them
     /// by content address. In memory until the app hands over its store.
@@ -1281,7 +1281,7 @@ impl WordProcessor {
     // field-by-field and survive save/reload): `indent` (left/hanging indent px,
     // added on top of the style's indent), `first_line_indent` (extra indent on
     // the paragraph's first line only — a v1 layout limitation), and `tab_stops`
-    // (a comma-separated px-position list, since qdoc's attr map stores only
+    // (a comma-separated px-position list, since tilo-doc's attr map stores only
     // scalars).
 
     /// Read a numeric attr (`Float`/`Int`) off an arbitrary block by id, `0.0`
@@ -1888,7 +1888,7 @@ impl WordProcessor {
     // ---- region-aware primitives -------------------------------------------
     // The caret/edit machinery below addresses whichever region is active
     // (`self.region`), dispatching each op to the body or region-aware (`*_in`)
-    // qdoc ops, so `insert_str`/`enter`/`backspace`/motion/marks are written once
+    // tilo-doc ops, so `insert_str`/`enter`/`backspace`/motion/marks are written once
     // and work in body, header, and footer alike.
 
     /// Block ids of the **active region**, in order.
@@ -1944,7 +1944,7 @@ impl WordProcessor {
     }
 
     // ---- region-aware writes (dispatch body vs. header/footer) -------------
-    // Each goes through the region-aware qdoc op (`*_in`) for the active region.
+    // Each goes through the region-aware tilo-doc op (`*_in`) for the active region.
 
     fn region_splice(
         &self,

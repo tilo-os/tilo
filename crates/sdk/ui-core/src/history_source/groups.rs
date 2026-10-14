@@ -38,7 +38,7 @@ use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{NamedRange, from_hex16, hex16};
 use tilo_automerge::read::int_at;
 
-/// Namespaced so it cannot collide with an app's own schema: `qdoc` uses
+/// Namespaced so it cannot collide with an app's own schema: `tilo-doc` uses
 /// `content` / `comments` / `props`, and the shell's room document uses
 /// `workspaces` / `active`.
 pub const GROUPS_KEY: &str = "tilo:group:";

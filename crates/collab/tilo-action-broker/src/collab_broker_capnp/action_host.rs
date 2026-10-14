@@ -2876,7 +2876,7 @@ impl CapnpBrokerState {
     ) -> Option<InvocationState> {
         let job = self.remote_job(caller, id)?;
         self.invocation_status(job)
-            .map(|update| InvocationState::new(*id, update))
+            .map(|update| InvocationState::new(*id, update).with_untrusted(self.untrusted_job(job)))
     }
 
     /// Resolves once an invocation changes after what `seen` has seen, or

@@ -184,6 +184,49 @@ macro_rules! rect_geometry {
     };
 }
 
+/// Implements the [`Widget`] methods of a composite that is one pressable
+/// target, from its `self.activation`: focusable once bound, a pointer
+/// cursor over the rect at `self.$rect`, and accessibility `Activate`
+/// firing the binding. A focus change sets `self.dirty`, so pair it with
+/// [`redraw_flag!`].
+macro_rules! pressable {
+    ($($rect:ident).+) => {
+        fn cursor_shape(
+            &self,
+            point: $crate::kurbo::Point,
+        ) -> Option<winit::window::CursorIcon> {
+            (self.activation.is_bound() && self.$($rect).+.contains(point))
+                .then_some(winit::window::CursorIcon::Pointer)
+        }
+
+        fn is_focusable(&self) -> bool {
+            self.activation.is_bound()
+        }
+
+        fn set_focus(&mut self, focused: bool) {
+            if self.activation.state.focused != focused {
+                self.activation.state.focused = focused;
+                self.dirty = true;
+            }
+        }
+
+        fn is_focused(&self) -> bool {
+            self.activation.state.focused
+        }
+
+        fn perform_action(
+            &mut self,
+            action: &$crate::a11y::Action,
+            _key_path: &[u64],
+            _state: &mut $crate::widget::Edits<'_>,
+            _root: &$crate::widget::ModelPath,
+        ) -> bool {
+            matches!(action, $crate::a11y::Action::Activate) && self.activation.activate()
+        }
+    };
+}
+pub(crate) use pressable;
+
 /// Implements [`Widget::needs_redraw`] and [`Widget::mark_drawn`] for a
 /// widget that tracks whether it needs repainting in `self.dirty`.
 #[macro_export]

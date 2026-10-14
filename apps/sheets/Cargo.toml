@@ -30,7 +30,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# Spreadsheet interchange (.xlsx/.ods) through qdoc's bounded, XXE-hardened
+# Spreadsheet interchange (.xlsx/.ods) through tilo-doc's bounded, XXE-hardened
 # codecs, and its A1 reference helpers.
 tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["xlsx", "ods"] }

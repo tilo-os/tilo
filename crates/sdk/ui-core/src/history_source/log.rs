@@ -41,7 +41,7 @@ pub struct HistoryLog {
     heads: Vec<ChangeHash>,
     /// The document as of `changes`, its diff cursor at their end.
     replica: AutoCommit,
-    /// `replica`'s qdoc snapshot, the "before" of the next structural
+    /// `replica`'s tilo-doc snapshot, the "before" of the next structural
     /// reading.
     snapshot: Option<DocSnapshot>,
     /// The replica could not apply a change; readings after it fell back to
@@ -56,7 +56,7 @@ pub struct HistoryLog {
 struct Basis {
     max_entries: usize,
     field_paths: bool,
-    /// Whether the document carries the qdoc schema.
+    /// Whether the document carries the tilo-doc schema.
     structural: bool,
     /// Readings carry translated words: the active locale, and the
     /// catalogue revision, which moves whenever a catalogue is added.
@@ -299,7 +299,7 @@ impl HistoryLog {
         });
     }
 
-    /// The replica's qdoc snapshot, when the document carries that schema.
+    /// The replica's tilo-doc snapshot, when the document carries that schema.
     fn replica_snapshot(&self) -> Option<DocSnapshot> {
         (self.basis.as_ref().is_some_and(|basis| basis.structural) && !self.failed)
             .then(|| tilo_doc::snapshot::of(&self.replica))

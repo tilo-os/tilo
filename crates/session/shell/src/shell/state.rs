@@ -2,7 +2,7 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
-use tilo_automerge::ReadTyped as _;
+use tilo_automerge::WriteTyped as _;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
@@ -1811,7 +1811,7 @@ impl WorkspaceTree {
         reason = "room-document projection keeps all capability map updates in one Automerge transaction"
     )]
     fn try_sync_room_doc(&mut self, room: RoomId) -> bool {
-        use automerge::{ROOT, transaction::Transactable};
+        use automerge::ROOT;
         use tilo_peer_state::room::media;
 
         if self.requires_native_owner(room) {
@@ -1863,18 +1863,14 @@ impl WorkspaceTree {
         // Identity first: the receiver checks this field against the
         // room it asked for, so an unlabelled document could be applied
         // to the wrong one.
-        let current_room = doc.str_at(&ROOT, "room");
-        if current_room.as_deref() != Some(room_str.as_str()) {
-            let _ = doc.put(&ROOT, "room", room_str.clone());
-        }
+        let _ = doc.put_str_if_changed(&ROOT, "room", &room_str);
 
-        let current_name = doc.str_at(&ROOT, "name");
         // The name is governed like the owner: only the governing machine
         // writes it. A member's local name (a device's "From another
         // device" placeholder before its first sync) would otherwise race
         // the real name in the shared document and could win.
-        if governs && current_name.as_deref() != Some(name.as_str()) {
-            let _ = doc.put(&ROOT, "name", name);
+        if governs {
+            let _ = doc.put_str_if_changed(&ROOT, "name", &name);
         }
 
         // Projected by **every** member, unlike governance below: a room
@@ -7070,6 +7066,7 @@ mod automerge_foundation_tests {
     /// records — not its cache, so a divergent fold can't hide behind it.
     fn governance_in_room_doc(tree: &WorkspaceTree, room: RoomId) -> (Option<String>, Vec<String>) {
         use automerge::{ROOT, ReadDoc};
+        use tilo_automerge::ReadTyped as _;
         let Some(doc) = tree.room_docs.get(&room) else {
             return (None, Vec::new());
         };

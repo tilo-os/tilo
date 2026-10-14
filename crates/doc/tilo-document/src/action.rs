@@ -295,7 +295,7 @@ pub enum RichTextAction {
     /// Insert a table after `after` already holding its contents: `cells` is
     /// its rows top to bottom, each row's cell texts left to right, and every
     /// row has the same number of cells. The first row is the header row
-    /// (qdoc has no separate header marker: the editor shades row 0 and the
+    /// (tilo-doc has no separate header marker: the editor shades row 0 and the
     /// exporters write it as the table's head). Laid out exactly as
     /// [`InsertTable`](Self::InsertTable) lays out an empty table, with the
     /// table and cell ids minted inside `apply`, so the table and its text
@@ -531,7 +531,7 @@ pub const MAX_TABLE_CELLS: usize = 10_000;
 /// The longest image description an action may set, in characters.
 pub const MAX_IMAGE_ALT_CHARS: usize = 2_048;
 
-/// Read only the addressed block while matching qdoc's snapshot membership:
+/// Read only the addressed block while matching tilo-doc's snapshot membership:
 /// a region block must be a map with a byte-valued order key. Missing or
 /// non-Text text projects to the empty string, just as `materialize_block` does.
 /// Characters of region block `id`, `None` when it is not a block of that

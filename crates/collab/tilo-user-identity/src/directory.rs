@@ -32,7 +32,7 @@
 
 use std::collections::HashMap;
 use tilo_automerge::ApplyIncoming;
-use tilo_automerge::ReadTyped as _;
+use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -153,7 +153,7 @@ pub enum DirectoryError {
     WrongIdentity,
     /// The underlying Automerge merge failed.
     #[error("automerge error: {0}")]
-    Automerge(String),
+    Automerge(#[from] automerge::AutomergeError),
     /// Canonical encoding failed. Effectively unreachable.
     #[error("canonicalisation failed: {0}")]
     Canonical(#[from] CanonicalError),
@@ -205,8 +205,7 @@ impl WorkspaceDirectory {
         device_public_key: [u8; 32],
         bytes: &[u8],
     ) -> Result<Self, DirectoryError> {
-        let mut doc =
-            AutoCommit::load(bytes).map_err(|e| DirectoryError::Automerge(e.to_string()))?;
+        let mut doc = AutoCommit::load(bytes)?;
         doc.set_actor(automerge::ActorId::from(device_public_key.as_slice()));
         Ok(Self {
             doc,
@@ -243,16 +242,12 @@ impl WorkspaceDirectory {
     /// [`WorkspaceMeta`] docs for the convergence guarantee.
     fn ensure_workspace_obj(&mut self, id: WorkspaceId) -> Result<ObjId, DirectoryError> {
         let key = Self::workspace_key(id);
-        match self
-            .doc
-            .get(ROOT, key.as_str())
-            .map_err(|e| DirectoryError::Automerge(e.to_string()))?
-        {
+        match self.doc.get(ROOT, key.as_str())? {
             Some((Value::Object(ObjType::Map), oid)) => Ok(oid),
             _ => self
                 .doc
                 .put_object(ROOT, key, ObjType::Map)
-                .map_err(|e| DirectoryError::Automerge(e.to_string())),
+                .map_err(DirectoryError::from),
         }
     }
 
@@ -268,16 +263,14 @@ impl WorkspaceDirectory {
     /// Automerge document operation fails.
     pub fn add_workspace(&mut self, id: WorkspaceId, name: &str) -> Result<(), DirectoryError> {
         let obj = self.ensure_workspace_obj(id)?;
-        self.put_text_if_changed(&obj, "name", name)?;
+        self.doc.put_str_if_changed(&obj, "name", name)?;
         // Ensure the three lists exist so `list_workspaces` finds them.
         for list in ["members", "hosts", "pinned"] {
             if !matches!(
                 self.doc.get(&obj, list),
                 Ok(Some((Value::Object(ObjType::List), _)))
             ) {
-                self.doc
-                    .put_object(&obj, list, ObjType::List)
-                    .map_err(|e| DirectoryError::Automerge(e.to_string()))?;
+                self.doc.put_object(&obj, list, ObjType::List)?;
             }
         }
         Ok(())
@@ -300,7 +293,7 @@ impl WorkspaceDirectory {
     ) -> Result<(), DirectoryError> {
         self.add_workspace(id, name)?;
         let obj = self.ensure_workspace_obj(id)?;
-        self.put_text_if_changed(&obj, "room", room)
+        Ok(self.doc.put_str_if_changed(&obj, "room", room)?)
     }
 
     /// Record who governs the room of workspace `id`, or that the person
@@ -316,28 +309,9 @@ impl WorkspaceDirectory {
         governor: Option<&str>,
     ) -> Result<(), DirectoryError> {
         let obj = self.ensure_workspace_obj(id)?;
-        match governor {
-            Some(governor) => self.put_text_if_changed(&obj, "governor", governor),
-            None if self.doc.str_at(&obj, "governor").is_some() => self
-                .doc
-                .delete(&obj, "governor")
-                .map_err(|e| DirectoryError::Automerge(e.to_string())),
-            None => Ok(()),
-        }
-    }
-
-    fn put_text_if_changed(
-        &mut self,
-        obj: &ObjId,
-        key: &str,
-        value: &str,
-    ) -> Result<(), DirectoryError> {
-        if self.doc.str_at(obj, key).as_deref() == Some(value) {
-            return Ok(());
-        }
-        self.doc
-            .put(obj, key, value)
-            .map_err(|e| DirectoryError::Automerge(e.to_string()))
+        Ok(self
+            .doc
+            .put_opt_str_if_changed(&obj, "governor", governor)?)
     }
 
     /// Place workspace `id` at `order` in the person's list (see
@@ -359,7 +333,7 @@ impl WorkspaceDirectory {
         }
         self.doc
             .put(&obj, "order", ScalarValue::F64(order))
-            .map_err(|e| DirectoryError::Automerge(e.to_string()))
+            .map_err(DirectoryError::from)
     }
 
     /// Record that device `device` belongs to this person and is called
@@ -374,12 +348,9 @@ impl WorkspaceDirectory {
         let key = Self::device_key(&device);
         let obj = match self.doc.get(ROOT, key.as_str()) {
             Ok(Some((Value::Object(ObjType::Map), obj))) => obj,
-            _ => self
-                .doc
-                .put_object(ROOT, key, ObjType::Map)
-                .map_err(|e| DirectoryError::Automerge(e.to_string()))?,
+            _ => self.doc.put_object(ROOT, key, ObjType::Map)?,
         };
-        self.put_text_if_changed(&obj, "label", label)
+        Ok(self.doc.put_str_if_changed(&obj, "label", label)?)
     }
 
     /// Every device of this person that registered itself, with its label,
@@ -470,7 +441,7 @@ impl WorkspaceDirectory {
             (false, true) => self.doc.delete(&obj, key.as_str()),
             _ => return Ok(()),
         };
-        written.map_err(|e| DirectoryError::Automerge(e.to_string()))
+        written.map_err(DirectoryError::from)
     }
 
     fn read_kept_off(&self, workspace_obj: &ObjId) -> Vec<[u8; 32]> {
@@ -620,18 +591,13 @@ impl WorkspaceDirectory {
         key: &str,
         keys: &[[u8; 32]],
     ) -> Result<(), DirectoryError> {
-        let list = self
-            .doc
-            .put_object(workspace_obj, key, ObjType::List)
-            .map_err(|e| DirectoryError::Automerge(e.to_string()))?;
+        let list = self.doc.put_object(workspace_obj, key, ObjType::List)?;
         for k in keys {
-            self.doc
-                .insert(
-                    &list,
-                    self.doc.length(&list),
-                    ScalarValue::Bytes(k.to_vec()),
-                )
-                .map_err(|e| DirectoryError::Automerge(e.to_string()))?;
+            self.doc.insert(
+                &list,
+                self.doc.length(&list),
+                ScalarValue::Bytes(k.to_vec()),
+            )?;
         }
         Ok(())
     }
@@ -759,9 +725,7 @@ impl WorkspaceDirectory {
         vk.verify(&digest, &sig)
             .map_err(|_| DirectoryError::BadSignature)?;
         // All checks pass — merge the automerge delta.
-        self.doc
-            .load_incoming(&update.delta)
-            .map_err(|e| DirectoryError::Automerge(e.to_string()))?;
+        self.doc.load_incoming(&update.delta)?;
         Ok(())
     }
 

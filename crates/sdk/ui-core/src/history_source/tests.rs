@@ -1,6 +1,6 @@
 //! End-to-end tests for the history producer.
 //!
-//! These drive the production path only: real automerge documents, real qdoc
+//! These drive the production path only: real automerge documents, real tilo-doc
 //! schema, the real `HistorySource`, the real `ActivityTimeline` filter, and
 //! the real `State::restore_to_heads`. Nothing is stubbed — a bug in any of
 //! those links fails a test here.
@@ -136,8 +136,8 @@ fn at(secs: i64) -> SystemTime {
         .unwrap_or(UNIX_EPOCH)
 }
 
-/// A document carrying the qdoc schema, authored by `handle`.
-fn qdoc_doc(handle: &str) -> (AutoCommit, tilo_doc::Containers, tilo_doc::IdGen) {
+/// A document carrying the tilo-doc schema, authored by `handle`.
+fn rich_doc(handle: &str) -> (AutoCommit, tilo_doc::Containers, tilo_doc::IdGen) {
     let mut doc = AutoCommit::new();
     doc.set_actor(ActorId::from(handle.as_bytes()));
     let c = tilo_doc::model::init(&mut doc, &ROOT);
@@ -150,7 +150,7 @@ fn qdoc_doc(handle: &str) -> (AutoCommit, tilo_doc::Containers, tilo_doc::IdGen)
 /// Alice appends "!" — each edit one commit, stamped an hour apart. Returns
 /// Alice's document (with Bob's change merged in) and the block id.
 fn two_identity_document() -> (AutoCommit, String) {
-    let (mut alice, c, mut alice_ids) = qdoc_doc("alice");
+    let (mut alice, c, mut alice_ids) = rich_doc("alice");
 
     let block = {
         let mut dm = tilo_doc::DocMut {
@@ -268,7 +268,7 @@ fn rows_attribute_and_summarise_what_actually_changed() {
     // A deletion is reported as a deletion, and a change that only removes a block
     // is classed as a tombstone so it lands under the timeline's "Deletes" chip.
     {
-        let (mut doc, c, mut ids) = qdoc_doc("alice");
+        let (mut doc, c, mut ids) = rich_doc("alice");
         let (a, b) = {
             let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
@@ -319,9 +319,9 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(rows[2].summary, "-1 block");
     }
     // phase: a_plain_automerge_document_falls_back_to_patch_summaries
-    // A document with no qdoc schema still produces real rows via the patch
+    // A document with no tilo-doc schema still produces real rows via the patch
     // fallback, which is what makes the producer usable over the compositor's
-    // chrome document, not just qdoc artifacts.
+    // chrome document, not just tilo-doc artifacts.
     {
         let mut doc = AutoCommit::new();
         doc.set_actor(ActorId::from("alice".as_bytes()));
@@ -373,7 +373,7 @@ fn rows_attribute_and_summarise_what_actually_changed() {
     }
     // phase: semantic_action_context_becomes_the_row_summary_and_browse_metadata
     {
-        let (mut doc, c, mut ids) = qdoc_doc("alice");
+        let (mut doc, c, mut ids) = rich_doc("alice");
         let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
@@ -642,7 +642,7 @@ fn entries_are_stamped_capped_and_stably_addressed() {
     // phase: the_entry_cap_keeps_the_most_recent_versions
     // The window cap keeps the newest rows, not the oldest.
     {
-        let (mut doc, c, mut ids) = qdoc_doc("alice");
+        let (mut doc, c, mut ids) = rich_doc("alice");
         let p = {
             let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
@@ -1109,8 +1109,8 @@ fn entries_since_reads_only_appended_changes_and_matches_entries() {
     let source = source().with_max_entries(4);
     let mut log = HistoryLog::default();
 
-    // phase: a qdoc document, edited by one person a change at a time
-    let (mut doc, c, mut ids) = qdoc_doc("alice");
+    // phase: a tilo-doc document, edited by one person a change at a time
+    let (mut doc, c, mut ids) = rich_doc("alice");
     let (rows, read) = read_since(&source, &mut doc, &mut log);
     assert_eq!(
         read,

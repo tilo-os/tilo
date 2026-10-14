@@ -51,7 +51,7 @@ mod open_with_tests {
 
     fn merge_is_never_offered_for_binary_or_unsupported_names() {
         assert!(merge_supported_path(std::path::Path::new("notes.txt")));
-        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
+        assert!(merge_supported_path(std::path::Path::new("draft.TILO-DOC")));
         assert!(!merge_supported_path(std::path::Path::new("photo.png")));
         assert!(!merge_supported_path(std::path::Path::new("unknown")));
     }
@@ -4170,7 +4170,7 @@ mod command_path_tests {
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
         let other = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let conflict = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
-        let mut entry = ent("conflicted.qdoc", false, "application/x-qdoc");
+        let mut entry = ent("conflicted.tilo-doc", false, "application/x-tilo-doc");
         entry.content_hash = Some([5; 32]);
         entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
