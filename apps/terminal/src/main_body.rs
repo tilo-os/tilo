@@ -1670,8 +1670,9 @@ impl TerminalWidget {
         self.banner_rect
     }
 
-    /// Tee subsequent PTY writes so a compositor-path test can see them.
-    #[cfg(any(test, debug_assertions))]
+    /// Tee subsequent PTY writes so a compositor-path test can see them, in
+    /// any profile it is built in (`test-support`).
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn attach_input_probe(&self) -> std::sync::mpsc::Receiver<Vec<u8>> {
         struct ProbeWriter {
             inner: Box<dyn Write + Send>,

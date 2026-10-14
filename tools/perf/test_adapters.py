@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import tomllib
@@ -467,6 +468,59 @@ class FrameworkFocus(unittest.TestCase):
         self.assertEqual(budgeted, produced)
 
 
+NOTES_LATENCY = ROOT / "apps/notes/examples/notes-latency.rs"
+
+
+def notes_latency_log(scale: float, gpu: bool = True) -> str:
+    """notes-latency's output: the table, then its one JSON line."""
+    def figures(values: list[float]) -> dict:
+        values = [value * scale for value in values]
+        return {"samples": len(values), "p50": sorted(values)[len(values) // 2], "p99": max(values),
+                "max": max(values), "values": values}
+    workloads = {workload: {"to_frame_ms": figures([1.0, 2.0, 3.0]),
+                            "to_raster_ms": figures([2.0, 3.0, 4.0]) if gpu else None}
+                 for workload in adapters.NOTES_LATENCY_WORKLOADS}
+    report = {"pages": 27, "blocks": 838, "gpu": gpu, "workloads": workloads}
+    return "\n".join([
+        "Notes input latency, 27 notes / 838 blocks, 1280x900 at scale 1, release build, x86_64",
+        "type             3     2.00     3.00     3.00     3.00     4.00     4.00",
+        f"NOTES-LATENCY {json.dumps(report)}",
+    ])
+
+
+class NotesLatency(unittest.TestCase):
+    def test_every_input_is_a_sample_of_its_workload(self):
+        records = {item.kpi: item for item in adapters.notes_latency(
+            [notes_latency_log(1.0), notes_latency_log(2.0)], ENV)}
+        typing = records["render.notes_latency.type.to_frame_ms"]
+        self.assertEqual((typing.unit, typing.n, typing.max), ("ms", 6, 6.0))
+        self.assertEqual(records["render.notes_latency.open.to_raster_ms"].max, 8.0)
+        self.assertEqual(records["render.notes_latency.scroll.to_frame_ms"].meta, {"runs": "2"})
+
+    def test_a_run_without_its_line_fails(self):
+        with self.assertRaisesRegex(ValueError, "NOTES-LATENCY"):
+            adapters.notes_latency([notes_latency_log(1.0), "workload  samples  to frame"], ENV)
+
+    def test_a_run_without_a_gpu_fails(self):
+        with self.assertRaisesRegex(ValueError, "no GPU"):
+            adapters.notes_latency([notes_latency_log(1.0, gpu=False)], ENV)
+
+    def test_the_example_prints_what_the_adapter_reads(self):
+        source = NOTES_LATENCY.read_text()
+        self.assertIn('"NOTES-LATENCY {record}"', source)
+        for field in ("to_frame_ms", "to_raster_ms", "values", *adapters.NOTES_LATENCY_WORKLOADS):
+            self.assertIn(f'"{field}"', source)
+
+    def test_every_kpi_has_a_budget_and_the_render_job_runs_it(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("render.notes_latency.")}
+        produced = {item.kpi for item in adapters.notes_latency([notes_latency_log(1.0)], ENV)}
+        self.assertEqual(budgeted, produced)
+        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        self.assertIn("--example notes-latency", workflow)
+        self.assertIn("adapters.py notes-latency", workflow)
+
+
 LOAD_BENCH = ROOT / "crates/hosting/tilo-relay/examples/relay_load/main.rs"
 
 
@@ -581,7 +635,8 @@ def browser_report(**changes) -> dict:
         "adapter": {"vendor": "google", "architecture": "swiftshader", "device": "", "description": ""},
         "browser": {"product": "Chrome/153.0.8010.12"},
         "viewport": {"width": 1920, "height": 1080, "deviceScaleFactor": 1},
-        "workload": {"rounds": 2, "apps": ["so.tilo.notes", "so.tilo.sheets"], "inputHz": 120, "cpuThrottle": 1},
+        "workload": {"rounds": 2, "apps": ["so.tilo.notes", "so.tilo.sheets"], "inputHz": 120, "cpuThrottle": 1,
+                     "demoSeconds": 5},
         "samples": {"load_ms": [900.0, 1100.0], "open_ms": [20.0, 30.0, 25.0, 35.0],
                     "open_ready_ms": [60.0, 90.0, 70.0, 80.0], "activate_ms": [12.0, 14.0, 40.0],
                     "demo_interval_ms": [16.0, 17.0, 33.0, 18.0], "demo_work_ms": [9.0, 10.0, 11.0],
@@ -638,10 +693,24 @@ class BrowserQualification(unittest.TestCase):
         written = set(re.findall(r"\b([a-z_]+_(?:ms|per_s)): rounds", source[source.index("samples: {"):]))
         self.assertEqual(written, set(adapters.BROWSER_KPIS))
 
-    def test_every_browser_kpi_has_a_budget(self):
+    def test_a_run_without_the_demo_reports_everything_else(self):
+        report = browser_report(demoSeconds=0)
+        report["samples"] = {field: values for field, values in report["samples"].items()
+                             if field not in adapters.BROWSER_DEMO_FIELDS}
+        records = {item.kpi for item in adapters.browser_qualification(report, BROWSER_ENV)}
+        self.assertNotIn("browser.demo.frame_interval", records)
+        self.assertIn("browser.activate.first_frame", records)
+        with self.assertRaisesRegex(ValueError, "demo samples from a run without the demo"):
+            adapters.browser_qualification(browser_report(demoSeconds=0), BROWSER_ENV)
+
+    def test_every_kpi_the_scheduled_lane_reports_has_a_budget(self):
+        """The nightly job runs without the demo (perf-scheduled.yml: --demo-seconds 0)."""
         budgets = compare.load_budgets(compare.BUDGETS)
         budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("browser.")}
-        self.assertEqual(budgeted, {kpi for kpi, _ in adapters.BROWSER_KPIS.values()})
+        self.assertEqual(budgeted, {kpi for field, (kpi, _) in adapters.BROWSER_KPIS.items()
+                                    if field not in adapters.BROWSER_DEMO_FIELDS})
+        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        self.assertIn("--demo-seconds 0", workflow)
 
 
 if __name__ == "__main__":

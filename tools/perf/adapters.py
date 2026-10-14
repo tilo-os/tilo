@@ -75,6 +75,13 @@ Each adapter reads what a benchmark already prints and emits records through
   (an agent call adding one item, end to end), `.recompute_ms.<size>` (one
   focus-order recomputation inside it) and `.native_recompute_ms.<size>` (one
   recomputation of the live window's order); every timing is a sample.
+- `notes-latency LOG...`: the `NOTES-LATENCY {json}` line of
+  `apps/notes/examples/notes-latency.rs`: Notes over a 27-note, 838-block
+  notebook, each input sent through the host's input path and timed to the
+  end of the host frame that shows it and to the GPU raster of that frame.
+  Each workload (`type`, `enter`, `backspace`, `scroll`, `open`) becomes
+  `render.notes_latency.<workload>.to_frame_ms` and `.to_raster_ms`, every
+  input a sample. A run without raster timings (no GPU) fails.
 - `hosting-load REPORT_JSON`: the relay load bench's `hosting-load.json`
   (`crates/hosting/tilo-relay/examples/relay_load`). Each KPI it measured
   becomes `<kpi>.n<collaborators>`, one sample per measured minute (fan-out
@@ -85,7 +92,7 @@ Each adapter reads what a benchmark already prints and emits records through
   report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
   one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
   frame interval and frame's runtime CPU is a sample, and each round's idle
-  frame rate one. The report must name the env's renderer, commit and profile,
+  frame rate one; the demo's two only when the run had the demo. The report must name the env's renderer, commit and profile,
   and an unthrottled page.
 
 Usage:
@@ -99,6 +106,7 @@ Usage:
     python3 tools/perf/adapters.py framework-open --env-json env.json framework-open.log >> results.jsonl
     python3 tools/perf/adapters.py framework-scroll --env-json env.json framework-scroll.log >> results.jsonl
     python3 tools/perf/adapters.py framework-focus --env-json env.json framework-focus.log >> results.jsonl
+    python3 tools/perf/adapters.py notes-latency --env-json env.json notes-latency.log >> results.jsonl
     python3 tools/perf/adapters.py hosting-load --env-json env.json hosting-load.json >> results.jsonl
     python3 tools/perf/adapters.py browser-qualification --env-json env.json browser.json >> results.jsonl
 
@@ -376,6 +384,37 @@ def framework_scroll(logs: list[str], env: dict[str, Any]) -> list[record.Record
     return [record.from_samples(kpi, units[kpi], values, meta=meta, **base) for kpi, values in samples.items()]
 
 
+NOTES_LATENCY_PREFIX = "NOTES-LATENCY "
+# The example's workloads, each a pair of KPIs.
+NOTES_LATENCY_WORKLOADS = ("type", "enter", "backspace", "scroll", "open")
+
+
+def notes_latency(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for one or more runs of the Notes input-latency example."""
+    samples: dict[str, list[float]] = {}
+    for log in logs:
+        lines = [line.strip()[len(NOTES_LATENCY_PREFIX):] for line in log.splitlines()
+                 if line.strip().startswith(NOTES_LATENCY_PREFIX)]
+        if len(lines) != 1:
+            raise ValueError(f"expected one `NOTES-LATENCY` line per run, found {len(lines)}: "
+                             "did notes-latency run to the end?")
+        report = json.loads(lines[0])
+        for workload in NOTES_LATENCY_WORKLOADS:
+            figures = report["workloads"][workload]
+            for stage in ("to_frame_ms", "to_raster_ms"):
+                if figures.get(stage) is None:
+                    raise ValueError(f"notes-latency took no `{stage}` for `{workload}`: no GPU?")
+                values = [float(value) for value in figures[stage]["values"]]
+                if not values:
+                    raise ValueError(f"notes-latency took no `{workload}` samples")
+                samples.setdefault(f"render.notes_latency.{workload}.{stage}", []).extend(values)
+    if not logs:
+        raise ValueError("no notes-latency logs")
+    meta = {**env.get("meta", {}), "runs": str(len(logs))}
+    base = {name: value for name, value in env.items() if name != "meta"}
+    return [record.from_samples(kpi, "ms", values, meta=meta, **base) for kpi, values in samples.items()]
+
+
 FILES_NAME_INDEX_LINE = re.compile(
     r"(?:^|\s)FILES-NAME-INDEX names=(?P<names>[0-9]+) rebuild_ms=(?P<rebuild_ms>[0-9.]+) "
     r"change_ms=(?P<change_ms>[0-9.]+(?:,[0-9.]+)*) unchanged_ms=(?P<unchanged_ms>[0-9.]+(?:,[0-9.]+)*) "
@@ -516,6 +555,8 @@ BROWSER_KPIS = {
     "demo_work_ms": ("browser.demo.frame_work", "ms"),
     "idle_per_s": ("browser.idle.presented_per_s", "per_s"),
 }
+# Reported only by a run with the demo workload (`--demo-seconds` above 0).
+BROWSER_DEMO_FIELDS = frozenset({"demo_interval_ms", "demo_work_ms"})
 
 
 def browser_qualification(report: dict[str, Any], env: dict[str, Any],
@@ -527,7 +568,8 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
     commit in the env's profile, clean unless `require_clean=False` (the A/B
     lane, whose output directory sits untracked in the checkout it builds),
     and its page CPU unthrottled: a throttled run stands in for older
-    hardware and is never this series.
+    hardware and is never this series. The demo's KPIs come from a run with
+    the demo and only from one.
     """
     if report.get("schema") != 1:
         raise ValueError(f"browser qualification report schema {report.get('schema')!r}, not 1")
@@ -542,9 +584,13 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
     if workload.get("cpuThrottle", 1) != 1:
         raise ValueError(f"the page's CPU was throttled {workload['cpuThrottle']}x")
     samples = report["samples"]
-    missing = [field for field in BROWSER_KPIS if not samples.get(field)]
+    demo = float(workload.get("demoSeconds", 0)) > 0
+    fields = [field for field in BROWSER_KPIS if demo or field not in BROWSER_DEMO_FIELDS]
+    missing = [field for field in fields if not samples.get(field)]
     if missing:
         raise ValueError(f"the report has no samples for {missing}")
+    if not demo and any(samples.get(field) for field in BROWSER_DEMO_FIELDS):
+        raise ValueError("the report has demo samples from a run without the demo")
     adapter = report.get("adapter") or {}
     meta = {**env.get("meta", {}), "bundle_digest": bundle["digest"], "runtime_sha256": bundle["runtimeSha256"],
             "browser": report["browser"]["product"],
@@ -553,8 +599,7 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
             "rounds": str(workload["rounds"]), "apps": ",".join(workload["apps"]),
             "input_hz": str(workload["inputHz"])}
     base = {name: value for name, value in env.items() if name != "meta"}
-    return [record.from_samples(kpi, unit, samples[field], meta=meta, **base)
-            for field, (kpi, unit) in BROWSER_KPIS.items()]
+    return [record.from_samples(*BROWSER_KPIS[field], samples[field], meta=meta, **base) for field in fields]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -589,6 +634,9 @@ def main(argv: list[str] | None = None) -> int:
                                    help="records from framework-scaling's FRAMEWORK-FOCUS lines")
     focusing.add_argument("--env-json", required=True, type=Path)
     focusing.add_argument("logs", nargs="+", type=Path)
+    notes = commands.add_parser("notes-latency", help="records from notes-latency's NOTES-LATENCY line")
+    notes.add_argument("--env-json", required=True, type=Path)
+    notes.add_argument("logs", nargs="+", type=Path)
     hosting = commands.add_parser("hosting-load", help="records from the relay load bench's hosting-load.json")
     hosting.add_argument("--env-json", required=True, type=Path)
     hosting.add_argument("--prices", type=Path, default=PRICES)
@@ -627,6 +675,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "framework-focus":
             records = framework_focus([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
                                       env)
+        elif args.command == "notes-latency":
+            records = notes_latency([path.read_text(encoding="utf-8", errors="replace") for path in args.logs],
+                                    env)
         elif args.command == "idle-wakeups":
             records = idle_wakeups([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         elif args.command == "files-name-index":

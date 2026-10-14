@@ -16,6 +16,7 @@
  */
 import {AdmissionError} from './admission.mjs';
 import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';
+import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prepareGpu} from './host.mjs';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} from './peer.mjs';
@@ -478,6 +479,10 @@ export async function startEntryPage({mode}) {
     document.documentElement.dataset.entry = 'open';
     globalThis.tiloMount = page.mount;
     globalThis.tiloRouter = page.router;
+    // A window that opens after a newer version was deployed finds this
+    // version's files gone: offer the reload rather than fail it quietly.
+    watchForUpdate({offer: () => offerUpdate({page, status}),
+      onChecked: update => { if (update) document.documentElement.dataset.update = update.deployed; }});
     const other = document.getElementById('other-mode');
     if (other) {
       // Written when followed, so it carries whatever is in front by then.
@@ -573,19 +578,50 @@ async function openWorkspace({choice, page, status}) {
   }
   remembering(() => chooseWorkspace(choice.home ? null : choice));
   status.textContent = `Opening ${choice.name}…`;
+  await closeRoom(page);
+  loadPage(url);
+}
+
+/** Stop following links, then close the room's desktop and its peer, saving
+ * what they hold; the person decides whether to leave without what cannot
+ * be saved. */
+async function closeRoom(page) {
   page.router.stop();
   for (;;) {
     try {
       await page.mount?.cleanup?.();
       await page.peer?.dispose?.();
-      break;
+      return;
     } catch (error) {
-      console.warn('switching workspace: closing failed', error);
+      console.warn('leaving the page: closing failed', error);
       const again = await card('Some changes in this workspace could not be saved yet.', [['Try again', true], ['Leave without them', false]]);
-      if (!again) break;
+      if (!again) return;
     }
   }
-  loadPage(url);
+}
+
+/**
+ * This page runs a version of Tilo the web entry no longer serves, and just
+ * missed a file of it (bundle-update.mjs). Offer to reload into the new
+ * version: the desktop and its documents are kept in this browser, so the
+ * reloaded page reopens the same windows, the one that failed included.
+ * Saved first, as for a switch of workspace; when saving fails the page
+ * stays.
+ */
+async function offerUpdate({page, status}) {
+  const reload = await card('Tilo was updated while this page was open, so it could not open what you asked for. Reload to use the new version; your windows and documents stay as they are.',
+    [['Reload', true], ['Not now', false]]);
+  if (!reload) return;
+  try {
+    await page.mount?.flush?.();
+  } catch (error) {
+    console.warn('updating: saving failed', error);
+    await card('Your latest changes here are not saved yet, so Tilo did not reload. Try again in a moment.', [['OK', null]]);
+    return;
+  }
+  status.textContent = 'Updating Tilo…';
+  await closeRoom(page);
+  location.reload();
 }
 
 /** After a failure to open `scope`, offer the person's other workspaces. */

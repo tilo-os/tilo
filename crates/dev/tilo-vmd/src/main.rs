@@ -42,6 +42,19 @@ enum Command {
     Restore {
         #[command(flatten)]
         state: State,
+        /// The booted image (default: from the kernel command line).
+        #[arg(long, hide = true)]
+        booted: Option<String>,
+    },
+    /// Put every slot back on the booted OS image when its layers were made
+    /// for another one, before systemd-sysext merges them (run at boot by
+    /// tilo-vm-reconcile-image.service).
+    ReconcileImage {
+        #[command(flatten)]
+        state: State,
+        /// The booted image (default: from the kernel command line).
+        #[arg(long, hide = true)]
+        booted: Option<String>,
     },
     /// Run one command as a slot sees the system: in its session's mount
     /// namespace, as its user; output streams, and the run is bounded.
@@ -220,6 +233,53 @@ fn awake_hold(lease: &std::path::Path) -> ExitCode {
     }
 }
 
+fn reconcile_image(state: &State, booted: Option<String>) -> ExitCode {
+    let Some(booted) = booted else {
+        eprintln!(
+            "tilo-vmd: no composefs= or ostree= on the kernel command line; slots stay as they are"
+        );
+        return ExitCode::SUCCESS;
+    };
+    match state
+        .daemon()
+        .reconcile_image(&booted, tilo_vmd::image::Merge::Pending)
+    {
+        Ok(Some(change)) => {
+            for line in change.describe() {
+                eprintln!("tilo-vmd: {line}");
+            }
+            if change.dropped.is_empty() {
+                eprintln!("tilo-vmd: slots follow {booted}");
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(None) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!(
+                "tilo-vmd: could not put the slots back on the booted image {booted}: {error}"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn restore(state: &State, booted: Option<String>) -> ExitCode {
+    let issues = state
+        .daemon()
+        .restore(booted.or_else(tilo_vmd::image::running_image).as_deref());
+    for issue in &issues {
+        eprintln!(
+            "tilo-vmd: slot {}: {} ({})",
+            issue.slot, issue.problem, issue.hint
+        );
+    }
+    if issues.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Rpc {
@@ -255,20 +315,10 @@ fn main() -> ExitCode {
                 |job: CiJob| daemon.ci_job(&job),
             ))
         }
-        Command::Restore { state } => {
-            let issues = state.daemon().restore();
-            for issue in &issues {
-                eprintln!(
-                    "tilo-vmd: slot {}: {} ({})",
-                    issue.slot, issue.problem, issue.hint
-                );
-            }
-            if issues.is_empty() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            }
+        Command::ReconcileImage { state, booted } => {
+            reconcile_image(&state, booted.or_else(tilo_vmd::image::running_image))
         }
+        Command::Restore { state, booted } => restore(&state, booted),
         Command::Exec {
             state,
             slot,

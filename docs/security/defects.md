@@ -876,11 +876,18 @@ requires the Tilo registry scope, a `sigstoreSigned` rule, the pinned key path
 and the installed non-empty verification key instead of accepting one unrelated
 string. Held by `os/tests/kernel_hardening_invariants.sh`.
 
-**Residual, open.** The image-policy check is three independent `grep -F` matches over
-`policy.json`, not a parse. It does not prove that the `sigstoreSigned` rule and key path belong
-to the `registry.tilo.so/tilo/tilo` scope: the `code.tilo.so/tilo/tilo` or
-`registry.tilo.so/tilo/legacy-guest` entry alone would satisfy the last two greps if the Tilo
-scope's rule were weakened. Separately, the audit's mem-init check required the kernel to report
+**Residual, resolved.** The image-policy check was three independent `grep -F` matches over
+`policy.json`, not a parse, so a signed `code.tilo.so/tilo/tilo` or
+`registry.tilo.so/tilo/legacy-guest` entry would have satisfied it while the
+`registry.tilo.so/tilo/tilo` scope itself accepted anything. The audit now runs
+`os/usr/libexec/tilo-image-policy-check`, which parses the policy and passes only when
+`registry.tilo.so/tilo/tilo` and `code.tilo.so/tilo/tilo` each hold nothing but `sigstoreSigned`
+requirements on `/usr/share/tilo/cosign.pub` with a repository-bound `signedIdentity`, and every
+more specific scope under either Tilo namespace is that or `reject`. An unreadable, malformed or
+duplicate-keyed policy fails. `os/tests/kernel_hardening_invariants.sh` runs it against the
+shipped policy and fourteen weakened copies (each Tilo scope accepting anything, another key,
+`signedBy`, a remapped identity, extra key material, a tag override, a removed scope, malformed
+JSON, a duplicate scope, a missing file), every one of which must fail. Separately, the audit's mem-init check required the kernel to report
 `heap free:on` and so warned on every correct boot once `init_on_free` left the kernel
 arguments; it now requires `alloc:on`, and `os/tests/kernel_hardening_invariants.sh` refuses the
 old pattern.
@@ -907,6 +914,22 @@ by `os/tests/kernel_hardening_invariants.sh`) still applies; the MAC layer does 
 **Fix direction:** collect the AVCs from a booted image under real workloads, write the
 enforcing allow-set, drop `typepermissive`, and add an invariant that fails while the domain is
 permissive.
+
+**Resolved.** `tilo-base.cil` no longer makes `tilo_fs_t` permissive; its allow-set names each
+type fs uses, grouped by subsystem with the reason for each rule.
+`os/tests/kernel_hardening_invariants.sh` ("root FUSE daemon SELinux domain enforces with named
+types") fails if a `typepermissive` returns, if the FUSE device grant disappears, or if a rule
+grants `tilo_fs_t` a whole attribute, an unconfined domain or every permission of a class.
+Receipt: on a dev VM (image `tilo-vm:main-f4c9380-ci`, aarch64) with fs.service running under a
+certified device identity, the AVCs were collected with the domain permissive and dontaudit rules
+disabled, then this module was loaded and the same workload re-run enforcing: mounting
+`/var/workspace`, file create/write/append/rename/copy/truncate/chmod/xattr/delete as two local
+accounts, a 5 MB content round trip, the storage socket's snapshot and eviction requests, Iroh
+waking (relays, net report, DNS), a stop and start, and the native data plane's probes on a Btrfs
+store volume. No `tilo_fs_t` denial was logged and every operation matched the permissive run.
+Peer sync with a second device was not part of that run. The shipped kernel has no fanotify, so
+the native data plane itself cannot start there (fs serves FUSE); its own rules will come from
+AVCs on a kernel that has it.
 
 ## P1-11 — A Read Deny below the room does not withhold that record's channel key
 

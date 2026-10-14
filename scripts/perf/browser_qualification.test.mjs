@@ -8,7 +8,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
 import {
-  GOALS, Invalid, appModules, classifyAdapter, intervals, judgeGoals, parseArgs, percentile, stats, summarize, unlistedResources,
+  GOALS, Invalid, appModules, chromeFlags, classifyAdapter, intervals, judgeGoals, parseArgs, percentile, stats, summarize, unlistedResources,
   verifyBundle,
 } from './browser_qualification.mjs';
 
@@ -83,9 +83,20 @@ test("an app's code is its split-off module, after the shared modules it needs",
   assert.deepEqual(appModules(null, 'so.tilo.notes'), []);
 });
 
+test("Chrome's flags follow the renderer and whether the run is root's", () => {
+  assert.deepEqual(chromeFlags('gpu', 501), ['--disable-frame-rate-limit', '--disable-gpu-vsync']);
+  const ci = chromeFlags('swiftshader', 0);
+  assert.ok(ci.includes('--use-vulkan=swiftshader') && ci.includes('--use-angle=swiftshader'));
+  assert.ok(ci.includes('--no-sandbox'), 'Chrome refuses to run as root with its sandbox');
+  assert.ok(!chromeFlags('swiftshader', 1000).includes('--no-sandbox'));
+  assert.ok(!chromeFlags('gpu', undefined).includes('--no-sandbox'));
+  assert.throws(() => parseArgs(['bundle', '--out', 'r.json', '--renderer', 'lavapipe']), /--renderer/,
+    "Chrome never offers a system CPU driver to WebGPU");
+});
+
 test('the adapter names its renderer, and an empty info is unknown', () => {
   assert.equal(classifyAdapter({vendor: 'google', architecture: 'swiftshader', device: '', description: ''}), 'swiftshader');
-  assert.equal(classifyAdapter({vendor: 'mesa', description: 'llvmpipe (LLVM 19)'}), 'llvmpipe');
+  assert.equal(classifyAdapter({vendor: 'mesa', description: 'llvmpipe (LLVM 19, 256 bits)'}), 'lavapipe');
   assert.equal(classifyAdapter({vendor: 'apple', architecture: 'metal-3'}), 'gpu');
   assert.equal(classifyAdapter({vendor: '', architecture: ''}), 'unknown');
   assert.equal(classifyAdapter(null), 'unknown');
@@ -121,11 +132,24 @@ test('goals report the value, the verdict and the remaining gap', () => {
   assert.ok(missed.find(g => g.name.startsWith('demo minimum')).met);
 });
 
+test('a run without the demo judges no demo goal', () => {
+  const noDemo = {...round(1), demo: {intervals: [], work: [], stages: {}, frames: 0, wheels: 0, seconds: 0, fps: NaN}};
+  const goals = judgeGoals(summarize([noDemo]));
+  assert.ok(goals.length > 0);
+  assert.ok(goals.every(g => !g.name.startsWith('demo')), 'no demo goal without a demo');
+  assert.ok(goals.find(g => g.name === 'activation (p99, ms)').met);
+  assert.equal(parseArgs(['bundle', '--out', 'r.json', '--renderer', 'swiftshader', '--demo-seconds', '0']).demoSeconds, 0);
+  assert.throws(() => parseArgs(['bundle', '--out', 'r.json', '--renderer', 'gpu', '--rounds', '0']), /positive/);
+});
+
 test('arguments need a bundle, a report path and a known renderer', () => {
   const parsed = parseArgs(['bundle', '--out', 'r.json', '--renderer', 'swiftshader', '--rounds', '2', '--max-load', '0.5']);
   assert.equal(parsed.rounds, 2);
   assert.equal(parsed.maxLoad, 0.5);
   assert.equal(parsed.activations, 20);
+  assert.equal(parsed.frameTimeout, 120, 'a software rasterizer may take long over a first pipeline');
+  assert.equal(parseArgs(['bundle', '--out', 'r.json', '--renderer', 'gpu']).frameTimeout, 10);
+  assert.equal(parseArgs(['bundle', '--out', 'r.json', '--renderer', 'gpu', '--frame-timeout', '30']).frameTimeout, 30);
   assert.throws(() => parseArgs(['bundle', '--out', 'r.json']), /usage/);
   assert.throws(() => parseArgs(['bundle', '--out', 'r.json', '--renderer', 'opengl']), /--renderer/);
   assert.throws(() => parseArgs(['bundle', '--out', 'r.json', '--renderer', 'gpu', '--rounds', '1.5']), /whole number/);

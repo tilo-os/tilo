@@ -988,6 +988,7 @@ mod tests {
         fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
             let ran = std::rc::Rc::clone(&self.ran);
             vec![SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Document,
                 provider_id: "params".to_string(),
@@ -1030,6 +1031,7 @@ mod tests {
 
         fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
             vec![SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: "receipts".into(),
@@ -1209,6 +1211,7 @@ mod tests {
             let polls = std::rc::Rc::clone(&self.polls);
             let refuse = self.refuse;
             vec![SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: self.id().into(),

@@ -4,7 +4,10 @@ use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::task::Poll;
 
-use super::{BlockingClient, FlatpakStatus, InstalledPackage, WirePinning, parse_id, text_result};
+use super::{
+    BlockingClient, FlatpakStatus, InstalledPackage, ListedPackage, PackageAbout, WirePinning,
+    parse_id, text_result,
+};
 
 type ReadFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>>>>;
 
@@ -63,7 +66,7 @@ impl BlockingClient {
     }
 
     /// Begin the same typed list read without waiting for its response.
-    pub fn begin_list(&self) -> PendingRead<Vec<InstalledPackage>> {
+    pub fn begin_list(&self) -> PendingRead<Vec<ListedPackage>> {
         let client = self.client.clone();
         PendingRead::new(async move {
             let response = client
@@ -87,7 +90,8 @@ impl BlockingClient {
                     text_result(value).map(std::path::PathBuf::from)
                 };
                 let id = parse_id(entry.get_id().map_err(|e| e.to_string())?)?;
-                out.push(InstalledPackage {
+                let about = PackageAbout::from_manifest(&manifest.package);
+                let package = InstalledPackage {
                     id: manifest.package.id,
                     version: manifest.package.version,
                     package_id_hex: id.to_hex(),
@@ -108,7 +112,8 @@ impl BlockingClient {
                     held: false,
                     payload_bytes: entry.get_size_bytes(),
                     system: !entry.get_user_managed(),
-                });
+                };
+                out.push(ListedPackage { package, about });
             }
             Ok(out)
         })
@@ -136,6 +141,31 @@ impl BlockingClient {
         let registry = registry.to_owned();
         PendingRead::new(async move {
             let mut request = client.registry_catalogue_request();
+            request.get().set_registry(&registry);
+            let response = request
+                .send()
+                .promise
+                .await
+                .map_err(|error| error.to_string())?;
+            let entries = text_result(
+                response
+                    .get()
+                    .map_err(|error| error.to_string())?
+                    .get_entries(),
+            )?;
+            if entries.len() > 4 * 1024 * 1024 {
+                return Err("verified repository catalogue exceeds the response limit".into());
+            }
+            Ok(entries)
+        })
+    }
+    /// Begin reading the catalogue the host last verified from `registry`,
+    /// which needs no network and so answers while a fresh read is pending.
+    pub fn begin_last_verified_catalogue(&self, registry: &str) -> PendingRead<String> {
+        let client = self.client.clone();
+        let registry = registry.to_owned();
+        PendingRead::new(async move {
+            let mut request = client.last_verified_catalogue_request();
             request.get().set_registry(&registry);
             let response = request
                 .send()
