@@ -2260,7 +2260,7 @@ async fn history_read_current_winner_is_separate_from_exact_restore_receipt() {
     fixture.endpoint.close().await;
 }
 
-/// A `.tilo-doc` record with two document versions: v1 holds blocks "alpha" (in
+/// An existing `.qdoc` record with two document versions: v1 holds blocks "alpha" (in
 /// part bold) and "beta"; v2, written through the FUSE commit path, extends
 /// "beta".
 struct TiloDocVersions {
@@ -2280,7 +2280,7 @@ impl TiloDocVersions {
                 crate::namespace::ROOT_INO,
                 "test.bin",
                 crate::namespace::ROOT_INO,
-                "a.tilo-doc",
+                "a.qdoc",
             )
             .unwrap();
         let record = fixture.fs.ns().record_id_for(fixture.ino).unwrap();

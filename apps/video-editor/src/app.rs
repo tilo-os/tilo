@@ -17,7 +17,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
-use taffy::{NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -6462,14 +6462,7 @@ impl Widget for VideoEditorApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
-        taffy.widget_leaf(
-            Style {
-                size: Size::from_percent(1.0, 1.0),
-                ..Default::default()
-            },
-            node_map,
-            self,
-        )
+        taffy.fill_leaf(node_map, self)
     }
 
     #[allow(

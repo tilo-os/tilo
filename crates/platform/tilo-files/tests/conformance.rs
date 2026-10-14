@@ -391,6 +391,14 @@ async fn prefixes_read_only_the_start(dir: &Dir) {
         blocking::read_prefix(dir, &p("media/none"), 4),
         Err(FsError::NotFound)
     );
+    assert_eq!(
+        blocking::read_bounded(dir, &p("media/clip.bin"), 11).unwrap(),
+        Some(b"header+body".to_vec())
+    );
+    assert_eq!(
+        blocking::read_bounded(dir, &p("media/clip.bin"), 10).unwrap(),
+        None
+    );
 }
 
 async fn blocking_calls_agree_with_async_ones(dir: &Dir) {
