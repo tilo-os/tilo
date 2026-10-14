@@ -3465,7 +3465,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             return;
         };
         let window_id = window.id();
-        let mut effect_before = None;
         let event = match event {
             UserEvent::NativeScenarioInput(packet) => {
                 if self.native_input_origin.is_none() {
@@ -3500,20 +3499,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         "lateness_us": now.saturating_duration_since(packet.scheduled_at).as_micros(),
                     }),
                 );
-                effect_before = self
-                    .app
-                    .native_input_snapshot()
-                    .map(|value| (packet.id, value));
+                let before = self.app.native_input_snapshot();
                 self.native_input_ids.push(packet.id);
-                match packet.input {
-                    crate::native_scenario::Input::Hover { x, y } => UserEvent::Hover { x, y },
-                    crate::native_scenario::Input::Click { x, y } => UserEvent::Click { x, y },
-                    crate::native_scenario::Input::Wheel { dx, dy } => UserEvent::Wheel { dx, dy },
-                    crate::native_scenario::Input::Character { value } => {
-                        UserEvent::Key(winit::keyboard::Key::Character(value.to_string().into()))
-                    }
-                    crate::native_scenario::Input::Key { key } => UserEvent::Key(key.into()),
+                // Pen steps carry their samples ahead of each pointer event,
+                // so a paced stroke reaches widgets as a tablet's would.
+                for event in packet.input.window_events() {
+                    self.injected_window_event(event_loop, window_id, event);
                 }
+                if let Some(before) = before {
+                    crate::native_scenario::log::emit_json(
+                        "tilo-native-effect",
+                        serde_json::json!({
+                            "id": packet.id, "before": before, "after": self.app.native_input_snapshot(),
+                        }),
+                    );
+                }
+                return;
             }
             other => other,
         };
@@ -3629,14 +3630,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     AkWindowEvent::AccessibilityDeactivated => {}
                 }
             }
-        }
-        if let Some((id, before)) = effect_before {
-            crate::native_scenario::log::emit_json(
-                "tilo-native-effect",
-                serde_json::json!({
-                    "id": id, "before": before, "after": self.app.native_input_snapshot(),
-                }),
-            );
         }
     }
 
