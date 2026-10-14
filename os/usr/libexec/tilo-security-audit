@@ -142,9 +142,15 @@ case "$lock" in
 esac
 
 # Memory-init + heap hardening kargs
-for k in init_on_alloc=1 init_on_free=1 slab_nomerge page_alloc.shuffle=1 vsyscall=none; do
+for k in init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 vsyscall=none; do
   has_karg "$k" && ok "karg $k" || warn "karg $k MISSING"
 done
+# 01-hardening.toml leaves init_on_free out on purpose: it zeroes all RAM on one
+# CPU at every boot and switches init_on_alloc's zeroing off. Someone may still
+# add it to their own boot entry; say so, it is not a failure.
+if has_karg init_on_free=1; then
+  note "karg init_on_free=1 is set locally: freed memory is scrubbed, boot zeroes all RAM first"
+fi
 # A dev image (os/Containerfile.dev, /usr/lib/tilo/image-flavour = dev) drops
 # this karg on purpose: tilo-vm hands the VM its SSH key as a credential.
 if has_karg systemd.import_credentials=no; then

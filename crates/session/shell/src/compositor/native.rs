@@ -14020,7 +14020,10 @@ pub fn run() {
         }
         let client_pump_needed = client_followup_needed(
             clients_dispatched,
-            client_changed || configured_after_dispatch > 0 || capture_ready,
+            client_changed
+                || configured_after_dispatch > 0
+                || capture_ready
+                || !state.selection.pending_pulls.is_empty(),
         );
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
