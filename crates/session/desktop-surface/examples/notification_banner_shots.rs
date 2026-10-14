@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             vec![
                 Notification::new("Ada mentioned you", "“Can you look at the launch notes?”")
                     .with_app_name("Chat")
-                    .with_from("Ada Lovelace", "peer:ada"),
+                    .with_from("Ada", "peer:ada"),
                 ask,
                 Notification::new(
                     "Sync paused",

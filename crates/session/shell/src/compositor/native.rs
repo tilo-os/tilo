@@ -7118,6 +7118,7 @@ fn power_notification_to_incoming(
         caller: None,
         badge_count: None,
         contact_endpoint: None,
+        sender_name: None,
         sound: Some(settings_store::system_sounds::SystemSoundEvent::LowBattery),
     }
 }

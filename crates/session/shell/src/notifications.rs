@@ -250,6 +250,10 @@ pub struct IncomingNotification {
     /// communications app. The shell hashes and checks it against its private
     /// Contacts-owned registry before it can affect focus policy.
     pub contact_endpoint: Option<String>,
+    /// Tilo extension: the display name of the person the message is from,
+    /// shown with `contact_endpoint` on the banner. Trusted no further than
+    /// the handle it travels with.
+    pub sender_name: Option<String>,
     /// The system sound this notification stands for, from its `category`
     /// hint; `None` when the sender asked for silence (`suppress-sound`).
     pub sound: Option<settings_store::system_sounds::SystemSoundEvent>,
@@ -1148,6 +1152,20 @@ fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String>
     (value.len() <= 320 && !value.chars().any(char::is_control)).then_some(value)
 }
 
+/// The `x-tilo-sender-name` hint: a person's display name, one line and
+/// bounded like a contact handle.
+#[cfg(any(test, target_os = "linux"))]
+fn parse_sender_name(hints: &HashMap<String, OwnedValue>) -> Option<String> {
+    let value = hints
+        .get("x-tilo-sender-name")?
+        .try_clone()
+        .ok()
+        .and_then(|value| String::try_from(value).ok())?;
+    let value = value.trim();
+    (!value.is_empty() && value.len() <= 320 && !value.chars().any(char::is_control))
+        .then(|| value.to_string())
+}
+
 #[cfg(any(test, target_os = "linux"))]
 fn parse_notification_sharing(hints: &HashMap<String, OwnedValue>) -> NotificationSharing {
     let Some(value) = hints.get("x-tilo-device-sharing") else {
@@ -1753,6 +1771,9 @@ impl NotificationService {
                 contact_endpoint: (!foreign_identity)
                     .then(|| parse_contact_endpoint(&hints))
                     .flatten(),
+                sender_name: (!foreign_identity)
+                    .then(|| parse_sender_name(&hints))
+                    .flatten(),
                 sound: parse_notification_sound(&hints),
             },
             sharing,
@@ -1992,6 +2013,7 @@ mod tests {
                 caller: None,
                 badge_count: None,
                 contact_endpoint: None,
+                sender_name: None,
                 sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
             });
             assert_eq!(b.pending_incoming_len(), 1);
@@ -2071,6 +2093,22 @@ mod tests {
             );
             assert_eq!(parse_contact_endpoint(&hints), None);
         }
+    }
+
+    #[test]
+    fn sender_name_hint_is_one_trimmed_line() {
+        let mut hints = HashMap::new();
+        assert_eq!(parse_sender_name(&hints), None);
+        hints.insert(
+            "x-tilo-sender-name".into(),
+            OwnedValue::from(zbus::zvariant::Str::from("  Ada  ")),
+        );
+        assert_eq!(parse_sender_name(&hints).as_deref(), Some("Ada"));
+        hints.insert(
+            "x-tilo-sender-name".into(),
+            OwnedValue::from(zbus::zvariant::Str::from("Ada\nLovelace")),
+        );
+        assert_eq!(parse_sender_name(&hints), None);
     }
 
     fn continuity_draft(sharing: NotificationSharing) -> ContinuityNotificationDraft {

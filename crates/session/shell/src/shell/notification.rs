@@ -344,31 +344,22 @@ pub fn from_incoming(inc: IncomingNotification) -> Notification {
     });
     notification.app_id = app_id;
     notification.source_workspace = inc.caller.as_ref().map(|c| c.workspace_id.0);
-    // A communications app that names who a message is from (its contact
-    // handle) gets a banner led by that person; the bridge only passes the
-    // handle on from a launcher-verified Tilo app.
-    notification.from = inc.contact_endpoint.as_deref().and_then(person_of_handle);
+    // A communications app that names who a message is from, by display
+    // name and contact handle, gets a banner led by that person. The name is
+    // what the person is called; the handle only picks their colour and is
+    // never shown. The bridge passes both on only from a launcher-verified
+    // Tilo app.
+    notification.from = inc
+        .sender_name
+        .clone()
+        .zip(inc.contact_endpoint.clone())
+        .map(|(name, identity)| NotificationPerson { name, identity });
     notification.actions = inc.actions;
     // Never from the wire: an app that could ask to pierce Do-Not-Disturb
     // would ask every time.
     notification.bypass_dnd = false;
     notification.show_on_lock_screen = false;
     notification
-}
-
-/// The person a contact handle names: the handle is their identity (their
-/// presence colour), its local part the name their initials come from.
-fn person_of_handle(handle: &str) -> Option<NotificationPerson> {
-    let handle = handle.trim();
-    if handle.is_empty() {
-        return None;
-    }
-    let local = handle.split_once(':').map_or(handle, |(_, rest)| rest);
-    let name = local.split('@').next().unwrap_or(local).trim();
-    Some(NotificationPerson {
-        name: if name.is_empty() { local } else { name }.to_string(),
-        identity: handle.to_string(),
-    })
 }
 
 /// A validated, ephemeral projection from another device as an ordinary
@@ -860,6 +851,7 @@ mod tests {
             caller: Some(PortalCaller::new(WorkspaceId(9), "org.mail")),
             badge_count: None,
             contact_endpoint: None,
+            sender_name: None,
             sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
         }
     }
@@ -879,13 +871,16 @@ mod tests {
             assert_eq!(n.default_action_key().as_deref(), Some("default"));
             // An app's own notice is from no one in particular...
             assert_eq!(n.from, None);
-            // ...a message naming its sender's handle is from that person.
+            // ...a handle alone names no one: it is never shown as a name...
             let mut message = incoming(4, 1, -1);
             message.contact_endpoint = Some("mailto:ada@example.org".into());
+            assert_eq!(from_incoming(message.clone()).from, None);
+            // ...a message naming its sender is from that person.
+            message.sender_name = Some("Ada".into());
             assert_eq!(
                 from_incoming(message).from,
                 Some(NotificationPerson {
-                    name: "ada".into(),
+                    name: "Ada".into(),
                     identity: "mailto:ada@example.org".into(),
                 })
             );
