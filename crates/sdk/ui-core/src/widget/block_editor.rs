@@ -589,6 +589,9 @@ pub struct BlockEditor {
     read_only: bool,
     /// Whether blocks show a drag handle beside them (off in a composer).
     block_handles: bool,
+    /// When the drag handles show: while the pointer moves, gone once it
+    /// rests or the person types.
+    handle_reveal: handle_reveal::HandleReveal,
     /// The colours mentions are painted in, from the owning model.
     mention_paint: Option<crate::widget::marks::MentionPaint>,
     /// How every line is aligned within the editor's width (a centred
@@ -848,6 +851,7 @@ impl BlockEditor {
             stack_measures: 0,
             read_only: false,
             block_handles: true,
+            handle_reveal: handle_reveal::HandleReveal::default(),
             mention_paint: None,
             text_align: crate::richtext::TextAlign::Left,
             font_scale: 1.0,
@@ -3990,6 +3994,9 @@ impl BlockEditor {
     ) -> Vec<Rect> {
         let tokens = &theme.tokens;
         let hovered = self.hovered_block();
+        // How visible the handles are this frame, from where the pointer last
+        // moved and whether the person has typed since.
+        let opacity = self.handle_reveal.drawn_opacity();
         let mut painted = Vec::new();
         // At most three blocks show a handle: the dragged one, the caret's and
         // the hovered one. Only those are measured.
@@ -4008,8 +4015,14 @@ impl BlockEditor {
                 continue;
             };
             let active = self.block_drag.is_some_and(|drag| drag.source == index);
+            // The caret's and the hovered block's handles show only while the
+            // pointer has moved since the last keystroke; a dragged one always.
+            if !active && opacity <= 0.0 {
+                continue;
+            }
+            let shown = if active { 1.0 } else { opacity };
             painted.push(handle);
-            let color = tokens.colors.text_primary.with_alpha_factor(0.72);
+            let color = tokens.colors.text_primary.with_alpha_factor(0.72 * shown);
             let center = handle.center();
             let scale = self.text_scale;
             let dot_r = 1.25 * scale;
@@ -4019,10 +4032,11 @@ impl BlockEditor {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens
-                        .colors
-                        .text_primary
-                        .with_alpha_factor(if active { 0.22 } else { 0.12 }),
+                    tokens.colors.text_primary.with_alpha_factor(if active {
+                        0.22
+                    } else {
+                        0.12 * shown
+                    }),
                     None,
                     &vello::kurbo::RoundedRect::from_rect(handle, 4.0),
                 );
@@ -8822,6 +8836,9 @@ impl Widget for BlockEditor {
             }
         }
 
+        self.handle_reveal.set_reduce_motion(theme.reduce_motion);
+        let shown = self.handle_opacity(crate::time::now());
+        self.handle_reveal.drawn(shown);
         let handles = self.draw_block_drag_affordance(scene, transform, theme);
 
         // Syntax colours are derived per change, not per frame; an unchanged
@@ -9582,6 +9599,7 @@ impl Widget for BlockEditor {
             return;
         }
         self.begin_edit();
+        self.reveal_handles_for(event, ctx);
         let typing = self.typing_position(event, *ctx.modifiers);
         self.handle_event_unscoped(event, ctx);
         let scope = match typing {
@@ -9656,6 +9674,7 @@ impl Widget for BlockEditor {
             .blocks
             .iter()
             .filter_map(|block| block.line.next_wake_deadline())
+            .chain(self.handle_fade_deadline())
             .min();
         self.for_each_child(&mut |child| {
             if let Some(deadline) = child.next_wake_deadline() {
@@ -9668,6 +9687,7 @@ impl Widget for BlockEditor {
 
     fn needs_animation_frame(&self) -> bool {
         self.copied_code_feedback.is_some()
+            || self.handles_need_frame()
             || self
                 .image_store
                 .as_ref()
@@ -10302,7 +10322,7 @@ impl Widget for BlockEditor {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.visual_formula_focus.is_some()
+        self.dirty || self.visual_formula_focus.is_some() || self.handles_need_frame()
     }
 
     fn layout_needs_measure(&self) -> bool {
@@ -11405,6 +11425,8 @@ fn code_header_height(blocks: &[Block], index: usize, scale: f64) -> f64 {
     CODE_HEADER_HEIGHT * scale
 }
 
+#[path = "block_editor_handle_reveal.rs"]
+mod handle_reveal;
 #[path = "block_editor_present.rs"]
 mod present;
 pub use present::{BlockContent, EditScope, PresenceKeyFn};

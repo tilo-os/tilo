@@ -2797,6 +2797,7 @@ impl Widget for NotesApp {
         // Idle otherwise (no idle redraw spin).
         (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
             || self.main.block_drag_scrolling()
+            || self.main.editor().drag_handles_fading()
             || self.shell.needs_animation_frame()
     }
 
