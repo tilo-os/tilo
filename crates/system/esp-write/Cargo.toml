@@ -1,0 +1,26 @@
+[package]
+name = "tilo-esp-write"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The one privileged writer of the read-only ESP: applies a caller's staged plan of boot-entry and Secure Boot changes."
+
+[[bin]]
+name = "tilo-esp-write"
+path = "src/main.rs"
+
+[dependencies]
+hex.workspace = true
+regex.workspace = true
+# openat/renameat/unlinkat relative to directory descriptors, without FFI.
+rustix = { workspace = true, features = ["fs", "std"] }
+serde_json.workspace = true
+sha2.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

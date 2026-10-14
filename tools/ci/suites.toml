@@ -112,7 +112,6 @@ suites = [
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
   "os/tests/test_oci_archive_layer_report.py",
-  "os/tests/test_esp_write.py",
   "os/tests/test_local_image_epoch.py",
   "os/tests/security_audit_kconfig.sh",
   "os/tests/boot_chain_source.sh",
@@ -673,6 +672,13 @@ readers = [
   "apps/discord/worker/tests/bridge.rs",
   "apps/discord/worker/examples/live_bridge.rs",
 ]
+
+[[cargo]]
+package = "tilo-esp-write"
+# The ESP writer's tests run tilo-deployment's boot-counter pass, which reads
+# its UKIs with the shipped command-line parser, against the built helper.
+inputs = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
+readers = ["crates/system/esp-write/tests/esp_write.rs"]
 
 [[cargo]]
 package = "greeter"
