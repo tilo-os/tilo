@@ -144,11 +144,9 @@ struct DeferredBuild {
 }
 
 /// A pipeline the device is compiling (`createComputePipelineAsync` on
-/// WebGPU, already created elsewhere).
-#[cfg(not(target_arch = "wasm32"))]
+/// WebGPU, already created elsewhere). Send on wasm through wgpu's
+/// `fragile-send-sync-non-atomic-wasm`.
 type CompilingShader = std::pin::Pin<Box<dyn Future<Output = WgpuShader> + Send>>;
-#[cfg(target_arch = "wasm32")]
-type CompilingShader = std::pin::Pin<Box<dyn Future<Output = WgpuShader>>>;
 
 fn defers_registration(deferred: &DeferredBuild) -> bool {
     match deferred.mode {
