@@ -142,7 +142,7 @@ fn open() -> (TestApp<App>, impl Fn(f64, f64) -> (f64, f64)) {
         json!({"marks": [{"id": "photo", "shape": {"kind": "image", "src": disc(), "x": 0, "y": 0, "width": 200, "height": 200}}]}),
     )
     .unwrap();
-    let canvas = app.harness().targets()["canvas"];
+    let canvas = app.harness().targets().get("canvas").copied().unwrap();
     app.harness()
         .perform_named("canvas", &ui::a11y::Action::Focus)
         .unwrap();
