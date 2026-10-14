@@ -24,6 +24,8 @@ mod envelopes;
 pub mod install;
 mod legacy;
 mod live;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod sessions;
 #[cfg(test)]
 mod tests;
@@ -159,6 +161,8 @@ impl Drop for WebHandle {
 
 struct Web {
     sessions: Arc<Sessions>,
+    #[cfg(feature = "mcp")]
+    mcp: mcp::RoomsMcp,
     grants: Arc<live::LiveGrants>,
     legacy: Arc<legacy::LegacyWindows>,
     live: LiveRelay,
@@ -321,6 +325,8 @@ impl Relay {
         let tasks_legacy = tokio::spawn(maintain_legacy(legacy.clone(), context.clone()));
         let web = Arc::new(Web {
             sessions: sessions.clone(),
+            #[cfg(feature = "mcp")]
+            mcp: mcp::RoomsMcp::new(config.limits.max_sessions),
             grants: grants.clone(),
             legacy: legacy.clone(),
             live,
@@ -897,6 +903,10 @@ fn cors(
 }
 
 async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<Body> {
+    #[cfg(feature = "mcp")]
+    if mcp::is_route(request.uri().path()) {
+        return mcp::handle(web, request).await;
+    }
     let origin = request.headers().get(header::ORIGIN).cloned();
     let mut response = if request.method() == Method::OPTIONS {
         reply(StatusCode::NO_CONTENT, Vec::new())

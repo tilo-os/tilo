@@ -424,7 +424,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// The host has already bound this exact authenticated run to its action
     /// door. This constructor does not mint or replace the execution identity.
-    pub(crate) fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
+    /// The embedding transport must revalidate admission before serving requests.
+    ///
+    /// # Errors
+    /// Rejects callers without a certified person, room or live execution.
+    pub fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
         let tilo_actions::remote::CallerPrincipal::Person(actor) = caller.principal() else {
             return Err(std::io::Error::other(
                 "MCP requires an admitted person execution",

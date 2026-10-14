@@ -12,7 +12,7 @@ use tilo_relay_protocol::legacy_window as wire;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-fn device(
+pub(super) fn device(
     root: &SigningKey,
     seed: u8,
     capabilities: DeviceCapabilities,
@@ -90,7 +90,7 @@ async fn post(
     }
 }
 
-async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 32] {
+pub(super) async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 32] {
     let (status, body) = post(
         addr,
         "/session",
@@ -567,6 +567,8 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         .ok()
         .unwrap();
     let web = Arc::new(Web {
+        #[cfg(feature = "mcp")]
+        mcp: mcp::RoomsMcp::new(256),
         sessions,
         grants,
         legacy: legacy.clone(),

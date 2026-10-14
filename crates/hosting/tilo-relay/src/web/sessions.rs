@@ -126,6 +126,12 @@ impl Session {
         self.token
     }
 
+    /// MCP traffic keeps its certified session active without an event poll.
+    #[cfg(feature = "mcp")]
+    pub(crate) fn touch(&self) {
+        *lock(&self.last_poll) = Instant::now();
+    }
+
     pub(crate) fn is_open(&self) -> bool {
         !*self.end.borrow() && Instant::now() < self.expires
     }

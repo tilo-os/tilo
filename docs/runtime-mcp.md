@@ -106,6 +106,10 @@ Architecture: [`architecture/agent-host.md`](architecture/agent-host.md).
 
 ## HTTP endpoint
 
+For a room hosted directly by `tilo-relay`, rather than a per-user runtime VM,
+see [MCP for hosted rooms](relay-mcp.md). That endpoint authenticates certified
+room members on the relay's existing HTTPS listener.
+
 A hosted machine (for example a provider's per-user VM) exposes the same tools
 over Streamable HTTP. Set `TILO_RUNTIME_MCP_HTTP=HOST:PORT` for the daemon; a
 non-loopback address also requires `TILO_RUNTIME_MCP_HTTP_TOKEN_FILE`, whose
