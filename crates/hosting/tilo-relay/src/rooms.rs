@@ -390,6 +390,7 @@ fn prepare_governance(
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<(), String> {
+    peer.reconcile_administrator_grants(key, now)?;
     peer.reconcile_media_governance(key, now)?;
     peer.validate_media_governance_for_publication()
 }

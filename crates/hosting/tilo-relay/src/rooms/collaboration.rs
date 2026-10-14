@@ -598,7 +598,8 @@ impl Rooms {
     }
 
     /// Make `user_public_key` an administrator of `room`: an editor holding
-    /// every governance action, as the room's Owner role.
+    /// every governance action, still bounded by their role
+    /// ([`tilo_action_policy::roles::administrator_grant`]).
     ///
     /// # Errors
     ///

@@ -112,6 +112,9 @@ pub enum Refusal {
     },
     /// The person is banned: unban them first.
     Banned(String),
+    /// The person is restricted: they change nothing, the room's governance
+    /// included, until the restriction lapses or is lifted.
+    Restricted(String),
     /// The person is not banned.
     NotBanned(String),
     /// The person holds no live restriction.
@@ -145,6 +148,7 @@ impl std::fmt::Display for Refusal {
                 None => write!(f, "only members ranked above a {target} can do this"),
             },
             Self::Banned(person) => write!(f, "{person} is banned from the room"),
+            Self::Restricted(person) => write!(f, "{person} is restricted in the room"),
             Self::NotBanned(person) => write!(f, "{person} is not banned"),
             Self::NotRestricted(person) => write!(f, "{person} is not restricted"),
             Self::InThePast(at) => write!(f, "{at} ms is not in the future"),
@@ -390,6 +394,7 @@ impl RoomPolicy {
         cx: &Context<'_>,
         approved: bool,
     ) -> Result<Vec<GrantId>, Refusal> {
+        self.check_not_held_off(actor, cx)?;
         let node = roles::governance_action(&self.room, action);
         let verdict = actor.decide(&node, roles::GOVERNANCE_KIND, cx);
         let verdict = if roles::governance::is_privileged(action) {
@@ -403,6 +408,30 @@ impl RoomPolicy {
             Answer::Ask => Err(Refusal::NeedsApproval(verdict.explain())),
             Answer::Deny => Err(Refusal::NotPermitted(verdict.explain())),
         }
+    }
+
+    /// Refuses governance to a person the room bans or restricts, whatever
+    /// else they hold. Their Deny sits on the whole room, so a grant on a
+    /// more specific node (an administrator's, a Moderator's actions) would
+    /// otherwise decide a governance action past it: a ban or a restriction
+    /// stops every change, governing others included. The owner is never
+    /// held off.
+    fn check_not_held_off(&self, actor: &Authority<'_>, cx: &Context<'_>) -> Result<(), Refusal> {
+        for subject in &actor.person.subjects {
+            let Subject::Person(person) = subject else {
+                continue;
+            };
+            if self.is_owner(person) {
+                continue;
+            }
+            if self.is_blocked(person) {
+                return Err(Refusal::Banned(person.clone()));
+            }
+            if self.restricted_until(person, cx).is_some() {
+                return Err(Refusal::Restricted(person.clone()));
+            }
+        }
+        Ok(())
     }
 
     /// Drop the grants that lapsed with their task
