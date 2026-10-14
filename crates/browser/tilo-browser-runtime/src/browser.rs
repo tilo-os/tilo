@@ -2205,7 +2205,9 @@ pub fn component_publications(id: u64) -> Result<String, JsValue> {
 /// Refuses closed mounts or unencodable requests.
 #[wasm_bindgen]
 pub fn component_catalogue_requests(id: u64) -> Result<String, JsValue> {
-    with_mount(id, |m| {
+    // The page asks every frame; taking the requests changes nothing the
+    // tree shows (an answer arrives through a call of its own).
+    with_mount_quietly(id, |m| {
         let requests = m.media.take_catalogue_requests(&mut m.frame);
         serde_json::to_string(&requests).map_err(error)
     })
@@ -3076,7 +3078,9 @@ pub fn remote_presence_gone(id: u64, publisher: &str) -> Result<(), JsValue> {
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn pending_writes(id: u64) -> Result<JsValue, JsValue> {
-    with_mount(id, |m| {
+    // The page persists after every presented status; storing what is
+    // written changes nothing the tree shows.
+    with_mount_quietly(id, |m| {
         m.flush_records();
         crate::storage::drain(&m.store)
     })
@@ -3209,7 +3213,9 @@ pub fn font_failed(id: u64) -> Result<(), JsValue> {
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn asset_requests(id: u64) -> Result<String, JsValue> {
-    with_mount(id, |m| {
+    // The page asks after every presented status; taking the image requests
+    // changes nothing the tree shows (a loaded image wakes its own frame).
+    with_mount_quietly(id, |m| {
         let mut tickets = m.image_tickets.borrow_mut();
         let mut requests = Vec::new();
         for (loader, images) in m.images.borrow_mut().iter_mut().enumerate() {
