@@ -294,10 +294,10 @@ async fn idle_awaits_share_one_connection() {
 /// pause on a loaded runner; a change made before the await arrives would
 /// time that handshake instead of the wake.
 async fn until_held(protocol: &RecordProtocol) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let started = Instant::now();
     while protocol.awaits.available_permits() == MAX_RECORD_CHANGE_AWAITS {
         assert!(
-            Instant::now() < deadline,
+            started.elapsed() < Duration::from_secs(10),
             "the recipient's await never reached the host"
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
