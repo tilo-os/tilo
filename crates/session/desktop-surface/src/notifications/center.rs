@@ -2191,55 +2191,89 @@ impl NotificationCenter {
                 (cursor, self.action_focus == Some(true)),
             );
         } else if rows.len() > visible_rows {
-            let newer = if start > 0 {
-                t("notification-center-newer")
-            } else {
-                t("notification-center-at-newest")
-            };
-            let older = if start.saturating_add(shown) < rows.len() {
-                t("notification-center-older")
-            } else {
-                t("notification-center-at-oldest")
-            };
-            let footer = layout.footer();
-            ui::surface::card(
+            Self::draw_pager(
                 scene,
                 transform,
-                footer,
-                qs::control_radius(theme, footer),
-                qs::control_fill(theme, false),
+                text_renderer,
+                theme,
+                layout.footer(),
+                (start, shown, rows.len()),
             );
-            // The pager says where the list is, in place of a count line
-            // over a list that fits.
-            let position = t_args(
-                "notification-center-position",
-                &[
-                    ("first", start.saturating_add(1).into()),
-                    ("last", start.saturating_add(shown).into()),
-                    ("total", rows.len().into()),
-                ],
-            );
-            // Enlarged type keeps the directions and lets the position go.
-            let room = f32_of_f64(footer.width() - 2.0 * qs::CONTROL_INSET);
-            let mut hint = format!("{newer}   \u{00b7}   {position}   \u{00b7}   {older}");
-            if text_renderer.measure_style(&hint, None, &caption_style).0 > room {
-                hint = format!("{newer}   \u{00b7}   {older}");
+        }
+    }
+
+    /// The pager band: both directions always named, the one the list has
+    /// reached dimmed like a disabled control, with the position between
+    /// them when it fits.
+    fn draw_pager(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        footer: Rect,
+        (start, shown, total): (usize, usize, usize),
+    ) {
+        let colors = &theme.tokens.colors;
+        let caption_style = theme.text(TextRole::Caption);
+        ui::surface::card(
+            scene,
+            transform,
+            footer,
+            qs::control_radius(theme, footer),
+            qs::control_fill(theme, false),
+        );
+        let ink = |enabled: bool| {
+            if enabled {
+                colors.text_primary
+            } else {
+                colors
+                    .text_primary
+                    .multiply_alpha(ui::widget::DISABLED_ALPHA)
             }
-            let (hint_w, hint_h) = text_renderer.measure_style(&hint, None, &caption_style);
+        };
+        let newer = (t("notification-center-newer"), ink(start > 0));
+        let older = (
+            t("notification-center-older"),
+            ink(start.saturating_add(shown) < total),
+        );
+        // The pager says where the list is, in place of a count line
+        // over a list that fits.
+        let position = t_args(
+            "notification-center-position",
+            &[
+                ("first", start.saturating_add(1).into()),
+                ("last", start.saturating_add(shown).into()),
+                ("total", total.into()),
+            ],
+        );
+        let separator = "   \u{00b7}   ";
+        let width = |text_renderer: &mut TextRenderer, text: &str| {
+            f64::from(text_renderer.measure_style(text, None, &caption_style).0)
+        };
+        // Enlarged type keeps the directions and lets the position go.
+        let room = footer.width() - 2.0 * qs::CONTROL_INSET;
+        let full = format!("{separator}{position}{separator}");
+        let ends = width(text_renderer, &newer.0) + width(text_renderer, &older.0);
+        let middle = if ends + width(text_renderer, &full) > room {
+            separator.to_owned()
+        } else {
+            full
+        };
+        let parts = [newer, (middle, colors.text_primary), older];
+        let widths = parts.each_ref().map(|(text, _)| width(text_renderer, text));
+        let mut x = footer.center().x - widths.iter().sum::<f64>() / 2.0;
+        let line_h = f64::from(text_renderer.measure_style("Ag", None, &caption_style).1);
+        let y = footer.center().y - line_h / 2.0;
+        for ((text, ink), part_w) in parts.iter().zip(widths) {
             text_renderer.draw_style(
                 scene,
-                &hint,
-                colors.text_primary,
-                transform.pre_translate(
-                    (
-                        footer.center().x - f64::from(hint_w) / 2.0,
-                        footer.center().y - f64::from(hint_h) / 2.0,
-                    )
-                        .into(),
-                ),
-                Some(f32_of_f64(footer.width() - 2.0 * qs::CONTROL_INSET)),
+                text,
+                *ink,
+                transform.pre_translate((x, y).into()),
+                None,
                 &caption_style,
             );
+            x += part_w;
         }
     }
 
