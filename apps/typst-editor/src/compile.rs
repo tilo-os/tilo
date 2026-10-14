@@ -582,6 +582,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bundled_documents_compile_cleanly_and_the_showcase_is_compact_and_crisp() {
+        let parts = WorldParts::new();
+        for (index, sample) in crate::samples::SAMPLES.iter().enumerate() {
+            let out = compile_source(&parts, sample.source, 2.0);
+            assert!(out.ok, "{}: {:?}", sample.name, out.diagnostics);
+            assert!(
+                out.diagnostics.is_empty(),
+                "{}: {:?}",
+                sample.name,
+                out.diagnostics
+            );
+            if index == crate::samples::DEFAULT_INDEX {
+                assert_eq!(out.pages.len(), 1, "the note is a single complete page");
+                let page = &out.pages[0];
+                assert!(
+                    page.height_pt / page.width_pt < 0.88,
+                    "fits the showcase viewport"
+                );
+                assert!((f64::from(page.width) - 2.0 * page.width_pt).abs() <= 1.0);
+                assert!((f64::from(page.height) - 2.0 * page.height_pt).abs() <= 1.0);
+            }
+        }
+    }
+
+    #[test]
     fn compile_extracts_text_glyphs_and_pdf_bytes() {
         // Case `windows_compilation_uses_real_emoji_glyphs`.
         #[cfg(target_os = "windows")]
