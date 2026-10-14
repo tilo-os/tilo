@@ -624,7 +624,18 @@ fn target_block(
 /// someone deleted the paragraph), else that its arguments are outside
 /// Writer's limits.
 fn refusal_reason(action: &RichTextAction, doc: &AutoCommit, c: &Containers) -> String {
-    const BLOCK_FIELDS: [&str; 6] = ["block", "blocks", "start_block", "end_block", "id", "ids"];
+    // `after` and `before` name the block an insert goes beside: a heading's
+    // text written there is a block the document lacks, not a style slip.
+    const BLOCK_FIELDS: [&str; 8] = [
+        "block",
+        "blocks",
+        "start_block",
+        "end_block",
+        "id",
+        "ids",
+        "after",
+        "before",
+    ];
     let named = serde_json::to_value(action).unwrap_or_default();
     let mut ids: Vec<String> = Vec::new();
     let mut stack = vec![&named];

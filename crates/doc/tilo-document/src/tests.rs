@@ -1073,6 +1073,21 @@ fn a_refused_edit_names_the_block_the_document_lacks() {
         error.contains("no block `{{previous}}`") && error.contains("read-text"),
         "{error}"
     );
+    // A paragraph's text where an insert names the block it goes after.
+    let error = replica
+        .apply_action(
+            &RichTextAction::InsertParagraph {
+                after: "Lumo Desk Light launches November 5".into(),
+                text: "x".into(),
+            },
+            "Insert",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("no block `Lumo Desk Light launches November 5`"),
+        "{error}"
+    );
 }
 
 #[test]

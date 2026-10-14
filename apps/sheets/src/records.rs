@@ -306,6 +306,13 @@ pub(crate) fn set_records_spec(sheet: usize, sheet_id: &str, info: Arc<SheetInfo
                     sheet_id: sheet_id.clone(),
                     cells,
                 }),
+                // Which sheet lacks the column: records meant for the sheet
+                // beside it name headers this one does not have.
+                Err(message) if message.starts_with("no column") => invalid(format!(
+                    "sheet `{}` has {message}; write the records to the sheet whose headers \
+                     they name",
+                    info.name
+                )),
                 Err(message) => invalid(message),
             }
         },

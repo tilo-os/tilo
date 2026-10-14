@@ -222,6 +222,47 @@ const MOST_REPLANS: usize = 8;
 /// many first. The planning deadline still bounds the time they all take.
 pub(crate) const MOST_DISCOVERY_TURNS: u32 = 40;
 
+/// A planning conversation's turns, watched for a model asking the same
+/// thing again and again: the same calls answered the same way
+/// [`Repeats::MOST`] turns in a row end the plan with that answer, rather
+/// than the conversation running out its turns on it.
+#[derive(Default)]
+pub(crate) struct Repeats {
+    last: String,
+    times: u32,
+}
+
+impl Repeats {
+    pub(crate) const MOST: u32 = 3;
+
+    /// One turn's call, its input and what it was answered.
+    pub(crate) fn call(turn: &mut String, name: &str, input: &serde_json::Value, answer: &str) {
+        let _ = write!(turn, "{name}\u{1f}{input}\u{1f}{answer}\u{1e}");
+    }
+
+    /// Note a turn written by [`Self::call`].
+    ///
+    /// # Errors
+    ///
+    /// Why the plan ends: the same turn came [`Self::MOST`] times.
+    pub(crate) fn note(&mut self, turn: String, answer: &str) -> Result<(), String> {
+        if turn == self.last {
+            self.times = self.times.saturating_add(1);
+        } else {
+            self.last = turn;
+            self.times = 1;
+        }
+        if self.times >= Self::MOST {
+            return Err(format!(
+                "the model made the same call {} times and was answered the same way: {}",
+                self.times,
+                answer.chars().take(300).collect::<String>()
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Where an offered operation runs.
 enum Target {
     Record(DocumentRoute),
@@ -1871,6 +1912,7 @@ impl OpenAiModel {
         let cache_key = briefing.cache_key.as_deref();
         let mut input = first_input(task);
         let mut previous: Option<String> = None;
+        let mut repeats = Repeats::default();
         for turn in 0..MOST_DISCOVERY_TURNS {
             // Instructions and tools are the same bytes for every agent and
             // task, and the first input starts with the apps' reference, so
@@ -1927,6 +1969,7 @@ impl OpenAiModel {
             }
             previous = Some(id);
             let mut outputs = Vec::with_capacity(calls.len());
+            let (mut seen, mut answered) = (String::new(), String::new());
             for call in &calls {
                 let result = if call.name == tilo_agent::tools::PLAN {
                     match tilo_agent::tools::read_plan(&call.input, revealed, most_steps) {
@@ -1943,12 +1986,15 @@ impl OpenAiModel {
                 } else {
                     tilo_agent::tools::answer(&call.name, &call.input, catalogue, revealed)
                 };
+                Repeats::call(&mut seen, &call.name, &call.input, &result);
+                answered.clone_from(&result);
                 outputs.push(serde_json::json!({
                     "type": "function_call_output",
                     "call_id": call.id,
                     "output": result,
                 }));
             }
+            repeats.note(seen, &answered)?;
             input = serde_json::Value::Array(outputs);
         }
         Err("the model exhausted its discovery turns".into())
@@ -2313,6 +2359,7 @@ impl PlanModel for OpenAiModel {
             serde_json::json!({ "role": "user", "content": stable + &rest }),
         ];
         let mut no_call = NoCall::default();
+        let mut repeats = Repeats::default();
         for turn in 0..MOST_DISCOVERY_TURNS {
             // Asked for text, the model is offered no tools: a local server
             // may ignore `tool_choice: "none"` and the model call again.
@@ -2355,6 +2402,7 @@ impl PlanModel for OpenAiModel {
                 continue;
             }
             messages.push(reply.message);
+            let (mut seen, mut answered) = (String::new(), String::new());
             for call in &reply.calls {
                 let result = if call.name == tilo_agent::tools::PLAN {
                     // A refused plan goes back to the model with the reason
@@ -2370,8 +2418,11 @@ impl PlanModel for OpenAiModel {
                 } else {
                     tilo_agent::tools::answer(&call.name, &call.input, catalogue, &mut revealed)
                 };
+                Repeats::call(&mut seen, &call.name, &call.input, &result);
+                answered.clone_from(&result);
                 messages.push(openai::tool_result(call, &result));
             }
+            repeats.note(seen, &answered)?;
         }
         Err("the model exhausted its discovery turns".into())
     }
@@ -2637,6 +2688,42 @@ mod tests {
     }
 
     use super::*;
+
+    /// The same call answered the same way three turns in a row ends the
+    /// plan with that answer; a call that changes, or an answer that does,
+    /// does not.
+    #[test]
+    fn a_model_repeating_one_call_ends_its_plan_with_the_answer() {
+        let mut repeats = Repeats::default();
+        let turn = |input: serde_json::Value| {
+            let mut seen = String::new();
+            Repeats::call(&mut seen, "plan", &input, "refused: x is out of range");
+            seen
+        };
+        let refused = "refused: x is out of range";
+        assert!(
+            repeats
+                .note(turn(serde_json::json!({"x": 1})), refused)
+                .is_ok()
+        );
+        assert!(
+            repeats
+                .note(turn(serde_json::json!({"x": 2})), refused)
+                .is_ok()
+        );
+        assert!(
+            repeats
+                .note(turn(serde_json::json!({"x": 2})), refused)
+                .is_ok()
+        );
+        let ended = repeats
+            .note(turn(serde_json::json!({"x": 2})), refused)
+            .unwrap_err();
+        assert!(
+            ended.contains("3 times") && ended.ends_with(refused),
+            "{ended}"
+        );
+    }
 
     #[test]
     fn cloud_names_the_metered_endpoint_and_needs_a_token() {

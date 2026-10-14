@@ -1249,7 +1249,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("no column `Itme`; the columns are `Item`, `Cost`"),
+            error.contains("sheet `Budget` has no column `Itme`; the columns are `Item`, `Cost`"),
             "{error}"
         );
     }

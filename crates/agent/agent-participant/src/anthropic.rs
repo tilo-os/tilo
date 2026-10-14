@@ -328,6 +328,7 @@ impl PlanModel for AnthropicModel {
         ));
         let mut messages = vec![first_message((&stable, &rest))];
         let mut reminded = false;
+        let mut repeats = crate::model::Repeats::default();
         for turn in 0..MOST_DISCOVERY_TURNS {
             let key = format!("{}-{turn}", hex::encode(run));
             let answer = self.turn(&tools, &messages, &key, deadline)?;
@@ -353,6 +354,7 @@ impl PlanModel for AnthropicModel {
                 ));
             }
             let mut results = Vec::with_capacity(calls.len());
+            let (mut seen, mut answered) = (String::new(), String::new());
             for call in &calls {
                 let result = if call.name == tilo_agent::tools::PLAN {
                     match tilo_agent::tools::read_plan(&call.input, &revealed, most_steps) {
@@ -369,12 +371,15 @@ impl PlanModel for AnthropicModel {
                 } else {
                     tilo_agent::tools::answer(&call.name, &call.input, catalogue, &mut revealed)
                 };
+                crate::model::Repeats::call(&mut seen, &call.name, &call.input, &result);
+                answered.clone_from(&result);
                 results.push(serde_json::json!({
                     "type": "tool_result",
                     "tool_use_id": call.id,
                     "content": result,
                 }));
             }
+            repeats.note(seen, &answered)?;
             // The answer as given (its thinking included), then the results,
             // the latest turn ending a cache breakpoint for the next. A
             // request takes four breakpoints: the tools and the reference

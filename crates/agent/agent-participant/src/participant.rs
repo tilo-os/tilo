@@ -160,18 +160,38 @@ pub struct ParticipantConfig {
     pub content: tilo_content::ContentStore,
 }
 
-/// The turns a task is planned again on once every step ran, each at most
-/// once.
-#[derive(Default)]
-struct FollowUps {
+/// A turn a task is planned again on once every step ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FollowUp {
     /// After a plan of reads alone, with what they found.
-    after_reads: bool,
+    AfterReads,
+    /// The export the request asks for, when the steps made none: only
+    /// export operations of its plan run.
+    Exporting,
     /// The check of the result against the request: a check that cannot
     /// plan leaves the task done, never failed.
-    checking: bool,
-    /// The export the request asks for, when the steps made none: as the
-    /// check, one that cannot plan leaves the task done.
-    exporting: bool,
+    Checking,
+    /// The exports a later step's change made stale, run again as they ran.
+    Reexporting,
+}
+
+/// The follow-up turns a task took, each at most once, and the one being
+/// planned.
+#[derive(Default)]
+struct FollowUps {
+    taken: Vec<FollowUp>,
+    turn: Option<FollowUp>,
+}
+
+impl FollowUps {
+    fn took(&self, follow_up: FollowUp) -> bool {
+        self.taken.contains(&follow_up)
+    }
+
+    fn take(&mut self, follow_up: FollowUp) {
+        self.taken.push(follow_up);
+        self.turn = Some(follow_up);
+    }
 }
 
 struct Running {
@@ -210,6 +230,10 @@ struct Running {
     changed: bool,
     /// The turns the task was planned again on once its steps ran.
     follow_ups: FollowUps,
+    /// The exports that ran, each with the step count when it did.
+    exports: Vec<(usize, Step)>,
+    /// The step count when each app's record was last changed.
+    edited_at: BTreeMap<String, usize>,
     /// Whether a model planned any of it: steps written out, or one
     /// operation the task stated outright, are neither re-planned nor
     /// checked.
@@ -249,6 +273,12 @@ impl Running {
         self.performed = self.performed.saturating_add(1);
         if matches!(step.action, StepAction::Invoke { .. }) {
             self.acted = self.acted.saturating_add(1);
+        }
+        if edited {
+            self.edited_at.insert(step.app.clone(), self.performed);
+        }
+        if !content.is_empty() && is_export(step) {
+            self.exports.push((self.performed, step.clone()));
         }
         self.changed |= edited || !content.is_empty();
         if edited {
@@ -293,24 +323,31 @@ impl Running {
         if !self.steps.is_empty() || self.acted == 0 || !self.by_model {
             return;
         }
-        let rest = if !self.changed && !self.follow_ups.after_reads {
-            self.follow_ups.after_reads = true;
+        let rest = if !self.changed && !self.follow_ups.took(FollowUp::AfterReads) {
+            self.follow_ups.take(FollowUp::AfterReads);
             READS_ANSWERED.to_owned()
         } else if self.changed
             && self.produced.is_empty()
             && asks_export(&self.request)
-            && !self.follow_ups.exporting
+            && !self.follow_ups.took(FollowUp::Exporting)
         {
             // A plan that edited and stopped short of the export asked for
             // leaves nothing to hand on: every model class gets this turn.
-            self.follow_ups.exporting = true;
+            self.follow_ups.take(FollowUp::Exporting);
             EXPORT_MISSING.to_owned()
-        } else if self.changed && checks_work && !self.follow_ups.checking {
-            self.follow_ups.checking = true;
+        } else if self.changed && checks_work && !self.follow_ups.took(FollowUp::Checking) {
+            self.follow_ups.take(FollowUp::Checking);
             // What ran is said outright, so the check sees the slides it
             // added were added rather than adding them again.
             format!("{CHECK_WORK}{CHECK_RAN}{}", self.ran.join("; "))
         } else {
+            // An export taken before a later step changed its record holds
+            // the record as it was: it runs again, as it ran, once.
+            let stale = self.stale_exports();
+            if !stale.is_empty() && !self.follow_ups.took(FollowUp::Reexporting) {
+                self.follow_ups.take(FollowUp::Reexporting);
+                self.steps.extend(stale);
+            }
             return;
         };
         self.steps.push_back(Step {
@@ -319,6 +356,26 @@ impl Running {
             action: StepAction::Continue(rest),
             carries: false,
         });
+    }
+
+    /// The exports that ran before a later step changed their app's record,
+    /// each once (the latest of the same export).
+    fn stale_exports(&self) -> Vec<Step> {
+        let mut stale: Vec<Step> = Vec::new();
+        for (at, step) in self.exports.iter().rev() {
+            let changed_after = self
+                .edited_at
+                .get(&step.app)
+                .is_some_and(|edited| edited > at);
+            let newer_ran = self.exports.iter().any(|(later, other)| {
+                later > at && other.log_names() == step.log_names() && other.record == step.record
+            });
+            if changed_after && !newer_ran && !stale.contains(step) {
+                stale.push(step.clone());
+            }
+        }
+        stale.reverse();
+        stale
     }
 
     /// A task that starts with `steps`, and what was read while planning
@@ -339,6 +396,8 @@ impl Running {
             acted: 0,
             changed: false,
             follow_ups: FollowUps::default(),
+            exports: Vec::new(),
+            edited_at: BTreeMap::new(),
             by_model: false,
             ran: Vec::new(),
         };
@@ -469,6 +528,11 @@ const EXPORT_MISSING: &str = "The steps so far changed the document but exported
      the request asks for an export. Plan only the export the request asks for (its format, kept \
      as content when it says so), without redoing the changes.";
 
+/// Whether `step` is an export (an operation whose name starts so).
+fn is_export(step: &Step) -> bool {
+    matches!(&step.action, StepAction::Invoke { address, .. } if address.action.starts_with("export"))
+}
+
 /// Whether `request` asks for something to be exported.
 fn asks_export(request: &str) -> bool {
     request
@@ -479,8 +543,11 @@ fn asks_export(request: &str) -> bool {
 
 /// What follows [`CHECK_WORK`]: the steps the task ran, each of which
 /// succeeded (a failed step is repaired or ends the task).
-const CHECK_RAN: &str = "\nThe steps this task already ran, each of which succeeded \
-     (do not run any of them again): ";
+const CHECK_RAN: &str = "\nThe steps this task already ran succeeded, but what they wrote may \
+     still be wrong: compare it with the request. Fix a wrong value by setting it again. Do not \
+     repeat a step that adds something (a slide, a line, an event, a contact, a mark) unless what \
+     it added is missing. An export runs again by itself after a change to what it exported. \
+     The steps: ";
 
 /// What a task whose plan was only reads is planned again with.
 const READS_ANSWERED: &str = "The reads above have answered. Now plan the steps that make or change \
@@ -1174,6 +1241,14 @@ impl AgentParticipant {
             ready_at,
             by_model,
         } = planned;
+        record_plan(
+            &self.identity.delegation.agent_id,
+            &task,
+            &text,
+            continues,
+            by_model,
+            &steps,
+        );
         if !self.control.is_running(&task) {
             return;
         }
@@ -1194,7 +1269,17 @@ impl AgentParticipant {
                     for (app, seen) in read {
                         running.observe(app, seen);
                     }
+                    // The export turn runs exports only: a model asked for
+                    // the missing export that rewrote the note as well lost
+                    // what the first plan had written right.
+                    let exporting = running.follow_ups.turn.take() == Some(FollowUp::Exporting);
                     for step in steps.into_iter().rev() {
+                        if exporting
+                            && matches!(step.action, StepAction::Invoke { .. })
+                            && !is_export(&step)
+                        {
+                            continue;
+                        }
                         running.steps.push_front(step);
                     }
                     self.plan_ready_at = Some(ready_at);
@@ -1208,11 +1293,14 @@ impl AgentParticipant {
                     self.running
                         .take()
                         .filter(|running| {
+                            // Done only when the steps changed or made
+                            // something: reads alone are not the work.
                             continues
-                                && running.acted > 0
-                                && (running.follow_ups.checking
-                                    || running.follow_ups.exporting
-                                    || error.starts_with(NOTHING_LEFT))
+                                && running.changed
+                                && (matches!(
+                                    running.follow_ups.turn,
+                                    Some(FollowUp::Checking | FollowUp::Exporting)
+                                ) || error.starts_with(NOTHING_LEFT))
                         })
                         .map(|running| running.done())
                 } else {
@@ -2162,6 +2250,41 @@ fn picture_size(bytes: &[u8]) -> Option<(&'static str, u32, u32)> {
     None
 }
 
+/// Appends one JSON line per plan to `TILO_AGENT_PLAN_LOG`, when set: the
+/// task, what was planned (its text, or the rest of it), and the steps or
+/// why there are none, so a task that ended early can be traced to its plan.
+fn record_plan(
+    agent: &str,
+    task: &str,
+    text: &str,
+    continues: bool,
+    by_model: bool,
+    steps: &Result<Vec<Step>, String>,
+) {
+    use std::io::Write as _;
+    let Some(path) = std::env::var_os("TILO_AGENT_PLAN_LOG") else {
+        return;
+    };
+    let line = serde_json::json!({
+        "at_unix_ms": tilo_clock::unix_now_ms(),
+        "agent": agent,
+        "task": task,
+        "continues": continues,
+        "by_model": by_model,
+        "text": text.chars().take(4_000).collect::<String>(),
+        "steps": steps.as_ref().ok().map(|steps| steps.iter().map(step_brief).collect::<Vec<_>>()),
+        "error": steps.as_ref().err(),
+    });
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
+    if let Err(error) = written {
+        tracing::warn!(%error, "cannot record a plan");
+    }
+}
+
 /// Appends one JSON line per invoked action to `TILO_AGENT_ACTION_LOG`, when
 /// set: who did what to which record, with its arguments, when, and how it
 /// went. A run can be replayed from it, every record rebuilt step by step.
@@ -2610,6 +2733,54 @@ mod tests {
         assert!(named_without_documents("Tidy the note.", &granted[..2], &[]).is_empty());
     }
 
+    /// A check that fixed a sheet the task had already exported has the
+    /// export run again, as it ran, once; an export taken after the last
+    /// change is not run again.
+    #[test]
+    fn an_export_a_later_change_made_stale_runs_again_once() {
+        let request =
+            "Make the budget sheet, then export it as an Excel workbook, kept as content.";
+        let mut running = Running::new("t1".into(), request.into(), Vec::new(), Vec::new());
+        running.by_model = true;
+        let sheets = "so.tilo.sheets";
+        let export = invoke(sheets, "sheets.workbook", "export-xlsx-content");
+        running.ran_step(
+            &invoke(sheets, "sheets.workbook", "new-sheet"),
+            None,
+            Vec::new(),
+            true,
+        );
+        running.ran_step(&export, None, vec!["v1".into()], false);
+        running.plan_more(true);
+        assert!(running.follow_ups.took(FollowUp::Checking));
+        running.steps.clear();
+        // The check fixes a formula: the workbook exported before is stale.
+        running.ran_step(
+            &invoke(sheets, "sheets.sheet:s1", "set-cells"),
+            None,
+            Vec::new(),
+            true,
+        );
+        running.plan_more(true);
+        assert_eq!(running.steps.iter().collect::<Vec<_>>(), [&export]);
+        running.steps.clear();
+        running.ran_step(&export, None, vec!["v2".into()], false);
+        running.plan_more(true);
+        assert!(running.steps.is_empty(), "exported after the change, once");
+
+        let mut fresh = Running::new("t2".into(), request.into(), Vec::new(), Vec::new());
+        fresh.by_model = true;
+        fresh.ran_step(
+            &invoke(sheets, "sheets.workbook", "new-sheet"),
+            None,
+            Vec::new(),
+            true,
+        );
+        fresh.ran_step(&export, None, vec!["v1".into()], false);
+        fresh.plan_more(false);
+        assert!(fresh.steps.is_empty(), "nothing changed after the export");
+    }
+
     /// A model plan that changed something is checked once against its
     /// request when the planner checks work, and not otherwise.
     #[test]
@@ -2636,7 +2807,7 @@ mod tests {
             Some(StepAction::Continue(rest))
                 if rest.starts_with(CHECK_WORK) && rest.ends_with(&format!("{CHECK_RAN}add-slide"))
         ));
-        assert!(running.follow_ups.checking);
+        assert!(running.follow_ups.took(FollowUp::Checking));
         running.steps.clear();
         running.plan_more(true);
         assert!(running.steps.is_empty(), "checked once");
