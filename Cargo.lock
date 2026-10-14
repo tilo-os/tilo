@@ -4744,11 +4744,10 @@ version = "0.1.0"
 dependencies = [
  "cosmic-text",
  "proptest",
- "shell",
+ "tilo-callstream",
  "tilo-media",
  "tracing",
  "tracing-subscriber",
- "workspace-hack",
 ]
 
 [[package]]
@@ -14343,7 +14342,6 @@ dependencies = [
  "getrandom 0.4.3",
  "greetd-client",
  "greeter",
- "gstreamer-app",
  "hex",
  "image",
  "iroh",
@@ -16449,7 +16447,11 @@ dependencies = [
 name = "tilo-callstream"
 version = "0.1.0"
 dependencies = [
+ "gstreamer-app",
+ "neighbour-wire",
+ "tempfile",
  "thiserror 2.0.21",
+ "tilo-callstream",
  "tilo-media",
  "tracing",
  "workspace-hack",
