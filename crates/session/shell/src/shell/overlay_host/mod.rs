@@ -4617,19 +4617,13 @@ impl ShellOverlayHost {
         encoded: &[u8],
         latency_ns: Option<u64>,
     ) -> bool {
-        let Some(tab_id) = self
-            .peer_stream_tabs
-            .get(&(source_peer, surface_id))
-            .copied()
-        else {
-            return false;
-        };
-        self.peer_view_mut(tab_id).is_some_and(|view| {
-            !matches!(
-                view.push_encoded_with_latency(encoded, latency_ns),
-                crate::shell::peer_view::PushOutcome::DecodeFailed
-            )
-        })
+        self.peer_stream_view_mut(source_peer, surface_id)
+            .is_some_and(|view| {
+                !matches!(
+                    view.push_encoded_with_latency(encoded, latency_ns),
+                    crate::shell::peer_view::PushOutcome::DecodeFailed
+                )
+            })
     }
 
     /// Show every peer-stream picture that finished decoding after its frame
@@ -4640,10 +4634,10 @@ impl ShellOverlayHost {
         if self.peer_stream_tabs.is_empty() {
             return false;
         }
-        let tabs: Vec<u64> = self.peer_stream_tabs.values().copied().collect();
+        let streams: Vec<(u64, u64)> = self.peer_stream_tabs.keys().copied().collect();
         let mut collected = false;
-        for tab_id in tabs {
-            if let Some(view) = self.peer_view_mut(tab_id)
+        for (source_peer, surface_id) in streams {
+            if let Some(view) = self.peer_stream_view_mut(source_peer, surface_id)
                 && view.picture_pending()
             {
                 collected |= view.collect_late_picture().is_some();
@@ -4652,8 +4646,16 @@ impl ShellOverlayHost {
         collected
     }
 
-    /// The peer view mounted in `tab_id`, if that tab shows one.
-    fn peer_view_mut(&mut self, tab_id: u64) -> Option<&mut crate::shell::peer_view::PeerView> {
+    /// The view showing the stream of `surface_id` from `source_peer`.
+    pub fn peer_stream_view_mut(
+        &mut self,
+        source_peer: u64,
+        surface_id: u64,
+    ) -> Option<&mut crate::shell::peer_view::PeerView> {
+        let tab_id = self
+            .peer_stream_tabs
+            .get(&(source_peer, surface_id))
+            .copied()?;
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: same row ownership invariant as `mount_peer_stream`.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };

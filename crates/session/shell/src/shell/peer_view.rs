@@ -984,6 +984,23 @@ mod tests {
         wheel_and_composed_text_go_to_the_window_under_focus();
     }
 
+    /// Once every pushed picture is out, the view neither collects a
+    /// phantom picture nor keeps the loop awake looking for one.
+    #[test]
+    fn a_settled_view_neither_collects_nor_wakes() {
+        const W: u32 = 64;
+        const H: u32 = 64;
+        let mut view = vp9_view(PeerSurfaceMetrics::default());
+        assert_eq!(view.next_wake_deadline(), None, "nothing pushed yet");
+        assert_eq!(
+            view.push_encoded_with_latency(&vp9_unit(W, H), None),
+            PushOutcome::Decoded,
+        );
+        assert!(!view.picture_pending());
+        assert_eq!(view.collect_late_picture(), None);
+        assert_eq!(view.next_wake_deadline(), None);
+    }
+
     #[test]
     fn peer_view_stream_queue_bounds_latency_and_rebuilds_decoders() {
         fn push_encoded_returns_false_for_empty_payload() {
@@ -1090,27 +1107,10 @@ mod tests {
             assert_eq!(external.snapshot().latency_ns_mean, 500);
         }
 
-        /// Once every pushed picture is out, the view neither collects a
-        /// phantom picture nor keeps the loop awake looking for one.
-        fn a_settled_view_neither_collects_nor_wakes() {
-            const W: u32 = 64;
-            const H: u32 = 64;
-            let mut view = vp9_view(PeerSurfaceMetrics::default());
-            assert_eq!(view.next_wake_deadline(), None, "nothing pushed yet");
-            assert_eq!(
-                view.push_encoded_with_latency(&vp9_unit(W, H), None),
-                PushOutcome::Decoded,
-            );
-            assert!(!view.picture_pending());
-            assert_eq!(view.collect_late_picture(), None);
-            assert_eq!(view.next_wake_deadline(), None);
-        }
-
         push_encoded_returns_false_for_empty_payload();
         push_encoded_with_latency_drops_oldest_after_ceiling();
         an_unknown_stream_label_degrades_to_h264();
         a_codec_switch_rebuilds_the_decoder();
         metrics_handle_is_shared_via_clone();
-        a_settled_view_neither_collects_nor_wakes();
     }
 }
