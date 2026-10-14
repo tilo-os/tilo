@@ -117,16 +117,22 @@ impl Widget for OpeningCard {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
-        let mut node = AccessNode::new(Role::Group)
-            .with_name(self.title.clone())
-            .with_state(AccessState::new().busy(true))
-            .with_live(Politeness::Polite)
-            .with_bounds(self.rect);
+        // The indicator says "opening" to the eye; a screen reader needs
+        // the word.
         let status = self.status_at(ui::time::now());
-        if !status.is_empty() {
-            node = node.with_description(status);
-        }
-        Some(node)
+        let description = if status.is_empty() {
+            crate::shell::i18n::t("shell-window-opening")
+        } else {
+            status
+        };
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(self.title.clone())
+                .with_description(description)
+                .with_state(AccessState::new().busy(true))
+                .with_live(Politeness::Polite)
+                .with_bounds(self.rect),
+        )
     }
 
     /// The indicator moves for as long as the card stands; under reduced
@@ -184,6 +190,14 @@ mod tests {
         let card = OpeningCard::new("Notes", "Installing Notes…");
         let node = card.accessibility().expect("card is accessible");
         assert_eq!(node.name.as_deref(), Some("Notes"));
+        assert_eq!(node.description.as_deref(), Some("Installing Notes…"));
         assert!(node.state.busy);
+        let quiet = OpeningCard::new("Notes", "")
+            .accessibility()
+            .expect("card is accessible");
+        assert_eq!(
+            quiet.description,
+            Some(crate::shell::i18n::t("shell-window-opening"))
+        );
     }
 }

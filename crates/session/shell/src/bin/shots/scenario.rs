@@ -234,6 +234,21 @@ pub enum Action {
         app_id: &'static str,
         surface_id: u64,
     },
+    /// Activate an app whose window has not mapped yet: the production
+    /// launch holds its place with the opening card from this frame.
+    HoldLaunchPlace {
+        app_id: &'static str,
+        label: &'static str,
+    },
+    /// A peer's window whose app is still being fetched from the
+    /// registry here, with no real install behind it.
+    HoldInstallPlace {
+        app_id: &'static str,
+        label: &'static str,
+    },
+    /// Let real time pass, then step one frame: for states keyed to how
+    /// long something has taken, which frame steps alone do not advance.
+    WaitWall(u64),
     /// Open a second tab of a **shell-hosted** app — Notes, Editor —
     /// into the active group.
     ///
@@ -729,6 +744,42 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
 
 /// `Action::OpenWindow` — split out of [`apply`] to keep that dispatcher short.
 fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
+    match action {
+        Action::HoldLaunchPlace { app_id, label } => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                let placement = shell::shell::placement::placement_for_launch_targeted(
+                    &st.tree(),
+                    st.strip_viewport(),
+                    st.open_target,
+                );
+                shell::shell::tab_binding::hold_place_for_launch(
+                    &mut st.tree_mut(),
+                    app_id,
+                    label,
+                    placement,
+                );
+                st.bump();
+            });
+            return;
+        }
+        Action::HoldInstallPlace { app_id, label } => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                shell::shell::peer_windows::show_install_under_way_for_shots(
+                    &mut st.tree_mut(),
+                    app_id,
+                    label,
+                );
+                st.bump();
+            });
+            return;
+        }
+        Action::WaitWall(ms) => {
+            std::thread::sleep(std::time::Duration::from_millis(*ms));
+            driver.step_frames(1);
+            return;
+        }
+        _ => {}
+    }
     if let Action::OpenWindow { app_id, surface_id } = action {
         let app_id = *app_id;
         let surface_id = *surface_id;
@@ -2037,6 +2088,34 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(1),
                 Action::Relayout,
                 Action::Snapshot("markup-saved"),
+            ],
+        },
+        Scenario {
+            name: "opening_card",
+            description: "An app asked for holds its place with the moving opening card from the \
+                          first frame, says so when the start runs long, and says what it is \
+                          doing while its app is still being fetched from the registry.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(None),
+                Action::HoldLaunchPlace {
+                    app_id: "so.tilo.notes",
+                    label: "Notes",
+                },
+                Action::Wait(1),
+                Action::Relayout,
+                Action::Snapshot("opening-first-frame"),
+                Action::WaitWall(5_500),
+                Action::Relayout,
+                Action::Snapshot("opening-slow"),
+                Action::SelectGroup(None),
+                Action::HoldInstallPlace {
+                    app_id: "so.tilo.slides",
+                    label: "Slides",
+                },
+                Action::Wait(20),
+                Action::Relayout,
+                Action::Snapshot("opening-installing"),
             ],
         },
         Scenario {
