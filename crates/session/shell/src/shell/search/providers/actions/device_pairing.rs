@@ -233,6 +233,7 @@ mod tests {
 
     #[test]
     fn a_non_admin_is_refused_before_any_pairing_step_runs() {
+        use crate::shell::state::FreshId as _;
         use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
 
         let mut tree = WorkspaceTree::default();

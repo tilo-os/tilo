@@ -758,7 +758,7 @@ impl tilo_action_broker::services::DevicePairingServices for BrokerDoor {
     }
 
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
-        STEPS.iter().map(|step| descriptor(step)).collect()
+        STEPS.into_iter().map(descriptor).collect()
     }
 
     fn start(
