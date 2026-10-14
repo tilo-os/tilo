@@ -73,14 +73,7 @@ fn write(record: &GpuHealth) {
     let Ok(bytes) = serde_json::to_vec_pretty(record) else {
         return;
     };
-    let result = path
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| {
-            let staging = path.with_extension("json.tmp");
-            std::fs::write(&staging, &bytes)?;
-            std::fs::rename(&staging, &path)
-        });
+    let result = tilo_files::native::atomic::write_creating_parent(&path, &bytes);
     if let Err(error) = result {
         tracing::warn!(
             target: "shell::compositor::gpu",

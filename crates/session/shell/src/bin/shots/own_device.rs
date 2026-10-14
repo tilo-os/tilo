@@ -85,7 +85,6 @@ pub fn seed_research(tree: &mut WorkspaceTree, salt: u16, person: &str) -> RoomI
         active_tab: draft,
         width: WindowWidth::Normal,
         maximized: false,
-        focus_history: Vec::new(),
     });
     let reading = salted(salt, 7);
     strip.window_groups.push(WindowGroup {
@@ -94,7 +93,6 @@ pub fn seed_research(tree: &mut WorkspaceTree, salt: u16, person: &str) -> RoomI
         active_tab: reading,
         width: WindowWidth::Normal,
         maximized: false,
-        focus_history: Vec::new(),
     });
     workspace.strips.push(strip);
     tree.desktop.workspaces.push(workspace);
@@ -128,7 +126,6 @@ pub fn split_outline(tree: &mut WorkspaceTree, room: RoomId, salt: u16) {
         tabs: vec![tab],
         width: WindowWidth::Normal,
         maximized: false,
-        focus_history: Vec::new(),
     });
     tree.sync_room_doc(room);
 }

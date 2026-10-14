@@ -2500,7 +2500,7 @@ enum LiveEnvelope {
 // This is delivery policy, not authority: callers must first revalidate the
 // current authenticated source and retain all recipient/session fences.
 /// The devices a retained message goes to live when only they can use it
-/// ([`tilo_peer_state::transport::audience`]); `None` for everyone.
+/// ([`crate::payloads::ShellPayloads::audience`]); `None` for everyone.
 fn live_audience(envelope: &LiveEnvelope) -> Option<std::collections::BTreeSet<[u8; 32]>> {
     let LiveEnvelope::Original(original) = envelope else {
         return None;
@@ -2513,9 +2513,7 @@ fn live_audience(envelope: &LiveEnvelope) -> Option<std::collections::BTreeSet<[
     else {
         return None;
     };
-    let msg = postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&body).ok()?;
-    let audience = tilo_peer_state::transport::audience(&msg)?;
-    Some(audience.iter().map(|device| *device.as_bytes()).collect())
+    crate::payloads::shell().audience(&body)
 }
 
 fn gated_checkpoint_channel(
@@ -2535,27 +2533,17 @@ fn gated_checkpoint_channel(
     };
     // Unknown wrapper suffixes retain the generic checkpoint gate.
     if outer_trailing.is_empty()
-        && let Ok((msg, trailing)) =
-            postcard::take_from_bytes::<tilo_peer_state::NeighbourMsg>(&body)
-        && trailing.is_empty()
-        && tilo_peer_state::transport::retention(&msg, false)
-            == Some((channel, tilo_peer_state::transport::Retention::Checkpoint))
+        && let Some(checkpoint) = crate::payloads::shell().checkpoint(&channel, &body)
     {
         // Channel governance is a sequence of steps that each replace the
         // last on one route, not a baseline of content a live device already
         // holds: every one must reach it.
-        let governance = matches!(
-            &msg,
-            tilo_peer_state::NeighbourMsg::MlsGovernance { .. }
-                | tilo_peer_state::NeighbourMsg::MlsAccessRequest { .. }
-                | tilo_peer_state::NeighbourMsg::MlsGovernanceAck { .. }
-        );
+        let governance = checkpoint.kind == crate::payloads::CheckpointKind::Governance;
         let continuity = source.is_some_and(|source| {
             matches!(
-                &msg,
-                tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
-                    user_public_key, ..
-                } if *user_public_key == source.peer.user_public_key
+                checkpoint.kind,
+                crate::payloads::CheckpointKind::Continuity { user }
+                    if user == source.peer.user_public_key
             )
         });
         if governance || continuity {
@@ -6532,6 +6520,12 @@ fn serve_locally(
         }
         None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
     };
+    if !plane.answers(&caller, &request.message) {
+        return Err((
+            UnavailableReason::UnsupportedPeer,
+            "this host does not serve apps",
+        ));
+    }
     let Some(reply) = plane.serve(workspace_id, &caller, request.message) else {
         return Ok(None);
     };

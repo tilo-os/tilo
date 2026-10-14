@@ -545,6 +545,31 @@ impl Hydrator {
         Some(manifest)
     }
 
+    /// The byte length of `manifest_hash` when every byte of it is local;
+    /// `None` when the manifest or any part of the content would have to be
+    /// fetched. Never touches the network.
+    pub async fn local_len(&self, manifest_hash: Hash) -> Option<u64> {
+        let manifest = self.local_manifest_index(manifest_hash).await?;
+        self.store
+            .is_complete(manifest_hash, &manifest)
+            .await
+            .then(|| manifest.total_len())
+    }
+
+    /// Run `fut` to completion on the daemon runtime from a synchronous
+    /// caller — a FUSE worker, the native plane or a test. This is the one
+    /// bridge from those threads into async code.
+    ///
+    /// A FUSE worker that waits here is unavailable to every other process
+    /// using the mount, so callers on one keep `fut` local or explicitly
+    /// bounded (a preview's few KiB, a thumbnail). Open-ended network
+    /// hydration belongs on the runtime instead: history restores and
+    /// conflict resolutions hydrate through a history job and commit once
+    /// the bytes are local.
+    pub fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
+        tokio::task::block_in_place(|| self.runtime_handle.block_on(fut))
+    }
+
     /// Write the complete local content of `manifest_hash` to `dest` as a
     /// read-only file. `Ok(false)` (and nothing written) when any part is
     /// not local; this never fetches from a peer. File-backed content is

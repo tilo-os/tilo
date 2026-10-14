@@ -45,11 +45,8 @@ fn at<'v>(value: &'v Value, key: &str) -> &'v Value {
 }
 
 fn record_path() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map_or_else(
-            || PathBuf::from(format!("/run/user/{}", current_uid())),
-            PathBuf::from,
-        )
+    tilo_paths::xdg::runtime_dir()
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", current_uid())))
         .join("tilo/gpu-health.json")
 }
 

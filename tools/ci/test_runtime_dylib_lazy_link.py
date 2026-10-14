@@ -153,6 +153,19 @@ class Arguments(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("variable g_counter", problems[0])
 
+    def test_only_items_of_macro_only_crates_leave_the_export_list(self):
+        # Shared generics name the crate that instantiated them last; when
+        # that is proc_macro2 the item is still alloc's, and apps link it.
+        alloc = "_RNvMs3_NtCsi2GJixwxVUa_5alloc7raw_vecINtB5_6RawVecjE8grow_one"
+        self.assertFalse(LAZY.compile_time_only(f"    {alloc}Cs9H9DpKkakbh_11proc_macro2;\n"))
+        self.assertFalse(LAZY.compile_time_only(f"    {alloc}Cs1a2b3c_5quote;\n"))
+        self.assertFalse(LAZY.compile_time_only(f"    {alloc}Csx_7tilo_ui;\n"))
+        self.assertTrue(LAZY.compile_time_only(
+            "    _RNvMNtCs9H9DpKkakbh_11proc_macro23impNtB2_11TokenStream3new;\n"))
+        self.assertTrue(LAZY.compile_time_only("    _RNvNtCsab_3syn5parse5parse;\n"))
+        self.assertTrue(LAZY.compile_time_only(
+            "    _RNvNtNtCsq_14zvariant_utils6macros3ty7matches;\n"))
+
 
 class RealLink(unittest.TestCase):
     """Builds and runs ELF objects; this is the production link path, so it needs Linux."""

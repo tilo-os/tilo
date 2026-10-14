@@ -112,8 +112,6 @@ uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-# The platform adapter the native runner feeds, for the live-bus benchmark.
-accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 # Serialised, self-restoring HOME/XDG redirection for the tests that

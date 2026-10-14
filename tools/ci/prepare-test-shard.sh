@@ -46,11 +46,6 @@ reads() { # PACKAGE...: whether the shard runs these packages' tests or scoped t
 # retain their pinned versions.
 bash tools/ensure-headless-audio.sh
 
-# The Secret Service suite uses libsecret's session-bus client.
-if tests tilo-secret-service; then
-    bash tools/ci/ensure-session-bus-tools.sh
-fi
-
 # The X11 bridge (xwayland-satellite and Xwayland) the shell's X11 clipboard
 # and focus tests drive; the pinned builder predates it.
 if tests shell; then

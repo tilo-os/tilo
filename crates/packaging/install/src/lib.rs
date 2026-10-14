@@ -28,9 +28,7 @@ pub mod runtime_blobs;
 pub mod shim;
 pub mod state;
 
-pub use shim::{
-    SIDECAR_SUFFIX, ShimError, ShimInstall, locate_shim_source, remove_shims, write_shims,
-};
+pub use shim::{ShimError, ShimInstall, locate_shim_source, remove_shims, write_shims};
 
 /// The name of the binary as registered with Cargo. Exposed for
 /// integration tests that want to invoke it via `CARGO_BIN_EXE_*`.

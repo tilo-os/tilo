@@ -704,7 +704,8 @@ impl GlobalShortcutsBackend {
         app_id: String,
         options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
-        let parent_window = option_text(&options, "parent_window").unwrap_or_default();
+        let parent_window =
+            crate::portal::option::<String>(&options, "parent_window").unwrap_or_default();
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let Ok(auth) = authenticate_call(
             &self.ctx,
@@ -1134,8 +1135,8 @@ fn decode_shortcuts(wire: Vec<ShortcutWire>) -> Option<Vec<GlobalShortcut>> {
             if !valid_id(&id) || !ids.insert(id.clone()) {
                 return None;
             }
-            let description = option_text(&options, "description");
-            let preferred_trigger = option_text(&options, "preferred_trigger");
+            let description = crate::portal::option::<String>(&options, "description");
+            let preferred_trigger = crate::portal::option::<String>(&options, "preferred_trigger");
             if description.as_deref().is_some_and(|text| !valid_text(text))
                 || preferred_trigger
                     .as_deref()
@@ -1150,13 +1151,6 @@ fn decode_shortcuts(wire: Vec<ShortcutWire>) -> Option<Vec<GlobalShortcut>> {
             })
         })
         .collect()
-}
-#[cfg(any(test, target_os = "linux"))]
-fn option_text(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    options
-        .get(key)
-        .and_then(|value| value.try_clone().ok())
-        .and_then(|value| String::try_from(value).ok())
 }
 #[cfg(any(test, target_os = "linux"))]
 fn valid_id(value: &str) -> bool {

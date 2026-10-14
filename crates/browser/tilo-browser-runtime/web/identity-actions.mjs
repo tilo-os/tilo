@@ -35,15 +35,15 @@ import {
 } from './root-identity.mjs';
 
 export const KEEP = Object.freeze({id: 'keep-identity', title: 'Keep this identity',
-  subtitle: 'Add a passkey, so you are yourself again on any browser'});
+  subtitle: 'Add a passkey, so you are yourself again on any browser', source: 'identity'});
 export const RECOVERY = Object.freeze({id: 'save-recovery-key', title: 'Save a recovery key',
-  subtitle: 'To your password manager, or as a file'});
+  subtitle: 'To your password manager, or as a file', source: 'identity'});
 export const SIGN_IN = Object.freeze({id: 'sign-in-passkey', title: 'Sign in with a passkey',
-  subtitle: 'Be the person you kept on another browser'});
+  subtitle: 'Be the person you kept on another browser', source: 'identity'});
 export const NAME = Object.freeze({id: 'set-name', title: 'Set your name',
-  subtitle: 'How others see you in this workspace'});
+  subtitle: 'How others see you in this workspace', source: 'identity'});
 export const PAIR = Object.freeze({id: 'pair-device', title: 'Pair a new device',
-  subtitle: 'Copy a link that opens this workspace there as you'});
+  subtitle: 'Copy a link that opens this workspace there as you', source: 'devices'});
 const APPROVE = 'approve-pairing:';
 /** How often, and for how long after `pair-device`, to ask for devices waiting. */
 const PAIR_POLL_MS = 3000;
@@ -118,7 +118,7 @@ export function createIdentityActions({
     for (const device of pending) {
       waiting.set(device.digest, device);
       offer({id: `${APPROVE}${device.digest}`, title: `Approve ${device.pairingCode}`,
-        subtitle: `Pair “${device.label}” as you`},
+        subtitle: `Pair “${device.label}” as you`, source: 'devices'},
       `Pair “${device.label}”?`,
       `A device asks to be you. Approve only if it shows ${device.pairingCode}.`);
     }

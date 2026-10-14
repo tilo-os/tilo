@@ -36,7 +36,6 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ChangeHash};
 use collab_types::{DocumentMutation, DocumentMutationKind};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_peer_state::NeighbourMsg;
 use tilo_relay_protocol::compaction::{CoverageStatement, entry_id, snapshot_heads, verify};
 
 mod verified;
@@ -44,6 +43,7 @@ mod verified;
 use verified::{Checked, Piece, Signatures};
 
 use crate::coedit::CoeditPayload;
+pub use crate::payloads::Route;
 use crate::store::compaction::{ChannelEntry, SnapshotWrite, file_digest};
 use crate::transport::Envelope;
 use crate::workspace::SharedWorkspace;
@@ -243,16 +243,18 @@ impl Compactor {
     /// admitted.
     ///
     /// Runs for every delta on the session task, so it borrows the payload
-    /// body and reads only the `NeighbourMsg` variant tag: no allocation or
-    /// copy proportional to the delta. Public only so an allocation test with
-    /// its own counting allocator can measure it.
+    /// body and asks the host's payload adapter only whether it is a document
+    /// frame: no allocation or copy proportional to the delta. Public only so
+    /// an allocation test with its own counting allocator can measure it.
     #[doc(hidden)]
     pub fn observe(delta: &[u8]) -> Option<Observed> {
         let (channel, _, body) = crate::coedit::retention_view(delta)?;
-        NeighbourMsg::is_app_document(body).then_some(Observed {
-            channel,
-            len: delta.len(),
-        })
+        crate::payloads::shell()
+            .is_document(body)
+            .then_some(Observed {
+                channel,
+                len: delta.len(),
+            })
     }
 
     /// An observed delta of `workspace_id` is being admitted, until the
@@ -642,14 +644,7 @@ fn identity_frame(
     cert: &tilo_user_identity::DeviceCert,
     workspace_id: u64,
 ) -> Result<([u8; 32], Vec<u8>), String> {
-    let hello = NeighbourMsg::IdentityHello {
-        cert: Box::new(cert.clone()),
-        revocations: Vec::new(),
-    };
-    let channel =
-        *blake3::hash(&[b"identity-hello\0".as_slice(), &cert.device_public_key].concat())
-            .as_bytes();
-    let body = postcard::to_stdvec(&hello).map_err(|error| error.to_string())?;
+    let (channel, body) = crate::payloads::shell().host_identity(cert)?;
     let bytes = crate::transport::encode(&Envelope::Delta {
         workspace_id,
         author_device_public_key: cert.device_public_key,
@@ -661,17 +656,6 @@ fn identity_frame(
     })
     .map_err(|error| error.to_string())?;
     Ok((channel, bytes))
-}
-
-/// The document a retained entry belongs to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Route {
-    /// Application id.
-    pub app_id: String,
-    /// Room (cluster) id.
-    pub cluster_id: String,
-    /// Record wire name.
-    pub record_id: String,
 }
 
 /// What one round decided: the route of a sealed tail to ask a member for,
@@ -1014,14 +998,7 @@ pub(crate) fn document_frames(
         );
         let signing = op.signing_bytes().map_err(|error| error.to_string())?;
         op.signature = collab_types::Signature::from_bytes(key.sign(&signing).to_bytes());
-        let body = postcard::to_stdvec(&NeighbourMsg::AppDocument {
-            peer: tilo_peer_state::peer_handle(&author),
-            app_id: route.app_id.clone(),
-            cluster_id: route.cluster_id.clone(),
-            record_id: route.record_id.clone(),
-            envelope: Box::new(op),
-        })
-        .map_err(|error| error.to_string())?;
+        let body = crate::payloads::shell().document_body(&author, route, op)?;
         let payload = if index == 0 {
             CoeditPayload::Checkpoint { channel, body }
         } else {

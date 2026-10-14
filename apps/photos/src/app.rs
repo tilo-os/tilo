@@ -11283,10 +11283,6 @@ impl Widget for PhotosApp {
         self.refresh_empty_state(doc);
     }
 
-    fn composition_follows_allocation(&self) -> bool {
-        true
-    }
-
     #[allow(
         clippy::unwrap_used,
         reason = "root's taffy node always builds from freshly-built children"

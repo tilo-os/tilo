@@ -50,16 +50,16 @@ function harness({actions = [], window = 'a1', share = true} = {}) {
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-test('live members carry an agent\'s record and activity but never a person\'s focus', () => {
+test('live members carry an agent\'s record and activity, a person\'s strip but never their focus', () => {
   const seen = new Map([
-    ['bot', {participant: {kind: 'agent', label: 'Scribe', color: '#010203', activity: 'Reading'}, focus: {app: 'a', record: 'r'}}],
-    ['ann', {participant: {kind: 'person', label: 'Ann'}, focus: {app: 'a', record: 'r'}}],
+    ['bot', {participant: {kind: 'agent', label: 'Scribe', color: '#010203', activity: 'Reading'}, focus: {app: 'a', record: 'r'}, place: '7'}],
+    ['ann', {participant: {kind: 'person', label: 'Ann'}, focus: {app: 'a', record: 'r'}, place: '7'}],
   ]);
   const layer = {available: true, members: () => ['bot', 'ann', 'new']};
   assert.deepEqual(liveMembers(layer, seen), [
-    {publisher: 'bot', kind: 'agent', label: 'Scribe', color: '#010203', focus: {app: 'a', record: 'r'}, activity: 'Reading'},
-    {publisher: 'ann', kind: 'person', label: 'Ann', color: null, focus: null, activity: null},
-    {publisher: 'new', kind: 'person', label: '', color: null, focus: null, activity: null},
+    {publisher: 'bot', kind: 'agent', label: 'Scribe', color: '#010203', focus: {app: 'a', record: 'r'}, activity: 'Reading', place: null},
+    {publisher: 'ann', kind: 'person', label: 'Ann', color: null, focus: null, activity: null, place: '7'},
+    {publisher: 'new', kind: 'person', label: '', color: null, focus: null, activity: null, place: null},
   ]);
   assert.equal(liveMembers({available: false}, seen), null, 'no live layer: the host lines decide');
 });
@@ -113,7 +113,7 @@ test('a hidden page neither posts nor reads; a member\'s name reaches the runtim
   layer.join('bot');
   layer.presence('bot', {participant: {kind: 'agent', label: 'Scribe', activity: 'Summarising'}, focus: {app: 'x', record: 'y'}});
   const last = h.calls.filter(([kind]) => kind === 'people').at(-1)[1];
-  assert.deepEqual(last.members, [{publisher: 'bot', kind: 'agent', label: 'Scribe', color: null, focus: {app: 'x', record: 'y'}, activity: 'Summarising'}]);
+  assert.deepEqual(last.members, [{publisher: 'bot', kind: 'agent', label: 'Scribe', color: null, focus: {app: 'x', record: 'y'}, activity: 'Summarising', place: null}]);
   here.stop();
   assert.equal(layer.handlers.presence.size, 0, 'stopping lets go of the layer');
 });

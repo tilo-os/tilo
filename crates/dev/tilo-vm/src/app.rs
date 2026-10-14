@@ -22,9 +22,9 @@ use crate::build;
 use crate::ci;
 use crate::cicache;
 use crate::cli::{
-    AddArgs, Builder, Command, CreateArgs, DeviceCommand, FlightCommand, GamepadCommand,
-    ImageCommand, InputCommand, PenCommand, ScenarioCommand, SeatCommand, SlotAppsCommand,
-    SlotCommand, TouchCommand, TouchpadCommand, UpgradeArgs, VmCommand,
+    AddArgs, Builder, Command, CreateArgs, FlightCommand, GamepadCommand, ImageCommand,
+    InputCommand, PenCommand, ScenarioCommand, SeatCommand, SlotAppsCommand, SlotCommand,
+    TouchCommand, UpgradeArgs, VmCommand,
 };
 use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -1131,6 +1131,15 @@ impl App {
                 human_bytes(status.storage.targets_bytes),
                 if low { "  LOW: tilo-vm gc" } else { "" }
             ));
+        }
+        if let Some(change) = &status.image_change {
+            lines.extend(
+                change
+                    .describe()
+                    .into_iter()
+                    .map(|line| format!("  {line}")),
+            );
+            insert(&mut vm_data, "image_change", json!(change));
         }
         let ci_from_host = Self::adapter(&vm)?.ci_layers_from_host();
         lines.push(format!(
@@ -3395,6 +3404,16 @@ impl App {
             )
             .next(&["tilo-vm status"]));
         }
+        if !staged.success
+            && let Some((free, needed)) = imageup::insufficient_space(&staged.stderr)
+        {
+            return Err(CliError::NoSpace {
+                place: format!("VM {}", vm.name),
+                free,
+                what: "the new OS image".into(),
+                needed,
+            });
+        }
         if !staged.success {
             return Err(CliError::CommandFailed {
                 command: words.join(" "),
@@ -3451,7 +3470,7 @@ impl App {
             }
             return Ok(Outcome::new(
                 format!(
-                    "staged {} on VM {}; it boots at the next restart (now running {previous_text})\n  {}",
+                    "staged {} on VM {}; it boots at the next restart (now running {previous_text})\n  at that boot every slot goes back to the new image: layers built for this one are dropped\n  {}",
                     next.describe(),
                     vm.name,
                     self.receipt.summary()
@@ -3462,9 +3481,15 @@ impl App {
         }
         let booted = self.reboot_into(vm, endpoint, &facts.boot_id, &next.digest)?;
         self.warnings.extend(self.receipt.slow());
+        let change = self.image_change_of_this_boot(vm, endpoint);
+        let slots = match &change {
+            Some(change) if !change.dropped.is_empty() => change.describe().join("\n  "),
+            Some(_) => "no slot ran layers: every slot runs the new image as installed".into(),
+            None => "slots: tilo-vmd did not report how it reconciled them with the new image (tilo-vm status)".into(),
+        };
         Ok(Outcome::new(
             format!(
-                "VM {} now runs {}\n  before: {previous_text}, kept for tilo-vm vm rollback-image\n  slots and layers are unchanged (they live in /var)\n  {}",
+                "VM {} now runs {}\n  before: {previous_text}, kept for tilo-vm vm rollback-image\n  {slots}\n  {}",
                 vm.name,
                 booted.describe(),
                 self.receipt.summary()
@@ -3476,9 +3501,38 @@ impl App {
                 "transport": stage.transport,
                 "digest": booted.digest,
                 "previous": previous.map(|p| p.digest),
+                "image_change": change,
             }),
         )
         .next(&["tilo-vm status", "tilo-vm vm rollback-image"]))
+    }
+
+    /// What tilo-vmd's early-boot reconcile did with the slots on the image
+    /// this boot runs, when it says so: its last image change, if that change
+    /// is to the booted image (the kernel command line names it).
+    fn image_change_of_this_boot(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+    ) -> Option<tilo_vm_protocol::ImageChange> {
+        let cmdline = self.vm_sh(vm, endpoint, "cat /proc/cmdline").ok()?;
+        let booted = tilo_vm_protocol::booted_image(&cmdline.stdout)?;
+        let status = self.connect(vm).ok()?.call(Status { slot: None }).ok()?;
+        if status.slots_image.as_deref() != Some(booted.as_str()) {
+            // A daemon that does not reconcile, or one that has not yet.
+            return None;
+        }
+        match status.image_change {
+            Some(change) if change.to == booted => Some(change),
+            // The reconcile for this image dropped nothing: no slot ran layers.
+            _ => Some(tilo_vm_protocol::ImageChange {
+                from: None,
+                to: booted,
+                at: String::new(),
+                dropped: Vec::new(),
+                freed_bytes: 0,
+            }),
+        }
     }
 
     /// So the shutdown can apply the staged deployment (see
@@ -4114,10 +4168,6 @@ impl App {
         Ok(imported)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one swap sequence: resolve, build, deliver and receipt stay in order"
-    )]
     fn swap(
         &mut self,
         slot: Option<String>,
@@ -4179,24 +4229,6 @@ impl App {
         let cohort_inputs = self.cohort_inputs(&component, &source)?;
         let vm = self.resolve_vm(None)?;
         let mut remote = self.prepare_swap_connection(&vm, &component, &source, builder)?;
-        let apps_build = if cohort_inputs.is_some() {
-            let configured = self
-                .registry()?
-                .remote_builders
-                .get(&remote.hello.arch)
-                .is_some_and(|line| !line.is_empty());
-            let plan = plan_apps_runtime_build(
-                builder,
-                &remote.hello.arch,
-                std::env::consts::ARCH,
-                cfg!(target_os = "linux"),
-                configured,
-            )?;
-            self.receipt.set("apps_runtime_build", plan.as_str());
-            Some(plan)
-        } else {
-            None
-        };
         let layer = if let ci::Source::Layer(hash) = source {
             hash
         } else {
@@ -4211,17 +4243,11 @@ impl App {
             if let ci::Source::Ci { tag, commit } = source {
                 self.ci_layer(&mut remote, &vm, entry, &tag, commit)?
             } else {
-                self.worktree_component_layer(
-                    &mut remote,
-                    &vm,
-                    entry,
-                    (builder, apps_build),
-                    profile,
-                )?
+                self.worktree_component_layer(&mut remote, &vm, entry, builder, profile)?
             }
         };
         if let Some(inputs) = &cohort_inputs {
-            self.cohort_prerequisites(&slot, &component, inputs, apps_build)?;
+            self.cohort_prerequisites(&slot, &component, inputs)?;
         }
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
@@ -4291,18 +4317,15 @@ impl App {
         remote: &mut Remote,
         vm: &Resolved,
         entry: &Component,
-        (builder, apps_build): (Option<Builder>, Option<AppsRuntimeBuild>),
+        builder: Option<Builder>,
         profile: Option<&str>,
     ) -> Result<String, CliError> {
         let selected = if entry.image_assembled && entry.name == "apps+runtime" {
-            if apps_build == Some(AppsRuntimeBuild::Local) {
-                // This host builds the whole cohort itself, then uploads it.
-                self.receipt.set("builder", "host");
-                return self.build_layer_local_pack(
-                    remote,
-                    vm,
-                    &entry.clone().with_profile(profile),
-                );
+            if matches!(builder, Some(Builder::Host | Builder::Vm)) {
+                return Err(CliError::Unsupported {
+                    what: "a host/VM-only cargo build for the paired apps+runtime assembly".into(),
+                    alternative: "tilo-vm swap apps+runtime --builder remote".into(),
+                });
             }
             Some(Builder::Remote)
         } else {
@@ -4318,13 +4341,7 @@ impl App {
         slot: &str,
         component: &str,
         inputs: &crate::source_inputs::Snapshot,
-        apps_build: Option<AppsRuntimeBuild>,
     ) -> Result<(), CliError> {
-        let prerequisite_builder = if apps_build == Some(AppsRuntimeBuild::Local) {
-            Builder::Host
-        } else {
-            Builder::Remote
-        };
         let root = self
             .worktree
             .as_ref()
@@ -4336,11 +4353,7 @@ impl App {
             build::source_provenance(
                 self.worktree.as_ref().ok_or(CliError::NotInWorktree)?,
                 component,
-                if prerequisite_builder == Builder::Host {
-                    "host"
-                } else {
-                    "remote"
-                },
+                "remote",
             ),
         );
         let mut outcomes = Vec::new();
@@ -4350,7 +4363,7 @@ impl App {
                 Some(slot.into()),
                 component.into(),
                 "worktree",
-                Some(prerequisite_builder),
+                Some(Builder::Remote),
                 None,
                 false,
                 KernelFlags::default(),
@@ -4688,13 +4701,6 @@ impl App {
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
         let arch = remote.hello.arch.clone();
-        let lock = std::fs::read(worktree.root.join("Cargo.lock"))
-            .ok()
-            .map(|bytes| build::sha256_hex(&bytes));
-        check_app_lock(
-            lock.as_deref(),
-            remote.hello.base.cargo_lock_hash.as_deref(),
-        )?;
         let configured = self.registry()?.remote_builders.get(&arch).cloned();
         let builder = match builder {
             None if vm.entry.hypervisor == hypervisor::DEVICE => Some(Builder::Remote),
@@ -5773,92 +5779,11 @@ pub fn worktree_buildable(component: &Component) -> Result<(), CliError> {
             component.name
         ),
         alternative: format!(
-            "one app from this worktree: tilo-vm swap app:<dir>; \
-             apps with their matching runtime: tilo-vm swap apps+runtime; the published set: \
+            "one app from this worktree: tilo-vm swap app:<dir>; the published set: \
              tilo-vm swap {} --from ci:<tag>; this worktree's image: tilo-vm vm upgrade --from local",
             component.name
         ),
     })
-}
-
-/// Where the paired `apps+runtime` cohort is built.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppsRuntimeBuild {
-    /// The configured remote builder for the device's architecture.
-    Remote,
-    /// This host's own cargo, which must be a Linux machine of the device's
-    /// architecture so the thin graph, runtime ABI and loader closure match.
-    Local,
-}
-
-impl AppsRuntimeBuild {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Remote => "remote",
-            Self::Local => "host",
-        }
-    }
-}
-
-/// Choose the builder for `swap apps+runtime --from worktree`.
-///
-/// The cohort is signed with an ephemeral key that never leaves the build and
-/// is re-verified by tilo-vmd (publisher pins, runtime ABI, closure, every
-/// package), so the builder choice only decides where cargo runs: `--builder
-/// host` is accepted on a Linux host of the device's own architecture, and is
-/// the default when no remote builder is configured.
-///
-/// # Errors
-/// `--builder vm`, and `--builder host` where this host cannot build for the
-/// device.
-pub fn plan_apps_runtime_build(
-    builder: Option<Builder>,
-    device_arch: &str,
-    host_arch: &str,
-    linux_host: bool,
-    remote_configured: bool,
-) -> Result<AppsRuntimeBuild, CliError> {
-    let local_possible = linux_host && host_arch == device_arch;
-    match builder {
-        Some(Builder::Vm) => Err(CliError::Unsupported {
-            what: "a VM-only cargo build for the paired apps+runtime assembly".into(),
-            alternative: "tilo-vm swap apps+runtime --builder host (a Linux host of the device's architecture) or --builder remote".into(),
-        }),
-        Some(Builder::Host) if local_possible => Ok(AppsRuntimeBuild::Local),
-        Some(Builder::Host) => Err(CliError::Unsupported {
-            what: format!(
-                "building apps+runtime on this {} host for a {device_arch} device",
-                if linux_host { host_arch } else { "non-Linux" }
-            ),
-            alternative: "the cohort must be built on a Linux machine of the device's architecture: tilo-vm swap apps+runtime --builder remote".into(),
-        }),
-        None if !remote_configured && local_possible => Ok(AppsRuntimeBuild::Local),
-        Some(Builder::Remote) | None => Ok(AppsRuntimeBuild::Remote),
-    }
-}
-
-/// `swap app:<dir>` links the image's own `libruntime_dylib.so`, whose symbols
-/// carry crate hashes, so a worktree whose `Cargo.lock` is not the image's
-/// would install an app that cannot start.
-///
-/// # Errors
-/// [`CliError::Unsupported`] when both locks are known and differ.
-pub fn check_app_lock(
-    worktree_lock: Option<&str>,
-    image_lock: Option<&str>,
-) -> Result<(), CliError> {
-    match (worktree_lock, image_lock) {
-        (Some(mine), Some(image)) if mine != image => Err(CliError::Unsupported {
-            what: format!(
-                "app:<dir> from a worktree whose Cargo.lock ({}) is not the image's ({}): the app would link the image's libruntime_dylib.so, whose symbols carry crate hashes",
-                short(mine),
-                short(image)
-            ),
-            alternative: "build the apps with their matching runtime as one cohort: tilo-vm swap apps+runtime (it is a generation, so tilo-vm rollback undoes it); never regenerate Cargo.lock to match".into(),
-        }),
-        _ => Ok(()),
-    }
 }
 
 /// Which builder `swap --from worktree` uses.
@@ -5941,29 +5866,6 @@ pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError
             pressure,
         },
         InputCommand::Gamepad(command) => gamepad_action(command)?,
-        InputCommand::Hold { combo } => InputAction::KeyDown { combo },
-        InputCommand::Release { combo } => InputAction::KeyUp { combo },
-        InputCommand::Device(DeviceCommand::Plug { profile }) => {
-            InputAction::DevicePlug { profile }
-        }
-        InputCommand::Device(DeviceCommand::Unplug { profile }) => {
-            InputAction::DeviceUnplug { profile }
-        }
-        InputCommand::Touchpad(TouchpadCommand::Tap { fingers }) => {
-            InputAction::TouchpadTap { fingers }
-        }
-        InputCommand::Touchpad(TouchpadCommand::Swipe {
-            dx,
-            dy,
-            fingers,
-            duration,
-        }) => InputAction::TouchpadSwipe {
-            fingers,
-            dx_mm: dx,
-            dy_mm: dy,
-            duration_ms: duration,
-        },
-        InputCommand::Touchpad(TouchpadCommand::Click) => InputAction::TouchpadClick,
     };
     let actions = vec![action];
     tilo_vm_protocol::input::validate(&actions).map_err(CliError::InvalidInput)?;
@@ -6094,20 +5996,6 @@ fn describe_input(action: &InputAction) -> String {
                 from.0, from.1, to.0, to.1
             )
         }
-        InputAction::KeyDown { combo } => format!("holding {combo}"),
-        InputAction::KeyUp { combo } => format!("released {combo}"),
-        InputAction::DevicePlug { profile } => format!("plugged in {profile}"),
-        InputAction::DeviceUnplug { profile } => format!("unplugged {profile}"),
-        InputAction::TouchpadTap { fingers } => {
-            format!("tapped the touchpad with {fingers} finger(s)")
-        }
-        InputAction::TouchpadSwipe {
-            fingers,
-            dx_mm,
-            dy_mm,
-            ..
-        } => format!("moved {fingers} finger(s) {dx_mm},{dy_mm} mm on the touchpad"),
-        InputAction::TouchpadClick => "clicked the touchpad".to_owned(),
         InputAction::GamepadPress { combos } => format!("pressed gamepad {}", combos.join(" ")),
         InputAction::GamepadStick { stick, x, y, .. } => {
             format!("pushed the {stick:?} stick to {x},{y}").to_lowercase()
@@ -7572,50 +7460,6 @@ mod tests {
             worktree_buildable(manifest.get("fs").unwrap()).unwrap();
         }
 
-        // Phase: apps_runtime_builds_where_the_device_architecture_matches.
-        {
-            use AppsRuntimeBuild::{Local, Remote};
-            let plan = |b, dev, host, linux, cfg| plan_apps_runtime_build(b, dev, host, linux, cfg);
-            assert_eq!(
-                plan(Some(Builder::Host), "x86_64", "x86_64", true, false).unwrap(),
-                Local
-            );
-            assert_eq!(plan(None, "x86_64", "x86_64", true, false).unwrap(), Local);
-            assert_eq!(plan(None, "x86_64", "x86_64", true, true).unwrap(), Remote);
-            assert_eq!(
-                plan(Some(Builder::Remote), "x86_64", "x86_64", true, false).unwrap(),
-                Remote
-            );
-            assert_eq!(
-                plan(None, "aarch64", "x86_64", true, false).unwrap(),
-                Remote
-            );
-            for refused in [
-                plan(Some(Builder::Host), "aarch64", "x86_64", true, true),
-                plan(Some(Builder::Host), "x86_64", "x86_64", false, true),
-                plan(Some(Builder::Vm), "x86_64", "x86_64", true, true),
-            ] {
-                assert!(
-                    matches!(refused, Err(CliError::Unsupported { .. })),
-                    "{refused:?}"
-                );
-            }
-        }
-
-        // Phase: app_swap_refuses_another_cargo_lock_with_the_cohort_hint.
-        {
-            check_app_lock(Some("aaaa"), Some("aaaa")).unwrap();
-            check_app_lock(None, Some("aaaa")).unwrap();
-            check_app_lock(Some("aaaa"), None).unwrap();
-            let error = check_app_lock(Some("aaaa"), Some("bbbb")).unwrap_err();
-            let CliError::Unsupported { what, alternative } = &error else {
-                panic!("{error:?}");
-            };
-            assert!(what.contains("Cargo.lock"), "{what}");
-            assert!(alternative.contains("swap apps+runtime"), "{alternative}");
-            assert!(alternative.contains("rollback"), "{alternative}");
-        }
-
         // Phase: builder_choice_prefers_the_vm_and_explains_fallbacks.
         {
             let ready = VmTools {
@@ -8045,54 +7889,6 @@ mod tests {
         let saved = std::fs::read_to_string(path).unwrap();
         assert!(!saved.contains("synthetic-private-input"));
         assert!(saved.contains("--stdin"));
-    }
-
-    #[test]
-    fn device_profile_and_touchpad_commands_become_validated_actions() {
-        let plug = input_actions(InputCommand::Device(DeviceCommand::Plug {
-            profile: "lenovo-83ed-touchpad".into(),
-        }))
-        .unwrap();
-        assert_eq!(
-            plug,
-            [InputAction::DevicePlug {
-                profile: "lenovo-83ed-touchpad".into()
-            }]
-        );
-        let unknown = input_actions(InputCommand::Device(DeviceCommand::Plug {
-            profile: "nope".into(),
-        }));
-        assert!(
-            matches!(unknown, Err(CliError::InvalidInput(m)) if m.contains("lenovo-83ed-keyboard"))
-        );
-        let swipe = input_actions(InputCommand::Touchpad(TouchpadCommand::Swipe {
-            dx: 0,
-            dy: -30,
-            fingers: 2,
-            duration: 300,
-        }))
-        .unwrap();
-        assert_eq!(
-            swipe,
-            [InputAction::TouchpadSwipe {
-                fingers: 2,
-                dx_mm: 0,
-                dy_mm: -30,
-                duration_ms: 300
-            }]
-        );
-        assert!(
-            input_actions(InputCommand::Touchpad(TouchpadCommand::Tap { fingers: 5 })).is_err()
-        );
-        assert_eq!(
-            input_actions(InputCommand::Hold {
-                combo: "shift".into()
-            })
-            .unwrap(),
-            [InputAction::KeyDown {
-                combo: "shift".into()
-            }]
-        );
     }
 
     #[test]
