@@ -204,7 +204,7 @@ pub use resource::{
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
     ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
     ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec, ResourceViewRangeSpec,
-    ResourceViewSpec, flatten, sole_text_argument,
+    ResourceViewSpec, flatten,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,

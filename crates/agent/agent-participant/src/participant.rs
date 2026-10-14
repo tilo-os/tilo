@@ -765,14 +765,8 @@ impl AgentParticipant {
                     .seed(&route)
                     .ok_or_else(|| format!("the room has no record {record} of {app_id} yet"))??;
                 let seed = Seed::Existing {
-                    // A room-record app (Notes, Chat) publishes its package-primary
-                    // record under the empty wire record id.
-                    record: if record.is_empty() {
-                        ui::record::RecordId::package_primary()
-                    } else {
-                        ui::record::RecordId::parse(record)
-                            .ok_or_else(|| format!("{record} is not a record id"))?
-                    },
+                    record: ui::record::RecordId::parse(record)
+                        .ok_or_else(|| format!("{record} is not a record id"))?,
                     changes: vec![saved],
                 };
                 (seed, Some(route))
@@ -869,14 +863,6 @@ impl AgentParticipant {
                 descriptor.action_label, descriptor.resource_label
             )
         });
-        let bound;
-        let arguments = match &descriptor {
-            Some(descriptor) => {
-                bound = descriptor.bind_prompt_text(arguments.clone());
-                &bound
-            }
-            None => arguments,
-        };
         let output = app
             .invoke(address, arguments, confirmed)
             .map_err(Refusal::Door)?;

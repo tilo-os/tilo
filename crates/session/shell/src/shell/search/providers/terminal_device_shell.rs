@@ -101,7 +101,6 @@ impl TerminalDeviceShellProvider {
             ));
         }
         SearchResult {
-            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: if matches!(operation, "inspect" | "read") {
                 tilo_actions::OperationKind::View

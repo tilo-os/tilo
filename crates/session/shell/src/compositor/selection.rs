@@ -1380,13 +1380,9 @@ impl State {
     /// Per-tick selection work: publish chrome's pending copy, pull any
     /// client-owned change into the mirror. Allocation-free when nothing changed.
     pub fn pump_selection(&mut self) {
-        // Dispatch may already have installed a newer client source while
-        // the previous mirror's last transfer completed. Incorporate that
-        // ownership edge first: adopting the old mirror would overwrite the
-        // new source before its formats can even be pulled.
-        self.drain_pending_pulls();
         adopt_complete_client_selection(&self.selection.store, unix_now_ms());
         self.publish_chrome_selection();
+        self.drain_pending_pulls();
     }
 
     /// Turn a pending chrome copy into a compositor-owned Wayland selection.

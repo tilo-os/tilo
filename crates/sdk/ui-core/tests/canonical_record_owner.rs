@@ -22,19 +22,6 @@ fn directory(
     )
     .unwrap()
 }
-/// The record's save status once the store has settled it. `try_flush` and a
-/// repairing open hand durability to the store's thread, which confirms it
-/// a moment later; until then the record reads, correctly, as Saving.
-fn settled(store: &RecordStore, id: &RecordId) -> RecordSaveStatus {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let status = store.save_status(id).unwrap();
-        if status != RecordSaveStatus::Saving || std::time::Instant::now() >= deadline {
-            return status;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-}
 fn body(store: &RecordStore, want: &RecordCheckout) -> String {
     store
         .read(&want.id, |doc| {
@@ -113,7 +100,7 @@ fn one_canonical_owner_shares_history_and_reserves_exactly_once() {
         assert_eq!(body(&a, &want), "changed");
         assert_eq!(body(&other, &want), "other");
         a.try_flush().unwrap();
-        assert_eq!(settled(&b, &want.id), RecordSaveStatus::Saved);
+        assert_eq!(b.save_status(&want.id).unwrap(), RecordSaveStatus::Saved);
         drop((token, second, a, b, other));
         let reopened = owners.open("so.tilo.test", "room-a").unwrap();
         assert!(matches!(
@@ -281,7 +268,10 @@ fn validation_refusals_and_repairs_preserve_bytes_and_reservations() {
             store.read(&want.id, record::home).flatten().as_deref(),
             Some("original-minting-room")
         );
-        assert_eq!(settled(&store, &want.id), RecordSaveStatus::Saved);
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            RecordSaveStatus::Saved
+        );
         store.with(&want.id, |doc| {
             doc.put(ROOT, "body", "after-recovery").unwrap();
         });
@@ -329,7 +319,10 @@ fn validation_refusals_and_repairs_preserve_bytes_and_reservations() {
             "append must not create a missing base document"
         );
         store.try_flush().unwrap();
-        assert_eq!(settled(&store, &want.id), RecordSaveStatus::Saved);
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            RecordSaveStatus::Saved
+        );
         assert!(AutoCommit::load(&std::fs::read(path).unwrap()).is_ok());
     }
 }
@@ -376,7 +369,10 @@ fn status_polling_and_failed_flushes_keep_pending_edits() {
             .unwrap();
         assert_eq!(before, after);
         store.try_flush().unwrap();
-        assert_eq!(settled(&store, &want.id), RecordSaveStatus::Saved);
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            RecordSaveStatus::Saved
+        );
     }
 
     // Case `failed_flush_retries_complete_latest_document_without_new_edit`.
@@ -409,7 +405,10 @@ fn status_polling_and_failed_flushes_keep_pending_edits() {
             .unwrap();
         std::fs::remove_dir(&path).unwrap();
         store.try_flush().unwrap();
-        assert_eq!(settled(&store, &want.id), RecordSaveStatus::Saved);
+        assert_eq!(
+            store.save_status(&want.id).unwrap(),
+            RecordSaveStatus::Saved
+        );
         assert_eq!(store.durability_error(&want.id), None);
         drop(store);
         let store = owners.open("so.tilo.test", "room-a").unwrap();
