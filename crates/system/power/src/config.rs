@@ -393,9 +393,10 @@ mod tests {
         }
         // Phase `unknown_profile_uses_legacy_timeout`.
         {
-            let section: serde_json::Value =
-                serde_json::from_str(r#"{"suspend_minutes":23,"balanced_suspend_minutes":99}"#)
-                    .unwrap();
+            let section: serde_json::Value = serde_json::from_str(
+                r#"{"auto_suspend":true,"suspend_minutes":23,"balanced_suspend_minutes":99}"#,
+            )
+            .unwrap();
             assert_eq!(
                 policy_from_section_for_profile(&section, Some("vendor-profile")).idle_suspend,
                 Some(Duration::from_secs(1380))
