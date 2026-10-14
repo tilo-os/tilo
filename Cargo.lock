@@ -10691,6 +10691,7 @@ dependencies = [
  "tilo-rt",
  "tilo-test-env",
  "tracing",
+ "uuid",
  "workspace-hack",
  "zbus",
  "zeroize",
@@ -13083,6 +13084,7 @@ dependencies = [
  "tilo-clock",
  "tilo-test-env",
  "tokio",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -21988,6 +21990,7 @@ dependencies = [
  "tilo-net",
  "tilo-paths",
  "tokio",
+ "uuid",
  "workspace-hack",
 ]
 
