@@ -21,6 +21,16 @@ No slot and no dev VM are involved. The scenario runs its own QEMU VM through
 when QEMU is on the host itself) in a named cycle, so its disks, TPM and
 firmware state exist for this run only.
 
+For an already-built unsigned ARM development medium, Linux also supports
+`TILO_UNVERIFIED_VM_INSTALL=1 TILO_VM_ARCH=aarch64`. This explicit opt-in
+attaches the existing VM install-proof port required by that medium. The guest
+still requires its embedded development marker, detected virtualization and
+passphrase unlock; signed production checks are unchanged. Use only owned
+disposable VM targets, never physical disks. This diagnostic does not establish
+release signing or current-source acceptance. On an x86 host, select
+`TILO_ACCEL=tcg TILO_MEM=4096 TILO_SMP=2 TILO_DISTROBOX=""` explicitly; ARM
+software emulation can take substantially longer than native installation.
+
 On Windows ARM64, use the native `tilo-vm.exe` and the WHPX transport:
 
 ```powershell
