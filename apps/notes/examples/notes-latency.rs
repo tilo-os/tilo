@@ -216,8 +216,8 @@ impl Host {
 struct Sample {
     frame_ms: f64,
     raster_ms: Option<f64>,
-    /// The accessibility walk within `frame_ms`.
-    walk_ms: f64,
+    /// The accessibility walk within `frame_ms`, in milliseconds.
+    walk: f64,
 }
 
 /// Send `event` (none: a frame with no input) and draw the frame that shows
@@ -233,7 +233,7 @@ fn timed(app: &mut App, host: &mut Host, event: Option<WindowEvent>) -> Sample {
     Sample {
         frame_ms,
         raster_ms: host.gpu.is_some().then(|| millis(start)),
-        walk_ms: host.walk_ms,
+        walk: host.walk_ms,
     }
 }
 
@@ -353,12 +353,12 @@ fn open(app: &mut App, host: &mut Host, page: notes::PageId) -> Result<Sample, F
         host.frame(app);
         if shows(&observe(app)?, &wanted) {
             let frame_ms = millis(start);
-            let walk_ms = host.walk_ms;
+            let walk = host.walk_ms;
             host.present(app);
             return Ok(Sample {
                 frame_ms,
                 raster_ms: host.gpu.is_some().then(|| millis(start)),
-                walk_ms,
+                walk,
             });
         }
         host.present(app);
@@ -508,7 +508,7 @@ fn report(name: &str, samples: &[Sample]) -> serde_json::Value {
         .iter()
         .filter_map(|sample| sample.raster_ms)
         .collect();
-    let walk: Vec<f64> = samples.iter().map(|sample| sample.walk_ms).collect();
+    let walk: Vec<f64> = samples.iter().map(|sample| sample.walk).collect();
     let frame = summary(&frame);
     let raster = (!raster.is_empty()).then(|| summary(&raster));
     let walk = summary(&walk);
@@ -530,7 +530,9 @@ fn report(name: &str, samples: &[Sample]) -> serde_json::Value {
         samples.len(),
         cell(Some(&frame)),
         cell(raster.as_ref()),
-        walk["p50"].as_f64().unwrap_or(0.0),
+        walk.get("p50")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
     );
     serde_json::json!({ "to_frame_ms": frame, "to_raster_ms": raster, "a11y_walk_ms": walk })
 }
