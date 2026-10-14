@@ -7,10 +7,29 @@ use tilo_user_identity::DeviceCert;
 /// Native-only state-file envelope. Its fields cannot be authored by UI callers.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NativeAuthorityStorage {
+    #[cfg_attr(
+        feature = "test-support",
+        serde(serialize_with = "count_record_serialization")
+    )]
     pub(crate) revision: u64,
     pub(crate) rooms: BTreeMap<RoomId, StoredRoom>,
     pub(crate) pending: BTreeMap<RoomId, StoredPendingEnrollment>,
 }
+// The first field is serialized once per whole record, whether the caller
+// is encoding a file, hashing a digest, or counting a preflight.
+#[cfg(feature = "test-support")]
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde serialize_with passes a reference to the field"
+)]
+fn count_record_serialization<S: serde::Serializer>(
+    revision: &u64,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    tilo_peer_state::work_counts::record_serialization();
+    revision.serialize(serializer)
+}
+
 impl NativeAuthorityStorage {
     #[must_use]
     pub fn requires(&self, room: RoomId) -> bool {

@@ -23,6 +23,14 @@ mod history_content;
 mod limits;
 mod publication;
 mod record;
+#[cfg(feature = "test-support")]
+mod work_counts;
+#[cfg(feature = "test-support")]
+use work_counts::Mutation;
+#[cfg(feature = "test-support")]
+pub use work_counts::WorkSnapshot;
+#[cfg(not(feature = "test-support"))]
+type Mutation = Mutex<()>;
 pub mod session;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
@@ -122,7 +130,7 @@ struct SharedOwner {
     store: Arc<dyn Store>,
     /// The committed record; replaced only inside a publication's `install`.
     authority: RwLock<NativeAuthorityStorage>,
-    mutation: Mutex<()>,
+    mutation: Mutation,
     current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
 }
@@ -321,7 +329,7 @@ impl NativeWorkspaceOwner {
         Ok(Self(Arc::new(SharedOwner {
             store,
             authority: RwLock::new(authority),
-            mutation: Mutex::new(()),
+            mutation: Mutation::default(),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
         })))
@@ -334,6 +342,23 @@ impl NativeWorkspaceOwner {
     pub fn fence_all(&self) {
         self.0.fence_all();
     }
+    /// Cumulative production work performed by this owner across its threads.
+    /// Read after the measured operations complete; subtract an earlier snapshot.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn work_counts(&self) -> WorkSnapshot {
+        self.0.mutation.work.snapshot()
+    }
+
+    /// Measure actual work in this owner's synchronous production turns during
+    /// `operation` on the caller's thread, excluding background and other owners.
+    /// Returns the operation's result and its work, even when that result is an error.
+    /// Nested measurements preserve the enclosing observation and attribution.
+    #[cfg(feature = "test-support")]
+    pub fn measure_work_for_test<R>(&self, operation: impl FnOnce() -> R) -> (R, WorkSnapshot) {
+        self.0.mutation.work.measure(operation)
+    }
+
     /// Every room with a committed enrollment.
     #[must_use]
     pub fn rooms(&self) -> Vec<RoomId> {
@@ -461,6 +486,8 @@ impl NativeWorkspaceOwner {
         room: RoomId,
         read: impl FnOnce(&NativeCommittedView) -> Result<T, String>,
     ) -> Result<T, String> {
+        #[cfg(feature = "test-support")]
+        let _work = self.0.mutation.work.enter();
         let current = self.0.current.read();
         if self.0.fenced(&current, room) {
             return Err("native owner continuity is fenced".into());

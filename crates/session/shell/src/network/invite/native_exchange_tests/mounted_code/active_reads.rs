@@ -1,26 +1,10 @@
-//! The active measurement for a shared workspace: while a collaborator keeps
-//! editing a large shared document, what does each of their edits cost the
-//! app that shows it, and the host that commits it?
-//!
-//! A collaborator makes the document large, then edits it a line at a time,
-//! each edit a signed write the actual owner commits. The mounted app
-//! re-reads the committed document after each one; this journey counts what
-//! its readers are handed by the owner (bytes, owner time, whole captures),
-//! how long each edit takes to show there, and the CPU the compositor's
-//! broker thread spends per edit, the thread that commits what the app
-//! writes and answers every reader.
-//!
-//! Each commit used to rebuild, for every edit the governor had not yet
-//! acknowledged, that edit's whole recovery history, one dependency at a
-//! time: 5.7 s of broker CPU per edit at 48,000 characters (1.2 s at
-//! 10,000), which starved the reader's round trips past their deadlines
-//! into renewals, each a whole read. Then the app sent every edit it read
-//! back to the owner, twice, as its own (once per route publishing the
-//! record), and every commit wrote the owner's whole record out as JSON
-//! about seven times, its outgoing bytes a line per byte: 725 ms of broker
-//! CPU per edit at 48,000 characters. The app now sends nothing it only
-//! read, so the broker's share is its reads, flat in the document's size;
-//! the edit's own commit, which persists the record, is the process's.
+//! Count production work while an independently signed collaborator edits a
+//! mounted shared document. Recovery must use the retained change history,
+//! reads must deliver only changes, and the SDK must not publish what it read.
+//! The collaborator commits through its own owner before the mounted owner
+//! receives its signed edit. Recovery extends that retained local publication;
+//! the receiving compositor encodes the new file and checks the old authority,
+//! without separate encodings for size checks and the new-file digest.
 use super::*;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,9 +22,6 @@ const EDITS: usize = 10;
 const READER_BYTES_PER_EDIT_BUDGET: u64 = 4096;
 
 /// A document of about 10,000 characters (200 lines, one text op each).
-/// Measured in this debug harness on the shared runner, per edit: 18 ms of
-/// broker CPU (1.2 s, then 247 ms before), 382 ms of process CPU (1.0 s)
-/// and 241 ms to show (577 ms).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_large_shared_document_under_remote_editing_is_reread_by_the_edit() {
     trace_publication_hops();
@@ -52,9 +33,7 @@ async fn a_large_shared_document_under_remote_editing_is_reread_by_the_edit() {
     .await;
 }
 
-/// About 48,000 characters (1,000 lines). Measured per edit: 20 ms of broker
-/// CPU (5.7 s, then 725 ms before), 574 ms of process CPU (2.3 s) and 344 ms
-/// to show (1.5 s).
+/// A document of about 48,000 characters (1,000 lines).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_long_shared_document_under_remote_editing_keeps_its_broker_responsive() {
     trace_publication_hops();
@@ -66,32 +45,18 @@ async fn a_long_shared_document_under_remote_editing_keeps_its_broker_responsive
     .await;
 }
 
-/// Broker CPU a one-line edit may cost at either size: the broker only
-/// answers the app's reads, which hand it the edit.
-const BROKER_MS_PER_EDIT_BUDGET: u128 = 100;
-/// CPU the whole test process may spend per one-line edit, by document size
-/// in lines: both devices, the relay, the app showing the edit and the
-/// owner's commit of it, which persists the owner's record.
-fn process_ms_per_edit_budget(lines: usize) -> u128 {
-    if lines <= 200 { 800 } else { 1100 }
-}
-/// How long half the edits may take to show, at either size.
-const LATENCY_P50_MS_BUDGET: u128 = 1000;
-
 /// What the first mounted app's committed readers were handed by the owner.
 #[derive(Default)]
 pub(super) struct Meter {
     captures: AtomicU64,
     changes: AtomicU64,
     bytes: AtomicU64,
-    owner_ns: AtomicU64,
 }
 #[derive(Clone, Copy, Debug, Default)]
 struct Sample {
     captures: u64,
     changes: u64,
     bytes: u64,
-    owner_ns: u64,
 }
 impl Sample {
     fn since(self, before: Self) -> Self {
@@ -99,7 +64,6 @@ impl Sample {
             captures: self.captures.saturating_sub(before.captures),
             changes: self.changes.saturating_sub(before.changes),
             bytes: self.bytes.saturating_sub(before.bytes),
-            owner_ns: self.owner_ns.saturating_sub(before.owner_ns),
         }
     }
 }
@@ -123,15 +87,7 @@ impl Meter {
             captures: self.captures.load(Ordering::Acquire),
             changes: self.changes.load(Ordering::Acquire),
             bytes: self.bytes.load(Ordering::Acquire),
-            owner_ns: self.owner_ns.load(Ordering::Acquire),
         }
-    }
-    fn timed<T>(&self, read: impl FnOnce() -> T) -> T {
-        let started = std::time::Instant::now();
-        let result = read();
-        let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        self.owner_ns.fetch_add(elapsed, Ordering::AcqRel);
-        result
     }
     fn handed(&self, read: &NativeDocumentRead) {
         let (count, body) = match read {
@@ -179,9 +135,7 @@ impl NativeDocumentReads for Reads {
         revision: Option<[u8; 32]>,
         maximum: usize,
     ) -> Result<NativeDocumentRead, String> {
-        let read = self
-            .meter
-            .timed(|| self.inner.capture(context, revision, maximum))?;
+        let read = self.inner.capture(context, revision, maximum)?;
         if matches!(read, NativeDocumentRead::Captured { .. }) {
             // Which reader read whole, and whether it held a revision: a
             // whole read after the document is large is what this journey
@@ -202,9 +156,7 @@ impl NativeDocumentReads for Reads {
         held: &HeldRevision,
         maximum: usize,
     ) -> Result<NativeDocumentRead, String> {
-        let read = self
-            .meter
-            .timed(|| self.inner.capture_since(context, held, maximum))?;
+        let read = self.inner.capture_since(context, held, maximum)?;
         self.meter.handed(&read);
         Ok(read)
     }
@@ -224,37 +176,17 @@ impl NativeDocumentReads for Reads {
     }
 }
 
-/// CPU time this process's threads have used so far, in all and on the
-/// threads whose names start with each of `prefixes`: both devices, the
-/// relay, the brokers (`tilo-collab-bro`) and the apps' collaboration
-/// shovels (`ui-collab-shove`), whose reads this journey measures.
-fn thread_cpu(prefixes: &[&str]) -> (std::time::Duration, Vec<std::time::Duration>) {
-    let threads = tilo_test_env::idle::sample_process(std::process::id())
-        .expect("sample the test process's threads");
-    let ticks = |keep: &dyn Fn(&str) -> bool| {
-        let ticks: u64 = threads
-            .iter()
-            .filter(|thread| keep(&thread.comm))
-            .map(|thread| thread.cpu_ticks)
-            .sum();
-        tilo_test_env::idle::CPU_TICK.saturating_mul(u32::try_from(ticks).unwrap_or(u32::MAX))
-    };
-    (
-        ticks(&|_| true),
-        prefixes
-            .iter()
-            .map(|prefix| ticks(&|comm| comm.starts_with(prefix)))
-            .collect(),
-    )
-}
-
-/// Wait until `target` shows `body`, framing it; how long that took.
+/// Frame only when the production app wake announces background work.
 #[expect(
     clippy::future_not_send,
     reason = "mounted UI roots use Rc and run on this test runtime thread"
 )]
-async fn shown(target: &mut Mounted, body: &str, what: &str) -> std::time::Duration {
-    let started = std::time::Instant::now();
+async fn shown(
+    target: &mut Mounted,
+    wakes: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
+    body: &str,
+    what: &str,
+) {
     tilo_test_env::within(what, async {
         loop {
             target.frame();
@@ -263,7 +195,8 @@ async fn shown(target: &mut Mounted, body: &str, what: &str) -> std::time::Durat
                 "collaboration failed while awaiting {what}"
             );
             let phase = super::blocked_read::phase(target);
-            if target.has_body(body)
+            let body_matches = target.has_body(body);
+            if body_matches
                 && phase["committed_read_ready"] == true
                 && phase["merge_ready"] == true
                 && phase["pending_remote"] == false
@@ -271,11 +204,13 @@ async fn shown(target: &mut Mounted, body: &str, what: &str) -> std::time::Durat
             {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            wakes
+                .recv()
+                .await
+                .expect("the mounted wake notifier remains open");
         }
     })
     .await;
-    started.elapsed()
 }
 
 /// The measured collaborator has no mounted SDK sharing its signer. A fixture
@@ -309,7 +244,12 @@ pub(super) async fn close_writer(writer: Option<Device>) {
 /// Receive a genuine remote edit from the independently enrolled collaborator.
 /// Its signer is never used by either mounted SDK, so a queued SDK write cannot
 /// be made stale by a later synthetic sequence committed ahead of it.
-fn commit_edit(device: &Device, owner: &NativeWorkspaceOwner, base: &str, expected: &str) {
+fn commit_edit(
+    device: &Device,
+    owner: &NativeWorkspaceOwner,
+    base: &str,
+    expected: &str,
+) -> tilo_joined_room::WorkSnapshot {
     let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
     assert_ne!(
         device.identity.device_cert.device_public_key,
@@ -344,8 +284,15 @@ fn commit_edit(device: &Device, owner: &NativeWorkspaceOwner, base: &str, expect
         &device.identity.device_signing_key,
         SystemTime::now(),
     );
-    owner
-        .receive(
+    let (committed, mut work) = device.owner.measure_work_for_test(|| {
+        device.owner.commit_document(
+            tilo_joined_room::testing::request(&message).unwrap(),
+            SystemTime::now(),
+        )
+    });
+    committed.expect("the collaborator's owner must commit and retain its signed edit");
+    let (received, receiving_work) = owner.measure_work_for_test(|| {
+        owner.receive(
             room,
             tilo_peer_state::TransportOrigin::RelayDelta(
                 device.identity.device_cert.device_public_key,
@@ -353,16 +300,22 @@ fn commit_edit(device: &Device, owner: &NativeWorkspaceOwner, base: &str, expect
             message,
             SystemTime::now(),
         )
-        .expect("the native owner must admit the signed collaborator edit");
+    });
+    received.expect("the mounted owner must admit the committed collaborator edit");
+    work = added_work(work, receiving_work);
+    // Persistence on the receiving compositor, independent of unrelated
+    // governance admissions on its background threads.
+    work.record_serializations = receiving_work.record_serializations;
     assert!(
         has_committed_body(owner, expected),
         "the received edit must be committed, not pending"
     );
+    work
 }
 
-/// Make the shared document large, then edit it a line at a time, each a
-/// signed write the owner commits, and measure what each edit costs the
-/// mounted app's committed readers and how long it takes to show there.
+/// Make the shared document large, then commit and deliver signed edits
+/// through both owners. Count synchronous owner work separately from unrelated
+/// background governance; count all publications by the mounted reader.
 #[expect(
     clippy::future_not_send,
     reason = "mounted UI roots use Rc and run on this test runtime thread"
@@ -375,7 +328,25 @@ pub(super) async fn run(device: &Device, target: &mut Mounted, lines: usize) {
     let owner = target.network.native_owner().unwrap();
     // A visible body alone does not establish the reader's applied revision.
     // Finish opening the original committed route before any synthetic edit.
-    shown(target, BODY, "the initial shared document read to settle").await;
+    let (send, mut wakes) = tokio::sync::mpsc::unbounded_channel();
+    let network_send = send.clone();
+    target.network.set_wake(Arc::new(move || {
+        let _ = network_send.send(());
+    }));
+    target
+        .code
+        .app
+        .controlled_bind_wake_for_test(move |_| {
+            let _ = send.send(());
+        })
+        .expect("the mounted app owns an unbound production wake scope");
+    shown(
+        target,
+        &mut wakes,
+        BODY,
+        "the initial shared document read to settle",
+    )
+    .await;
     // Written in edits a signed text edit can carry (16 KiB each).
     let mut body = String::from(BODY);
     for batch in (0..lines).collect::<Vec<_>>().chunks(LINES_PER_EDIT) {
@@ -385,79 +356,120 @@ pub(super) async fn run(device: &Device, target: &mut Mounted, lines: usize) {
         }
         commit_edit(device, &owner, &base, &body);
     }
-    shown(target, &body, "the large shared document to show").await;
+    shown(
+        target,
+        &mut wakes,
+        &body,
+        "the large shared document to show",
+    )
+    .await;
     eprintln!(
         "active journey: the shared document holds {} characters",
         body.len()
     );
-    let mut latencies = Vec::with_capacity(EDITS);
     let before = meter.sample();
-    let threads = ["tilo-collab-bro", "ui-collab-shove"];
-    let (cpu_before, parts_before) = thread_cpu(&threads);
+    let mut work = tilo_joined_room::WorkSnapshot::default();
+    let publications_before = target
+        .code
+        .app
+        .controlled_outbound_document_mutations_for_test();
     for edit in 0..EDITS {
         let base = body.clone();
         let _ = writeln!(body, "// collaborator edit {edit}");
-        let started = std::time::Instant::now();
-        commit_edit(device, &owner, &base, &body);
-        shown(target, &body, "the edit to show").await;
-        latencies.push(started.elapsed());
+        let edit_work = commit_edit(device, &owner, &base, &body);
+        work = added_work(work, edit_work);
+        shown(target, &mut wakes, &body, "the edit to show").await;
     }
-    let (cpu_after, parts_after) = thread_cpu(&threads);
-    let cpu = cpu_after.saturating_sub(cpu_before);
-    let parts: Vec<_> = parts_after
-        .iter()
-        .zip(&parts_before)
-        .map(|(after, before)| after.saturating_sub(*before))
-        .collect();
+    let publications = target
+        .code
+        .app
+        .controlled_outbound_document_mutations_for_test()
+        .checked_sub(publications_before)
+        .expect("publication counter is monotonic");
     let read = meter.sample().since(before);
-    latencies.sort_unstable();
-    let edits = EDITS as u64;
-    let per_edit = |total: u128| total.checked_div(u128::from(edits)).unwrap_or(0);
-    let bytes_per_edit = read.bytes.checked_div(edits).unwrap_or(0);
-    let broker_ms_per_edit = per_edit(parts.first().map_or(0, std::time::Duration::as_millis));
-    let process_ms_per_edit = per_edit(cpu.as_millis());
-    let latency_ms_p50 = latencies
-        .get(EDITS / 2)
-        .map_or(0, std::time::Duration::as_millis);
-    eprintln!(
-        "ACTIVE-SHARED-DOCUMENT doc_chars={} edits={EDITS} full_captures={} changes={} reader_bytes_per_edit={bytes_per_edit} owner_read_us_per_edit={} process_cpu_ms_per_edit={} broker_cpu_ms_per_edit={} shovel_cpu_ms_per_edit={} latency_ms_p50={} latency_ms_max={}",
-        body.len(),
-        read.captures,
-        read.changes,
-        per_edit(u128::from(read.owner_ns)) / 1_000,
-        process_ms_per_edit,
-        broker_ms_per_edit,
-        per_edit(parts.get(1).map_or(0, std::time::Duration::as_millis)),
-        latency_ms_p50,
-        latencies.last().map_or(0, std::time::Duration::as_millis),
-    );
     assert!(
         target.code.app.collaboration_is_connected(),
         "the app stays connected through the edits"
+    );
+    assert_work(work, read, publications, lines, body.len());
+}
+
+fn added_work(
+    a: tilo_joined_room::WorkSnapshot,
+    b: tilo_joined_room::WorkSnapshot,
+) -> tilo_joined_room::WorkSnapshot {
+    tilo_joined_room::WorkSnapshot {
+        recovery_dependencies: a
+            .recovery_dependencies
+            .checked_add(b.recovery_dependencies)
+            .unwrap(),
+        recovery_changes: a.recovery_changes.checked_add(b.recovery_changes).unwrap(),
+        record_serializations: a
+            .record_serializations
+            .checked_add(b.record_serializations)
+            .unwrap(),
+    }
+}
+
+fn assert_work(
+    work: tilo_joined_room::WorkSnapshot,
+    read: Sample,
+    publications: u64,
+    lines: usize,
+    characters: usize,
+) {
+    let dependencies = work.recovery_dependencies;
+    let recovered = work.recovery_changes;
+    let serializations = work.record_serializations;
+    let bytes_per_edit = read.bytes.checked_div(EDITS as u64).unwrap();
+    eprintln!(
+        "ACTIVE-SHARED-DOCUMENT doc_chars={} edits={EDITS} full_captures={} changes={} reader_bytes_per_edit={bytes_per_edit} recovery_dependencies={dependencies} recovery_changes={recovered} record_serializations={serializations} sdk_publications={publications}",
+        characters, read.captures, read.changes,
+    );
+    // Each extension checks its causal metadata once: six dependencies for
+    // the first small edit, then one more per edit. Extra construction batches
+    // add one dependency each. Only the new change is reconstructed.
+    let batches = lines.div_ceil(LINES_PER_EDIT) as u64;
+    let expected_dependencies = (EDITS as u64)
+        .checked_mul((EDITS as u64).checked_add(5).unwrap())
+        .unwrap()
+        .checked_div(2)
+        .unwrap()
+        .checked_add(
+            batches
+                .checked_sub(1)
+                .unwrap()
+                .checked_mul(EDITS as u64)
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        dependencies, expected_dependencies,
+        "recovery extension visits causal metadata once"
+    );
+    assert_eq!(
+        recovered, EDITS as u64,
+        "recovery history reconstructs only each new change"
+    );
+    assert_eq!(
+        serializations,
+        (EDITS as u64).checked_mul(2).unwrap(),
+        "each received edit encodes the new file and checks the old authority"
+    );
+    assert_eq!(
+        publications, 0,
+        "the mounted SDK must never publish a change it only read"
     );
     assert_eq!(
         read.captures, 0,
         "an edit of a document the reader holds is read as its changes, never whole"
     );
+    assert_eq!(
+        read.changes, EDITS as u64,
+        "each settled edit is delivered once as changes"
+    );
     assert!(
         bytes_per_edit <= READER_BYTES_PER_EDIT_BUDGET,
-        "each one-line edit handed the reader {bytes_per_edit} bytes (budget {READER_BYTES_PER_EDIT_BUDGET}); the document is {} characters",
-        body.len()
-    );
-    assert!(
-        broker_ms_per_edit <= BROKER_MS_PER_EDIT_BUDGET,
-        "each one-line edit cost the broker thread {broker_ms_per_edit} ms of CPU (budget {BROKER_MS_PER_EDIT_BUDGET} ms); the document is {} characters",
-        body.len()
-    );
-    let budget = process_ms_per_edit_budget(lines);
-    assert!(
-        process_ms_per_edit <= budget,
-        "each one-line edit cost the process {process_ms_per_edit} ms of CPU (budget {budget} ms); the document is {} characters",
-        body.len()
-    );
-    assert!(
-        latency_ms_p50 <= LATENCY_P50_MS_BUDGET,
-        "half the edits took over {latency_ms_p50} ms to show (budget {LATENCY_P50_MS_BUDGET} ms); the document is {} characters",
-        body.len()
+        "each one-line edit handed the reader {bytes_per_edit} bytes (budget {READER_BYTES_PER_EDIT_BUDGET}); the document is {characters} characters"
     );
 }

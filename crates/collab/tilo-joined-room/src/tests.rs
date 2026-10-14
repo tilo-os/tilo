@@ -612,6 +612,56 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
     assert_eq!(outgoing(&open_file(&joined.path).unwrap()), 1);
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn committed_local_outbox_edit_reuses_recovery_history() {
+    let joined = enrolled();
+    for index in 0..12 {
+        let request = edit_with(
+            &joined.owner,
+            joined.room,
+            joined.now,
+            &format!("edit {index}"),
+        );
+        joined.owner.commit_document(request, joined.now).unwrap();
+    }
+    let request = edit_with(&joined.owner, joined.room, joined.now, "measured edit");
+    let (receipt, work) = joined
+        .owner
+        .measure_work_for_test(|| joined.owner.commit_document(request, joined.now));
+    receipt.unwrap();
+    assert!(
+        work.record_serializations > 0,
+        "the real owner commit must serialize"
+    );
+    assert!(
+        work.recovery_changes <= 8,
+        "one local edit must not reconstruct retained history repeatedly: {work:?}"
+    );
+    joined
+        .owner
+        .with_outgoing(joined.room, joined.now, |_, outgoing| {
+            assert_eq!(
+                outgoing.entries().count(),
+                13,
+                "each committed edit retains custody"
+            );
+            Ok(())
+        })
+        .unwrap();
+    let reopened = open_file(&joined.path).unwrap();
+    reopened
+        .with_current(joined.room, |view| {
+            let document = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            assert_eq!(
+                document.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
+                Some("measured edit")
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
 #[test]
 fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
     let joined = enrolled();

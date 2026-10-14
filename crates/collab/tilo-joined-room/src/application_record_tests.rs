@@ -139,6 +139,106 @@ fn current_capture(fixture: &Fixture) -> crate::CommittedDocument {
         .unwrap()
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn production_work_counts_follow_the_owner_across_threads() {
+    let fixture = fixture();
+    let unrelated = self::fixture();
+    let before = fixture.owner.work_counts();
+    let unrelated_before = unrelated.owner.work_counts();
+    let clone = fixture.owner.clone();
+    let certificate = fixture.certificate.clone();
+    let key = fixture.key.clone();
+    let now = fixture.now;
+    std::thread::spawn(move || {
+        assert!(
+            clone
+                .prepare_application_record(
+                    crate::RoomId::parse(testing::ROOM).unwrap(),
+                    &certificate,
+                    &key,
+                    &route(),
+                    now,
+                )
+                .unwrap()
+        );
+    })
+    .join()
+    .unwrap();
+    assert!(fixture.owner.work_counts().record_serializations > before.record_serializations);
+    assert_eq!(unrelated.owner.work_counts(), unrelated_before);
+    assert!(!current_capture(&fixture).bytes.is_empty());
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn measured_work_observes_only_synchronous_turns_of_its_owner() {
+    let fixture = fixture();
+    let unrelated = self::fixture();
+    let before = fixture.owner.work_counts();
+    let ((), excluded) = fixture.owner.measure_work_for_test(|| {
+        std::thread::scope(|scope| {
+            scope.spawn(|| created_capture(&fixture)).join().unwrap();
+        });
+        created_capture(&unrelated);
+    });
+    assert_eq!(excluded, crate::WorkSnapshot::default());
+    assert!(fixture.owner.work_counts().record_serializations > before.record_serializations);
+
+    let next_route = ApplicationRecord::declared(
+        "so.tilo.chat",
+        "next",
+        "chat.workspace",
+        &["chat.workspace".into()],
+    )
+    .unwrap();
+    let ((result, nested), measured) = fixture.owner.measure_work_for_test(|| {
+        fixture.owner.clone().measure_work_for_test(|| {
+            fixture.owner.prepare_application_record(
+                crate::RoomId::parse(testing::ROOM).unwrap(),
+                &fixture.certificate,
+                &fixture.key,
+                &next_route,
+                fixture.now,
+            )
+        })
+    });
+    assert!(result.unwrap());
+    assert!(nested.record_serializations > 0);
+    assert_eq!(measured, nested);
+
+    // Unwind restores observation without stealing the next owner turn.
+    let (nested, measured) = fixture.owner.measure_work_for_test(|| {
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fixture
+                .owner
+                .measure_work_for_test(|| panic!("measurement unwind"));
+        }));
+        assert!(panic.is_err());
+        let (_, nested) = fixture.owner.measure_work_for_test(|| {
+            fixture
+                .owner
+                .prepare_application_record(
+                    crate::RoomId::parse(testing::ROOM).unwrap(),
+                    &fixture.certificate,
+                    &fixture.key,
+                    &ApplicationRecord::declared(
+                        "so.tilo.chat",
+                        "after-unwind",
+                        "chat.workspace",
+                        &["chat.workspace".into()],
+                    )
+                    .unwrap(),
+                    fixture.now,
+                )
+                .unwrap()
+        });
+        nested
+    });
+    assert!(measured.record_serializations > 0);
+    assert_eq!(measured, nested);
+}
+
 #[test]
 fn first_creation_capture_is_nonempty_loadable_and_respects_its_byte_bound() {
     use automerge::ReadDoc as _;

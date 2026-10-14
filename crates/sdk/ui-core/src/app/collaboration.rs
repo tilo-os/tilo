@@ -1,6 +1,21 @@
 // Collaboration transport, presence, permissions, and document integration.
 
 impl App {
+    /// Accepted outbound document publications by this mounted app, across its
+    /// primary, room-index and owned-record routes. Includes snapshots published
+    /// for an owned record, but not late-join snapshot replies, read requests,
+    /// presence or rejected queue admissions. Compare before/after values once
+    /// initial mounting has settled; the count is not process-global.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn controlled_outbound_document_mutations_for_test(&self) -> u64 {
+        self.collaboration.outbound_document_mutations
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn count_outbound_document_mutation(&mut self) {
+        self.collaboration.outbound_document_mutations += 1;
+    }
+
     /// Prepare and mount an application on its already admitted collaboration manager.
     /// Host preparation runs inside the existing native read custody. The original
     /// record binding is checked before the component factory runs, and the same
@@ -278,6 +293,8 @@ impl App {
                         crate::collaboration::CollabRequest::document_incremental(delta),
                     );
                     if self.note_document_send(&result) {
+                        #[cfg(any(test, feature = "test-support"))]
+                        self.count_outbound_document_mutation();
                         self.advance_primary_document(heads);
                     }
                 }
@@ -327,6 +344,8 @@ impl App {
         };
         if result.is_ok() {
             room.advance_outbound(heads);
+            #[cfg(any(test, feature = "test-support"))]
+            self.count_outbound_document_mutation();
         }
         self.note_document_send(&result);
     }

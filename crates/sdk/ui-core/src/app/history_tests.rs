@@ -3664,6 +3664,13 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
     fixture.app.document_routes.sent.clear();
     fixture.app.publish_owned_documents();
     assert!(sent(&fixture).is_empty(), "fully published before any read");
+    let outbound_before_reads = fixture
+        .app
+        .controlled_outbound_document_mutations_for_test();
+    assert!(
+        outbound_before_reads > 0,
+        "initial publications were counted"
+    );
 
     for edit in 0..3 {
         let name = format!("committed-{edit}");
@@ -3685,6 +3692,17 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
         );
     }
 
+    assert_eq!(
+        fixture
+            .app
+            .controlled_outbound_document_mutations_for_test(),
+        outbound_before_reads + fixture.app.document_routes.sent.len() as u64,
+        "the mounted counter observes every accepted owned-route publication"
+    );
+    let outbound_before_local = fixture
+        .app
+        .controlled_outbound_document_mutations_for_test();
+    fixture.app.document_routes.sent.clear();
     // A later local edit publishes exactly its own change.
     let before = heads(&fixture);
     commit_local(&fixture, "after committed reads");
@@ -3702,6 +3720,12 @@ fn native_owned_committed_read_is_not_republished_as_an_echo() {
         ] => assert_eq!(bytes, &expected),
         other => panic!("expected exactly the local incremental, got {other:?}"),
     }
+    assert_eq!(
+        fixture
+            .app
+            .controlled_outbound_document_mutations_for_test(),
+        outbound_before_local + fixture.app.document_routes.sent.len() as u64
+    );
     fixture.app.document_routes.sent.clear();
     let (delta, published) = primary(&mut fixture);
     assert_eq!(delta, expected, "the primary document publishes it too");

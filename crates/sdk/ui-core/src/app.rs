@@ -1520,6 +1520,26 @@ impl App {
         )
     }
 
+    /// Bind this mounted app's production wake destination to a test notifier.
+    /// A channel sender (including an async channel) lets a test await actual
+    /// background work instead of sleeping or repeatedly drawing frames. Binding
+    /// flushes any pre-bind wake; the ordinary frame pump still consumes the
+    /// scope's pending work. The sink must not retain the owning app.
+    ///
+    /// # Errors
+    /// Returns `Closed` for a detached/closed app and `AlreadyBound` if the
+    /// production event loop or another notifier already owns the destination.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn controlled_bind_wake_for_test(
+        &mut self,
+        sink: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
+    ) -> Result<(), crate::wake::WakeBindError> {
+        self.wake_scope
+            .as_mut()
+            .ok_or(crate::wake::WakeBindError::Closed)?
+            .bind(sink)
+    }
+
     fn retire_semantic_root(&self) {
         if let Some(retirement) = &self.retirement {
             retirement.retire();
@@ -3111,6 +3131,48 @@ mod legacy_owner_routing_tests {
             })));
         tile.bind_record(store.clone(), checkout.clone());
         tile
+    }
+
+    #[test]
+    fn controlled_wake_notifier_observes_only_its_mounted_app() {
+        let mut app = App::from_scoped_parts_with_controlled_inputs(
+            crate::wake::WakeScope::new(),
+            State::new(),
+            Box::new(crate::widget::Column::new()),
+        );
+        let other = App::from_scoped_parts_with_controlled_inputs(
+            crate::wake::WakeScope::new(),
+            State::new(),
+            Box::new(crate::widget::Column::new()),
+        );
+        let handle = {
+            let _entry = app.enter_wake_scope();
+            crate::wake::WakeHandle::new()
+        };
+        // Binding flushes work that arrived before the test started waiting.
+        handle.notify_events();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.controlled_bind_wake_for_test(move |event| tx.send(event).unwrap())
+            .unwrap();
+        assert!(!rx.try_recv().unwrap().requires_sync());
+        {
+            let _entry = other.enter_wake_scope();
+            crate::wake::WakeHandle::new().wake();
+        }
+        assert!(rx.try_recv().is_err());
+        std::thread::spawn(move || handle.wake()).join().unwrap();
+        assert!(rx.try_recv().unwrap().requires_sync());
+        assert_eq!(
+            app.controlled_bind_wake_for_test(|_| {}),
+            Err(crate::wake::WakeBindError::AlreadyBound)
+        );
+        app.close_wake_scope();
+        assert_eq!(
+            app.controlled_bind_wake_for_test(|_| {}),
+            Err(crate::wake::WakeBindError::Closed)
+        );
+        assert_eq!(app.controlled_outbound_document_mutations_for_test(), 0);
+        assert_eq!(other.controlled_outbound_document_mutations_for_test(), 0);
     }
 
     #[test]

@@ -379,6 +379,8 @@ impl ContinuationRuntime {
 
 /// Collaboration transports and local authorship identity.
 pub(super) struct CollaborationRuntime {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) outbound_document_mutations: u64,
     pub(super) manager: CollaborationManager,
     /// Keeps the room record index subscribed while `manager` follows a
     /// checked-out record route.
@@ -406,6 +408,8 @@ impl CollaborationRuntime {
     ) -> Self {
         crate::history_source::authors::read_as(&local_author.0);
         Self {
+            #[cfg(any(test, feature = "test-support"))]
+            outbound_document_mutations: 0,
             manager,
             room_manager: None,
             local_author,

@@ -9,6 +9,10 @@ publish.workspace = true
 # Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.
 ignored = ["serde_bytes"]
 
+[features]
+# Owner-scoped production work accounting for integration tests.
+test-support = []
+
 [dependencies]
 tilo-actions = { path = "../actions" }
 # The shell retention authority a relay binding pins.

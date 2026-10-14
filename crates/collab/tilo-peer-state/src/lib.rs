@@ -20,6 +20,8 @@ mod join_contract_tests;
 mod postcard_sink;
 pub mod room;
 mod state;
+#[cfg(feature = "test-support")]
+pub mod work_counts;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
 pub use state::{

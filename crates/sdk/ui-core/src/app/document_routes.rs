@@ -347,6 +347,8 @@ impl App {
             .try_send_to_route(route, request)?;
         #[cfg(test)]
         self.document_routes.sent.push(observation);
+        #[cfg(any(test, feature = "test-support"))]
+        self.count_outbound_document_mutation();
         Ok(())
     }
 

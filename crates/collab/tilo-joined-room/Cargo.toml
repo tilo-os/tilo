@@ -8,7 +8,7 @@ description = "A device's enrolled replicas of rooms governed by a remote durabl
 
 [features]
 # Fixtures and internals the desktop session's own owner tests assert on.
-test-support = ["dep:iroh-base"]
+test-support = ["dep:iroh-base", "tilo-peer-state/test-support"]
 
 [dependencies]
 tilo-action-policy = { path = "../action-policy" }

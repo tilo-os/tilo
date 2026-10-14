@@ -135,6 +135,10 @@ pub(super) fn extended(mutation: &DocumentMutation, admitted: &Automerge) -> Opt
     let mut changes = admitted
         .get_changes(&base.get_heads())
         .into_iter()
+        .inspect(|_| {
+            #[cfg(feature = "test-support")]
+            crate::work_counts::recovery_changes(1);
+        })
         .filter(|change| wanted.contains(&change.hash()))
         .map(|change| (change.hash(), change))
         .collect::<HashMap<_, _>>();
@@ -196,6 +200,8 @@ fn applied_order(own: &[Change], admitted: &Automerge) -> Option<Vec<ChangeHash>
             break;
         }
         for hash in &next {
+            #[cfg(feature = "test-support")]
+            crate::work_counts::recovery_dependencies(1);
             let meta = admitted.get_change_meta_by_hash(hash)?;
             deps.insert(*hash, meta.deps);
             known.insert(*hash);
@@ -286,6 +292,10 @@ pub(super) fn build(
         let mut changes = admitted
             .get_changes(&[])
             .into_iter()
+            .inspect(|_| {
+                #[cfg(feature = "test-support")]
+                crate::work_counts::recovery_changes(1);
+            })
             .map(|change| (change.hash(), change))
             .collect::<HashMap<_, _>>();
         match own {
@@ -371,6 +381,8 @@ fn walk_queue(
         let dependencies = missing
             .iter()
             .map(|hash| {
+                #[cfg(feature = "test-support")]
+                crate::work_counts::recovery_dependencies(1);
                 changes
                     .get(hash)
                     .cloned()
@@ -394,6 +406,8 @@ fn fetch(
     missing
         .iter()
         .map(|hash| {
+            #[cfg(feature = "test-support")]
+            crate::work_counts::recovery_dependencies(1);
             changes
                 .remove(hash)
                 .ok_or_else(|| "retained publication dependency is not in admitted history".into())
