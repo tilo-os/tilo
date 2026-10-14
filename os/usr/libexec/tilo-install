@@ -306,7 +306,7 @@ fi
 
 # Resolve one native-issued generation for every setup consumer in this run.
 # A completed generation never selects itself through a caller path or env var.
-PREPARED_SETUP_RUN="$(python3 /usr/libexec/tilo-installer-prepared-setup-extract.py selected-generation)" \
+PREPARED_SETUP_RUN="$(/usr/libexec/tilo-installer-prepared-setup-extract selected-generation)" \
   || die "native installer generation is unavailable"
 
 # --- parse args --------------------------------------------------------------
@@ -315,14 +315,14 @@ authenticate_prepared_setup() {
   local source_verify=()
   [ "${1:-}" != --verify-retained-source ] || source_verify+=(--verify-retained-source)
   [ -x /usr/libexec/tilo-prepared-setup ] || return 1
-  python3 /usr/libexec/tilo-installer-prepared-setup-extract.py preflight \
+  /usr/libexec/tilo-installer-prepared-setup-extract preflight \
     --source-dir "$prepared_run" --receipt "$(cat "$prepared_run/receipt.json")" >/dev/null || return 1
   auth_root="$(mktemp -d /run/tilo-installer/auth.XXXXXXXX)" || return 1
   chmod 0700 "$auth_root" || return 1
   if authenticated_receipt="$(printf '%s' "$PASSWORD" | /usr/libexec/tilo-prepared-setup --authenticate-install \
     --package "$prepared_run/prepared-setup.sealed" --receipt "$prepared_run/receipt.json" \
     --quarantine "$auth_root/quarantine" "${source_verify[@]}")" \
-    && validated_receipt="$(printf '%s' "$authenticated_receipt" | python3 /usr/libexec/tilo-installer-prepared-setup-extract.py \
+    && validated_receipt="$(printf '%s' "$authenticated_receipt" | /usr/libexec/tilo-installer-prepared-setup-extract \
       preflight-authenticated --source-dir "$prepared_run")"; then
     auth_status=0
   else
@@ -596,14 +596,14 @@ fi
 
 # A public delivery receipt grants no identity adoption authority. Verify its
 # expected encrypted artifact before any partitioning/formatting/install work.
-python3 /usr/libexec/tilo-installer-prepared-setup-extract.py preflight-profile \
+/usr/libexec/tilo-installer-prepared-setup-extract preflight-profile \
   --source-dir "$PREPARED_SETUP_RUN" \
   || die "prepared setup profile expectation is missing or changed"
-python3 /usr/libexec/tilo-installer-prepared-setup-extract.py preflight-home \
+/usr/libexec/tilo-installer-prepared-setup-extract preflight-home \
   --source-dir "$PREPARED_SETUP_RUN" \
   || die "selected portable Home ciphertext is missing or changed"
 if [ -n "$PREPARED_SETUP_RECEIPT" ]; then
-  python3 /usr/libexec/tilo-installer-prepared-setup-extract.py preflight \
+  /usr/libexec/tilo-installer-prepared-setup-extract preflight \
     --source-dir "$PREPARED_SETUP_RUN" \
     --receipt "$PREPARED_SETUP_RECEIPT" \
     || die "expected encrypted prepared setup is missing or changed"
@@ -944,7 +944,7 @@ mark_alongside_tilo_root() {
 validate_home_target_capacity() {
   local home_bytes target_bytes
   local capacity_args=(--source-dir "$PREPARED_SETUP_RUN")
-  home_bytes="$(python3 /usr/libexec/tilo-installer-prepared-setup-extract.py home-required-bytes "${capacity_args[@]}")" \
+  home_bytes="$(/usr/libexec/tilo-installer-prepared-setup-extract home-required-bytes "${capacity_args[@]}")" \
     || die "could not read selected portable Home space requirements"
   case "$home_bytes" in ''|*[!0-9]*) die "portable Home space requirement is invalid" ;; esac
   [ "$home_bytes" != 0 ] || return 0
@@ -962,7 +962,7 @@ validate_home_target_capacity() {
     capacity_args+=(--disk-bytes "$target_bytes")
   fi
   [ "$ENCRYPT" -eq 0 ] || capacity_args+=(--encrypted)
-  python3 /usr/libexec/tilo-installer-prepared-setup-extract.py check-home-capacity "${capacity_args[@]}" >/dev/null \
+  /usr/libexec/tilo-installer-prepared-setup-extract check-home-capacity "${capacity_args[@]}" >/dev/null \
     || die "selected target cannot hold Tilo, encrypted Home and authenticated extraction; refusing further target writes"
 }
 validate_home_target_capacity
@@ -1656,15 +1656,16 @@ label_installed_tilo_path() {
 stage_installed_firstboot_runtime() {
   local source_root="$1" target_etc="$2" helper helper_files seeds unit tmp service name
   helper="$source_root/usr/libexec/tilo-firstboot-user"
-  seeds="$source_root/usr/libexec/tilo-firstboot-home-seeds.py"
+  seeds="$source_root/usr/libexec/tilo-firstboot-home-seeds"
   helper_files="$source_root/usr/libexec/tilo-firstboot-files.py"
   unit="$source_root/usr/lib/systemd/system/tilo-firstboot-user.service"
-  [ -f "$helper" ] && [ ! -L "$helper" ] && [ -f "$seeds" ] && [ ! -L "$seeds" ] && [ -f "$unit" ] && [ ! -L "$unit" ] \
+  [ -f "$helper" ] && [ ! -L "$helper" ] && [ -f "$seeds" ] && [ ! -L "$seeds" ] && [ -x "$seeds" ] && [ -f "$unit" ] && [ ! -L "$unit" ] \
     || die "installer is missing its first-boot account runtime"
   [ -f "$helper_files" ] && [ ! -L "$helper_files" ] \
     || die "installer is missing its first-boot file runtime"
-  [ -f "$source_root/usr/libexec/tilo-installer-prepared-setup-extract.py" ] \
-    && [ ! -L "$source_root/usr/libexec/tilo-installer-prepared-setup-extract.py" ] \
+  [ -f "$source_root/usr/libexec/tilo-installer-prepared-setup-extract" ] \
+    && [ ! -L "$source_root/usr/libexec/tilo-installer-prepared-setup-extract" ] \
+    && [ -x "$source_root/usr/libexec/tilo-installer-prepared-setup-extract" ] \
     || die "installer is missing its prepared setup transport runtime"
   if [ -e "$PREPARED_SETUP_RUN/receipt.json" ]; then
     [ -f "$source_root/usr/libexec/tilo-prepared-setup" ] \
@@ -1691,16 +1692,16 @@ stage_installed_firstboot_runtime() {
   label_installed_tilo_path "$tmp" /etc/tilo/firstboot-user
   mv -f -- "$tmp" "$target_etc/tilo/firstboot-user"
   tmp="$(mktemp "$target_etc/tilo/.firstboot-home-seeds.XXXXXX")"
-  install -m 0644 "$seeds" "$tmp"
-  label_installed_tilo_path "$tmp" /etc/tilo/firstboot-home-seeds.py
-  mv -f -- "$tmp" "$target_etc/tilo/firstboot-home-seeds.py"
-  helper="$source_root/usr/libexec/tilo-installer-prepared-setup-extract.py"
+  install -m 0755 "$seeds" "$tmp"
+  label_installed_tilo_path "$tmp" /etc/tilo/firstboot-home-seeds
+  mv -f -- "$tmp" "$target_etc/tilo/firstboot-home-seeds"
+  helper="$source_root/usr/libexec/tilo-installer-prepared-setup-extract"
   [ -f "$helper" ] && [ ! -L "$helper" ] \
     || die "installer is missing its prepared setup transport runtime"
   tmp="$(mktemp "$target_etc/tilo/.prepared-setup-transport.XXXXXX")"
-  install -m 0644 "$helper" "$tmp"
-  label_installed_tilo_path "$tmp" /etc/tilo/prepared-setup-transport.py
-  mv -f -- "$tmp" "$target_etc/tilo/prepared-setup-transport.py"
+  install -m 0755 "$helper" "$tmp"
+  label_installed_tilo_path "$tmp" /etc/tilo/prepared-setup-transport
+  mv -f -- "$tmp" "$target_etc/tilo/prepared-setup-transport"
   if [ -e "$PREPARED_SETUP_RUN/receipt.json" ]; then
     tmp="$(mktemp "$target_etc/tilo/.prepared-setup.XXXXXX")"
     install -m 0755 "$source_root/usr/libexec/tilo-prepared-setup" "$tmp"
@@ -2129,13 +2130,13 @@ if [ -e "$PREPARED_SETUP_RUN/prepared-setup.sealed" ] || [ -L "$PREPARED_SETUP_R
     || die "could not locate exactly one installed /var for encrypted prepared setup"
   printf '%s' "$AUTHENTICATED_PREPARED" | "$STAGING_HANDOFF" deliver-retained --target-var "${PREPARED_TARGET_VARS[0]}" \
     || die "could not retain authenticated original-files access intent"
-  python3 /usr/libexec/tilo-installer-prepared-setup-extract.py retain \
+  /usr/libexec/tilo-installer-prepared-setup-extract retain \
     --source-dir "$PREPARED_SETUP_RUN" --target-var "${PREPARED_TARGET_VARS[0]}" \
     || die "could not retain encrypted prepared setup in the installed system"
-  printf '%s' "$AUTHENTICATED_PREPARED" | python3 /usr/libexec/tilo-installer-prepared-setup-extract.py retain-authenticated-binding \
+  printf '%s' "$AUTHENTICATED_PREPARED" | /usr/libexec/tilo-installer-prepared-setup-extract retain-authenticated-binding \
     --source-dir "$PREPARED_SETUP_RUN" --target-var "${PREPARED_TARGET_VARS[0]}" \
     || die "could not retain the authenticated target first-use binding"
-  python3 /usr/libexec/tilo-installer-prepared-setup-extract.py retain-home \
+  /usr/libexec/tilo-installer-prepared-setup-extract retain-home \
     --source-dir "$PREPARED_SETUP_RUN" --target-var "${PREPARED_TARGET_VARS[0]}" \
     || die "could not stream selected portable Home ciphertext into the installed system"
   install_prepared_device_identity "${PREPARED_TARGET_VARS[0]}/lib/tilo/prepared-setup" "${PREPARED_TARGET_VARS[0]}" \

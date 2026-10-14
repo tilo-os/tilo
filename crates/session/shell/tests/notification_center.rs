@@ -135,8 +135,8 @@ fn notifications_group_by_verified_app_in_the_accessibility_tree() {
         .collect();
     assert_eq!(
         controls,
-        ["Dismiss", "Read complete notification"],
-        "reading is available; with no agent in the workspace, Hand to agent is not offered"
+        ["Dismiss"],
+        "the row itself opens the notification; with no agent in the workspace, Hand to agent is not offered"
     );
 
     // Fold every group from the keyboard: select a header, Enter, next.

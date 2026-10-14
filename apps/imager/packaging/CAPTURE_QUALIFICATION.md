@@ -27,7 +27,8 @@ The closed cohort object has exactly `schema` (integer1), `source_root` (this
 checkout), `source_inputs` (relative source path to actual SHA256) and `roles`.
 Source-only mode requires `worker`, `runtime`, `host`, `imager_tests`. Full mode
 also requires `shell`, `fs`, `control`, `launcher`, `credential_helper`,
-`prepared_helper`, `files`, `writer`, `browser`, `app_package`, `runtime_bundle`,
+`prepared_helper`, `home_seeds`, `prepared_extract`, `files`, `writer`, `browser`,
+`app_package`, `runtime_bundle`,
 `install` and `installer`. The installed launcher must match both its actual
 compiler role and the launcher inside the signed SDK. Worker and SDK bytes must match the actually signed sidecar; the host
 must match `--host`. The full fixture must verify launched signed Files and Writer payloads against

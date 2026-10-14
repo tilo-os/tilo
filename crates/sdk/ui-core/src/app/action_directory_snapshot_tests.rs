@@ -790,3 +790,62 @@ fn directory_lifecycle_publishes_once_ready_and_refreshes_on_idle() {
         assert_eq!(calls.get(), materializations);
     }
 }
+
+/// A search source whose providers are costly to make (an index behind
+/// them) and which describes them without making them.
+struct DescribedSearch {
+    made: std::rc::Rc<Cell<usize>>,
+    generation: std::rc::Rc<Cell<u64>>,
+}
+impl Widget for DescribedSearch {
+    crate::provides!(dyn crate::search::capability::SearchSource);
+
+    fn build_layout(
+        &mut self,
+        t: &mut TaffyTree<()>,
+        _: &Theme,
+        _: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        t.new_leaf(taffy::Style::default()).unwrap()
+    }
+    fn name(&self) -> &'static str {
+        "described-search"
+    }
+}
+impl crate::search::capability::SearchSource for DescribedSearch {
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        self.made.set(self.made.get() + 1);
+        Vec::new()
+    }
+    fn search_provider_descriptors(
+        &self,
+    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+        vec![crate::search::capability::SearchProviderDescriptor::new(
+            "described",
+            Some(self.generation.get()),
+            crate::widget::ActionDirectoryInvocationDomain::Unsupported,
+        )]
+    }
+}
+
+#[test]
+fn directory_revision_describes_search_sources_without_making_them() {
+    let made = std::rc::Rc::new(Cell::new(0));
+    let generation = std::rc::Rc::new(Cell::new(0));
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(DescribedSearch {
+            made: made.clone(),
+            generation: generation.clone(),
+        }),
+    );
+    let revision = app.action_directory_revision();
+    assert_eq!(app.action_directory_revision(), revision);
+    generation.set(1);
+    assert_ne!(
+        app.action_directory_revision(),
+        revision,
+        "a provider naming a new build moves the directory"
+    );
+    assert_eq!(made.get(), 0, "the witness never makes a provider");
+}

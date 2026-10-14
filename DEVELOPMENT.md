@@ -1,7 +1,8 @@
 # Development Guide
 
-Build dependencies, local development and testing. See `AGENTS.md` for repository
-conventions.
+Build dependencies, local development and testing. The project's rules, and the
+check that enforces each, are in [`docs/policies.md`](docs/policies.md); `AGENTS.md`
+is what agents working here are told.
 
 ## Dev VMs (tilo-vm)
 
@@ -609,6 +610,7 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `cryptsetup` (binary) | `cryptsetup` | rollback mechanism tests drive a real LUKS2 header |
 | `swtpm` `swtpm_setup` (binaries) | `swtpm` `swtpm-tools` | rollback mechanism tests drive an isolated software TPM |
 | `tpm2_getcap` (binary) | `tpm2-tools` | rollback mechanism tests exercise production TPM policy commands |
+| `xwayland-satellite` `Xwayland` (binaries) | `xwayland-satellite` `xorg-x11-server-Xwayland` | the X11 clipboard tests drive a real satellite bridge; they fail, not skip, without it |
 
 The sandbox, language-server, and rollback mechanism tests require the binary
 tools listed above. Install them where Cargo runs, including inside a build
@@ -625,7 +627,7 @@ From an ARM64 host, run:
 
 ```powershell
 cargo test -p imager --lib --features host-media-writer --target aarch64-pc-windows-msvc --locked
-cargo test -p ui --test hosted-platform --target aarch64-pc-windows-msvc --locked
+cargo test -p tilo-ui --test hosted-platform --target aarch64-pc-windows-msvc --locked
 ```
 
 Use `x86_64-pc-windows-msvc` on an x64 host. Keep the target explicit: an
@@ -641,7 +643,7 @@ workspace root:
 
 ```bash
 brew install pkgconf gstreamer
-cargo run -p video_editor
+cargo run -p video-editor
 ```
 
 The editor enables GStreamer playback and export by default. Homebrew's
@@ -1105,7 +1107,7 @@ $gstPrefix = 'C:/msys64/clangarm64' # Replace with your installation.
 $env:PATH = "$gstPrefix/bin;$env:PATH"
 $env:PKG_CONFIG = "$gstPrefix/bin/pkgconf.exe"
 $env:PKG_CONFIG_PATH = "$gstPrefix/lib/pkgconfig"
-cargo test --locked -p media --features decode,encode --lib
+cargo test --locked -p tilo-media --features decode,encode --lib
 cargo check --locked -p video-player --tests
 cargo test --locked -p video-player --test real_decode
 ```
@@ -1785,12 +1787,23 @@ checks all new commits and exact blobs in its comparison range, catching
 `--no-verify` commits and intermediate binary additions later deleted. It fails
 when history cannot be inspected. Existing exceptions remain migration work.
 
+The lines a commit adds carry no credential, merge-conflict marker or `dbg!`
+(`dbg!` only in Rust outside `vendor/`). One definition,
+`tools/policy/added_line_policy.py`, serves the hook, `scripts/scan-secrets.sh`
+and fast quality, which repeats it on every new commit, so `--no-verify` does
+not get past it. A line counts as added when no parent's version of the file
+holds it: an existing string does not fire again when its file is touched, and
+a merge answers only for its resolution. A credential-shaped string that is not
+one needs `example` or `placeholder` on the same line; that is the only
+exception.
+
 `pre-commit` checks the staged change the way CI's quality job would: rustfmt
 on the staged Rust files, workspace membership
 (`scripts/check-workspace-complete.sh`), the app text and shell copy contracts,
 lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
-CI (`.forgejo/workflows/check.yml`).
+CI (`.forgejo/workflows/check.yml`). [`docs/policies.md`](docs/policies.md) maps
+every rule to the hook or CI step that holds it.
 
 Committing a merge checks only what the resolution changed. A file staged
 exactly as the merged-in side has it already passed that side's checks, so the

@@ -191,7 +191,7 @@ impl Continuation {
         tilo_actions::ActionFailure {
             code,
             message,
-            details: None,
+            details: error.failure_details(),
             retryable: false,
         }
     }

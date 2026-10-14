@@ -63,6 +63,8 @@ store-package-file-type = Tilo package
 store-package-review-busy = Too many package reviews are waiting. Finish the current reviews first.
 
 store-package-local-trust = Verified by an existing trusted attestor
+store-installed-unanswered = Verified when installed. { $repositories } hasn't answered, so this app's description and updates appear here once it does.
+store-installed-unlisted = Verified when installed. No enabled repository lists this app, so it gets no updates here.
 store-package-local-description = Signed local application. Installation requires its payload and exact runtime to be available.
 store-package-local-source = Local package
 store-app-installed = App installed.

@@ -253,8 +253,8 @@ fn open_tilo(
     let mut package_root = host.list().ok().and_then(|packages| {
         packages
             .into_iter()
-            .find(|package| package.id == item.id)
-            .and_then(|package| package.package_id())
+            .find(|listed| listed.package.id == item.id)
+            .and_then(|listed| listed.package.package_id())
     });
 
     if !already_cached {
@@ -348,8 +348,8 @@ fn tilo_existing(
     let id = match host.list().and_then(|packages| {
         packages
             .into_iter()
-            .find(|package| package.id == item.id)
-            .and_then(|package| package.package_id())
+            .find(|listed| listed.package.id == item.id)
+            .and_then(|listed| listed.package.package_id())
             .ok_or_else(|| "installed package could not be resolved".into())
     }) {
         Ok(id) => id,

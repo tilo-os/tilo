@@ -24,7 +24,7 @@ class Contracts(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.store = c.Store(self.root, os.getuid())
         paths = [c.HELPER, '/usr/libexec/tilo-firstboot-user',
-                 '/usr/libexec/tilo-firstboot-home-seeds.py', '/usr/libexec/tilo-firstboot-files.py',
+                 '/usr/libexec/tilo-firstboot-home-seeds', '/usr/libexec/tilo-firstboot-files.py',
                  '/usr/libexec/tilo-verify-home-consumer-capability',
                  '/usr/libexec/tilo-verify-applications-consumer-capability',
                  '/usr/libexec/tilo-installed-data-consumer.py', '/usr/bin/tar', *c.TOOLS]
@@ -67,6 +67,8 @@ class Contracts(unittest.TestCase):
         if mode == '--home-consumer-capability':
             return c.canonical(self.home)
         if mode == '--capabilities':
+            self.assertEqual(command, [str(self.store.path('/usr/libexec/tilo-firstboot-home-seeds')),
+                                       '--capabilities'])
             return b'{"schema":1,"seed_protocol":1}'
         if mode == '--reattest-original-source-consumer-capability':
             return c.canonical(self.original)
@@ -103,7 +105,7 @@ class Contracts(unittest.TestCase):
 
     def test_every_actual_artifact_change_refuses(self):
         for name in [c.HELPER, '/usr/bin/tar', '/usr/libexec/tilo-firstboot-user',
-                     '/usr/libexec/tilo-firstboot-home-seeds.py']:
+                     '/usr/libexec/tilo-firstboot-home-seeds']:
             path = self.store.path(name)
             data = path.read_bytes()
             path.write_bytes(data + b'changed')

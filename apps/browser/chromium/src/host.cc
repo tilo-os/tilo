@@ -12,6 +12,7 @@
 #include "agent_log.h"
 #include "paint_snapshot.h"
 #include "fullscreen_state.h"
+#include "audio_pcm.h"
 #include "credential_document.h"
 #include "credential_consent.h"
 #include "credential_commands.h"
@@ -19,6 +20,7 @@
 #if defined(OS_MAC)
 #include "credentials_mac.h"
 #endif
+#include "include/cef_audio_handler.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_command_line.h"
@@ -55,6 +57,7 @@
 namespace {
 constexpr int kOffscreenFrameRate = 60;
 constexpr size_t kMaxMediaFrames = 64;
+constexpr size_t kMaxAudioPackets = 16;
 // Bounded, opt-in startup geometry evidence; never includes page content.
 void TraceGeometry(const char* stage,int tab,int width=0,int height=0,double scale=0) {
   static const bool enabled=[] {const char* value=std::getenv("TILO_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
@@ -66,6 +69,18 @@ class Output {
  public:
   Output():thread_([this]{ Run(); }) {}
   ~Output() { Stop(); }
+  // Page audio is real time: its own lane, ordered with itself (start, packets,
+  // stop) but never allowed to fail the host or hold up its events. Past
+  // kMaxAudioPackets queued the oldest packet goes, so a slow app hears a gap
+  // instead of an ever-growing delay.
+  void SendAudio(std::string data,bool packet) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    audio_.emplace_back(packet,tilo::EncodePacket(1,data));
+    if(audio_.size()>kMaxAudioPackets) {
+      for(auto it=audio_.begin();it!=audio_.end();++it) if(it->first) { audio_.erase(it);break; }
+    }
+    cv_.notify_one();
+  }
   void Send(uint8_t kind,std::string data) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto packet=tilo::EncodePacket(kind,data);
@@ -85,8 +100,9 @@ class Output {
     for(;;) {
       std::string packet;
       { std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock,[&]{ return stopping_ || !events_.empty() || !frame_.empty(); });
+        cv_.wait(lock,[&]{ return stopping_ || !events_.empty() || !audio_.empty() || !frame_.empty(); });
         if(!events_.empty()) { packet=std::move(events_.front()); events_.pop_front(); }
+        else if(!audio_.empty()) { packet=std::move(audio_.front().second); audio_.pop_front(); }
         else if(!frame_.empty()) packet.swap(frame_);
         else break;
       }
@@ -106,9 +122,11 @@ class Output {
     }
   }
   std::atomic<bool> stopping_{false},failed_{false};
-  std::mutex mutex_; std::condition_variable cv_; std::deque<std::string> events_; std::string frame_; std::thread thread_;
+  std::mutex mutex_; std::condition_variable cv_; std::deque<std::string> events_; std::deque<std::pair<bool,std::string>> audio_; std::string frame_; std::thread thread_;
 };
 Output* output=nullptr;
+// Page audio goes to the app (`--tilo-audio-bridge`) because its sandbox has no audio device; without it Chromium plays on its own.
+bool audio_bridge=false;
 void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
   if(!fields) fields=CefDictionaryValue::Create();
   fields->SetString("event",name); auto value=CefValue::Create(); value->SetDictionary(fields);
@@ -156,7 +174,7 @@ CefRefPtr<tilo::Downloads> downloads;
 tilo::DownloadOwnerReservations download_owners;
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
-                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler {
+                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler, public CefAudioHandler {
  public:
   explicit Client(int id):id_(id),credential_document_(private_mode),capabilities_(new tilo::Capabilities([this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
   void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
@@ -165,6 +183,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void StringEvent(const std::string& name,const std::string& key,const CefString& text) {
     auto d=CefDictionaryValue::Create();d->SetString(key,text);Event(name,d);
+  }
+  // Called on CEF's audio threads: only enqueues, like every callback here.
+  void AudioEvent(const std::string& name,CefRefPtr<CefDictionaryValue> fields,bool packet) {
+    if(transfer_owner_) return;
+    if(!fields) fields=CefDictionaryValue::Create();
+    fields->SetInt("tab",id_);fields->SetString("event",name);
+    auto value=CefValue::Create();value->SetDictionary(fields);
+    output->SendAudio(CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString(),packet);
   }
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
   void OpenTab(const CefString& url,bool background) {
@@ -213,6 +239,23 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     auto d=CefDictionaryValue::Create();d->SetInt("id",find_id_);d->SetInt("count",count);d->SetInt("active",active);d->SetBool("final",final_update);Event("find_result",d);
     if(final_update) { finding_=false;if(!pending_find_.empty()) { auto next=pending_find_.front();pending_find_.pop_front();CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,CefRefPtr<CefDictionaryValue> command){self->Command(command);},CefRefPtr<Client>(this),next));} }
   }
+  CefRefPtr<CefAudioHandler> GetAudioHandler() override { return audio_bridge ? this : nullptr; }
+  // Stereo at 48 kHz is what the app's output service plays: Chromium mixes
+  // and resamples to it before handing the stream over.
+  bool GetAudioParameters(CefRefPtr<CefBrowser>,CefAudioParameters& params) override {
+    params.channel_layout=CEF_CHANNEL_LAYOUT_STEREO;params.sample_rate=48000;params.frames_per_buffer=480;return true;
+  }
+  void OnAudioStreamStarted(CefRefPtr<CefBrowser>,const CefAudioParameters& params,int channels) override {
+    audio_channels_=channels;
+    auto d=CefDictionaryValue::Create();d->SetInt("rate",params.sample_rate);d->SetInt("channels",channels);AudioEvent("audio_start",d,false);
+  }
+  void OnAudioStreamPacket(CefRefPtr<CefBrowser>,const float** data,int frames,int64_t) override {
+    std::string pcm;
+    if(!tilo::InterleavePcm16(data,audio_channels_,frames,pcm)) return;
+    auto d=CefDictionaryValue::Create();d->SetString("pcm",CefBase64Encode(pcm.data(),pcm.size()));AudioEvent("audio",d,true);
+  }
+  void OnAudioStreamStopped(CefRefPtr<CefBrowser>) override { AudioEvent("audio_stop",nullptr,false); }
+  void OnAudioStreamError(CefRefPtr<CefBrowser>,const CefString&) override { AudioEvent("audio_stop",nullptr,false); }
   CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return downloads; }
   CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return capabilities_; }
   CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
@@ -1052,6 +1095,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   std::optional<uint64_t> pending_main_media_token_;
   std::optional<bool> last_media_playing_;bool media_limit_reported_=false;
   tilo::FullscreenState fullscreen_;
+  int audio_channels_=2;
   tilo::CredentialDocument credential_document_;
   tilo::CredentialHandshake credential_handshake_;
   tilo::CredentialConsent credential_consent_;
@@ -1372,7 +1416,7 @@ void CloseHost() {
 int RunHost(int argc,char** argv) {
   signal(SIGPIPE,SIG_IGN);
   std::string profile;
-  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true;if(arg.rfind("--service-session=",0)==0) {service_session_id=arg.substr(18);if(!tilo::ServiceSessionId(service_session_id))return 2;} }
+  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true;if(arg=="--tilo-audio-bridge") audio_bridge=true;if(arg.rfind("--service-session=",0)==0) {service_session_id=arg.substr(18);if(!tilo::ServiceSessionId(service_session_id))return 2;} }
   if(private_mode && !service_session_id.empty())return 2;
   if(profile.empty() || profile[0]!='/') {std::cerr<<"--profile requires an absolute directory\n";return 2;}
   std::filesystem::create_directories(profile);

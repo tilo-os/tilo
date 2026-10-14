@@ -804,13 +804,13 @@ fn lockout_parameters_can_be_read_tightened_and_given_a_real_reset_authorisation
         recovery_time: 7200,
         lockout_recovery: 600,
     };
-    let tightened = lockout::tighten(&f.runner, target, None).expect("tighten");
+    let tightened = lockout::tighten(&f.runner, target, None, f.scratch.path()).expect("tighten");
     assert_eq!(tightened.max_tries, 8, "maxTries should have been applied");
     assert_eq!(tightened.recovery_time, 7200);
     assert_eq!(tightened.lockout_recovery, 600);
 
     let auth = lockout::new_reset_auth().expect("auth");
-    lockout::set_reset_auth(&f.runner, &auth, None).expect("set reset auth");
+    lockout::set_reset_auth(&f.runner, &auth, None, f.scratch.path()).expect("set reset auth");
     let now = lockout::read(&f.runner).expect("read again");
     assert!(
         now.lockout_auth_set,

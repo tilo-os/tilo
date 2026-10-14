@@ -31,8 +31,7 @@ ASSETS = {
            ('dependencies/common.py', 0o644),
        )},
     **{f'os/usr/libexec/{name}': (f'usr/libexec/{name}', 0o755) for name in (
-        'tilo-firstboot-user', 'tilo-firstboot-home-seeds.py',
-        'tilo-installer-prepared-setup-extract.py', 'tilo-staging-handoff',
+        'tilo-firstboot-user', 'tilo-staging-handoff',
         'tilo-store-volume', 'tilo-install-handoff-copy.py',
     )},
     'os/scripts/verify-account-consumer-capability.py':

@@ -2,6 +2,7 @@
 """Exercise the actual target handoff with an OS lacking all firstboot /usr files."""
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -34,8 +35,8 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             target.mkdir(parents=True)
             for relative in ("usr/libexec/tilo-firstboot-user",
                              "usr/libexec/tilo-firstboot-files.py",
-                             "usr/libexec/tilo-firstboot-home-seeds.py",
-                             "usr/libexec/tilo-installer-prepared-setup-extract.py",
+                             "usr/libexec/tilo-firstboot-home-seeds",
+                             "usr/libexec/tilo-installer-prepared-setup-extract",
                              "usr/lib/systemd/system/tilo-firstboot-user.service",
                              "usr/libexec/tilo-firstboot-autologin-cleanup",
                              "usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service",
@@ -43,7 +44,15 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
                              "usr/lib/systemd/system/tilo-session-recovery.service"):
                 out = source / relative
                 out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_bytes((ROOT / "os" / relative).read_bytes())
+                if out.name in ("tilo-firstboot-home-seeds", "tilo-installer-prepared-setup-extract"):
+                    override = {"tilo-firstboot-home-seeds": "TILO_FIRSTBOOT_HOME_SEEDS_BINARY",
+                                "tilo-installer-prepared-setup-extract": "TILO_PREPARED_EXTRACT_BINARY"}[out.name]
+                    binary = Path(os.environ.get(override, ROOT / "target/debug" / out.name))
+                    self.assertEqual(binary.read_bytes()[:4], b"\x7fELF", str(binary))
+                    shutil.copyfile(binary, out)
+                    out.chmod(0o755)
+                else:
+                    out.write_bytes((ROOT / "os" / relative).read_bytes())
             baseline = source / "usr/share/tilo/greetd-config.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_bytes((ROOT / "os/etc/greetd/config.toml").read_bytes())
@@ -61,13 +70,15 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             files = target / "tilo/tilo-firstboot-files.py"
             self.assertEqual(files.read_bytes(), (source / "usr/libexec/tilo-firstboot-files.py").read_bytes())
             self.assertIn("/etc/tilo/tilo-firstboot-files.py", (work / "target/labels").read_text())
-            seeds = target / "tilo/firstboot-home-seeds.py"
-            self.assertEqual(seeds.read_bytes(), (source / "usr/libexec/tilo-firstboot-home-seeds.py").read_bytes())
-            self.assertEqual(seeds.stat().st_mode & 0o777, 0o644)
-            transport = target / "tilo/prepared-setup-transport.py"
-            self.assertEqual(transport.read_bytes(), (source / "usr/libexec/tilo-installer-prepared-setup-extract.py").read_bytes())
-            self.assertEqual(transport.stat().st_mode & 0o777, 0o644)
-            self.assertIn("/etc/tilo/firstboot-home-seeds.py", (work / "target/labels").read_text())
+            seeds = target / "tilo/firstboot-home-seeds"
+            self.assertEqual(seeds.read_bytes(), (source / "usr/libexec/tilo-firstboot-home-seeds").read_bytes())
+            self.assertEqual(seeds.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(subprocess.run([str(seeds), "--capabilities"], capture_output=True).returncode, 0)
+            transport = target / "tilo/prepared-setup-transport"
+            self.assertEqual(transport.read_bytes(), (source / "usr/libexec/tilo-installer-prepared-setup-extract").read_bytes())
+            self.assertEqual(transport.stat().st_mode & 0o777, 0o755)
+            self.assertNotEqual(subprocess.run([str(transport), "invalid-operation"], capture_output=True).returncode, 0)
+            self.assertIn("/etc/tilo/firstboot-home-seeds", (work / "target/labels").read_text())
             unit = target / "systemd/system/tilo-firstboot-user.service"
             self.assertIn("ExecStart=/usr/bin/bash /etc/tilo/firstboot-user\n", unit.read_text())
             self.assertNotIn("ExecStart=/usr/libexec/", unit.read_text())
@@ -152,7 +163,8 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
         containerfile = (ROOT / "os/Containerfile").read_text()
         for path in ("os/usr/libexec/tilo-firstboot-user",
                      "os/usr/libexec/tilo-firstboot-files.py",
-                     "os/usr/libexec/tilo-firstboot-home-seeds.py",
+                     "target/release/tilo-firstboot-home-seeds",
+                     "target/release/tilo-installer-prepared-setup-extract",
                      "os/usr/libexec/tilo-firstboot-autologin-cleanup",
                      "os/usr/lib/systemd/system/tilo-firstboot-user.service",
                      "os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service"):

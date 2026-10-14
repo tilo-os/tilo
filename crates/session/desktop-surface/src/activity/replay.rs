@@ -56,10 +56,10 @@ impl RoomActivityPane {
     /// immediately; every retained frame remains an exact Automerge fork.
     ///
     /// Forking the document is O(history) and runs on the compositor thread
-    /// whenever the desktop document moves (a workspace switch writes it).
-    /// Checkpoints are therefore kept per entry and only entries new since
-    /// the last rebuild are forked; switching workspaces or scope reuses
-    /// them.
+    /// whenever the rows move. Checkpoints are therefore kept per entry and
+    /// only entries new since the last rebuild are forked; switching
+    /// workspaces or scope reuses them, and a switch's own change is no
+    /// entry (the history source passes over it).
     pub(super) fn rebuild_replay_frames(
         &mut self,
         tree: &impl ActivityTree,

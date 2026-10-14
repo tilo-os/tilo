@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Exercise interruption/retry against the production firstboot transaction."""
+"""Production firstboot transaction retries with an explicit Python seed oracle.
+
+The native seed namespace suite separately exercises the shipped executable.
+"""
 import json
 import os
 from pathlib import Path
@@ -74,11 +77,11 @@ def locked():
         (r / 'skel/default').write_text('generated')
         (r / 'skel/seeded').write_text('skel')
         (r / 'home/fixtureuser/seeded').write_text('installer')
-        (r / 'seeds.py').write_text(common + f"""locked()
+        (r / 'seeds.py').write_text('#!/usr/bin/env python3\n' + common + f"""locked()
 fail('seeds')
 import importlib.util, stat
 from unittest.mock import patch
-spec = importlib.util.spec_from_file_location('seeds', {str(ROOT / 'os/usr/libexec/tilo-firstboot-home-seeds.py')!r})
+spec = importlib.util.spec_from_file_location('seeds', {str(ROOT / 'os/tests/oracles/tilo-firstboot-home-seeds.py')!r})
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 # Simulated NSS account and root authority; production seed I/O is unchanged.
@@ -96,6 +99,7 @@ with patch.object(helper.os, 'geteuid', return_value=0), \\
     helper.seed(r / 'home/fixtureuser', r / 'skel', os.getuid(), os.getgid(), r / 'state/seeds')
 fail('seeds-after')
 """)
+        (r / 'seeds.py').chmod(0o755)
         (r / 'handoff').write_text('#!/usr/bin/env python3\n' + common + """if sys.argv[1] == 'required-user-id':
     assert not (r / 'shadow').exists(), 'retry repeated UID availability query'
     print('1000')
@@ -104,7 +108,8 @@ else:
     fail('plan')
 """)
         (r / 'handoff').chmod(0o755)
-        (r / 'etc/prepared-setup-transport.py').write_text(common + "locked(); fail(sys.argv[1])\n")
+        (r / 'etc/prepared-setup-transport').write_text('#!/usr/bin/env python3\n' + common + "locked(); fail(sys.argv[1])\n")
+        (r / 'etc/prepared-setup-transport').chmod(0o755)
         s = SOURCE.read_text()
         for old, new in {
             '/etc/tilo': str(r / 'etc'),
@@ -113,7 +118,7 @@ else:
             '"/home/$user"': f'"{r}/home/$user"',
             'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"': f'FILES_HELPER="{ROOT}/os/usr/libexec/tilo-firstboot-files.py"',
             '/usr/libexec/tilo-staging-handoff': str(r / 'handoff'),
-            'seed_helper=/usr/libexec/tilo-firstboot-home-seeds.py': f'seed_helper={r}/seeds.py',
+            'seed_helper=/usr/libexec/tilo-firstboot-home-seeds': f'seed_helper={r}/seeds.py',
         }.items():
             self.assertIn(old, s)
             s = s.replace(old, new)
@@ -459,7 +464,7 @@ class HomeSeedTests(unittest.TestCase):
         from unittest.mock import patch
         import stat
         spec = importlib.util.spec_from_file_location(
-            'home_seeds', ROOT / 'os/usr/libexec/tilo-firstboot-home-seeds.py')
+            'home_seeds', ROOT / 'os/tests/oracles/tilo-firstboot-home-seeds.py')
         self.helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.helper)
         self.work = tempfile.TemporaryDirectory()

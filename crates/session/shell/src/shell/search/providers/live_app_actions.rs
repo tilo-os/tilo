@@ -99,6 +99,7 @@ fn invalidates_directory_cache(error: &ActionHostError) -> bool {
         error,
         ActionHostError::UnknownAction
             | ActionHostError::InvalidRequest { .. }
+            | ActionHostError::StaleRevision
             | ActionHostError::Unavailable { .. }
     )
 }
@@ -1401,6 +1402,7 @@ impl LiveAppActionsProvider {
             let invoke_broker = broker.clone();
             let invoke_actor = actor.clone();
             return SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: PROVIDER_ID.into(),
@@ -1438,6 +1440,7 @@ impl LiveAppActionsProvider {
         let status_broker = self.broker.clone();
         let actor = actor.to_string();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Custom("action-job".into()),
             operation_kind: tilo_actions::OperationKind::View,
             provider_id: PROVIDER_ID.into(),
@@ -1966,6 +1969,7 @@ impl LiveAppActionsProvider {
         let resource = address.resource.clone();
         let action = address.action.clone();
         SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: descriptor.kind,
             provider_id: PROVIDER_ID.into(),
@@ -2057,6 +2061,7 @@ impl LiveAppActionsProvider {
         };
         let title = row.resource.label.clone();
         SearchResult {
+            shortcut: None,
             operation_kind: tilo_actions::OperationKind::View,
             kind: ResourceKind::Custom(if row.resource.kind.is_empty() {
                 "Resources".into()
@@ -2331,6 +2336,7 @@ impl SearchProvider for LiveAppActionsProvider {
             for (id, update) in self.broker.statuses(&actor) {
                 let status_broker = self.broker.clone();
                 results.push(SearchResult {
+                    shortcut: None,
                     kind: ResourceKind::Custom("action-job".into()),
                     operation_kind: tilo_actions::OperationKind::View,
                     provider_id: PROVIDER_ID.into(),
@@ -2359,6 +2365,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     let invoke_broker = broker.clone();
                     let invoke_actor = actor.clone();
                     results.push(SearchResult {
+                        shortcut: None,
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: PROVIDER_ID.into(),
@@ -2438,6 +2445,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 let open_start = Rc::clone(&start);
                 let open_unavailable = unavailable.clone();
                 results.push(SearchResult {
+                    shortcut: None,
                     kind: ResourceKind::Action,
                     operation_kind: action.operation_kind,
                     provider_id: PROVIDER_ID.to_string(),
@@ -3911,6 +3919,7 @@ mod tests {
                 ActionHostError::InvalidRequest {
                     reason: "stale revision".into(),
                 },
+                ActionHostError::StaleRevision,
                 ActionHostError::Unavailable {
                     reason: "owner left".into(),
                 },
@@ -5283,6 +5292,7 @@ mod tests {
             let chrome = chrome.borrow();
             let room = chrome.tree().desktop.workspaces[0].room.to_string();
             let result = |cluster: &str| SearchResult {
+                shortcut: None,
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: PROVIDER_ID.into(),

@@ -4,8 +4,8 @@
 //! To see it, drive a running compositor rather than eyeballing a checklist:
 //! `cargo run --bin shell -- --backend headless` plus `tilo-control`
 //! (`scripts/headless-examples/`, `docs/headless-testing.md`), or render stills
-//! and recordings with `cargo run --bin shots`. `--mode hosted` runs the shell
-//! in a window inside an existing X11/Wayland session.
+//! and recordings with `cargo run --bin shots`. `--backend winit` (the default)
+//! runs the compositor in a window inside an existing X11/Wayland session.
 
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
@@ -1189,9 +1189,9 @@ pub(crate) fn surface_row_ptrs(
 /// In unit tests, panics if the isolated Files fixture cannot be created.
 // `tree_handle` is only ever read here (`.clone()`/`.read()`), never
 // moved, so `&WorkspaceTreeHandle` would be the tighter signature — but
-// its callers outside this module (`compositor::frame`,
-// `compositor::hosted`) already hold their own owned handle at the call
-// site, so narrowing here is not this pass's call to make.
+// its callers outside this module (`compositor::frame`) already hold
+// their own owned handle at the call site, so narrowing here is not this
+// pass's call to make.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "tree_handle is only ever borrowed here, but narrowing the signature would touch \

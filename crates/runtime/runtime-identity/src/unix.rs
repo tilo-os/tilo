@@ -1463,6 +1463,16 @@ impl SigningIdentity {
         }
     }
 
+    /// Whether a signature from this identity would be made with the
+    /// person's root (group) key rather than an enrolled device key. A
+    /// single-device record's local secret *is* the root scalar, and no
+    /// application may ever obtain a root signature: one over a
+    /// `DeviceCert` digest enrols an attacker's machine as one of the
+    /// person's devices, one over a revocation digest evicts the real ones.
+    pub(crate) fn signs_with_root_key(&self) -> bool {
+        self.device_certificate.is_none() || self.signing_public_key == self.group_public_key
+    }
+
     fn sign_local(&self, message: &[u8]) -> io::Result<[u8; 64]> {
         match &self.source {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),

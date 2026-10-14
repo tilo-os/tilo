@@ -12,6 +12,7 @@ import {recoverableClose} from './close-recovery.mjs';
 import {createCrashQuarantine,crashAction} from './app-crash.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createLiveCursors} from './live-cursors.mjs';
+import {createHere} from './here.mjs';
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
 export {createPanorama} from './panorama.mjs';
@@ -52,6 +53,14 @@ const data=createDataLoader({baseURL:import.meta.url,runtime});
  * `flush()` resolves when writes are durable; call `release()` once. */
 /** The wasm runtime module, once loaded (the peer's codec and certificates). */
 export async function loadRuntime(){await ready();return runtime;}
+/** Open the WebGPU device and compile the renderer once the module is in,
+ * while the page joins and opens the workspace; the first mount takes it.
+ * Skipped where mounting would refuse WebGPU, and on WebKit, whose renderer
+ * starts only once the page's load settled (`settleBeforeGpu`). */
+export function prepareGpu(){
+  if(!navigator.gpu||webgpuRefusal()||isWebKit(navigator))return;
+  void ready().then(()=>runtime.prepare_gpu()).catch(()=>{});
+}
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
@@ -77,13 +86,13 @@ export async function mountDesktop(target,options={}) {
   const navigationFocus={errors(){},update(){},close(){}};
   const presentationWaiters=new Set();
   const config={profile:'tilo-browser',device:'tilo-browser-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:options.peer?undefined:'Browser user',instance:1,mac:/Mac/.test(navigator.platform),conservativeGpu:isWebKit(navigator),...options};
-  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;
+  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.presenceUrl;
   // The desktop offers Invite only when the page takes it.
   config.invite=typeof options.onInvite==='function';delete config.onInvite;
   // What only this page can do for the person (keeping their identity): offered in desktop search and on banners.
   delete config.hostActions;delete config.onHostAction;
   let unsubscribeDesktopCommits;
-  let liveOverlay,liveCursors,liveCarets,legacyWindows,nodeApps;
+  let liveOverlay,liveCursors,liveCarets,here,legacyWindows,nodeApps,livePlace=null;
   // The room's live layer as this mount publishes through it (a certified
   // peer's `live` view: only the mount acted in last speaks), else the peer's.
   const liveLayer=()=>typeof options.live==='function'?options.live():options.peer?.live;
@@ -145,6 +154,7 @@ export async function mountDesktop(target,options={}) {
     nativeCatalogue.pump();
     for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
+    if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null});}
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
       desktopOwnership=Boolean(runtime.desktop_input_ownership&&runtime.desktop_navigation_snapshot?.(id));
       runtimeReady=true;
@@ -173,7 +183,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;inputScope.capture();}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,windows:()=>{const shown=runtime.desktop_record_windows?.(id);return shown?JSON.parse(shown):undefined;}});liveCarets=followRemoteCarets(layer,()=>id,active);}if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],onError:error=>report({nodeAppsError:String(error)})});}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,localFocus:()=>livePlace?.focus??null,windows:()=>{const shown=runtime.desktop_record_windows?.(id);return shown?JSON.parse(shown):undefined;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],onError:error=>report({nodeAppsError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
@@ -255,7 +265,7 @@ export async function mountDesktop(target,options={}) {
     begin(){
       capture.close();semanticPresentation.close();
       crashListeners.delete(onCrash);
-      nativeCatalogue.dispose();media?.close();liveOverlay?.close();liveOverlay=undefined;liveCursors?.close();liveCursors=undefined;liveCarets?.();liveCarets=undefined;legacyWindows?.close();legacyWindows=undefined;nodeApps?.close();nodeApps=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      nativeCatalogue.dispose();media?.close();liveOverlay?.close();liveOverlay=undefined;liveCursors?.close();liveCursors=undefined;liveCarets?.();liveCarets=undefined;here?.stop();here=undefined;legacyWindows?.close();legacyWindows=undefined;nodeApps?.close();nodeApps=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=Array.from(runtime.close(id));
       surface.remove();
     },
@@ -418,6 +428,8 @@ export async function mountDesktop(target,options={}) {
       // Host actions (`[{id, title, subtitle?}]`) in place of earlier ones, and a banner offering one (`{action, title, body}`).
       setHostActions:actions=>{if(active()&&runtime.desktop_set_host_actions)runtime.desktop_set_host_actions(id,JSON.stringify(actions));},
       offerHostAction:offer=>{if(active()&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
+      // What the page just did out of sight, said in passing ("Link copied").
+      acknowledge:text=>{if(active()&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
 
       durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args),

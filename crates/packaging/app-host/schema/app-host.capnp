@@ -119,11 +119,16 @@ interface AppHost {
     installLocal @19 (tappBytes :Data, reviewedRoot :Text,
                       reviewedArchiveHash :Text) -> (id :Data);
     # Metadata-only exact installed consumer/runtime review. No payload is fetched.
-    inspectOptionalRuntime @20 (appId :Text, consumerRoot :Data, runtime :Text)
+    inspectOptionalRuntime @22 (appId :Text, consumerRoot :Data, runtime :Text)
         -> (reviewJson :Text);
     # Explicit consent to the exact review. Revalidates signed declaration and
     # configured offer identity, then uses the shared bounded signed installer.
     # Disconnect/Back does not roll back or necessarily interrupt installation.
     acquireOptionalRuntime @21 (reviewJson :Text, progress :RuntimeProgress) -> ();
 
+    # The catalogue the host last accepted from one enabled repository, read
+    # without the network so a slow or unreachable repository still describes
+    # what it listed. The stored snapshot is verified again against the pinned
+    # owner key, the rollback checkpoint and its expiry; fails when none does.
+    lastVerifiedCatalogue @20 (registry :Text) -> (entries :Text);
 }

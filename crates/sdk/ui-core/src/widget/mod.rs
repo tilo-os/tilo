@@ -1770,6 +1770,15 @@ pub trait Widget {
         None
     }
 
+    /// Whether [`Self::accessibility`] reports this subtree hidden, for a
+    /// host that asks it of every node to prune focus traversal. Widgets
+    /// whose node is costly to build (text values, per-block children) and is
+    /// never hidden answer without building it; any override must agree with
+    /// `accessibility()`.
+    fn accessibility_hidden(&self) -> bool {
+        self.accessibility().is_some_and(|node| node.state.hidden)
+    }
+
     /// Geometry for an immediate-mode semantic child from
     /// [`AccessNode::children`](crate::a11y::AccessNode::children). The path is
     /// its child-index path beneath this widget's accessibility node. Returning
@@ -3078,6 +3087,7 @@ pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
+pub mod acknowledgement;
 pub mod autocomplete;
 pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList};
 mod number_input;

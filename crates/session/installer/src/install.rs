@@ -411,8 +411,14 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
         cmd.arg("--device-label").arg(&opts.device_label);
     }
     if let Some(expected) = &opts.prepared_setup {
-        cmd.arg("--prepared-setup-receipt")
-            .arg(serde_json::to_string(expected).expect("public ciphertext binding"));
+        cmd.arg("--prepared-setup-receipt").arg(
+            serde_json::json!({
+                "schema": expected.schema,
+                "sealed_bytes": expected.sealed_bytes,
+                "ciphertext_sha256": expected.ciphertext_sha256,
+            })
+            .to_string(),
+        );
     }
     if opts.purpose != "computer" {
         cmd.arg("--purpose").arg(&opts.purpose);

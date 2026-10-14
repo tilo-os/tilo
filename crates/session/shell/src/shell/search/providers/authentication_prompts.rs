@@ -135,6 +135,7 @@ impl SearchProvider for AuthenticationPromptsProvider {
                     ticket.request().action_id
                 )),
                 badge: Some(self.display_name()),
+                shortcut: None,
                 score: 0,
                 params,
                 contract: Some(tilo_actions::ActionContract {

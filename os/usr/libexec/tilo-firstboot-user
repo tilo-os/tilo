@@ -246,12 +246,12 @@ case "$account_home" in
 esac
 /usr/bin/python3 -I "$FILES_HELPER" home "$account_home" "$account_uid" "$account_gid"
 
-seed_helper=/etc/tilo/firstboot-home-seeds.py
+seed_helper=/etc/tilo/firstboot-home-seeds
 if [ ! -e "$seed_helper" ] && [ ! -L "$seed_helper" ]; then
-  seed_helper=/usr/libexec/tilo-firstboot-home-seeds.py
+  seed_helper=/usr/libexec/tilo-firstboot-home-seeds
 fi
-if [ ! -f "$seed_helper" ] || [ -L "$seed_helper" ] \
-    || ! /usr/bin/python3 "$seed_helper" "$user"; then
+if [ ! -f "$seed_helper" ] || [ -L "$seed_helper" ] || [ ! -x "$seed_helper" ] \
+    || ! "$seed_helper" "$user"; then
   echo "tilo-firstboot-user: home defaults could not be attested; account remains locked" >&2
   exit 1
 fi
@@ -272,7 +272,7 @@ fi
 # Keep prepared setup encrypted through firstboot. Only the actual account's
 # explicit import action may authenticate and adopt its contents later.
 if [ -e /var/lib/tilo/prepared-setup ] || [ -L /var/lib/tilo/prepared-setup ]; then
-  if ! /usr/bin/python3 /etc/tilo/prepared-setup-transport.py deliver-user --username "$user"; then
+  if ! /etc/tilo/prepared-setup-transport deliver-user --username "$user"; then
     echo "tilo-firstboot-user: encrypted prepared setup delivery failed; account remains locked" >&2
     exit 1
   fi
@@ -283,7 +283,7 @@ fi
 if [ -e /var/lib/tilo/prepared-home ] || [ -L /var/lib/tilo/prepared-home ] \
     || [ -e /var/lib/tilo/prepared-applications ] || [ -L /var/lib/tilo/prepared-applications ] \
     || [ -e /var/lib/tilo/prepared-browser ] || [ -L /var/lib/tilo/prepared-browser ]; then
-  if ! /usr/bin/python3 /etc/tilo/prepared-setup-transport.py deliver-home-user --username "$user"; then
+  if ! /etc/tilo/prepared-setup-transport deliver-home-user --username "$user"; then
     echo "tilo-firstboot-user: portable data custody delivery failed; account remains locked" >&2
     exit 1
   fi

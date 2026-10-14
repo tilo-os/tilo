@@ -1003,6 +1003,7 @@ mod tests {
             package_id: super::super::FILES_PACKAGE_ID.into(),
             display_name: "Files".into(),
             localized_names: std::collections::BTreeMap::new(),
+            keywords: vec![],
             category: None,
             version: "1.0.0".into(),
             manifest_path: "/apps/files/manifest.toml".into(),

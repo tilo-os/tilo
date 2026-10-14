@@ -2582,3 +2582,11 @@ fn selected_discord_origin_wire_preserves_raw_value_refuses_other_origins_and_re
     assert!(validate_event(&leak).is_err());
     assert!(decode_event(&leak).is_none());
 }
+
+#[test]
+fn a_governed_app_routes_page_audio_through_the_host_bridge() {
+    // The sandbox withholds the audio sockets and devices, so the engine must
+    // not try to open any; its sound reaches the app over the host protocol.
+    assert_eq!(host_audio_switches(true), ["--tilo-audio-bridge"]);
+    assert!(host_audio_switches(false).is_empty());
+}

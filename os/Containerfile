@@ -74,7 +74,7 @@ ARG ENV_RUNTIME_REF=scratch
 # boot-test while the engine's own build is being repaired.
 ARG TILO_WITH_BROWSER=1
 # The engine runtime's version: ui::webview::chromium::runtime::RUNTIME_VERSION.
-ARG CHROMIUM_RUNTIME_VERSION=2026.10.9-chromium
+ARG CHROMIUM_RUNTIME_VERSION=2026.10.10-chromium
 # The pinned builder bootc-builder compiles the image's bootc in, the one
 # os/Containerfile.bootc-helper uses.
 ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
@@ -293,6 +293,9 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 # and `switch` use the ESP the boot loader started from. Upstream takes the
 # disk's first ESP, which on a laptop that came with Windows is Windows', and
 # every one of them then fails reading loader entries that ESP does not have.
+# And an upgrade needs room only for the layers it does not have yet (0003):
+# upstream's composefs space check counted the whole image, so a laptop with
+# most of the new image's layers already stored refused to upgrade.
 # The frozen snapshot carries no ostree-devel, so this builds in the pinned
 # builder image as os/Containerfile.bootc-helper does, with that image's own
 # Fedora repositories (BOOTC_BUILD_PACKAGES are no snapshot input). Nothing of
@@ -305,7 +308,8 @@ ARG BOOTC_SOURCE=bootc-fa0d3f9.tar.gz
 ARG BOOTC_SHA256=e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac
 ARG BOOTC_BUILD_PACKAGES="ostree-devel patch"
 COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
-    os/external-assets/bootc-runtime/0002-zlink-macros-from-tilo-vendor.patch /patches/
+    os/external-assets/bootc-runtime/0002-zlink-macros-from-tilo-vendor.patch \
+    os/external-assets/bootc-runtime/0003-space-check-counts-missing-layers.patch /patches/
 # zlink-macros with its generated enum variants in a fixed order (0002 patches
 # bootc's build onto it): the release emits them in HashMap order, so no two
 # bootc builds matched and the image was not reproducible.
@@ -702,9 +706,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        else \
          DESKTOP_RELEASE_ARGS="-p shell --bin shell --bin tilo-runtime-mcp -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p installer -p imager -p runtime-bundle -p tilo-rollback -p tilo-sibling-unlock -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody -p legacy-vm" \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p installer -p imager -p runtime-bundle -p tilo-rollback -p tilo-sibling-unlock -p tilo-esp-write -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody -p legacy-vm" \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
-    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-sibling-unlock --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-legacy --bin tilo-account-credential" \
+    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-firstboot-home-seeds --bin tilo-installer-prepared-setup-extract --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-sibling-unlock --bin tilo-esp-write --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-legacy --bin tilo-account-credential" \
     # The thin-app profile compiles each crate as one codegen unit, for tapp
     # size. Built in the image without LTO (a dev build) the runtime and its
     # dependencies take 16: one unit made fs alone compile for ten minutes.
@@ -746,7 +750,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in shell tilo-runtime-mcp tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-relay-environment tilo-relay-offers tilo-legacy tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-greeter tilo-installer tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-sibling-unlock tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential; do \
+    && for b in shell tilo-runtime-mcp tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-relay-environment tilo-relay-offers tilo-legacy tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-sibling-unlock tilo-esp-write tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime-mcp) continue ;; esac; \
          if [ ! -x "target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
@@ -786,11 +790,14 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/tilo-system-extension-manager \
           target/release/tilo-greeter \
           target/release/tilo-installer \
+          target/release/tilo-firstboot-home-seeds \
+          target/release/tilo-installer-prepared-setup-extract \
           target/release/tilo-prepared-setup \
           target/release/tilo-runtime-bundle \
           target/release/tilo-app-host \
           target/release/tilo-rollback \
           target/release/tilo-sibling-unlock \
+          target/release/tilo-esp-write \
           target/release/tilo-crypto \
           target/release/tilo-image-trust \
           target/release/tilo-device-key-init \
@@ -1203,9 +1210,7 @@ COPY os/scripts/verify-account-consumer-capability.py \
     os/scripts/verify-applications-consumer-capability.py \
     os/scripts/installed-data-consumer.py \
     os/scripts/data-consumer-catalog-facts.py /tilo-components/scripts/
-COPY os/usr/libexec/tilo-firstboot-home-seeds.py \
-    os/usr/libexec/tilo-installer-prepared-setup-extract.py \
-    os/usr/libexec/tilo-session os/usr/libexec/tilo-image-trust-staged \
+COPY os/usr/libexec/tilo-session os/usr/libexec/tilo-image-trust-staged \
     os/usr/libexec/tilo-verified-update os/usr/libexec/tilo-board-successor.py \
     /tilo-components/usr/libexec/
 COPY os/dev/hardware_profile.py /tilo-components/dev/
@@ -1273,7 +1278,6 @@ FROM scratch AS recovery-files
 COPY --from=component-files /image/recovery-files/ /
 COPY --chmod=0755 \
     os/usr/libexec/tilo-deployment \
-    os/usr/libexec/tilo-esp-write \
     os/usr/libexec/tilo-system-extension-activate \
     os/usr/libexec/tilo-system-extension-dispatch \
     os/usr/libexec/tilo-boot-health \
@@ -2237,6 +2241,7 @@ COPY os/etc/gitconfig /etc/gitconfig
 COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
     os/usr/libexec/tilo-security-audit \
+    os/usr/libexec/tilo-image-policy-check \
     os/usr/libexec/tilo-firstboot-user \
     os/usr/libexec/tilo-firstboot-files.py \
     os/usr/libexec/tilo-firstboot-autologin-cleanup \
@@ -2375,7 +2380,7 @@ COPY os/usr/lib/bootc/install/40-tilo.toml /usr/lib/bootc/install/40-tilo.toml
 # ---------------------------------------------------------------------------
 # Kernel/userspace hardening (security plan §11 — "table stakes")
 # ---------------------------------------------------------------------------
-# Kernel args (init_on_alloc/free, lockdown=integrity, slab_nomerge, kstack
+# Kernel args (init_on_alloc, lockdown=integrity, slab_nomerge, kstack
 # randomisation, page-alloc shuffle, vsyscall=none). bootc applies kargs.d at
 # install/upgrade, and `bootc container ukify` seals it into the UKI command line
 # at build time — which is what makes this set measured rather than merely

@@ -2646,14 +2646,7 @@ impl Widget for SlidesApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.widget_leaf(
-            Style {
-                size: Size::from_percent(1.0, 1.0),
-                ..Default::default()
-            },
-            node_map,
-            self,
-        );
+        let node = taffy.fill_leaf(node_map, self);
         self.node = Some(node);
         node
     }

@@ -92,6 +92,8 @@ def verify_roles(candidate):
                 'control': '/usr/bin/tilo-control',
                 'credential_helper': '/usr/libexec/tilo-account-credential',
                 'prepared_helper': '/usr/libexec/tilo-prepared-setup',
+                'home_seeds': '/usr/libexec/tilo-firstboot-home-seeds',
+                'prepared_extract': '/usr/libexec/tilo-installer-prepared-setup-extract',
                 'files': str(candidate / 'file-explorer'),
                 'writer': str(candidate / 'word-processor'),
                 'host': str(candidate / 'host/bin/tilo-imager')}

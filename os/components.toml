@@ -386,10 +386,11 @@ name = "prepared-setup"
 kind = "userspace"
 scope = "session"
 packages = ["imager"]
-bins = ["tilo-prepared-setup"]
+bins = ["tilo-prepared-setup", "tilo-installer-prepared-setup-extract"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-prepared-setup", to = "/usr/libexec/tilo-prepared-setup", mode = "0755" },
+  { from = "tilo-installer-prepared-setup-extract", to = "/usr/libexec/tilo-installer-prepared-setup-extract", mode = "0755" },
   { from = "@manifest/scripts/verify-home-consumer-capability.py", to = "/usr/libexec/tilo-verify-home-consumer-capability", mode = "0755" },
   { from = "@manifest/scripts/verify-applications-consumer-capability.py", to = "/usr/libexec/tilo-verify-applications-consumer-capability", mode = "0755" },
   { from = "@manifest/scripts/installed-data-consumer.py", to = "/usr/libexec/tilo-installed-data-consumer.py", mode = "0755" },
@@ -414,12 +415,11 @@ kind = "boot"
 scope = "vm"
 scenario = "os/dev/test-installer-cycle.sh"
 packages = ["installer"]
-bins = ["tilo-installer"]
+bins = ["tilo-installer", "tilo-firstboot-home-seeds"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-installer", to = "/usr/bin/tilo-installer", mode = "0755" },
-  { from = "@manifest/usr/libexec/tilo-firstboot-home-seeds.py", to = "/usr/libexec/tilo-firstboot-home-seeds.py", mode = "0755" },
-  { from = "@manifest/usr/libexec/tilo-installer-prepared-setup-extract.py", to = "/usr/libexec/tilo-installer-prepared-setup-extract.py", mode = "0755" },
+  { from = "tilo-firstboot-home-seeds", to = "/usr/libexec/tilo-firstboot-home-seeds", mode = "0755" },
 ]
 
 [[component]]
@@ -498,6 +498,20 @@ files = [
   { from = "completions/fish/tilo.fish", to = "/usr/share/fish/vendor_completions.d/tilo.fish", mode = "0644", optional = true, layer = "desktop-binaries" },
   { from = "completions/zsh/_tilo", to = "/usr/share/zsh/site-functions/_tilo", mode = "0644", optional = true, layer = "desktop-binaries" },
   { link = "_tilo", to = "/usr/share/zsh/site-functions/_system", layer = "desktop-binaries" },
+]
+
+# The one writer of the read-only ESP, started on demand as
+# tilo-esp-write@CALLER.service by the boot-entry and Secure Boot units, at
+# boot and on the way down; a swap takes effect at its next start.
+[[component]]
+name = "esp-write"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-esp-write"]
+bins = ["tilo-esp-write"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-esp-write", to = "/usr/libexec/tilo-esp-write", mode = "0755" },
 ]
 
 [[component]]

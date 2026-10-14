@@ -18,6 +18,7 @@ pub use owner::HistoryOwner;
 pub(crate) mod canvas;
 pub(crate) mod frame;
 pub(crate) mod frozen_root;
+pub use frozen_root::FrozenRootPreview;
 pub(crate) mod host;
 pub mod pending_controls;
 pub use preview::*;
