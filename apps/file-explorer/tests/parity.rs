@@ -299,9 +299,11 @@ fn initial_path_prefers_workspace_then_legacy_then_user_home_then_cwd_then_root(
     // Assert the exact startup path for the current environment, including
     // configured mounts and the sandbox's granted user home. An explicit
     // workspace override suppresses the legacy /workspace fallback.
-    use file_explorer::model::{initial_path, user_home, workspace_roots};
+    use file_explorer::model::{initial_path, user_home, workspace_record_authority_roots};
     let p = initial_path();
-    let workspace = workspace_roots().into_iter().next();
+    // A configured mount, not `~/Shared`: received shares are a sidebar
+    // place, and an empty one is no window to open on.
+    let workspace = workspace_record_authority_roots().into_iter().next();
     let legacy = PathBuf::from("/workspace");
     let home = user_home();
     let cwd = std::env::current_dir().ok();
