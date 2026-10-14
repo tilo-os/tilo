@@ -1133,7 +1133,12 @@ impl App {
             ));
         }
         if let Some(change) = &status.image_change {
-            lines.extend(change.describe().into_iter().map(|line| format!("  {line}")));
+            lines.extend(
+                change
+                    .describe()
+                    .into_iter()
+                    .map(|line| format!("  {line}")),
+            );
             insert(&mut vm_data, "image_change", json!(change));
         }
         let ci_from_host = Self::adapter(&vm)?.ci_layers_from_host();

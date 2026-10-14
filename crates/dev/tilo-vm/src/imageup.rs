@@ -1103,7 +1103,10 @@ mod tests {
             "not enough space on VM yoga: the new OS image needs 5.2 GB, 2.3 GB is free"
         );
         assert!(error.hint().contains("reused"), "{}", error.hint());
-        assert_eq!(insufficient_space("error: Switching: pulling: connection refused"), None);
+        assert_eq!(
+            insufficient_space("error: Switching: pulling: connection refused"),
+            None
+        );
     }
 
     /// A commit off main is found by its `<ref>-<sha7>` tags.
