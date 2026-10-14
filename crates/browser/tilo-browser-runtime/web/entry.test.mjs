@@ -293,6 +293,28 @@ test('any other link waits for the runtime’s grammar before admission', async 
   page.router.stop?.();
 });
 
+test('the home workspace’s app in front is fetched beside the runtime, before admission', async () => {
+  const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/', app: 'so.tilo.chat'};
+  const order = [];
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://rooms.example/open/', hash: ''},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: () => new Promise(() => {}),
+    prefetchApplication: app => order.push(`prefetch ${app}`),
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    enterViaHost: async () => {
+      order.push('door');
+      throw new Error('closed');
+    },
+  };
+  await assert.rejects(boot({mode: 'desktop', window, deps}), /closed/);
+  assert.deepEqual(order, ['prefetch so.tilo.chat', 'door']);
+});
+
 test('only a bare desktop entry under a home reopens the workspace the person last chose', () => {
   const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const chosen = {origin: 'https://acme.example', room: 'A'};
