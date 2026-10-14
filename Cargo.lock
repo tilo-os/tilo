@@ -19001,6 +19001,7 @@ dependencies = [
  "themes",
  "tilo-app",
  "tilo-browser-runtime",
+ "tilo-desktop-surface",
  "totp",
  "tube",
  "typst-editor",
