@@ -22284,6 +22284,7 @@ dependencies = [
  "tilo-document",
  "tilo-files",
  "tilo-paths",
+ "tilo-pdf",
  "tilo-resource",
  "tilo-rich-text",
  "tilo-spellcheck",
