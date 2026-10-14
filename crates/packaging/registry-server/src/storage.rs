@@ -69,8 +69,10 @@ use registry_types::{
 
 use crate::allowlist::PublisherAllowlist;
 
+mod checked;
 mod payload_objects;
 mod twins;
+pub(crate) use checked::FileStamp;
 pub use payload_objects::IncomingObject;
 pub use twins::TwinReport;
 
@@ -106,6 +108,8 @@ pub struct HistoryCompactionReport {
 #[derive(Clone)]
 pub struct Storage {
     root: PathBuf,
+    /// Served objects already checked against their names.
+    checked: std::sync::Arc<checked::CheckedFiles>,
 }
 
 impl Storage {
@@ -137,7 +141,16 @@ impl Storage {
             std::fs::create_dir_all(root.join(name))
                 .map_err(|e| StorageError::Io(format!("mkdir {name}: {e}")))?;
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            checked: std::sync::Arc::default(),
+        })
+    }
+
+    /// How many times a served object's content has been checked against
+    /// its name: once per stored file, however often it is downloaded.
+    pub fn object_checks(&self) -> u64 {
+        self.checked.checks()
     }
 
     /// The `handshake.toml` path.
@@ -194,10 +207,11 @@ impl Storage {
     /// Returns an error when a stored index cannot be read or no longer
     /// matches its name.
     pub fn load_version_index(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        read_named(
+        self.read_served(
             self.version_index_path(blake3_hex),
             "version index",
             blake3_hex,
+            None,
         )
     }
 
@@ -221,7 +235,7 @@ impl Storage {
         self.root.join("first-party-promotion.staged.json")
     }
 
-    fn channel_authorization_path(&self) -> PathBuf {
+    pub(crate) fn channel_authorization_path(&self) -> PathBuf {
         self.root.join("channel-authorization.json")
     }
 
@@ -372,18 +386,24 @@ impl Storage {
         let Some(path) = self.thin_package_path(root_hex) else {
             return Ok(None);
         };
-        let Some(bytes) = read_if_exists(&path, "thin package")? else {
-            return Ok(None);
-        };
-        let decoded =
-            tilo_app_package::tapp::read(bytes.as_slice(), &mut tilo_app_package::DiscardBlobs)
-                .map_err(|error| StorageError::Parse(format!("thin package: {error}")))?;
-        if !decoded.carried.is_empty() || !decoded.meta.id.to_hex().eq_ignore_ascii_case(root_hex) {
-            return Err(StorageError::Parse(
-                "thin package does not match its package root".into(),
-            ));
-        }
-        Ok(Some(bytes))
+        self.checked.read(
+            &path,
+            "thin package",
+            |stamp| Ok(stamp.len()),
+            |bytes| {
+                let decoded =
+                    tilo_app_package::tapp::read(bytes, &mut tilo_app_package::DiscardBlobs)
+                        .map_err(|error| StorageError::Parse(format!("thin package: {error}")))?;
+                if !decoded.carried.is_empty()
+                    || !decoded.meta.id.to_hex().eq_ignore_ascii_case(root_hex)
+                {
+                    return Err(StorageError::Parse(
+                        "thin package does not match its package root".into(),
+                    ));
+                }
+                Ok(())
+            },
+        )
     }
 
     /// Store a full package under its BLAKE3 so this registry can host it at
@@ -498,7 +518,7 @@ impl Storage {
     /// Returns an error when a stored artifact cannot be read or no longer
     /// matches its name.
     pub fn load_artifact(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        read_named(self.artifact_path(blake3_hex), "artifact", blake3_hex)
+        self.read_served(self.artifact_path(blake3_hex), "artifact", blake3_hex, None)
     }
 
     /// The payload blob named `blake3_hex`, re-checked against its name, or
@@ -511,14 +531,12 @@ impl Storage {
         let Some(path) = self.payload_blob_path(blake3_hex) else {
             return Ok(None);
         };
-        if std::fs::metadata(&path)
-            .is_ok_and(|metadata| metadata.len() > tilo_app_package::chunks::MAX_OBJECT_BYTES)
-        {
-            return Err(StorageError::Parse(
-                "payload blob exceeds the object size limit".into(),
-            ));
-        }
-        read_named(Some(path), "payload blob", blake3_hex)
+        self.read_served(
+            Some(path),
+            "payload blob",
+            blake3_hex,
+            Some(tilo_app_package::chunks::MAX_OBJECT_BYTES),
+        )
     }
 
     /// Stage exact package bytes under their BLAKE3. A package is kept once:
@@ -2247,6 +2265,45 @@ fn write_once(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
 /// The bytes at `path`, which is named by their BLAKE3 `blake3_hex`, or
 /// `None` without a valid name or a file. Stored bytes that no longer match
 /// their name are an error, never served.
+impl Storage {
+    /// [`read_named`] for objects served to clients: the name check runs once
+    /// per stored file rather than on every request. `max_len` refuses files
+    /// larger than that before reading them.
+    fn read_served(
+        &self,
+        path: Option<PathBuf>,
+        what: &str,
+        blake3_hex: &str,
+        max_len: Option<u64>,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        self.checked.read(
+            &path,
+            what,
+            |stamp| match max_len {
+                Some(max) if stamp.len() > max => Err(StorageError::Parse(format!(
+                    "{what} exceeds the object size limit"
+                ))),
+                _ => Ok(stamp.len()),
+            },
+            |bytes| {
+                if blake3::hash(bytes)
+                    .to_hex()
+                    .eq_ignore_ascii_case(blake3_hex)
+                {
+                    Ok(())
+                } else {
+                    Err(StorageError::Parse(format!(
+                        "{what} content does not match its name"
+                    )))
+                }
+            },
+        )
+    }
+}
+
 fn read_named(
     path: Option<PathBuf>,
     what: &str,
@@ -2348,6 +2405,43 @@ mod tests {
             updated_at_unix: 100,
             signature_hex: String::new(),
         }
+    }
+
+    /// A payload blob and its compressed twin are checked against their
+    /// name the first time they are served, not on every download, and a
+    /// missing one costs no check at all.
+    #[test]
+    fn served_objects_are_checked_once_per_stored_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = Storage::open(dir.path()).unwrap();
+        storage.checked = std::sync::Arc::new(checked::CheckedFiles::settling_for(
+            std::time::Duration::ZERO,
+        ));
+        let bytes = b"a reviewed payload blob".repeat(64);
+        let hash = tilo_app_package::BlobHash::of(&bytes);
+        atomic_write(&storage.payload_dir().join(hash.to_hex()), &bytes).unwrap();
+        storage.write_payload_twin(&hash, &bytes).unwrap();
+
+        let missing = tilo_app_package::BlobHash::of(b"never stored").to_hex();
+        assert_eq!(storage.load_payload_blob(&missing).unwrap(), None);
+        assert_eq!(storage.load_payload_twin(&missing).unwrap(), None);
+        assert_eq!(storage.object_checks(), 0);
+
+        for _ in 0..5 {
+            assert_eq!(
+                storage
+                    .load_payload_blob(&hash.to_hex())
+                    .unwrap()
+                    .as_deref(),
+                Some(bytes.as_slice())
+            );
+            assert!(storage.load_payload_twin(&hash.to_hex()).unwrap().is_some());
+        }
+        assert_eq!(
+            storage.object_checks(),
+            2,
+            "one check each for the blob and its twin"
+        );
     }
 
     fn snapshot(sequence: u64, previous: String, marker: &str) -> SignedRegistrySnapshot {
