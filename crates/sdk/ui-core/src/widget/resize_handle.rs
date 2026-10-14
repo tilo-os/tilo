@@ -240,6 +240,12 @@ impl Widget for ResizeHandle {
         // ignored in favour of the row's explicit `set_neighbour_rects`.
     }
 
+    /// A fixed slot whose geometry comes from its neighbours, never from
+    /// what it contains: there is never anything to measure.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,

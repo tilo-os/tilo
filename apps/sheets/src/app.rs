@@ -3156,6 +3156,14 @@ impl Widget for SheetsApp {
         self.pending.redraw = false;
         self.grid.mark_drawn();
     }
+
+    /// The grid fills its node and places everything in it in
+    /// `apply_layout`: there is never a size for the layout solver to
+    /// measure, so a frame that only moves the window (a strip pan) solves
+    /// none.
+    fn layout_needs_measure(&self) -> bool {
+        false
+    }
 }
 
 impl ui::presence::capability::PublishesPresence for SheetsApp {
