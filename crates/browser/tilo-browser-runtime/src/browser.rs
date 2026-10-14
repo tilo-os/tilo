@@ -2742,8 +2742,13 @@ pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
             .ok_or_else(|| error("Desktop unavailable"))?;
         let tree = desktop.handle.read(Clone::clone);
         let focused = tree.active_workspace().and_then(|workspace| {
-            let strip_id = tree.active_strip.get(&workspace.id).copied()?;
-            let strip = workspace.strips.iter().find(|s| s.id == strip_id)?;
+            // A person who has not moved yet is shown the first strip, as
+            // the composition draws it.
+            let strip = tree
+                .active_strip
+                .get(&workspace.id)
+                .and_then(|id| workspace.strips.iter().find(|s| s.id == *id))
+                .or_else(|| workspace.strips.first())?;
             let group = tree
                 .active_group_for(strip.id)
                 .and_then(|g| strip.window_groups.iter().find(|w| w.id == g))

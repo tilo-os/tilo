@@ -283,6 +283,13 @@ pub(crate) fn own_recent_actions(
     }
     actions.sort_by(|a, b| a.at_ms.cmp(&b.at_ms).then_with(|| a.id.cmp(&b.id)));
     actions.dedup_by(|a, b| a.id == b.id);
+    // Typing commits a step every second or so: a run of the same action on
+    // the same resource is one thing the person did, named by its newest step.
+    actions.reverse();
+    actions.dedup_by(|older, newer| {
+        older.action == newer.action && older.resource == newer.resource && older.app == newer.app
+    });
+    actions.reverse();
     if actions.len() > MAX_OWN_ACTIONS {
         actions.drain(..actions.len().saturating_sub(MAX_OWN_ACTIONS));
     }
