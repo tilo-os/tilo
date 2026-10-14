@@ -703,6 +703,7 @@ mod component_adapter {
 
     impl Widget for BoundAppWidget {
         crate::provides!(
+            dyn crate::AppWidget,
             dyn crate::widget::FullscreenProvider,
             dyn crate::widget::CompleteContentProvider,
             dyn crate::widget::Continuable,
@@ -1432,6 +1433,11 @@ mod component_adapter {
     impl crate::search::capability::SearchSource for BoundAppWidget {
         fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
             self.component.search_providers()
+        }
+        fn search_provider_descriptors(
+            &self,
+        ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+            self.component.search_provider_descriptors()
         }
         fn activate_search_result(
             &mut self,

@@ -68,6 +68,8 @@ store-package-new-install = Not installed on this device.
 store-package-file-type = Tilo package
 store-package-review-busy = Too many package reviews are waiting. Finish the current reviews first.
 store-package-local-trust = Verified by an existing trusted attestor
+store-installed-unanswered = Bei der Installation verifiziert. { $repositories } hat nicht geantwortet. Beschreibung und Updates dieser App erscheinen hier, sobald die Quelle antwortet.
+store-installed-unlisted = Bei der Installation verifiziert. Keine aktivierte Paketquelle führt diese App, daher gibt es hier keine Updates für sie.
 store-package-local-description = Signed local application. Installation requires its payload and exact runtime to be available.
 store-package-local-source = Local package
 
@@ -77,6 +79,8 @@ store-draft-report = Meldung zu { $app_id } begonnen
 store-record-moderation-case = Die Registry hat Fall { $case_id } eröffnet: { $status }
 store-report-note = Das Anliegen einer Meldung beschrieben
 store-reports-reports = Eine Meldung bearbeitet
+
+store-source-partial = Einige Paketquellen sind nicht verfügbar. Andere Apps bleiben verfügbar.
 
 store-bot-label = BOT
 store-bot-what-it-does = Was er tut

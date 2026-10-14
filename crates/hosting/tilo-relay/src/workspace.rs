@@ -280,7 +280,36 @@ impl WorkspaceRuntime {
         pinned: bool,
         membership: Membership,
     ) -> Result<Self, crate::store::StoreError> {
-        Self::open_inner(state_root, workspace_id, pinned, membership, false)
+        Self::open_with_payloads(
+            state_root,
+            workspace_id,
+            pinned,
+            membership,
+            crate::payloads::neighbour(),
+        )
+    }
+
+    /// [`Self::open`], its store classifying retained co-edit bodies with
+    /// `payloads`, the adapter the host was started with.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::open`].
+    pub fn open_with_payloads(
+        state_root: &std::path::Path,
+        workspace_id: u64,
+        pinned: bool,
+        membership: Membership,
+        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
+    ) -> Result<Self, crate::store::StoreError> {
+        Self::open_inner(
+            state_root,
+            workspace_id,
+            pinned,
+            membership,
+            payloads,
+            false,
+        )
     }
 
     /// Open a pinned workspace only when its durable snapshot already exists.
@@ -291,8 +320,9 @@ impl WorkspaceRuntime {
         workspace_id: u64,
         pinned: bool,
         membership: Membership,
+        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
     ) -> Result<Self, crate::store::StoreError> {
-        Self::open_inner(state_root, workspace_id, pinned, membership, true)
+        Self::open_inner(state_root, workspace_id, pinned, membership, payloads, true)
     }
 
     fn open_inner(
@@ -300,9 +330,10 @@ impl WorkspaceRuntime {
         workspace_id: u64,
         pinned: bool,
         membership: Membership,
+        payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
         require_snapshot: bool,
     ) -> Result<Self, crate::store::StoreError> {
-        let store = WorkspaceStore::open(state_root, workspace_id, pinned)?;
+        let store = WorkspaceStore::open_with_payloads(state_root, workspace_id, pinned, payloads)?;
         let governed_access_record = store.load_governed_access()?;
         let admission = if governed_access_record.is_some() {
             crate::room_access::AdmissionMode::Governed

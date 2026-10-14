@@ -53,6 +53,8 @@ pub mod odt;
 mod office_meta;
 #[cfg(feature = "office")]
 mod office_props;
+#[cfg(feature = "office")]
+pub mod package;
 #[cfg(any(feature = "docx", feature = "odt"))]
 mod para_styles;
 #[cfg(feature = "office")]
@@ -154,9 +156,6 @@ pub(crate) fn generic_font_family(name: &str) -> &'static str {
         "sans"
     }
 }
-
-/// Spreadsheet formats the platform opens as a workbook resource, whatever this build compiles.
-pub const SHEET_EXTENSIONS: &[&str] = &["xlsx", "ods"];
 
 /// Document formats the platform opens as an editable rich-text resource — the OS source of
 /// truth for "this file is an editable document", independent of which codecs a given binary

@@ -77,6 +77,8 @@ pub mod compaction;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
+mod compute_actions;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod compute_session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute_transport;
@@ -97,6 +99,8 @@ pub mod environment_tools;
 #[cfg(not(target_arch = "wasm32"))]
 mod handshake;
 #[cfg(not(target_arch = "wasm32"))]
+mod host_authority;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;
 #[cfg(target_os = "linux")]
 pub mod legacy_route;
@@ -110,6 +114,8 @@ mod membership_watch;
 pub mod metrics;
 #[cfg(feature = "agents")]
 pub mod moderation;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod payloads;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
@@ -153,7 +159,7 @@ tilo_agent_participant::app_worker!();
 // daemon. The daemon keeps addressing them here.
 pub use tilo_relay_client::frame;
 pub use tilo_relay_protocol::{
-    auth, certify, config, home_peer, live, mesh, policy, process_lease,
+    auth, certify, config, home_peer, live, mesh, placement, policy, process_lease,
 };
 pub use tilo_relay_session::{antientropy, client, coedit, position};
 

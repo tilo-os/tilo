@@ -3,7 +3,8 @@
 //!
 //! The relay's admission authenticates the device that sent a delta and
 //! authorises it for the workspace, but it does not open the `AppDocument`
-//! inside or verify its `SignedOp`. Compaction is where the host first
+//! inside or verify its `SignedOp`; the host's payload adapter
+//! ([`ShellPayloads::open_document`]) is what reads the route and envelope. Compaction is where the host first
 //! relies on that signature, so every entry it folds, counts as sealed or
 //! removes has to have verified **here**, as its lineage's author, for its
 //! route.
@@ -32,24 +33,34 @@
 //! nothing else.
 
 use std::collections::HashSet;
-
-use collab_types::{DocumentFrame, DocumentMutation, DocumentSegment};
-use tilo_peer_state::NeighbourMsg;
+use std::sync::Arc;
 
 use super::Route;
+use crate::payloads::ShellPayloads;
 use crate::store::compaction::ChannelEntry;
+use collab_types::{DocumentFrame, DocumentMutation, DocumentSegment};
 
 /// BLAKE3 of a retained entry's body.
 type BodyHash = [u8; 32];
 
 /// Entry bodies of one channel whose document signature verified in this
 /// process.
-#[derive(Default)]
 pub(super) struct Signatures {
+    /// Reads the route and envelope of a document frame.
+    payloads: Arc<dyn ShellPayloads>,
     /// Verified bodies, as of the previous round.
     verified: HashSet<BodyHash>,
     /// Verified bodies this round has read so far.
     current: HashSet<BodyHash>,
+}
+
+/// Tests read the desktop's frames, as a relay started with
+/// [`Relay::start`](crate::daemon::Relay::start) does.
+#[cfg(test)]
+impl Default for Signatures {
+    fn default() -> Self {
+        Self::with_payloads(crate::payloads::neighbour())
+    }
 }
 
 /// What one entry carries, as far as the host can read it.
@@ -93,6 +104,15 @@ impl<'a> Checked<'a> {
 }
 
 impl Signatures {
+    /// A record that reads document frames with `payloads`.
+    pub(super) fn with_payloads(payloads: Arc<dyn ShellPayloads>) -> Self {
+        Self {
+            payloads,
+            verified: HashSet::new(),
+            current: HashSet::new(),
+        }
+    }
+
     /// Decode `entry` and check it: its signature verifies (unless these
     /// exact body bytes verified before), the signer is the lineage's author,
     /// and the envelope names the route it is framed for.
@@ -102,20 +122,8 @@ impl Signatures {
             route,
             piece: Piece::Opaque,
         };
-        let Ok(NeighbourMsg::AppDocument {
-            app_id,
-            cluster_id,
-            record_id,
-            envelope,
-            ..
-        }) = postcard::from_bytes::<NeighbourMsg>(&entry.body)
-        else {
+        let Some((route, envelope)) = self.payloads.open_document(&entry.body) else {
             return opaque(None);
-        };
-        let route = Route {
-            app_id,
-            cluster_id,
-            record_id,
         };
         let artifact =
             collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);

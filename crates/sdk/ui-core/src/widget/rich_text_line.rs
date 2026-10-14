@@ -139,6 +139,10 @@ pub struct RichTextLine {
     /// Paint-only semantic colours (for example fenced-code syntax). These
     /// never enter Automerge or the Markdown mark model.
     transient_colors: Vec<TransientColorSpan>,
+    /// What the owner derived `transient_colors` from, if it said: an owner
+    /// that derives them (a code run's syntax) compares this rather than
+    /// deriving them again. Any other change of the colours forgets it.
+    transient_key: Option<u64>,
     /// Formatting-only edits must notify the owning document just like typing.
     dirty: RichTextDirty,
     /// Cached theme colours used by unwrapped attributed single-line shaping.
@@ -181,6 +185,7 @@ impl RichTextLine {
             image_source_height: 0.0,
             marks: Vec::new(),
             transient_colors: Vec::new(),
+            transient_key: None,
             dirty: RichTextDirty::default(),
             accent_rgb: None,
             syntax: None,
@@ -418,6 +423,11 @@ impl RichTextLine {
         self.inner.is_focused()
     }
 
+    /// Whether the underlying input currently refuses editing.
+    pub fn is_disabled(&self) -> bool {
+        self.inner.is_disabled()
+    }
+
     /// When losing focus the cursor isn't touched — it stays wherever
     /// the user last left it.
     pub fn set_focus(&mut self, focused: bool) {
@@ -477,6 +487,24 @@ impl RichTextLine {
     }
 
     pub fn set_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
+        self.transient_key = None;
+        self.replace_transient_colors(colors);
+    }
+
+    /// [`Self::set_transient_colors`], remembering `key` as what they were
+    /// derived from; [`Self::transient_colors_key`] returns it until the
+    /// colours are set again.
+    pub fn set_keyed_transient_colors(&mut self, key: u64, colors: Vec<TransientColorSpan>) {
+        self.transient_key = Some(key);
+        self.replace_transient_colors(colors);
+    }
+
+    /// The key the current transient colours were set with, if any.
+    pub fn transient_colors_key(&self) -> Option<u64> {
+        self.transient_key
+    }
+
+    fn replace_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
         if self.transient_colors == colors {
             return;
         }
@@ -1234,6 +1262,10 @@ impl Widget for RichTextLine {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         Widget::accessibility(&self.inner)
+    }
+
+    fn accessibility_hidden(&self) -> bool {
+        Widget::accessibility_hidden(&self.inner)
     }
 
     fn perform_action(

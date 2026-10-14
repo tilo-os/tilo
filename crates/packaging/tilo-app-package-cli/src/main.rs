@@ -408,6 +408,11 @@ struct EntryArgs {
     /// Existing registry owner pin used with --runtime-catalogue.
     #[arg(long, requires = "runtime_catalogue")]
     registry_owner_pubkey: Option<String>,
+    /// Write a machine-readable exact-runtime refusal for a publisher's
+    /// bounded signed-catalogue readiness wait. No file is written for any
+    /// other verification or packaging failure.
+    #[arg(long, requires = "runtime_catalogue")]
+    missing_runtime_output: Option<PathBuf>,
     /// Payload objects of a thin .tapp, as `split` wrote them; they are
     /// hosted beside the .tapp at `--url`.
     #[arg(long)]
@@ -506,6 +511,24 @@ fn main() -> Result<()> {
     }
 }
 
+/// Fill `[package.keywords]` from the app's `search/*.ftl`, which are the
+/// only place the words are written; a manifest that also declares some by
+/// hand is refused rather than merged.
+fn add_search_keywords(manifest: &mut Manifest, manifest_path: &Path) -> Result<()> {
+    let app_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let keywords = tilo_app_package::search_keywords::read(app_dir).map_err(|e| anyhow!(e))?;
+    if !keywords.is_empty() && !manifest.package.keywords.is_empty() {
+        bail!(
+            "{} declares [package.keywords] and has search/*.ftl; keep the words in search/*.ftl only",
+            manifest_path.display()
+        );
+    }
+    if !keywords.is_empty() {
+        manifest.package.keywords = keywords;
+    }
+    Ok(())
+}
+
 fn cmd_pack(
     manifest_path: &Path,
     payload_dir: &Path,
@@ -516,6 +539,7 @@ fn cmd_pack(
     let manifest_src = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("read manifest {}", manifest_path.display()))?;
     let mut manifest = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    add_search_keywords(&mut manifest, manifest_path)?;
 
     let identity = match identity_path {
         Some(p) => load_identity(p)?,
@@ -626,7 +650,8 @@ struct PackDesktopArgs<'a> {
 fn cmd_pack_desktop(args: &PackDesktopArgs<'_>) -> Result<()> {
     let manifest_src = std::fs::read_to_string(args.manifest)
         .with_context(|| format!("read manifest {}", args.manifest.display()))?;
-    let authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    let mut authored = Manifest::from_toml_str(&manifest_src).context("decode manifest TOML")?;
+    add_search_keywords(&mut authored, args.manifest)?;
     let name = args
         .executable
         .file_name()
@@ -721,9 +746,8 @@ fn cmd_compress(file: &Path, output: Option<&Path>) -> Result<()> {
         },
         Path::to_path_buf,
     );
-    let temp = output.with_extension(format!("zst.tmp.{}", std::process::id()));
-    std::fs::write(&temp, &twin).with_context(|| format!("write {}", temp.display()))?;
-    std::fs::rename(&temp, &output).with_context(|| format!("write {}", output.display()))?;
+    tilo_files::native::atomic::write(&output, &twin)
+        .with_context(|| format!("write {}", output.display()))?;
     eprintln!(
         "compressed {} -> {}: {} -> {} bytes",
         file.display(),
@@ -1182,10 +1206,7 @@ fn reconcile_entry_history(
             .registry_owner_pubkey
             .as_deref()
             .context("runtime catalogue requires an existing registry owner pin")?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .context("clock precedes Unix epoch")?
-            .as_secs();
+        let now = tilo_clock::try_unix_now().context("clock precedes Unix epoch")?;
         registry_types::verify_snapshot(&catalogue, owner, now)
             .context("verify runtime catalogue against registry owner")?;
         let dropped = registry_client::runtime_history::reconcile(
@@ -1210,6 +1231,49 @@ fn reconcile_entry_history(
         }
     }
     Ok(())
+}
+
+fn record_missing_runtime(path: Option<&Path>, error: &anyhow::Error) -> Result<()> {
+    if let (Some(path), Some(missing)) = (
+        path,
+        error.downcast_ref::<registry_client::runtime_history::MissingRuntime>(),
+    ) {
+        let record = serde_json::json!({
+            "package_id": missing.package_id,
+            "version": missing.version,
+            "architecture": missing.architecture,
+            "runtime": missing.runtime,
+        });
+        std::fs::write(path, serde_json::to_vec(&record)?)
+            .with_context(|| format!("write exact-runtime refusal to {}", path.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod runtime_readiness_tests {
+    use super::record_missing_runtime;
+
+    #[test]
+    fn writes_only_typed_exact_runtime_refusals() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("missing.json");
+        let missing = registry_client::runtime_history::MissingRuntime {
+            package_id: "so.tilo.agent".into(),
+            version: "1.0.8".into(),
+            architecture: "aarch64".into(),
+            runtime: "tilo-runtime/exact".into(),
+        };
+        record_missing_runtime(Some(&path), &missing.into()).unwrap();
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(record["runtime"], "tilo-runtime/exact");
+        assert_eq!(record["architecture"], "aarch64");
+
+        std::fs::remove_file(&path).unwrap();
+        record_missing_runtime(Some(&path), &anyhow::anyhow!("invalid signature")).unwrap();
+        assert!(!path.exists());
+    }
 }
 
 fn load_previous_entry(path: &Path) -> Result<registry_types::RegistryEntry> {
@@ -1368,7 +1432,10 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
             &retention,
         )?
     };
-    reconcile_entry_history(args, &mut entry, &signer)?;
+    if let Err(error) = reconcile_entry_history(args, &mut entry, &signer) {
+        record_missing_runtime(args.missing_runtime_output.as_deref(), &error)?;
+        return Err(error);
+    }
     print_entry(&entry, action, &signer)?;
     // `build_entry` always builds exactly one version; `.first()`
     // avoids indexing so a future refactor there can't turn this into a panic.

@@ -368,6 +368,11 @@ pub struct NotesApp {
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
     canonical_synced: Option<CanonicalProjectionKey>,
+    /// The committed heads of the document `reconcile_canonical` last
+    /// projected, while nothing has been presented since: one event asks
+    /// several times of a document that has not moved, and reading the
+    /// notebook whole costs every note.
+    reconciled_heads: Option<Vec<ChangeHash>>,
     /// Observer-only receipt that a canonical projection reached this surface.
     projection_adopted: bool,
     /// The framework presents every state of the notebook to this window
@@ -382,6 +387,9 @@ pub struct NotesApp {
     /// surface is attached. A notebook shown before (or without) it is read
     /// only.
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::Notebook>>,
+    /// The framework's live notebook, once hosted: an edit's own result is
+    /// read from it, which reads only what the edit changed.
+    live: Option<ui::framework::Live<crate::resource::Notebook>>,
     /// Local-only current tag browse/filter. It is deliberately not persisted
     /// or replicated: collaborators may inspect different tag slices.
     active_tag_filter: Option<TagId>,
@@ -486,6 +494,9 @@ impl NotesApp {
             })
         });
         let rect = editor.get_rect();
+        let active_line = editor
+            .focused_index()
+            .and_then(|index| editor.blocks().get(index));
         serde_json::json!({
             "app": "so.tilo.notes",
             "editor_id": "block_editor",
@@ -503,6 +514,15 @@ impl NotesApp {
             "rendered_body_hash": blake3::hash(rendered.as_bytes()).to_hex().to_string(),
             "rendered_body_chars": rendered.chars().count(),
             "editor_focused": editor.is_focused(),
+            "active_line_present": active_line.is_some(),
+            "active_line_focused": active_line.is_some_and(|block| block.line.is_focused()),
+            "active_line_disabled": active_line.is_some_and(|block| block.line.is_disabled()),
+            "editor_read_only": editor.is_read_only(),
+            "editor_composing": editor.is_composing(),
+            "editor_route_available": self.main_node.is_some() && self.main.editor_route_available(),
+            "sidebar_renaming": self.sidebar.is_renaming(),
+            "sidebar_menu_open": self.sidebar.menu_is_open(),
+            "editor_menu_open": editor.slash_menu_visible() || editor.link_popover().is_visible(),
             "caret": caret,
             "editor_rect": [rect.x0, rect.y0, rect.x1, rect.y1],
         })
@@ -524,9 +544,9 @@ impl NotesApp {
         main.set_local_author(Some(author.0.clone()));
         let content = crate::notebook::content();
         let snapshot =
-            crate::notebook::image_snapshot(&workspace.notebook, |digest| content.read(digest));
-        let waiting = snapshot.len() < workspace.notebook.images.len();
-        let manifest = workspace.notebook.images.clone();
+            crate::notebook::image_snapshot(&workspace.images, |digest| content.read(digest));
+        let waiting = snapshot.len() < workspace.images.len();
+        let manifest = (*workspace.images).clone();
         let mut app = Self::build_widget(workspace, sidebar, main);
         if let Ok(mut assets) = app.canonical_assets.write() {
             *assets = snapshot;
@@ -541,12 +561,51 @@ impl NotesApp {
     }
 
     fn project_workspace(doc: &AutoCommit, selected: Option<PageId>) -> Result<Workspace, String> {
-        let mut workspace = Workspace::of(Rc::new(read_notebook(doc)?), &Workspace::default());
+        let notebook =
+            ui::tilo_resource::profiling::measure("read_notebook", || read_notebook(doc))?;
+        Ok(Self::select_in(
+            Workspace::of(&notebook, &Workspace::default()),
+            selected,
+        ))
+    }
+
+    /// The workspace a restored view shows of `doc`, after the one the
+    /// window shows: notes that did not change keep what it read of them.
+    /// Hosted, the framework read the notebook when it opened the record and
+    /// follows `doc` since: the restore takes that state, reading only what
+    /// changed after it, rather than every note a second time. A peer's
+    /// change that arrived in between is in it, because the live notebook is
+    /// synced to `doc` first.
+    fn project_restored(
+        &self,
+        doc: &AutoCommit,
+        selected: Option<PageId>,
+    ) -> Result<Workspace, String> {
+        let live = self
+            .live
+            .as_ref()
+            .filter(|live| live.unreadable().is_none());
+        let workspace = if let Some(live) = live {
+            ui::tilo_resource::profiling::measure("live_projection", || {
+                live.sync(doc).map_err(|error| error.to_string())?;
+                Ok::<_, String>(Workspace::of(&live.get(), &self.workspace))
+            })?
+        } else {
+            let notebook =
+                ui::tilo_resource::profiling::measure("read_notebook", || read_notebook(doc))?;
+            Workspace::of(&notebook, &self.workspace)
+        };
+        Ok(Self::select_in(workspace, selected))
+    }
+
+    /// `workspace` showing `selected` when it holds that note, else its first
+    /// top-level note.
+    fn select_in(mut workspace: Workspace, selected: Option<PageId>) -> Workspace {
         let selected = selected
             .filter(|page| workspace.get(*page).is_some())
             .or_else(|| workspace.children_of(None).first().map(|page| page.id));
         workspace.set_selected(selected);
-        Ok(workspace)
+        workspace
     }
 
     fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
@@ -627,9 +686,11 @@ impl NotesApp {
             main_scroll_copy: None,
             status_over_main: Vec::new(),
             canonical_synced: None,
+            reconciled_heads: None,
             projection_adopted: false,
             presented: false,
             dispatcher: None,
+            live: None,
             active_tag_filter: None,
             route_history: ui::NavStack::new(initial_route),
             history_target: None,
@@ -665,6 +726,7 @@ impl NotesApp {
     }
 
     fn refresh_status(&mut self) {
+        let _profile = ui::tilo_resource::profiling::Phase::start("status_refresh");
         let path = match self.workspace.selected() {
             Some(id) => self.breadcrumb_for(id),
             None => String::new(),
@@ -967,7 +1029,7 @@ impl NotesApp {
             .selected()
             .into_iter()
             .filter_map(|page| self.workspace.bodies.get(&page))
-            .flatten()
+            .flat_map(|blocks| blocks.iter())
             .flat_map(|block| block.marks.clone())
             .filter_map(|span| match span.mark {
                 actions::InlineMark::Transclusion { page } => page.parse::<PageId>().ok(),
@@ -983,7 +1045,7 @@ impl NotesApp {
                     .bodies
                     .get(&page.id)
                     .into_iter()
-                    .flatten()
+                    .flat_map(|blocks| blocks.iter())
                     .map(|block| block.text.clone())
                     .find(|text| !text.trim().is_empty())
                     .unwrap_or_else(|| "Empty note".to_string());
@@ -1168,7 +1230,7 @@ impl NotesApp {
     /// we deliberately do NOT create it here, so binding can never fork
     /// the `pages` Map ahead of the handshake.
     fn bind_selected_page(&mut self, state: &AutoCommit, sel: PageId) {
-        if self.workspace.body_state(sel).is_none() {
+        if !self.workspace.has_stored_body(sel) {
             return; // page not in the shared doc yet — wait for sync
         }
         let title = self
@@ -1359,7 +1421,11 @@ impl NotesApp {
     pub(crate) fn adopt_resource_state(&mut self, state: &Rc<crate::Notebook>) {
         self.projection_adopted = true;
         self.presented = true;
-        self.adopt(Workspace::of(Rc::clone(state), &self.workspace));
+        self.reconciled_heads = None;
+        let workspace = ui::tilo_resource::profiling::measure("workspace_projection", || {
+            Workspace::of(state, &self.workspace)
+        });
+        self.adopt(workspace);
         let selected = self.workspace.selected();
         if self.bound_page != selected {
             self.bound_page = None;
@@ -1370,11 +1436,13 @@ impl NotesApp {
             self.open_when_present = None;
             self.navigate_to(page);
         }
-        self.sidebar.sync_from_workspace(&self.workspace);
+        ui::tilo_resource::profiling::measure("sidebar_projection", || {
+            self.sidebar.sync_from_workspace(&self.workspace);
+        });
         if let Some(page) = selected.and_then(|id| self.workspace.get(id)) {
             self.main.set_title(Some(page.title.clone()));
         }
-        self.refresh_link_pages();
+        ui::tilo_resource::profiling::measure("link_pages", || self.refresh_link_pages());
         self.self_dirty = true;
     }
 
@@ -1383,9 +1451,11 @@ impl NotesApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Notebook>,
         actions: ui::framework::Actions<crate::resource::Notebook>,
+        live: ui::framework::Live<crate::resource::Notebook>,
     ) {
         self.main.attach_notebook(dispatcher.clone(), actions);
         self.dispatcher = Some(dispatcher);
+        self.live = Some(live);
     }
 
     /// What opens a note the framework names by its item: a search hit, an
@@ -1453,7 +1523,7 @@ impl NotesApp {
             }
             self.index_search_page(
                 source,
-                bodies.get(&source).map(Vec::as_slice).unwrap_or_default(),
+                bodies.get(&source).map(AsRef::as_ref).unwrap_or_default(),
                 &known_pages,
             );
         }
@@ -1508,8 +1578,28 @@ impl NotesApp {
     fn reconcile_canonical(&mut self, doc: &AutoCommit) -> Result<(), String> {
         #[cfg(test)]
         let _profile = ui::tilo_resource::profiling::Phase::start("reconcile_canonical");
-        let workspace = Workspace::of(Rc::new(read_notebook(doc)?), &self.workspace);
-        self.adopt(workspace);
+        // An open transaction may hold writes the heads do not name yet.
+        let heads = (doc.pending_ops() == 0).then(|| doc.base_heads());
+        if heads.is_none() || heads != self.reconciled_heads {
+            let workspace = if let Some(live) = self.live.as_ref().filter(|_| self.presented) {
+                // Hosted, the framework's live notebook reads what changed
+                // since it last followed the document; the state is held
+                // only while it is projected, so the framework keeps
+                // updating it in place.
+                ui::tilo_resource::profiling::measure("live_projection", || {
+                    live.sync(doc).map_err(|error| error.to_string())?;
+                    Ok::<_, String>(Workspace::of(&live.get(), &self.workspace))
+                })?
+            } else {
+                let notebook =
+                    ui::tilo_resource::profiling::measure("read_notebook", || read_notebook(doc))?;
+                ui::tilo_resource::profiling::measure("workspace_projection", || {
+                    Workspace::of(&notebook, &self.workspace)
+                })
+            };
+            self.adopt(workspace);
+            self.reconciled_heads = heads;
+        }
         if self
             .active_tag_filter
             .is_some_and(|tag| self.workspace.get_tag(tag).is_none())
@@ -1533,8 +1623,26 @@ impl NotesApp {
         edits: &mut ui::widget::Edits<'_>,
         event: OutEvent,
     ) -> Result<(), String> {
-        self.reconcile_canonical(edits.doc())?;
         let gone = |app: &Self, id: PageId| app.workspace.get(id).is_none();
+        if let OutEvent::Select(id) = event
+            && !gone(self, id)
+        {
+            // Choosing a note the window shows writes nothing: it is taken
+            // against the workspace on screen, as `sync` takes it, without
+            // reading the notebook again. A note a collaborator removed since
+            // leaves the selection when the next projection arrives; one the
+            // window does not show yet (created before the next presentation)
+            // is looked up in the document below.
+            self.workspace.set_selected(Some(id));
+            self.sidebar.sync_from_workspace(&self.workspace);
+            if let Some(page) = self.workspace.get(id) {
+                self.main.set_title(Some(page.title.clone()));
+            }
+            self.record_current_route();
+            self.refresh_status();
+            return Ok(());
+        }
+        self.reconcile_canonical(edits.doc())?;
         match event {
             OutEvent::Select(id) => {
                 if gone(self, id) {
@@ -1722,7 +1830,7 @@ impl NotesApp {
     /// and pick up referenced bytes that arrive from a collaborator's device
     /// after the reference did.
     fn refresh_canonical_assets(&mut self) {
-        let manifest = &self.workspace.notebook.images;
+        let manifest = Rc::clone(&self.workspace.images);
         let retry = self
             .canonical_assets_waiting
             .is_some_and(|since| since.elapsed() >= std::time::Duration::from_secs(1));
@@ -1730,9 +1838,7 @@ impl NotesApp {
             return;
         }
         let content = crate::notebook::content();
-        let snapshot = crate::notebook::image_snapshot(&self.workspace.notebook, |digest| {
-            content.read(digest)
-        });
+        let snapshot = crate::notebook::image_snapshot(&manifest, |digest| content.read(digest));
         let waiting = snapshot.len() < manifest.len();
         let arrived = self
             .canonical_assets
@@ -1741,7 +1847,7 @@ impl NotesApp {
         if let Ok(mut assets) = self.canonical_assets.write() {
             *assets = snapshot;
         }
-        self.canonical_asset_manifest = manifest.clone();
+        self.canonical_asset_manifest = (*manifest).clone();
         self.canonical_assets_waiting = waiting.then(ui::time::now);
         if arrived && retry {
             // The image store remembers a failed load; a fresh store draws the
@@ -2126,7 +2232,8 @@ impl ui::application_view::ApplicationViewState for NotesApp {
     ) -> Result<ui::application_view::ApplicationFocusRestore, ui::view::ThawError> {
         use crate::local_view::{NotesLocalViewV1, PreparedFocus};
         let local = NotesLocalViewV1::decode(local)?;
-        let workspace = Self::project_workspace(doc, local.selected_page)
+        let workspace = self
+            .project_restored(doc, local.selected_page)
             .map_err(ui::view::ThawError::State)?;
         let mut main = self
             .main
@@ -2139,7 +2246,7 @@ impl ui::application_view::ApplicationViewState for NotesApp {
                     .bodies
                     .get(&page)
                     .into_iter()
-                    .flatten()
+                    .flat_map(|blocks| blocks.iter())
                     .map(|block| block.id.clone())
                     .collect::<std::collections::HashSet<_>>()
             })
@@ -2154,7 +2261,9 @@ impl ui::application_view::ApplicationViewState for NotesApp {
             .filter(|id| workspace.tags().iter().any(|tag| tag.id == *id));
         // All validation/projection above precedes the first saved local change.
         self.main = main;
-        self.workspace = workspace;
+        // The notes that changed since the window last showed the notebook
+        // are indexed again for search and links.
+        self.adopt(workspace);
         self.sidebar = sidebar;
         self.active_tag_filter = active_tag;
         self.bound_page = self.workspace.selected();
@@ -3606,10 +3715,13 @@ mod tests {
     }
 
     /// The dispatcher the framework attaches to the notebook surface, for a
-    /// test that drives `NotesApp` over a document of its own.
+    /// test that drives `NotesApp` over a document of its own. The live
+    /// notebook follows the framework's record, so a surface over another
+    /// document is never presented and never reads it.
     fn framework_dispatcher() -> (
         ui::framework::Dispatcher<crate::resource::Notebook>,
         ui::framework::Actions<crate::resource::Notebook>,
+        ui::framework::Live<crate::resource::Notebook>,
     ) {
         let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
         let notes = app.surface_mut::<NotesApp>();
@@ -3619,6 +3731,7 @@ mod tests {
                 .clone()
                 .expect("the framework attaches its dispatcher"),
             notes.main.actions().expect("and its actions"),
+            notes.live.clone().expect("and its live notebook"),
         )
     }
 
@@ -3630,8 +3743,8 @@ mod tests {
             &ui::permissions::UserId("notes-app-test-author".into()),
         )
         .unwrap();
-        let (dispatcher, actions) = framework_dispatcher();
-        app.attach_framework(dispatcher, actions);
+        let (dispatcher, actions, live) = framework_dispatcher();
+        app.attach_framework(dispatcher, actions, live);
         app
     }
 

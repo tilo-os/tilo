@@ -58,7 +58,8 @@ impl Mode {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum Request {
     /// Hold a record ([`Mode::Replica`]): a new one when `seed` is `None`,
-    /// otherwise the record named with its durable changes in order.
+    /// a new one under the record named when it has no changes, otherwise
+    /// the record named with its durable changes in order.
     Open {
         app_id: String,
         room: String,
@@ -179,7 +180,14 @@ pub(crate) enum WireDoorError {
     MissingArgument(String),
     UnexpectedArgument(String),
     InvalidArguments(String),
-    Unavailable { code: String, reason: String },
+    ArgumentOutOfRange {
+        param: String,
+        violation: tilo_actions::ArgViolation,
+    },
+    Unavailable {
+        code: String,
+        reason: String,
+    },
     ConfirmationRequired,
     UnregisteredType(String),
     Failed(String),
@@ -193,6 +201,10 @@ impl WireDoorError {
             DoorError::MissingArgument(at) => Self::MissingArgument(address(at)),
             DoorError::UnexpectedArgument(at) => Self::UnexpectedArgument(address(at)),
             DoorError::InvalidArguments(reason) => Self::InvalidArguments(reason.clone()),
+            DoorError::ArgumentOutOfRange { param, violation } => Self::ArgumentOutOfRange {
+                param: param.clone(),
+                violation: violation.clone(),
+            },
             DoorError::Unavailable { code, reason } => Self::Unavailable {
                 code: code.clone(),
                 reason: reason.clone(),
@@ -212,6 +224,9 @@ impl WireDoorError {
             Self::MissingArgument(at) => DoorError::MissingArgument(address(&at)),
             Self::UnexpectedArgument(at) => DoorError::UnexpectedArgument(address(&at)),
             Self::InvalidArguments(reason) => DoorError::InvalidArguments(reason),
+            Self::ArgumentOutOfRange { param, violation } => {
+                DoorError::ArgumentOutOfRange { param, violation }
+            }
             Self::Unavailable { code, reason } => DoorError::Unavailable { code, reason },
             Self::ConfirmationRequired => DoorError::ConfirmationRequired,
             Self::UnregisteredType(kind) => DoorError::UnregisteredType(kind),

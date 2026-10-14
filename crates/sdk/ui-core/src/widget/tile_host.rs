@@ -1991,6 +1991,26 @@ impl Widget for TileHost {
         children
     }
 
+    /// The tile's own node fills the window whatever it shows, so a notice
+    /// or a stub has nothing to measure once laid out; app content and
+    /// History report their own.
+    fn is_layout_dirty(&self) -> bool {
+        if self.record_error.is_some() {
+            return true;
+        }
+        let mut has_children = false;
+        let mut dirty = false;
+        self.for_each_child(&mut |child| {
+            has_children = true;
+            dirty = dirty || child.is_layout_dirty();
+        });
+        if has_children {
+            dirty
+        } else {
+            self.rect == Rect::ZERO
+        }
+    }
+
     fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         let _running = self.running();
         if !self.history_lifetime.active.get()
@@ -2598,6 +2618,16 @@ impl crate::search::capability::SearchSource for TileHost {
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         match &self.content {
             TileContent::App(app) => crate::search::capability::search_providers(app.as_ref()),
+            _ => Vec::new(),
+        }
+    }
+    fn search_provider_descriptors(
+        &self,
+    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+        match &self.content {
+            TileContent::App(app) => {
+                crate::search::capability::search_provider_descriptors(app.as_ref())
+            }
             _ => Vec::new(),
         }
     }

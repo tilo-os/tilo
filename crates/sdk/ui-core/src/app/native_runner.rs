@@ -1550,7 +1550,7 @@ impl AppHandler {
         window_id: WindowId,
         event: WindowEvent,
         origin: native_input_isolation::EventOrigin,
-    ) {
+    ) -> bool {
         native_input_isolation::dispatch(
             self.native_input_route_isolation,
             origin,
@@ -1558,7 +1558,7 @@ impl AppHandler {
             |event| {
                 self.handle_routed_window_event(event_loop, window_id, event);
             },
-        );
+        )
     }
     /// Called before showing the window on Windows, and from the first
     /// `RedrawRequested` elsewhere so GPU init doesn't starve Wayland's
@@ -3465,7 +3465,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             return;
         };
         let window_id = window.id();
-        let mut effect_before = None;
         let event = match event {
             UserEvent::NativeScenarioInput(packet) => {
                 if self.native_input_origin.is_none() {
@@ -3500,20 +3499,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         "lateness_us": now.saturating_duration_since(packet.scheduled_at).as_micros(),
                     }),
                 );
-                effect_before = self
-                    .app
-                    .native_input_snapshot()
-                    .map(|value| (packet.id, value));
+                let before = self.app.native_input_snapshot();
                 self.native_input_ids.push(packet.id);
-                match packet.input {
-                    crate::native_scenario::Input::Hover { x, y } => UserEvent::Hover { x, y },
-                    crate::native_scenario::Input::Click { x, y } => UserEvent::Click { x, y },
-                    crate::native_scenario::Input::Wheel { dx, dy } => UserEvent::Wheel { dx, dy },
-                    crate::native_scenario::Input::Character { value } => {
-                        UserEvent::Key(winit::keyboard::Key::Character(value.to_string().into()))
-                    }
-                    crate::native_scenario::Input::Key { key } => UserEvent::Key(key.into()),
+                // Pen steps carry their samples ahead of each pointer event,
+                // so a paced stroke reaches widgets as a tablet's would.
+                for event in packet.input.window_events() {
+                    self.injected_window_event(event_loop, window_id, event);
                 }
+                if let Some(before) = before {
+                    crate::native_scenario::log::emit_json(
+                        "tilo-native-effect",
+                        serde_json::json!({
+                            "id": packet.id, "before": before, "after": self.app.native_input_snapshot(),
+                        }),
+                    );
+                }
+                return;
             }
             other => other,
         };
@@ -3629,14 +3630,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     AkWindowEvent::AccessibilityDeactivated => {}
                 }
             }
-        }
-        if let Some((id, before)) = effect_before {
-            crate::native_scenario::log::emit_json(
-                "tilo-native-effect",
-                serde_json::json!({
-                    "id": id, "before": before, "after": self.app.native_input_snapshot(),
-                }),
-            );
         }
     }
 
@@ -3855,17 +3848,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             None
         };
         self.note_host_appearance_event(&event);
-        self.route_window_event(
+        let admitted = self.route_window_event(
             event_loop,
             window_id,
             event,
             native_input_isolation::EventOrigin::Platform,
         );
         if let Some(input) = physical_input {
-            crate::native_scenario::log::emit_json(
-                "tilo-physical-input",
-                crate::physical_input_trace::Trace::effect(input, self.app.native_input_snapshot()),
-            );
+            let mut row =
+                crate::physical_input_trace::Trace::effect(input, self.app.native_input_snapshot());
+            let modifiers = self.app.input.modifiers.state();
+            row["input_route_admitted"] = serde_json::json!(admitted);
+            row["modifiers"] = serde_json::json!({
+                "shift": modifiers.shift_key(), "control": modifiers.control_key(),
+                "alt": modifiers.alt_key(), "super": modifiers.super_key(),
+            });
+            crate::native_scenario::log::emit_json("tilo-physical-input", row);
         }
     }
 
@@ -4890,9 +4888,9 @@ impl App {
             dispatching_touch_pointer: false,
             native_scenario,
             native_input_ids: Vec::new(),
-            physical_input_trace: std::env::var("TILO_PROFILE_PRESENTATION")
-                .is_ok_and(|value| value == "1")
-                .then(crate::physical_input_trace::Trace::default),
+            physical_input_trace: crate::physical_input_trace::Trace::when_enabled(
+                std::env::var("TILO_PROFILE_PRESENTATION").ok().as_deref(),
+            ),
             native_input_origin: None,
             native_input_pointer_passthrough: false,
             native_input_route_isolation: false,

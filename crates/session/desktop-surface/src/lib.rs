@@ -27,5 +27,6 @@ pub mod surface;
 
 pub use surface::{
     AppInbox, AppNotifier, DesktopHandle, DesktopNotifications, DesktopSurface, HistorySource,
-    HostAction, NotificationOutcome, TileSource, published_selection, seed_tree,
+    HostAction, HostActionSource, NotificationOutcome, TileSource, is_host_offer,
+    published_selection, seed_tree,
 };

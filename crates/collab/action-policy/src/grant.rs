@@ -3,7 +3,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use web_time::{SystemTime, UNIX_EPOCH};
+use tilo_clock::{SystemTime, UNIX_EPOCH};
 
 use crate::{KindSet, TreePath};
 

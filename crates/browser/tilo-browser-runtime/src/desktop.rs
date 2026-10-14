@@ -8,7 +8,7 @@
 //! documents. A profile with no stored desktop is seeded with a window per
 //! requested application.
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,10 +76,6 @@ pub(crate) fn known_application(app: &str) -> Option<&'static str> {
         .find_map(|(id, title)| (id == app).then_some(title))
 }
 
-/// What a group's new-tab control opens: Notes where the bundle has it,
-/// else the first application.
-const NEW_TAB_APP: &str = "so.tilo.notes";
-
 pub(crate) fn catalogue() -> Vec<Application> {
     known_applications()
         .into_iter()
@@ -104,6 +100,10 @@ pub(crate) struct Inputs {
     pub author: String,
     pub permissions: Rc<RefCell<PermissionContext>>,
 }
+
+/// The person who made each strip or opened each window, by its id. Kept
+/// with the desktop so whoever wants to know can ask; it grants nothing.
+pub(crate) type Authors = Rc<RefCell<BTreeMap<u64, String>>>;
 
 /// State the mount and the tile source share.
 #[derive(Clone, Default)]
@@ -130,6 +130,8 @@ pub(crate) struct Shared {
     /// Record ids of tabs whose application is not loaded yet: the record's
     /// kind comes with the application, so they are bound once it is.
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
+    /// Who made each strip and opened each window, by strip or tab id.
+    pub authors: Authors,
     /// Applications whose code is being fetched.
     loading: Rc<RefCell<std::collections::HashSet<&'static str>>>,
     /// Applications whose code failed to load since their tabs last asked.
@@ -440,6 +442,31 @@ impl Shared {
             .collect()
     }
 
+    /// The record `tab` shows as the room's live layer names it: its
+    /// application and the record id, empty for the package's primary
+    /// record.
+    pub fn live_record_of(&self, tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
+        let app = tree
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|candidate| candidate.id == tab)
+            .and_then(|tab| match &tab.tile {
+                TileContent::LocalApp { app_id, .. } => Some(app_id.clone()),
+                _ => None,
+            })?;
+        let records = self.records.borrow();
+        let id = &records.get(&tab)?.id;
+        let record = if id.is_package_primary() {
+            String::new()
+        } else {
+            id.as_str().to_owned()
+        };
+        Some((app, record))
+    }
+
     /// The record `tab` shows, once its component bound one.
     pub fn record_of(&self, tab: TabId) -> Option<String> {
         self.records
@@ -704,15 +731,6 @@ impl TileSource for Tiles {
         }
     }
 
-    fn new_tab(&mut self, _: &Workspace, id: TabId) -> Option<Tab> {
-        let known = known_applications();
-        let (app, title) = known
-            .iter()
-            .find(|(app, _)| *app == NEW_TAB_APP)
-            .or_else(|| known.first())?;
-        Some(app_tab(id, app, title))
-    }
-
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
         if let Some(node_app) = app.strip_prefix(NODE_APP_LAUNCH) {
             // Opened on the node; its window arrives as a legacy window.
@@ -747,6 +765,10 @@ impl TileSource for Tiles {
             return Some(tab);
         }
         let title = known_application(app)?;
+        self.shared
+            .authors
+            .borrow_mut()
+            .insert(id, self.inputs.author.clone());
         Some(app_tab(id, app, title))
     }
 
@@ -800,6 +822,9 @@ struct StoredDesktop {
     tree: DesktopTree,
     /// `(tab, record id)` for every tab whose component bound a record.
     records: Vec<(TabId, String)>,
+    /// Who made each strip and opened each window still on the desktop.
+    #[serde(default)]
+    authors: BTreeMap<u64, String>,
 }
 
 /// Saves a mounted desktop to the profile whenever its tree or its tabs'
@@ -812,6 +837,7 @@ pub(crate) struct Persistence {
     records_changed: Rc<Cell<bool>>,
     records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
     unbound: Rc<RefCell<HashMap<TabId, String>>>,
+    authors: Authors,
     /// Every change of this device's desktop, for Activity
     /// (`tilo_desktop_surface::history_log`).
     pub history: Rc<RefCell<AutoCommit>>,
@@ -831,8 +857,18 @@ impl Persistence {
     pub fn save(&self, handle: &DesktopHandle) -> Result<(), String> {
         let notifications_revision = self.notifications.revision();
         if notifications_revision != self.saved_notifications_revision.get() {
+            // Asks are the page's to make again: one kept past a reload
+            // could no longer be answered.
+            let history: Vec<_> = self
+                .notifications
+                .log()
+                .history()
+                .iter()
+                .filter(|notification| !tilo_desktop_surface::is_host_offer(notification))
+                .cloned()
+                .collect();
             let bytes = tilo_desktop_surface::notifications::encode_history(
-                self.notifications.log().history(),
+                &history,
                 ui::time::SystemTime::now(),
                 ui::time::now(),
             )
@@ -850,7 +886,12 @@ impl Persistence {
         {
             return Ok(());
         }
-        let stored = stored_desktop(handle, &self.records.borrow(), &self.unbound.borrow());
+        let stored = stored_desktop(
+            handle,
+            &self.records.borrow(),
+            &self.unbound.borrow(),
+            &self.authors.borrow(),
+        );
         let value = serde_json::to_value(&stored).map_err(|error| error.to_string())?;
         let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
         self.store
@@ -885,11 +926,14 @@ fn stored_desktop(
     handle: &DesktopHandle,
     bindings: &HashMap<TabId, RecordCheckout>,
     unbound: &HashMap<TabId, String>,
+    authors: &BTreeMap<u64, String>,
 ) -> StoredDesktop {
     handle.read(|tree| {
         let mut live = std::collections::HashSet::new();
+        let mut strips = std::collections::HashSet::new();
         for workspace in &tree.workspaces {
             for strip in &workspace.strips {
+                strips.insert(strip.id.0);
                 for group in &strip.window_groups {
                     live.extend(group.tabs.iter().map(|tab| tab.id));
                 }
@@ -907,16 +951,27 @@ fn stored_desktop(
             )
             .collect();
         records.sort_unstable();
+        let authors = authors
+            .iter()
+            .filter(|(id, _)| strips.contains(*id) || live.contains(*id))
+            .map(|(id, author)| (*id, author.clone()))
+            .collect();
         StoredDesktop {
             tree: tree.clone(),
             records,
+            authors,
         }
     })
 }
 
 /// The desktop as peers share it: the tree and each tab's record.
 pub(crate) fn shared_value(handle: &DesktopHandle, shared: &Shared) -> serde_json::Value {
-    let mut desktop = stored_desktop(handle, &shared.records.borrow(), &shared.unbound.borrow());
+    let mut desktop = stored_desktop(
+        handle,
+        &shared.records.borrow(),
+        &shared.unbound.borrow(),
+        &shared.authors.borrow(),
+    );
     desktop.tree = handle.shared_tree();
     serde_json::to_value(desktop).unwrap_or(serde_json::Value::Null)
 }
@@ -939,6 +994,11 @@ pub(crate) fn apply_shared(
     {
         let (bound, unbound) = stored_records(&desktop);
         shared.unbound.borrow_mut().extend(unbound);
+        let mut authors = shared.authors.borrow_mut();
+        for (id, author) in &desktop.authors {
+            authors.entry(*id).or_insert_with(|| author.clone());
+        }
+        drop(authors);
         let mut records = shared.records.borrow_mut();
         for (tab, checkout) in bound {
             if records
@@ -1028,6 +1088,7 @@ pub(crate) fn mount(
         let (bound, unbound) = stored_records(&stored);
         *shared.records.borrow_mut() = bound;
         *shared.unbound.borrow_mut() = unbound;
+        *shared.authors.borrow_mut() = stored.authors;
         stored.tree
     } else {
         let definitions: Vec<(&str, &'static str)> = match apps {
@@ -1087,6 +1148,7 @@ pub(crate) fn mount(
         records_changed: Rc::clone(&shared.records_changed),
         records: Rc::clone(&shared.records),
         unbound: Rc::clone(&shared.unbound),
+        authors: Rc::clone(&shared.authors),
         history: Rc::new(RefCell::new(history)),
         history_key,
         history_dirty: Cell::new(false),

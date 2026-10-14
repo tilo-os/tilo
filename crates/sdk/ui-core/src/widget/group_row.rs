@@ -358,6 +358,12 @@ pub struct GroupRow {
     /// Groups the last draw skipped as outside the row. They keep their
     /// dirty state, so cached scenes rebuild once they are painted again.
     culled_groups: Vec<u64>,
+    /// When the latest frame synced the groups, and which of them its draw
+    /// then left unpainted: a deadline of theirs that was due by then has
+    /// had its frame, and what is left of it is for their paint.
+    synced_at: Option<Instant>,
+    unpainted: Vec<u64>,
+    unpainted_since: Option<Instant>,
     /// While the lane being drawn is in canvas coordinates (a presenter
     /// keeps the strip): what of the canvas the screen shows this draw.
     /// `None` in screen space.
@@ -1003,6 +1009,9 @@ impl GroupRow {
             sibling_fade_hold: None,
             fade_hero: None,
             culled_groups: Vec::new(),
+            synced_at: None,
+            unpainted: Vec::new(),
+            unpainted_since: None,
             apart_window: None,
             apart_spans: Vec::new(),
             apart_drawings: Vec::new(),
@@ -1393,6 +1402,20 @@ impl GroupRow {
     /// Whether the strip is partitioned across displays.
     pub fn is_partitioned(&self) -> bool {
         !self.lanes.is_empty()
+    }
+
+    /// The shown group a left press at the remembered cursor lands in;
+    /// mouse buttons carry no position of their own.
+    pub fn group_under_cursor(&self) -> Option<u64> {
+        self.groups
+            .iter()
+            .enumerate()
+            .find(|(i, group)| {
+                !self.layout_hides_group(*i)
+                    && !group.is_closing()
+                    && group.get_rect().contains(self.last_cursor)
+            })
+            .map(|(_, group)| group.id)
     }
 
     /// Whether logical point `p` is over this strip: inside one of its
@@ -3176,10 +3199,26 @@ impl Widget for GroupRow {
     fn modal_capture(&self) -> Option<Rect> {
         self.children().into_iter().find_map(Widget::modal_capture)
     }
+    /// A group the latest frame left unpainted (outside the row) had that
+    /// frame for every deadline due by its sync. One still pending waits for
+    /// the group's paint (a status pill that clears itself when drawn), which
+    /// only showing the group gives, so it must not wake the host on every
+    /// frame. Its later deadlines (an alarm, a poll) still wake it.
     fn next_wake_deadline(&self) -> Option<Instant> {
+        let served = |child: &dyn Widget, deadline: Instant| {
+            self.unpainted_since.is_some_and(|since| deadline <= since)
+                && self.groups.iter().any(|group| {
+                    self.unpainted.contains(&group.id)
+                        && std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(group), child)
+                })
+        };
         self.children()
             .into_iter()
-            .filter_map(Widget::next_wake_deadline)
+            .filter_map(|child| {
+                child
+                    .next_wake_deadline()
+                    .filter(|&deadline| !served(child, deadline))
+            })
             .min()
     }
 
@@ -3273,6 +3312,7 @@ impl Widget for GroupRow {
         Some(self)
     }
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        self.synced_at = Some(crate::time::now());
         for g in &mut self.groups {
             g.sync(state, root);
         }
@@ -4084,13 +4124,17 @@ impl Widget for GroupRow {
     fn mark_drawn(&mut self) {
         let culled = std::mem::take(&mut self.culled_groups);
         for group in &mut self.groups {
-            if !culled.contains(&group.id) {
+            if culled.contains(&group.id) {
+                group.next_frame();
+            } else {
                 group.mark_drawn();
             }
         }
         for handle in &mut self.handles {
             handle.mark_drawn();
         }
+        self.unpainted = culled;
+        self.unpainted_since = self.synced_at;
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -5654,6 +5698,223 @@ mod tests {
 
     fn make_row_with_groups(tab_specs: &[&[u64]]) -> GroupRow {
         make_row_with_groups_with_taffy(tab_specs).0
+    }
+
+    /// A row a host pans between frames, as the desktop surface pans its
+    /// shown strip for a wheel: begin, travel and end in one step.
+    struct PannedRow {
+        row: GroupRow,
+        travel: std::rc::Rc<std::cell::Cell<Option<f64>>>,
+    }
+
+    impl crate::widget::Decorator for PannedRow {
+        type Inner = GroupRow;
+        fn inner(&self) -> &GroupRow {
+            &self.row
+        }
+        fn inner_mut(&mut self) -> &mut GroupRow {
+            &mut self.row
+        }
+        fn needs_redraw(&self) -> bool {
+            self.travel.get().is_some() || self.row.needs_redraw()
+        }
+        fn update(&mut self, state: &crate::widget::AppModel, path: &ModelPath) -> bool {
+            if let Some(travel) = self.travel.take() {
+                self.row.begin_strip_pan();
+                assert!(self.row.update_strip_pan(travel), "the strip moves");
+                self.row.end_strip_pan(crate::time::now());
+            }
+            self.row.update(state, path)
+        }
+    }
+
+    /// A pan translates windows that are already laid out: the frame
+    /// re-applies positions, so hit-testing and culling follow, but solves
+    /// no size, and a strip of windows pans at the cost of moving them.
+    #[test]
+    fn a_strip_pan_re_applies_positions_without_measuring() {
+        let travel = std::rc::Rc::new(std::cell::Cell::new(None));
+        let groups = (1..=6).map(|id| make_group(id * 100, &[id])).collect();
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            PannedRow {
+                row: GroupRow::new(groups),
+                travel: std::rc::Rc::clone(&travel),
+            },
+            (1200, 800),
+            Theme::dark(),
+        );
+        for _ in 0..4 {
+            harness.relayout();
+        }
+        let row = |harness: &crate::headless::FrameHarness| {
+            let row = &harness.root::<PannedRow>().row;
+            (
+                row.scroll_x(),
+                row.groups[0].get_rect(),
+                row.pan_max_scroll_x(),
+            )
+        };
+        let (start, first, max) = row(&harness);
+        assert!(max > 300.0, "six windows overflow 1200 px: {max}");
+        let nodes = harness.layout_node_ids();
+
+        travel.set(Some(150.0));
+        assert!(harness.poll_frame().unwrap(), "a pan presents a frame");
+        let stats = harness.last_relayout();
+        assert!(!stats.rebuilt, "a pan keeps the composition: {stats:?}");
+        assert!(
+            !stats.measured,
+            "a pan solves no size: {stats:?}, asked by {:?}",
+            harness.layout_measure_requesters()
+        );
+        assert_eq!(harness.layout_node_ids(), nodes);
+        let (panned, moved, _) = row(&harness);
+        assert!((panned - start - 150.0).abs() < 1e-9, "{start} -> {panned}");
+        assert!(
+            (first.x0 - moved.x0 - 150.0).abs() < 1e-9,
+            "the windows are laid out where the strip panned to: {first:?} -> {moved:?}"
+        );
+        harness.verify_retained_geometry().unwrap();
+    }
+
+    /// An app whose wake deadline only its paint moves on, as a status pill
+    /// that clears itself once drawn after its linger.
+    struct PaintedDeadline {
+        deadline: std::rc::Rc<std::cell::Cell<Option<Instant>>>,
+        rect: Rect,
+    }
+
+    impl Widget for PaintedDeadline {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.fill_leaf(node_map, self)
+        }
+        crate::rect_geometry!();
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+            self.deadline.set(None);
+        }
+        fn next_wake_deadline(&self) -> Option<Instant> {
+            self.deadline.get()
+        }
+        fn name(&self) -> &'static str {
+            "PaintedDeadline"
+        }
+    }
+
+    impl crate::widget::AppWidget for PaintedDeadline {
+        fn uses_host_record(&self) -> bool {
+            false
+        }
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Painted deadline"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Glyph("P")
+        }
+    }
+
+    /// A window past the strip's edge is not painted, so a deadline only its
+    /// paint consumes stays due: once a frame has run for it, it must not
+    /// wake the host on every frame until the window is shown. Its later
+    /// deadlines still wake the host, and shown again it is painted.
+    #[test]
+    fn an_unpainted_window_does_not_keep_waking_the_host_for_its_paint() {
+        let deadline = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut groups: Vec<WindowGroup> = (1..=5).map(|id| make_group(id * 100, &[id])).collect();
+        groups.push(WindowGroup::new(
+            600,
+            vec![(
+                TabDescriptor::new(6, "T6"),
+                TileContent::App(Box::new(PaintedDeadline {
+                    deadline: std::rc::Rc::clone(&deadline),
+                    rect: Rect::ZERO,
+                })),
+            )],
+            6,
+            WindowWidth::Normal,
+        ));
+        let travel = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            PannedRow {
+                row: GroupRow::new(groups),
+                travel: std::rc::Rc::clone(&travel),
+            },
+            (1200, 800),
+            Theme::dark(),
+        );
+        for _ in 0..4 {
+            harness.relayout();
+        }
+        let due = |harness: &crate::headless::FrameHarness| {
+            harness
+                .frame_schedule()
+                .next_wake_deadline
+                .is_some_and(|at| at <= crate::time::now())
+        };
+
+        // Due while off screen: the host wakes once and the frame runs.
+        deadline.set(Some(crate::time::now()));
+        assert!(due(&harness), "a due deadline wakes the host");
+        assert!(harness.poll_frame().unwrap());
+        assert!(
+            deadline.get().is_some(),
+            "an off-screen window is not painted"
+        );
+        assert!(
+            !due(&harness),
+            "the deadline had its frame: no frame after frame"
+        );
+
+        // A later deadline of the same window still wakes the host.
+        let later = crate::time::now() + Duration::from_secs(60);
+        deadline.set(Some(later));
+        assert_eq!(harness.frame_schedule().next_wake_deadline, Some(later));
+
+        // Shown, the window is painted and its deadline consumed.
+        deadline.set(Some(crate::time::now()));
+        let max = harness.root::<PannedRow>().row.pan_max_scroll_x();
+        travel.set(Some(max));
+        assert!(harness.poll_frame().unwrap());
+        assert_eq!(deadline.get(), None, "the window shown is painted");
+    }
+
+    /// A closing window's fade rebuilds the row once per drawn frame. Asking
+    /// on every composition pass kept one frame from ever settling, so
+    /// closing a window stopped a host's drawing (`CompositionDidNotSettle`).
+    #[test]
+    fn a_closing_window_lets_its_frame_settle() {
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.take_structure_dirty();
+        row.groups[0].start_closing();
+        let mut passes = 0;
+        let settled = crate::widget::layout::settle_widget_composition(false, |_| {
+            passes += 1;
+            Ok((Some(Vec::new()), row.take_structure_dirty()))
+        });
+        assert!(settled.is_ok(), "{settled:?} after {passes} passes");
+        assert_eq!(passes, 2, "one rebuild for the fade's frame, then settled");
+        row.mark_drawn();
+        assert!(
+            row.take_structure_dirty(),
+            "the next frame steps the fade again"
+        );
+        assert!(!row.take_structure_dirty());
     }
 
     fn drawn_strip(windows: u64) -> (GroupRow, Scene) {

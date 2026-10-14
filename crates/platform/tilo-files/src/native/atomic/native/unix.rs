@@ -139,7 +139,7 @@ impl Directory {
         self.validate_permission_profile()?;
         let metadata = self.file.metadata()?;
         if !metadata.is_dir()
-            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || !crate::native::private::owned_by_me(&metadata)
             || metadata.mode() & 0o022 != 0
         {
             return Err(io::Error::new(
@@ -643,7 +643,7 @@ fn validate_private_security(file: &File, metadata: &Metadata) -> io::Result<()>
     Ok(())
 }
 fn validate_owner_mode(metadata: &Metadata) -> io::Result<()> {
-    if metadata.uid() != rustix::process::geteuid().as_raw() {
+    if !crate::native::private::owned_by_me(metadata) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "owner-only object is not owned by the effective user",

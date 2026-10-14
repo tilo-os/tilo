@@ -109,23 +109,30 @@ fn checkpoint_key(bytes: &[u8], workspace: u64) -> Option<blake3::Hash> {
 }
 
 /// The author and channel of a checkpoint whose message is the whole of its
-/// route ([`tilo_peer_state::transport::standalone`]).
-fn standalone(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 32])> {
+/// route ([`crate::payloads::Checkpoint::standalone`]), as `payloads` reads it.
+fn standalone(
+    payloads: &dyn crate::payloads::ShellPayloads,
+    bytes: &[u8],
+    workspace: u64,
+) -> Option<([u8; 32], [u8; 32])> {
     let (author, CoeditPayload::Checkpoint { channel, body }) = payload(bytes, workspace)? else {
         return None;
     };
-    let (message, rest) = postcard::take_from_bytes::<tilo_peer_state::NeighbourMsg>(&body).ok()?;
-    let routed = rest.is_empty()
-        && tilo_peer_state::transport::retention(&message, false)
-            == Some((channel, tilo_peer_state::transport::Retention::Checkpoint))
-        && tilo_peer_state::transport::standalone(&message);
-    routed.then_some((author, channel))
+    payloads
+        .checkpoint(&channel, &body)?
+        .standalone
+        .then_some((author, channel))
 }
 
 /// Whether standalone `checkpoint` replaces `prior`: retained earlier by the
 /// same author on the same channel.
-fn replaces(checkpoint: &[u8], prior: &[u8], workspace: u64) -> bool {
-    standalone(checkpoint, workspace).is_some_and(|(author, channel)| {
+fn replaces(
+    payloads: &dyn crate::payloads::ShellPayloads,
+    checkpoint: &[u8],
+    prior: &[u8],
+    workspace: u64,
+) -> bool {
+    standalone(payloads, checkpoint, workspace).is_some_and(|(author, channel)| {
         identity(prior, workspace).is_some_and(|(old_author, old_channel, _)| {
             old_author == author && old_channel == channel
         })
@@ -513,6 +520,57 @@ fn sync_once(path: &Path) -> Result<(), StoreError> {
     }
 }
 
+/// Run independent barriers at once. Concurrent fsyncs share the file
+/// system's journal commits: a commit whose barriers order nothing between
+/// them waits about as long as for one of them instead of for each in turn.
+fn barriers(
+    work: &mut [&mut (dyn FnMut() -> Result<(), StoreError> + Send)],
+) -> Result<(), StoreError> {
+    let Some((first, rest)) = work.split_first_mut() else {
+        return Ok(());
+    };
+    std::thread::scope(|scope| {
+        let others: Vec<_> = rest
+            .iter_mut()
+            .map(|barrier| {
+                scope.spawn(move || {
+                    let result = barrier();
+                    (result, crate::store::helper_fsyncs())
+                })
+            })
+            .collect();
+        let mut result = first();
+        for other in others {
+            let other = match other.join() {
+                Ok((other, fsyncs)) => {
+                    crate::store::credit_fsyncs(fsyncs);
+                    other
+                }
+                Err(_) => Err(invalid("a barrier panicked")),
+            };
+            if result.is_ok() {
+                result = other;
+            }
+        }
+        result
+    })
+}
+
+/// [`create_dir`] for `lineage` in `v2`, except that a lineage this
+/// creates leaves its entry unsynced: returns `v2` then, for the caller to
+/// sync beside its own barriers.
+fn create_lineage(v2: PathBuf, lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
+    if !lineage.is_dir() {
+        match fs::create_dir(lineage) {
+            Ok(()) => return Ok(Some(v2)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    create_dir(lineage)?;
+    Ok(None)
+}
+
 pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
     // Every commit passes here for directories that exist: a stat, rather
     // than a mkdir that fails with EEXIST and a stat.
@@ -558,6 +616,31 @@ pub(super) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError>
 
 fn generation_name(name: &str) -> bool {
     name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The CURRENT that will select generation `name`, written beside the
+/// lineage's CURRENT before it is renamed over it.
+const SELECTION_PREFIX: &str = ".CURRENT.";
+
+/// The generation a selection [`SELECTION_PREFIX`] file names.
+fn selection_generation(name: &str) -> Option<&str> {
+    name.strip_prefix(SELECTION_PREFIX)
+        .filter(|generation| generation_name(generation))
+}
+
+/// Create `path` with `bytes` and sync it; its entry is the caller's to
+/// sync.
+fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+    use std::io::Write as _;
+    #[cfg(test)]
+    super::test_barrier::check(path, "sync-file")?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    crate::store::fsync(&file)?;
+    Ok(())
 }
 
 pub(crate) fn current(lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
@@ -683,14 +766,17 @@ impl GenerationGc {
                     self.child = None;
                 }
             } else if let Some(entry) = self.entries.peek()? {
-                if entry.path() != active
-                    && entry.file_type()?.is_dir()
-                    && generation_name(&entry.file_name().to_string_lossy())
-                {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if entry.path() != active && entry.file_type()?.is_dir() && generation_name(&name) {
                     self.child = Some((
                         entry.path(),
                         super::bounded::DirectoryCursor::open(&entry.path())?,
                     ));
+                } else if selection_generation(&name).is_some() && entry.file_type()?.is_file() {
+                    // A build that failed before its commit left it.
+                    fs::remove_file(entry.path())?;
+                    self.removed = true;
                 }
                 self.entries.advance();
             } else {
@@ -739,6 +825,13 @@ pub(crate) struct RetainBuild {
     /// append selects and writes into; a staged checkpoint becomes the
     /// first instead.
     fresh: bool,
+    /// The directory holding the lineage, when this build created the
+    /// lineage and has not yet made its entry durable: a checkpoint does
+    /// that beside its own barriers.
+    unsynced_parent: Option<PathBuf>,
+    /// The CURRENT naming `staged`, durable beside the lineage's own: the
+    /// commit renames it over CURRENT.
+    pending_current: Option<PathBuf>,
     scratch: PathBuf,
     bytes: Vec<u8>,
     /// Digest of `bytes`, which a prior record must share to be read.
@@ -972,21 +1065,42 @@ impl RetainBuild {
     /// Every prior record was inspected: collect a duplicate, stage a
     /// checkpoint, or append.
     fn inspected(&mut self) -> Result<(), StoreError> {
+        let unsynced_parent = self.unsynced_parent.take();
+        let stage_checkpoint = self.continuity.is_none()
+            && self.checkpoint
+            && !self.opaque
+            && (covers(&self.bytes, &self.bytes, self.workspace)
+                || standalone(&**self.store.payloads(), &self.bytes, self.workspace).is_some());
+        if let Some(parent) = unsynced_parent.as_deref()
+            && (self.duplicate || !stage_checkpoint)
+        {
+            sync_dir_once(parent)?;
+        }
         if self.duplicate && self.continuity.is_none() {
             self.phase = if self.staged_only {
                 RetainPhase::Done
             } else {
                 RetainPhase::Collect(Box::new(GenerationGc::new(self.lineage.clone())?))
             };
-        } else if self.continuity.is_none()
-            && self.checkpoint
-            && !self.opaque
-            && (covers(&self.bytes, &self.bytes, self.workspace)
-                || standalone(&self.bytes, self.workspace).is_some())
-        {
-            let staged = self.lineage.join(hex::encode(rand::random::<[u8; 16]>()));
-            create_dir(&staged)?;
-            durable_write(&staged.join("checkpoint.delta"), &self.bytes)?;
+        } else if stage_checkpoint {
+            let name = hex::encode(rand::random::<[u8; 16]>());
+            let staged = self.lineage.join(&name);
+            fs::create_dir(&staged)?;
+            // The checkpoint, the CURRENT that will name its stage and a new
+            // lineage's own entry order nothing between them, nor do the
+            // entries of the first two after them; all hold before the
+            // commit renames the CURRENT into place.
+            let checkpoint = staged.join("checkpoint.delta");
+            let selection = self.lineage.join(format!("{SELECTION_PREFIX}{name}"));
+            let bytes = &self.bytes;
+            barriers(&mut [
+                &mut || write_synced(&checkpoint, bytes),
+                &mut || write_synced(&selection, name.as_bytes()),
+                &mut || unsynced_parent.as_deref().map_or(Ok(()), sync_dir_once),
+            ])?;
+            let lineage = &self.lineage;
+            barriers(&mut [&mut || sync_dir(&staged), &mut || sync_dir(lineage)])?;
+            self.pending_current = Some(selection);
             self.staged = Some(staged);
             self.staged_synced = true;
             #[cfg(test)]
@@ -1028,7 +1142,11 @@ impl RetainBuild {
                 durable_write(&self.lineage.join("CURRENT"), name.as_encoded_bytes())?;
             }
             if let Some(receipt) = &self.continuity {
-                super::continuity::account_validation(&mut self.sorter.stats, self.bytes.len());
+                super::continuity::account_validation(
+                    &**self.store.payloads(),
+                    &mut self.sorter.stats,
+                    self.bytes.len(),
+                );
                 super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
             }
             durable_write(&path, &self.bytes)?;
@@ -1212,7 +1330,12 @@ impl RetainBuild {
                         self.opaque |= identity(&record.bytes, self.workspace)
                             .is_some_and(|(_, _, checkpoint)| checkpoint)
                             && !covers(&record.bytes, &record.bytes, self.workspace)
-                            && !replaces(&self.bytes, &record.bytes, self.workspace);
+                            && !replaces(
+                                &**self.store.payloads(),
+                                &self.bytes,
+                                &record.bytes,
+                                self.workspace,
+                            );
                     } else {
                         self.duplicate |= record.bytes == self.bytes;
                     }
@@ -1235,6 +1358,7 @@ impl RetainBuild {
                                 .join(format!("{next:016x}.delta"));
                             if let Some(receipt) = &self.continuity {
                                 super::continuity::account_validation(
+                                    &**self.store.payloads(),
                                     &mut self.sorter.stats,
                                     self.bytes.len(),
                                 );
@@ -1263,7 +1387,12 @@ impl RetainBuild {
                             ),
                         )
                     } else if !covers(&self.bytes, &record.bytes, self.workspace)
-                        && !replaces(&self.bytes, &record.bytes, self.workspace)
+                        && !replaces(
+                            &**self.store.payloads(),
+                            &self.bytes,
+                            &record.bytes,
+                            self.workspace,
+                        )
                     {
                         let path = self
                             .staged
@@ -1296,13 +1425,20 @@ impl RetainBuild {
                 if !self.staged_synced {
                     sync_dir(staged)?;
                 }
-                durable_write(
-                    &self.lineage.join("CURRENT"),
-                    staged
-                        .file_name()
-                        .invariant("staged missing")?
-                        .as_encoded_bytes(),
-                )?;
+                if let Some(selection) = self.pending_current.take() {
+                    #[cfg(test)]
+                    super::test_barrier::check(&self.lineage, "current-publish")?;
+                    fs::rename(&selection, self.lineage.join("CURRENT"))?;
+                    sync_dir(&self.lineage)?;
+                } else {
+                    durable_write(
+                        &self.lineage.join("CURRENT"),
+                        staged
+                            .file_name()
+                            .invariant("staged missing")?
+                            .as_encoded_bytes(),
+                    )?;
+                }
                 self.written = self.bytes.len() as u64;
                 self.phase = RetainPhase::Collect(Box::new(GenerationGc::after_commit(
                     self.lineage.clone(),
@@ -1467,7 +1603,7 @@ impl WorkspaceStore {
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         create_dir(&v2)?;
         let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
-        create_dir(&lineage)?;
+        let unsynced_parent = create_lineage(v2, &lineage)?;
         let (active, fresh) = match current(&lineage)? {
             Some(active) => (active, false),
             // A checkpoint stages a generation of its own, so a new lineage
@@ -1519,6 +1655,8 @@ impl WorkspaceStore {
             lineage,
             active,
             fresh,
+            unsynced_parent,
+            pending_current: None,
             scratch,
             digest,
             bytes,
@@ -2253,6 +2391,106 @@ pub(super) mod tests {
         assert_eq!(store.load_retained().unwrap(), vec![third]);
     }
 
+    /// A payload adapter that recognises nothing.
+    struct Unclassified;
+
+    impl crate::payloads::ShellPayloads for Unclassified {
+        fn is_document(&self, _: &[u8]) -> bool {
+            false
+        }
+        fn open_document(
+            &self,
+            _: &[u8],
+        ) -> Option<(crate::payloads::Route, Box<collab_types::SignedOp>)> {
+            None
+        }
+        fn document_body(
+            &self,
+            _: &[u8; 32],
+            _: &crate::payloads::Route,
+            _: collab_types::SignedOp,
+        ) -> Result<Vec<u8>, String> {
+            Err("unclassified".into())
+        }
+        fn host_identity(
+            &self,
+            _: &tilo_user_identity::DeviceCert,
+        ) -> Result<([u8; 32], Vec<u8>), String> {
+            Err("unclassified".into())
+        }
+        fn checkpoint(&self, _: &[u8; 32], _: &[u8]) -> Option<crate::payloads::Checkpoint> {
+            None
+        }
+        fn audience(&self, _: &[u8]) -> Option<std::collections::BTreeSet<[u8; 32]>> {
+            None
+        }
+        fn decoded_overhead(&self) -> usize {
+            0
+        }
+    }
+
+    /// Checkpoint replacement asks the adapter the store was opened with,
+    /// not a process-wide one: through an adapter that classifies nothing,
+    /// the governance acknowledgements the desktop adapter lets replace one
+    /// another are all kept.
+    #[test]
+    fn checkpoint_replacement_asks_the_stores_own_adapter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel = collab_types::ChannelId::new();
+        let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
+        let ack = |through: u8| {
+            let message = tilo_peer_state::NeighbourMsg::MlsGovernanceAck {
+                room: "room".into(),
+                ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
+                    channel,
+                    device,
+                    [through; 32],
+                )),
+                delivery: 0,
+            };
+            let (route, _) = tilo_peer_state::transport::retention(&message, false).unwrap();
+            let bytes = crate::transport::encode(&Envelope::Delta {
+                workspace_id: 7,
+                author_device_public_key: [1; 32],
+                authored_at_ns: u64::from(through),
+                delta: CoeditPayload::Checkpoint {
+                    channel: route,
+                    body: postcard::to_stdvec(&message).unwrap(),
+                }
+                .encode()
+                .unwrap(),
+                signature: [0; 64],
+            })
+            .unwrap();
+            (route, bytes)
+        };
+        let (route, first) = ack(1);
+        let (_, second) = ack(2);
+        let unclassified = WorkspaceStore::open_with_payloads(
+            tmp.path(),
+            7,
+            false,
+            std::sync::Arc::new(Unclassified),
+        )
+        .unwrap();
+        unclassified.retain_checkpoint(&route, &first).unwrap();
+        unclassified.retain_checkpoint(&route, &second).unwrap();
+        assert_eq!(
+            unclassified.load_retained().unwrap(),
+            vec![first, second],
+            "nothing it cannot classify is replaced"
+        );
+
+        let (_, third) = ack(3);
+        let desktop = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        desktop.retain_checkpoint(&route, &third).unwrap();
+        assert_eq!(
+            desktop.load_retained().unwrap(),
+            vec![third],
+            "the desktop adapter lets the newest acknowledgement replace the rest"
+        );
+    }
+
     #[test]
     fn checkpoint_without_causal_tail_coverage_preserves_uncovered_tail() {
         use automerge::transaction::Transactable;
@@ -2381,7 +2619,8 @@ pub(super) mod tests {
         ));
         let active = current(&lineage).unwrap().unwrap();
         // Drive the real retention operation through staging so the injected
-        // failure can target only CURRENT publication, before its rename.
+        // failure can target only CURRENT publication, before its rename,
+        // and leaves the CURRENT the stage prepared beside it.
         let mut build = store.start_retain(&[9; 32], None, new.clone()).unwrap();
         for _ in 0..20_000 {
             if matches!(build.phase, RetainPhase::Commit) {
@@ -2393,11 +2632,9 @@ pub(super) mod tests {
             ));
         }
         assert!(matches!(build.phase, RetainPhase::Commit));
-        let failed = tilo_files::native::atomic::test_support::with_failure(
-            tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
-            || build.step(WorkLimit::default()),
-        );
-        assert!(failed.is_err());
+        let fault = crate::store::test_barrier::fail(&lineage, "current-publish");
+        assert!(build.step(WorkLimit::default()).is_err());
+        drop(fault);
         drop(build);
         drop(store);
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
@@ -2406,11 +2643,23 @@ pub(super) mod tests {
             vec![old, tail, uncovered.clone()]
         );
         assert_eq!(current(&lineage).unwrap().unwrap(), active);
+        let selections = || {
+            fs::read_dir(&lineage)
+                .unwrap()
+                .filter(|entry| {
+                    selection_generation(&entry.as_ref().unwrap().file_name().to_string_lossy())
+                        .is_some()
+                })
+                .count()
+        };
+        assert_eq!(selections(), 1);
         store.retain_checkpoint(&[9; 32], &new).unwrap();
         assert_eq!(
             store.load_retained().unwrap(),
             vec![new.clone(), uncovered.clone()]
         );
+        // The next commit's collection reclaims what the failed one left.
+        assert_eq!(selections(), 0);
         document.put(automerge::ROOT, "next", 4).unwrap();
         let next_tail = frame(false, document.save_incremental(), 4);
         store.retain_delta(&[9; 32], 2, &next_tail).unwrap();

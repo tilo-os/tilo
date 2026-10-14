@@ -1,4 +1,0 @@
-bytes = 1245184
-measured = 93448917
-run = 74524
-reason = "Files native clipboard offers and retained SDK receipt completions (#3009). App SDK run 74524 measured the merged release desktop module at 93448917 bytes, 256725 above its existing budget. This total includes intervening main changes and is not an isolated measurement of this feature's cost. Record the ratchet's standard 1% headroom rounded to 64 KiB while preserving current caller, cancellation and descriptor checks."

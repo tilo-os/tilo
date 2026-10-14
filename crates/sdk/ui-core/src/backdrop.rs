@@ -93,7 +93,27 @@ pub(crate) fn fill(
     material: Material,
     theme: &Theme,
 ) {
-    let ground = crate::chrome::panel_ground(theme);
+    fill_with_ground(
+        scene,
+        transform,
+        shape,
+        material,
+        theme,
+        crate::chrome::panel_ground(theme),
+    );
+}
+
+/// [`fill`] with a ground of the caller's choosing: a surface that lifts
+/// itself off the desktop by its own tone (a notification card) tints the
+/// same blurred backdrop with that tone instead of the panel ground.
+pub(crate) fn fill_with_ground(
+    scene: &mut Scene,
+    transform: Affine,
+    shape: &impl Shape,
+    material: Material,
+    theme: &Theme,
+    ground: Color,
+) {
     if blurs(material, theme)
         && let Some((image, brush_transform)) = record(scene, transform, shape, theme, ground)
     {

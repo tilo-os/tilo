@@ -165,8 +165,10 @@ assert.ok(burst.travel > 0, `a 120 Hz wheel run pans: ${JSON.stringify(burst)}`)
 console.log(JSON.stringify({step: 'rate', ...burst, ok: true}));
 await sleep(400);
 
-// A long flick past the end stops the strip there.
-const flick = Array.from({length: Math.ceil((s.pan.max * 2) / 40)}, () => 40);
+// A long flick past the end stops the strip there. Chrome gives every
+// driven wheel a mouse notch's legacy wheelDelta, so steps stay below the
+// pixels a mouse notch scrolls, or the host would take them for notches.
+const flick = Array.from({length: Math.ceil((s.pan.max * 2) / 16)}, () => 16);
 await swipe(1, flick);
 s = await strip();
 assert.ok(Math.abs(s.pan.offset - s.pan.max) < 1, `a flick stops at the end: ${JSON.stringify(s.pan)}`);

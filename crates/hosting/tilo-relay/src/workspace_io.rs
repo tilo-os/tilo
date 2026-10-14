@@ -420,6 +420,7 @@ fn reservations() -> &'static Mutex<HashMap<ReservationKey, Opening>> {
 
 async fn open_runtime(
     state_root: std::path::PathBuf,
+    payloads: Arc<dyn crate::payloads::ShellPayloads>,
     workspace_id: u64,
     pinned: bool,
     admission: AdmissionMode,
@@ -433,8 +434,13 @@ async fn open_runtime(
         .map_err(|error| error.to_string())?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let mut runtime =
-            WorkspaceRuntime::open(&state_root, workspace_id, pinned, Membership::default())?;
+        let mut runtime = WorkspaceRuntime::open_with_payloads(
+            &state_root,
+            workspace_id,
+            pinned,
+            Membership::default(),
+            payloads,
+        )?;
         // A governed record on disk keeps the room governed.
         runtime.admission = runtime.admission.rebind(admission);
         Ok::<_, StoreError>(Arc::new(tokio::sync::Mutex::new(runtime)))
@@ -454,6 +460,7 @@ async fn open_runtime(
 pub(crate) async fn get_or_initialize(
     workspaces: &WorkspaceRegistry,
     state_root: std::path::PathBuf,
+    payloads: &Arc<dyn crate::payloads::ShellPayloads>,
     workspace_id: u64,
     pinned: bool,
     admission: AdmissionMode,
@@ -484,8 +491,10 @@ pub(crate) async fn get_or_initialize(
             drop(pending);
             drop(map);
             let registry = workspaces.clone();
+            let payloads = payloads.clone();
             tokio::spawn(async move {
-                let opened = open_runtime(state_root, workspace_id, pinned, admission).await;
+                let opened =
+                    open_runtime(state_root, payloads, workspace_id, pinned, admission).await;
                 let mut map = registry.lock().await;
                 let opened =
                     opened.map(|workspace| map.entry(workspace_id).or_insert(workspace).clone());
@@ -899,6 +908,7 @@ mod tests {
             get_or_initialize(
                 &first_registry,
                 first_root,
+                &crate::payloads::neighbour(),
                 7,
                 false,
                 AdmissionMode::Explicit,
@@ -911,6 +921,7 @@ mod tests {
             get_or_initialize(
                 &registry,
                 root.clone(),
+                &crate::payloads::neighbour(),
                 8,
                 false,
                 AdmissionMode::Explicit,
@@ -921,9 +932,17 @@ mod tests {
         );
         first.abort();
         drop(release);
-        let workspace = get_or_initialize(&registry, root, 7, false, AdmissionMode::Explicit, 1)
-            .await
-            .unwrap();
+        let workspace = get_or_initialize(
+            &registry,
+            root,
+            &crate::payloads::neighbour(),
+            7,
+            false,
+            AdmissionMode::Explicit,
+            1,
+        )
+        .await
+        .unwrap();
         assert!(Arc::ptr_eq(&registry.lock().await[&7], &workspace));
         assert_eq!(registry.lock().await.len(), 1);
     }
@@ -942,6 +961,7 @@ mod tests {
             get_or_initialize(
                 &first_registry,
                 first_root,
+                &crate::payloads::neighbour(),
                 7,
                 false,
                 AdmissionMode::Explicit,
@@ -950,9 +970,11 @@ mod tests {
             .await
         });
         reached.await.unwrap();
+        let payloads = crate::payloads::neighbour();
         let mut second = Box::pin(get_or_initialize(
             &registry,
             root.clone(),
+            &payloads,
             7,
             false,
             AdmissionMode::Explicit,
@@ -970,9 +992,17 @@ mod tests {
         assert!(registry.lock().await.is_empty());
         std::fs::remove_file(tmp.path().join("workspaces/7")).unwrap();
         assert!(
-            get_or_initialize(&registry, root, 7, false, AdmissionMode::Explicit, 1)
-                .await
-                .is_ok()
+            get_or_initialize(
+                &registry,
+                root,
+                &crate::payloads::neighbour(),
+                7,
+                false,
+                AdmissionMode::Explicit,
+                1
+            )
+            .await
+            .is_ok()
         );
     }
 }

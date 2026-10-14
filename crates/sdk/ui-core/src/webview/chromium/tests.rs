@@ -2423,3 +2423,11 @@ fn native_caret_prepare_opt_in_uses_the_original_tab_capability() {
     assert_eq!(check["action"], "check_text_input");
     assert!(check.get("native_caret").is_none());
 }
+
+#[test]
+fn a_governed_app_routes_page_audio_through_the_host_bridge() {
+    // The sandbox withholds the audio sockets and devices, so the engine must
+    // not try to open any; its sound reaches the app over the host protocol.
+    assert_eq!(host_audio_switches(true), ["--tilo-audio-bridge"]);
+    assert!(host_audio_switches(false).is_empty());
+}

@@ -471,10 +471,8 @@ fn is_descendant_of(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
 /// The installed on-screen keyboard package, if it is a graphical service in
 /// its signed manifest.
 fn installed_osk() -> Result<crate::shell::launcher::InstalledApp, String> {
-    let app = crate::shell::launcher::installed_apps()
+    let app = crate::shell::launcher::installed_app(PACKAGE_ID)
         .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|app| app.package_id == PACKAGE_ID)
         .ok_or_else(|| format!("{PACKAGE_ID} is not installed"))?;
     let manifest = launcher::manifest::read_manifest(&app.manifest_path)
         .map_err(|e| format!("reading {}: {e}", app.manifest_path.display()))?;
@@ -680,15 +678,25 @@ impl InputMethodServices {
     }
 
     pub fn tick(&mut self, state: &mut State) {
+        self.tick_with_steps(state, |_| {});
+    }
+
+    /// Keep the production input-phase trace tied to the actual refresh and
+    /// service calls, so a slow registry read is distinguishable from seat
+    /// arbitration or a service restart.
+    pub fn tick_with_steps(&mut self, state: &mut State, mut step: impl FnMut(&'static str)) {
         if self.installed_epoch != crate::shell::launcher::installed_apps_epoch()
             || self.installed_checked.elapsed() >= INSTALL_REFRESH
         {
             self.refresh_installed(state);
+            step("input-method-refresh");
             self.apply(state);
+            step("input-method-apply");
         }
         for service in &mut self.services {
             service.tick();
         }
+        step("input-method-service-ticks");
         // X11 displays connect the composer and discount its connection by
         // this group.
         super::xwayland_composer::set_composer_process_group(
@@ -697,6 +705,7 @@ impl InputMethodServices {
                 .find(|service| service.kind() == TrustedInputMethod::Composer)
                 .and_then(InputMethodService::process_group),
         );
+        step("input-method-xwayland");
     }
 
     /// The private display paths, for unlinking at teardown.
@@ -971,6 +980,44 @@ mod tests {
         assert!(
             unchanged,
             "another installed application must not replace or revoke the keyboard"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn another_registry_row_cannot_claim_the_keyboard_service() {
+        let mut fixture = InstalledServiceFixture::new();
+        let other = fixture.directory.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(
+            other.join("manifest.toml"),
+            crate::shell::test_support::canonical_manifest(
+                &format!("id = '{PACKAGE_ID}'\nversion = '1.0.0'\nkind = 'service'"),
+                "[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            fixture.directory.path().join("registry.toml"),
+            format!(
+                "[[entry]]\nid = 'dev.tilo.other'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                other.display().to_string(),
+                other.join("manifest.toml").display().to_string(),
+            ),
+        )
+        .unwrap();
+        crate::shell::launcher::invalidate_app_cache();
+        fixture
+            .methods
+            .reload(&mut fixture.state, &saved_settings());
+        let unavailable = !fixture.methods.osk_installed
+            && fixture.osk().installed.is_none()
+            && fixture.state.input_method_owner_kind()
+                != Some(TrustedInputMethod::OnScreenKeyboard);
+        drop(fixture);
+        assert!(
+            unavailable,
+            "only the canonical keyboard registry row may own the seat"
         );
     }
 

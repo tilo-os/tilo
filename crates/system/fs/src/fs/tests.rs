@@ -3047,7 +3047,7 @@ mod record_publisher_integration_tests {
         base_bytes: Vec<u8>,
         current_bytes: Vec<u8>,
         other_bytes: Vec<u8>,
-        qdoc: bool,
+        tilo_doc: bool,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -3137,7 +3137,7 @@ mod record_publisher_integration_tests {
                 version_id: other.id,
                 bytes: other_bytes.clone(),
             },
-            (!qdoc).then_some(crate::conflict_merge::ExactMergeBase {
+            (!tilo_doc).then_some(crate::conflict_merge::ExactMergeBase {
                 version_id: base_version,
                 bytes: base_bytes.clone(),
             }),
@@ -3157,6 +3157,12 @@ mod record_publisher_integration_tests {
                 std::slice::from_ref(&conflict),
             )
             .unwrap();
+        let preflight: fs_protocol::MergePreflightProjectionV1 =
+            serde_json::from_slice(&fs.history_merge_preflight(ino, conflict.id).unwrap()).unwrap();
+        assert!(
+            preflight.safe,
+            "serialized document merge must be available"
+        );
         let transaction_id = merge_uuid(
             b"transaction",
             publisher.workspace_id(),
@@ -3274,7 +3280,7 @@ mod record_publisher_integration_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn qdoc_merge_recovers_after_history_crash_and_replays_idempotently() {
+    async fn serialized_document_merge_recovers_after_history_crash_and_replays_idempotently() {
         let mut base = tilo_doc::Document::new();
         let block = base.insert_block(None, "paragraph");
         base.splice_text(&block, 0, 0, "base");
@@ -3285,14 +3291,16 @@ mod record_publisher_integration_tests {
         let mut other = base.fork();
         other.splice_text(&block, 4, 0, "R");
         let other_bytes = other.save();
-        merge_recovers_after_history_crash_and_replays_idempotently(
-            "merge.qdoc",
-            base_bytes,
-            current_bytes,
-            other_bytes,
-            true,
-        )
-        .await;
+        for name in ["merge.qdoc", "merge.tilo-doc"] {
+            merge_recovers_after_history_crash_and_replays_idempotently(
+                name,
+                base_bytes.clone(),
+                current_bytes.clone(),
+                other_bytes.clone(),
+                true,
+            )
+            .await;
+        }
     }
 }
 

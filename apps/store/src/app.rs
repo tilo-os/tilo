@@ -437,6 +437,10 @@ pub struct StoreApp {
     flatpak_available: bool,
     flatpak_error: Option<String>,
     flatpak_checking: bool,
+    /// Enabled native repositories that have not answered the current
+    /// refresh. An installed app none of the others lists says so once, on
+    /// its details page.
+    unanswered_repositories: Vec<String>,
     /// Which item the user has expanded in the responsive detail sheet.
     /// Keyed by [`StoreItem::id`] and retained across window rebuilds so the
     /// document-backed route does not disappear during a responsive reflow.
@@ -515,6 +519,7 @@ impl StoreApp {
             flatpak_available: false,
             flatpak_error: Some(ui::i18n!("store-flatpak-checking")),
             flatpak_checking: true,
+            unanswered_repositories: Vec::new(),
             focused_detail: None,
             technical_details_open: false,
             structure_dirty: true,
@@ -654,6 +659,7 @@ impl StoreApp {
                     title: "Flathub".into(),
                     disabled: false,
                     user_managed: false,
+                    catalogue_error: None,
                 }]);
                 if scenario == Some("account-remotes") {
                     self.show_remotes();
@@ -667,6 +673,7 @@ impl StoreApp {
                     title: "Flathub".into(),
                     disabled: scenario == Some("remotes-disabled"),
                     user_managed: true,
+                    catalogue_error: None,
                 }]);
             }
             Some("progress") => {
@@ -756,6 +763,13 @@ impl StoreApp {
         self.focused_detail = None;
         self.pending_detail = None;
         self.structure_dirty = true;
+    }
+
+    pub fn set_unanswered_repositories(&mut self, repositories: Vec<String>) {
+        if self.unanswered_repositories != repositories {
+            self.unanswered_repositories = repositories;
+            self.structure_dirty = true;
+        }
     }
 
     pub fn set_remotes(&mut self, remotes: Vec<crate::flathub_client::Remote>) {
@@ -1303,6 +1317,7 @@ impl StoreApp {
         self.set_flatpak_available(snap.flatpak_available);
         self.flatpak_error = snap.flatpak_error;
         self.set_remotes(snap.remotes);
+        self.set_unanswered_repositories(snap.unanswered_repositories);
         if current_detail && current_query {
             self.set_status_line(snap.status_line);
             self.set_operation_error(snap.operation_error);
@@ -1362,6 +1377,9 @@ impl StoreApp {
                             "supported_language_count".into(),
                             serde_json::json!(item.supported_languages.len()),
                         );
+                        if let Some(notice) = self.local_only_notice(item) {
+                            fields.insert("notice".into(), serde_json::json!(notice));
+                        }
                         Ok(detail)
                     })
             })
@@ -1387,6 +1405,7 @@ impl StoreApp {
                     "title": resource_detail_excerpt(&remote.title),
                     "scope": if remote.user_managed { "account" } else { "device" },
                     "disabled": remote.disabled,
+                    "catalogue_error": remote.catalogue_error.as_deref().map(resource_detail_excerpt),
                 })
             })
             .collect::<Vec<_>>();
@@ -2456,6 +2475,7 @@ mod tests {
                 flatpak_available: true,
                 flatpak_error: None,
                 operation_error: Some("Earlier detail request failed".into()),
+                unanswered_repositories: Vec::new(),
             });
             assert_eq!(
                 app.focused_detail, selected,
@@ -2507,6 +2527,7 @@ mod tests {
             flatpak_available: true,
             flatpak_error: None,
             operation_error: error,
+            unanswered_repositories: Vec::new(),
         };
         app.apply_worker_snapshot(snapshot(
             crate::worker::DetailUpdate::Requested {
@@ -2563,6 +2584,7 @@ mod tests {
             flatpak_available: true,
             flatpak_error: None,
             operation_error: error.map(str::to_owned),
+            unanswered_repositories: Vec::new(),
         };
         app.apply_worker_snapshot(snapshot("notes", Vec::new(), Some("Earlier search failed")));
         assert_eq!(
@@ -2630,6 +2652,7 @@ mod tests {
                 flatpak_available: true,
                 flatpak_error: None,
                 operation_error: None,
+                unanswered_repositories: Vec::new(),
             });
         })
         .unwrap();
@@ -2736,6 +2759,7 @@ mod tests {
                 flatpak_available: true,
                 flatpak_error: None,
                 operation_error: None,
+                unanswered_repositories: Vec::new(),
             });
             store.set_worker_busy(true);
         })
@@ -2843,6 +2867,55 @@ mod tests {
     }
 
     #[test]
+    fn independent_repository_warning_stays_visible_and_other_actions_enabled() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            // This controlled source fixture replaces the initial missing-service snapshot.
+            store.set_operation_error(None);
+            store.set_items(crate::fixture::fixture_catalog());
+            store.set_flatpak_available(true);
+            store.set_worker_busy(false);
+            store.set_remotes(vec![crate::flathub_client::Remote {
+                name: "fedora".into(),
+                url: "https://example.invalid/fedora".into(),
+                title: "Fedora Flatpaks".into(),
+                disabled: false,
+                user_managed: false,
+                catalogue_error: Some(
+                    "Could not read Fedora Flatpaks: Unable to load summary".into(),
+                ),
+            }]);
+        })
+        .unwrap();
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            for width in [480, 1280] {
+                app.harness().resize((width, 900)).unwrap();
+                app.harness().set_theme(theme.clone());
+                let retry = app.harness().targets()["store.error.refresh"];
+                assert!(retry.x0 >= 0.0 && retry.x1 <= f64::from(width));
+                assert!(retry.y0 >= 0.0 && retry.y1 <= 900.0);
+                let inspection = app.harness().inspection_json().unwrap();
+                assert!(
+                    inspection.contains("Unable to load summary"),
+                    "{inspection}"
+                );
+                assert!(
+                    app.harness()
+                        .controls()
+                        .iter()
+                        .any(|control| control.name.as_deref() == Some("Refresh apps")
+                            && !control.disabled)
+                );
+                app.with_surface(|store: &mut StoreApp| {
+                    assert!(store.inspect_catalogue(None).unwrap()["error"].is_null());
+                })
+                .unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn readable_store_failure_and_build_metadata_have_reviewable_layouts() {
         let output =
             std::env::var_os("TILO_STORE_PRESENTATION_REVIEW_DIR").map(std::path::PathBuf::from);
@@ -2863,6 +2936,7 @@ mod tests {
                 title: "Fedora Flatpaks".into(),
                 disabled: false,
                 user_managed: false,
+                catalogue_error: None,
             };
             store.set_worker_busy(false);
             store.set_operation_error(Some(crate::flathub_client::remote_error(
@@ -3161,6 +3235,7 @@ mod tests {
                     url: "https://dl.flathub.org/repo/".into(),
                     disabled: false,
                     user_managed: false,
+                    catalogue_error: None,
                 }]);
             })
             .unwrap();
@@ -3210,6 +3285,7 @@ mod tests {
                     url: "https://dl.flathub.org/repo/".into(),
                     disabled: false,
                     user_managed: false,
+                    catalogue_error: None,
                 }]);
             })
             .unwrap();
@@ -3246,6 +3322,7 @@ mod tests {
                 url: "https://dl.flathub.org/repo/".into(),
                 disabled: false,
                 user_managed: false,
+                catalogue_error: None,
             }]);
             store.set_flatpak_available(false);
             store.flatpak_error = Some("The app service is unavailable.".into());
@@ -3290,6 +3367,7 @@ mod tests {
                 url: "https://dl.flathub.org/repo/".into(),
                 disabled: false,
                 user_managed: true,
+                catalogue_error: None,
             }]);
         })
         .unwrap();
@@ -3498,6 +3576,7 @@ mod tests {
             url: "https://tools.example.test/repo/".into(),
             disabled: true,
             user_managed: true,
+            catalogue_error: None,
         };
         let system = crate::flathub_client::Remote {
             user_managed: false,
@@ -3558,6 +3637,7 @@ mod tests {
                 url: "https://tools.example.test/repo/".into(),
                 disabled: true,
                 user_managed: true,
+                catalogue_error: None,
             }]);
             store.show_remotes();
         })
@@ -3596,6 +3676,7 @@ mod tests {
             title: "Flathub".into(),
             disabled: false,
             user_managed: false,
+            catalogue_error: None,
         };
         app.set_remotes(vec![source.clone()]);
         let row = app.live_row(&source.resource_id()).unwrap().into_resource();
@@ -3673,6 +3754,7 @@ mod tests {
             title: "Flathub".into(),
             disabled: false,
             user_managed: false,
+            catalogue_error: None,
         };
         app.set_remotes(vec![system.clone()]);
         let resource = app
@@ -3721,6 +3803,7 @@ mod tests {
             url: "https://tools.example/repo".into(),
             disabled: false,
             user_managed: false,
+            catalogue_error: None,
         };
         app.set_remotes(vec![remote.clone()]);
         let row = app.live_row("remote:system:tools").unwrap().into_resource();
@@ -4112,6 +4195,7 @@ mod tests {
                 title: "Flathub".into(),
                 disabled: false,
                 user_managed: true,
+                catalogue_error: None,
             }]);
             for id in [REMOTES_ID, "remote:flathub", crate::resource::MODERATION_ID] {
                 assert!(app.live_row(id).is_some(), "{id} resolves");

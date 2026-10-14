@@ -955,6 +955,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         use ui::a11y::{AccessNode, AccessState, Role};
         let mut tree = self.editor.accessibility()?;
         let disabled = self.source.read_only() || self.is_composing();
+        let duplicate_label = ui::i18n!("widget-block-duplicate");
         for row in &mut tree.children {
             let Some(id) = row
                 .semantic_key
@@ -964,7 +965,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
                 continue;
             };
             let mut duplicate = AccessNode::new(Role::Button)
-                .with_name(ui::i18n!("widget-block-duplicate"))
+                .with_name(duplicate_label.clone())
                 .with_action_target(format!("notes.block-duplicate:{id}"))
                 .with_state(AccessState::new().focusable(!disabled).disabled(disabled));
             duplicate.bounds = row.bounds;

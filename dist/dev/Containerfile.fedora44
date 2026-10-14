@@ -73,9 +73,11 @@ RUN case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) exit 1
  && chmod 0755 /usr/local/bin/cosign
 
 # The web build's toolchain, as CI's builder image has it
-# (os/Containerfile.builder): wasm-opt, wasm-ld, Node.js, brotli, ar, and the
-# wasm-bindgen CLI Cargo.lock pins, from the checksum-pinned upstream release.
-RUN dnf install -y --setopt=install_weak_deps=False binaryen lld nodejs brotli binutils \
+# (os/Containerfile.builder): wasm-opt, wasm-ld, Node.js with npm (the bundle's
+# MoQ library is installed with `npm ci`; CI's image gets npm as a weak
+# dependency of nodejs), brotli, ar, and the wasm-bindgen CLI Cargo.lock pins,
+# from the checksum-pinned upstream release.
+RUN dnf install -y --setopt=install_weak_deps=False binaryen lld nodejs npm brotli binutils \
  && dnf clean all && rm -rf /var/cache/dnf \
  && name="wasm-bindgen-0.2.108-$(uname -m)-unknown-linux-musl.tar.gz" \
  && sha=$(awk -F '\t' -v name="$name" '$1 !~ /^#/ && $2 == name {print $1}' /tmp/tilo-cosign/github-assets.tsv) \
@@ -86,7 +88,7 @@ RUN dnf install -y --setopt=install_weak_deps=False binaryen lld nodejs brotli b
  && tar -xzf "/tmp/$name" -C /tmp \
  && install -m 0755 "/tmp/${name%.tar.gz}/wasm-bindgen" /usr/local/bin/wasm-bindgen \
  && rm -rf "/tmp/$name" "/tmp/${name%.tar.gz}" /tmp/tilo-cosign \
- && wasm-bindgen --version && wasm-opt --version && wasm-ld --version && node --version
+ && wasm-bindgen --version && wasm-opt --version && wasm-ld --version && node --version && npm --version
 
 # Android NDK for the standalone Android app host (docs/android.md). The SHA-1
 # is Google's published digest in repository2-3.xml; the SHA-256 was taken

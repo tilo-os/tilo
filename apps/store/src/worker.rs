@@ -134,6 +134,9 @@ pub struct Snapshot {
     pub flatpak_available: bool,
     pub flatpak_error: Option<String>,
     pub operation_error: Option<String>,
+    /// Enabled native repositories that have not answered the current
+    /// refresh, so installed apps they list are described only locally.
+    pub unanswered_repositories: Vec<String>,
 }
 
 struct QueuedRequest {
@@ -316,6 +319,8 @@ struct State {
     flatpak_available: bool,
     flatpak_error: Option<String>,
     catalogue_error: Option<String>,
+    /// See [`Snapshot::unanswered_repositories`].
+    unanswered_repositories: Vec<String>,
     searches: LruCache<String, Vec<StoreItem>>,
     details: LruCache<String, StoreItem>,
     /// The current palette/action directory. Rebuilding it is linear in a
@@ -349,6 +354,7 @@ fn initial_state(
         flatpak_available: false,
         flatpak_error: None,
         catalogue_error: None,
+        unanswered_repositories: Vec::new(),
         searches: LruCache::new(CACHE_CAP),
         details: LruCache::new(CACHE_CAP),
         directory,
@@ -539,6 +545,7 @@ fn poll_refresh(
             flatpak_available: state.flatpak_available,
             flatpak_error: state.flatpak_error.clone(),
             operation_error: state.catalogue_error.clone(),
+            unanswered_repositories: state.unanswered_repositories.clone(),
         })
 }
 
@@ -958,6 +965,13 @@ fn browse_remote(id: &str, state: &mut State, snapshots: &Snapshots) -> (bool, O
             }
             Ok((items, remote.title.clone()))
         });
+    if let Some(remote) = state
+        .remotes
+        .iter_mut()
+        .find(|remote| remote.resource_id() == id)
+    {
+        remote.catalogue_error = result.as_ref().err().cloned();
+    }
     match result {
         Ok((items, title)) => {
             // Browsing may discover more apps than the first catalogue page.
@@ -1165,6 +1179,7 @@ fn update_all(
             flatpak_available: state.flatpak_available,
             flatpak_error: state.flatpak_error.clone(),
             operation_error: None,
+            unanswered_repositories: state.unanswered_repositories.clone(),
         };
         if !snapshots.progress(progress) {
             return (false, None);
@@ -1234,6 +1249,7 @@ fn send_tracked(
         operation_error: operation_error
             .or_else(|| state.catalogue_error.clone())
             .or_else(|| state.flatpak_error.clone()),
+        unanswered_repositories: state.unanswered_repositories.clone(),
     })
 }
 
@@ -1297,7 +1313,8 @@ fn refresh_flatpak(state: &mut State) {
             state.flatpak_available = status.available;
             state.installed = installed_flatpaks(&status.installed);
             state.installed_origins = crate::flathub_client::installed_origins(&status.installed);
-            state.remotes = crate::flathub_client::list_remotes(&status.remotes);
+            state.remotes =
+                crate::flathub_client::refreshed_remotes(&status.remotes, &state.remotes);
         }
         Err(error) => {
             tracing::error!(%error, "could not observe host Flatpak state");
@@ -1385,6 +1402,7 @@ mod tests {
             flatpak_available: false,
             flatpak_error: None,
             catalogue_error: None,
+            unanswered_repositories: Vec::new(),
             searches: LruCache::new(CACHE_CAP),
             details: LruCache::new(CACHE_CAP),
             directory,

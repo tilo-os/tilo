@@ -1951,9 +1951,7 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         reply: Option<ActionDirectoryBridgeReply>,
     ) -> Result<u64, ActionHostError> {
-        let stale = || ActionHostError::InvalidRequest {
-            reason: "the action changed since that revision; list it again".into(),
-        };
+        let stale = || ActionHostError::StaleRevision;
         let (row, resolved) = match reply {
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
                 runtime_collab::ActionDirectoryResolution::Found { row, revision },
@@ -2876,7 +2874,7 @@ impl CapnpBrokerState {
     ) -> Option<InvocationState> {
         let job = self.remote_job(caller, id)?;
         self.invocation_status(job)
-            .map(|update| InvocationState::new(*id, update))
+            .map(|update| InvocationState::new(*id, update).with_untrusted(self.untrusted_job(job)))
     }
 
     /// Resolves once an invocation changes after what `seen` has seen, or
