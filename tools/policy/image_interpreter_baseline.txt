@@ -9,7 +9,6 @@
 # path  # what it does, and so what porting it touches
 os/usr/libexec/tilo-board-successor.py  # verified update: picks the authenticated board successor
 os/usr/libexec/tilo-boot-order  # dual boot, run by hand: enlists Tilo after Windows in the firmware boot order
-os/usr/libexec/tilo-extension  # signed system extensions: download, verify, activate (boot service, timer, NetworkManager hook)
 os/usr/libexec/tilo-firstboot-files.py  # firstboot: durable intent and home defaults
 os/usr/libexec/tilo-image-policy-check  # security audit: containers-policy.json requires the pinned Cosign signature
 os/usr/libexec/tilo-install-dev-ssh.py  # installer, development images only: owner SSH keys
