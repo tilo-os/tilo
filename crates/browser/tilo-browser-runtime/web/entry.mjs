@@ -3,7 +3,9 @@
  * `app/index.html` (one app, full tab). The page:
  * 1. takes the secrets the inline scrubber moved out of the address bar
  *    (a machine to set up, `install`, is handed back for the page to offer);
- * 2. parses the link with the runtime's Rust grammar under its entry
+ * 2. parses the link with the runtime's Rust grammar under its entry (a bare
+ *    entry under a home workspace needs no grammar, so admission starts
+ *    while the runtime still loads)
  *    (`entry.json` beside the desktop page, written by the web host: `home`
  *    is the workspace a bare entry opens instead of the person's own desktop,
  *    `tickets` names where guest tickets are redeemed; absent, a bare entry
@@ -53,18 +55,25 @@ export function grammar(runtime, entry) {
   };
 }
 
+/** A bare entry under a web host's home workspace: its route, read without
+ * the runtime's grammar; `null` for any other link. */
+export function homeRoute({location, mode, home = null}) {
+  const bare = location.hash === '' || location.hash === '#';
+  if (!bare || !home) return null;
+  const scope = {kind: 'room', host: new URL(home.host.origin).origin, room: home.room ?? null};
+  // `home.app` is the app in front: on the desktop among the workspace's
+  // other apps, or full tab under an app entry. Without one, the desktop.
+  const target = home.app ? {scope, app: home.app} : {scope};
+  return {mode: home.app ? mode : 'desktop', target};
+}
+
 /** The route the page was opened with. A bare entry opens the web host's
  * home workspace (its room is learned on admission), or else, on the
  * desktop, the person's own desktop. */
 export function initialRoute({link, location, mode, home = null}) {
+  const toHome = homeRoute({location, mode, home});
+  if (toHome) return toHome;
   const bare = location.hash === '' || location.hash === '#';
-  if (bare && home) {
-    const scope = {kind: 'room', host: new URL(home.host.origin).origin, room: home.room ?? null};
-    // `home.app` is the app in front: on the desktop among the workspace's
-    // other apps, or full tab under an app entry. Without one, the desktop.
-    const target = home.app ? {scope, app: home.app} : {scope};
-    return {mode: home.app ? mode : 'desktop', target};
-  }
   if (bare && mode === 'desktop') {
     try {
       return link.parse(location.href);
@@ -115,12 +124,19 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const loading = status?.textContent ?? '';
   // A machine to set up is not admission: the page offers it once open.
   const {install, ...secrets} = takeLinkSecrets(window);
-  const runtime = await deps.loadRuntime();
+  // The runtime (most of the page's download) loads while the entry is read
+  // and, for a bare entry under a home workspace, while admission starts:
+  // a host's door is asked, and the person and device keys opened, before
+  // anything needs the runtime. Each door waits for it where it does.
+  const loaded = deps.loadRuntime();
   const entry = await readEntry({mode, location: window.location, fetch: deps.fetch});
-  const link = grammar(runtime, entry);
+  const linked = loaded.then(runtime => grammar(runtime, entry));
+  // Awaited below; a failure is the first door's to report.
+  void linked.catch(() => {});
   let route;
   try {
-    route = initialRoute({link, location: window.location, mode, home: entry.home});
+    route = homeRoute({location: window.location, mode, home: entry.home})
+      ?? initialRoute({link: await linked, location: window.location, mode, home: entry.home});
   } catch (error) {
     say(error?.message ?? String(error));
     throw error;
@@ -138,6 +154,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   });
   say(loading);
   onStep('open');
+  const link = await linked;
   if (peer && route.target.scope.kind === 'room' && !route.target.scope.room) {
     // The home workspace's room is known now: show its canonical link.
     route = {...route, target: {...route.target, scope: {...route.target.scope, room: peer.room}}};

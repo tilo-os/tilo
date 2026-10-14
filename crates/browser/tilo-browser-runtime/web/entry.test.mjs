@@ -165,3 +165,58 @@ test('the home workspace opens through its host door under its listed name, and 
   assert.equal(mounts[0].workspaceName, 'Commons');
   page.router.stop?.();
 });
+
+test('a bare entry under a home workspace asks the host’s door while the runtime still loads', async () => {
+  const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+  const order = [];
+  let loaded;
+  const runtime = {
+    parseLink: () => { throw new Error('a home entry needs no grammar to be admitted'); },
+    formatLink: () => 'https://rooms.example/open/#/@rooms.example/w/ROOM',
+  };
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const peer = {room: 'ROOM', whenReady: async () => {}, mountDesktop: async () => { order.push('mount'); return {navigation}; }};
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://rooms.example/open/', hash: ''},
+    history: {state: null, replaceState: () => order.push('canonical'), pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: () => new Promise(resolve => { loaded = () => { order.push('runtime'); resolve(runtime); }; }),
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    enterViaHost: async () => {
+      order.push('door');
+      // The door's own wait for the runtime, before its first certificate.
+      loaded();
+      return peer;
+    },
+  };
+  const page = await boot({mode: 'desktop', window, deps});
+  // The router then keeps the address canonical as it goes.
+  assert.deepEqual(order.slice(0, 4), ['door', 'runtime', 'canonical', 'mount']);
+  page.router.stop?.();
+});
+
+test('any other link waits for the runtime’s grammar before admission', async () => {
+  const order = [];
+  const runtime = {
+    parseLink: () => { order.push('parse'); return JSON.stringify({mode: 'desktop', target: {scope: {kind: 'own'}}}); },
+    formatLink: () => 'https://tilo.so/#/me',
+  };
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://tilo.so/#/me', hash: '#/me'},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const deps = {
+    loadRuntime: async () => { order.push('runtime'); return runtime; },
+    fetch: async () => ({ok: false}),
+    mountDesktop: async () => { order.push('mount'); return {navigation}; },
+  };
+  const page = await boot({mode: 'desktop', window, deps});
+  assert.deepEqual(order, ['runtime', 'parse', 'mount']);
+  page.router.stop?.();
+});
