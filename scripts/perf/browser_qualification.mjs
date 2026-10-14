@@ -170,6 +170,19 @@ export function classifyAdapter(info) {
   return 'gpu';
 }
 
+/**
+ * Chrome's flags for a run on `renderer` by user `uid`: no frame-rate limit
+ * or vsync; SwiftShader's Vulkan and ANGLE when the run is on SwiftShader (a
+ * runner without a GPU, as crates/browser/tilo-web-desktop/scripts/navigation.mjs
+ * starts it); no sandbox for root (a CI container), which Chrome refuses
+ * otherwise. The adapter check still proves which renderer ran.
+ */
+export function chromeFlags(renderer, uid) {
+  return ['--disable-frame-rate-limit', '--disable-gpu-vsync',
+    ...(renderer === 'swiftshader' ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader'] : []),
+    ...(uid === 0 ? ['--no-sandbox'] : [])];
+}
+
 /** Intervals between consecutive presented frames, from their timestamps. */
 export function intervals(times) {
   const out = [];
@@ -366,8 +379,11 @@ async function round(browser, url, options, index) {
   const page = await freshPage(browser, options.cpuThrottle);
   try {
     await page.send('Page.navigate', {url: `${url}/`});
-    for (let i = 0; !(await page.evaluate('Boolean(globalThis.tiloMount?.navigation)').catch(() => false)); i++) {
-      if (i > 600 || page.errors.some(e => /panic/i.test(e))) {
+    // SwiftShader compiles the renderer's pipelines on the CPU before the
+    // first frame: 30 s on a fast laptop, so allow three minutes.
+    const deadline = Date.now() + 180_000;
+    while (!(await page.evaluate('Boolean(globalThis.tiloMount?.navigation)').catch(() => false))) {
+      if (Date.now() > deadline || page.errors.some(e => /panic/i.test(e))) {
         throw new Invalid(`round ${index}: the desktop never presented: ${page.errors.slice(0, 2).join(' | ')}`);
       }
       await sleep(100);
@@ -493,7 +509,8 @@ async function main() {
   options.split = existsSync(split) ? JSON.parse(readFileSync(split, 'utf8')) : null;
   const listed = Object.keys(JSON.parse(readFileSync(join(options.bundle, 'build.json'), 'utf8')).files);
   const server = await serve(options.bundle);
-  const browser = await launch({args: ['--disable-frame-rate-limit', '--disable-gpu-vsync']});
+  const flags = chromeFlags(options.renderer, process.getuid?.());
+  const browser = await launch({args: flags});
   try {
     const version = (await browser.send('Browser.getVersion')).result;
     const rounds = [];
@@ -517,7 +534,7 @@ async function main() {
       adapter: rounds[0].adapter, browser: {product: version.product, userAgent: version.userAgent},
       viewport: VIEWPORT, host: {...before, before, after, maxLoad: options.maxLoad ?? null, platform: `${os.platform()} ${os.release()} ${os.arch()}`},
       workload: {rounds: options.rounds, activations: options.activations, demoSeconds: options.demoSeconds,
-        idleSeconds: options.idleSeconds, cpuThrottle: options.cpuThrottle, apps: rounds[0].apps, inputHz: 120, chromeFlags: ['--disable-frame-rate-limit', '--disable-gpu-vsync']},
+        idleSeconds: options.idleSeconds, cpuThrottle: options.cpuThrottle, apps: rounds[0].apps, inputHz: 120, chromeFlags: flags},
       summary, goals: judgeGoals(summary), attribution: attribute(rounds),
       samples: {
         load_ms: rounds.map(r => r.loadMs), open_ms: rounds.flatMap(r => r.opens.map(o => o.ms)),
