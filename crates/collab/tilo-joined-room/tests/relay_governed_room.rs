@@ -60,7 +60,7 @@ fn certificate(
 /// The text of an Editor's invitation to `room`, for `person` only, that
 /// the relay governing it issues for the room's owner `issuer`.
 async fn invite(relay: &Relay, issuer: &DeviceCert, room: &str, person: [u8; 32]) -> String {
-    let issued = relay
+    let invitation = relay
         .rooms()
         .unwrap()
         .issue(
@@ -79,7 +79,7 @@ async fn invite(relay: &Relay, issuer: &DeviceCert, room: &str, person: [u8; 32]
         )
         .await
         .unwrap();
-    join::encode_invitation_text(&issued.signed_invitation)
+    join::encode_invitation_text(&invitation.signed_invitation)
 }
 
 async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
