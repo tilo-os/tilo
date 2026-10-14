@@ -1,0 +1,32 @@
+# What `tilo-cache-gc.timer` may remove: things this machine can download or
+# regenerate again, once nothing uses them. A person's own
+# ~/.config/tilo/cache-gc.toml replaces this file for their own run (their
+# test caches). `tilo os status` says what the last runs freed, what they kept
+# and when that can go; `tilo os clean` runs the cleanup now.
+#
+# Nothing in use is ever removed: Flatpak keeps every runtime an installed app
+# needs, an upgrade holds the developer image copy's lock, and a test run holds
+# its fixture cache's lock.
+
+# Flatpak runtimes no installed app uses (what `flatpak uninstall --unused`
+# removes). A reinstalled app downloads its runtime again.
+[flatpak]
+# remove_unused_runtimes = true
+
+# The copy of the last developer image upgrade in /var/lib/tilo-vm/image
+# (`tilo-vm vm upgrade --from local`). Without it the next such upgrade sends
+# the whole image once instead of only what changed.
+[vm_image]
+# remove = true
+# unused_days = 14
+
+# Test fixtures `tools/test-env.sh` caches in ~/.cache/tilo/test-env. Each
+# change to a fixture generator leaves the previous set behind.
+[test_caches]
+# remove = true
+# unused_days = 14
+
+# While the disk has less free space than this, anything above that is not in
+# use goes at once, however recently it was used.
+[space]
+# low_free_gb = 5
