@@ -725,6 +725,24 @@ impl Relay {
         );
         handshake_trust.refresh(&workspaces).await;
         let live_trust_policy = handshake_trust.live_policy.clone();
+        // A certified host governs the rooms it creates, unless its embedder
+        // serves workspace joining itself. It answers their governance as
+        // actions itself, beside whatever apps its embedder serves.
+        let governs_rooms = startup_mode == RelayStartupMode::CertifiedHost
+            && !handshake_trust.allow_any
+            && !additional_protocols.iter().any(|(alpn, _)| {
+                alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
+                    || alpn.as_slice() == crate::rooms::ROOM_ADMIN_ALPN
+            });
+        let governance = governs_rooms.then(crate::rooms::HostRoomActions::new);
+        let app_serving = match &governance {
+            Some(governance) => Some(Arc::new(crate::rooms::GovernedPlane {
+                governance: governance.clone(),
+                apps: app_serving,
+            })
+                as Arc<dyn crate::app_serving::AppServingPlane>),
+            None => app_serving,
+        };
         let handler = RelayProtocol {
             protocol: crate::peer::SessionProtocol::V1,
             workspaces: workspaces.clone(),
@@ -788,14 +806,7 @@ impl Relay {
             node_session: Arc::default(),
         });
         let governed_access_update = Arc::new(AsyncMutex::new(()));
-        // A certified host governs the rooms it creates, unless its embedder
-        // serves workspace joining itself.
-        let rooms = if startup_mode == RelayStartupMode::CertifiedHost
-            && !handshake_trust.allow_any
-            && !additional_protocols.iter().any(|(alpn, _)| {
-                alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
-                    || alpn.as_slice() == crate::rooms::ROOM_ADMIN_ALPN
-            }) {
+        let rooms = if governs_rooms {
             Some(
                 crate::rooms::Rooms::open(
                     crate::rooms::RoomHost {
@@ -833,6 +844,9 @@ impl Relay {
         } else {
             None
         };
+        if let (Some(governance), Some(rooms)) = (&governance, &rooms) {
+            governance.attach(rooms.clone());
+        }
         let mut router = Router::builder(endpoint.clone())
             .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
@@ -2508,8 +2522,8 @@ async fn handle_conn(
     mut recv: RecvStream,
 ) -> Result<(), RelayError> {
     ctx.metrics.inc_conns_accepted();
-    // 1. The handshake, under the live policy: the owner and every user the
-    // relay currently admits.
+    // 1. The bounded shared handshake, under the live policy: the owner and
+    // every user the relay currently admits.
     let client_peer = match ctx
         .identity
         .authenticate(

@@ -408,6 +408,9 @@ use crate::compositor::control_invocation::{
     ControlInvocation, ControlInvocationPoll, InvocationProgress,
 };
 use crate::compositor::control_listing::{HeldListing, ListingStamp, ListingWait};
+use crate::compositor::session_bootstrap::{
+    LoadedSession, load_session_tree, service_socket_is_live, spawn_session_collab_broker,
+};
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, TouchPhaseKind,
@@ -445,11 +448,17 @@ struct NativeRedrawReasons {
     lock_animation: bool,
     /// A media-key readout drawn over the lock surface is fading or due to clear.
     lock_osd: bool,
+    /// An earlier tick counted a change but painted no frame for it: the
+    /// frame clock was not due yet, or the presenter was full. Most reasons
+    /// are edges seen once (a client commit, input, a session change), so
+    /// the change is owed until a frame is painted.
+    owed: bool,
 }
 
 impl NativeRedrawReasons {
     fn content_changed(self, session_locked: bool) -> bool {
-        self.force
+        self.owed
+            || self.force
             || self.backend_event
             || self.visible_input
             || self.session
@@ -490,10 +499,52 @@ impl NativeRedrawReasons {
             (session_locked && self.lock_clock, r::LOCK_CLOCK),
             (session_locked && self.lock_animation, r::LOCK_ANIMATION),
             (session_locked && self.lock_osd, r::LOCK_OSD),
+            (self.owed, r::OWED),
         ]
         .into_iter()
         .filter(|(held, _)| *held)
         .fold(0, |bits, (_, bit)| bits | bit)
+    }
+}
+
+/// The backend events one loop iteration dispatched, for whether they ask for
+/// a frame by themselves ([`NativeRedrawReasons::backend_event`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DispatchedInput {
+    /// Keyboard presses and releases.
+    keys: u64,
+    /// Every other backend event.
+    other: u64,
+}
+
+impl DispatchedInput {
+    fn note(&mut self, event: &BackendEvent) {
+        let key = matches!(
+            event,
+            BackendEvent::Input(WindowEvent::KeyboardInput { .. })
+                | BackendEvent::PhysicalKey {
+                    event: WindowEvent::KeyboardInput { .. },
+                    ..
+                }
+        );
+        if key {
+            self.keys = self.keys.saturating_add(1);
+        } else {
+            self.other = self.other.saturating_add(1);
+        }
+    }
+
+    /// Whether this input needs a frame of its own, with `keys_to_clients` of
+    /// its keys forwarded to a client. A key only a client took changes no
+    /// shell pixels: the client's commit asks for the frame that shows it.
+    /// Painting for the key as well spent the frame clock's next deadline on
+    /// a frame identical to the last one, so the commit that followed a
+    /// millisecond later waited a refresh interval for the next deadline. A
+    /// key the shell kept (a shortcut, typing into the chrome), and any other
+    /// event, asks for a frame as before; whatever the shell changed in
+    /// response asks again through its own reason.
+    fn asks_for_frame(self, keys_to_clients: u64) -> bool {
+        self.other > 0 || self.keys > keys_to_clients
     }
 }
 
@@ -7220,197 +7271,6 @@ fn priority_route(
 /// How long an invite minted from the palette stays valid.
 const INVITE_EXPIRY_SECONDS: u64 = 3600;
 
-/// Load this machine's desktop state and bring it up to the invariants
-/// later stages assume: a persist path, a durable room identity per
-/// workspace, and an owner per room — an unowned room has no administrators.
-///
-/// Returns the tree plus whether peer sync may come up; refused when the
-/// device key won't load, since the id salt comes from it and an unsalted id space lets peers mint colliding ids.
-fn load_session_tree(
-    enable_peer_sync: bool,
-) -> (
-    crate::shell::state::WorkspaceTreeHandle,
-    bool,
-    Option<crate::shell::persist::StateNotice>,
-) {
-    use crate::shell::persist;
-
-    let path = persist::state_json_path();
-
-    // The id salt is set **before** the tree is loaded — load-bearing order.
-    //
-    // Two peers minting ids from the same counter collide, and CRDT sync
-    // folds them into one row. The salt (from the Iroh keypair) puts each
-    // peer in a disjoint id range, making an id safe as a replication key.
-    //
-    // Setting it after load left `bootstrap_default`'s first-boot ids
-    // unsalted — identical on every machine, so two such peers joining one
-    // room would collide. Re-seeding afterwards didn't help: it fixes ids minted *next*, not ones already in the tree.
-    let mut peer_sync_possible = enable_peer_sync;
-    let peer_key_path = crate::shell::network::peer_key_path();
-    match load_or_create_workspace_salt(&path, &peer_key_path) {
-        Ok(salt) => {
-            crate::shell::state::WorkspaceTree::set_process_peer_salt(salt);
-            tracing::info!("workspace id salt set to 0x{:04x}", salt);
-        }
-        Err(error) => {
-            peer_sync_possible = false;
-            tracing::error!(
-                %error,
-                "workspace id salt unavailable; peer sync stays off rather than using an unstable id namespace"
-            );
-        }
-    }
-    if peer_sync_possible {
-        match crate::network::behaviour::load_or_create_keypair(&peer_key_path) {
-            Ok(kp) => {
-                tracing::info!(endpoint = %kp.public(), "peer-sync: device identity loaded");
-            }
-            Err(e) => {
-                peer_sync_possible = false;
-                tracing::error!(
-                    "peer-sync: device key load failed ({e}); peer sync stays off \
-                     rather than syncing an unsalted id space"
-                );
-            }
-        }
-    }
-
-    // Carried out to `run`, which has the chrome to show it — silently handing
-    // someone a bootstrapped demo tree is indistinguishable from losing their work.
-    let (mut tree, state_notice) = persist::load_or_default(&path);
-    // Recover cards written by builds that mistook a host window's toolkit
-    // identity for an uninstalled package. The host catalogue is available
-    // before the frame loop starts, so this one-shot migration can distinguish
-    // a now-resolvable local app from a genuinely missing one without making
-    // the latter retry forever.
-    let recovered_host_apps =
-        crate::shell::peer_windows::retry_resolvable_host_app_errors(&mut tree);
-    // Past every id already in the tree, so a restart won't re-mint one in use. No-op on a first boot.
-    tree.seed_next_id_from_self();
-
-    // Nothing writes back over a file this session refused to read — a refused
-    // session runs without persistence, like `ui::persist` disabling a writer over a document it wouldn't open.
-    tree.persist_path = if state_notice.is_none() {
-        Some(path)
-    } else {
-        None
-    };
-    tree.fs_acl_path = Some(persist::fs_capability_export_path());
-    if recovered_host_apps {
-        tracing::info!(
-            target: "tilo::session_restore",
-            "retrying legacy host-app cards that now resolve to installed desktop entries"
-        );
-        tree.queue_save();
-    }
-
-    let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
-    if !adopted.is_empty() {
-        tracing::info!(
-            "capabilities: {} workspace(s) adopted by their selected identities",
-            adopted.len()
-        );
-    }
-    if let Some(account) = std::env::var("USER")
-        .ok()
-        .filter(|account| !account.is_empty())
-    {
-        let rebound = tree
-            .rebind_account_owned_workspaces(&account, crate::shell::state::local_user_id_for_room);
-        if !rebound.is_empty() {
-            tracing::info!(
-                "capabilities: {} workspace(s) created before this device's identity now belong to it",
-                rebound.len()
-            );
-        }
-    }
-    // Replay the persisted aggregate on every boot. A previous session may
-    // have stopped while the authority socket was unavailable; the
-    // background publisher coalesces this with any immediate mutation.
-    tree.export_fs_capabilities();
-    (tree.shared(), peer_sync_possible, state_notice)
-}
-
-/// Is something already listening on `path`? The collaboration broker
-/// unlinks before it binds, so without this check a second compositor on
-/// the same `XDG_RUNTIME_DIR` would steal the socket from the running
-/// session, splitting apps across two unreachable brokers. A successful
-/// connect means a live listener; `ECONNREFUSED` means a stale inode we do want to clear.
-fn collab_socket_is_live(path: &std::path::Path) -> bool {
-    path.exists() && std::os::unix::net::UnixStream::connect(path).is_ok()
-}
-
-/// Bind the session's CRDT fan-out broker on the service socket the
-/// launcher hands to apps. `None` means a degraded session, not a normal
-/// one — every app manifest declares `collab`, so nothing collaborates
-/// until this succeeds; reported at `error!` and surfaced via `chrome_state::set_collab_unavailable`.
-fn spawn_session_collab_broker(
-    chrome: &crate::shell::chrome_state::Chrome,
-    peer_sync: Option<&Arc<crate::shell::network::ShellNetwork>>,
-) -> Option<crate::shell::collab_broker::BrokerHandle> {
-    if let Err(e) = launcher::services::ensure_services_root() {
-        tracing::error!(
-            "collab: cannot create {} ({e}); apps will start without collaboration",
-            launcher::services::services_root().display()
-        );
-        chrome
-            .borrow_mut()
-            .set_collab_unavailable(crate::shell::i18n::t_args(
-                "collab-unavailable-services-root",
-                &[("error", e.to_string().into())],
-            ));
-        return None;
-    }
-
-    let capnp_path = launcher::services::collab_socket();
-    if collab_socket_is_live(&capnp_path) {
-        tracing::error!(
-            "collab: {} already has a live listener — another session is using this \
-             XDG_RUNTIME_DIR; refusing to take its socket. Apps will start without \
-             collaboration.",
-            capnp_path.display()
-        );
-        chrome
-            .borrow_mut()
-            .set_collab_unavailable(crate::shell::i18n::t("collab-unavailable-socket-taken"));
-        return None;
-    }
-
-    let peer_sync_owned = peer_sync.cloned();
-    let membership = chrome.borrow().tree_handle();
-    match crate::shell::collab_broker::spawn_native(
-        capnp_path.clone(),
-        &peer_sync_owned,
-        membership,
-    ) {
-        Ok(handle) => {
-            tracing::info!(
-                "collab: typed broker listening on {} — peer_sync={}",
-                capnp_path.display(),
-                peer_sync.is_some()
-            );
-            crate::shell::channel_encryption::ChannelKeyProvider::session()
-                .set(handle.channel_encryption());
-            chrome.borrow_mut().clear_collab_unavailable();
-            Some(handle)
-        }
-        Err(e) => {
-            tracing::error!(
-                "collab: bind {} failed ({e}); apps will start without collaboration",
-                capnp_path.display()
-            );
-            chrome
-                .borrow_mut()
-                .set_collab_unavailable(crate::shell::i18n::t_args(
-                    "collab-unavailable-broker",
-                    &[("error", e.to_string().into())],
-                ));
-            None
-        }
-    }
-}
-
 fn active_physical_gamepad_binding(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
@@ -8101,7 +7961,7 @@ fn spawn_session_identity_broker(
         return None;
     }
     let path = launcher::services::identity_socket();
-    if collab_socket_is_live(&path) {
+    if service_socket_is_live(&path) {
         tracing::error!(path = %path.display(), "identity: another session owns the socket");
         return None;
     }
@@ -9083,7 +8943,11 @@ pub fn run() {
 
     // The desktop's own state, loaded from disk not bootstrapped fresh — room
     // identity, owner and capability list all have to survive a restart.
-    let (tree_handle, enable_peer_sync, state_notice) = load_session_tree(enable_peer_sync);
+    let LoadedSession {
+        tree: tree_handle,
+        peer_sync_possible: enable_peer_sync,
+        notice: state_notice,
+    } = load_session_tree(enable_peer_sync);
     let mut state = State::new_with_workspace_tree(
         event_loop.handle(),
         display_handle.clone(),
@@ -9114,6 +8978,22 @@ pub fn run() {
         backend.composites_strip_layers(),
     );
     frame_builder.set_scroll_copy_presenter(backend.copies_scrolls());
+    // A peer stream's picture finishes on a media thread after its frame's
+    // push returned (the loop never waits for a decode); this wakes the loop
+    // to show it, with no polling while a stream plays.
+    match calloop::ping::make_ping() {
+        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
+            Ok(_) => frame_builder
+                .host_mut()
+                .set_peer_picture_wake(Arc::new(move || ping.ping())),
+            Err(error) => {
+                tracing::warn!(%error, "could not register the peer picture wake source; peer streams poll for decoded pictures");
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "could not create the peer picture wake source; peer streams poll for decoded pictures");
+        }
+    }
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
@@ -9218,8 +9098,8 @@ pub fn run() {
         state.selection_store(),
     );
 
-    // Peer sync is constructed here (not only in hosted mode) because this is
-    // the compositor that boots as the Tilo session.
+    // Peer sync is constructed here because this is the compositor that boots
+    // as the Tilo session.
     let mut peer_sync = enable_peer_sync
         .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
         .flatten();
@@ -9941,6 +9821,8 @@ pub fn run() {
     let mut lock_keyboard = lock_screen::LockTouchKeyboard::default();
     let mut last_lock_media_poll = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
+    // A change counted on a tick that painted nothing ([`NativeRedrawReasons::owed`]).
+    let mut content_owed = false;
     let mut force_first_paint = true;
     let mut animation_settle = AnimationSettle::default();
     // When the frame being made was first wanted, for its trace lateness.
@@ -10347,6 +10229,8 @@ pub fn run() {
                 .map(BackendEvent::Input),
         );
         let had_backend_events = !pending_events.is_empty();
+        let mut dispatched_input = DispatchedInput::default();
+        let client_keys_before = state.client_keys_delivered;
         let mut session_changed = false;
         let mut accessibility_changed = false;
         let mut visible_input_changed = pen_moved;
@@ -10415,6 +10299,7 @@ pub fn run() {
         // events that must run next, before anything the backend queued later.
         let mut event_step = "accessibility";
         while let Some(event) = pending_events.pop_front() {
+            dispatched_input.note(&event);
             state.physical_key_input_time_ns = match &event {
                 BackendEvent::PhysicalKey { input_time_ns, .. } => Some(*input_time_ns),
                 _ => None,
@@ -12404,6 +12289,10 @@ pub fn run() {
                     }
                 }
             );
+            // A picture that outlasted its frame's push is shown once it
+            // finishes, even when no later frame arrives to carry it out; the
+            // view's wake deadline brings the loop back for it.
+            let _ = frame_builder.host_mut().collect_late_peer_pictures();
             // Which legacy windows running on the person's other devices this
             // one shows: each host streams them here only while it does.
             // Nothing shows under the lock.
@@ -12691,7 +12580,8 @@ pub fn run() {
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
         let redraw_reasons = NativeRedrawReasons {
             force: force_first_paint,
-            backend_event: had_backend_events,
+            backend_event: dispatched_input
+                .asks_for_frame(state.client_keys_delivered.wrapping_sub(client_keys_before)),
             visible_input: visible_input_changed,
             session: session_changed || injected_redraw,
             revision: revision_changed,
@@ -12723,6 +12613,7 @@ pub fn run() {
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
+            owed: content_owed,
         };
         let content_changed = redraw_reasons.content_changed(session.is_locked());
         demand_onset.note_tick(content_changed, iter_t0);
@@ -12748,6 +12639,9 @@ pub fn run() {
             metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
+        // A change this tick saw but could not paint is still to be shown: the
+        // next tick that may paint does, even if nothing new happens by then.
+        content_owed = content_changed && !should_paint;
         animation_settle.after_tick(still_moving, should_paint);
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
@@ -12775,7 +12669,7 @@ pub fn run() {
             }
             if should_paint {
                 frames_painted = frames_painted.saturating_add(1);
-                if had_backend_events {
+                if redraw_reasons.backend_event {
                     cause_events = cause_events.saturating_add(1);
                 }
                 if session_changed {
@@ -12796,7 +12690,10 @@ pub fn run() {
                     }
                 }
                 if keepalive_due
-                    && !(had_backend_events || session_changed || revision_changed || animating)
+                    && !(redraw_reasons.backend_event
+                        || session_changed
+                        || revision_changed
+                        || animating)
                 {
                     cause_keepalive = cause_keepalive.saturating_add(1);
                 }
@@ -13491,6 +13388,7 @@ pub fn run() {
             locker.lock();
         }
 
+        let testctl_cpu = metrics.thread_cpu();
         // Accept new test-control connections and drain them in this same
         // iteration, so a request already written is answered without
         // another calloop sleep. One written after this drain wakes the loop
@@ -13580,6 +13478,7 @@ pub fn run() {
         });
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
+        metrics.mark_testctl_cpu(testctl_cpu);
 
         // Selection bookkeeping after dispatch, not in the protocol handler:
         // smithay raises `new_selection` before installing the new source, so an inline pull would read the previous owner.
@@ -13677,7 +13576,10 @@ pub fn run() {
         }
         let client_pump_needed = client_followup_needed(
             clients_dispatched,
-            client_changed || configured_after_dispatch > 0 || capture_ready,
+            client_changed
+                || configured_after_dispatch > 0
+                || capture_ready
+                || !state.selection.pending_pulls.is_empty(),
         );
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
@@ -14464,6 +14366,51 @@ mod tests {
         assert!(settle.due(false));
     }
 
+    /// A key the focused client alone took asks for no frame: the client's
+    /// commit does, and a frame painted for the key itself would spend the
+    /// frame clock's deadline on an unchanged desktop and hold the commit's
+    /// frame back a refresh interval. Keys the shell kept, and every other
+    /// backend event, still ask for one.
+    #[test]
+    fn a_key_only_a_client_took_asks_for_no_frame_of_its_own() {
+        let key = |pressed| {
+            BackendEvent::Input(keyboard_input_event(
+                &winit::keyboard::Key::Character("a".into()),
+                pressed,
+            ))
+        };
+        let mut typed = DispatchedInput::default();
+        typed.note(&key(true));
+        typed.note(&key(false));
+        assert!(
+            !typed.asks_for_frame(2),
+            "a press and release forwarded to the client change no shell pixels"
+        );
+        assert!(
+            typed.asks_for_frame(1),
+            "a key the shell kept (a shortcut, typing into the chrome) asks for a frame"
+        );
+        let mut physical = DispatchedInput::default();
+        physical.note(&BackendEvent::PhysicalKey {
+            event: keyboard_input_event(&winit::keyboard::Key::Character("a".into()), true),
+            input_time_ns: 1,
+        });
+        assert!(
+            !physical.asks_for_frame(1),
+            "a physical key counts as a key"
+        );
+        let mut pointer = typed;
+        pointer.note(&BackendEvent::Redraw);
+        assert!(
+            pointer.asks_for_frame(2),
+            "any other backend event in the same tick still asks for a frame"
+        );
+        assert!(
+            !DispatchedInput::default().asks_for_frame(0),
+            "no input, no frame"
+        );
+    }
+
     #[test]
     fn redraw_edges_and_idle_parking_follow_real_wake_sources() {
         // Phase `consumed_shell_input_is_a_redraw_edge`.
@@ -14877,6 +14824,25 @@ mod tests {
             );
             assert_eq!(dimmer.overlay_alpha(), None);
         }
+    }
+
+    /// A client commit is an edge the loop sees once. Seen on a tick that may
+    /// not paint (the frame clock is not due, or the presenter is full), it
+    /// stays owed until a frame is painted: before, the frame waited for the
+    /// next unrelated event, a key's release a tenth of a second later.
+    #[test]
+    fn a_change_seen_on_a_tick_that_could_not_paint_is_still_owed() {
+        use crate::compositor::metrics::paint_reason as r;
+        let owed = NativeRedrawReasons {
+            owed: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert!(owed.content_changed(false));
+        assert!(
+            owed.content_changed(true),
+            "only changes the tick counted are owed, so the lock does not filter them again"
+        );
+        assert_eq!(owed.paint_reason_bits(false, false), r::OWED);
     }
 
     #[test]
@@ -15391,106 +15357,6 @@ mod tests {
                     .is_empty(),
                 "post-layout geometry keeps the surface on the same physical output"
             );
-        }
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn collab_socket_is_bound_once_for_the_launcher() {
-        // Phase `compositor_binds_the_socket_the_launcher_dials`.
-        // The compositor binds the socket the launcher dials. Assert across both
-        // production paths, not either one's idea of the path: bind with the
-        // compositor's spawn function, resolve with the launcher's resolver,
-        // require an open descriptor. `required@1` makes a divergence an error, not the skip an optional service gets.
-        {
-            let runtime = tempfile::tempdir().expect("tempdir");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_RUNTIME_DIR", runtime.path());
-            let fb = FrameBuilder::new((800, 600));
-            let chrome = fb.chrome_handle();
-            let broker = spawn_session_collab_broker(&chrome, None)
-                .expect("the compositor must be able to bind its own collab socket");
-
-            assert!(
-                chrome.borrow().collab_available(),
-                "a session that bound its broker must not report collaboration unavailable: {:?}",
-                chrome.borrow().collab_unavailable
-            );
-
-            // The launcher's real resolver, on a manifest demanding the service.
-            // Use the authenticated launch path: collaboration deliberately rejects
-            // a bare socket connection with no app/workspace handoff.
-            let mut services = std::collections::BTreeMap::new();
-            services.insert(
-                launcher::services::COLLAB_SERVICE.to_string(),
-                tilo_app_package::ServiceReq {
-                    protocol: launcher::services::COLLAB_SERVICE.to_string(),
-                    requirement: tilo_app_package::Requirement::Required,
-                    version: 1,
-                },
-            );
-            let resolved = launcher::services::resolve_service_binds_for_launch(
-                &services,
-                false,
-                launcher::services::ServiceLaunchContext {
-                    app_id: "so.tilo.socket-contract-test",
-                    workspace_id: Some("socket-contract-workspace"),
-                },
-            )
-            .expect("the launcher must authenticate with the socket the compositor just bound");
-
-            assert_eq!(
-                resolved.len(),
-                1,
-                "expected exactly one resolved service, got {resolved:?}"
-            );
-            assert_eq!(resolved[0].name, launcher::services::COLLAB_SERVICE);
-            assert!(
-                resolved[0].host_fd() >= 0,
-                "the launcher must hand the app a real connected descriptor"
-            );
-
-            drop(broker);
-        }
-        // Phase `a_second_session_refuses_to_take_a_live_collab_socket`.
-        // A live socket is not taken away from the session that owns it. Two
-        // compositors against one `XDG_RUNTIME_DIR` is what a second login (or
-        // stray test) produces, and the broker unlinks before binding — without
-        // the liveness probe, the newcomer would silently strand the first session's apps. Refusing loudly is correct, and must reach the chrome.
-        {
-            let runtime = tempfile::tempdir().expect("tempdir");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_RUNTIME_DIR", runtime.path());
-
-            let first_fb = FrameBuilder::new((800, 600));
-            let first_chrome = first_fb.chrome_handle();
-            let first =
-                spawn_session_collab_broker(&first_chrome, None).expect("first broker binds");
-
-            let second_fb = FrameBuilder::new((800, 600));
-            let second_chrome = second_fb.chrome_handle();
-            let second = spawn_session_collab_broker(&second_chrome, None);
-
-            assert!(
-                second.is_none(),
-                "a second session must not bind over a live collab socket"
-            );
-            assert!(
-                !second_chrome.borrow().collab_available(),
-                "the refused session must report collaboration as unavailable"
-            );
-            assert!(
-                first_chrome.borrow().collab_available(),
-                "the session that owns the socket must be left working"
-            );
-            // And the first broker still answers — the point of refusing.
-            assert!(
-                collab_socket_is_live(&launcher::services::collab_socket()),
-                "the original broker must still be listening after the refusal"
-            );
-
-            drop(second);
-            drop(first);
         }
     }
 

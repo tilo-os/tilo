@@ -21,6 +21,7 @@
 //! janitor, both on tokio intervals.
 
 mod envelopes;
+mod here;
 pub mod install;
 mod legacy;
 mod live;
@@ -176,6 +177,8 @@ struct Web {
     envelopes: envelopes::Envelopes,
     /// Members' profiles, for `/profile`.
     profiles: envelopes::Envelopes,
+    /// Who is here and what they are doing, for `/here`.
+    here: Arc<here::Here>,
 }
 
 /// Checks the published origins against the listeners they front, and
@@ -348,6 +351,7 @@ impl Relay {
                 envelopes::Kind::Profile,
                 self.state_root().join("profiles"),
             ),
+            here: Arc::new(here::Here::new(here::from_env())),
         });
         let mut tasks = vec![tasks_bridge, tasks_legacy];
         let live = web.live.clone();
@@ -1124,6 +1128,30 @@ async fn route(
                 return Err(status(StatusCode::BAD_REQUEST, "input out of bounds"));
             }
             legacy_input(web, &session.peer, request).await
+        }
+        protocol::HERE_PATH => {
+            let session = authed()?;
+            let request: protocol::HereRequest = decode(&bytes)?;
+            request
+                .validate()
+                .map_err(|why| status(StatusCode::BAD_REQUEST, why))?;
+            if !live::admitted(&web.sessions, &session.peer, request.workspace_id).await {
+                return Err(status(
+                    StatusCode::FORBIDDEN,
+                    "not admitted to this workspace",
+                ));
+            }
+            let (reply, job) = web.here.post(
+                request,
+                session.peer.device_public_key,
+                session.peer.user_public_key,
+                std::time::Instant::now(),
+                tilo_clock::unix_now_ns() / 1_000_000,
+            );
+            if let Some(job) = job {
+                tokio::spawn(web.here.clone().summarize(job));
+            }
+            Ok(encoded(&reply))
         }
         "/rooms" => {
             let session = authed()?;

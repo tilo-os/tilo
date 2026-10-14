@@ -215,26 +215,15 @@ protection, because the command line is inside the signature.
 
 The initramfs is required, not optional: unlocking an encrypted root needs early userspace.
 
-**Dependency not yet available.** The deployment backend the system ships on today cannot produce
-it: a static
-unified image embeds a command line that must name the deployment it boots, and that name changes
-on every update. Getting there needs the content-addressed deployment backend described in §4.3,
-which upstream still marks experimental.
+A static unified image embeds a command line that must name the deployment it boots, and on the
+ostree backend that name changes on every update; only the content-addressed deployment backend
+described in §4.3 can carry one. The image is on that backend and builds the unified image
+([boot-chain.md](boot-chain.md), [composefs-decision.md](composefs-decision.md)), which upstream
+still marks experimental.
 
-Until it lands, the claims in this document about an uneditable command line and a single
-measurement that transitively attests the root filesystem (§4.3) describe target behavior.
-Generation-bound unlock is **not** on that list — see §4.4; it works today by a different route.
-
-**Current backend coverage.** Signature
-verification covers the kernel and the boot loader. It does not cover the initramfs, which is a
-plain archive the loader hands to the kernel *after* verification — and the initramfs is where the
-encrypted root gets unlocked. Anyone who can write the boot partition therefore runs code before
-the root is open, with secure boot enabled and every signature valid. The kernel command line sits
-beside it as an editable text file, so every hardening option can be stripped the same way.
-
-On this backend, secure boot provides a **verified kernel, not a verified boot**. That
-is the strongest reason to reach a unified image, and it is a larger gap than the rollback question
-that first drew attention here.
+On the ostree backend Tilo left, signature verification covered the kernel and the boot loader but
+not the initramfs or the command line, so secure boot provided a **verified kernel, not a verified
+boot**. [boot-chain.md](boot-chain.md) keeps that account as history.
 
 ### 4.3 Sealed root filesystem
 
@@ -258,12 +247,11 @@ This is weaker than Android Verified Boot, where the rollback index lives in tam
 consulted by the bootloader *before* execution. This check happens after the bootloader has
 already run, so it does not provide bootloader-level rollback protection.
 
-**Generation binding does not need the unified image.** The firmware measures every image it loads,
-and each generation deploys its own kernel. The register covering loaded images therefore differs
-per generation on the backend that ships today.
-
-The objection to using this register — that it changes on every update — applies only to a *fixed*
-policy. A signed per-generation prediction is the mechanism for a register that moves.
+**Generation binding rides on the measured command line.** The unified image's command line
+carries the generation, and the register that measures the image therefore differs per generation.
+The objection to using such a register — that it changes on every update — applies only to a
+*fixed* policy. A signed per-generation prediction is the mechanism for a register that moves; the
+register choice and policy order are in [boot-chain.md](boot-chain.md).
 
 **No register provides anti-rollback by itself.** An old signed prediction stays valid
 forever, so an attacker who restores an older signed kernel produces a measurement the TPM will
@@ -271,8 +259,8 @@ honour. Refusing that needs monotonic state the attacker cannot wind back — th
 section — and standard enrollment tooling does not expose it. Measured boot proves *what* ran,
 not that what ran is *current*; refusing an old but validly signed image requires monotonic state.
 
-The mechanism is built and tested against an emulated TPM, and the required measurement is
-available now. The remaining work is wiring.
+The mechanism is built and tested against an emulated TPM, and the installer enrolls it on
+verified TPM2 installs ([rollback.md](rollback.md)). Physical TPM validation is outstanding.
 
 ### 4.5 Security policy as a signed object
 
@@ -385,8 +373,11 @@ not assume one.
 
 Hardware-enforced shadow stacks; full RELRO with immediate binding; position-independent
 executables; fortified source and stack-clash protection for **every vendored C dependency**
-(these do not inherit distribution build flags and must be set explicitly); zero-on-allocate and
-zero-on-free; slab hardening; kernel stack offset randomisation; kernel lockdown; enforced module
+(these do not inherit distribution build flags and must be set explicitly); zero-on-allocate
+(zero-on-free is deliberately left off: it zeroes all RAM on one CPU at every boot and switches
+alloc-time zeroing off, for a shorter lifetime of freed data that matters only to an attacker who
+can already read kernel memory; `os/usr/lib/bootc/kargs.d/01-hardening.toml` records the
+decision); slab hardening; kernel stack offset randomisation; kernel lockdown; enforced module
 signatures with a per-build key discarded after signing; cross-process debugging disabled.
 
 ### Tier 1 — high-risk processes only
@@ -569,9 +560,10 @@ right now. Continuous enforcement comes from the sealed root, not from attestati
   those are different things (§4.8).
 - That an unlocked machine is as trustworthy as a locked one. It is as *usable*, and it says which
   it is (§4.6).
-- That the boot chain in §4.2–4.3 is in force. Without a unified kernel image the command line is
-  editable and the initramfs is unsigned, so secure boot delivers a verified kernel rather than a
-  verified boot (§4.2).
+- That the boot chain in §4.2–4.3 is in force on a machine whose owner has not enrolled Secure
+  Boot keys. The image ships no vendor-signed loader; until the owner enrolls, firmware boots an
+  altered UKI. Its measurement differs, so a TPM-bound unlock does not open for it, but a typed
+  passphrase or recovery key still does ([boot-chain.md](boot-chain.md)).
 - That measured boot prevents downgrade. It proves what ran, not that what ran is current; refusing
   an old-but-validly-signed image needs monotonic state, which is a separate mechanism (§4.4).
 
@@ -586,10 +578,14 @@ absence, including an adversarial errno-comparison test that caught a leak; the 
 mechanism against an emulated TPM, including a header-restore attack performed rather than argued;
 and startup resilience, proven by reproducing the abort against the previous code.
 
-**Built but never booted:** the entire boot chain. Encrypted install, the passphrase path for
-machines without a TPM, and owner-enrolled secure boot have not run on a machine, real or virtual.
-The tooling refuses to act when its preconditions are absent, which is the right failure mode, but
-a refusal that has never been exercised end to end is a claim like any other.
+**Booted in virtual machines, not on a hardware matrix:** the boot chain. The composefs UKI
+boots, and `os/tests/rollback-boot-check.sh` passes, on a VM booted from an image
+`os/dev/build-image.sh` built; LUKS enrolment is asserted to open the volume during the image
+build (`os/tests/luks_enrolment.sh`); Secure Boot enforcement of owner-enrolled keys is probed
+against an OVMF variable store (`os/tests/secureboot_vm_probe.sh`). Firmware enrollment and TPM
+behaviour vary by device, and none of this has run across real hardware. The tooling refuses to
+act when its preconditions are absent, which is the right failure mode, but a refusal that has
+never been exercised end to end is a claim like any other.
 
-The current evidence covers the components furthest from the hardware; the boot chain remains
-unbooted.
+The current evidence covers the components furthest from the hardware best; the boot chain has
+virtual-machine evidence only.

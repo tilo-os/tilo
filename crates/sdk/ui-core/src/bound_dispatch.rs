@@ -936,10 +936,38 @@ pub(crate) fn bound_contract_violations(
 /// Collect each retained component once even when an ordinary container does
 /// not forward `search_providers`. Legacy providers keep their root-owned route.
 pub(crate) fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::SearchProvider>> {
-    fn visit(
+    collect_search_sources(
+        root,
+        &|widget| crate::search::capability::search_providers(widget),
+        &|provider| provider.callback_binding().is_none(),
+    )
+}
+
+/// [`search_providers`] as the action directory's witness reads them: the
+/// same providers in the same order, described without being made, so a
+/// source that indexes to answer builds nothing until someone searches.
+pub(crate) fn search_provider_descriptors(
+    root: &dyn Widget,
+) -> Vec<crate::search::capability::SearchProviderDescriptor> {
+    collect_search_sources(
+        root,
+        &|widget| crate::search::capability::search_provider_descriptors(widget),
+        &|descriptor| descriptor.owner.is_none(),
+    )
+}
+
+/// What `read` finds of the root's own search sources (those `unowned`
+/// admits), then of each retained component's, once each.
+fn collect_search_sources<T>(
+    root: &dyn Widget,
+    read: &dyn Fn(&dyn Widget) -> Vec<T>,
+    unowned: &dyn Fn(&T) -> bool,
+) -> Vec<T> {
+    fn visit<T>(
         widget: &dyn Widget,
+        read: &dyn Fn(&dyn Widget) -> Vec<T>,
         seen: &mut std::collections::HashSet<uuid::Uuid>,
-        providers: &mut Vec<Box<dyn crate::search::SearchProvider>>,
+        found: &mut Vec<T>,
     ) {
         let binding = widget.callback_binding();
         let Ok(_entry) = binding.as_ref().map(CallbackBinding::enter).transpose() else {
@@ -948,16 +976,21 @@ pub(crate) fn search_providers(root: &dyn Widget) -> Vec<Box<dyn crate::search::
         if let Some(binding) = &binding
             && seen.insert(binding.lifetime_id)
         {
-            providers.extend(crate::search::capability::search_providers(widget));
+            found.extend(read(widget));
         }
-        widget.for_each_child(&mut |child| visit(child, seen, providers));
+        widget.for_each_child(&mut |child| visit(child, read, seen, found));
     }
-    let mut providers = crate::search::capability::search_providers(root)
+    let mut found = read(root)
         .into_iter()
-        .filter(|provider| provider.callback_binding().is_none())
+        .filter(|source| unowned(source))
         .collect::<Vec<_>>();
-    visit(root, &mut std::collections::HashSet::new(), &mut providers);
-    providers
+    visit(
+        root,
+        read,
+        &mut std::collections::HashSet::new(),
+        &mut found,
+    );
+    found
 }
 
 fn provider_resource(

@@ -128,7 +128,12 @@ require_text /usr/lib/systemd/system/fs.service "/usr/bin/fs serve --mount-point
 require_text /usr/lib/systemd/system/fs.service "--acl /var/lib/tilo/fs-capabilities.json --principal person:local"
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/dev/fuse"
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/var/lib/tilo/device/cert.bin"
-require_line /usr/lib/systemd/system/fs.service "ExecStop=/usr/bin/fusermount3 -u -z /var/workspace"
+# The daemon unmounts itself on systemd's SIGTERM; an ExecStop= naming
+# fusermount3 fails every stop with 203/EXEC (init_t may not execute it).
+if cat "$root/usr/lib/systemd/system/fs.service" "$root"/usr/lib/systemd/system/fs.service.d/*.conf 2>/dev/null \
+    | grep -Eq '^ExecStop=.*fusermount'; then
+  die "fs.service stops through fusermount3, which systemd cannot execute under SELinux"
+fi
 # The FUSE mount (or Tier 1 bind) must reach the host: no directive that
 # gives the service its own mount namespace, in the unit or a drop-in.
 if cat "$root/usr/lib/systemd/system/fs.service" "$root"/usr/lib/systemd/system/fs.service.d/*.conf 2>/dev/null \

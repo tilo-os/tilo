@@ -629,14 +629,7 @@ mod tests {
         {
             let response = response_with_result(false);
             assert_eq!(response.0, 0);
-            assert_eq!(
-                response
-                    .1
-                    .get("result")
-                    .and_then(|value| value.try_clone().ok())
-                    .and_then(|value| u32::try_from(value).ok()),
-                Some(0)
-            );
+            assert_eq!(crate::portal::option::<u32>(&response.1, "result"), Some(0));
         }
     }
 

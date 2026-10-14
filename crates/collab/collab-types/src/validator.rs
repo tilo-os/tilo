@@ -662,6 +662,48 @@ pub fn document_node(room: &str, app: &str, record: &str) -> TreePath {
     TreePath::room(room).app(app).resource(record)
 }
 
+/// Every record `room › app › resource` one of `grants` names (at the record
+/// or anywhere below it), as `(app, record)`, in grant order and possibly
+/// repeated.
+///
+/// A record's channel id is a hash of its route, so a steward cannot turn a
+/// channel back into the record it carries. A grant that names a record
+/// gives the route itself, so a steward admitting devices per record can
+/// decide a Read Deny on that record from the first admission on, without
+/// having seen the record written and without any mapping of its own to
+/// lose on a restart. A pattern grant (every resource of an app, any depth)
+/// names no record and is not inverted here.
+pub fn named_records<'g>(
+    grants: impl IntoIterator<Item = &'g Grant>,
+    room: &str,
+) -> impl Iterator<Item = (&'g str, &'g str)> {
+    use tilo_action_policy::{Level, Segment};
+    grants.into_iter().filter_map(move |grant| {
+        let [
+            Segment::Name(Level::Room, named_room),
+            Segment::Name(Level::App, app),
+            Segment::Name(Level::Resource, record),
+            ..,
+        ] = grant.node.segments()
+        else {
+            return None;
+        };
+        (named_room == room).then_some((app.as_str(), record.as_str()))
+    })
+}
+
+/// The record whose channel is `channel` among those `grants` name in
+/// `room` ([`named_records`]); `None` when no grant names it.
+#[must_use]
+pub fn named_record_of_channel<'g>(
+    grants: impl IntoIterator<Item = &'g Grant>,
+    room: &str,
+    channel: crate::ChannelId,
+) -> Option<(&'g str, &'g str)> {
+    named_records(grants, room)
+        .find(|(app, record)| crate::document_channel_id(app, room, record) == channel)
+}
+
 /// The app segment of an artifact no app claims.
 const UNKNOWN_APP: &str = "-";
 

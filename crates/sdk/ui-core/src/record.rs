@@ -345,9 +345,25 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RecordKind(String);
 
+/// Old Writer kind stamps still name the current rich-text resource.
+/// Reopening a record must not rewrite its attributed CRDT history.
+const FORMER_KINDS: [(&str, &str); 2] = [
+    ("document", "tilo.rich-text"),
+    ("qdoc.rich-text", "tilo.rich-text"),
+];
+
 impl RecordKind {
     pub fn new(kind: impl Into<String>) -> Self {
-        Self(kind.into())
+        let kind = kind.into();
+        match FORMER_KINDS.iter().find(|(former, _)| *former == kind) {
+            Some((_, current)) => Self((*current).to_owned()),
+            None => Self(kind),
+        }
+    }
+
+    /// Whether a stored current or former name identifies this kind.
+    pub fn names(&self, stored: &str) -> bool {
+        Self::new(stored) == *self
     }
 
     pub fn as_str(&self) -> &str {
@@ -619,7 +635,7 @@ fn stamp_scoped(
     let existing_refs = object_at(doc, &m, "refs", ObjType::List);
     if matches!(&existing_id, StringAt::String(existing) if existing != id.as_str())
         || matches!(&existing_id, StringAt::Invalid)
-        || matches!(&existing_kind, StringAt::String(existing) if existing != kind.as_str())
+        || matches!(&existing_kind, StringAt::String(existing) if !kind.names(existing))
         || matches!(&existing_kind, StringAt::Invalid)
         || matches!(&existing_home, StringAt::String(existing) if existing.is_empty())
         || matches!(&existing_home, StringAt::Invalid)
@@ -3820,6 +3836,32 @@ mod tests {
         );
         one.merge(&mut two).unwrap();
         assert_eq!(one.get_changes(&[]).len(), 1, "they converge on one record");
+    }
+
+    /// Writer records stamped before the kind rename reopen as rich text
+    /// without rewriting their attributed history.
+    #[test]
+    fn records_stamped_with_former_writer_kinds_reopen_without_rewrite() {
+        let current = RecordKind::new("tilo.rich-text");
+        assert!(current.names("tilo.rich-text"));
+        for former in ["document", "qdoc.rich-text"] {
+            assert_eq!(RecordKind::new(former), current);
+            assert!(current.names(former));
+            let id = RecordId::for_tab(7);
+            let mut doc = AutoCommit::new();
+            init(&mut doc, &id, &current, "room");
+            let meta = meta_obj(&mut doc).unwrap();
+            doc.put(&meta, "kind", former).unwrap();
+            doc.commit();
+            let heads = doc.get_heads();
+            assert_eq!(
+                identity(&doc),
+                Some(RecordCheckout::new(id.clone(), current.clone()))
+            );
+            assert!(init_scoped(&mut doc, &id, &current, "room", None));
+            doc.commit();
+            assert_eq!(doc.get_heads(), heads);
+        }
     }
 
     /// Two members of a room each create the record the room derives for

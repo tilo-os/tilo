@@ -108,7 +108,9 @@ pub(super) async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCer
         handshake: challenge.handshake,
         ack2: crate::auth::HelloAck2 {
             sig_over_server_nonce: key
-                .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                .sign(&crate::auth::client_challenge_digest(
+                    &challenge.ack.server_nonce,
+                ))
                 .to_bytes(),
         },
     };
@@ -232,7 +234,9 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
             &challenge.handshake,
             &crate::auth::HelloAck2 {
                 sig_over_server_nonce: key
-                    .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                    .sign(&crate::auth::client_challenge_digest(
+                        &challenge.ack.server_nonce,
+                    ))
                     .to_bytes(),
             },
         )
@@ -373,7 +377,9 @@ async fn live_grants_follow_announced_changes() {
             &challenge.handshake,
             &crate::auth::HelloAck2 {
                 sig_over_server_nonce: key
-                    .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                    .sign(&crate::auth::client_challenge_digest(
+                        &challenge.ack.server_nonce,
+                    ))
                     .to_bytes(),
             },
         )
@@ -587,6 +593,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
             envelopes::Kind::Profile,
             relay.state_root().join("profiles"),
         ),
+        here: Arc::new(here::Here::new(None)),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -598,6 +605,45 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     let maintaining = tokio::spawn(maintain_legacy(legacy.clone(), relay.web_context().clone()));
     let token = browser(addr, &owner_key, &owner).await;
     let guest_token = browser(addr, &guest_key, &guest).await;
+    // Who is here: a member is listed in their room by their session's
+    // device, and refused in a room they are not in and past the bounds.
+    let here = |workspace_id, action: &str| {
+        postcard::to_allocvec(&protocol::HereRequest {
+            workspace_id,
+            label: "Owner".into(),
+            window: None,
+            actions: vec![protocol::HereAction {
+                id: [1; 16],
+                action: action.into(),
+                resource: "Welcome note".into(),
+                app: "Notes".into(),
+                at_ms: 1,
+            }],
+        })
+        .unwrap()
+    };
+    let (code, body) = post(
+        addr,
+        protocol::HERE_PATH,
+        Some(token),
+        here(room.workspace_id, "Edited the text"),
+    )
+    .await;
+    assert_eq!(code, 200);
+    let listed: protocol::HereReply = postcard::from_bytes(&body).unwrap();
+    assert_eq!(listed.people.len(), 1);
+    assert_eq!(listed.people[0].device, owner.device_public_key);
+    assert_eq!(listed.people[0].user, owner.user_public_key);
+    for (session, request, code) in [
+        (Some(token), here(room.workspace_id ^ 1, "Edited"), 403),
+        (Some(token), here(room.workspace_id, &"x".repeat(97)), 400),
+        (None, here(room.workspace_id, "Edited"), 401),
+    ] {
+        assert_eq!(
+            post(addr, protocol::HERE_PATH, session, request).await.0,
+            code
+        );
+    }
     // Each person with an open session counts once.
     let online = online_sessions.online_users();
     assert_eq!(online.len(), 2);

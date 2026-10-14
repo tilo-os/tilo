@@ -1,0 +1,19 @@
+[Unit]
+Description=Put tilo-vm slots back on the booted OS image
+# Layers are built against one OS image. After an upgrade, switch or rollback
+# they would run old programs against the new image's, so every slot goes back
+# to the image itself before systemd-sysext merges anything. Nothing here may
+# order this after systemd-tmpfiles-setup (sysext precedes it): no PrivateTmp,
+# no other sandboxing that pulls in tmpfiles.
+DefaultDependencies=no
+After=local-fs.target
+Before=systemd-sysext.service sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo-vmd reconcile-image
+
+[Install]
+WantedBy=sysinit.target

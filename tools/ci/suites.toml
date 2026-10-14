@@ -356,8 +356,8 @@ suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
 name = "imager-packaging"
-inputs = ["apps/imager/packaging/", "apps/imager/desktop-catalog.json", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/host-session-e2e.yml"]
-suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py"]
+inputs = ["apps/imager/packaging/", "apps/imager/tilo-app.toml", "apps/imager/desktop-catalog.json", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/host-session-e2e.yml"]
+suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_product_display_name.py"]
 
 [[group]]
 name = "ntfs-helper"
@@ -448,11 +448,14 @@ inputs = [
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
   "crates/session/shell/examples/redraw_bench.rs",
+  # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
+  "tools/web/chrome.mjs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
   # default collection.
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
+  "scripts/perf/browser_qualification.test.mjs",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_latency_bench_test.py",
   "scripts/perf/device_notes_latency_test.py",
@@ -544,10 +547,12 @@ name = "browser-runtime-web"
 # and the scripts that assemble the web core. app-installer reads the Rust
 # app catalogue. The live transport suites load the MoQ library that check.yml
 # builds from scripts/moq-browser before the offline suites run.
-inputs = ["crates/browser/tilo-browser-runtime/", "scripts/moq-browser/", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
+# bundle-update runs the split modules' loader that wasm-split's main.rs writes.
+inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "scripts/moq-browser/", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/here.test.mjs",
   "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
   "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
@@ -558,6 +563,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs",
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs",
   "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
   "crates/browser/tilo-browser-runtime/web/native-catalogue.test.mjs",
   "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
@@ -572,11 +578,13 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/router.test.mjs",
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/arrival.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs",
   "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
   "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/bundle-update.test.mjs",
   "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
@@ -975,8 +983,12 @@ inputs = [
   "scripts/headless-examples/",
   "apps/store/fixtures/published/snapshot379.json.gz.b64",
   "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64",
+  # The search relevance table runs over every app's manifest and keywords.
+  "apps/*/tilo-app.toml",
+  "apps/*/search/*.ftl",
 ]
 readers = [
+  "crates/session/shell/src/shell/search/relevance_tests.rs",
   "crates/session/shell/examples/files_clipboard_native.rs",
   "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",

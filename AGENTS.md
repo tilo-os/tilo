@@ -51,6 +51,13 @@ Most user-facing design questions reduce to that one decision:
 - **The OS owns window chrome**; apps must not draw their own title bar. Windows never
   overlap — reject designs that reintroduce floating.
 
+## Policies
+
+Every standing project rule, why it exists, and the check that enforces it (or that it is
+review-only) is in [`docs/policies.md`](docs/policies.md), with the exception path for each.
+This file keeps what an agent needs to operate; where the two differ, the policy page and its
+checks win.
+
 ## Repository Layout
 
 Single Cargo workspace, no submodules: apps in `apps/`, libraries in `crates/<domain>/`, the OS
@@ -264,15 +271,13 @@ pushing. `--locked` in CI. Commit a lock-only update with the command declared,
 `TILO_CARGO_UPDATE='-p <crate> --precise <version>' git commit`; the pre-commit hook refuses any
 other lock change without a manifest beside it (DEVELOPMENT.md, "Pre-commit hook").
 
-Tilo's own crates use one RustCrypto generation, the one iroh uses: `ed25519-dalek` and
-`x25519-dalek` 3, `rand`/`rand_core`/`rand_chacha` 0.10, `sha2` 0.11, `hmac` 0.13,
-`chacha20poly1305` 0.11. Take OS randomness from `getrandom::SysRng`, wrapped as
-`UnwrapErr(SysRng)` where an infallible `CryptoRng` is required. The previous generation is in
-the lock only through third-party crates (openmls, frost-ed25519, authenticode, smithay, …); do
-not add a direct dependency on it. The two sanctioned exceptions exist because the newest
-releases of those dependencies still require it: frost's `rand_core` 0.6 is reached only
-through `threshold-identity`'s RNG bridge, and tilo-crypto keeps authenticode's stack
-(`authenticode-sha2`, `x509-cert`/`cms` 0.2 on `der` 0.7).
+Tilo's own crates use one RustCrypto generation, the one iroh uses; the versions are in
+[`docs/policies.md`](docs/policies.md#dependencies-and-runtime) and
+`tools/policy/check_crypto_generation.py` refuses a direct dependency on the previous one. Take
+OS randomness from `getrandom::SysRng`, wrapped as `UnwrapErr(SysRng)` where an infallible
+`CryptoRng` is required. frost's `rand_core` 0.6 is reached only through `threshold-identity`'s
+RNG bridge, and tilo-crypto keeps authenticode's stack (`authenticode-sha2`, `x509-cert`/`cms`
+0.2 on `der` 0.7), because the newest releases of those dependencies still require it.
 
 ## Traps that have cost real time
 
@@ -292,9 +297,9 @@ through `threshold-identity`'s RNG bridge, and tilo-crypto keeps authenticode's 
 
 ## Verification covenant
 
-Declared in the header of `crates/session/shell/tests/concept_parity_spec.rs` and applying to **all** tests:
-never `#[ignore]` a failing test, never weaken an assertion, always assert on the production
-path rather than a tautological helper.
+Never `#[ignore]` a failing test, never weaken an assertion, always assert on the production
+path rather than a tautological helper. It applies to **all** tests; the rest of the testing
+rules are in [`docs/policies.md`](docs/policies.md#testing-and-verification).
 
 ## Self-contained repository
 
@@ -302,9 +307,7 @@ This is an open-source repository; everything in it must stand on its own. Never
 internal documents, trackers or private links (issue-tracker ids, internal docs or wikis, chat
 threads) in code, comments, docs, tests, scripts, commit messages and bodies, PR titles and
 descriptions, branch names or fixture strings. State the reason itself where it is needed.
-`.githooks/pre-commit`, `.githooks/commit-msg` and CI (`tools/policy/check_public_references.py`,
-`check_commit_message.py --title`, `check_commit_policy.py`) reject tracker ids and private-document
-links in tracked files, commit messages, pull request titles and head branch names.
+Hooks and CI reject them ([`docs/policies.md`](docs/policies.md#process) names the checks).
 
 ## Where to read first
 

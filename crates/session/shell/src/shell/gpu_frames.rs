@@ -250,6 +250,214 @@ impl GpuFrame {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Bytes of `wl_shm` pixels this thread wrote into client-frame textures
+    /// ([`UploadRing::upload`]).
+    static THREAD_SHM_UPLOAD_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn thread_shm_upload_bytes() -> u64 {
+    THREAD_SHM_UPLOAD_BYTES.with(std::cell::Cell::get)
+}
+
+/// A rectangle of a client frame, in its pixels: `(x, y, width, height)`.
+#[cfg(target_os = "linux")]
+pub type FrameRegion = (u32, u32, u32, u32);
+
+/// Regions a texture of an [`UploadRing`] may lack before it is written
+/// whole instead: past this many, one whole upload is cheaper to track.
+#[cfg(target_os = "linux")]
+const MAX_STALE_REGIONS: usize = 128;
+
+/// One texture of an [`UploadRing`].
+#[cfg(target_os = "linux")]
+struct UploadSlot {
+    texture: wgpu::Texture,
+    /// The frame drawn from it last; the texture is written again only once
+    /// nothing holds that frame (the store replaced it and every queued frame
+    /// that draws it was presented).
+    frame: Weak<GpuFrame>,
+    /// What the texture lacks against the newest frame: the regions written
+    /// into the other textures since it was last written; `None`, all of it.
+    stale: Option<Vec<FrameRegion>>,
+}
+
+/// The textures a `wl_shm` surface's frames are drawn from on the presenting
+/// device, so a commit uploads only what changed.
+///
+/// The SHM worker keeps a surface's pixels on the CPU and lays each commit's
+/// damage over them; this ring then writes into a texture no queued frame
+/// draws any more only the rows that texture lacks: the damage of this commit
+/// and of the commits since it was last written. A texture still drawn by a
+/// frame on its way to the screen is never written, so every frame shows the
+/// pixels of its own commit. A new size or presenting device starts over.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub struct UploadRing {
+    generation: u64,
+    size: (u32, u32),
+    slots: Vec<UploadSlot>,
+}
+
+#[cfg(target_os = "linux")]
+impl UploadRing {
+    /// Upload `pixels`, a tightly packed premultiplied RGBA frame of `size`
+    /// that differs from the previous one uploaded through this ring only in
+    /// `changed` (`None`: anywhere), and return the frame drawn from it.
+    /// `None` when there is no presenting device; the frame is then drawn
+    /// from its CPU pixels.
+    pub fn upload(
+        &mut self,
+        surface: u64,
+        pixels: &Arc<Vec<u8>>,
+        size: (u32, u32),
+        changed: Option<&[FrameRegion]>,
+    ) -> Option<Arc<GpuFrame>> {
+        let present = present_device()?;
+        let expected = (size.0 as usize)
+            .saturating_mul(size.1 as usize)
+            .saturating_mul(4);
+        if size.0 == 0 || size.1 == 0 || pixels.len() != expected {
+            return None;
+        }
+        if self.generation != present.generation || self.size != size {
+            *self = Self {
+                generation: present.generation,
+                size,
+                slots: Vec::new(),
+            };
+        }
+        let changed: Option<Vec<FrameRegion>> = changed.map(<[_]>::to_vec);
+        let index = self.free_slot(&present.device);
+        // Every texture but the one written lacks what changed.
+        for (other, slot) in self.slots.iter_mut().enumerate() {
+            if other == index {
+                continue;
+            }
+            slot.stale = match (slot.stale.take(), changed.as_ref()) {
+                (Some(mut stale), Some(changed)) => {
+                    stale.extend_from_slice(changed);
+                    (stale.len() <= MAX_STALE_REGIONS).then_some(stale)
+                }
+                _ => None,
+            };
+        }
+        let slot = self.slots.get_mut(index)?;
+        let write = match (slot.stale.take(), changed) {
+            (Some(mut stale), Some(changed)) => {
+                stale.extend(changed);
+                Some(stale)
+            }
+            _ => None,
+        };
+        // Written below: up to date with this frame.
+        slot.stale = Some(Vec::new());
+        let whole = [(0, 0, size.0, size.1)];
+        write_regions(
+            &present.queue,
+            &slot.texture,
+            pixels,
+            size,
+            write.as_deref().unwrap_or(&whole),
+        );
+        let frame = GpuFrame::borrowing(&present, slot.texture.clone(), false, surface);
+        // The CPU pixels are this frame's: a screenshot or another device
+        // reads them instead of the texture.
+        let _ = frame.rgba.set(Some(Arc::clone(pixels)));
+        let frame = Arc::new(frame);
+        slot.frame = Arc::downgrade(&frame);
+        Some(frame)
+    }
+
+    /// A texture no frame draws any more, made when every one is still drawn.
+    fn free_slot(&mut self, device: &wgpu::Device) -> usize {
+        if let Some(free) = self
+            .slots
+            .iter()
+            .position(|slot| slot.frame.strong_count() == 0)
+        {
+            return free;
+        }
+        let (width, height) = self.size;
+        self.slots.push(UploadSlot {
+            texture: device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("shm-client-frame"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            }),
+            frame: Weak::new(),
+            stale: None,
+        });
+        self.slots.len().saturating_sub(1)
+    }
+}
+
+/// Write `regions` of `pixels`, a tightly packed RGBA frame of `size`, into
+/// the same place of `texture`.
+#[cfg(target_os = "linux")]
+fn write_regions(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    pixels: &[u8],
+    size: (u32, u32),
+    regions: &[FrameRegion],
+) {
+    for &(x, y, width, height) in regions {
+        let right = x.saturating_add(width).min(size.0);
+        let bottom = y.saturating_add(height).min(size.1);
+        if x >= right || y >= bottom {
+            continue;
+        }
+        let (width, height) = (right.saturating_sub(x), bottom.saturating_sub(y));
+        let offset = u64::from(y)
+            .saturating_mul(u64::from(size.0))
+            .saturating_add(u64::from(x))
+            .saturating_mul(4);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset,
+                bytes_per_row: Some(size.0.saturating_mul(4)),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        #[cfg(test)]
+        THREAD_SHM_UPLOAD_BYTES.with(|count| {
+            count.set(
+                count.get().saturating_add(
+                    u64::from(width)
+                        .saturating_mul(u64::from(height))
+                        .saturating_mul(4),
+                ),
+            );
+        });
+    }
+}
+
 /// A frame's leases, waiting for the GPU marker submitted when it went.
 struct Retiring {
     device: wgpu::Device,
@@ -982,6 +1190,102 @@ mod tests {
     ) -> Arc<GpuFrame> {
         let texture = test_buffer(present, format, (3, 2), &texel.repeat(6));
         Arc::new(GpuFrame::borrowing(present, texture, opaque, surface))
+    }
+
+    /// A `wl_shm` commit that damages one text line uploads that line, not
+    /// the frame; a texture a queued frame still draws is never written, and
+    /// one written again catches up with every commit it missed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_shm_upload_writes_only_what_the_texture_lacks() {
+        let Some(present) = present() else {
+            eprintln!("no wgpu adapter; skipping");
+            return;
+        };
+        *PRESENT_DEVICE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(present);
+        let (width, height) = (64u32, 48u32);
+        let row = u64::from(width) * 4;
+        let whole = row * u64::from(height);
+        let grid = |lines: &[u32]| {
+            let mut pixels = [20, 20, 20, 255].repeat((width * height) as usize);
+            for &line in lines {
+                for y in line * 4..line * 4 + 4 {
+                    let start = (y * width * 4) as usize;
+                    pixels[start..start + (width * 4) as usize]
+                        .copy_from_slice(&[200, 200, 200, 255].repeat(width as usize));
+                }
+            }
+            Arc::new(pixels)
+        };
+        let line = |n: u32| (0, n * 4, width, 4);
+        let uploaded = |upload: &mut dyn FnMut() -> Arc<GpuFrame>| {
+            let before = thread_shm_upload_bytes();
+            let frame = upload();
+            (frame, thread_shm_upload_bytes() - before)
+        };
+        let mut ring = UploadRing::default();
+        let surface = 77;
+
+        let first = grid(&[]);
+        let (a, bytes) = uploaded(&mut || {
+            ring.upload(surface, &first, (width, height), None)
+                .expect("frame")
+        });
+        assert_eq!(bytes, whole, "the first frame is uploaded whole");
+
+        // A queued frame still draws `a`: the next commit goes to another
+        // texture, which has never been written.
+        let second = grid(&[1]);
+        let (b, bytes) = uploaded(&mut || {
+            ring.upload(surface, &second, (width, height), Some(&[line(1)]))
+                .expect("frame")
+        });
+        assert_eq!(bytes, whole, "a new texture is written whole");
+        drop(a);
+
+        // `a`'s texture is free again; it lacks line 1 and gets line 2.
+        let third = grid(&[1, 2]);
+        let (c, bytes) = uploaded(&mut || {
+            ring.upload(surface, &third, (width, height), Some(&[line(2)]))
+                .expect("frame")
+        });
+        assert_eq!(bytes, 2 * 4 * row, "the missed line and the typed one");
+        assert_eq!(
+            read_back(&c).expect("readback"),
+            *third,
+            "the rewritten texture shows exactly the newest frame"
+        );
+        drop((b, c));
+
+        // Steady typing: a free texture already up to date gets only the
+        // typed line.
+        let fourth = grid(&[1, 2, 3]);
+        let (d, bytes) = uploaded(&mut || {
+            ring.upload(surface, &fourth, (width, height), Some(&[line(3)]))
+                .expect("frame")
+        });
+        assert_eq!(bytes, 4 * row, "one typed line");
+        assert_eq!(read_back(&d).expect("readback"), *fourth);
+        assert_eq!(
+            d.rgba().as_deref(),
+            Some(&*fourth),
+            "the CPU pixels go with the frame: nothing is read back"
+        );
+        drop(d);
+
+        // A new size starts over.
+        let resized = Arc::new([20, 20, 20, 255].repeat((width * (height + 4)) as usize));
+        let (_, bytes) = uploaded(&mut || {
+            ring.upload(surface, &resized, (width, height + 4), Some(&[line(0)]))
+                .expect("frame")
+        });
+        assert_eq!(
+            bytes,
+            row * u64::from(height + 4),
+            "a resized frame is uploaded whole"
+        );
     }
 
     #[test]

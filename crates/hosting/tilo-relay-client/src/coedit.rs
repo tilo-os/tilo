@@ -13,8 +13,12 @@ use serde::{Deserialize, Serialize};
 
 /// Body carried inside an `Envelope::Delta`. Self-describing so the
 /// receiver can distinguish retained checkpoints from their incremental tail.
-/// Retention metadata is deliberately visible to the host while the document
-/// body remains opaque.
+/// Retention metadata is deliberately visible to the host. The body is a
+/// collaboration message the host may still read: a workspace host
+/// classifies it to decide retention, replay and compaction, and folds
+/// unsealed document frames. Only a sealed document's content is opaque to
+/// it (`docs/architecture/security.md`, "What a workspace host reads and
+/// originates").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoeditPayload {
     /// A complete, idempotent state checkpoint for one logical document.
@@ -23,7 +27,7 @@ pub enum CoeditPayload {
     Checkpoint {
         /// Stable digest of the logical document route.
         channel: [u8; 32],
-        /// Opaque collaboration message.
+        /// The collaboration message; see the type for what a host reads.
         body: Vec<u8>,
     },
     /// An incremental update retained after the latest checkpoint for this
@@ -32,7 +36,7 @@ pub enum CoeditPayload {
     RetainedDelta {
         /// Stable digest of the logical document route.
         channel: [u8; 32],
-        /// Opaque collaboration message.
+        /// The collaboration message; see the type for what a host reads.
         body: Vec<u8>,
     },
 }

@@ -199,6 +199,7 @@ impl Fixture {
                 super::super::envelopes::Kind::Profile,
                 state.path().join("profiles"),
             ),
+            here: Arc::new(super::super::here::Here::new(None)),
         });
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await

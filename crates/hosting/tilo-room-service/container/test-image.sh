@@ -11,9 +11,14 @@ source_revision=${2:?$usage}
   || { echo 'the image does not run as uid 10001' >&2; exit 1; }
 [[ $(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image") == "$source_revision" ]] \
   || { echo 'the image is not labelled with its source revision' >&2; exit 1; }
+# The running process reports the same revision as the label (/metrics, /mode).
+env=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image")
+grep -qx "TILO_SOURCE_REVISION=$source_revision" <<<"$env" \
+  || { echo 'TILO_SOURCE_REVISION does not equal the revision label' >&2; exit 1; }
 for file in /usr/local/bin/tilo-relay /usr/local/bin/tilo-room-service /usr/local/bin/fonts/manifest.toml \
   /usr/local/share/tilo/bots/discord-bridge.json \
-  /srv/tilo-room-assets/index.html /srv/tilo-room-assets/app/index.html /srv/tilo-room-assets/workspaces.mjs /srv/tilo-room-assets/root-identity.mjs /srv/tilo-room-assets/identity-actions.mjs; do
+  /srv/tilo-room-assets/index.html /srv/tilo-room-assets/app/index.html /srv/tilo-room-assets/workspaces.mjs /srv/tilo-room-assets/root-identity.mjs /srv/tilo-room-assets/identity-actions.mjs \
+  /srv/tilo-room-assets/locales/en-US.ftl /srv/tilo-room-assets/locales/de-DE.ftl; do
   docker run --rm --entrypoint /bin/sh "$image" -c "test -s $file" || { echo "missing $file" >&2; exit 1; }
 done
 # Captured first: under pipefail, grep -q closing the pipe early fails the run.
@@ -52,8 +57,11 @@ answer=$(request POST /join "{\"userPublicKey\":\"$(hex32)\",\"displayName\":\"S
 grep -q '"admissionToken"' <<<"$answer" || { printf 'the guest was not pre-admitted:\n%s\n' "$answer" >&2; exit 1; }
 answer=$(request GET /presence)
 grep -q '"online"' <<<"$answer" || { printf 'no presence:\n%s\n' "$answer" >&2; exit 1; }
+answer=$(request GET /mode)
+grep -q "\"revision\":\"$source_revision\"" <<<"$answer" \
+  || { printf '/mode does not report the source revision:\n%s\n' "$answer" >&2; exit 1; }
 answer=$(request GET /)
-grep -qi 'location: https://app.example/' <<<"$answer" || { printf '/ does not lead to the web entry:\n%s\n' "$answer" >&2; exit 1; }
+grep -qi 'location: https://app.example/'<<<"$answer" || { printf '/ does not lead to the web entry:\n%s\n' "$answer" >&2; exit 1; }
 trap - EXIT
 docker rm -f "$container" >/dev/null
 echo "room-service image ok"
