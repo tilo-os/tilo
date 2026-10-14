@@ -568,9 +568,6 @@ pub struct RealtimeEncoder {
     spec: &'static CodecElement,
     running: Running,
     encoder: gst::Element,
-    /// The bitstream parser after the encoder, whose caps carry the coded
-    /// size.
-    parser: gst::Element,
     /// The element in front of the encoder (`vapostproc` on the dmabuf path),
     /// asked whether it can import a given dmabuf layout.
     convert: gst::Element,
@@ -712,7 +709,6 @@ impl RealtimeEncoder {
         let encoder = make(spec.element)?;
         tune_encoder(&encoder, spec, config);
         let parser = make(config.codec.parser())?;
-        let parser_handle = parser.clone();
         // Repeat parameter sets with every keyframe so a receiver can join at
         // any of them.
         set_number(&parser, "config-interval", -1);
@@ -747,7 +743,6 @@ impl RealtimeEncoder {
             running,
             encoder,
             convert: convert_handle,
-            parser: parser_handle,
             dmabuf_path: use_vapostproc,
             current_caps: raw_caps.clone(),
             raw_caps,
@@ -796,19 +791,6 @@ impl RealtimeEncoder {
     /// bitrate).
     pub fn config(&self) -> &EncoderConfig {
         &self.config
-    }
-
-    /// The frame size the encoder actually codes, read from the bitstream
-    /// parser once output has flowed. It can exceed the configured size when
-    /// an encoder pads to its alignment without signalling the display size
-    /// (see [`DecoderConfig::display_size`]); a sender whose transport
-    /// carries the size should announce the configured one.
-    pub fn coded_size(&self) -> Option<(u32, u32)> {
-        let caps = self.parser.static_pad("src")?.current_caps()?;
-        let s = caps.structure(0)?;
-        let w = s.get::<i32>("width").ok()?;
-        let h = s.get::<i32>("height").ok()?;
-        Some((u32::try_from(w).ok()?, u32::try_from(h).ok()?))
     }
 
     /// Whether [`InputFrame::Dmabuf`] is imported without a CPU copy.

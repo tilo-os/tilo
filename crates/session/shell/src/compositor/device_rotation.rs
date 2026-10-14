@@ -13,9 +13,6 @@ use std::time::Duration;
 use os_actions::DeviceOrientation;
 use settings_store::hardware::OutputTransform;
 
-/// Settings key (in the `display` section) holding the rotation lock.
-pub const ROTATION_LOCK_KEY: &str = settings_store::hardware::ROTATION_LOCK.name();
-
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
 /// The panel transform that keeps content upright for `orientation`.

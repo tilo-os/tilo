@@ -51,6 +51,10 @@ pub struct Elevation {
     /// outline. Paint it with [`crate::surface::shadow`] at the surface's
     /// own radius.
     pub floating: Shadow,
+    /// A tight shadow at a floating surface's foot, under the wide one: it
+    /// defines the edge of a surface that has no outline of its own (a
+    /// notification card) where the wide shadow alone reads as haze.
+    pub contact: Shadow,
     /// The 1 px inner light edge a floating surface draws on a dark
     /// material, just inside its outline. Transparent on a light material.
     pub floating_edge: Color,
@@ -76,6 +80,11 @@ impl Elevation {
                 blur: 32.0,
                 color: Color::from_rgba8(0, 0, 0, 60),
             },
+            contact: Shadow {
+                offset_y: 1.0,
+                blur: 3.0,
+                color: Color::from_rgba8(0, 0, 0, 72),
+            },
             floating_edge: Color::from_rgba8(255, 255, 255, 20),
             glass_inner: Shadow {
                 offset_y: 0.0,
@@ -97,6 +106,7 @@ impl Elevation {
         let d = Self::dark();
         Self {
             floating: d.floating.with_alpha_scaled(LIGHT_SHADOW_SCALE),
+            contact: d.contact.with_alpha_scaled(LIGHT_SHADOW_SCALE),
             floating_edge: Color::TRANSPARENT,
             glass_inner: d.glass_inner,
             glass_outer: d.glass_outer,
