@@ -325,7 +325,10 @@ fn floating_input_gutter_routes_pointer_touch_and_remote_to_lower_float() {
         )
     ));
     let store = crate::compositor::foreign::store();
-    // The first native buffer must answer the actual lower window's allocation.
+    // Each native buffer answers its current allocation; otherwise input is
+    // correctly scaled from the displayed window to the old buffer's size.
+    store.publish_rgba(child, &vec![255; 500 * 400 * 4], 500, 400);
+    assert!(store.mark_presented(child, window));
     store.publish_rgba(lower, &vec![255; 570 * 370 * 4], 570, 370);
     assert!(store.mark_presented(lower, lower_window));
     fixture.state.mark_floating_toplevel_presented(lower);
@@ -400,6 +403,18 @@ fn floating_input_gutter_falls_through_to_the_workspace_tile() {
     };
     let point = (tile.rect.center().x, tile.rect.center().y);
     let window = Rect::from_center_size(tile.rect.center(), (160.0, 120.0));
+    let store = crate::compositor::foreign::store();
+    let width = ui::num::u32_of_f64(tile.rect.width().round());
+    let height = ui::num::u32_of_f64(tile.rect.height().round());
+    store.publish_rgba(
+        source,
+        &vec![255; (width * height * 4) as usize],
+        width,
+        height,
+    );
+    assert!(store.mark_presented(source, tile.rect));
+    store.publish_rgba(child, &vec![255; 160 * 120 * 4], 160, 120);
+    assert!(store.mark_presented(child, window));
     let body = ui::floating_surface::translate_input_rect(
         Some(Rect::new(8.0, 8.0, 48.0, 112.0)),
         vello::kurbo::Point::ZERO,

@@ -552,6 +552,72 @@ pub fn install_app_reporting(
     install_or_update_app_reporting(app, on_progress, Change::Install)
 }
 
+/// Install an exact runtime from a configured repository without replacing an app.
+/// The normal downloader and installer retain registry, signature, payload and
+/// runtime publisher checks; an installed version follows the normal update policy.
+///
+/// # Errors
+/// Returns registry verification or offer errors, or the normal install refusal.
+pub fn install_runtime_reporting(
+    runtime: &str,
+    registry: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<CatalogueApp, InstallError> {
+    let offer = crate::runtime_offer(runtime, registry)
+        .map_err(|detail| InstallError::Download { detail })?
+        .ok_or_else(|| InstallError::NotOffered {
+            package_id: runtime.to_string(),
+        })?;
+    let installed = crate::installed_version(&offer.package_id)
+        .map_err(|detail| InstallError::Integrity { detail })?;
+    if installed.is_some() {
+        update_app_reporting(&offer, on_progress)?;
+    } else {
+        install_app_reporting(&offer, on_progress)?;
+    }
+    Ok(offer)
+}
+
+/// Install the runtime `runtime` from the first enabled repository that
+/// offers exactly that build, through the same verified pipeline an app's
+/// own runtime takes. The caller names only the runtime: which repository,
+/// which signed package and which publisher key are the device's decision.
+/// Nothing is done when it is already installed.
+///
+/// # Errors
+///
+/// Returns [`InstallError::NotOffered`] when no enabled repository offers
+/// the build, or the first error of the repository that did.
+pub fn install_runtime_from_enabled(
+    runtime: &str,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    if crate::runtime_installed(runtime) {
+        return Ok(());
+    }
+    let registries = crate::config::load_registries();
+    let mut last_error = None;
+    for registry in registries.enabled() {
+        match crate::runtime_offer(runtime, &registry.name) {
+            Ok(Some(offer)) => {
+                install_or_update_app_reporting(&offer, on_progress, Change::Install)?;
+                return if crate::runtime_installed(runtime) {
+                    Ok(())
+                } else {
+                    Err(InstallError::NotOffered {
+                        package_id: runtime.to_owned(),
+                    })
+                };
+            }
+            Ok(None) => {}
+            Err(detail) => last_error = Some(InstallError::Download { detail }),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| InstallError::NotOffered {
+        package_id: runtime.to_owned(),
+    }))
+}
+
 /// What [`install_or_update_app_reporting`] does with the verified package.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Change {
@@ -620,7 +686,10 @@ fn install_or_update_app_reporting(
 
     let downloaded = fetch_verified(app, &dest, on_progress)?;
 
-    install_optional_runtimes(app, &dest, on_progress);
+    if let Err(error) = install_optional_runtimes(app, &dest, on_progress) {
+        let _ = std::fs::remove_file(&dest);
+        return Err(error);
+    }
     let payload_from = payload_source(app);
     let mut command = Command::new(tilo_install_bin());
     if change == Change::Install {
@@ -703,45 +772,33 @@ fn ensure_runtime(
     }
 }
 
-/// Install the optional runtimes the downloaded app mounts when present —
-/// a browser's engine — that its registry offers. The app starts without
-/// one and says so, so a runtime that cannot be fetched now is reported and
-/// does not stop the install.
+/// Make the optional runtimes the downloaded app pins (`optional-runtimes`:
+/// a browser's engine) available, as [`ensure_runtime`] does for its
+/// runtime.
+///
+/// They are part of the app: it pins them by exact version, and replacing a
+/// working build with one whose engine is absent would leave it saying "not
+/// installed" until someone fetched the engine by hand. So an engine that
+/// cannot be fetched refuses the install or update, and nothing changes.
 fn install_optional_runtimes(
     app: &CatalogueApp,
     staged: &Path,
     on_progress: &mut dyn FnMut(DownloadProgress),
-) {
-    let Ok(file) = std::fs::File::open(staged) else {
-        return;
-    };
-    let Ok(tapp) = tilo_app_package::tapp::read(
+) -> Result<(), InstallError> {
+    let file = std::fs::File::open(staged).map_err(|error| InstallError::Download {
+        detail: format!("{}: {error}", staged.display()),
+    })?;
+    let tapp = tilo_app_package::tapp::read(
         std::io::BufReader::new(file),
         &mut tilo_app_package::DiscardBlobs,
-    ) else {
-        return;
-    };
-    for runtime in &tapp.meta.manifest.package.optional_runtimes {
-        if crate::runtime_installed(runtime) {
-            continue;
-        }
-        let outcome = crate::runtime_offer(runtime, &app.registry)
-            .map_err(|detail| InstallError::Download { detail })
-            .and_then(|offer| match offer {
-                Some(offer) => {
-                    install_or_update_app_reporting(&offer, on_progress, Change::Install)
-                }
-                None => Err(InstallError::NotOffered {
-                    package_id: runtime.clone(),
-                }),
-            });
-        if let Err(error) = outcome {
-            eprintln!(
-                "app: {} can use runtime {runtime}, which was not installed: {error}",
-                app.package_id
-            );
-        }
+    )
+    .map_err(|error| InstallError::Integrity {
+        detail: error.to_string(),
+    })?;
+    for runtime in tilo_app_package::desktop::optional_runtime_dependencies(&tapp.meta.manifest) {
+        ensure_runtime(app, runtime, on_progress)?;
     }
+    Ok(())
 }
 
 /// Download and atomically update an installed app from a verified offer.
@@ -885,6 +942,66 @@ mod tests {
                 "a thin package's payload comes from the offering registry: {argv:?}"
             );
         }
+    }
+
+    #[test]
+    fn app_host_stages_verified_downloads_in_private_state_without_writable_home() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let unit = include_str!("../../app-host/systemd/tilo-app-host.service");
+        let setting = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("Environment=TILO_STORE_CACHE_DIR="))
+            .expect("the hardened host must explicitly locate writable download state");
+        assert_eq!(setting, "%S/tilo-app-host/cache");
+        assert!(unit.lines().any(|line| line == "ProtectHome=read-only"));
+        let writes = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("ReadWritePaths="))
+            .expect("scoped broker writes");
+        assert!(
+            writes
+                .split_whitespace()
+                .any(|path| path == "%S/tilo-app-host")
+        );
+        assert!(
+            !writes
+                .split_whitespace()
+                .any(|path| path == "%h" || path == "%h/.cache/tilo-store")
+        );
+
+        let mut home = tilo_test_env::TestHome::new().expect("isolated home");
+        let state = home.root().join("private-state");
+        let cache = PathBuf::from(setting.replace("%S", &state.to_string_lossy()));
+        home.env().set("TILO_STORE_CACHE_DIR", &cache);
+        let staging = staging_dir().expect("private staging directory");
+        assert_eq!(staging, cache.join("staged-tapp"));
+        assert!(!home.cache().join("tilo-store/staged-tapp").exists());
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback");
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("download request");
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntapp")
+                .expect("package bytes");
+        });
+        let dest = staging.join("package.tapp");
+        let result = download_reporting_limited(
+            &format!("http://{address}/app.tapp"),
+            &dest,
+            4,
+            &mut |_| {},
+        );
+        server.join().expect("server cleanup");
+        assert_eq!(result.expect("actual canonical staging write"), 4);
+        verify_download_metadata(&registry_app_for(b"tapp"), 4).expect("exact registry bytes");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"tapp");
+        assert!(!home.cache().join("tilo-store/staged-tapp").exists());
+        std::fs::remove_file(&dest).expect("disposable staging cleanup");
     }
 
     fn registry_app_for(bytes: &[u8]) -> CatalogueApp {

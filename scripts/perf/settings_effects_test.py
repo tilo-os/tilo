@@ -8,7 +8,7 @@ class SettingsEffectsTests(unittest.TestCase):
         a=dict(app='dev.tilo.settings',search_id='settings.search',ready=True,
           local_search_text='',synchronized_search_query='',search_widget_text='',search_caret_byte=0,
           search_focused=True,search_rect=[20,10,780,45],root_rect=[0,0,800,600],selected_category='network',
-          rendered_result_count=23,rendered_category_ids=list(ALL_CATEGORIES),narrow=False,sidebar_open=True,
+          rendered_result_count=len(ALL_CATEGORIES),rendered_category_ids=list(ALL_CATEGORIES),narrow=False,sidebar_open=True,
           document_root='Root',document_actor='ab12',document_witness_kind='effective_heads_on_disposable_clone',
           effective_document_heads=['a'*64],original_pending_ops=3)
         b=dict(a,local_search_text='z',search_widget_text='z',search_caret_byte=1)

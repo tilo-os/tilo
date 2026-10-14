@@ -2,8 +2,8 @@
 //!
 //! A leaf `ui` widget the browser chrome positions directly under the
 //! address [`ui::widget::TextInput`]. It renders the ranked
-//! [`HistoryEntry`] rows produced by
-//! [`History::suggest`](crate::history::History::suggest) as a floating panel
+//! [`Row`]s produced by
+//! [`build_rows`](crate::omnibox::build_rows) as a floating panel
 //! of list rows — each row shows the page title with its URL beneath it —
 //! and lifts the current selection.
 //!
@@ -35,12 +35,12 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Interaction, ListRowFace, Widget};
 
-use crate::history::HistoryEntry;
+use crate::omnibox::{Row, RowKind};
 
 /// Address-bar suggestion dropdown. See the module docs.
 pub struct AddressSuggestions {
     /// Ranked suggestions, best first (as returned by `History::suggest`).
-    items: Vec<HistoryEntry>,
+    items: Vec<Row>,
     /// Index of the highlighted row. Always valid when `items` is
     /// non-empty (clamped on every mutation); meaningless when empty.
     selected: usize,
@@ -48,7 +48,7 @@ pub struct AddressSuggestions {
     hovered: Option<usize>,
     /// Entry the user committed via Enter/click, drained by
     /// [`Self::take_chosen`].
-    chosen: Option<HistoryEntry>,
+    chosen: Option<Row>,
     /// Panel rect in logical coordinates.
     rect: Rect,
     /// Caller-supplied top-left anchor (under the address bar). When set
@@ -91,7 +91,7 @@ impl AddressSuggestions {
 
     /// Replace the suggestion list. Resets the highlight to the first row
     /// (the best-ranked suggestion) and clears any stale hover.
-    pub fn set_suggestions(&mut self, items: Vec<HistoryEntry>) {
+    pub fn set_suggestions(&mut self, items: Vec<Row>) {
         self.items = items;
         self.selected = 0;
         self.hovered = None;
@@ -110,7 +110,7 @@ impl AddressSuggestions {
     }
 
     /// The suggestions currently displayed, best first.
-    pub fn items(&self) -> &[HistoryEntry] {
+    pub fn items(&self) -> &[Row] {
         &self.items
     }
 
@@ -125,7 +125,7 @@ impl AddressSuggestions {
 
     /// The highlighted entry, or `None` when there are no suggestions.
     /// The chrome reads this on Enter to navigate to the picked page.
-    pub fn selected(&self) -> Option<&HistoryEntry> {
+    pub fn selected(&self) -> Option<&Row> {
         self.items.get(self.selected)
     }
 
@@ -171,7 +171,7 @@ impl AddressSuggestions {
 
     /// Take the entry the user committed via Enter or a row click, if any.
     /// Returns `Some` exactly once per commit, then `None`.
-    pub fn take_chosen(&mut self) -> Option<HistoryEntry> {
+    pub fn take_chosen(&mut self) -> Option<Row> {
         self.chosen.take()
     }
 
@@ -192,7 +192,7 @@ impl AddressSuggestions {
         let Some(index) = self
             .items
             .iter()
-            .position(|entry| blake3::hash(entry.url.as_bytes()).to_hex().as_str() == hash)
+            .position(|entry| blake3::hash(row_key(entry).as_bytes()).to_hex().as_str() == hash)
         else {
             return false;
         };
@@ -279,21 +279,55 @@ impl AddressSuggestions {
                 self.rect.x1 - pad,
                 row_top + self.row_height(),
             );
-            // Fall back to the URL as the title when a page has none yet.
-            let title = if entry.title.trim().is_empty() {
-                entry.url.as_str()
-            } else {
-                entry.title.as_str()
-            };
-            ListRowFace::new(title)
-                .secondary(&entry.url)
+            let face = ListRowFace::new(&entry.title)
+                .leading(ui::widget::RowLeading::Icon(kind_icon(entry.kind)))
                 .selected(idx == self.selected)
                 .interaction(Interaction {
                     hovered: self.hovered == Some(idx),
                     ..Interaction::default()
-                })
-                .paint(&mut ctx, rect);
+                });
+            let visits = visit_label(entry.visits);
+            let face = match entry.kind {
+                RowKind::History => face.secondary(&entry.detail).meta(&visits),
+                RowKind::Go => face.secondary("Open this address"),
+                RowKind::Search => face.secondary("Search the web"),
+                RowKind::Suggestion => face,
+            };
+            face.paint(&mut ctx, rect);
         }
+    }
+}
+
+fn kind_icon(kind: RowKind) -> ui::icons::Icon {
+    use ui::icons::Icon;
+    match kind {
+        RowKind::Go => Icon::ArrowRight,
+        RowKind::Search | RowKind::Suggestion => Icon::Search,
+        RowKind::History => Icon::History,
+    }
+}
+
+fn visit_label(visits: u32) -> String {
+    if visits > 1 {
+        format!("{visits} visits")
+    } else {
+        String::new()
+    }
+}
+
+/// Stable identity of a row across relayouts: what it is and what it opens.
+fn row_key(row: &Row) -> String {
+    match row.kind {
+        RowKind::History => row.url.clone(),
+        kind => format!("{kind:?}:{}", row.url),
+    }
+}
+
+fn describe(row: &Row) -> String {
+    match row.kind {
+        RowKind::History => row.detail.clone(),
+        RowKind::Go => format!("Open {}", row.detail),
+        RowKind::Search | RowKind::Suggestion => format!("Search for {}", row.title),
     }
 }
 
@@ -416,19 +450,15 @@ impl Widget for AddressSuggestions {
             .iter()
             .enumerate()
             .map(|(index, entry)| {
-                let title = if entry.title.trim().is_empty() {
-                    entry.url.as_str()
-                } else {
-                    entry.title.as_str()
-                };
+                let title = entry.title.as_str();
                 let row_top = self.rect.y0 + self.pad() + index as f64 * self.row_height();
                 AccessNode::new(Role::ListItem)
                     .with_action_target(format!(
                         "browser.address-suggestion:{}",
-                        blake3::hash(entry.url.as_bytes()).to_hex()
+                        blake3::hash(row_key(entry).as_bytes()).to_hex()
                     ))
                     .with_name(title)
-                    .with_description(entry.url.clone())
+                    .with_description(describe(entry))
                     .with_bounds(Rect::new(
                         self.rect.x0,
                         row_top,
@@ -494,16 +524,17 @@ impl Widget for AddressSuggestions {
 mod tests {
     use super::*;
 
-    fn entry(url: &str, title: &str) -> HistoryEntry {
-        HistoryEntry {
-            url: url.to_string(),
+    fn entry(url: &str, title: &str) -> Row {
+        Row {
+            kind: RowKind::History,
             title: title.to_string(),
-            last_visit: 0,
-            visit_count: 1,
+            detail: url.to_string(),
+            url: url.to_string(),
+            visits: 1,
         }
     }
 
-    fn three() -> Vec<HistoryEntry> {
+    fn three() -> Vec<Row> {
         vec![
             entry("https://a.test", "Alpha"),
             entry("https://b.test", "Beta"),

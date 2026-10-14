@@ -572,6 +572,7 @@ fn place(
                 tabs: vec![tab],
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             }],
         }),
         TabPlacement::InGroup {
@@ -603,6 +604,7 @@ fn place(
                     tabs: vec![tab],
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
             );
         }

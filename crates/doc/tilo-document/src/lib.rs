@@ -13,6 +13,9 @@
 
 pub mod action;
 pub mod anchor;
+pub mod block_actions;
+pub mod block_edit;
+pub mod block_markdown;
 pub mod field;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -521,6 +524,27 @@ impl Resource for RichText {
         Self::read_under(doc, &automerge::ROOT)
     }
 
+    const READABLE: bool = true;
+
+    /// The body as Markdown with the ids the block actions take; with an
+    /// `item` naming a block, that block's line.
+    fn read_content(
+        _state: &RichTextState,
+        doc: &Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let mut content = block_actions::read_under(doc, &automerge::ROOT, item)?;
+        if let Some(map) = content.as_object_mut() {
+            map.insert("kind".into(), serde_json::json!(Self::KIND));
+        }
+        Ok(content)
+    }
+
+    /// The ids the block actions touched.
+    fn answer(doc: &Doc, action: &str, changes: &[automerge::Patch]) -> Option<serde_json::Value> {
+        block_actions::action_result_under(doc, &automerge::ROOT, action, changes)
+    }
+
     /// A change to a paragraph on screen is placed from the index kept of
     /// its objects.
     fn locate(state: &RichTextState, obj: &ObjId) -> Option<tilo_resource::ObjPath> {
@@ -668,7 +692,9 @@ impl Resource for RichText {
     /// Every edit, derived from [`RichTextAction`] itself, so agents read the
     /// vocabulary from the `apply` descriptor.
     fn action_schema() -> Option<serde_json::Value> {
-        Some(<RichTextAction as tilo_resource::JsonSchema>::json_schema())
+        Some(block_actions::without_declared_variants(
+            &<RichTextAction as tilo_resource::JsonSchema>::json_schema(),
+        ))
     }
 
     /// Small named catalogue for people and agents. Positional keystrokes stay
@@ -736,24 +762,6 @@ impl Resource for RichText {
             )
             .describe("Change a paragraph's structural kind."),
             ActionDecl::new(
-                "insert-block",
-                "Insert paragraph",
-                vec![
-                    ActionParam::required_owned(
-                        "after",
-                        ParamType::Text,
-                        "Block id to insert after",
-                    ),
-                    ActionParam::optional_owned("text", ParamType::Text, "Initial text"),
-                ],
-                |args, _| {
-                    let after = args.text("after").ok_or("missing after")?.to_owned();
-                    let text = args.text("text").unwrap_or("").to_owned();
-                    Ok(RichTextAction::InsertParagraph { after, text })
-                },
-            )
-            .describe("Insert a paragraph after a block."),
-            ActionDecl::new(
                 "append-paragraph",
                 "Append paragraph",
                 vec![ActionParam::required_owned(
@@ -770,6 +778,9 @@ impl Resource for RichText {
             // leave its writer's caret after the text.
             .describe("Add a new paragraph containing the text at the end of the document."),
         ]
+        .into_iter()
+        .chain(block_actions::declarations())
+        .collect()
     }
 
     fn views(_state: &RichTextState) -> Vec<tilo_actions::ResourceViewSpec> {
@@ -1035,3 +1046,6 @@ mod tests;
 
 #[cfg(test)]
 mod schema_tests;
+
+#[cfg(test)]
+mod block_tests;

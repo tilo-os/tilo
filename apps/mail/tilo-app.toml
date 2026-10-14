@@ -14,6 +14,10 @@ category = "Office"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+# HTML bodies render in the Chromium engine runtime, in a sandboxed view with
+# scripts and remote content blocked (reader.rs, html_mail.rs). Without the
+# runtime the reader shows the message as styled text.
+optional-runtimes = ["tilo-runtime/2026.10.9-chromium"]
 platforms = ["linux", "macos"]
 platform-reason = "Speaks IMAP and SMTP over raw sockets until a host-side proxy exists."
 
@@ -24,7 +28,7 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.http"]
-optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "webview"]
+optional = ["files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -44,7 +48,11 @@ namespaces = [
     "mount",
     "net",
 ]
-seccomp    = "tilo-default"
+# The engine needs JIT mappings and builds its own renderer sandbox; the image
+# grants this only to packages listed in web-engine-entitled.conf and
+# jit-entitled.conf (Mail is, for the engine's own sake: mail scripts are
+# denied by CSP).
+seccomp    = "tilo-web-engine"
 landlock   = "strict"
 
 [sandbox.net]

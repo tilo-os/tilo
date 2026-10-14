@@ -17,9 +17,11 @@ use tantivy::{
     SegmentReader, SingleSegmentIndexWriter, TantivyDocument, TantivyError, Term,
 };
 
+use crate::direct::{DIRECT_LIMIT, Direct};
 use crate::query::{FIELD_BASE, Matching, Used, compile};
 use crate::tokenizer::{GramTokenizer, WordTokenizer};
-use crate::weight::{FieldWeight, INDEXED_WEIGHTS, MatchTier, Ranks};
+use crate::typo::Typos;
+use crate::weight::{FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MatchTier, Ranks};
 
 const KEY_FIELD: &str = "key";
 const SEGMENT_FIELD: &str = "segment";
@@ -137,6 +139,11 @@ impl Document {
     pub fn fields(&self) -> &[(String, FieldWeight)] {
         &self.fields
     }
+
+    /// The record's [`Self::signals`]: its boost and length.
+    pub(crate) const fn signals_pair(&self) -> (i32, u32) {
+        self.signals
+    }
 }
 
 /// One match.
@@ -194,6 +201,8 @@ pub(crate) struct Fields {
     pub grams: [Field; INDEXED_WEIGHTS.len()],
     /// Words of title fields, for typo matching.
     pub title_words: Field,
+    /// Words of keyword fields, matched by typo below the titles' words.
+    pub keyword_words: Field,
     pub body_grams: Field,
     pub body_words: Field,
 }
@@ -217,6 +226,7 @@ fn schema() -> (Schema, Fields) {
     let gram_fields =
         std::array::from_fn(|slot| builder.add_text_field(&format!("grams{slot}"), grams.clone()));
     let title_words = builder.add_text_field("title_words", words.clone());
+    let keyword_words = builder.add_text_field("keyword_words", words.clone());
     let body_grams = builder.add_text_field("body_grams", grams);
     let body_words = builder.add_text_field("body_words", words);
     (
@@ -228,6 +238,7 @@ fn schema() -> (Schema, Fields) {
             length,
             grams: gram_fields,
             title_words,
+            keyword_words,
             body_grams,
             body_words,
         },
@@ -315,6 +326,14 @@ pub struct SearchIndex {
     matching: Matching,
     ranks: Ranks,
     used: Used,
+    /// The words of the records' titles and keywords, which typos are
+    /// matched against; kept only when [`Matching::typos`] is on.
+    typos: Typos,
+    /// The committed records read directly, while they are few and have no
+    /// body ([`Direct`]); searches then skip tantivy.
+    direct: Option<Direct>,
+    /// Most records [`Self::direct`] holds; zero answers through tantivy.
+    direct_limit: usize,
     documents: BTreeMap<u64, Document>,
     pending: BTreeSet<u64>,
     /// Pending keys the committed index has never held, so their records
@@ -367,6 +386,9 @@ impl SearchIndex {
             matching,
             ranks: MatchTier::rank_in,
             used: Used::default(),
+            typos: Typos::default(),
+            direct: None,
+            direct_limit: DIRECT_LIMIT,
             documents: BTreeMap::new(),
             pending: BTreeSet::new(),
             fresh: BTreeSet::new(),
@@ -383,8 +405,10 @@ impl SearchIndex {
     #[must_use]
     pub fn detached(&self) -> Self {
         let mut copy = Self::new(self.matching).with_ranks(self.ranks);
+        copy.direct_limit = self.direct_limit;
         copy.documents.clone_from(&self.documents);
         copy.used = self.used;
+        copy.typos.clone_from(&self.typos);
         copy.rebuild = true;
         copy
     }
@@ -435,12 +459,25 @@ impl SearchIndex {
             self.fresh.insert(document.key);
         }
         self.pending.insert(document.key);
-        self.documents.insert(document.key, document);
+        if self.matching.typos {
+            self.typos.add(&document);
+        }
+        if let Some(replaced) = self.documents.insert(document.key, document)
+            && self.matching.typos
+        {
+            self.typos.remove(&replaced);
+        }
     }
 
     /// Remove a record. Returns whether it existed.
     pub fn remove(&mut self, key: u64) -> bool {
-        let existed = self.documents.remove(&key).is_some();
+        let removed = self.documents.remove(&key);
+        if let Some(removed) = &removed
+            && self.matching.typos
+        {
+            self.typos.remove(removed);
+        }
+        let existed = removed.is_some();
         if existed && self.fresh.remove(&key) {
             // Never committed: nothing to delete.
             self.pending.remove(&key);
@@ -454,9 +491,17 @@ impl SearchIndex {
     pub fn replace_all(&mut self, documents: impl IntoIterator<Item = Document>) {
         self.documents.clear();
         self.used = Used::default();
+        self.typos = Typos::default();
         for document in documents {
             self.note_used(&document);
-            self.documents.insert(document.key, document);
+            if self.matching.typos {
+                self.typos.add(&document);
+            }
+            if let Some(replaced) = self.documents.insert(document.key, document)
+                && self.matching.typos
+            {
+                self.typos.remove(&replaced);
+            }
         }
         self.pending.clear();
         self.fresh.clear();
@@ -506,7 +551,17 @@ impl SearchIndex {
         committed?;
         self.pending.clear();
         self.rebuild = false;
+        self.direct = (!self.used.body && self.documents.len() <= self.direct_limit)
+            .then(|| Direct::new(&self.documents, self.matching.typos));
         Ok(())
+    }
+
+    /// Answer every search through tantivy, however few the records: what
+    /// the direct path is tested against.
+    #[cfg(test)]
+    pub(crate) fn through_tantivy(mut self) -> Self {
+        self.direct_limit = 0;
+        self
     }
 
     fn tantivy_documents(&self, document: &Document, out: &mut impl FnMut(TantivyDocument)) {
@@ -521,9 +576,13 @@ impl SearchIndex {
             if let Some(grams) = fields.grams.get(slot) {
                 record.add_text(*grams, text);
             }
-            // Only title words are matched by typo.
-            if slot == 0 && self.matching.typos {
-                record.add_text(fields.title_words, text);
+            // Only title and keyword words are matched by typo.
+            if self.matching.typos {
+                if slot == 0 {
+                    record.add_text(fields.title_words, text);
+                } else if slot == KEYWORD_SLOT {
+                    record.add_text(fields.keyword_words, text);
+                }
             }
         }
         if let Some(body) = &document.body {
@@ -692,6 +751,9 @@ impl SearchIndex {
         page: Page,
         score: impl Fn(Signals) -> i32 + Clone + Send + Sync + 'static,
     ) -> Hits {
+        if let Some(direct) = &self.direct {
+            return direct.search(self.matching, self.ranks, query, page, &score);
+        }
         let Some(reader) = &self.reader else {
             return Hits::default();
         };
@@ -702,10 +764,17 @@ impl SearchIndex {
         if limit == 0 {
             return Hits::default();
         }
-        let Some(compiled) = compile(&self.fields, self.used, self.matching, self.ranks, query)
-        else {
+        let Some(compiled) = compile(
+            &self.fields,
+            self.used,
+            self.matching,
+            self.ranks,
+            &self.typos,
+            query,
+        ) else {
             return Hits::default();
         };
+
         let collector = TopDocs::with_limit(limit.saturating_add(1))
             .and_offset(page.offset)
             .tweak_score(move |segment_reader: &SegmentReader| {
