@@ -375,6 +375,12 @@ mod component_adapter {
             self.component.root.as_deref().map(f)
         }
 
+        /// Whether the record's last sampled save is still unconfirmed.
+        fn saving(&self) -> bool {
+            let binding = self.component.callback_binding();
+            binding.enter().is_ok() && self.component.save_status_wake_deadline().is_some()
+        }
+
         /// [`Self::in_root`] with the root lent mutably.
         fn in_root_mut<R>(
             &mut self,
@@ -1256,9 +1262,12 @@ mod component_adapter {
             self.in_root(|root| root.needs_animation_frame())
                 .unwrap_or_default()
         }
+        /// A save the store has not confirmed yet is pending too: "Saving…"
+        /// is a placeholder for "Saved", so a still capture waits for it.
         fn has_pending_visual_work(&self) -> bool {
             self.in_root(Widget::has_pending_visual_work)
                 .unwrap_or_default()
+                || self.saving()
         }
         fn has_transient_feedback(&self) -> bool {
             let binding = self.component.callback_binding();

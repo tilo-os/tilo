@@ -179,6 +179,8 @@ history-selection-clear = Clear
 history-sync-finish-edit = Finish the current edit before receiving remote changes
 history-sync-queue-full = Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.
 history-sync-owner-changed = Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.
+history-sync-offline = Working offline. Changes will sync when you're back.
+history-sync-remote-waiting = Remote updates will apply when the current edit finishes.
 history-sync-owner-closed = Document owner closed or changed. Reconnect before synchronizing its replacement.
 
 # File history in the History host.
@@ -400,6 +402,9 @@ history-day-this-week = This week
 history-day-earlier = Earlier
 
 save-status-saving = Saving…
+save-status-stalled = Couldn't save yet. Retrying…
+save-status-not-saved = Not saved
+save-status-not-saved-detail = Your changes are still here. Try again to save them.
 save-status-saved = Saved
 save-status-failed = Save failed
 save-status-retry = Try again

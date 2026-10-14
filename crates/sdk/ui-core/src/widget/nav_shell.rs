@@ -1257,6 +1257,9 @@ pub struct NavShell {
     toasts_drawn_scene: Scene,
     /// A notice came, went or changed: the next draw paints it.
     toasts_dirty: bool,
+    /// The window's sync status, quiet text before the trailing controls
+    /// of the row History stands in.
+    sync_status: crate::widget::HeaderStatus,
 }
 
 impl Default for NavShell {
@@ -1341,6 +1344,7 @@ impl NavShell {
             toasts_drawn: None,
             toasts_drawn_scene: Scene::new(),
             toasts_dirty: false,
+            sync_status: crate::widget::HeaderStatus::default(),
         }
     }
 
@@ -2876,6 +2880,61 @@ impl NavShell {
         {
             self.paint_part(f, part);
         }
+        self.paint_sync_status(f);
+    }
+
+    /// The sync status, in the header of the column History stands in (the
+    /// one reaching the window's trailing edge): after its title and before
+    /// its trailing controls, wherever the row has room.
+    fn paint_sync_status(&mut self, f: &mut Frame<'_>) {
+        if self.sync_status.text().is_none() {
+            return;
+        }
+        let g = &self.geometry;
+        let column = g.history_column.unwrap_or(Column::Content);
+        let row = g.header(column);
+        if row.width() <= 0.0 || row.height() <= 0.0 || g.column(column).width() <= 0.0 {
+            self.sync_status
+                .paint(f.scene, f.transform, f.text, f.theme, row, 0.0, 0.0);
+            return;
+        }
+        let gap = f64::from(f.theme.tokens.spacing.s3);
+        let in_row = |rect: Rect| {
+            rect.width() > 0.0 && rect.y0 < row.y1 && rect.y1 > row.y0 && rect.x0 >= row.x0
+        };
+        let actions = at(&self.headers, column).actions.len();
+        let mut trailing: Vec<Rect> = (0..actions)
+            .map(|i| Part::Action(column, i))
+            .chain([Part::More(column)])
+            .filter(|part| self.built_has(*part) && !self.part_hidden(*part))
+            .filter_map(|part| self.exposed(part).map(|widget| widget.get_rect()))
+            .collect();
+        trailing.extend([g.history, g.inspector_toggle]);
+        let x1 = trailing
+            .into_iter()
+            .filter(|rect| in_row(*rect))
+            .map(|rect| rect.x0)
+            .fold(row.x1, f64::min)
+            - gap;
+        let x0 = [
+            Part::Title(column),
+            Part::Leading(column),
+            Part::Toggle,
+            Part::Back,
+        ]
+        .into_iter()
+        .filter(|part| self.built_has(*part) && !self.part_hidden(*part))
+        .filter_map(|part| match part {
+            Part::Toggle => Some(g.toggle),
+            Part::Back => Some(g.back),
+            _ => self.exposed(part).map(|widget| widget.get_rect()),
+        })
+        .filter(|rect| in_row(*rect))
+        .map(|rect| rect.x1)
+        .fold(row.x0, f64::max)
+            + gap;
+        self.sync_status
+            .paint(f.scene, f.transform, f.text, f.theme, row, x0, x1);
     }
 
     /// Whether `part` is in the host tree this frame: only those were laid
@@ -3474,6 +3533,9 @@ impl Widget for NavShell {
             .iter()
             .filter_map(|part| self.exposed(*part))
             .collect();
+        if self.sync_status.text().is_some() {
+            children.push(&self.sync_status);
+        }
         if !self.toasts.is_empty() {
             children.push(&self.toasts);
         }
@@ -3487,6 +3549,9 @@ impl Widget for NavShell {
             if let Some(widget) = self.exposed(part) {
                 visitor(widget);
             }
+        }
+        if self.sync_status.text().is_some() {
+            visitor(&self.sync_status);
         }
         if !self.toasts.is_empty() {
             visitor(&self.toasts);
@@ -3513,6 +3578,7 @@ impl Widget for NavShell {
             history_close,
             inert_parts,
             toasts,
+            sync_status,
             ..
         } = self;
         let mut stubs = inert_parts.iter_mut();
@@ -3584,6 +3650,9 @@ impl Widget for NavShell {
             if let Some(widget) = next {
                 out.push(widget);
             }
+        }
+        if sync_status.text().is_some() {
+            out.push(sync_status);
         }
         if !toasts.is_empty() {
             out.push(toasts);
@@ -3729,6 +3798,14 @@ impl WindowHeader for NavShell {
         self.inputs.borrow_mut().history = control;
         self.structure_dirty = true;
         self.invalidate();
+    }
+
+    fn set_sync_status(&mut self, status: Option<&str>) -> bool {
+        if self.sync_status.set(status) {
+            self.paint_dirty = true;
+            self.invalidation.invalidate();
+        }
+        true
     }
 }
 

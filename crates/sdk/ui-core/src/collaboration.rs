@@ -1117,6 +1117,10 @@ pub struct CollaborationManager {
     /// Whether the action directory was registered on the current primary
     /// route. A new `Hello` resets it.
     action_directory_published: bool,
+    /// Whether this document was meant to sync: the manager was given a
+    /// collaboration service to reach. Losing the service later keeps it
+    /// set; a manager that never had one is a local document.
+    sync_expected: bool,
 }
 
 impl CollaborationManager {
@@ -1139,6 +1143,7 @@ impl CollaborationManager {
             reported_state: None,
             identity: None,
             action_directory_published: false,
+            sync_expected: true,
         };
         manager.reported_state = Some(manager.state());
         manager
@@ -1266,6 +1271,7 @@ impl CollaborationManager {
             awaiting_primary: false,
             identity: None,
             action_directory_published: false,
+            sync_expected: false,
         }
     }
 
@@ -1303,6 +1309,15 @@ impl CollaborationManager {
                 TransportStatus::Ready | TransportStatus::Degraded(_) => CollaborationState::Ready,
             },
         }
+    }
+
+    /// Whether changes were meant to reach peers and currently do not: the
+    /// manager had a collaboration service and has lost it. A document that
+    /// never had one (local, outside any room) is not offline, and one still
+    /// connecting has not lost anything yet.
+    #[must_use]
+    pub fn sync_lost(&self) -> bool {
+        self.sync_expected && matches!(self.state(), CollaborationState::Offline(_))
     }
 
     /// The current state when it differs from the one this method last
@@ -2133,6 +2148,18 @@ mod portable_transport_tests {
         });
         assert!(!manager.is_connected());
         assert!(manager.poll().is_empty());
+    }
+
+    #[test]
+    fn only_a_document_that_had_a_service_reports_sync_lost() {
+        assert!(!CollaborationManager::disabled().sync_lost());
+        let mut manager = CollaborationManager::with_peer_transport(ClosedPeer);
+        assert!(!manager.sync_lost());
+        manager.send(CollabRequest::Document {
+            mutation: collab_types::DocumentMutation::Snapshot(vec![1]),
+            authorization: None,
+        });
+        assert!(manager.sync_lost());
     }
 }
 

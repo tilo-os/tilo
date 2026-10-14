@@ -673,7 +673,10 @@ impl NotesApp {
     /// `apply_event`. The status bar diffs internally so a no-op
     /// refresh doesn't dirty its render.
     pub(crate) fn take_save_retry_request(&mut self) -> bool {
-        std::mem::take(&mut self.save_retry)
+        // A save the store has not confirmed for a while is submitted again
+        // on the surface's behalf, as "Retrying…" says.
+        let stalled = self.save_surface.take_retry();
+        std::mem::take(&mut self.save_retry) || stalled
     }
 
     fn refresh_status(&mut self) {

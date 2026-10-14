@@ -117,6 +117,8 @@ pub struct HistoryHost {
     /// The live app draws the window's header row, which holds the History
     /// control while History is closed, so this toolbar draws none then.
     app_presents_button: bool,
+    /// The app's header row shows the sync status, so this bar does not.
+    app_presents_status: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
     selected: Vec<crate::HistoryEntryId>,
     before: PreviewCanvas,
@@ -310,6 +312,7 @@ impl HistoryHost {
             open_button: true,
             fallback_bar: true,
             app_presents_button: false,
+            app_presents_status: false,
             rect: Rect::ZERO,
             chrome_node: None,
             live_node: None,
@@ -1702,7 +1705,11 @@ impl HistoryHost {
             toolbar = toolbar.push(Box::new(scopes));
         }
         toolbar = self.files_toolbar(toolbar);
-        if let Some(status) = &self.sync_status {
+        if let Some(status) = self
+            .sync_status
+            .as_ref()
+            .filter(|_| !self.app_presents_status)
+        {
             toolbar = toolbar.push(Box::new(
                 Text::new(status).with_live(crate::a11y::Politeness::Polite),
             ));
