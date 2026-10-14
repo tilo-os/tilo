@@ -481,7 +481,7 @@ fn pictures_are_kept_by_digest_and_shown_in_their_note() {
     let digest = blake3::hash(&png).to_hex().to_string();
     let state = notebook.state().unwrap();
     assert_eq!(state.images.get(&digest), Some(&Bytes::of(&png)));
-    let snapshot = image_snapshot(&state, |_| None);
+    let snapshot = image_snapshot(&state.images, |_| None);
     assert_eq!(snapshot.get(&format!("asset:{digest}")), Some(&png));
     assert!(
         texts(&notebook, &page)
@@ -552,9 +552,29 @@ fn the_notebook_publishes_notes_as_items_and_reads_as_its_content() {
     let whole = Notebook::read_content(&state, notebook.doc(), None).unwrap();
     assert_eq!(whole["pages"][0]["title"], "Alpha");
     assert_eq!(whole["pages"][0]["item"], item);
+    // A note reads as Markdown, one line per block, each ending in the id
+    // its body's block actions take.
     let one = Notebook::read_content(&state, notebook.doc(), Some(&item)).unwrap();
-    assert_eq!(one["text"], "First line\nSecond line");
-    assert_eq!(one["blocks"][1]["text"], "Second line");
+    let lines: Vec<(&str, &str)> = one["markdown"]
+        .as_str()
+        .expect("the body as Markdown")
+        .lines()
+        .map(|line| line.rsplit_once(" ^").expect("a block id on every line"))
+        .collect();
+    let texts: Vec<&str> = lines.iter().map(|(text, _)| *text).collect();
+    assert_eq!(texts, ["First line", "Second line"], "{one}");
+    assert_eq!(one["blocks"], 2, "{one}");
+    let (second, second_id) = lines[1];
+    assert_eq!(second, "Second line");
+    assert!(!second_id.is_empty() && second_id != lines[0].1, "{one}");
+    // Its body is the rich-text resource published beneath the note, read as
+    // the same lines.
+    let body = crate::actions::body_resource_id(uuid(&a));
+    assert_eq!(one["body"], body.as_str());
+    let published_body = Notebook::child(&state, &body).expect("the body is published");
+    assert_eq!(published_body.kind, "tilo.rich-text");
+    let read_body = Notebook::read_content(&state, notebook.doc(), Some(&body)).unwrap();
+    assert_eq!(read_body["markdown"], one["markdown"]);
     assert!(
         Notebook::read_content(&state, notebook.doc(), Some("notes.notebook/pages/gone")).is_err()
     );
@@ -605,4 +625,54 @@ fn an_agent_edits_a_note_body_from_a_compact_field_edit_listing() {
     let edit: Edit<Notebook> = serde_json::from_value(edit).unwrap();
     self::edit(&mut notebook, &edit).unwrap();
     assert_eq!(texts(&notebook, &id), ["Read the plan"]);
+}
+
+/// A note-creating action answers with the note it made; a rename of an
+/// existing note and a new tag answer with nothing.
+#[test]
+fn creating_a_note_reports_its_page_and_renaming_does_not() {
+    let mut notebook = Replica::<Notebook>::new();
+    let before = notebook.heads();
+    let id = note(&mut notebook, "Fresh", None);
+    let after = notebook.heads();
+    let created = notebook.doc_mut().diff(&before, &after);
+    let result = Notebook::created_page(notebook.doc(), "new-note", &created)
+        .expect("the answer names the new note");
+    assert_eq!(result["page"], uuid(&id).to_string());
+    assert_eq!(
+        result["resource"],
+        crate::actions::page_resource_id(uuid(&id))
+    );
+
+    let before = notebook.heads();
+    apply(
+        &mut notebook,
+        Notebook::RENAME.with(notebook::Rename {
+            page: id,
+            title: "Renamed".into(),
+        }),
+    )
+    .unwrap();
+    let after = notebook.heads();
+    let renamed = notebook.doc_mut().diff(&before, &after);
+    assert_eq!(
+        Notebook::created_page(notebook.doc(), "rename", &renamed),
+        None
+    );
+
+    let before = notebook.heads();
+    apply(
+        &mut notebook,
+        Notebook::NEW_TAG.with(notebook::NewTag {
+            name: "Work".into(),
+        }),
+    )
+    .unwrap();
+    let after = notebook.heads();
+    let tagged = notebook.doc_mut().diff(&before, &after);
+    assert_eq!(
+        Notebook::created_page(notebook.doc(), "new-tag", &tagged),
+        None,
+        "a new tag is no note"
+    );
 }

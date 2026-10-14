@@ -66,7 +66,7 @@ D2 = 3
 [apps.imager]
 D1 = 6
 D2 = 9
-R1 = 303
+R1 = 302
 R2 = 207
 R3 = 54
 R4 = 22
@@ -138,8 +138,8 @@ D2 = 5
 [apps.terminal]
 D1 = 4
 D2 = 3
-R1 = 45
-R2 = 53
+R1 = 41
+R2 = 17
 R3 = 3
 
 [apps.totp]

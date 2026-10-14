@@ -36,7 +36,6 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ChangeHash};
 use collab_types::{DocumentMutation, DocumentMutationKind};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_peer_state::NeighbourMsg;
 use tilo_relay_protocol::compaction::{CoverageStatement, entry_id, snapshot_heads, verify};
 
 mod verified;
@@ -44,6 +43,8 @@ mod verified;
 use verified::{Checked, Piece, Signatures};
 
 use crate::coedit::CoeditPayload;
+pub use crate::payloads::Route;
+use crate::payloads::ShellPayloads;
 use crate::store::compaction::{ChannelEntry, SnapshotWrite, file_digest};
 use crate::transport::Envelope;
 use crate::workspace::SharedWorkspace;
@@ -165,6 +166,8 @@ type ChannelKey = (u64, [u8; 32]);
 struct Inner {
     key: ed25519_dalek::SigningKey,
     cert: tilo_user_identity::DeviceCert,
+    /// Reads document frames and frames the host's own retained bodies.
+    payloads: Arc<dyn ShellPayloads>,
     jobs: tokio::sync::Semaphore,
     growth: Mutex<HashMap<ChannelKey, Growth>>,
     volunteers: Mutex<HashMap<u64, Vec<[u8; 32]>>>,
@@ -216,11 +219,17 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Compactor {
-    /// A compactor signing as this host device.
-    pub fn new(key: ed25519_dalek::SigningKey, cert: tilo_user_identity::DeviceCert) -> Self {
+    /// A compactor signing as this host device, reading and framing
+    /// co-edit bodies with `payloads`.
+    pub fn new(
+        key: ed25519_dalek::SigningKey,
+        cert: tilo_user_identity::DeviceCert,
+        payloads: Arc<dyn ShellPayloads>,
+    ) -> Self {
         Self(Arc::new(Inner {
             key,
             cert,
+            payloads,
             jobs: tokio::sync::Semaphore::new(1),
             growth: Mutex::default(),
             volunteers: Mutex::default(),
@@ -240,16 +249,21 @@ impl Compactor {
     }
 
     /// The document channel a delta retains to, and its size, before it is
-    /// admitted.
+    /// admitted, as this compactor's payload adapter reads it.
+    pub(crate) fn observe(&self, delta: &[u8]) -> Option<Observed> {
+        Self::observe_with(&*self.0.payloads, delta)
+    }
+
+    /// [`Self::observe`] with `payloads`.
     ///
     /// Runs for every delta on the session task, so it borrows the payload
-    /// body and reads only the `NeighbourMsg` variant tag: no allocation or
-    /// copy proportional to the delta. Public only so an allocation test with
-    /// its own counting allocator can measure it.
+    /// body and asks the payload adapter only whether it is a document
+    /// frame: no allocation or copy proportional to the delta. Public only so
+    /// an allocation test with its own counting allocator can measure it.
     #[doc(hidden)]
-    pub fn observe(delta: &[u8]) -> Option<Observed> {
+    pub fn observe_with(payloads: &dyn ShellPayloads, delta: &[u8]) -> Option<Observed> {
         let (channel, _, body) = crate::coedit::retention_view(delta)?;
-        NeighbourMsg::is_app_document(body).then_some(Observed {
+        payloads.is_document(body).then_some(Observed {
             channel,
             len: delta.len(),
         })
@@ -354,8 +368,9 @@ impl Compactor {
         // for the round and put back after it.
         let mut signatures = lock(&self.0.signatures)
             .remove(&(workspace_id, channel))
-            .unwrap_or_default();
+            .unwrap_or_else(|| Signatures::with_payloads(self.0.payloads.clone()));
         let key = self.0.key.clone();
+        let payloads = self.0.payloads.clone();
         let (signatures, planned) = tokio::task::spawn_blocking(move || {
             let planned = on_cpu(|| {
                 let entries = store.channel_entries(&channel)?;
@@ -364,7 +379,9 @@ impl Compactor {
                     &mut signatures,
                     &known,
                     min_tail,
-                    |route, snapshot| document_frames(&key, workspace_id, route, snapshot).ok(),
+                    |route, snapshot| {
+                        document_frames(&*payloads, &key, workspace_id, route, snapshot).ok()
+                    },
                 ))
             });
             (signatures, planned)
@@ -398,7 +415,11 @@ impl Compactor {
         folded: &Folded,
         frames: Vec<Vec<u8>>,
     ) -> Result<(), String> {
-        let identity = identity_frame(&self.0.cert, workspace.lock().await.store.workspace_id())?;
+        let identity = identity_frame(
+            &*self.0.payloads,
+            &self.0.cert,
+            workspace.lock().await.store.workspace_id(),
+        )?;
         let remove: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
         let author = self.0.cert.device_public_key;
         let outcome = owner_run(workspace, move |store| {
@@ -639,17 +660,11 @@ async fn owner_run<T: Send + 'static>(
 /// The host's certificate as a retained frame: the channel and the framed
 /// envelope.
 fn identity_frame(
+    payloads: &dyn ShellPayloads,
     cert: &tilo_user_identity::DeviceCert,
     workspace_id: u64,
 ) -> Result<([u8; 32], Vec<u8>), String> {
-    let hello = NeighbourMsg::IdentityHello {
-        cert: Box::new(cert.clone()),
-        revocations: Vec::new(),
-    };
-    let channel =
-        *blake3::hash(&[b"identity-hello\0".as_slice(), &cert.device_public_key].concat())
-            .as_bytes();
-    let body = postcard::to_stdvec(&hello).map_err(|error| error.to_string())?;
+    let (channel, body) = payloads.host_identity(cert)?;
     let bytes = crate::transport::encode(&Envelope::Delta {
         workspace_id,
         author_device_public_key: cert.device_public_key,
@@ -661,17 +676,6 @@ fn identity_frame(
     })
     .map_err(|error| error.to_string())?;
     Ok((channel, bytes))
-}
-
-/// The document a retained entry belongs to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Route {
-    /// Application id.
-    pub app_id: String,
-    /// Room (cluster) id.
-    pub cluster_id: String,
-    /// Record wire name.
-    pub record_id: String,
 }
 
 /// What one round decided: the route of a sealed tail to ask a member for,
@@ -971,14 +975,15 @@ fn fold(entries: &[ChannelEntry], readable: &Readable) -> Option<Folded> {
 }
 
 /// Sign `snapshot` for `route` as the host and frame it the way a device
-/// publishes it: one retained envelope per document frame, the first as the
-/// checkpoint. The publisher is the host's own handle, which a native shell
+/// publishes it (`payloads` frames each body): one retained envelope per
+/// document frame, the first as the checkpoint. The publisher is the host's own handle, which a native shell
 /// requires of every document it accepts.
 ///
 /// # Errors
 ///
 /// Returns a description when the snapshot is too large or encoding fails.
 pub(crate) fn document_frames(
+    payloads: &dyn ShellPayloads,
     key: &ed25519_dalek::SigningKey,
     workspace_id: u64,
     route: &Route,
@@ -1014,14 +1019,7 @@ pub(crate) fn document_frames(
         );
         let signing = op.signing_bytes().map_err(|error| error.to_string())?;
         op.signature = collab_types::Signature::from_bytes(key.sign(&signing).to_bytes());
-        let body = postcard::to_stdvec(&NeighbourMsg::AppDocument {
-            peer: tilo_peer_state::peer_handle(&author),
-            app_id: route.app_id.clone(),
-            cluster_id: route.cluster_id.clone(),
-            record_id: route.record_id.clone(),
-            envelope: Box::new(op),
-        })
-        .map_err(|error| error.to_string())?;
+        let body = payloads.document_body(&author, route, op)?;
         let payload = if index == 0 {
             CoeditPayload::Checkpoint { channel, body }
         } else {

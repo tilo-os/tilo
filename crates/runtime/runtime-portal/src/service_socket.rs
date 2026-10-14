@@ -16,6 +16,56 @@ pub struct InheritedServiceSocket {
     retry: Mutex<Option<UnixStream>>,
 }
 
+/// A serialized inherited control connection whose sessions use separate leases.
+/// The raw inherited descriptor is claimed once and never reacquired.
+pub struct InheritedControlSocket {
+    socket: InheritedServiceSocket,
+    #[cfg(unix)]
+    exchange: Mutex<()>,
+}
+
+impl InheritedControlSocket {
+    #[must_use]
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            socket: InheritedServiceSocket::new(name),
+            #[cfg(unix)]
+            exchange: Mutex::new(()),
+        }
+    }
+
+    #[must_use]
+    pub fn was_taken(&self) -> bool {
+        self.socket.was_taken()
+    }
+
+    /// Exchange one serialized request, retaining only the control connection.
+    ///
+    /// # Errors
+    /// Returns inherited ownership or poisoned connection errors.
+    ///
+    /// # Safety
+    /// This instance alone must own the inherited fd. The request must negotiate
+    /// a protocol using independent session lifetime descriptors; this connection
+    /// must never itself be returned as a session lease.
+    #[cfg(unix)]
+    pub unsafe fn with_control<T>(
+        &self,
+        request: impl FnOnce(&UnixStream) -> T,
+    ) -> Result<T, ServiceSocketError> {
+        let exchange = self
+            .exchange
+            .lock()
+            .map_err(|_| ServiceSocketError::Poisoned)?;
+        // SAFETY: the caller guarantees this instance exclusively owns the fd.
+        let stream = unsafe { self.socket.take() }?;
+        let result = request(&stream);
+        self.socket.retain_connection(stream)?;
+        drop(exchange);
+        Ok(result)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceSocketError {
     #[error("the service descriptor is missing")]
@@ -81,6 +131,11 @@ impl InheritedServiceSocket {
     /// ownership lock cannot be acquired safely.
     #[cfg(unix)]
     pub fn retry_after_refusal(&self, stream: UnixStream) -> Result<(), ServiceSocketError> {
+        self.retain_connection(stream)
+    }
+
+    #[cfg(unix)]
+    fn retain_connection(&self, stream: UnixStream) -> Result<(), ServiceSocketError> {
         let mut retry = self
             .retry
             .lock()

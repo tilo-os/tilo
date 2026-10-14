@@ -63,6 +63,8 @@ store-package-file-type = Tilo package
 store-package-review-busy = Too many package reviews are waiting. Finish the current reviews first.
 
 store-package-local-trust = Verified by an existing trusted attestor
+store-installed-unanswered = Verified when installed. { $repositories } hasn't answered, so this app's description and updates appear here once it does.
+store-installed-unlisted = Verified when installed. No enabled repository lists this app, so it gets no updates here.
 store-package-local-description = Signed local application. Installation requires its payload and exact runtime to be available.
 store-package-local-source = Local package
 store-app-installed = App installed.
@@ -76,6 +78,16 @@ store-operation-failed = Could not complete the operation
 store-error-refresh = Refresh apps
 store-repository-timeout = { $name } did not respond. Other apps remain available. Refresh apps to try again.
 store-build-version = Full build version
+
+store-runtime-install = Install runtime
+store-runtime-reference = Required runtime
+store-runtime-installed = Installed { $name } { $version }. Open the app again to use it.
+store-runtime-reviewed = Reviewed { $name }. Installation remains a separate step.
+store-runtime-changed = The reviewed runtime package changed; review it again.
+store-runtime-service-unavailable = The app service is unavailable. No runtime operation was attempted.
+store-runtime-offer-mismatch = The signed runtime offer does not match the requested identity.
+store-runtime-offer-ambiguous = More than one repository offers this runtime. Choose one repository before installing.
+store-runtime-unavailable = No enabled repository offers the required runtime for this device.
 
 ## History: what each change to the reports did
 

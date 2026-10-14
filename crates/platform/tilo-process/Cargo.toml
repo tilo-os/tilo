@@ -23,6 +23,9 @@ tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 # The rendezvous lock and the socket wait.
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
+# The owner-only service connect's deadline.
+socket2 = { version = "0.6", default-features = false, features = ["all"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

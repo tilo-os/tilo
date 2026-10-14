@@ -442,9 +442,12 @@ mod tests {
             .find(|resource| resource.id.as_str() == "windows.manager")
             .expect("the manager");
         for id in ["install", "import-iso"] {
+            let action = manager.actions.iter().find(|action| action.id == id);
+            assert!(action.is_some(), "{id} is on the manager");
+            // Privileged work on a path is never how a launch opens a file.
             assert!(
-                manager.actions.iter().any(|action| action.id == id),
-                "{id} is on the manager"
+                action.is_some_and(|action| !action.contract.opens_path()),
+                "{id} is no path opener"
             );
         }
     }

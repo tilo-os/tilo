@@ -7,6 +7,7 @@ license.workspace = true
 description = "Default-deny single Windows appliance and RemoteApp integration for Tilo"
 
 [dependencies]
+uuid.workspace = true
 tilo-paths.workspace = true
 tilo-libvirt-domain = { path = "../../system/libvirt-domain" }
 quick-xml.workspace = true
@@ -34,3 +35,6 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

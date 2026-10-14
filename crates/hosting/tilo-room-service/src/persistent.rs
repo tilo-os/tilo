@@ -5,7 +5,7 @@
 
 use crate::config::{Config, PersistentConfig};
 use crate::guests::GuestLedger;
-use crate::limits::{IpHasher, JoinLimits, Seats};
+use crate::limits::{IpHasher, JoinLimits, JoinRates, Seats};
 use crate::room::read_started;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -116,7 +116,13 @@ impl Shared {
             .persistent
             .as_ref()
             .context("not a persistent room")?;
-        Self::with_key(dir, key, config.max_guests, persistent.max_spectators)
+        Self::with_key(
+            dir,
+            key,
+            config.max_guests,
+            persistent.max_spectators,
+            (persistent.guest_joins, persistent.spectator_joins),
+        )
     }
 
     fn with_key(
@@ -124,6 +130,7 @@ impl Shared {
         key: [u8; 32],
         max_guests: usize,
         max_spectators: usize,
+        (guest_joins, spectator_joins): (JoinRates, JoinRates),
     ) -> Result<Self> {
         std::fs::create_dir_all(dir.join("avatars"))
             .with_context(|| format!("create {}", dir.display()))?;
@@ -131,8 +138,8 @@ impl Shared {
         Ok(Self {
             dir,
             hasher: IpHasher::new(key),
-            joins: std::sync::Mutex::new(JoinLimits::guests()),
-            spectates: std::sync::Mutex::new(JoinLimits::spectators()),
+            joins: std::sync::Mutex::new(JoinLimits::new(guest_joins)),
+            spectates: std::sync::Mutex::new(JoinLimits::new(spectator_joins)),
             guests: std::sync::Mutex::new(guests),
             seats: std::sync::Mutex::new(Seats::new(max_guests)),
             watching: std::sync::Mutex::new(Seats::new(max_spectators)),
@@ -142,8 +149,14 @@ impl Shared {
     #[cfg(test)]
     pub(crate) fn for_test(dir: &Path, max_guests: usize, max_spectators: usize) -> Arc<Self> {
         Arc::new(
-            Self::with_key(dir.to_path_buf(), [7; 32], max_guests, max_spectators)
-                .unwrap_or_else(|error| panic!("{error:#}")),
+            Self::with_key(
+                dir.to_path_buf(),
+                [7; 32],
+                max_guests,
+                max_spectators,
+                (JoinRates::GUESTS, JoinRates::SPECTATORS),
+            )
+            .unwrap_or_else(|error| panic!("{error:#}")),
         )
     }
 
@@ -157,10 +170,6 @@ pub struct Persistent {
     /// The current child; `None` while it restarts.
     child: Mutex<Option<Child>>,
     waiters: std::sync::Mutex<Waiters>,
-}
-
-fn now_ms() -> u64 {
-    tilo_clock::unix_now_ms()
 }
 
 fn token_digest(token: &str) -> String {
@@ -277,6 +286,9 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     }
     for channel in &persistent.chat_channels {
         command.arg("--chat-channel").arg(channel);
+    }
+    for strip in &persistent.strips {
+        command.arg("--strip").arg(strip);
     }
     for owner in &persistent.owners {
         command.arg("--owner").arg(owner);
@@ -500,7 +512,7 @@ impl Persistent {
                         .guests
                         .lock()
                         .map_err(|_| anyhow::anyhow!("guest ledger poisoned"))?
-                        .removed(&user_public_key, now_ms())?;
+                        .removed(&user_public_key, tilo_clock::unix_now_ms())?;
                     eprintln!(
                         "tilo-room-service: a guest was {}; their address {}",
                         if banned { "banned" } else { "removed" },
@@ -620,7 +632,7 @@ impl Persistent {
         seats: &std::sync::Mutex<Seats>,
     ) -> std::result::Result<String, JoinRefusal> {
         let ip_hash = self.shared.hasher.hash(ip);
-        let now = now_ms();
+        let now = tilo_clock::unix_now_ms();
         if self
             .shared
             .guests
@@ -690,7 +702,11 @@ impl Persistent {
             return Err(JoinRefusal::Unavailable);
         };
         if let Ok(mut guests) = self.shared.guests.lock()
-            && let Err(error) = guests.record_join(&request.user_public_key, &ip_hash, now_ms())
+            && let Err(error) = guests.record_join(
+                &request.user_public_key,
+                &ip_hash,
+                tilo_clock::unix_now_ms(),
+            )
         {
             eprintln!("tilo-room-service: could not record a join: {error:#}");
         }
@@ -1251,36 +1267,48 @@ mod tests {
 
     #[test]
     fn the_relay_opens_chat_with_the_channels_the_operator_names() {
-        let channel_args = |vars: &[(&str, &str)]| {
-            let config = Config::from_lookup(|name| {
-                vars.iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            })
-            .unwrap();
-            let command = child_command(&config, Path::new("/state")).unwrap();
-            let args: Vec<String> = command
-                .as_std()
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect();
-            args.windows(2)
-                .filter(|pair| pair[0] == "--chat-channel")
-                .map(|pair| pair[1].clone())
-                .collect::<Vec<_>>()
-        };
+        assert!(relay_args("--chat-channel", &[]).is_empty());
+        assert_eq!(
+            relay_args(
+                "--chat-channel",
+                &[("TILO_ROOMS_CHAT_CHANNELS", "general,show-and-tell")]
+            ),
+            ["general", "show-and-tell"]
+        );
+    }
+
+    #[test]
+    fn the_relay_gives_the_desktop_the_strips_the_operator_names() {
+        assert!(relay_args("--strip", &[]).is_empty());
+        assert_eq!(
+            relay_args("--strip", &[("TILO_ROOMS_STRIPS", "Main,Games night")]),
+            ["Main", "Games night"]
+        );
+    }
+
+    /// The values the relay is started with for `flag`, under the
+    /// persistent room's base configuration and `vars`.
+    fn relay_args(flag: &str, vars: &[(&str, &str)]) -> Vec<String> {
         let base = [
             ("TILO_ROOMS_PERSISTENT", "plaza"),
             ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example"),
         ];
-        assert!(channel_args(&base).is_empty());
-        assert_eq!(
-            channel_args(&[
-                base[0],
-                base[1],
-                ("TILO_ROOMS_CHAT_CHANNELS", "general,show-and-tell"),
-            ]),
-            ["general", "show-and-tell"]
-        );
+        let config = Config::from_lookup(|name| {
+            base.iter()
+                .chain(vars)
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        })
+        .unwrap();
+        let command = child_command(&config, Path::new("/state")).unwrap();
+        let args: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        args.windows(2)
+            .filter(|pair| pair[0] == flag)
+            .map(|pair| pair[1].clone())
+            .collect()
     }
 }

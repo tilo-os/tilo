@@ -414,14 +414,18 @@ fn local_resume_snapshot(entries: &[HistoryEntry], local: &str) -> Option<Resume
         .filter_map(|entry| {
             let context = entry.context.as_ref()?;
             let resource = context.resource.as_ref()?;
+            let mut target = ui::HistoryResourceTarget {
+                app_id: context.app.as_ref().map(|app| app.id.clone()),
+                app_label: context.app.as_ref().map(|app| app.label.clone()),
+                id: resource.id.clone(),
+                kind: resource.kind.clone(),
+                label: resource.label.clone(),
+            };
+            // A resource known only by its id has nothing to offer by name.
+            let label = target.display_name()?.to_owned();
+            target.label = label;
             Some(ResumeSnapshot {
-                target: ui::HistoryResourceTarget {
-                    app_id: context.app.as_ref().map(|app| app.id.clone()),
-                    app_label: context.app.as_ref().map(|app| app.label.clone()),
-                    id: resource.id.clone(),
-                    kind: resource.kind.clone(),
-                    label: resource.label.clone(),
-                },
+                target,
                 author: entry.author.clone(),
                 app: context.app.as_ref().map(|app| app.label.clone()),
                 timestamp: entry.timestamp,
@@ -717,6 +721,10 @@ pub struct RoomActivityPane {
     named: Vec<NamedRange>,
     /// Heads at the last rebuild, so a no-op frame skips re-deriving.
     last_heads: Vec<ChangeHash>,
+    /// [`Self::history_log`]'s rows revision at the last rebuild: while it
+    /// holds, the changes since were all passed over (a workspace switch)
+    /// and the rows are as derived.
+    last_rows: u64,
     period: Period,
     /// Every row the document yielded, with the workspace each belongs
     /// to (`None` for no single workspace). [`Self::scope`] selects the
@@ -969,15 +977,20 @@ impl RoomActivityPane {
                 t
             },
             // A workspace is a cluster of windows saved/reopened collaboratively.
+            // Which workspace shows is the device's view, written on every
+            // switch: no history, and no place in the window, which switching
+            // back and forth used to fill until nothing anyone did was left.
             source: HistorySource::new()
                 .with_artifact_kind(ArtifactKind::Cluster)
-                .without_field_paths(),
+                .without_field_paths()
+                .passing_over(tilo_desktop_model::desktop_doc::only_sets_active),
             revert_intent,
             name_intent,
             undo_intent,
             clear_filters_intent,
             named: Vec::new(),
             last_heads: Vec::new(),
+            last_rows: 0,
             period: Period::default(),
             derived: Vec::new(),
             scoped_tree_rows: Vec::new(),
@@ -1628,6 +1641,7 @@ impl RoomActivityPane {
             origin.get_or_insert(next);
         }
         if !app_origins.is_empty() {
+            let titles = std::mem::take(&mut detail.resources);
             detail.resources = app_origins
                 .into_iter()
                 .filter_map(|origin| {
@@ -1641,12 +1655,21 @@ impl RoomActivityPane {
                                 .as_ref()
                                 .is_some_and(|doc| doc.pending_ops() == 0)
                     });
+                    let app_label = self.host.app_display_name(app);
+                    // The record's title as its own actions named it, else
+                    // its app: the record id is an address, not a name.
+                    let label = titles
+                        .iter()
+                        .find(|target| target.id == id.as_str())
+                        .and_then(|target| ui::human_label(&target.label, &target.id))
+                        .or(app_label.as_deref())
+                        .map_or_else(|| t("overview-untitled"), str::to_owned);
                     Some(ui::HistoryResourceTarget {
-                        app_label: self.host.app_display_name(app),
+                        app_label,
                         app_id: Some(app.clone()),
                         id: id.as_str().into(),
                         kind: kind.as_str().into(),
-                        label: id.as_str().into(),
+                        label,
                     })
                 })
                 .collect();
@@ -2300,7 +2323,16 @@ impl RoomActivityPane {
 
         let heads = tree.document_mut().get_heads();
         let active = tree.active.raw();
-        if heads == self.last_heads && !self.timeline.entries().is_empty() {
+        // A switch writes the document but no row: read just the changes
+        // since and, when all of them were passed over, only show the rows
+        // of the workspace now active.
+        let only_passed_over = heads != self.last_heads && !self.last_heads.is_empty() && {
+            self.source
+                .follow(tree.document_mut(), &mut self.history_log);
+            self.history_log.rows_revision() == self.last_rows
+        };
+        if only_passed_over || (heads == self.last_heads && !self.timeline.entries().is_empty()) {
+            self.last_heads = heads;
             if self.last_active != Some(active) {
                 self.apply_scope(tree);
             }
@@ -2351,6 +2383,7 @@ impl RoomActivityPane {
         let mut entries = self
             .source
             .entries_since(tree.document_mut(), &mut self.history_log);
+        self.last_rows = self.history_log.rows_revision();
         let mut tags = describe_room_changes(
             tree.document_mut(),
             &self.history_log,
@@ -6621,8 +6654,10 @@ impl RoomActivityPane {
             ActivityFocus::Morning(key, remove) => Some(if *remove {
                 t("activity-morning-remove")
             } else {
-                self.morning_target(key)
-                    .map_or_else(|| t("activity-morning-unavailable"), |target| target.label)
+                self.morning_target(key).map_or_else(
+                    || t("activity-morning-unavailable"),
+                    |target| morning_sources::morning_resource_name(&target),
+                )
             }),
             ActivityFocus::Resume => self.resume_target.as_ref().map(|target| {
                 t_args(

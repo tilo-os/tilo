@@ -137,6 +137,7 @@ impl App {
         &self.presence_ctx
     }
     pub fn presence_ctx_mut(&mut self) -> &mut PresenceCtx {
+        self.mark_semantic_tree_stale();
         &mut self.presence_ctx
     }
 
@@ -174,6 +175,7 @@ impl App {
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
         let _entry = self.enter_wake_scope();
         self.permission_ctx = ctx;
+        self.mark_semantic_tree_stale();
         // See `invalidate_widget_resource_cache`: once the numeric namespace
         // is exhausted, dropping the projection is the collision-free way to
         // make the changed permissions visible without reusing a live cache.

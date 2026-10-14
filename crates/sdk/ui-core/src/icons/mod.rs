@@ -11,7 +11,10 @@
 //! `tilo-concept/node_modules/lucide-react/dist/esm/icons/<kebab>.js`,
 //! add a variant to [`Icon`], and map it in `icon_subpaths`.
 
+mod app_glyph;
 mod app_image;
+
+pub use app_glyph::app_glyph;
 
 pub use app_image::{AppImage, AppImageSource, MAX_DEVICE_PX, device_px, draw_app_image};
 

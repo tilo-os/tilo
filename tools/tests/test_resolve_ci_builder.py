@@ -67,7 +67,7 @@ class BuilderResolutionTests(unittest.TestCase):
         with self.subTest(phase='workflow routes native consumers through resolved output'):
             workflow = (ROOT / '.forgejo/workflows/check.yml').read_text()
             self.assertIn('run: python3 tools/ci/resolve_builder.py', workflow)
-            self.assertEqual(workflow.count('image: ${{ needs.builder.outputs.image }}'), 6)
+            self.assertEqual(workflow.count('image: ${{ needs.builder.outputs.image }}'), 7)
             security = workflow.split('\n  security:', 1)[1].split('\n  suites:', 1)[0]
             self.assertIn('image: registry.tilo.so/tilo/ci-fast@sha256:', security)
             self.assertNotIn('image=registry.tilo.so/tilo/tilo-builder:latest', workflow)

@@ -351,8 +351,8 @@ pub(crate) use codec::decode_action_directory_row;
 #[cfg(feature = "client")]
 pub use codec::{
     decode_action_directory_page, decode_action_directory_resolution, decode_exported_action,
-    write_action_directory_page, write_action_directory_resolution, write_action_directory_row,
-    write_exported_action,
+    decode_surface_delta, write_action_directory_page, write_action_directory_resolution,
+    write_action_directory_row, write_exported_action, write_surface_delta,
 };
 
 /// The Cap'n Proto codec: the only place an exported action or directory
@@ -365,6 +365,7 @@ mod codec {
         MAX_DIRECTORY_PRESENTATION_WIRE_BYTES, RowVisibility,
     };
     use crate::collab_capnp;
+    use crate::{ResourceFields, SHAPE_ID_BYTES, ShapeId, SurfaceDelta, SurfaceResource};
     use tilo_actions::{
         ActionContract, OperationKind, ResourcePresentation, ResourceSemanticIdentity,
         ResourceViewDescriptor, ResourceViewMountSpec, ResourceViewRangeSpec,
@@ -878,6 +879,147 @@ mod codec {
                 Ok(ActionDirectoryResolution::Unavailable)
             }
         }
+    }
+
+    /// Encode a surface delta into the `publishActionSurface` request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a shape or binding cannot be encoded, or a list
+    /// is longer than a capnp list can address.
+    pub fn write_surface_delta(
+        mut out: collab_capnp::channel_handle::publish_action_surface_params::Builder<'_>,
+        app_id: &str,
+        delta: &SurfaceDelta,
+    ) -> Result<(), capnp::Error> {
+        let count = |len: usize| {
+            u32::try_from(len)
+                .map_err(|_| capnp::Error::failed("too many actions to publish".to_string()))
+        };
+        out.set_app_id(app_id);
+        out.set_reset(delta.reset);
+        {
+            let mut shapes = out.reborrow().init_shapes(count(delta.shapes.len())?);
+            for (index, (id, shape)) in delta.shapes.iter().enumerate() {
+                let mut row = shapes.reborrow().get(count(index)?);
+                row.set_id(id);
+                write_exported_action(row.init_action(), shape)?;
+            }
+        }
+        {
+            let mut templates = out.reborrow().init_templates(count(delta.templates.len())?);
+            for (index, (id, members)) in delta.templates.iter().enumerate() {
+                let mut row = templates.reborrow().get(count(index)?);
+                row.set_id(id);
+                row.set_shapes(&members.concat());
+            }
+        }
+        {
+            let mut resources = out.reborrow().init_resources(count(delta.resources.len())?);
+            for (index, resource) in delta.resources.iter().enumerate() {
+                let mut row = resources.reborrow().get(count(index)?);
+                row.set_resource(&resource.resource);
+                row.set_resource_kind(&resource.fields.resource_kind);
+                row.set_resource_label(&resource.fields.resource_label);
+                row.set_template(&resource.template);
+                if let Some(identity) = &resource.fields.semantic_identity {
+                    if !identity.is_valid() || identity.kind != resource.fields.resource_kind {
+                        return Err(capnp::Error::failed(
+                            "invalid resource semantic identity".into(),
+                        ));
+                    }
+                    let mut out = row.init_semantic_identity();
+                    out.set_kind(&identity.kind);
+                    out.set_key(&identity.key);
+                }
+            }
+        }
+        let mut removed = out.init_removed(count(delta.removed.len())?);
+        for (index, resource) in delta.removed.iter().enumerate() {
+            removed.set(count(index)?, resource);
+        }
+        Ok(())
+    }
+
+    /// Decode a `publishActionSurface` request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the shape or binding that does not decode, or
+    /// whose shape id is not [`SHAPE_ID_BYTES`] long.
+    pub fn decode_surface_delta(
+        request: collab_capnp::channel_handle::publish_action_surface_params::Reader<'_>,
+    ) -> Result<SurfaceDelta, capnp::Error> {
+        fn shape_id(data: &[u8]) -> Result<ShapeId, capnp::Error> {
+            ShapeId::try_from(data)
+                .map_err(|_| capnp::Error::failed("action shape id has the wrong length".into()))
+        }
+        let mut delta = SurfaceDelta {
+            reset: request.get_reset(),
+            ..SurfaceDelta::default()
+        };
+        for row in request.get_shapes()? {
+            delta.shapes.push((
+                shape_id(row.get_id()?)?,
+                decode_action(row.get_action()?, Source::Published)?,
+            ));
+        }
+        for row in request.get_templates()? {
+            let members = row.get_shapes()?;
+            if members.len() % SHAPE_ID_BYTES != 0 {
+                return Err(capnp::Error::failed(
+                    "action template shapes are not a whole number of ids".into(),
+                ));
+            }
+            delta.templates.push((
+                shape_id(row.get_id()?)?,
+                members
+                    .chunks_exact(SHAPE_ID_BYTES)
+                    .map(shape_id)
+                    .collect::<Result<_, _>>()?,
+            ));
+        }
+        for row in request.get_resources()? {
+            let resource = capnp_text(row.get_resource()?)?;
+            let address = Address {
+                source: Source::Published,
+                resource: &resource,
+                action: "",
+            };
+            let resource_kind = capnp_text(row.get_resource_kind()?)?;
+            let semantic_identity = if row.has_semantic_identity() {
+                let identity = row.get_semantic_identity()?;
+                let (kind, key) = (identity.get_kind()?, identity.get_key()?);
+                if kind.len() > ResourceSemanticIdentity::MAX_KIND_BYTES
+                    || key.len() > ResourceSemanticIdentity::MAX_KEY_BYTES
+                {
+                    return Err(address.error("oversized resource semantic identity"));
+                }
+                let identity = ResourceSemanticIdentity {
+                    kind: capnp_text(kind)?,
+                    key: capnp_text(key)?,
+                };
+                if !identity.is_valid() || identity.kind != resource_kind {
+                    return Err(address.error("invalid resource semantic identity"));
+                }
+                Some(identity)
+            } else {
+                None
+            };
+            delta.resources.push(SurfaceResource {
+                fields: ResourceFields {
+                    resource_label: capnp_text(row.get_resource_label()?)?,
+                    semantic_identity,
+                    resource_kind,
+                },
+                template: shape_id(row.get_template()?)?,
+                resource,
+            });
+        }
+        for row in request.get_removed()? {
+            delta.removed.push(capnp_text(row?)?);
+        }
+        Ok(delta)
     }
 }
 

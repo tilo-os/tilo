@@ -1,7 +1,8 @@
 # Development Guide
 
-Build dependencies, local development and testing. See `AGENTS.md` for repository
-conventions.
+Build dependencies, local development and testing. The project's rules, and the
+check that enforces each, are in [`docs/policies.md`](docs/policies.md); `AGENTS.md`
+is what agents working here are told.
 
 ## Dev VMs (tilo-vm)
 
@@ -626,7 +627,7 @@ From an ARM64 host, run:
 
 ```powershell
 cargo test -p imager --lib --features host-media-writer --target aarch64-pc-windows-msvc --locked
-cargo test -p ui --test hosted-platform --target aarch64-pc-windows-msvc --locked
+cargo test -p tilo-ui --test hosted-platform --target aarch64-pc-windows-msvc --locked
 ```
 
 Use `x86_64-pc-windows-msvc` on an x64 host. Keep the target explicit: an
@@ -642,7 +643,7 @@ workspace root:
 
 ```bash
 brew install pkgconf gstreamer
-cargo run -p video_editor
+cargo run -p video-editor
 ```
 
 The editor enables GStreamer playback and export by default. Homebrew's
@@ -1070,8 +1071,8 @@ installer registers to open the installed executable. This route launches a
 normal Clocks window; it does not yet focus an already-running instance. The
 registered command ignores URI contents rather than forwarding them as arguments.
 
-For device verification, build `cargo build --locked -p ui-examples --example windows-host
---features notifications`. The helper accepts `history so.tilo.clocks` to inspect
+For device verification, build `cargo build --locked -p ui-examples --example windows-host`.
+The helper accepts `history so.tilo.clocks` to inspect
 only Clocks' notifications and `remove so.tilo.clocks TAG` to dismiss one test
 notification. `show ID TAG TITLE BODY` exercises the production SDK API; Windows
 may reject a settings query before the app's first notification is submitted.
@@ -1106,7 +1107,7 @@ $gstPrefix = 'C:/msys64/clangarm64' # Replace with your installation.
 $env:PATH = "$gstPrefix/bin;$env:PATH"
 $env:PKG_CONFIG = "$gstPrefix/bin/pkgconf.exe"
 $env:PKG_CONFIG_PATH = "$gstPrefix/lib/pkgconfig"
-cargo test --locked -p media --features decode,encode --lib
+cargo test --locked -p tilo-media --features decode,encode --lib
 cargo check --locked -p video-player --tests
 cargo test --locked -p video-player --test real_decode
 ```
@@ -1339,6 +1340,13 @@ golden='(package(tilo-ui) and test(typography_visual_regression::)) or (package(
 tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "not ($golden)"
 tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "$golden"
 ```
+
+The fixtures it caches live in `~/.cache/tilo/test-env` (`TILO_TEST_CACHE_DIR`),
+one set per generator revision. On Tilo OS your `tilo-cache-gc.timer` removes a
+set nothing has read for 14 days, never one a running test holds the lock of;
+`tilo os clean` does it now, `tilo os status` says what went, and
+`~/.config/tilo/cache-gc.toml` changes the policy (see
+`/etc/tilo/cache-gc.toml`).
 
 ### Tests and the process environment
 
@@ -1786,12 +1794,23 @@ checks all new commits and exact blobs in its comparison range, catching
 `--no-verify` commits and intermediate binary additions later deleted. It fails
 when history cannot be inspected. Existing exceptions remain migration work.
 
+The lines a commit adds carry no credential, merge-conflict marker or `dbg!`
+(`dbg!` only in Rust outside `vendor/`). One definition,
+`tools/policy/added_line_policy.py`, serves the hook, `scripts/scan-secrets.sh`
+and fast quality, which repeats it on every new commit, so `--no-verify` does
+not get past it. A line counts as added when no parent's version of the file
+holds it: an existing string does not fire again when its file is touched, and
+a merge answers only for its resolution. A credential-shaped string that is not
+one needs `example` or `placeholder` on the same line; that is the only
+exception.
+
 `pre-commit` checks the staged change the way CI's quality job would: rustfmt
 on the staged Rust files, workspace membership
 (`scripts/check-workspace-complete.sh`), the app text and shell copy contracts,
 lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
-CI (`.forgejo/workflows/check.yml`).
+CI (`.forgejo/workflows/check.yml`). [`docs/policies.md`](docs/policies.md) maps
+every rule to the hook or CI step that holds it.
 
 Committing a merge checks only what the resolution changed. A file staged
 exactly as the merged-in side has it already passed that side's checks, so the

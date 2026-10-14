@@ -612,7 +612,27 @@ impl PackageStore {
         })
     }
 
+    /// Ingest the package streamed from `tapp` and the payload blobs it
+    /// lacks, and materialise its tree. Its blobs are written as one
+    /// deferred-durability group: one database sync when the package is in,
+    /// not one per blob, which on a device's flash cost an fsync for each of
+    /// an app's hundreds of files. Nothing refers to the blobs until the
+    /// registry row is committed, after the caller's flush.
     fn ingest_with_content<F>(
+        &self,
+        content: &Content<'_>,
+        tapp: impl Read + Send,
+        admit: F,
+        fetcher: Option<&dyn BlobFetcher>,
+        keep_present: bool,
+    ) -> Result<(PackageMeta, Admission, usize, usize), StoreError>
+    where
+        F: FnOnce(&PackageMeta) -> Result<Admission, String> + Send,
+    {
+        content.deferred(|| self.ingest_deferred(content, tapp, admit, fetcher, keep_present))
+    }
+
+    fn ingest_deferred<F>(
         &self,
         content: &Content<'_>,
         tapp: impl Read + Send,
@@ -1688,6 +1708,65 @@ type = "gui"
                 crate::integrity::verify(&repeated.package, &repeated.package.payload_root)?
                     .is_intact()
             );
+            Ok(())
+        })();
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// An app of many files: its blobs are written with one database sync,
+    /// not one each.
+    #[test]
+    fn installing_a_package_syncs_its_blobs_once() {
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let identity = SigningIdentity::generate();
+            let payload = tempfile::tempdir()?;
+            std::fs::create_dir(payload.path().join("bin"))?;
+            std::fs::write(payload.path().join("bin/app"), vec![7; 4096])?;
+            std::fs::create_dir(payload.path().join("share"))?;
+            for index in 0..40_u32 {
+                std::fs::write(
+                    payload.path().join(format!("share/{index}.txt")),
+                    format!("file {index}").repeat(64),
+                )?;
+            }
+            let manifest = Manifest::from_toml_str(&format!(
+                r#"
+[package]
+id = "so.tilo.sync-test"
+version = "1.0.0"
+kind = "app"
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+[sandbox.net]
+mode = "off"
+[entrypoint]
+bin = "bin/app"
+type = "gui"
+"#,
+                hex::encode(identity.public_key_bytes())
+            ))?;
+            let packed = pack(payload.path(), &manifest, &identity)?;
+            let archive = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed))?;
+            let root = tempfile::tempdir()?;
+            let store = PackageStore::at(root.path());
+            let mut syncs = None;
+            let installed = store.install_with_flush(
+                archive.as_slice(),
+                |_| Ok(Admission::default()),
+                None,
+                |content| {
+                    syncs = Some(content.write_syncs());
+                    content::flush(content)
+                },
+            )?;
+            assert_eq!(installed.blobs, 41);
+            assert_eq!(installed.blobs_already_stored, 0);
+            assert_eq!(syncs, Some(1), "blob writes before the commit");
             Ok(())
         })();
         assert!(result.is_ok(), "{result:?}");

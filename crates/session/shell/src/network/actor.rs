@@ -7,6 +7,7 @@ pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
 #[cfg(test)]
 mod nearby_transfer_tests;
+pub(crate) mod room_governance;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -354,9 +355,15 @@ pub enum NetCmd {
     },
     NativeMedia(super::native_media::Command),
     NativeEnrollment(super::invite::enrollment_driver::Command),
+    /// Invoke a relay-governed room's own `tilo.workspace` governance, on the
+    /// room's relay session, and answer the relay's receipt.
+    RoomGovernance(Box<room_governance::Request>),
     /// Ask the room authority of the relay at `relay`, as `certificate`, from
     /// this device's own endpoint: the relay accepts only the certificate of
-    /// the endpoint it authenticated.
+    /// the endpoint it authenticated. Only what a room's governance actions
+    /// cannot carry goes this way: creating, listing and entering rooms on
+    /// a host, the invitation that enrolls this device into a room it does
+    /// not hold yet, and a member's own namespace claim and effect receipt.
     RoomAdmin {
         relay: EndpointAddr,
         certificate: DeviceCert,
@@ -997,7 +1004,9 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
     Some(match command {
         NetCmd::Connect { .. } => "dialling a peer",
         NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(_) => "dialling a host",
-        NetCmd::GovernorAction { .. } | NetCmd::RoomAdmin { .. } => "talking to a room's host",
+        NetCmd::GovernorAction { .. } | NetCmd::RoomAdmin { .. } | NetCmd::RoomGovernance(_) => {
+            "talking to a room's host"
+        }
         NetCmd::NativeEnrollment(_) => "enrolling a device",
         NetCmd::NativeMedia(_) => "a call",
         NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
@@ -1112,6 +1121,8 @@ struct ActorState {
     native_media: super::native_media::Registry,
     native_enrollment: super::invite::enrollment_driver::Registry,
     native_routes: native_ingress::Routes,
+    /// Governance invocations waiting for their room's relay to answer.
+    room_governance: room_governance::Waiting,
     /// The endpoint's relays, held back until a remote party appears.
     reachability: Reachability,
     gossip: Gossip,
@@ -1517,6 +1528,13 @@ impl ActorState {
                 self.endpoint.clone(),
                 self.host_identity.as_ref(),
             ),
+            Some(NetCmd::RoomGovernance(request)) => {
+                let (ws, host) = (request.ws, request.host);
+                if let Some(frame) = self.room_governance.send(*request, Instant::now()) {
+                    self.publish_remote_action(ws, host, NeighbourMsg::RemoteAction { frame })
+                        .await;
+                }
+            }
             Some(NetCmd::RoomAdmin {
                 relay,
                 certificate,
@@ -2606,9 +2624,12 @@ impl ActorState {
                 session,
                 event,
             }) => {
+                // A room's governance answering this device is taken here:
+                // its caller waits off the thread other answers go to.
                 if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
                     std::sync::Weak::ptr_eq(&session, &Arc::downgrade(&runtime.session))
-                }) {
+                }) && !self.room_governance.takes(ws, &event)
+                {
                     self.handle_host_event(ws, peer, event).await;
                 }
             }
@@ -3995,6 +4016,7 @@ async fn run(
         native_media: super::native_media::Registry::default(),
         native_enrollment: super::invite::enrollment_driver::Registry::default(),
         native_routes: native_ingress::Routes::default(),
+        room_governance: room_governance::Waiting::default(),
         gossip,
         internal_tx,
         topics: HashMap::new(),
@@ -7543,6 +7565,7 @@ mod tests {
         // A frame in the clear never leaves.
         let cleartext = tilo_relay_protocol::live::LiveFrame::Presence(
             tilo_relay_protocol::live::PresenceFrame {
+                place: None,
                 seq: 1,
                 sent_at_ms: 1,
                 focus: None,

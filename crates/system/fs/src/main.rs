@@ -141,6 +141,48 @@ mod share_mount_tests {
         }
     }
 
+    /// Every `fsync` asks for the namespace to be durable, so asking costs a
+    /// write only when the document changed since this process last wrote
+    /// it, by any path: the barrier itself or the full generation write.
+    #[test]
+    fn the_namespace_barrier_writes_only_a_changed_document() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("namespace.bin");
+        let namespace = Arc::new(Mutex::new(Namespace::new("barrier").unwrap()));
+        persist_namespace_changes(&namespace, &path).unwrap();
+        assert!(path.exists(), "the first barrier writes the document");
+
+        // Removing the file shows whether the next barrier writes.
+        std::fs::remove_file(&path).unwrap();
+        persist_namespace_changes(&namespace, &path).unwrap();
+        assert!(!path.exists(), "an unchanged document is not written again");
+
+        namespace
+            .lock()
+            .unwrap()
+            .create_dir(fs::ROOT_INO, "placed", 1)
+            .unwrap();
+        persist_namespace_changes(&namespace, &path).unwrap();
+        let mut reopened = load_namespace(&path, "restarted".into()).unwrap();
+        assert!(
+            reopened.lookup(fs::ROOT_INO, "placed").is_some(),
+            "a changed document is written before the barrier returns"
+        );
+
+        namespace
+            .lock()
+            .unwrap()
+            .create_dir(fs::ROOT_INO, "checkpointed", 2)
+            .unwrap();
+        persist_namespace_generation(&namespace, &path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        persist_namespace_changes(&namespace, &path).unwrap();
+        assert!(
+            !path.exists(),
+            "a generation written another way already satisfies the barrier"
+        );
+    }
+
     /// #4113. The persister writes the sync progress with each peer
     /// beside the namespace document, and a restart resumes it; damaged
     /// progress, or progress beside a document recovered from an older
@@ -2197,6 +2239,7 @@ async fn serve(
         MountConfig {
             checked_history_workspace: workspace_id,
             mount_point,
+            namespace_path: np.clone(),
             predictive_cache_root: cache_dir.clone(),
             thumb_dir,
             share_control_path: share_socket.clone().filter(|_| share_task.is_some()),
@@ -2443,6 +2486,7 @@ async fn mount(
         MountConfig {
             checked_history_workspace: workspace_id,
             mount_point,
+            namespace_path: np.clone(),
             predictive_cache_root: cache_dir,
             thumb_dir,
             share_control_path: None,
@@ -2616,6 +2660,7 @@ async fn mount_share(
         MountConfig {
             checked_history_workspace: credential.invite().workspace_id,
             mount_point,
+            namespace_path: Some(namespace_path.clone()),
             predictive_cache_root: Some(cache_dir.clone()),
             thumb_dir,
             share_control_path: None,
@@ -3309,29 +3354,59 @@ fn persist_namespace_generation(
     // of this path) are a valid document by construction; parsing them
     // again costs a full document load per save, under the namespace lock.
     // Anything else found on disk is still fully validated.
-    let last = persisted_digests()
+    let last = persisted_generations()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(path)
-        .copied();
+        .map(|generation| generation.digest);
     fs::durable_backup::write(path, &bytes, |candidate| {
         let candidate_digest = *blake3::hash(candidate).as_bytes();
         candidate_digest == digest
             || Some(candidate_digest) == last
             || Namespace::from_bytes("namespace-backup-validator", candidate).is_ok()
     })?;
-    persisted_digests()
+    // After `save()`, which may have completed record ids.
+    let heads = namespace.heads();
+    persisted_generations()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(path.to_path_buf(), digest);
+        .insert(path.to_path_buf(), PersistedGeneration { digest, heads });
     Ok(digest)
 }
 
-/// The digest of the namespace document this process last wrote per path.
-fn persisted_digests() -> &'static Mutex<std::collections::HashMap<PathBuf, [u8; 32]>> {
-    static DIGESTS: std::sync::OnceLock<Mutex<std::collections::HashMap<PathBuf, [u8; 32]>>> =
-        std::sync::OnceLock::new();
-    DIGESTS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+/// Persist the namespace at `path` unless the last document this process
+/// wrote there already holds it: the same heads mean the same document. An
+/// idle namespace costs a heads comparison, not a full save, which is what
+/// lets every `fsync` ask for it.
+fn persist_namespace_changes(namespace: &Arc<Mutex<Namespace>>, path: &Path) -> Result<()> {
+    let heads = namespace
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .heads();
+    let written = persisted_generations()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(path)
+        .is_some_and(|generation| generation.heads == heads);
+    if written {
+        return Ok(());
+    }
+    persist_namespace_generation(namespace, path).map(drop)
+}
+
+/// The namespace document this process last wrote to one path.
+struct PersistedGeneration {
+    digest: [u8; 32],
+    heads: Vec<automerge::ChangeHash>,
+}
+
+/// What this process last wrote per namespace path.
+fn persisted_generations() -> &'static Mutex<std::collections::HashMap<PathBuf, PersistedGeneration>>
+{
+    static WRITTEN: std::sync::OnceLock<
+        Mutex<std::collections::HashMap<PathBuf, PersistedGeneration>>,
+    > = std::sync::OnceLock::new();
+    WRITTEN.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 fn load_namespace(path: &Path, author: String) -> Result<Namespace> {
@@ -3415,8 +3490,9 @@ fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task
     let progress_path = peer_sync_path(&path);
     fs::namespace_persist::spawn_persister(namespace, move |namespace, pending| {
         let mut failed = fs::namespace_persist::Pending::default();
+        // A `fsync` may have written this document already.
         if pending.document
-            && let Err(error) = persist_namespace_generation(namespace, &path)
+            && let Err(error) = persist_namespace_changes(namespace, &path)
         {
             eprintln!("namespace persist to {} failed: {error}", path.display());
             failed.document = true;
@@ -3521,6 +3597,9 @@ fn fuse_worker_threads() -> usize {
 struct MountConfig {
     checked_history_workspace: uuid::Uuid,
     mount_point: PathBuf,
+    /// Where the namespace is persisted, if anywhere: `fsync`, `fsyncdir`
+    /// and native changesets write it there before they return.
+    namespace_path: Option<PathBuf>,
     predictive_cache_root: Option<PathBuf>,
     thumb_dir: Option<PathBuf>,
     share_control_path: Option<PathBuf>,
@@ -3556,6 +3635,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let MountConfig {
         checked_history_workspace,
         mount_point,
+        namespace_path: durable_namespace_path,
         predictive_cache_root,
         thumb_dir,
         share_control_path,
@@ -3578,6 +3658,9 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         replacement_transactions,
         mut rebind,
     } = services;
+    // Before anything is served: from here on a stop signal ends the mount
+    // through the final save instead of killing the process.
+    let mut stop = StopSignals::install()?;
     if !mount_point.exists() {
         std::fs::create_dir_all(&mount_point)?;
     }
@@ -3727,6 +3810,13 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             }
         });
 
+    // Both planes: the native plane after each changeset, FUSE on `fsync`
+    // and `fsyncdir`.
+    if let Some(path) = durable_namespace_path {
+        fs.set_durability_hook(Arc::new(move || {
+            persist_namespace_changes(&durable_namespace, &path).map_err(std::io::Error::other)
+        }));
+    }
     #[cfg(target_os = "linux")]
     if let Some((args, device)) = data_plane.as_ref()
         && let Some(cfg) = native_config(
@@ -3738,10 +3828,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             read_only,
         )?
     {
-        if let Some(path) = namespace_path(predictive_cache_root.as_deref()) {
-            fs.set_durability_hook(Arc::new(move || persist_now(&durable_namespace, &path)));
-        }
-        let outcome = run_native(fs, cfg, native_sync, rebind).await;
+        let outcome = run_native(fs, cfg, native_sync, rebind, &mut stop).await;
         if let Some(task) = predictive_policy_task {
             task.abort();
         }
@@ -3799,7 +3886,8 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     });
     println!("Mounting QuickFS at {}", mount_point.display());
 
-    // Exit cleanly on Ctrl-C or mount exit (don't hang a crash-looping service forever).
+    // Exit cleanly on a stop signal or mount exit (don't hang a
+    // crash-looping service forever).
     let outcome = tokio::select! {
         res = &mut mount_task => {
             match res {
@@ -3809,8 +3897,8 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             }
             MountOutcome::Unmounted
         },
-        _ = tokio::signal::ctrl_c() => {
-            println!("Interrupted, exiting...");
+        signal = stop.recv() => {
+            println!("{signal}, exiting...");
             let _ = unmount_tx.send(session_supervisor::SessionEvent::Unmount);
             let _ = (&mut mount_task).await;
             MountOutcome::Unmounted
@@ -3904,6 +3992,7 @@ async fn run_native(
     cfg: fs::native::NativeConfig,
     sync: Option<Arc<SyncHandle>>,
     mut rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+    stop: &mut StopSignals,
 ) -> Result<MountOutcome> {
     let fs = Arc::new(fs);
     let content = Arc::clone(&fs.hydrator);
@@ -3913,15 +4002,10 @@ async fn run_native(
         fs::native::NativePlane::start(cfg, fs, content, sync, runtime)
     })
     .await??;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     // Every way out is an event: nothing here wakes until one happens.
     let outcome = tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            println!("Interrupted, exiting...");
-            MountOutcome::Unmounted
-        }
-        _ = terminate.recv() => {
-            println!("Terminated, exiting...");
+        signal = stop.recv() => {
+            println!("{signal}, exiting...");
             MountOutcome::Unmounted
         }
         () = async {
@@ -3943,6 +4027,40 @@ async fn run_native(
     println!("Content received from peers: {ranged} bytes in ranges, {blobs} bytes as blobs");
     println!("Workspace unmounted.");
     Ok(outcome)
+}
+
+/// The signals that end a mount cleanly: SIGINT from a terminal, SIGTERM
+/// from systemd's stop (every shutdown, update reboot and service restart),
+/// SIGHUP when the controlling terminal goes away. The default action of
+/// each kills the process at once, before the caller's final namespace save,
+/// so a write acknowledged in the last [`fs::namespace_persist::QUIET`] was
+/// lost. A handler, once installed, stays installed for the life of the
+/// process: a signal that arrives after the mount already ended (an external
+/// unmount, then systemd's stop) no longer cuts that save short.
+struct StopSignals {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+    hangup: tokio::signal::unix::Signal,
+}
+
+impl StopSignals {
+    fn install() -> std::io::Result<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
+            hangup: signal(SignalKind::hangup())?,
+        })
+    }
+
+    /// Waits for the first stop signal since [`Self::install`] and names it.
+    async fn recv(&mut self) -> &'static str {
+        tokio::select! {
+            _ = self.interrupt.recv() => "Interrupted",
+            _ = self.terminate.recv() => "Terminated",
+            _ = self.hangup.recv() => "Hung up",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4361,6 +4479,30 @@ mod tests {
             let args = acl_args_from(&["--acl", path.to_str().unwrap(), "--identity", "abcd"]);
             let err = resolve_acl(&args, NODE_KEY).expect_err("a 2-byte identity is not a key");
             assert!(format!("{err:#}").contains("32 bytes"), "got: {err:#}");
+        }
+    }
+
+    /// systemd stops `fs.service` with SIGTERM; SIGHUP arrives when a
+    /// terminal running the daemon closes. Once a mount installed its stop
+    /// signals, each of them, like SIGINT, reaches the stop path, which
+    /// unmounts and makes the final namespace save, instead of killing the
+    /// process before it. (A signal whose default action still applied would
+    /// end this test binary here.)
+    #[tokio::test]
+    async fn stop_signals_reach_the_stop_path_instead_of_killing_the_process() {
+        let mut stop = StopSignals::install().unwrap();
+        for (signal, name) in [
+            (libc::SIGTERM, "Terminated"),
+            (libc::SIGHUP, "Hung up"),
+            (libc::SIGINT, "Interrupted"),
+        ] {
+            // SAFETY: raising a signal in this process, whose handler the
+            // install above put in place.
+            assert_eq!(unsafe { libc::raise(signal) }, 0);
+            let received = tokio::time::timeout(tilo_test_env::hang_bound(), stop.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{name} never reached the stop path"));
+            assert_eq!(received, name);
         }
     }
 }

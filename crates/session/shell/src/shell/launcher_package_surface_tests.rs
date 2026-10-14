@@ -72,6 +72,7 @@ fn install(root: &Path, id: &str, files: &[(&str, &[u8])]) -> InstalledApp {
         package_id: id.into(),
         display_name: id.into(),
         localized_names: BTreeMap::default(),
+        keywords: Vec::new(),
         category: None,
         version: "0.1.0".into(),
         manifest_path: meta.join("manifest.toml"),
