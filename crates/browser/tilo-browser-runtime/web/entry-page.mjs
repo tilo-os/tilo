@@ -502,8 +502,10 @@ export async function startEntryPage({mode}) {
     // on, reaches the console and the host's error report.
     status.textContent = failureMessage(error, {workspace: workspaceName, loaded: Boolean(runtime)});
     const known = admitting && remembering(() => rememberedRoom(admitting.scope));
-    // A declined invitation or a damaged link says nothing about the room.
-    if (known && !(error instanceof AdmissionError && error.code !== 'no-access')) {
+    // A declined or unusable invitation, a damaged link or this browser's
+    // device key held by another tab says nothing about the room.
+    const local = error?.name === 'CustodyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed'].includes(error.code));
+    if (known && !local) {
       // A room this browser was a member of: say what is known, and stop
       // reopening it on a bare entry.
       remembering(() => markUnavailable(known));
