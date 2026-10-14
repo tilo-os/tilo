@@ -113,14 +113,19 @@ optional = true
 
 [dependencies.wgpu]
 version = "29.0.3"
-# Tilo patch: on WebGPU the deferred pipelines' compiles are held by a
-# renderer that lives in shared statics, so wgpu's futures must be Send there
-# too (single-threaded wasm, as everywhere in Tilo).
 features = [
     "std",
     "wgsl",
-    "fragile-send-sync-non-atomic-wasm",
 ]
+optional = true
+default-features = false
+
+# Tilo patch: on WebGPU the deferred pipelines' compiles are held by a
+# renderer that lives in shared statics, so wgpu's futures must be Send there
+# too (single-threaded wasm, as everywhere in Tilo).
+[target.'cfg(target_arch = "wasm32")'.dependencies.wgpu]
+version = "29.0.3"
+features = ["fragile-send-sync-non-atomic-wasm"]
 optional = true
 default-features = false
 
