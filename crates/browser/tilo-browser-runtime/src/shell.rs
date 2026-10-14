@@ -429,8 +429,7 @@ impl BrowserShell {
                 self.chrome.here.borrow_mut().set_sharing(mode);
             }
             CollaboratorsHit::ToggleDetails(index) => {
-                let tree = self.handle.read(Clone::clone);
-                let id = self.chrome.people(&tree).get(index).map(|p| p.id.clone());
+                let id = self.people.details_target(index).map(str::to_owned);
                 self.expanded = if self.expanded == id { None } else { id };
             }
             CollaboratorsHit::PreviousPeople | CollaboratorsHit::NextPeople => {
@@ -898,7 +897,7 @@ impl Widget for BrowserShell {
         if self.people_open || self.people.wants_pointer_capture() {
             let on_bar = self
                 .cursor
-                .is_some_and(|point| point.y < tilo_desktop::topbar::TOPBAR_HEIGHT_PX);
+                .is_some_and(|point| point.y < f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
             let hit = self
                 .people
                 .handle_event(event, ctx, self.people_open, self.cursor);

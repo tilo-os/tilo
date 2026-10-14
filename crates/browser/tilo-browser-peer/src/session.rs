@@ -1628,13 +1628,9 @@ impl Task {
                 true
             }
             Command::LegacyInput(request, done) => {
-                Self::request_legacy_input(request, done, client);
-                true
+                Self::request_legacy_input(request, done, client)
             }
-            Command::Here(request, done) => {
-                Self::request_here(request, done, client);
-                true
-            }
+            Command::Here(request, done) => Self::request_here(request, done, client),
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
             Command::VoiceCall(room, request, op) => self.voice_call(room, request, op, client),
             Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
@@ -1754,11 +1750,12 @@ impl Task {
         }
     }
 
+    /// Always `true`: the session takes it whatever the answer.
     fn request_legacy_input(
         request: tilo_relay_protocol::legacy_window::InputRequest,
         done: InputCompletion,
         client: Option<&Link>,
-    ) {
+    ) -> bool {
         match client {
             Some(Link::Https(link)) => {
                 let http = link.client().clone();
@@ -1773,13 +1770,15 @@ impl Task {
             Some(Link::Iroh(_)) => done(Err("legacy input is sent over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
         }
+        true
     }
 
+    /// Always `true`: the session takes it whatever the answer.
     fn request_here(
         request: tilo_relay_protocol::web::HereRequest,
         done: HereCompletion,
         client: Option<&Link>,
-    ) {
+    ) -> bool {
         match client {
             Some(Link::Https(link)) => {
                 let http = link.client().clone();
@@ -1793,6 +1792,7 @@ impl Task {
             Some(Link::Iroh(_)) => done(Err("who is here is served over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
         }
+        true
     }
 
     fn request_rooms(

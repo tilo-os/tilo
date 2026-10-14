@@ -112,11 +112,8 @@ pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
 
 fn parse_rgb(hex: &str) -> Option<(u8, u8, u8)> {
     let hex = hex.strip_prefix('#')?;
-    if hex.len() < 6 || !hex.is_ascii() {
-        return None;
-    }
-    let byte = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
-    Some((byte(0)?, byte(2)?, byte(4)?))
+    let byte = |at: std::ops::Range<usize>| u8::from_str_radix(hex.get(at)?, 16).ok();
+    Some((byte(0..2)?, byte(2..4)?, byte(4..6)?))
 }
 
 fn line(text: &str, automatic: bool) -> Option<Line> {
