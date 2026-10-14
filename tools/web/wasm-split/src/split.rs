@@ -48,6 +48,8 @@ pub struct Splitter<'a> {
     main_graph: HashSet<Node>,
     call_graph: HashMap<Node, HashSet<Node>>,
     parent_graph: HashMap<Node, HashSet<Node>>,
+    /// Each defined data symbol's size, by its symbol index.
+    data_sizes: HashMap<usize, usize>,
 }
 
 /// What one split module or shared chunk defines, imports and deletes (in
@@ -150,6 +152,7 @@ impl<'a> Splitter<'a> {
             call_graph: Default::default(),
             parent_graph: Default::default(),
             shared_symbols: Default::default(),
+            data_sizes: Default::default(),
         };
 
         module.build_call_graph()?;
@@ -1091,10 +1094,14 @@ impl<'a> Splitter<'a> {
     /// Group the code several split modules reach, and the start module does
     /// not, into shared chunks, so each copy is downloaded once instead of
     /// with every module that needs it. Functions are grouped by exactly
-    /// which split modules reach them; a group of at least
-    /// [`MIN_CHUNK_BYTES`] of code is a chunk of its own, loaded only by
-    /// those modules, and the smaller groups share one chunk. A module loads
-    /// every chunk holding a function it reaches.
+    /// which split modules reach them. A group's weight is its code plus the
+    /// static data only those same modules reach, which goes with that code
+    /// (`crate::data`). A group of at least [`MIN_CHUNK_BYTES`] is a chunk
+    /// of its own, loaded only by those modules. A lighter group joins the
+    /// chunk of the fewest modules that include all of its own, so only
+    /// modules that already load that chunk fetch it; the rest share one
+    /// chunk. A module loads every chunk holding a function it reaches, so
+    /// any grouping is sound; this one only decides who downloads what.
     ///
     /// A chunk's functions that code outside the chunk calls or takes the
     /// address of get a slot in the function table, like the start module's
@@ -1104,7 +1111,7 @@ impl<'a> Splitter<'a> {
         let mut users: HashMap<Node, Vec<usize>> = HashMap::new();
         for (index, split) in self.split_points.iter().enumerate() {
             for item in split.reachable_graph.iter() {
-                if matches!(item, Node::Function(_)) && !self.main_graph.contains(item) {
+                if !self.main_graph.contains(item) {
                     users.entry(*item).or_default().push(index);
                 }
             }
@@ -1130,17 +1137,44 @@ impl<'a> Splitter<'a> {
             Node::DataSymbol(_) => 0,
         };
 
-        let mut groups: BTreeMap<Vec<usize>, Vec<Node>> = BTreeMap::new();
+        let mut groups: BTreeMap<Vec<usize>, (Vec<Node>, usize)> = BTreeMap::new();
         for (node, mut splits) in users {
             splits.sort_unstable();
-            groups.entry(splits).or_default().push(node);
+            let (functions, weight) = groups.entry(splits).or_default();
+            match node {
+                Node::Function(_) => {
+                    *weight += size(&node);
+                    functions.push(node);
+                }
+                Node::DataSymbol(index) => {
+                    *weight += self.data_sizes.get(&index).copied().unwrap_or(0);
+                }
+            }
+        }
+        groups.retain(|_, (functions, _)| !functions.is_empty());
+        let (heavy, light): (Vec<_>, Vec<_>) = groups
+            .into_iter()
+            .partition(|(_, (_, weight))| *weight >= MIN_CHUNK_BYTES);
+        let mut owners: Vec<Vec<usize>> = Vec::new();
+        for (splits, (functions, _)) in heavy {
+            owners.push(splits);
+            self.chunks.push(functions.into_iter().collect());
         }
         let mut small = HashSet::new();
-        for nodes in groups.into_values() {
-            if nodes.iter().map(size).sum::<usize>() >= MIN_CHUNK_BYTES {
-                self.chunks.push(nodes.into_iter().collect());
-            } else {
-                small.extend(nodes);
+        for (splits, (functions, _)) in light {
+            let host = owners
+                .iter()
+                .enumerate()
+                .filter(|(_, owner)| {
+                    splits
+                        .iter()
+                        .all(|split| owner.binary_search(split).is_ok())
+                })
+                .min_by_key(|(index, owner)| (owner.len(), *index))
+                .map(|(index, _)| index);
+            match host {
+                Some(index) => self.chunks[index].extend(functions),
+                None => small.extend(functions),
             }
         }
         if !small.is_empty() {
@@ -1188,6 +1222,11 @@ impl<'a> Splitter<'a> {
     /// that to our *new* module's symbols.
     fn build_call_graph(&mut self) -> Result<()> {
         let original = ModuleWithRelocations::new(self.original)?;
+        self.data_sizes = original
+            .data_symbols
+            .iter()
+            .map(|(index, symbol)| (*index, symbol.range.len()))
+            .collect();
 
         // Distinct functions can share a name in the name section (copies of
         // one generic shim), so a name maps to every function carrying it.
