@@ -325,8 +325,8 @@ mod tests {
         }
     }
 
-    fn naming(peer: u64) -> Option<serde_json::Value> {
-        Some(serde_json::json!({ super::OPENED_PEER_FIELD: peer }))
+    fn naming(peer: u64) -> serde_json::Value {
+        serde_json::json!({ super::OPENED_PEER_FIELD: peer })
     }
 
     fn accepted(state: &CapnpBrokerState, job: u64) -> bool {
@@ -349,7 +349,7 @@ mod tests {
         state.launch_published(4);
         assert!(accepted(&state, first) && accepted(&state, second));
         state.launch_published(5);
-        assert_eq!(answered(&state, second), naming(5));
+        assert_eq!(answered(&state, second), Some(naming(5)));
         assert!(accepted(&state, first), "peer 5 is not the first's");
 
         // A connection naming the first's ticket for another app or room
@@ -366,7 +366,7 @@ mod tests {
         assert!(accepted(&state, first));
         state.launch_connected(7, &connected(1, &room));
         state.launch_published(7);
-        assert_eq!(answered(&state, first), naming(7));
+        assert_eq!(answered(&state, first), Some(naming(7)));
     }
 
     #[test]
@@ -391,7 +391,7 @@ mod tests {
         state.expire_workspace_opens(now.checked_add(PUBLISH_WAIT).unwrap());
         assert_eq!(
             answered(&state, quiet),
-            naming(8),
+            Some(naming(8)),
             "an instance that publishes nothing is still the one started"
         );
         assert!(accepted(&state, silent));
