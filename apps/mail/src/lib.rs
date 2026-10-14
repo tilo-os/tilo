@@ -56,9 +56,12 @@ pub mod app;
 pub mod attachment_store;
 pub mod autoconfig;
 pub mod compose;
+#[cfg(feature = "live")]
+pub(crate) mod connect;
 pub mod engine;
 pub mod header;
 pub mod html_mail;
+pub mod html_text;
 pub mod i18n;
 pub mod list;
 pub mod model;

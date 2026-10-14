@@ -30,8 +30,10 @@ pub enum WorkArea {
     /// An 8 px band above and below the strips.
     #[default]
     Framed,
-    /// Window surfaces meet the bottom edge and `top` px separate them from
-    /// the top bar. A maximized window abuts the bar directly.
+    /// `top` px separate the window surfaces from the top bar and the same
+    /// margin separates them from the bottom edge, with nothing else in
+    /// between (the navigation leaves are zero-height and add no gap). A
+    /// maximized window abuts the bar and the bottom edge directly.
     Flush { top: f32 },
 }
 pub struct SurfaceChrome {
@@ -243,10 +245,16 @@ impl DesktopSurface {
                         .any(|g| g.maximized)
                 });
                 let column = column.with_vertical_padding(0.0);
+                // The zero-height navigation leaves ahead of the rows are
+                // separated by the column gap too; two stray gaps used to
+                // stack above the first strip on top of `top`.
+                let column = column.with_gap(0.0);
                 if maximized {
-                    column.with_gap(0.0)
+                    column
                 } else {
-                    column.with_extra_top_padding(top)
+                    column
+                        .with_extra_top_padding(top)
+                        .with_extra_bottom_padding(top)
                 }
             }
         };
@@ -540,6 +548,29 @@ impl DesktopSurface {
         }
         out
     }
+    /// A client that exits after refusing or deferring a close request
+    /// retires its still-visible window here, once. This must precede every
+    /// rebuild decision, which would otherwise drop the window unanimated.
+    pub fn retire_departed_requested_groups(&mut self, tree: &DesktopTree) {
+        for id in self.order.clone() {
+            let Some(row) = self.row_mut(id) else {
+                continue;
+            };
+            for group in &mut row.groups {
+                if group.close_was_requested()
+                    && !group.is_closing()
+                    && !tree.workspaces.iter().any(|w| {
+                        w.strips
+                            .iter()
+                            .any(|s| s.window_groups.iter().any(|g| g.id == group.id))
+                    })
+                {
+                    group.start_closing();
+                }
+            }
+        }
+    }
+
     /// Reconcile retained groups and hosts. A changed strip set requires rebuilding with host chrome.
     #[expect(
         clippy::too_many_lines,
@@ -560,6 +591,7 @@ impl DesktopSurface {
         if workspace.strips.iter().map(|s| s.id).collect::<Vec<_>>() != self.order {
             return ReconcileOutcome::RebuildRequired;
         }
+        self.retire_departed_requested_groups(tree);
         let empty = workspace
             .strips
             .iter()
@@ -988,6 +1020,52 @@ impl DesktopSurface {
         inherited.retain(|wake| std::sync::Arc::strong_count(wake) > 1);
         self.retained_wakes = inherited;
     }
+    /// The backdrop and the window content: everything [`Self::draw_bar`]
+    /// paints over. A host drawing the desktop in one scene draws what sits
+    /// between the windows and the top bar (the docked wheel, notices,
+    /// floating surfaces) after this and before [`Self::draw_bar`], the
+    /// order [`Self::draw_sections`] composes the same layers in.
+    pub fn draw_below_bar(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.external_navigation {
+            self.root.draw(scene, transform, text, theme, presence);
+            return;
+        }
+        for path in [&[0, 0][..], &[0, 1, 1]] {
+            if let Some(layer) = child_mut(self.root.as_mut(), path) {
+                layer.draw(scene, transform, text, theme, presence);
+            }
+        }
+    }
+
+    /// The top bar and the other displays' compact bars, over everything
+    /// [`Self::draw_below_bar`] drew: anchored chrome may extend below the
+    /// bar's band and must stay on top of window content. With external
+    /// navigation the root drew everything already.
+    pub fn draw_bar(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.external_navigation {
+            return;
+        }
+        for path in [&[0, 1, 0][..], &[0, 2]] {
+            if let Some(layer) = child_mut(self.root.as_mut(), path) {
+                layer.draw(scene, transform, text, theme, presence);
+            }
+        }
+    }
+
     /// Separate recordings preserve native retained scene and capture layering.
     pub fn draw_sections(
         &mut self,
@@ -1060,18 +1138,8 @@ impl Widget for DesktopSurface {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.external_navigation {
-            self.root.draw(scene, transform, text, theme, presence);
-            return;
-        }
-        // Window content paints under the top bar: anchored chrome may extend
-        // below the bar's band and must stay on top of it.
-        let layers: [&[usize]; 4] = [&[0, 0], &[0, 1, 1], &[0, 1, 0], &[0, 2]];
-        for path in layers {
-            if let Some(layer) = child_mut(self.root.as_mut(), path) {
-                layer.draw(scene, transform, text, theme, presence);
-            }
-        }
+        self.draw_below_bar(scene, transform, text, theme, presence);
+        self.draw_bar(scene, transform, text, theme, presence);
     }
     fn handle_event(
         &mut self,

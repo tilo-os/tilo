@@ -83,6 +83,7 @@ fn open_tab(tree: &mut WorkspaceTree, room: RoomId, salt: u16, title: &str) -> u
         active_tab: tab,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     });
     workspace.strips.push(strip);
     tree.sync_room_doc(room);

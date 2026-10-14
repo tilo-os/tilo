@@ -60,6 +60,7 @@ os/tests/internal_install_cycle_test.py
 os/tests/live_recovery.sh
 os/tests/boot_ux_invariants.sh
 os/tests/greeter_auth_security.sh
+os/tests/secret_service_single_provider.sh
 os/tests/repair_mode.sh
 os/tests/installer_profile_transport.sh
 os/tests/imager_release_invariants.sh

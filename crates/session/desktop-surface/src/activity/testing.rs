@@ -112,6 +112,7 @@ impl TestTree {
             active_tab,
             width: WindowWidth::Wide,
             maximized: false,
+            focus_history: Vec::new(),
         });
         let mut home = empty_workspace(ws_id, "Home", vec![strip]);
         home.collaborators = vec![

@@ -27,6 +27,11 @@ pub(crate) struct VerifiedCohort {
 }
 
 impl VerifiedCohort {
+    /// The applications this cohort selects into the session user's store.
+    pub(crate) fn ids(&self) -> impl Iterator<Item = &str> {
+        self.packages.iter().map(|package| package.row.id.as_str())
+    }
+
     /// A no-op requires every authenticated cohort package to be selected,
     /// not merely present in the system store. A held or missing selection
     /// takes the ordinary installer path instead.

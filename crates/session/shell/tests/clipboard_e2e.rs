@@ -1912,6 +1912,17 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         // focused seat before accepting the queued copy.
         assert!(clipboard.set_text(ClipboardTarget::Clipboard, "app caption"));
         assert!(clipboard.set_image(2, 1, &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]));
+        // Publication is queued to the app clipboard worker. Keep its seat
+        // focused until the actual protocol selection advertises the image;
+        // opening the sink first can revoke its copy serial before publication.
+        app.wait_until(
+            |s| {
+                s.clipboard_offer_mimes
+                    .iter()
+                    .any(|mime| mime == "image/png")
+            },
+            "the app clipboard worker never published its PNG selection",
+        );
 
         let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.app-sink");
         sink.assert_is_tilo_compositor();
@@ -6756,7 +6767,6 @@ fn a_copy_with_an_empty_internal_format_survives_the_client_disconnecting() {
 /// Closing the focused window gives keyboard focus back to the window that
 /// had it before: the next keystrokes must go somewhere.
 #[test]
-#[ignore = "known gap: DesktopTree::remove_tab (desktop-model/src/topology.rs) activates the tab now at the closed tab's index, not the one that was active before it opened, so a window that opened beside a shell tab hands focus to that tab"]
 fn closing_a_wayland_window_returns_keyboard_focus_to_the_previous_one() {
     let compositor = Compositor::start();
     let mut a = TestClient::new(compositor.connect(), "org.tilo.test.focus-return-a");
@@ -6773,7 +6783,6 @@ fn closing_a_wayland_window_returns_keyboard_focus_to_the_previous_one() {
 
 /// Same, with an X11 window (through satellite) as the one that closes.
 #[test]
-#[ignore = "known gap: DesktopTree::remove_tab (desktop-model/src/topology.rs) activates the tab now at the closed tab's index, not the one that was active before it opened, so a window that opened beside a shell tab hands focus to that tab"]
 fn closing_an_x11_window_returns_keyboard_focus_to_the_previous_wayland_window() {
     assert!(
         Path::new("/usr/bin/xwayland-satellite").is_file(),

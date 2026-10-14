@@ -43,7 +43,9 @@ pub struct ActiveEventLoop {
 impl ActiveEventLoop {
     pub fn create_custom_cursor(&self, source: CustomCursorSource) -> CustomCursor {
         let _ = source.inner;
-        CustomCursor { inner: super::PlatformCustomCursor }
+        CustomCursor {
+            inner: super::PlatformCustomCursor,
+        }
     }
 
     pub fn available_monitors(&self) -> VecDeque<MonitorHandle> {
@@ -74,7 +76,9 @@ impl ActiveEventLoop {
     pub fn raw_display_handle_rwh_06(
         &self,
     ) -> Result<rwh_06::RawDisplayHandle, rwh_06::HandleError> {
-        Ok(rwh_06::RawDisplayHandle::UiKit(rwh_06::UiKitDisplayHandle::new()))
+        Ok(rwh_06::RawDisplayHandle::UiKit(
+            rwh_06::UiKitDisplayHandle::new(),
+        ))
     }
 
     pub(crate) fn set_control_flow(&self, control_flow: ControlFlow) {
@@ -129,7 +133,7 @@ fn map_user_event<T: 'static>(
             for event in receiver.try_iter() {
                 (handler)(Event::UserEvent(event), window_target);
             }
-        },
+        }
     }
 }
 
@@ -259,7 +263,10 @@ impl<T: 'static> EventLoop<T> {
             mtm,
             sender,
             receiver,
-            window_target: RootActiveEventLoop { p: ActiveEventLoop { mtm }, _marker: PhantomData },
+            window_target: RootActiveEventLoop {
+                p: ActiveEventLoop { mtm },
+                _marker: PhantomData,
+            },
             _did_finish_launching_observer,
             _did_become_active_observer,
             _will_resign_active_observer,
@@ -292,7 +299,10 @@ impl<T: 'static> EventLoop<T> {
             >(Box::new(handler))
         };
 
-        let handler = EventLoopHandler { handler, event_loop: self.window_target };
+        let handler = EventLoopHandler {
+            handler,
+            event_loop: self.window_target,
+        };
 
         app_state::will_launch(self.mtm, handler);
 
@@ -391,7 +401,9 @@ impl<T> EventLoopProxy<T> {
     }
 
     pub fn send_event(&self, event: T) -> Result<(), EventLoopClosed<T>> {
-        self.sender.send(event).map_err(|::std::sync::mpsc::SendError(x)| EventLoopClosed(x))?;
+        self.sender
+            .send(event)
+            .map_err(|::std::sync::mpsc::SendError(x)| EventLoopClosed(x))?;
         unsafe {
             // let the main thread know there's a new event
             CFRunLoopSourceSignal(self.source);
@@ -439,7 +451,7 @@ fn setup_control_flow_observers() {
             #[allow(non_upper_case_globals)]
             match activity {
                 kCFRunLoopBeforeWaiting => app_state::handle_main_events_cleared(mtm),
-                kCFRunLoopExit => {}, // may happen when running on macOS
+                kCFRunLoopExit => {} // may happen when running on macOS
                 _ => unreachable!(),
             }
         }
@@ -454,7 +466,7 @@ fn setup_control_flow_observers() {
             #[allow(non_upper_case_globals)]
             match activity {
                 kCFRunLoopBeforeWaiting => app_state::handle_events_cleared(mtm),
-                kCFRunLoopExit => {}, // may happen when running on macOS
+                kCFRunLoopExit => {} // may happen when running on macOS
                 _ => unreachable!(),
             }
         }

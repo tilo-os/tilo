@@ -318,7 +318,10 @@ impl DocOwner {
                 WriteOp::Replace(bytes),
                 writer.then(|| self.actor.to_bytes()),
             )?;
-            match self.store.flush(Some(&self.key)) {
+            // Never waits on the disk: this runs on the thread that opens the
+            // record. The store commits on its own thread, and the pending
+            // write below is confirmed through `durability`.
+            match self.store.flush_without_waiting(&self.key) {
                 Ok(()) | Err(SeamError::Pending(_)) => {}
                 Err(error) => return Err(error.into()),
             }
@@ -353,7 +356,12 @@ impl DocOwner {
                 }
             }
         } else {
-            let durable = match self.store.flush(Some(&self.key)) {
+            // Bytes that were only read need their file and ancestors synced
+            // before they count as durable. That is the store's thread's work,
+            // not the opener's: `Pending` leaves the document usable at once and
+            // the writer confirms it (`confirmed_seed`) when the store reports
+            // it settled.
+            let durable = match self.store.flush_without_waiting(&self.key) {
                 Ok(()) => Some(heads.clone()),
                 // Read, but its host has not committed it yet (a peer's change
                 // stored for this record a moment ago): it is the document,
@@ -625,12 +633,31 @@ impl DocWriter {
         Ok(())
     }
 
+    /// The heads of the document as it was accepted, once the store has made
+    /// those bytes durable in the background; `None` before, or when the
+    /// writer has moved on from them.
+    fn confirmed_seed(&self, progress: &Progress) -> Option<Vec<ChangeHash>> {
+        let owner = self.owner.as_ref()?;
+        if progress.durable.is_some() || !progress.inflight.is_empty() {
+            return None;
+        }
+        let accepted = owner.accepted.borrow();
+        let accepted = accepted.as_ref()?;
+        (accepted.durable.is_none()
+            && accepted.pending.is_none()
+            && owner.store.is_settled(&owner.key))
+        .then(|| accepted.heads.clone())
+    }
+
     /// Fold resolved writes into the durable heads and sticky error.
     fn settle(&self) {
         let Some(owner) = &self.owner else {
             return;
         };
         let mut progress = self.progress.borrow_mut();
+        if let Some(heads) = self.confirmed_seed(&progress) {
+            progress.durable = Some(heads);
+        }
         while let Some(front) = progress.inflight.front() {
             match owner.store.durability(&owner.key, front.revision) {
                 Durability::Pending => break,
@@ -659,7 +686,10 @@ impl DocWriter {
     pub fn durability_snapshot(&self) -> DurabilitySnapshot {
         let progress = self.progress.borrow();
         let mut snapshot = DurabilitySnapshot {
-            durable_heads: progress.durable.clone(),
+            durable_heads: progress
+                .durable
+                .clone()
+                .or_else(|| self.confirmed_seed(&progress)),
             error: progress.error.clone(),
         };
         let Some(owner) = &self.owner else {
@@ -826,6 +856,58 @@ mod tests {
             let loaded = owner.load().unwrap().expect("stored document");
             owner.accept(loaded).unwrap()
         }
+    }
+
+    /// Opening a record that is already stored must never wait on the disk:
+    /// it runs on the compositor's thread, where a directory sync that blocks
+    /// on a busy journal stops every window. The store's own thread makes the
+    /// read bytes durable, and the writer learns when it has.
+    #[test]
+    fn accepting_a_stored_document_syncs_on_the_stores_thread_not_the_openers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("profile");
+        let key = StorageKey::record("so.tilo.test", "room", "opened");
+        {
+            let store: Rc<dyn DurableStore> =
+                Rc::new(FsStore::with_debounce(&root, Duration::ZERO));
+            let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
+            let mut doc = owner.new_document().unwrap();
+            let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+            doc.splice_text(&body, 0, 0, "stored").unwrap();
+            let writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+            writer.try_flush().unwrap();
+        }
+
+        let fs = Rc::new(FsStore::with_debounce(&root, Duration::ZERO));
+        let store: Rc<dyn DurableStore> = fs.clone();
+        let opener = std::thread::current().id();
+        let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key).unwrap());
+        let loaded = owner.load().unwrap().expect("stored document");
+        let mut doc = owner.accept(loaded).unwrap();
+        let writer = DocWriter::try_start(&owner).unwrap();
+        assert_eq!(
+            text(&doc, "body"),
+            "stored",
+            "the document is usable at once"
+        );
+        assert!(
+            !fs.faults().sync_threads.contains(&opener),
+            "opening synced a file or directory on the opening thread"
+        );
+
+        let started = std::time::Instant::now();
+        while writer.durability_snapshot().durable_heads != Some(doc.get_heads()) {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the store never confirmed the opened document durable"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let sync_threads = fs.faults().sync_threads.clone();
+        assert!(
+            !sync_threads.is_empty() && !sync_threads.contains(&opener),
+            "the sync belongs to the store's thread: {sync_threads:?}"
+        );
     }
 
     fn text(doc: &AutoCommit, key: &str) -> String {

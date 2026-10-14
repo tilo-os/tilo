@@ -318,3 +318,59 @@ fn signed_bundles_verify_and_catch_a_tampered_root() {
         }
     }
 }
+
+/// Payload hashing is spread over threads. A bundle of many files must still
+/// have every one of them hashed, and one changed byte in any of them (the
+/// first, a middle one, the last) must still be refused.
+#[test]
+fn a_bundle_of_many_files_is_hashed_whole_and_refuses_a_change_in_any_of_them() {
+    let host = tempfile::tempdir().unwrap();
+    fake_x86_64_host(host.path());
+    let libs_dir = tempfile::tempdir().unwrap();
+    let libs: Vec<_> = (0..40)
+        .map(|n| {
+            let path = libs_dir.path().join(format!("libextra{n:02}.so"));
+            let bytes: Vec<u8> = (0..=250u8).cycle().skip(n).take(1000 + n * 7919).collect();
+            fs::write(&path, bytes).unwrap();
+            path
+        })
+        .collect();
+    let out = tempfile::tempdir().unwrap();
+    let manifest = build_bundle_with(
+        out.path(),
+        "many",
+        &BuildOptions {
+            from: Some(host.path()),
+            arch: Some("x86_64"),
+            identity: None,
+            extra_libs: &libs,
+        },
+    )
+    .unwrap();
+    assert!(manifest.files.len() > 40);
+    let (_, check) =
+        runtime_bundle::verify_bundle_verity_with(out.path(), &VerifyOptions::default()).unwrap();
+    assert_eq!(check.hashed, manifest.files.len(), "every file is hashed");
+    let total: u64 = manifest.files.iter().map(|f| f.size).sum();
+    assert_eq!(check.hashed_bytes, total, "every byte is read");
+
+    for victim in [
+        "lib/libextra00.so",
+        "lib/libextra20.so",
+        "lib/libextra39.so",
+    ] {
+        let path = out.path().join(victim);
+        let original = fs::read(&path).unwrap();
+        let mut changed = original.clone();
+        let middle = changed.len() / 2;
+        changed[middle] ^= 1;
+        fs::write(&path, &changed).unwrap();
+        let error = verify_bundle(out.path()).unwrap_err();
+        assert!(
+            matches!(error, BundleError::HashMismatch { .. }),
+            "{victim}: {error:?}"
+        );
+        fs::write(&path, original).unwrap();
+        verify_bundle(out.path()).unwrap();
+    }
+}

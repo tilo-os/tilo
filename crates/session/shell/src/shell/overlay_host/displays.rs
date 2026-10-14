@@ -348,6 +348,13 @@ impl ShellOverlayHost {
             .collect()
     }
 
+    fn fullscreen_lane_area(&self, assignment: &HashMap<GroupId, u32>) -> Option<(u32, Rect)> {
+        let group = self.chrome.as_ref()?.borrow().fullscreen_group()?;
+        let output = *assignment.get(&group)?;
+        let display = self.outputs.iter().find(|display| display.id == output)?;
+        Some((output, display.rect()))
+    }
+
     /// Push the partition to every row and place the top bars: the full
     /// one on the primary display, a compact one on each other display.
     /// Cheap when nothing changed, so it runs every layout pass.
@@ -391,10 +398,11 @@ impl ShellOverlayHost {
             .collect();
         let rects: Vec<Rect> = rows.iter().map(|(_, rect)| *rect).collect();
         let bands = strip_bands(&rects, self.rect.y0 + own_top_band());
+        let fullscreen_area = self.fullscreen_lane_area(&assignment);
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // A row of a strip outside the active workspace keeps one
             // continuous row until the next rebuild tears it down.
-            let lanes = rows
+            let mut lanes = rows
                 .iter()
                 .position(|(id, _)| *id == strip_id)
                 .and_then(|k| bands.get(k))
@@ -402,6 +410,16 @@ impl ShellOverlayHost {
                 .unwrap_or_default();
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
+            // Fullscreen owns the output, not the previous tiled strip band.
+            // Keeping that band leaves the client below the hidden top bar.
+            if row.is_fullscreen()
+                && let Some((output, area)) = fullscreen_area
+                && let Some(lane) = lanes.iter_mut().find(|lane| lane.output == output)
+            {
+                lane.area = area;
+                lane.usable = area.width();
+                lane.leading = false;
+            }
             row.set_lanes(&lanes, &assignment);
             if let Some(focused) = focused {
                 row.set_focus_output(focused);

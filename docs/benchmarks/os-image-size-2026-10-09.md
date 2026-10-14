@@ -61,8 +61,8 @@ deployed directories on x86_64:
 
 The largest packages are `wine-core` (1,420,588,763 B) and `wine-mono`
 (318,703,141 B). aarch64 carries `/usr/lib/tilo/windows-runners` and
-`/usr/share/virtio-win` as well. Shipping this stack as a downloaded system
-extension would take it out of the image.
+`/usr/share/virtio-win` as well. This stack now ships as a downloaded
+system extension (tilo-windows-compat), out of the image.
 
 **The font catalog was in three layers.** The same 54.4 MB was in the runtime
 bundle's `lib/fonts`, in `/usr/share/tilo/font-catalogs/<sha>` and in

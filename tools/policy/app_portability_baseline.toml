@@ -138,8 +138,8 @@ D2 = 5
 [apps.terminal]
 D1 = 4
 D2 = 3
-R1 = 45
-R2 = 53
+R1 = 44
+R2 = 48
 R3 = 3
 
 [apps.totp]

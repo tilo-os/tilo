@@ -68,6 +68,10 @@ fn canonical_image_store(
     ui::ImageStore::with_max_dimension(&fetcher, 2048)
 }
 
+/// How long referenced image bytes that have not arrived wait before the
+/// notebook is read for them again.
+const CANONICAL_ASSETS_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
 type ImportedAssets = Vec<(String, Vec<u8>)>;
 
 /// One block of a note as the window's index keeps it.
@@ -292,10 +296,9 @@ pub struct NotesApp {
     /// The note's save + page/word status, surfaced on the save status
     /// surface (see `save_status`) instead of a permanent strip.
     status: StatusModel,
-    /// The framework's save status surface: "Saving…" and "Saved" (with
-    /// the note's length) in a transient bubble in the bottom-trailing
-    /// corner, shown again on a page switch and while the pointer rests
-    /// there; a failed save as an error toast with "Try again".
+    /// The framework's save status surface: autosave shows nothing; a
+    /// failed save is an error toast with "Try again", and the save that
+    /// ends it a one-time "Saved" bubble in the bottom-trailing corner.
     save_surface: ui::SaveStatusSurface,
     /// "Try again" was chosen on a failed save; the host drains it.
     save_retry: bool,
@@ -486,6 +489,8 @@ impl NotesApp {
             })
         });
         let rect = editor.get_rect();
+        let sidebar_drawer_open = self.shell.geometry().sidebar == SidebarPlacement::Drawer
+            && self.shell.is_sidebar_open();
         let active_line = editor
             .focused_index()
             .and_then(|index| editor.blocks().get(index));
@@ -511,7 +516,8 @@ impl NotesApp {
             "active_line_disabled": active_line.is_some_and(|block| block.line.is_disabled()),
             "editor_read_only": editor.is_read_only(),
             "editor_composing": editor.is_composing(),
-            "editor_route_available": self.main_node.is_some() && self.main.editor_route_available(),
+            "editor_route_available": self.main_node.is_some() && self.main.editor_route_available() && !sidebar_drawer_open,
+            "sidebar_drawer_open": sidebar_drawer_open,
             "sidebar_renaming": self.sidebar.is_renaming(),
             "sidebar_menu_open": self.sidebar.menu_is_open(),
             "editor_menu_open": editor.slash_menu_visible() || editor.link_popover().is_visible(),
@@ -707,9 +713,6 @@ impl NotesApp {
                 ui::record::RecordSaveStatus::Failed(_) => SaveStatus::Failed,
                 ui::record::RecordSaveStatus::MemoryOnly => SaveStatus::SessionOnly,
             });
-        let announce = self.status.state().save_status != save_status
-            || self.status.state().page_path != path
-            || self.status.state().page_count != self.workspace.pages().len();
         let save_problem = match &self.record_save_status {
             ui::record::RecordSaveStatus::Failed(reason) if self.shots_save_status.is_none() => {
                 Some(reason.clone())
@@ -723,15 +726,11 @@ impl NotesApp {
             page_count: self.workspace.pages().len(),
             word_count,
         });
-        // A failure stays on the surface until the note saves or it is
-        // dismissed; "Saving…" and "Saved" pass. Counts stay live while the
-        // bubble shows, but a new word must not reopen it.
-        let now = ui::time::now();
-        self.save_surface.set_detail(self.status_detail());
-        self.save_surface.set(self.save_state(), now);
-        if announce {
-            self.save_surface.poke(now);
-        }
+        // Autosave is the system's job and shows nothing: only a failure
+        // (until the note saves or it is dismissed) and the save that ends
+        // it reach the screen. The state and counts stay in the
+        // accessibility status.
+        self.save_surface.set(self.save_state(), ui::time::now());
     }
 
     /// The save state the surface reports.
@@ -745,17 +744,8 @@ impl NotesApp {
         }
     }
 
-    /// What the saved bubble adds: the note's length, where the window
-    /// has room for it. A phone keeps the bubble to the save state.
-    fn status_detail(&self) -> Option<String> {
-        if self.shell.geometry().sidebar != SidebarPlacement::Docked {
-            return None;
-        }
-        self.status.word_text()
-    }
-
-    /// `--shots`: stage the status bubble as a change just happened, so a
-    /// still frame captures the floating chip.
+    /// `--shots`: stage the save surface as a change just happened, so a
+    /// still frame captures what it shows (nothing, for autosave).
     pub fn stage_status_bubble(&mut self) {
         self.refresh_status();
         self.save_surface.poke(ui::time::now());
@@ -1023,6 +1013,11 @@ impl NotesApp {
             };
             let result = fit_image_asset(request.image.bytes).and_then(|bytes| {
                 let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+                // The pasted picture is drawn from here at once, whatever the
+                // content store does with the notebook's copy.
+                if let Ok(mut assets) = self.canonical_assets.write() {
+                    assets.insert(source.clone(), bytes.clone());
+                }
                 // Replaces the selection the paste was made over, or goes
                 // after the block the caret was in, as one action.
                 let edit = self
@@ -1710,6 +1705,21 @@ impl NotesApp {
 
     /// Open note `id` on the next sync, where its body binds.
     fn open_page(&mut self, id: PageId) {
+        // Explicit note navigation gives the body the keyboard. Keep a docked
+        // tree visible, but dismiss its modal drawer, including saved intent
+        // that has not yet been resolved against the first measured width.
+        self.pending_responsive_view = Some((false, false));
+        if self.shell.geometry().sidebar == SidebarPlacement::Drawer {
+            self.set_drawer_open(false);
+        }
+        self.sidebar.set_focus(false);
+        let outgoing_page = self.main.page_id();
+        self.main.focus_note_body();
+        if let Some(new_title) = self.main.take_title_rename()
+            && let Some(id) = outgoing_page
+        {
+            self.pending_events.push(OutEvent::Rename { id, new_title });
+        }
         self.pending_events.push(OutEvent::Select(id));
     }
 
@@ -1737,7 +1747,7 @@ impl NotesApp {
         let manifest = &self.workspace.notebook.images;
         let retry = self
             .canonical_assets_waiting
-            .is_some_and(|since| since.elapsed() >= std::time::Duration::from_secs(1));
+            .is_some_and(|since| since.elapsed() >= CANONICAL_ASSETS_RETRY);
         if *manifest == self.canonical_asset_manifest && !retry {
             return;
         }
@@ -1745,23 +1755,43 @@ impl NotesApp {
         let snapshot = crate::notebook::image_snapshot(&self.workspace.notebook, |digest| {
             content.read(digest)
         });
-        let waiting = snapshot.len() < manifest.len();
         let arrived = self
             .canonical_assets
             .read()
             .is_ok_and(|assets| snapshot.keys().any(|key| !assets.contains_key(key)));
+        let mut waiting = true;
         if let Ok(mut assets) = self.canonical_assets.write() {
-            *assets = snapshot;
+            // Bytes this window put in itself (a paste) stay while the
+            // notebook still names them, even where the store would not
+            // serve them back.
+            assets.retain(|key, _| {
+                key.strip_prefix("asset:")
+                    .is_some_and(|digest| manifest.contains_key(digest))
+            });
+            assets.extend(snapshot);
+            waiting = manifest
+                .keys()
+                .any(|digest| !assets.contains_key(&format!("asset:{digest}")));
         }
         self.canonical_asset_manifest = manifest.clone();
         self.canonical_assets_waiting = waiting.then(ui::time::now);
-        if arrived && retry {
-            // The image store remembers a failed load; a fresh store draws the
-            // images that were placeholders while their bytes were on the way.
-            self.main
-                .set_image_store(Some(canonical_image_store(&self.canonical_assets)));
-            self.self_dirty = true;
+        if arrived {
+            // The image store remembers a failed load, and an image block is
+            // laid out (and asked for) in the frame it appears, before its
+            // bytes were in the snapshot: forget the failures so the images
+            // that were placeholders are fetched again.
+            if let Some(store) = self.main.image_store()
+                && store.forget_failed()
+            {
+                self.self_dirty = true;
+            }
         }
+    }
+
+    /// When the images still on their way are looked for again.
+    fn canonical_assets_retry_deadline(&self) -> Option<ui::time::Instant> {
+        self.canonical_assets_waiting
+            .map(|since| since + CANONICAL_ASSETS_RETRY)
     }
 
     fn drain_title_rename(&mut self, edits: &mut ui::widget::Edits<'_>) {
@@ -2031,6 +2061,23 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn sidebar_menu_open_for_test(&self) -> bool {
         self.sidebar.context_menu_open_for_test()
+    }
+
+    /// Test hook: whether the picture `source` (`asset:<digest>`) has
+    /// decoded in the notebook's image store, once its loads settle.
+    #[doc(hidden)]
+    pub fn image_decoded_for_test(&self, source: &str) -> bool {
+        self.main.image_store().is_some_and(|store| {
+            store.block_until_idle(ui::time::Duration::from_secs(2));
+            store.get(source).is_some()
+        })
+    }
+
+    /// Test hook: pictures still fetching or decoding in the notebook's image
+    /// store.
+    #[doc(hidden)]
+    pub fn images_pending_for_test(&self) -> usize {
+        self.main.image_store().map_or(0, ui::ImageStore::pending)
     }
 
     /// Test hook: whether the editor's `/` block menu is visible.
@@ -2305,10 +2352,12 @@ impl Widget for NotesApp {
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= ui::time::now());
         self.self_dirty |= feedback_expired;
+        // A dragged block's pointer at the page's edge scrolls the page.
+        let dragged = self.main.autoscroll_block_drag();
         // The retained shell owns queued header views, responsive bindings
         // and navigation. It participates in the same lifecycle as the
         // separately projected notebook content in its column slots.
-        self.shell.update(state, path) || feedback_expired
+        self.shell.update(state, path) || feedback_expired || dragged
     }
 
     fn native_input_snapshot(
@@ -2585,11 +2634,15 @@ impl Widget for NotesApp {
         // / fading, so it hides itself without needing a stray pointer event.
         // Idle otherwise (no idle redraw spin).
         (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
+            || self.main.block_drag_scrolling()
             || self.shell.needs_animation_frame()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let mut earliest = self.save_surface.next_wake_deadline();
+        if let Some(deadline) = self.canonical_assets_retry_deadline() {
+            earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
+        }
         for child in self.children() {
             if let Some(deadline) = child.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
@@ -3872,13 +3925,13 @@ mod tests {
         let mut host =
             ui::prelude::TestApp::<crate::NotesShell>::open_data_dir(profile.path()).unwrap();
         host.flush().unwrap();
+        // Notes keeps one record per room: the room's own document.
+        assert!(host.record().is_package_primary());
         let directory = profile
             .path()
             .join("so.tilo.notes")
             .join("rooms")
-            .join("personal")
-            .join("records")
-            .join(host.record().storage_key());
+            .join("personal");
         assert!(directory.is_dir(), "observe the real record directory");
         let backup = profile.path().join("held-record");
         std::fs::rename(&directory, &backup).unwrap();
@@ -3958,6 +4011,15 @@ mod tests {
             app.refresh_status();
             assert_eq!(app.status.state().word_count, Some(3));
             assert_eq!(app.save_surface.failure(), None);
+            for status in [SaveStatus::Saving, SaveStatus::Saved].repeat(3) {
+                app.shots_save_status = Some(status);
+                app.refresh_status();
+                assert!(
+                    !app.save_surface.is_visible(ui::time::now()),
+                    "autosave must not flash a bubble while typing"
+                );
+            }
+            assert_eq!(app.save_surface.state(), Some(&ui::SaveState::Saved));
 
             app.shots_save_status = Some(SaveStatus::Failed);
             app.refresh_status();
@@ -4002,9 +4064,12 @@ mod tests {
         {
             let (mut app, state, _tmp, _) = app_seeded_into_doc();
             app.theme.reduce_motion = false;
+            // The only transient left: the save that ends a failure.
+            app.shots_save_status = Some(SaveStatus::Failed);
+            app.refresh_status();
             app.shots_save_status = Some(SaveStatus::Saved);
             app.refresh_status();
-            app.save_surface.poke(ui::time::now());
+            assert!(app.save_surface.is_visible(ui::time::now()));
             assert!(app.needs_animation_frame(), "normal fade requests frames");
 
             app.theme.reduce_motion = true;

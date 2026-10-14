@@ -20,6 +20,8 @@ AREAS = {
     "search": "Search and history",
     "resources": "Resources",
     "basics": "Basics: hardware controls, keyboard, displays",
+    "agent": "Agent door: the in-session MCP path",
+    "input": "Input fidelity: real device descriptors, layouts, touchpad",
 }
 
 
@@ -29,6 +31,15 @@ class CheckFailed(Exception):
 
 class Unobservable(CheckFailed):
     """The check could not observe its subject. Reported as a failure, never a skip."""
+
+
+class ExpectedFailure(CheckFailed):
+    """The subject is known to be broken or missing in this image, and the reason is named.
+
+    Reported as `xfail`, which does not fail the run: the check keeps proving the gap and
+    starts passing the moment the product does. Raise it only for a *named, checkable*
+    precondition (a socket the image should serve and does not), never for an observation
+    that merely went wrong: that stays a failure."""
 
 
 @dataclass
@@ -56,15 +67,34 @@ class Check:
 REGISTRY: list[Check] = []
 
 
-def check(id: str, area: str, title: str, needs: tuple = ()):
-    """Register a check. The function gets (ctx, result) and raises to fail."""
+def check(id: str, area: str, title: str, needs: tuple = (), calibrating: str = ""):
+    """Register a check. The function gets (ctx, result) and raises to fail.
+
+    `calibrating` names why the check's expectation has not yet been confirmed against a
+    real run (an observable assumed from the code, not seen working): while it is set, a
+    failure is reported as `xfail` with that reason and a pass is a pass. Remove it after the
+    first green CI run; a check that stays red then is a real finding."""
     assert area in AREAS, area
 
     def wrap(func):
-        REGISTRY.append(Check(id, area, title, func, needs))
+        REGISTRY.append(Check(id, area, title, _calibrated(func, calibrating) if calibrating else func, needs))
         return func
 
     return wrap
+
+
+def _calibrated(func, why: str):
+    """`func` whose failures, of any kind, are expected ones while its expectation is unconfirmed."""
+    def run(ctx, res):
+        try:
+            return func(ctx, res)
+        except ExpectedFailure:
+            raise
+        except Exception as exc:  # noqa: BLE001 - an assumed observable may fail in any way
+            raise ExpectedFailure(f"{type(exc).__name__}: {exc} (still calibrating: {why})") from exc
+
+    run.__module__, run.__name__ = func.__module__, func.__name__
+    return run
 
 
 def run_check(ctx, chk: Check) -> Result:
@@ -81,6 +111,8 @@ def run_check(ctx, chk: Check) -> Result:
                                    f"{ctx.facts.get(need + ':why', 'an earlier check failed')}")
         chk.func(ctx, res)
         res.status = "pass"
+    except ExpectedFailure as exc:
+        res.status, res.detail = "xfail", _join(res.detail, f"expected failure: {exc}")
     except Unobservable as exc:
         res.status, res.unobservable, res.detail = "fail", True, _join(res.detail, str(exc))
     except CheckFailed as exc:

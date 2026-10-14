@@ -65,7 +65,7 @@ impl WindowArea {
         match self {
             WindowArea::Outer => {
                 win_to_err(unsafe { GetWindowRect(hwnd, &mut rect) })?;
-            },
+            }
             WindowArea::Inner => unsafe {
                 let mut top_left = mem::zeroed();
 
@@ -118,7 +118,10 @@ pub fn get_cursor_clip() -> Result<RECT, io::Error> {
 /// Note that calling this will automatically dispatch a `WM_MOUSEMOVE` event.
 pub fn set_cursor_clip(rect: Option<RECT>) -> Result<(), io::Error> {
     unsafe {
-        let rect_ptr = rect.as_ref().map(|r| r as *const RECT).unwrap_or(ptr::null());
+        let rect_ptr = rect
+            .as_ref()
+            .map(|r| r as *const RECT)
+            .unwrap_or(ptr::null());
         win_to_err(ClipCursor(rect_ptr))
     }
 }
@@ -168,7 +171,7 @@ pub(crate) fn to_windows_cursor(cursor: CursorIcon) -> PCWSTR {
         CursorIcon::NotAllowed | CursorIcon::NoDrop => IDC_NO,
         CursorIcon::Grab | CursorIcon::Grabbing | CursorIcon::Move | CursorIcon::AllScroll => {
             IDC_SIZEALL
-        },
+        }
         CursorIcon::EResize
         | CursorIcon::WResize
         | CursorIcon::EwResize
