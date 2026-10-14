@@ -1321,7 +1321,9 @@ impl App {
     /// not follow (the palette, the close dialog, a History review) is up.
     fn semantic_tree_current(&self) -> bool {
         !self.accessibility.semantic_tree_stale
-            && !self.unsettled()
+            && !self.needs_sync
+            && !self.layout.layout_dirty
+            && !self.layout.structure_dirty
             && !self.semantic_tree_untracked()
     }
 
