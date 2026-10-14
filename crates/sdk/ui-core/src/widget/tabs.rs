@@ -13,6 +13,7 @@ use crate::widget::AppKind;
 use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::hover_intent::HoverIntent;
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -285,6 +286,13 @@ pub struct TabBar {
     hover_close_idx: Option<usize>,
     hover_max_idx: Option<usize>,
     hover_search_idx: Option<usize>,
+    /// Which pill the pointer has opened: a short dwell before a pill opens,
+    /// and menu-aim prediction that keeps it open while the pointer travels
+    /// toward its chips.
+    hover_intent: HoverIntent,
+    /// The pill the intent last saw under the pointer, for settling its
+    /// timers between pointer samples.
+    hover_intent_under: Option<usize>,
     hover_new_tab: bool,
     press_origin: Option<(usize, Point)>,
     /// Offset from the pressed pill's top-left to the cursor at press time; the
@@ -449,6 +457,8 @@ impl TabBar {
             hover_close_idx: None,
             hover_max_idx: None,
             hover_search_idx: None,
+            hover_intent: HoverIntent::default(),
+            hover_intent_under: None,
             hover_new_tab: false,
             pinned_ids: HashSet::new(),
             accent_ids: HashMap::new(),
@@ -535,8 +545,8 @@ impl TabBar {
     }
 
     /// The host shows which window group has keyboard input: the active tab
-    /// of the focused group carries a keyline in your colour, the focus
-    /// colour, and the others carry the lift alone.
+    /// of the focused group carries a keyline in primary ink, and the others
+    /// carry the lift alone.
     pub fn set_group_focused(&mut self, focused: bool) {
         self.shows_group_focus = true;
         self.group_focus = if focused {
@@ -563,6 +573,15 @@ impl TabBar {
         self.layout_anim_started = Some(crate::time::now());
     }
 
+    /// Test fixture: the pointer over pill `idx`, having dwelt long enough to
+    /// open it.
+    #[cfg(test)]
+    fn hover_open_for_tests(&mut self, idx: usize) {
+        self.hover_idx = Some(idx);
+        self.hover_intent.force_open(Some(idx));
+        self.hover_intent_under = Some(idx);
+    }
+
     /// Pin transient pill geometry at its resting state for deterministic
     /// integration screenshots. This does not alter production animation;
     /// it only removes wall-clock sampling from visual regression tests.
@@ -572,6 +591,8 @@ impl TabBar {
         self.hover_close_idx = None;
         self.hover_max_idx = None;
         self.hover_search_idx = None;
+        self.hover_intent.clear();
+        self.hover_intent_under = None;
         self.hover_new_tab = false;
         self.press_origin = None;
         self.pending_drag = None;
@@ -664,10 +685,13 @@ impl TabBar {
                 ),
                 FOCUS_KEYLINE_PX / 2.0,
             );
+            // Primary ink, not your colour: which group has input is state,
+            // and a coloured underline on every focused window made the
+            // accent the loudest thing on the desktop (HIG 9.4).
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 pill_transform,
-                theme.tokens.colors.intent.you,
+                theme.tokens.colors.text_primary,
                 None,
                 &keyline,
             );
@@ -1225,7 +1249,7 @@ impl TabBar {
 
         let max_rect_target = self.max_rects.get(i).copied().unwrap_or(Rect::ZERO);
         if self.show_maximize && max_rect_target.area() > 0.0 {
-            let alpha = chip_alpha_at(zone, CLOSE_HIT_PX + ACTION_GAP + ACTION_W);
+            let alpha = chip_alpha_at(zone, MAX_CHIP_REACH);
             let max_r = shift_rect(max_rect_target, offset);
             let max_hover = Some(i) == self.hover_max_idx;
             if max_hover {
@@ -1441,10 +1465,15 @@ impl TabBar {
             return Reveal::None;
         }
         let pressed = self.press_origin.is_some_and(|(j, _)| j == i);
-        // Hovering the pill reveals its actions at once. They used to wait out
-        // a dwell and a pointer-speed gate; that made the chips appear late,
-        // and retract while the pointer was still travelling to one of them.
-        if Some(i) == self.hover_idx || pressed || self.keyboard_focus && t.id == self.active_id {
+        // The pointer opens a pill after a short dwell from when it entered
+        // (not re-armed by motion inside it), so sweeping across the row moves
+        // nothing; and an open pill stays open while the pointer heads for its
+        // chips, even across a neighbour or the gap. A press and keyboard
+        // focus are explicit and open at once.
+        if Some(i) == self.hover_intent.open()
+            || pressed
+            || self.keyboard_focus && t.id == self.active_id
+        {
             // With the maximize chip withheld there is nothing above `Close` to
             // open into, and reserving `Full`'s width for a chip that will
             // never be placed would just push the title around for nothing.
@@ -1476,6 +1505,31 @@ impl TabBar {
             let u = 1.0 - t.clamp(0.0, 1.0);
             a.from + (a.to - a.from) * (1.0 - u * u * u)
         }
+    }
+
+    /// Where pill `i`'s chips sit once it has finished opening: the menu-aim
+    /// target. Taken at the settled width rather than the current one, so a
+    /// pointer that outruns the opening pill is still heading for them, and
+    /// over the bar's full height, so a path that grazes the strip of bar
+    /// above or below the pill on its way is still heading for them too.
+    fn aim_target(&self, i: usize) -> Option<Rect> {
+        let r = self.tab_rects.get(i).copied().filter(|r| r.area() > 0.0)?;
+        let id = self.tabs.get(i)?.id;
+        let still_to_grow = (Reveal::Full.reserve() - self.reveal_reserve(id)).max(0.0);
+        let x1 = r.x1 + still_to_grow;
+        let (y0, y1) = if self.rect.height() > 0.0 {
+            (self.rect.y0.min(r.y0), self.rect.y1.max(r.y1))
+        } else {
+            (r.y0, r.y1)
+        };
+        Some(Rect::new((x1 - CHIP_CLUSTER_W).max(r.x0), y0, x1, y1))
+    }
+
+    /// Lets the hover intent's dwell and aim hold run out between pointer
+    /// samples.
+    fn settle_hover_intent(&mut self) {
+        self.hover_intent
+            .settle(self.hover_intent_under, crate::time::now());
     }
 
     /// 0 at [`Reveal::None`], 1 at [`Reveal::Full`]. The body wash rides this so the
@@ -1535,6 +1589,17 @@ impl TabBar {
             },
         );
         from
+    }
+
+    /// Test/shot clock control for the hover dwell: settle the pointer intent
+    /// as if the dwell had run out since the pointer entered the pill it
+    /// rests on. Production input still arms the dwell exclusively through
+    /// `on_cursor_moved`. Returns whether a pill is open by pointer now.
+    #[cfg(any(test, debug_assertions))]
+    pub fn elapse_hover_dwell(&mut self) -> bool {
+        let later = crate::time::now() + crate::widget::hover_intent::DWELL;
+        self.hover_intent.settle(self.hover_intent_under, later);
+        self.hover_intent.open().is_some()
     }
 
     /// Hold every in-flight reveal curve `at` milliseconds along it. The curve runs
@@ -2357,12 +2422,12 @@ impl TabBar {
 // (`TAB_BAR_HEIGHT`, `NEW_TAB_CHIP_PX`). Against the 4 px spacing scale:
 //
 //   on the grid   TAB_BAR_HEIGHT 44, PILL_PAD_X 12 (= s3), CLOSE_HIT_PX 32
-//                 (= s8, the minimum pointer target), ACTION_GAP 4 (= s1),
+//                 (= s8, the minimum pointer target), CHIP_PITCH 24 (= s6),
 //                 ACTION_HIT_INSET_Y 4 (= s1), PINNED_W 28, MIN_TITLE_PX 40,
 //                 PILL_MIN_PX 84
 //   off the grid  TAB_PILL_INSET_Y 6 (pill 32 tall inside a 44 bar — the
 //                 bar height is pinned), PILL_GAP 6, ICON_GAP 6, CLOSE_W 18,
-//                 ACTION_W 14, ICON_W 14, CLOSE_INSET 3, TITLE_CHIP_GAP 10,
+//                 ACTION_W 14, ICON_W 14, CLOSE_INSET 7, TITLE_CHIP_GAP 10,
 //                 CHIP_FADE_PX 10, PILL_SQUEEZE_FLOOR_PX 54
 //
 // The off-grid values are lucide glyph sizes and optical gaps around a
@@ -2381,7 +2446,9 @@ const PILL_PAD_X: f64 = 12.0;
 const CLOSE_W: f64 = 18.0;
 /// The glyph remains compact; its pointer target does not.
 const CLOSE_HIT_PX: f64 = 32.0;
-const CLOSE_INSET: f64 = 3.0;
+/// The × sits centred in its pointer target, so the three chips can share
+/// one rhythm (see [`CHIP_PITCH`]).
+const CLOSE_INSET: f64 = (CLOSE_HIT_PX - CLOSE_W) / 2.0;
 /// How far a maximize/search chip's pointer rect stops short of the pill's
 /// top and bottom edges.
 const ACTION_HIT_INSET_Y: f64 = 4.0;
@@ -2398,7 +2465,10 @@ const ACTION_HOVER_TINT_ALPHA: u8 = 64;
 /// target; maximize/search are secondary and also reachable from the
 /// context menu.
 const ACTION_W: f64 = 14.0;
-const ACTION_GAP: f64 = 4.0;
+/// Centre-to-centre distance between neighbouring chips. Search, maximize
+/// and close glyphs stand on one even rhythm; they used to sit 18 px apart
+/// on the left and 31 px on the right, which read as two loose groups.
+const CHIP_PITCH: f64 = 24.0;
 const ICON_W: f64 = 14.0;
 const ICON_GAP: f64 = 6.0;
 const PINNED_W: f64 = 28.0;
@@ -2420,9 +2490,17 @@ const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
 /// instead of characters — the cluster drops search, then maximize, then close.
 const MIN_TITLE_PX: f64 = 40.0;
 
+/// Right edge to the left edge of the maximize glyph: the reveal zone that
+/// places it.
+const MAX_CHIP_REACH: f64 = CLOSE_HIT_PX / 2.0 + CHIP_PITCH + ACTION_W / 2.0;
+
 /// Right edge to the left edge of the leftmost revealed chip: close, then
 /// maximize, then search.
-const CHIP_CLUSTER_W: f64 = CLOSE_HIT_PX + ACTION_GAP + ACTION_W + ACTION_GAP + ACTION_W;
+const CHIP_CLUSTER_W: f64 = MAX_CHIP_REACH + CHIP_PITCH;
+
+// The painted maximize glyph stays clear of the close chip's 32 px target,
+// so a press on what the eye sees as maximize never closes the tab.
+const _: () = assert!(CLOSE_HIT_PX / 2.0 + CHIP_PITCH - ACTION_W / 2.0 > CLOSE_HIT_PX);
 
 /// Gap between title and trailing chip; must be at least [`CHIP_FADE_PX`] for
 /// a settled pill to paint its cluster at full opacity.
@@ -2551,12 +2629,14 @@ fn chip_rects(
     // the pill's centre line whatever their rects' heights.
     let chip_y0 = r.y0 + ACTION_HIT_INSET_Y;
     let chip_y1 = r.y1 - ACTION_HIT_INSET_Y;
-    let close_target_x0 = r.x1 - CLOSE_HIT_PX;
     let close_x0 = r.x1 - close_w - close_inset;
-    // Secondary actions sit outside the close target. This keeps the 32px
-    // close target from swallowing a visible maximize/search button.
-    let max_x0 = close_target_x0 - max_w - ACTION_GAP;
-    let search_x0 = max_x0 - search_w - ACTION_GAP;
+    // One pitch between neighbouring glyph centres. At that pitch the
+    // maximize glyph already sits outside the 32 px close target (asserted
+    // at compile time beside `CHIP_CLUSTER_W`), so the target cannot
+    // swallow a visible maximize/search button.
+    let close_cx = close_x0 + close_w / 2.0;
+    let max_x0 = close_cx - CHIP_PITCH - max_w / 2.0;
+    let search_x0 = close_cx - 2.0 * CHIP_PITCH - search_w / 2.0;
     let close = if effective >= CLOSE_HIT_PX {
         // The close glyph remains an 18px visual, centred in the larger pill.
         // Its 32px pointer target is derived separately in `apply_layout`.
@@ -2570,7 +2650,7 @@ fn chip_rects(
     } else {
         Rect::ZERO
     };
-    let max_rect = if effective >= CLOSE_HIT_PX + ACTION_GAP + ACTION_W {
+    let max_rect = if effective >= MAX_CHIP_REACH {
         Rect::new(max_x0, chip_y0, max_x0 + max_w, chip_y1)
     } else {
         Rect::ZERO
@@ -2758,6 +2838,7 @@ impl Widget for TabBar {
         self.mark_rects.clear();
         self.mark_rects.resize(self.tabs.len(), Rect::ZERO);
 
+        self.settle_hover_intent();
         let (visual_order, widths, grow) = self.compute_pill_layout();
 
         let gap = PILL_GAP;
@@ -2928,6 +3009,15 @@ impl Widget for TabBar {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.on_cursor_moved(*position, ctx.scale_factor, ctx.handled);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                // Nothing can be aimed at from outside the surface.
+                self.hover_idx = None;
+                self.hover_close_idx = None;
+                self.hover_max_idx = None;
+                self.hover_search_idx = None;
+                self.hover_intent.clear();
+                self.hover_intent_under = None;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -3190,6 +3280,8 @@ impl Widget for TabBar {
         // Keeps the curve running once the pointer stops moving, until an
         // opening pill finishes.
         let reveal = self.reveal_in_flight();
+        // A dwell or an aim hold still to run out: the next layout settles it.
+        let hover_intent = self.hover_intent.deadline().is_some();
         let busy = !self.reduce_motion && self.marks.values().any(|m| *m == TabMark::Busy);
         let drag_lift = !self.reduce_motion
             && self.pending_drag.is_some()
@@ -3203,6 +3295,7 @@ impl Widget for TabBar {
             || hover_drop_fade
             || reveal
             || drag_lift
+            || hover_intent
             || busy
     }
 }
@@ -3682,6 +3775,19 @@ impl TabBar {
             .filter(|&(_, chip)| chip == ActionChip::Search)
             .map(|(i, _)| i);
         self.hover_idx = self.tab_rects.iter().position(|r| r.contains(p));
+        // A pill that is not open yet does not start opening from its close
+        // glyph: opening grows the pill rightward and would carry the × out
+        // from under the pointer that is about to press it.
+        let open = self.hover_intent.open();
+        let under = if self.hover_close_idx.is_some() && self.hover_close_idx != open {
+            None
+        } else {
+            self.hover_idx
+        };
+        let target = open.and_then(|i| self.aim_target(i));
+        self.hover_intent_under = under;
+        self.hover_intent
+            .on_motion(p, under, target, crate::time::now());
         self.hover_new_tab = self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(p);
         if let Some((idx, origin)) = self.press_origin
             && point_delta(p, origin).hypot() > DRAG_START_THRESHOLD_PX
@@ -4430,7 +4536,7 @@ mod tests {
                 "the active tab (A) is not modified, so it has no dot"
             );
 
-            b.hover_idx = Some(1);
+            b.hover_open_for_tests(1);
             assert_eq!(
                 b.modified_marker_color_for_tests(1, &theme),
                 None,
@@ -4482,7 +4588,7 @@ mod tests {
                     b.set_modified(2, true);
                 }
                 if hover {
-                    b.hover_idx = Some(1);
+                    b.hover_open_for_tests(1);
                 }
 
                 let theme = Theme::dark();
@@ -5389,8 +5495,9 @@ mod tests {
             dispatch(&mut b, &release);
             assert_eq!(b.drop_zone_target(), None, "release clears target");
             assert!(
-                !b.needs_animation_frame(),
-                "at rest (no drag) the bar must not pump frames",
+                b.hover_intent.deadline().is_some() && b.needs_animation_frame(),
+                "release clears the drag target but keeps the resting pointer's \
+                 hover dwell running, so the pill under it still opens",
             );
         }
 
@@ -6160,7 +6267,7 @@ mod tests {
             }
 
             // The affordance is reachable via hover, just not permanent.
-            b.hover_idx = Some(1);
+            b.hover_open_for_tests(1);
             assert!(
                 b.close_affordance_visible_for_tests(1, &theme),
                 "a hovered pill has a lifted body to host the ×",
@@ -6438,12 +6545,13 @@ mod tests {
                 "and keeps its 32 px"
             );
 
-            // The search glyph's trailing edge lies inside the enlarged maximize
-            // target; the painted glyph wins over the target.
+            // At the even chip pitch the enlarged maximize target stops short
+            // of the painted search glyph, so its trailing edge is search's
+            // alone (the press resolution would let the glyph win anyway).
             let on_search_glyph = Point::new(search.x1 - 1.0, search.center().y);
             assert!(
-                b.action_hit_rect(max).contains(on_search_glyph),
-                "the overlap this test relies on exists"
+                !b.action_hit_rect(max).contains(on_search_glyph),
+                "the maximize target leaves the search glyph alone"
             );
             let mut handled = false;
             b.last_cursor = on_search_glyph;
@@ -6907,12 +7015,14 @@ mod tests {
         }
     }
 
-    /// Aims at the pill's leading third so the cursor never lands on a chip.
+    /// Aims at the pill's leading third so the cursor never lands on a chip,
+    /// then lays out once the hover dwell has run.
     fn hover_pill(b: &mut TabBar, idx: usize, width: f64, theme: &crate::theme::Theme) {
         let r = b.tab_rects()[idx];
         let p = Point::new(r.x0 + r.width() * 0.25, r.center().y);
         let mut handled = false;
         dispatch_cursor(b, p, &mut handled);
+        assert!(b.elapse_hover_dwell(), "resting on the pill opens it");
         lay_out_at_width_with(b, width, theme);
     }
 
@@ -6971,41 +7081,244 @@ mod tests {
         )
     }
 
-    /// Hovering a pill reveals its search/maximize chips at once, and they
-    /// stay put while the pointer travels (however fast) to one of them. A
-    /// dwell-and-speed gate once withheld them and re-armed on every fast
-    /// move, so the chips appeared late and retracted under a pointer that was
-    /// still heading for them.
-    #[test]
-    fn pointer_reveal_is_immediate_and_survives_the_trip_to_a_chip() {
-        let theme = Theme::dark().with_reduce_motion(true);
-        let width = 900.0;
+    /// Runs `f` with the toolkit clock reading `at`, so pointer samples and
+    /// layout passes see one synthetic timeline.
+    fn at_time<T>(at: Instant, f: impl FnOnce() -> T) -> T {
+        crate::time::testing::with_monotonic_time(at, f)
+    }
+
+    /// A pointer sample at `p`, `ms` after `t0`, followed by the layout pass
+    /// of the frame it lands in.
+    fn sample_at(b: &mut TabBar, t0: Instant, ms: u64, p: Point, theme: &Theme) {
+        let at = t0 + Duration::from_millis(ms);
+        at_time(at, || {
+            let mut handled = false;
+            dispatch_cursor(b, p, &mut handled);
+            lay_out_at_width_with(b, 900.0, theme);
+        });
+    }
+
+    fn layout_at(b: &mut TabBar, t0: Instant, ms: u64, theme: &Theme) {
+        at_time(t0 + Duration::from_millis(ms), || {
+            lay_out_at_width_with(b, 900.0, theme);
+        });
+    }
+
+    fn chips_open(b: &TabBar, i: usize) -> bool {
+        b.max_rects()[i].area() > 0.0 && b.search_rects()[i].area() > 0.0
+    }
+
+    /// Points along a straight line from `a` to `b`, `n` steps, excluding `a`.
+    fn path(a: Point, b: Point, n: u32) -> Vec<Point> {
+        (1..=n)
+            .map(|k| a.lerp(b, f64::from(k) / f64::from(n)))
+            .collect()
+    }
+
+    /// A bar with pill 1 opened by a pointer resting on its leading third,
+    /// and the instant (after the dwell) it opened at.
+    fn bar_with_pill_one_open(theme: &Theme) -> (TabBar, Instant) {
         let mut b = four_tab_bar();
-        lay_out_at_width_with(&mut b, width, &theme);
-        let idle = b.tab_rects()[1].width();
-        assert!(b.max_rects()[1].area() == 0.0 && b.search_rects()[1].area() == 0.0);
-
+        lay_out_at_width_with(&mut b, 900.0, theme);
         let r = b.tab_rects()[1];
-        let mut handled = false;
-        dispatch_cursor(&mut b, Point::new(r.x0 + 12.0, r.center().y), &mut handled);
-        lay_out_at_width_with(&mut b, width, &theme);
+        let t0 = crate::time::now();
+        sample_at(&mut b, t0, 0, Point::new(r.x0 + 12.0, r.center().y), theme);
+        let dwell = u64::try_from(crate::widget::hover_intent::DWELL.as_millis()).unwrap();
+        layout_at(&mut b, t0, dwell, theme);
+        assert!(chips_open(&b, 1), "resting on the pill opens it");
+        (b, t0 + Duration::from_millis(dwell))
+    }
+
+    /// Resting on a pill opens it after a short dwell, counted from when the
+    /// pointer entered: slow motion inside the pill does not restart it (the
+    /// old gate re-armed on every sample, so chips came late), and the dwell
+    /// is shorter than the old 200 ms one. Until it runs out the bar keeps
+    /// frames coming, so a pointer that stops dead still opens the pill.
+    #[test]
+    fn resting_on_a_pill_opens_it_after_a_short_dwell_from_entry() {
+        use crate::widget::hover_intent::DWELL;
+        assert!(DWELL < Duration::from_millis(200), "shorter than before");
+        let dwell = u64::try_from(DWELL.as_millis()).unwrap();
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let idle = b.tab_rects()[1].width();
+        let r = b.tab_rects()[1];
+        let t0 = crate::time::now();
+
+        // Slow drift inside the pill: one pixel every 10 ms.
+        let mut ms = 0;
+        while ms < dwell {
+            let x = r.x0 + 12.0 + f64::from(u32::try_from(ms / 10).unwrap());
+            sample_at(&mut b, t0, ms, Point::new(x, r.center().y), &theme);
+            assert!(
+                !chips_open(&b, 1),
+                "opened {ms} ms in, before the dwell ran"
+            );
+            assert!(
+                b.needs_animation_frame(),
+                "a pending dwell must keep frames coming"
+            );
+            ms += 10;
+        }
+        layout_at(&mut b, t0, dwell, &theme);
         assert!(
-            b.tab_rects()[1].width() > idle + 1.0,
-            "no dwell before it opens"
+            chips_open(&b, 1),
+            "the dwell counts from entry, not the last sample"
         );
-        assert!(b.max_rects()[1].area() > 0.0 && b.search_rects()[1].area() > 0.0);
+        assert!(b.tab_rects()[1].width() > idle + 1.0);
+        assert_eq!(b.hover_intent.deadline(), None, "nothing left to wake for");
+    }
 
-        // A fast jump onto the maximize chip keeps the pill open.
-        let chip = b.max_rects()[1].center();
-        dispatch_cursor(&mut b, chip, &mut handled);
-        lay_out_at_width_with(&mut b, width, &theme);
-        assert!(b.max_rects()[1].area() > 0.0 && b.search_rects()[1].area() > 0.0);
-        assert_eq!(b.hover_max_idx, Some(1));
+    /// A pointer sweeping across the row (to reach a window below, say)
+    /// spends less than the dwell over each pill, so none of them opens and
+    /// nothing reflows under it.
+    #[test]
+    fn a_fast_sweep_across_the_row_opens_no_pill() {
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let idle: Vec<Rect> = b.tab_rects().to_vec();
+        let y = idle[0].center().y;
+        let from = Point::new(idle[0].x0 + 2.0, y);
+        let to = Point::new(idle[3].x1 + 40.0, y);
+        let t0 = crate::time::now();
+        // A sample per 8 ms frame at 3 px/ms, a brisk but ordinary sweep.
+        let steps = (1_u32..)
+            .find(|n| f64::from(*n) * 24.0 >= to.x - from.x)
+            .expect("a finite row");
+        for (k, p) in path(from, to, steps).into_iter().enumerate() {
+            let ms = u64::try_from(k).unwrap() * 8;
+            sample_at(&mut b, t0, ms, p, &theme);
+            for i in 0..4 {
+                assert!(
+                    !chips_open(&b, i),
+                    "pill {i} opened under a sweep at {ms} ms"
+                );
+            }
+            assert_eq!(b.tab_rects(), idle.as_slice(), "the row reflowed mid-sweep");
+        }
+        // Off the row: nothing is pending, nothing opens later.
+        let end = u64::from(steps) * 8;
+        sample_at(&mut b, t0, end + 8, Point::new(to.x, 400.0), &theme);
+        layout_at(&mut b, t0, end + 2000, &theme);
+        assert!((0..4).all(|i| !chips_open(&b, i)));
+    }
 
-        // Leaving the row closes it again.
-        dispatch_cursor(&mut b, Point::new(chip.x, 400.0), &mut handled);
-        lay_out_at_width_with(&mut b, width, &theme);
-        assert!((b.tab_rects()[1].width() - idle).abs() < 0.01);
+    /// Menu aim: once a pill is open, a pointer heading for its chips keeps
+    /// it open even where the path leaves the pill (here it grazes the strip
+    /// of bar under the pill). Holds on a fast path (few, far-apart samples)
+    /// and a slow one (many samples, each well inside the hold).
+    #[test]
+    fn an_open_pill_holds_while_the_pointer_heads_for_its_chips() {
+        let theme = Theme::dark().with_reduce_motion(true);
+        for (name, steps, frame_ms) in [("fast", 2_u32, 8_u64), ("slow", 24, 20)] {
+            let (mut b, opened) = bar_with_pill_one_open(&theme);
+            let open_w = b.tab_rects()[1].width();
+            let r = b.tab_rects()[1];
+            let chip = b.max_rects()[1].center();
+            // From where it rested, down-right out under the pill's bottom
+            // edge, then up onto the maximize chip.
+            let start = Point::new(r.x0 + 12.0, r.center().y);
+            let dip = Point::new(chip.x - 30.0, r.y1 + 3.0);
+            assert!(dip.y < b.rect.y1, "the dip stays on the bar");
+            let mut points = vec![start];
+            points.extend(path(start, dip, steps));
+            points.extend(path(dip, chip, steps));
+            for (k, p) in points.into_iter().enumerate() {
+                let ms = u64::try_from(k).unwrap() * frame_ms;
+                sample_at(&mut b, opened, ms, p, &theme);
+                assert!(
+                    chips_open(&b, 1) && (b.tab_rects()[1].width() - open_w).abs() < 0.01,
+                    "{name}: the pill closed or moved at {p:?} on the way to its chip",
+                );
+            }
+            assert_eq!(b.hover_max_idx, Some(1), "{name}: arrived on the chip");
+        }
+    }
+
+    /// The hold is only for a pointer still heading for the chips: moving
+    /// away closes the pill at once, and stopping short releases it once the
+    /// hold lapses, handing over to whatever is under the pointer.
+    #[test]
+    fn the_aim_hold_ends_when_the_pointer_turns_away_or_stops_short() {
+        use crate::widget::hover_intent::{AIM_HOLD, DWELL};
+        let theme = Theme::dark().with_reduce_motion(true);
+
+        // Turning away: back to the left, onto pill 0.
+        {
+            let (mut b, opened) = bar_with_pill_one_open(&theme);
+            let idle0 = b.tab_rects()[0];
+            let p = Point::new(idle0.center().x, idle0.center().y);
+            sample_at(&mut b, opened, 8, p, &theme);
+            assert!(
+                !chips_open(&b, 1),
+                "moving away closes the open pill at once"
+            );
+            assert!(
+                !chips_open(&b, 0),
+                "and the next pill waits out its own dwell"
+            );
+            let dwell = u64::try_from(DWELL.as_millis()).unwrap();
+            layout_at(&mut b, opened, 8 + dwell, &theme);
+            assert!(chips_open(&b, 0));
+        }
+
+        // Stopping short, under the pill and off any other pill.
+        {
+            let (mut b, opened) = bar_with_pill_one_open(&theme);
+            let r = b.tab_rects()[1];
+            let chip = b.max_rects()[1].center();
+            let start = Point::new(r.x0 + 12.0, r.y1 - 3.0);
+            let short = Point::new(chip.x - 30.0, r.y1 + 3.0);
+            sample_at(&mut b, opened, 0, start, &theme);
+            sample_at(&mut b, opened, 8, short, &theme);
+            assert!(chips_open(&b, 1), "still heading for the chips");
+            assert!(
+                b.needs_animation_frame(),
+                "a running hold must keep frames coming"
+            );
+            let hold = u64::try_from(AIM_HOLD.as_millis()).unwrap();
+            layout_at(&mut b, opened, 8 + hold - 1, &theme);
+            assert!(chips_open(&b, 1));
+            layout_at(&mut b, opened, 8 + hold, &theme);
+            assert!(
+                !chips_open(&b, 1),
+                "a pointer resting short of the chips lets go"
+            );
+        }
+    }
+
+    /// The three chips stand on one rhythm: search, maximize and close glyph
+    /// centres are one pitch apart, and the × sits centred in its target.
+    #[test]
+    fn the_three_chips_are_evenly_spaced() {
+        let r = Rect::new(0.0, 6.0, 400.0, 38.0);
+        let (close, max_rect, search) = chip_rects(
+            r,
+            CHIP_CLUSTER_W,
+            false,
+            CLOSE_W,
+            CLOSE_INSET,
+            ACTION_W,
+            ACTION_W,
+        );
+        let gap_left = max_rect.center().x - search.center().x;
+        let gap_right = close.center().x - max_rect.center().x;
+        assert!(
+            (gap_left - gap_right).abs() < 1e-9,
+            "{gap_left} vs {gap_right}"
+        );
+        assert!((gap_left - CHIP_PITCH).abs() < 1e-9);
+        assert!((close.center().x - (r.x1 - CLOSE_HIT_PX / 2.0)).abs() < 1e-9);
+        assert!(
+            max_rect.x1 <= r.x1 - CLOSE_HIT_PX,
+            "maximize clears the close target"
+        );
+        assert!(
+            (search.x0 - (r.x1 - CHIP_CLUSTER_W)).abs() < 1e-9,
+            "the cluster is exactly as wide as the zone that places it",
+        );
     }
 
     #[test]
@@ -7289,14 +7602,9 @@ mod tests {
     #[test]
     fn the_active_tab_is_the_lift_alone_unless_the_host_shows_group_focus() {
         let theme = crate::theme::Theme::dark();
-        let you = theme
-            .tokens
-            .colors
-            .intent
-            .you
-            .premultiply()
-            .to_rgba8()
-            .to_u32();
+        let colour = |c: vello::peniko::Color| c.premultiply().to_rgba8().to_u32();
+        let you = colour(theme.tokens.colors.intent.you);
+        let ink = colour(theme.tokens.colors.text_primary);
         let paint = |b: &mut TabBar| {
             lay_out_at_width_with(b, 600.0, &theme);
             let mut scene = Scene::new();
@@ -7308,18 +7616,24 @@ mod tests {
                 &theme,
                 &PresenceCtx::default(),
             );
-            scene.encoding().draw_data.contains(&you)
+            scene.encoding().draw_data.clone()
         };
         let mut documents = bar();
+        let unfocused = paint(&mut documents);
         assert!(
-            !paint(&mut documents),
-            "a strip of documents shows no keyline"
+            !unfocused.contains(&you),
+            "a strip of documents wears no accent"
         );
         let mut groups = bar();
         groups.set_group_focused(true);
+        let focused = paint(&mut groups);
         assert!(
-            paint(&mut groups),
-            "the focused window group's active tab does"
+            focused.len() > unfocused.len() && focused.contains(&ink),
+            "the focused window group's active tab carries a keyline"
+        );
+        assert!(
+            !focused.contains(&you),
+            "in primary ink: your colour is for keyboard focus rings, carets and selection"
         );
     }
 }
