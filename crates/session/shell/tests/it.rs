@@ -229,6 +229,8 @@ mod speaker_calibration_fabric;
 mod speaker_clock_policy;
 #[path = "state_file_format.rs"]
 mod state_file_format;
+#[path = "strip_holds_still.rs"]
+mod strip_holds_still;
 #[path = "strip_navigation.rs"]
 mod strip_navigation;
 #[path = "surface_substream_e2e.rs"]

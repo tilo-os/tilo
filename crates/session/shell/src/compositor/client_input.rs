@@ -2310,7 +2310,7 @@ fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
     state.forward_client_pointer_motion(global, target);
 }
 
-/// Make `group` the active group of `strip` in the chrome's tree so the shell's focus rules agree with what the user just clicked.
+/// Make `group` the active group of `strip` in the chrome's tree so the shell's focus rules agree with what the user just clicked, and keep the strip where it is: the click landed on what was on screen.
 fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
     let mut changed = false;
     fb.with_chrome(|chrome| {
@@ -2328,6 +2328,9 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
             chrome.bump();
         }
     });
+    if changed {
+        fb.host_mut().keep_clicked_group_in_place(strip, group);
+    }
     changed
 }
 
