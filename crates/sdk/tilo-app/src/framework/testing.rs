@@ -645,6 +645,63 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::open(profile, role, &author, &[], None, None, None, |_| {})
     }
 
+    /// Open another window of the app beside this one, on the same profile
+    /// and in the same room, while this one stays open: two windows a
+    /// person has open at once. Its fallback record is the room's when the
+    /// app [keeps one per room](ResourceApp::ROOM_RECORD), so both show one
+    /// record; [`Self::deliver_changes_to`] carries edits between them.
+    ///
+    /// # Errors
+    /// Returns the launch failure, and refuses a `--data-dir` profile,
+    /// which has one window.
+    pub fn open_window(&self) -> Result<Self, LaunchError> {
+        let window = self.instance.wrapping_add(1).max(INSTANCE + 1);
+        let profile = match &self.profile {
+            Profile::Temporary(directory, room, device)
+            | Profile::Window(directory, room, device, _) => {
+                Profile::Window(Rc::clone(directory), room.clone(), device.clone(), window)
+            }
+            Profile::DataDir(_) => {
+                return Err(operation("a --data-dir profile has one window"));
+            }
+        };
+        Self::open(
+            profile,
+            self.role,
+            &self.author,
+            &[],
+            None,
+            None,
+            None,
+            |_| {},
+        )
+    }
+
+    /// Deliver this window's changes to the record to `other`, a window
+    /// showing the same record, as the room's broker fans each window's
+    /// document changes out to every other window on the record; `other`
+    /// takes them in and draws its next frame, without reopening. Whether
+    /// `other` changed.
+    ///
+    /// # Errors
+    /// Returns why the windows do not show one record, or why `other`
+    /// refused the changes.
+    pub fn deliver_changes_to(&mut self, other: &mut Self) -> Result<bool, String> {
+        if self.checkout().id != other.checkout().id {
+            return Err("the windows show different records".into());
+        }
+        let mut frontier = ui_core::DocumentFrontier::default();
+        let (changes, _) = self
+            .records
+            .replication_delta(&self.checkout().id, &mut frontier)
+            .map_err(|error| error.to_string())?;
+        let took_in = other
+            .records
+            .merge_peer_changes(other.checkout(), changes)?;
+        other.harness().relayout();
+        Ok(took_in)
+    }
+
     /// The room's default records of the app's windows kept on this
     /// profile, as [`SeedCx::window_records`](super::SeedCx::window_records)
     /// reads them.
