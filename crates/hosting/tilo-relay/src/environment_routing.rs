@@ -20,10 +20,9 @@ use std::sync::{Arc, RwLock};
 use iroh::endpoint::{RecvStream, SendStream};
 use tilo_clock::unix_now_ms;
 use tilo_relay_protocol::environment::{
-    ContentReply, ENVIRONMENT_PROTOCOL_VERSION, LaunchId, LegacyFrame, LegacyLaunch,
-    LegacyLaunchOutcome, MAX_ENVIRONMENT_FRAME_BYTES, MemberIdentity, Refusal, ServerFrame,
-    SessionId, SessionRequest, StreamOpen, WindowFrame, WindowInput, WorkerStreamOpen,
-    bounded_detail,
+    ENVIRONMENT_PROTOCOL_VERSION, LaunchId, LegacyFrame, LegacyLaunch, LegacyLaunchOutcome,
+    MAX_ENVIRONMENT_FRAME_BYTES, MemberIdentity, Refusal, ServerFrame, SessionId, SessionRequest,
+    StreamOpen, WindowFrame, WindowInput, WorkerStreamOpen, bounded_detail,
 };
 use tilo_user_identity::RevocationList;
 use tokio::io::AsyncWrite;
@@ -187,13 +186,7 @@ pub(crate) async fn serve_stream(
     };
     if !context.still_trusted(&peer) {
         if matches!(open, StreamOpen::ComputeContent { .. }) {
-            write_message(
-                &mut send,
-                &ContentReply::Refused {
-                    code: "not_authorised".into(),
-                },
-            )
-            .await?;
+            crate::compute_content::refuse(&mut send, "not_authorised").await?;
         } else {
             refuse(
                 &mut send,
@@ -212,23 +205,8 @@ pub(crate) async fn serve_stream(
             job_id,
             digest,
         } => {
-            if version == ENVIRONMENT_PROTOCOL_VERSION {
-                crate::compute_content::route_content(
-                    &context,
-                    &peer,
-                    (workspace_id, job_id, digest),
-                    &mut send,
-                )
-                .await
-            } else {
-                write_message(
-                    &mut send,
-                    &ContentReply::Refused {
-                        code: "unsupported_version".into(),
-                    },
-                )
-                .await
-            }
+            let asked = (workspace_id, job_id, digest);
+            crate::compute_content::route_content(&context, &peer, version, asked, &mut send).await
         }
         StreamOpen::Environment {
             version,
