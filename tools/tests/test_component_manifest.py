@@ -132,6 +132,53 @@ class ComponentManifestPolicyTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_source_shell_layer_carries_verified_fonts_and_refuses_incomplete_catalogs(self):
+        catalog = load("shell_font_catalog_under_test", REPO / "tools/font-catalog.py")
+        source = REPO / "crates/sdk/ui-core/assets/fonts"
+        reviewed = catalog.prepared_root(source, "os", offline=True)
+        manifest = installer.load_manifest(REPO / "os/components.toml")
+        fonts = next(e for e in manifest.files() if e.component == "shell" and e.tree)
+        self.assertEqual(fonts.to, "/usr/share/fonts/tilo/")
+        self.assertFalse(fonts.optional)
+        for defect in (None, "missing", "tampered", "manifest", "provenance", "offline"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                supplied = root / "fonts"
+                catalog.stage(reviewed, supplied, "os")
+                face = supplied / catalog.manifest(source)["font"][0]["file"]
+                if defect == "missing":
+                    face.unlink()
+                elif defect == "tampered":
+                    data = bytearray(face.read_bytes())
+                    data[-1] ^= 1
+                    face.write_bytes(data)
+                elif defect in ("manifest", "provenance"):
+                    name = "manifest.toml" if defect == "manifest" else "PROVENANCE.md"
+                    (supplied / name).write_bytes((supplied / name).read_bytes() + b"changed")
+                out = self.build_outputs(root)
+                layer = root / "layer"
+                with mock.patch.dict(os.environ, {
+                    "TILO_FONT_CATALOG_ROOT": "" if defect == "offline" else str(supplied),
+                    "TILO_FONT_ASSET_CACHE": str(root / "empty-cache"),
+                    "TILO_FONT_ASSETS_OFFLINE": "1",
+                }), contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    status = self.run_installer("--from", str(out), "--dest", str(layer), "shell")
+                installed = layer / "usr/share/fonts/tilo"
+                if defect is None:
+                    self.assertEqual(status, 0, stderr.getvalue())
+                    self.assertEqual(catalog.verify(installed, "os"), catalog.verify(reviewed, "os"))
+                    for path in supplied.rglob("*"):
+                        if path.is_file():
+                            self.assertEqual((installed / path.relative_to(supplied)).read_bytes(),
+                                             path.read_bytes())
+                    self.assertEqual((layer / "usr/bin/shell").read_bytes(), (out / "shell").read_bytes())
+                    self.assertEqual((layer / "usr/libexec/tilo-session").read_bytes(),
+                                     (REPO / "os/usr/libexec/tilo-session").read_bytes())
+                else:
+                    self.assertEqual(status, 1)
+                    self.assertIn("mandatory shell font catalog", stderr.getvalue())
+                    self.assertFalse(installed.exists())
+
     def test_image_component_stage_carries_the_speech_workers_license(self):
         # Reconstruct checked-in COPY inputs from the actual component-files
         # stage, then execute the production installer against that manifest.

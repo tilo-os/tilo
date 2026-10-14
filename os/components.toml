@@ -113,6 +113,9 @@ files = [
   # The PAM entry point and compositor share the session-recovery contract.
   # A fresh slot login must run this source's wrapper, not the base image's.
   { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },
+  # Source swaps materialize the pinned OS catalog; images already assemble
+  # this direct tree with the runtime payload, sharing its font bytes.
+  { from = "/usr/share/fonts/tilo/", to = "/usr/share/fonts/tilo/", tree = true, layer = "direct" },
 ]
 
 # The control-socket CLI, the one way agents and scripts drive a running
