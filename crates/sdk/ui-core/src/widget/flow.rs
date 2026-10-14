@@ -54,6 +54,10 @@ pub(super) struct Flow {
     cache_parts: Option<crate::scene_parts::SectionParts>,
     /// Whether the cached subtree shows a secret, replayed with the cache.
     cache_shows_secret: bool,
+    /// A setter changed the container's own layout style (its padding or
+    /// gap) after its node was built. The retained layout tree keeps the
+    /// built style, so the change reports a structure rebuild.
+    pub style_dirty: bool,
 }
 
 impl Flow {
@@ -76,6 +80,7 @@ impl Flow {
             cache_carries_material: false,
             cache_parts: None,
             cache_shows_secret: false,
+            style_dirty: false,
         }
     }
 
@@ -439,7 +444,11 @@ macro_rules! flow_widget_methods {
         /// A flow adds no structure of its own: a change a child can
         /// describe stays described.
         fn take_structure_change(&mut self) -> $crate::widget::StructureChange {
-            let mut change = $crate::widget::StructureChange::None;
+            let mut change = if std::mem::take(&mut self.flow.style_dirty) {
+                $crate::widget::StructureChange::Rebuild
+            } else {
+                $crate::widget::StructureChange::None
+            };
             for child in &mut self.flow.children {
                 change = change.join(child.take_structure_change());
             }
@@ -466,11 +475,12 @@ macro_rules! flow_widget_methods {
             reason = "Every child must clear its structure-dirty flag; a short-circuiting any would leave later children dirty."
         )]
         fn take_structure_dirty(&mut self) -> bool {
+            let own = std::mem::take(&mut self.flow.style_dirty);
             self.flow
                 .children
                 .iter_mut()
                 .map(|c| c.take_structure_dirty())
-                .fold(false, |acc, d| acc || d)
+                .fold(own, |acc, d| acc || d)
         }
 
         fn release_scene_cache(&mut self) {
