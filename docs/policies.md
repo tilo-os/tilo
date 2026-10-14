@@ -32,6 +32,7 @@ the pull request that needs it, with the reason written next to the entry:
 | A ratcheted count (UI tokens, app portability, resource/action contract, widget writes, document engine) | the baseline beside the check; counts only fall |
 | A size budget | one raise file per change under `tools/perf/*-size-budget/raises/` |
 | A licence, advisory or dependency source | `deny.toml`, with a comment saying why |
+| An interpreter script in the OS image | a reasoned line in `tools/policy/image_interpreter_baseline.txt`; the list only shrinks |
 | An old RustCrypto edge | `SANCTIONED` in `tools/policy/check_crypto_generation.py` |
 | A review-only rule | say so, and why, in the pull request description |
 
@@ -119,7 +120,7 @@ can change without editing its callers.
 | Tilo's own crates use the RustCrypto generation iroh uses (`ed25519-dalek`/`x25519-dalek` 3, `rand`/`rand_core`/`rand_chacha` 0.10, `sha2` 0.11, `hmac` 0.13, `chacha20poly1305` 0.11); the previous one arrives only through third-party crates. OS randomness comes from `getrandom::SysRng`. | One generation to audit; the old one leaves the lock when its last upstream moves. | Check: [`check_crypto_generation.py`](../tools/policy/check_crypto_generation.py) (direct edges in `Cargo.lock`; `SysRng` is review) |
 | TLS is rustls. No OpenSSL or `native-tls` anywhere in the graph. | One certificate-verification path to review, and no C library to patch in every image. | Check: [`check_tls_stack.py`](../tools/policy/check_tls_stack.py) |
 | GStreamer is the only media stack: no in-tree codec crates (`openh264` from source, `ffmpeg-next`). | Hardware codecs first, and H.264 in software only through Cisco's licensed binary. | Check: [`check_media_stack.py`](../tools/policy/check_media_stack.py) |
-| No interpreted language (Python, JavaScript) on the runtime path of the OS or an app where a compiled alternative exists. Build and CI tooling may use Python. | Startup time, footprint and one fewer runtime to secure. | Review |
+| No interpreted language (Python, JavaScript) on the runtime path of the OS or an app where a compiled alternative exists. Build and CI tooling may use Python. | Startup time, footprint and one fewer runtime to secure. | Check (image overlay only): [`check_image_interpreters.py`](../tools/policy/check_image_interpreters.py) refuses a new Python, Node, Deno, Bun or Perl script under `os/usr` or `os/etc`; the [baseline](../tools/policy/image_interpreter_baseline.txt) of older ones only shrinks. Apps and the image's package list are review |
 | Inputs are pinned: the Rust toolchain in `rust-toolchain.toml`, crates in `Cargo.lock`, actions by SHA, and image packages by snapshot. Builds of apps and images are reproducible from a commit. | A build that cannot be reproduced cannot be verified. | Partly: `--locked`, the action and image checks above, [`check_dev_image_contract.py`](../tools/policy/check_dev_image_contract.py); reproducibility itself is review |
 | Apps are small: each shipped app and the shared runtime have size budgets that only fall without a raise file. | Apps download on demand and are not installed. | Check: `tools/perf/tapp_size_ratchet.py` and `tools/perf/runtime_size_ratchet.py` in `lint.yml` ([measurements](measurements/app-package-size.md)) |
 
@@ -205,8 +206,6 @@ Review-only rules above that look cheap to check, not yet done:
 - `scripts/scan-secrets.sh`, conflict markers and `dbg!` run only in pre-commit,
   so a `--no-verify` commit skips them; `check_commit_policy.py` could scan the
   new blobs as it already does for text and LF.
-- No interpreter on the runtime path: a check over the image's package lists and
-  shipped files for Python or Node payloads outside the build stages.
 - Vendored crates: require a licence file and a `PROVENANCE.md` with the upstream
   version in every `vendor/*` directory.
 - Motion: a ratchet for literal animation durations, once the motion section is
