@@ -28,8 +28,8 @@ use std::sync::Arc;
 
 use tilo_desktop::about::{AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
-    ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, TopBarWidget,
-    TopBarWidgets,
+    ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, StripPlaces,
+    TopBarWidget, TopBarWidgets,
 };
 use tilo_desktop::collaborators::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, RosterRow, RosterStatus,
@@ -79,12 +79,23 @@ pub(crate) struct HostOffers {
     pub about: tilo_desktop::about::AboutLinks,
 }
 
+/// Who this desktop's person is when they make something in the room,
+/// and who made what there.
+#[derive(Clone, Default)]
+pub(crate) struct Room {
+    /// Who made each strip and opened each window.
+    pub authors: crate::desktop::Authors,
+    /// The person this desktop acts for.
+    pub author: String,
+}
+
 /// The bar's view of the page: the surface's tree, the wall clock, and the
 /// intents it raised since the last update pass.
 struct PageChrome {
     handle: DesktopHandle,
     shared: crate::desktop::Shared,
     here: tilo_desktop::here::Here,
+    room: Room,
     intents: RefCell<Vec<ChromeIntent>>,
     /// `(tree revision, minute, who-is-here revision)` the snapshot revision
     /// was last bumped for.
@@ -105,6 +116,10 @@ impl DesktopChromeSource for PageChrome {
             self.seen.set(seen);
             self.revision.set(self.revision.get().wrapping_add(1));
         }
+        let others = self.here.borrow().strip_places();
+        let places = self
+            .handle
+            .read(|tree| StripPlaces::in_active_workspace(tree, &others));
         DesktopChromeSnapshot {
             revision: self.revision.get(),
             clock,
@@ -113,6 +128,7 @@ impl DesktopChromeSource for PageChrome {
             topbar_widgets: Some(TopBarWidgets {
                 widgets: vec![TopBarWidget::Clock, TopBarWidget::Calendar],
             }),
+            strip_places: Some(places),
             watching: self.here.borrow().watching(),
             ..DesktopChromeSnapshot::default()
         }
@@ -319,12 +335,14 @@ impl BrowserShell {
         requests: HostRequests,
         here: tilo_desktop::here::Here,
         shared: crate::desktop::Shared,
+        room: Room,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         let chrome = Rc::new(PageChrome {
             handle: handle.clone(),
             shared,
             here,
+            room,
             intents: RefCell::default(),
             seen: Cell::new((u64::MAX, 0, 0)),
             revision: Cell::new(0),
@@ -530,6 +548,16 @@ impl BrowserShell {
                 }
             }
             ChromeIntent::ToggleOverview => self.toggle_overview(),
+            ChromeIntent::SwitchStrip(strip) => {
+                if let Some(workspace) = self.active_workspace() {
+                    self.dispatch(&Command::Strip {
+                        generation: self.generation.clone(),
+                        workspace,
+                        strip: strip.0.to_string(),
+                    });
+                }
+            }
+            ChromeIntent::AddStrip { name } => self.add_strip(name),
             ChromeIntent::ToggleTiloMenu => {
                 // One popover from the bar at a time.
                 self.people_open = false;
@@ -537,6 +565,26 @@ impl BrowserShell {
             }
             _ => {}
         }
+    }
+
+    /// Add a strip named `name` to the active workspace, kept as this
+    /// person's, and go there.
+    fn add_strip(&self, name: String) {
+        let mut tree = self.handle.read(Clone::clone);
+        let active = tree.active;
+        let Some(workspace) = tree.workspaces.iter_mut().find(|w| w.id == active) else {
+            return;
+        };
+        let strip = Strip::new(StripId(self.handle.mint_id()), name);
+        let id = strip.id;
+        workspace.strips.push(strip);
+        tree.active_strip.insert(active, id);
+        self.chrome
+            .room
+            .authors
+            .borrow_mut()
+            .insert(id.0, self.chrome.room.author.clone());
+        self.handle.replace_tree(tree);
     }
 
     fn toggle_overview(&mut self) {

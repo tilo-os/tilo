@@ -113,6 +113,8 @@ pub mod metrics;
 #[cfg(feature = "agents")]
 pub mod moderation;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod payloads;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
 mod persistence;

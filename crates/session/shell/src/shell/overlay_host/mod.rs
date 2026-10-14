@@ -818,6 +818,9 @@ pub struct ShellOverlayHost {
     /// whose runtime content was replaced by a `PeerView`. These never enter
     /// `ChromeState` or its replicated workspace document.
     peer_stream_tabs: std::collections::HashMap<(u64, u64), u64>,
+    /// Wakes the compositor loop when a peer stream's picture finishes
+    /// decoding; handed to every peer view this host mounts.
+    peer_picture_wake: Option<media::realtime::PictureWake>,
     /// Quick-settings root-page presentation, geometry and input state.
     qs_root: QuickSettingsRoot,
     // Navigation can shrink the panel before the matching release arrives.
@@ -2162,6 +2165,9 @@ impl ShellOverlayHost {
             crate::shell::search::providers::SessionActionsProvider::new(session_action_policy),
         ));
         search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::SettingsPagesProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::tray_items::TrayItemsProvider::global(),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -2452,6 +2458,7 @@ impl ShellOverlayHost {
             notification_stack: NotificationStack::new(),
             last_chrome_revision: u64::MAX,
             peer_stream_tabs: std::collections::HashMap::new(),
+            peer_picture_wake: None,
             // User intent is durable, while the root filters it against the
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
@@ -4545,6 +4552,7 @@ impl ShellOverlayHost {
         );
         peer_view.restart_stream(codec, display_size);
         peer_view.set_input_sink(std::sync::Arc::clone(input_sink));
+        peer_view.set_picture_wake(self.peer_picture_wake.clone());
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: identical to `foreign_surface_rect`: rows are boxed by
             // this host and `&mut self` makes this traversal exclusive.
@@ -4614,13 +4622,53 @@ impl ShellOverlayHost {
         encoded: &[u8],
         latency_ns: Option<u64>,
     ) -> bool {
-        let Some(tab_id) = self
+        self.peer_stream_view_mut(source_peer, surface_id)
+            .is_some_and(|view| {
+                !matches!(
+                    view.push_encoded_with_latency(encoded, latency_ns),
+                    crate::shell::peer_view::PushOutcome::DecodeFailed
+                )
+            })
+    }
+
+    /// How the loop learns that a peer-stream picture finished decoding:
+    /// peer views never wait for their pictures, so `wake` (run on a media
+    /// thread) brings the loop back to [`Self::collect_late_peer_pictures`].
+    /// Views mounted from now on use it.
+    pub fn set_peer_picture_wake(&mut self, wake: media::realtime::PictureWake) {
+        self.peer_picture_wake = Some(wake);
+    }
+
+    /// Show every peer-stream picture that finished decoding after its frame
+    /// was pushed. A window that stops changing sends no further frame to
+    /// carry its last picture out of the decoder, so the loop collects it.
+    /// Returns whether any view took a new picture.
+    pub fn collect_late_peer_pictures(&mut self) -> bool {
+        if self.peer_stream_tabs.is_empty() {
+            return false;
+        }
+        let streams: Vec<(u64, u64)> = self.peer_stream_tabs.keys().copied().collect();
+        let mut collected = false;
+        for (source_peer, surface_id) in streams {
+            if let Some(view) = self.peer_stream_view_mut(source_peer, surface_id)
+                && view.picture_pending()
+            {
+                collected |= view.collect_late_picture().is_some();
+            }
+        }
+        collected
+    }
+
+    /// The view showing the stream of `surface_id` from `source_peer`.
+    pub fn peer_stream_view_mut(
+        &mut self,
+        source_peer: u64,
+        surface_id: u64,
+    ) -> Option<&mut crate::shell::peer_view::PeerView> {
+        let tab_id = self
             .peer_stream_tabs
             .get(&(source_peer, surface_id))
-            .copied()
-        else {
-            return false;
-        };
+            .copied()?;
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: same row ownership invariant as `mount_peer_stream`.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
@@ -4629,21 +4677,14 @@ impl ShellOverlayHost {
                     continue;
                 };
                 let ui::widget::TileContent::App(app) = host.content_mut() else {
-                    return false;
+                    return None;
                 };
-                let Some(view) = app
+                return app
                     .as_any_mut()
-                    .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>())
-                else {
-                    return false;
-                };
-                return !matches!(
-                    view.push_encoded_with_latency(encoded, latency_ns),
-                    crate::shell::peer_view::PushOutcome::DecodeFailed
-                );
+                    .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>());
             }
         }
-        false
+        None
     }
 
     /// Whether a view shows the stream of `surface_id` from `source_peer`.
@@ -8315,8 +8356,8 @@ impl ShellOverlayHost {
                 if let Some(badge) = &r.badge {
                     e = e.badge(badge.clone());
                 }
-                if r.id == "room.activity.open" {
-                    e = e.keybinding("Super+H");
+                if let Some(shortcut) = &r.shortcut {
+                    e = e.keybinding(shortcut.clone());
                 }
                 entries.push(e);
                 results.push(r.clone());
@@ -9074,6 +9115,16 @@ impl ShellOverlayHost {
                     self.palette_visible = true;
                     return;
                 }
+            }
+            crate::shell::search::usage::record(&result.provider_id, &result.id);
+            // A switch flips where the person can see it: keep the palette
+            // open on the row's new state instead of closing it.
+            if result.provider_id == crate::shell::search::providers::actions::PROVIDER_ID
+                && crate::shell::search::providers::actions::toggles_in_place(&result.id)
+            {
+                self.last_search_query = "\0toggled\0".into();
+                self.palette_layout_dirty = true;
+                return;
             }
             self.palette_visible = false;
             self.palette.close();

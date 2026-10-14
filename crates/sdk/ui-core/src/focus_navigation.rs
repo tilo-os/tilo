@@ -98,6 +98,20 @@ fn find_trap_focusables(
     None
 }
 
+/// Whether any widget [`order`] would visit traps focus: when none does,
+/// `order` reports no trap without its walk having to run.
+pub(crate) fn any_trap(widget: &dyn Widget) -> bool {
+    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+        return false;
+    };
+    if widget.traps_focus() {
+        return true;
+    }
+    let mut found = false;
+    widget.for_each_child(&mut |child| found = found || any_trap(child));
+    found
+}
+
 /// The deepest trapping subtree owns the keyboard order.
 pub(crate) fn order(
     root: NodeId,

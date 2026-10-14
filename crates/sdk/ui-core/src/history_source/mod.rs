@@ -131,7 +131,12 @@ pub struct HistorySource {
     max_entries: usize,
     record_genesis: bool,
     field_paths: bool,
+    pass_over: Option<PassOver>,
 }
+
+/// Which changes a [`HistorySource`] passes over; see
+/// [`HistorySource::passing_over`].
+pub type PassOver = fn(&automerge::Change) -> bool;
 
 impl Default for HistorySource {
     fn default() -> Self {
@@ -148,7 +153,25 @@ impl HistorySource {
             max_entries: DEFAULT_MAX_ENTRIES,
             record_genesis: true,
             field_paths: true,
+            pass_over: None,
         }
+    }
+
+    /// Pass over the changes `pass_over` names: they are part of the
+    /// document, and of the heads every later row is read at, but they make
+    /// no row and take no place in the window. For a document that also
+    /// keeps view state, such as which workspace a desktop shows, so that
+    /// moving the view neither shows up as history nor pushes what people
+    /// did out of the window. Decided from the change alone, so a reader
+    /// that reads the log from scratch decides it for every change.
+    #[must_use]
+    pub fn passing_over(mut self, pass_over: PassOver) -> Self {
+        self.pass_over = Some(pass_over);
+        self
+    }
+
+    fn passes_over(&self, change: &automerge::Change) -> bool {
+        self.pass_over.is_some_and(|pass_over| pass_over(change))
     }
 
     /// Describe a change that edited a document's fields by how many it

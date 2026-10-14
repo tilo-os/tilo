@@ -293,6 +293,77 @@ pub fn application_fields<'a>(
     ]
 }
 
+/// An app's [`application_fields`] plus what else people call it: each of
+/// its `keywords` (aliases, synonyms, the products it stands in for, in
+/// every language its manifest gives), its names in other languages as the
+/// name itself, and the initials of its name (`wp` for `Word Processor`).
+#[must_use]
+pub fn application_search_fields<'a>(
+    name: &'a str,
+    package_id: &'a str,
+    category: Option<&'a str>,
+    description: Option<&'a str>,
+    other_names: impl IntoIterator<Item = &'a str>,
+    keywords: impl IntoIterator<Item = &'a str>,
+) -> Vec<(String, super::FieldWeight)> {
+    use super::FieldWeight;
+    let mut fields: Vec<(String, FieldWeight)> =
+        application_fields(name, package_id, category, description)
+            .into_iter()
+            .map(|(text, weight)| (text.to_owned(), weight))
+            .collect();
+    for other in other_names {
+        fields.push((other.to_owned(), FieldWeight::TITLE));
+        fields.extend(super::initials(other).map(|initials| (initials, FieldWeight::KEYWORD)));
+    }
+    fields.extend(super::initials(name).map(|initials| (initials, FieldWeight::KEYWORD)));
+    fields.extend(
+        keywords
+            .into_iter()
+            .filter(|keyword| !keyword.trim().is_empty())
+            .map(|keyword| (keyword.to_owned(), FieldWeight::KEYWORD)),
+    );
+    fields
+}
+
+/// What a tier earns in an app's fields: the usual ranks, except that a
+/// keyword typed whole is the app's other name, and ranks like a name's
+/// start. "apps" is the Store's, whatever other app has the word in its name.
+#[must_use]
+pub fn application_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Option<i32> {
+    if tier == super::MatchTier::Exact && weight == super::FieldWeight::KEYWORD {
+        return super::MatchTier::Prefix.rank_in(super::FieldWeight::TITLE);
+    }
+    tier.rank_in(weight)
+}
+
+/// How much more an application hit is worth at the merge than its field
+/// rank says, because a person who types what an app is called, or a word it
+/// is known by, wants to open it: a perfect name match is launch intent; an
+/// exact alias or keyword ("youtube" for a video app) is the same intent
+/// reached by another word and must still lead the notes and files that
+/// merely contain it; a keyword or name that only begins or contains the
+/// query is weaker and ranks by its score alone.
+#[must_use]
+pub fn application_intent_boost(score: i32, top: i32) -> f32 {
+    let top = top.max(1);
+    if score >= top {
+        // A name, or a word the app is known by, typed whole.
+        4.5
+    } else if score.saturating_mul(100) >= top.saturating_mul(90) {
+        3.0
+    } else if score.saturating_mul(100) >= top.saturating_mul(70) {
+        1.5
+    } else if score > 0 && score <= provider_score(super::MatchTier::Spanning.percent()) {
+        // Only a typo or loosely spread words matched. Still a person
+        // reaching for an app by a half-remembered name, so a launch row
+        // leads an action that is just as loosely matched.
+        0.4
+    } else {
+        0.0
+    }
+}
+
 /// Product-owned ordering for the empty Applications palette. Search queries
 /// continue to rank purely by match quality; this only prevents a fresh system
 /// from presenting forty alphabetised tools as though they were equally likely
@@ -438,15 +509,9 @@ pub fn lexical_strength(
 /// matches, never make a weak metadata hit beat an exact visible title.
 pub const ACTIVE_APP_PROXIMITY_BOOST: f32 = 0.25;
 
-/// A provider-perfect application-name match represents launch intent, not a
-/// coincidental lexical occurrence. It must beat an exact filename/note with
-/// the same word, while an exact action (strength 5.0) still beats an
-/// unrelated app that merely received a weak provider score.
-pub const PERFECT_APPLICATION_INTENT_BOOST: f32 = 3.0;
-
 /// One hit's strength against every other provider's: its lexical fit, its
-/// provider's normalized score, launch intent for a perfect application
-/// match, and the caller's contextual `proximity` boost.
+/// provider's normalized score, launch intent for an application match
+/// ([`application_intent_boost`]), and the caller's contextual `proximity` boost.
 #[allow(
     clippy::cast_precision_loss,
     reason = "provider score scales are small integers; exact precision isn't needed for a 0..1 strength ratio"
@@ -461,12 +526,13 @@ pub fn merged_strength(
     proximity: f32,
 ) -> f32 {
     let top = top.max(1);
-    let application_intent = if matches!(
-        kind,
-        ResourceKind::Application | ResourceKind::HostApplication
-    ) && score >= top
-    {
-        PERFECT_APPLICATION_INTENT_BOOST
+    // Launch intent is a reading of what was typed; an empty query has none.
+    let application_intent = if !needle.trim().is_empty()
+        && matches!(
+            kind,
+            ResourceKind::Application | ResourceKind::HostApplication
+        ) {
+        application_intent_boost(score, top)
     } else {
         0.0
     };

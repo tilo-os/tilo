@@ -717,6 +717,10 @@ pub struct RoomActivityPane {
     named: Vec<NamedRange>,
     /// Heads at the last rebuild, so a no-op frame skips re-deriving.
     last_heads: Vec<ChangeHash>,
+    /// [`Self::history_log`]'s rows revision at the last rebuild: while it
+    /// holds, the changes since were all passed over (a workspace switch)
+    /// and the rows are as derived.
+    last_rows: u64,
     period: Period,
     /// Every row the document yielded, with the workspace each belongs
     /// to (`None` for no single workspace). [`Self::scope`] selects the
@@ -969,15 +973,20 @@ impl RoomActivityPane {
                 t
             },
             // A workspace is a cluster of windows saved/reopened collaboratively.
+            // Which workspace shows is the device's view, written on every
+            // switch: no history, and no place in the window, which switching
+            // back and forth used to fill until nothing anyone did was left.
             source: HistorySource::new()
                 .with_artifact_kind(ArtifactKind::Cluster)
-                .without_field_paths(),
+                .without_field_paths()
+                .passing_over(tilo_desktop_model::desktop_doc::only_sets_active),
             revert_intent,
             name_intent,
             undo_intent,
             clear_filters_intent,
             named: Vec::new(),
             last_heads: Vec::new(),
+            last_rows: 0,
             period: Period::default(),
             derived: Vec::new(),
             scoped_tree_rows: Vec::new(),
@@ -2300,7 +2309,16 @@ impl RoomActivityPane {
 
         let heads = tree.document_mut().get_heads();
         let active = tree.active.raw();
-        if heads == self.last_heads && !self.timeline.entries().is_empty() {
+        // A switch writes the document but no row: read just the changes
+        // since and, when all of them were passed over, only show the rows
+        // of the workspace now active.
+        let only_passed_over = heads != self.last_heads && !self.last_heads.is_empty() && {
+            self.source
+                .follow(tree.document_mut(), &mut self.history_log);
+            self.history_log.rows_revision() == self.last_rows
+        };
+        if only_passed_over || (heads == self.last_heads && !self.timeline.entries().is_empty()) {
+            self.last_heads = heads;
             if self.last_active != Some(active) {
                 self.apply_scope(tree);
             }
@@ -2351,6 +2369,7 @@ impl RoomActivityPane {
         let mut entries = self
             .source
             .entries_since(tree.document_mut(), &mut self.history_log);
+        self.last_rows = self.history_log.rows_revision();
         let mut tags = describe_room_changes(
             tree.document_mut(),
             &self.history_log,
