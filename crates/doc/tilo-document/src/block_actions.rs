@@ -125,7 +125,7 @@ fn shape_params() -> [ActionParam; 4] {
 }
 
 fn kind_param(required: bool) -> ActionParam {
-    let description = "paragraph, heading, bullet, numbered, checklist, quote or code";
+    let description = "paragraph, heading, bullet, numbered, checklist, quote, code, or a callout: note, tip, important, warning or caution";
     let param = if required {
         text_param("kind", description)
     } else {

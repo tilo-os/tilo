@@ -1490,6 +1490,26 @@ impl TextInput {
         (text_y, line_height)
     }
 
+    /// The first visual row's band, `(top, height)`: where a list marker
+    /// beside a wrapping line sits, whatever the rows below it hold.
+    pub(crate) fn first_row_band(&self) -> (f64, f64) {
+        if self.multiline {
+            (
+                self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+                self.line_height(),
+            )
+        } else {
+            self.text_band()
+        }
+    }
+
+    /// The style a wrapping line is shaped in at `scale`: its size, leading,
+    /// weight and family, so a mark set beside it (a list ordinal) shares
+    /// its baseline.
+    pub(crate) fn line_style(&self, scale: f32) -> TextStyle {
+        self.multiline_style(scale)
+    }
+
     /// Requires a prior `draw` to have populated `char_x_positions`.
     fn caret_x_at(&self, theme: &Theme, position: TextPosition) -> f64 {
         if (!self.multiline || self.multiline_shaped)

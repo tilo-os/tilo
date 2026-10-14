@@ -36,11 +36,17 @@ pub enum BlockKind {
     Checklist,
     Quote,
     Code,
+    /// The callouts: a quote set apart as a GitHub alert.
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
 }
 
 impl BlockKind {
     /// The names the declared actions take, in the order they are offered.
-    pub const NAMES: [&'static str; 7] = [
+    pub const NAMES: [&'static str; 12] = [
         "paragraph",
         "heading",
         "bullet",
@@ -48,6 +54,11 @@ impl BlockKind {
         "checklist",
         "quote",
         "code",
+        "note",
+        "tip",
+        "important",
+        "warning",
+        "caution",
     ];
 
     /// The kind named `name`.
@@ -61,6 +72,11 @@ impl BlockKind {
             "checklist" | "todo" | "task" => Self::Checklist,
             "quote" => Self::Quote,
             "code" => Self::Code,
+            "note" | "info" => Self::Note,
+            "tip" => Self::Tip,
+            "important" => Self::Important,
+            "warning" | "warn" => Self::Warning,
+            "caution" | "danger" => Self::Caution,
             _ => return None,
         })
     }
@@ -116,6 +132,11 @@ impl BlockShape {
             BlockKind::Checklist => Shape::Checklist(indent, self.done.unwrap_or(false)),
             BlockKind::Quote => Shape::Quote,
             BlockKind::Code => Shape::Code(self.lang.clone().filter(|lang| !lang.is_empty())),
+            BlockKind::Note => Shape::Callout("note"),
+            BlockKind::Tip => Shape::Callout("tip"),
+            BlockKind::Important => Shape::Callout("important"),
+            BlockKind::Warning => Shape::Callout("warning"),
+            BlockKind::Caution => Shape::Callout("caution"),
         })
     }
 }

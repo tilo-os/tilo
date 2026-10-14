@@ -7,7 +7,7 @@
 //! full-screen search affordance pinned at 360 px, wider than most
 //! paragraph blocks; this is a compact popover anchored at the caret.
 
-use crate::widget::block_editor::BlockKind;
+use crate::widget::block_editor::{BlockKind, CalloutKind};
 use crate::widget::filter_menu::{FilterMenu, MenuEntry, MenuSpec};
 
 pub type SlashMenu = FilterMenu<BlockKind>;
@@ -22,6 +22,15 @@ static SPEC: MenuSpec = MenuSpec {
     widget_name: "SlashMenu",
     test_id: "slash_menu",
 };
+
+/// A callout entry: the kind's name, found by it and by `callout`.
+fn callout(kind: CalloutKind, keywords: &'static [&'static str]) -> MenuEntry<BlockKind> {
+    MenuEntry {
+        label: kind.label(),
+        keywords,
+        value: BlockKind::Callout(kind),
+    }
+}
 
 fn entries() -> Vec<MenuEntry<BlockKind>> {
     vec![
@@ -50,6 +59,20 @@ fn entries() -> Vec<MenuEntry<BlockKind>> {
             keywords: &["quote", "blockquote", "citation", ">"],
             value: BlockKind::Quote,
         },
+        callout(
+            CalloutKind::Note,
+            &["note", "callout", "info", "admonition"],
+        ),
+        callout(CalloutKind::Tip, &["tip", "callout", "hint", "idea"]),
+        callout(CalloutKind::Important, &["important", "callout", "key"]),
+        callout(
+            CalloutKind::Warning,
+            &["warning", "warn", "callout", "alert"],
+        ),
+        callout(
+            CalloutKind::Caution,
+            &["caution", "danger", "callout", "error"],
+        ),
         MenuEntry {
             label: "Bullet list".to_string(),
             keywords: &["bullet", "list", "ul", "unordered"],
