@@ -717,6 +717,15 @@ pub trait Backend {
     }
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent));
 
+    /// Read input that arrived since the last poll, without blocking and
+    /// without touching anything else [`Self::poll_events`] applies (the
+    /// output table above all), so the run loop can call it between the
+    /// phases of a turn while that turn's frame is being built. The events
+    /// arrive in order and belong ahead of whatever the next
+    /// [`Self::poll_events`] returns. Backends whose input does not arrive
+    /// on their own loop have nothing to read here.
+    fn poll_input(&mut self, _callback: &mut dyn FnMut(BackendEvent)) {}
+
     /// Duplicate an fd which becomes readable whenever this backend has
     /// events waiting for [`Self::poll_events`]. The compositor registers it
     /// in its outer calloop, avoiding periodic polling of a backend that owns

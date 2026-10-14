@@ -10226,6 +10226,39 @@ pub fn run() {
             }
         };
     }
+    // Read input between the phases of a turn, and send at once each release
+    // of a key a client holds (`client_input::deliver_held_key_release`): a
+    // client repeats a held key until its release arrives, and the phases
+    // after this turn's input dispatch can outlast the repeat delay. All
+    // other input, presses included, waits in `pending_events`, in order,
+    // for the next turn's full dispatch.
+    macro_rules! deliver_held_key_releases {
+        () => {{
+            let placements = crate::compositor::backend::layout::placements(backend.outputs());
+            backend.poll_input(&mut |event| {
+                pending_events.push_back(crate::compositor::backend::layout::event_to_logical(
+                    &placements,
+                    event,
+                ));
+            });
+            if !pending_events.is_empty()
+                && !session.is_locked()
+                && client_input_allowed(&frame_builder)
+            {
+                let mut delivered = false;
+                for event in &pending_events {
+                    if let BackendEvent::Input(wev) | BackendEvent::PhysicalKey { event: wev, .. } =
+                        event
+                    {
+                        delivered |= client_input::deliver_held_key_release(&mut state, wev);
+                    }
+                }
+                if delivered && let Err(err) = display.flush_clients() {
+                    tracing::warn!(%err, "flushing an early key release failed");
+                }
+            }
+        }};
+    }
     while !close_requested {
         dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
@@ -12067,6 +12100,7 @@ pub fn run() {
         }
         frame_builder.set_osk_commits(state.osk_commits);
         pump_checkpoint!("session-focus-and-surfaces");
+        deliver_held_key_releases!();
         let floating_surfaces = state
             .floating_toplevels
             .iter()
@@ -12204,6 +12238,7 @@ pub fn run() {
         let pump_network_started = pump_bookkeeping_done;
         if let Some(net) = peer_sync.as_ref() {
             pump_phase!("network-tick", net.frame_tick());
+            deliver_held_key_releases!();
             if !std::mem::replace(&mut device_fabric_tried, true) {
                 device_fabric_worker = start_device_fabric(net, &notif_bridge);
             }
@@ -12239,6 +12274,7 @@ pub fn run() {
                     })
                 );
             }
+            deliver_held_key_releases!();
             pump_phase!(
                 "physical-gamepads",
                 crate::shell::physical_gamepad::pump_physical_gamepads(
@@ -12579,6 +12615,7 @@ pub fn run() {
             );
         }
         pump_checkpoint!("device-fabric-and-network");
+        deliver_held_key_releases!();
         // Keep the presence relay current, then fold in what peers sent. Pointer
         // is read level-triggered (covers every source: seat, remote peer, test
         // socket); the room set is re-read after every tree write, since a
@@ -12598,6 +12635,7 @@ pub fn run() {
             false
         };
         pump_checkpoint!("peer-presence");
+        deliver_held_key_releases!();
         let pump_presence_done = Instant::now();
         let pump_apps_started = pump_presence_done;
         for osd in transport_osds.drain() {
@@ -12630,6 +12668,7 @@ pub fn run() {
         }
         let pump_apps_done = Instant::now();
         pump_checkpoint!("widget-pump");
+        deliver_held_key_releases!();
         if take_deferred_peer_sync_activation(&mut deferred_peer_sync, onboarding_active) {
             // `pump_apps` just observed the trusted onboarding completion.
             // Apps were withheld until this edge. The network starts off the
@@ -12818,6 +12857,7 @@ pub fn run() {
             lock_player = None;
             lock_pointer = None;
         }
+        deliver_held_key_releases!();
         let pump_done = Instant::now();
         let pump_total = pump_done
             .duration_since(iter_t0)
@@ -13674,6 +13714,7 @@ pub fn run() {
         if retain_session_redraw(session_changed || injected_redraw, should_paint) {
             injected_redraw_pending = true;
         }
+        deliver_held_key_releases!();
         let t_paint_done = iter_t0.elapsed();
 
         // Confirm an `ext_session_lock_v1` client's lock only after the overlay is
@@ -13785,6 +13826,7 @@ pub fn run() {
         if let Some(consent) = agent_door_consent.as_mut() {
             consent.pump(&frame_builder.chrome_handle());
         }
+        deliver_held_key_releases!();
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
         metrics.mark_testctl_cpu(testctl_cpu);
@@ -14023,6 +14065,12 @@ pub fn run() {
                     control_invocation_deadline(&test_control_conns, park_now),
                 ),
                 ("control-followup", control_followup.then_some(park_now)),
+                // Input read between phases waits here for the next turn;
+                // its fd has already been drained, so nothing else wakes it.
+                (
+                    "queued-input",
+                    (!pending_events.is_empty()).then_some(park_now),
+                ),
                 (
                     "seat-input",
                     (!test_control_ctx.seat_events.is_empty()).then_some(park_now),
