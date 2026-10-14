@@ -16,6 +16,14 @@ pub(crate) const STRIP_INDICATOR_HOLD: Duration = Duration::from_millis(1_200);
 /// The fade-out after the hold: long enough to read as a fade, not a blink.
 pub(crate) const STRIP_INDICATOR_FADE: Duration = Duration::from_millis(400);
 
+/// The hold and the fade together: how long after the last change they are
+/// gone.
+const STRIP_INDICATOR_SHOWN: Duration = Duration::from_millis(1_600);
+const _: () = assert!(
+    STRIP_INDICATOR_SHOWN.as_millis()
+        == STRIP_INDICATOR_HOLD.as_millis() + STRIP_INDICATOR_FADE.as_millis()
+);
+
 /// What the indicators report. Any change to it is navigation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StripPosition {
@@ -45,9 +53,10 @@ impl StripIndicators {
             self.changed_at = Some(now);
         }
         self.last = Some(position);
-        if self.changed_at.is_some_and(|at| {
-            now.saturating_duration_since(at) >= STRIP_INDICATOR_HOLD + STRIP_INDICATOR_FADE
-        }) {
+        if self
+            .changed_at
+            .is_some_and(|at| now.saturating_duration_since(at) >= STRIP_INDICATOR_SHOWN)
+        {
             self.changed_at = None;
         }
     }
@@ -72,7 +81,7 @@ impl StripIndicators {
         if reduce_motion {
             return 0.0;
         }
-        let into_fade = elapsed - STRIP_INDICATOR_HOLD;
+        let into_fade = elapsed.saturating_sub(STRIP_INDICATOR_HOLD);
         if into_fade >= STRIP_INDICATOR_FADE {
             return 0.0;
         }
@@ -86,8 +95,7 @@ impl StripIndicators {
         !self.hovered
             && self.changed_at.is_some_and(|at| {
                 let elapsed = now.saturating_duration_since(at);
-                elapsed >= STRIP_INDICATOR_HOLD
-                    && elapsed < STRIP_INDICATOR_HOLD + STRIP_INDICATOR_FADE
+                elapsed >= STRIP_INDICATOR_HOLD && elapsed < STRIP_INDICATOR_SHOWN
             })
     }
 
@@ -96,11 +104,11 @@ impl StripIndicators {
     /// observes it clears `changed_at`, so the clearing frame is painted.
     pub(crate) fn next_wake_deadline_at(&self, now: Instant) -> Option<Instant> {
         let at = self.changed_at?;
-        let fade_start = at + STRIP_INDICATOR_HOLD;
+        let fade_start = at.checked_add(STRIP_INDICATOR_HOLD)?;
         if now < fade_start {
             Some(fade_start)
         } else {
-            Some(fade_start + STRIP_INDICATOR_FADE)
+            at.checked_add(STRIP_INDICATOR_SHOWN)
         }
     }
 }
