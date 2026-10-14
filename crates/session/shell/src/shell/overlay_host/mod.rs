@@ -831,6 +831,9 @@ pub struct ShellOverlayHost {
     /// Top-right notification stack, above content but below the
     /// permission prompt and modals.
     notification_stack: NotificationStack,
+    /// The theme's reduced-motion choice at the last paint, so wakes and
+    /// animation frames for the acknowledgement skip a fade it won't show.
+    acknowledgement_reduce_motion: std::cell::Cell<bool>,
     /// Last `chrome.revision` seen by [`Self::resync_strips_from_tree`];
     /// a disagreement means the tree changed shape and live
     /// [`GroupRow`] widgets need the new strip contents. `u64::MAX` at
@@ -2491,6 +2494,7 @@ impl ShellOverlayHost {
             status_sharing: collaboration_preferences.sharing,
             peer_sync_overlay: PeerSyncOverlay::default(),
             notification_stack: NotificationStack::new(),
+            acknowledgement_reduce_motion: std::cell::Cell::new(false),
             last_chrome_revision: u64::MAX,
             peer_stream_tabs: std::collections::HashMap::new(),
             peer_picture_wake: None,
@@ -3373,6 +3377,39 @@ impl ShellOverlayHost {
         }
 
         osd.draw(scene, transform, text_renderer, theme, self.rect, alpha);
+    }
+
+    /// Paint the passing acknowledgement ("Enrollment token copied"), if one
+    /// is up. Same slot and frame path as the OSD: woken by
+    /// [`Widget::next_wake_deadline`] for its fade and end, animated through
+    /// the fade.
+    fn draw_acknowledgement(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.acknowledgement_reduce_motion.set(theme.reduce_motion);
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let now = ui::time::now();
+        let Some(ack) = chrome.borrow().acknowledger.current(now) else {
+            return;
+        };
+        let alpha = ack.alpha_at(now, theme.reduce_motion);
+        ack.draw(scene, transform, text_renderer, theme, self.rect, alpha);
+    }
+
+    /// The acknowledgement showing now, if any.
+    fn current_acknowledgement(
+        &self,
+        now: ui::time::Instant,
+    ) -> Option<ui::widget::acknowledgement::Acknowledgement> {
+        self.chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow().acknowledger.current(now))
     }
 
     /// Copy the poller's latest reading onto the chrome, bumping the
@@ -20226,7 +20263,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 12] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 13] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20277,6 +20314,12 @@ impl ShellOverlayHost {
                     .as_ref()
                     .and_then(|chrome| chrome.borrow().osd)
                     .and_then(|osd| osd.next_wake_deadline_at(now)),
+            ),
+            (
+                "acknowledgement",
+                self.current_acknowledgement(now).and_then(|ack| {
+                    ack.next_wake_at(now, self.acknowledgement_reduce_motion.get())
+                }),
             ),
             ("now-playing", self.now_playing_wake_deadline(now)),
             ("window-previews", self.window_previews_wake_deadline(now)),
@@ -20441,6 +20484,11 @@ impl ShellOverlayHost {
             .as_ref()
             .and_then(|chrome| chrome.borrow().osd)
             .is_some_and(|osd| osd.needs_animation_frame_at(now));
+        let acknowledgement_frame = {
+            let now = ui::time::now();
+            self.current_acknowledgement(now)
+                .is_some_and(|ack| ack.fading_at(now, self.acknowledgement_reduce_motion.get()))
+        };
         self.transition_started.is_some()
             || self.strip_indicators.needs_animation_frame_at(now)
             || self.workspace_switch_holding_at(now)
@@ -20462,6 +20510,7 @@ impl ShellOverlayHost {
             || notification_frame
             || (self.overlay_flags().collaborators && self.collaborators_overlay.needs_animation_frame())
             || osd_frame
+            || acknowledgement_frame
             || self.window_previews.changed()
     }
 }
@@ -22888,6 +22937,13 @@ impl ShellOverlayHost {
         // while a modal is up, so its readout must too.
         overlay_part(scene, "shell.osd", desktop, |scene| {
             self.draw_osd(scene, transform, text_renderer, theme);
+            None
+        });
+
+        // A passing acknowledgement answers the action just taken, which
+        // may have been inside a modal, so it shows over everything too.
+        overlay_part(scene, "shell.acknowledgement", desktop, |scene| {
+            self.draw_acknowledgement(scene, transform, text_renderer, theme);
             None
         });
     }

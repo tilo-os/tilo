@@ -9860,7 +9860,12 @@ impl WordProcessorWidget {
         path: &std::path::Path,
     ) -> Result<(), String> {
         let doc = cx.document().ok_or("the document is not at hand")?.clone();
-        self.try_write_to_path(&doc, path, WpFormat::from_path(path))
+        self.try_write_to_path(&doc, path, WpFormat::from_path(path))?;
+        // No chooser was involved, so nothing on screen changed: the file
+        // is out of sight and the toast is the only answer. A save through
+        // the chooser stays quiet, since the person just picked the file.
+        self.toast.show(t("toast-saved"), ToastKind::Success);
+        Ok(())
     }
 
     /// Ask the person where to save with the host's chooser; the chosen file

@@ -1570,7 +1570,15 @@ impl SlidesApp {
         Ok(match path {
             Some(path) => cx.thread(
                 move |_| save_presentation_to_path(&deck, std::path::Path::new(&path), &content),
-                |app: &mut Self, saved, _| app.finish_save(saved.map(|()| true)),
+                |app: &mut Self, saved, _| {
+                    // Written straight to `path` with no chooser, so nothing
+                    // on screen changed: say it was saved.
+                    if saved.is_ok() {
+                        app.io_toast
+                            .show(tr("slides-toast-saved"), ToastKind::Success);
+                    }
+                    app.finish_save(saved.map(|()| true))
+                },
             ),
             None => {
                 let name = format!("{}.odp", sanitize_filename(&deck.title));
@@ -1589,8 +1597,8 @@ impl SlidesApp {
         })
     }
 
-    /// Show the outcome of saving. Saved and cancelled have nothing to say:
-    /// the person chose the file in the chooser. Only a failure is shown.
+    /// Show a failed save. A save through the chooser has nothing more to
+    /// say: the person just picked the file.
     fn finish_save(&mut self, saved: Result<bool, String>) -> EffectAnswer {
         match saved {
             Ok(_) => Ok(Effected::done()),
