@@ -153,6 +153,9 @@ struct TrustedServiceLaunch {
     identity: ServiceLaunchIdentity,
     registered_at: Instant,
     continuation_instance: Option<u64>,
+    /// The broker's ticket for the launch that started this process: the
+    /// startup token the compositor gave it, never read back from the app.
+    launch_ticket: Option<u64>,
 }
 
 static TRUSTED_SERVICE_LAUNCHES: std::sync::LazyLock<Mutex<HashMap<u32, TrustedServiceLaunch>>> =
@@ -255,13 +258,14 @@ pub(crate) fn verified_running_packages() -> Vec<String> {
 #[cfg(any(test, target_os = "linux"))]
 #[cfg(test)]
 fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
-    register_trusted_window_launch(pid, identity, None);
+    register_trusted_window_launch(pid, identity, None, None);
 }
 
 fn register_trusted_window_launch(
     pid: u32,
     identity: ServiceLaunchIdentity,
     continuation_instance: Option<u64>,
+    launch_ticket: Option<u64>,
 ) {
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
@@ -275,6 +279,7 @@ fn register_trusted_window_launch(
             identity,
             registered_at: Instant::now(),
             continuation_instance,
+            launch_ticket,
         },
     );
 }
@@ -339,6 +344,7 @@ pub(crate) fn authenticated_window_launch(
                 tilo_action_broker::services::AuthenticatedApplicationLaunch {
                     creation: launch.identity.application_creation.clone(),
                     continuation_instance: launch.continuation_instance,
+                    launch_ticket: launch.launch_ticket,
                 },
             );
         }
@@ -365,6 +371,7 @@ fn take_in_process_window_launch(
         tilo_action_broker::services::AuthenticatedApplicationLaunch {
             creation: launch.identity.application_creation,
             continuation_instance: launch.continuation_instance,
+            launch_ticket: None,
         },
     )
 }
@@ -4102,7 +4109,7 @@ fn start_launch(
                 .iter()
                 .find(|(key, _)| key == "TILO_CONTINUITY_INSTANCE")
                 .and_then(|(_, value)| value.parse::<u64>().ok());
-            register_trusted_window_launch(child.id(), identity, instance);
+            register_trusted_window_launch(child.id(), identity, instance, startup_token);
         }
         let workspace_id = command
             .service_identity
@@ -7423,7 +7430,7 @@ mod tests {
             compat_entry_generation: 0,
             application_creation: None,
         };
-        register_trusted_window_launch(pid, identity, Some(42));
+        register_trusted_window_launch(pid, identity, Some(42), Some(9));
         assert!(authenticated_window_launch(pid, "so.tilo.notes", "private-window-room").is_none());
         assert!(authenticated_window_launch(pid, "so.tilo.code", "other-room").is_none());
         assert!(
@@ -7437,6 +7444,7 @@ mod tests {
         let bound = authenticated_window_launch(pid, "so.tilo.code", "private-window-room")
             .expect("original exact launcher record");
         assert_eq!(bound.continuation_instance, Some(42));
+        assert_eq!(bound.launch_ticket, Some(9), "the launch's own ticket");
         // Kernel start time is part of the retained record, not app-reported identity.
         lock(&TRUSTED_SERVICE_LAUNCHES)
             .get_mut(&pid)

@@ -42,6 +42,11 @@ struct Writer {
     listing_page: Option<usize>,
     /// Every question and invocation the host was sent, in order.
     log: Arc<Mutex<Vec<Asked>>>,
+    /// The instance an `open` starts, which its answer names.
+    started: u64,
+    /// Another instance of the app that comes up with it, which nobody
+    /// asked for (another session's open).
+    bystander: Option<u64>,
 }
 
 struct DirectoryFailure {
@@ -68,6 +73,8 @@ impl Writer {
             document: None,
             listing_page: None,
             log: Arc::default(),
+            started: 1,
+            bystander: None,
         }
     }
 
@@ -346,17 +353,21 @@ impl ActionHost for Writer {
             .push(Asked::Query(Box::new(query.clone())));
         let running = *self.running.lock().unwrap();
         let Some(provider) = query.provider.clone() else {
+            let mut peers = self.bystander.into_iter().collect::<Vec<_>>();
+            peers.push(self.started);
+            peers.sort_unstable();
             return Pending::ready(Ok(CataloguePage {
                 revision: "v5".into(),
-                providers: running
-                    .then(|| CatalogueProvider {
-                        provider: "1".into(),
+                providers: peers
+                    .into_iter()
+                    .filter(|_| running)
+                    .map(|peer| CatalogueProvider {
+                        provider: peer.to_string(),
                         app_id: APP.into(),
                         room: "room".into(),
                         record_id: String::new(),
                         browsable: true,
                     })
-                    .into_iter()
                     .collect(),
                 ..CataloguePage::default()
             }));
@@ -531,9 +542,15 @@ impl ActionHost for Writer {
                 },
             }
         } else {
-            let value = self.document.as_ref().filter(|_| action == "read-text").map(
-                |markdown| json!({"version": 1, "content": {"markdown": markdown}, "nextCursor": "c2"}),
-            );
+            let value = if target.provider == WORKSPACE {
+                // As the broker answers a workspace open: with the
+                // instance the launch started.
+                Some(json!({"peer_id": self.started}))
+            } else {
+                self.document.as_ref().filter(|_| action == "read-text").map(
+                    |markdown| json!({"version": 1, "content": {"markdown": markdown}, "nextCursor": "c2"}),
+                )
+            };
             InvocationUpdate::Succeeded {
                 invocation: *id,
                 output: tilo_actions::ActionOutput {
@@ -649,6 +666,36 @@ fn opening_an_app_with_a_file_opens_it_through_the_apps_own_action() {
             ),
         ]
     );
+}
+
+/// Two sessions opening one app at once each get the instance their own
+/// launch started: the host names it, and the bridge neither lists the
+/// app's instances before nor after to guess which one is new.
+#[test]
+fn an_open_answers_the_instance_the_host_started() {
+    let host = Writer {
+        started: 7,
+        bystander: Some(5),
+        ..Writer::new(Some("open"))
+    };
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    let reply = run(call(
+        &server,
+        "tilo_invoke",
+        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
+    ))
+    .unwrap();
+    assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
+    assert_eq!(reply["peer_id"], 7, "{reply}");
+    assert_eq!(reply["opened"]["update"]["state"], "succeeded", "{reply}");
+    let asked = host.asked();
+    assert!(
+        !asked.iter().any(lists_instances),
+        "no instance listing was asked: {asked:?}"
+    );
+    let opened = host.invoked();
+    assert_eq!(opened.len(), 2, "{opened:?}");
+    assert_eq!(opened[1].0, "7", "the file opened in the started instance");
 }
 
 /// computer (run 20260930-105710): every task that opened a file spent its
@@ -834,10 +881,9 @@ fn opening_a_file_an_instance_holds_returns_that_instance() {
 #[test]
 fn an_app_opened_empty_answers_once_its_directory_lists_a_resource() {
     let host = Writer::new(None);
-    host.blank_listings
-        .lock()
-        .unwrap()
-        .extend([false, true, true]);
+    // The host answers once the app has published, but the app may publish
+    // again while it binds its document: the first listings read empty.
+    host.blank_listings.lock().unwrap().extend([true, true]);
     let server = McpServer::new(host.clone(), "room".into(), "owner".into());
     let reply = run(call(
         &server,
