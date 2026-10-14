@@ -198,7 +198,7 @@ struct ReplayAudioTrack {
 }
 
 enum RecordingOutput {
-    Mp4(super::mp4_recording::Mp4Recording),
+    Mp4(tilo_callstream::mp4_recording::Mp4Recording),
 }
 
 impl RecordingOutput {
@@ -210,7 +210,7 @@ impl RecordingOutput {
         fps: u32,
         audio_track_names: Vec<String>,
     ) -> Self {
-        Self::Mp4(super::mp4_recording::Mp4Recording::new(
+        Self::Mp4(tilo_callstream::mp4_recording::Mp4Recording::new(
             path.to_path_buf(),
             codec,
             width,
@@ -931,8 +931,9 @@ impl CaptureExecutor {
         let (width, height) = ((width & !1).max(2), (height & !1).max(2));
         let renderer = OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("recording renderer {width}×{height}: {error}"))?;
-        let encoder =
-            super::mp4_recording::recording_encoder(width, height, 30, 8_000_000, 60, true)?;
+        let encoder = tilo_callstream::mp4_recording::recording_encoder(
+            width, height, 30, 8_000_000, 60, true,
+        )?;
         let codec = encoder.codec();
         let path = next_recording_path(self.sequence, intent.audio != AudioCaptureMode::None)?;
         self.sequence = self.sequence.saturating_add(1);
@@ -1071,7 +1072,7 @@ impl CaptureExecutor {
         let (width, height) = ((width & !1).max(2), (height & !1).max(2));
         let renderer = OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("recent-capture renderer {width}×{height}: {error}"))?;
-        let encoder = super::mp4_recording::recording_encoder(
+        let encoder = tilo_callstream::mp4_recording::recording_encoder(
             width,
             height,
             REPLAY_FPS,
