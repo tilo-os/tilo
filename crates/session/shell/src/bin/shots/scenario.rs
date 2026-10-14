@@ -2141,6 +2141,9 @@ fn build_scenarios() -> Vec<Scenario> {
                     received: 4_200_000,
                     total: 18_000_000,
                 },
+                // Past the dots-to-bar crossfade, so the shot shows where
+                // it settles rather than a frame of the fade.
+                Action::WaitWall(400),
                 Action::Relayout,
                 Action::Snapshot("opening-installing-progress"),
             ],
