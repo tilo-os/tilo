@@ -916,6 +916,72 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
 
 // The rail: the thing that says there is more strip.
 
+/// The ribbon and rail report a position, which matters only while you
+/// move: hidden at rest, they show the moment navigation changes what they
+/// report (a keyboard step, a sideways scroll) and fade out shortly after.
+#[test]
+fn the_position_indicators_show_while_navigating_and_fade_after() {
+    let mut h = Harness::new();
+    let rest = Instant::now();
+    assert_eq!(
+        h.host.strip_indicator_alpha_at(rest, false),
+        0.0,
+        "at rest the indicators stay out of the way"
+    );
+
+    // Step until focus actually moves along the strip (the first press can
+    // only settle keyboard focus on it, which moves nothing).
+    for _ in 0..3 {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+        h.tick();
+        if h.host.strip_rail_for_tests().focused != 0 {
+            break;
+        }
+    }
+    assert_ne!(
+        h.host.strip_rail_for_tests().focused,
+        0,
+        "fixture: focus moved"
+    );
+    let stepped = Instant::now();
+    assert_eq!(
+        h.host.strip_indicator_alpha_at(stepped, false),
+        1.0,
+        "a keyboard step along the strip shows them at once"
+    );
+    assert_eq!(
+        h.host
+            .strip_indicator_alpha_at(stepped + Duration::from_millis(900), false),
+        1.0,
+        "they stay long enough to read"
+    );
+    assert_eq!(
+        h.host
+            .strip_indicator_alpha_at(stepped + Duration::from_secs(2), false),
+        0.0,
+        "and are gone within two seconds of the last move"
+    );
+
+    // Once gone, a sideways scroll that moves the strip brings them back.
+    let before = (h.host.strip_rail_for_tests().focused, h.scroll_x());
+    for rightward in [-120.0, 120.0] {
+        h.scroll_horizontally(rightward);
+        h.tick();
+        if (h.host.strip_rail_for_tests().focused, h.scroll_x()) != before {
+            break;
+        }
+    }
+    assert_ne!(
+        (h.host.strip_rail_for_tests().focused, h.scroll_x()),
+        before,
+        "fixture: the scroll moved along the strip"
+    );
+    let later = stepped + Duration::from_secs(3);
+    let scrolled = later.max(Instant::now());
+    let moved = h.host.strip_indicator_alpha_at(scrolled, false);
+    assert_eq!(moved, 1.0, "scrolling the strip shows them again");
+}
+
 #[test]
 fn the_rail_maps_the_strip_and_travels_on_click() {
     // Phase `the_rail_maps_the_strip_and_marks_what_is_on_screen`.

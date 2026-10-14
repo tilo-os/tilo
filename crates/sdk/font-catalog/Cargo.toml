@@ -25,6 +25,7 @@ workspace = true
 # `fstatvfs` and `geteuid`: whether a catalog file sits on read-only storage
 # this user cannot change (`Trust`).
 libc.workspace = true
+rustix = { workspace = true, features = ["process"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

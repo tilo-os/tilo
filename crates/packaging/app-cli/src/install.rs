@@ -362,17 +362,30 @@ fn twin_url(url: &reqwest::Url) -> Option<reqwest::Url> {
     Some(twin)
 }
 
-fn package_client() -> Result<reqwest::blocking::Client, String> {
-    tilo_net::http::blocking_client()
-        .user_agent("tilo-app/0.1")
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(download_timeout())
-        // The publisher-signed URL is the only endpoint authorized to serve
-        // these bytes. Following a redirect would silently widen that trust
-        // and can cross from a public origin into a private network.
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| format!("http client: {e}"))
+/// The process's one client for package downloads. Its connection pool
+/// lets the downloads of a run share connections: a far-away store charges a
+/// TCP and TLS handshake, several round trips, for every new one, which an
+/// update of many apps otherwise paid once per package. Its timeout
+/// ([`download_timeout`]) bounds each step of a download, not the whole
+/// transfer.
+fn package_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::blocking::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            tilo_net::http::blocking_client()
+                .user_agent("tilo-app/0.1")
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(download_timeout())
+                // The publisher-signed URL is the only endpoint authorized to serve
+                // these bytes. Following a redirect would silently widen that trust
+                // and can cross from a public origin into a private network.
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|e| format!("http client: {e}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 /// What a response body is: the package itself, or its compressed twin.
@@ -661,12 +674,55 @@ fn install_or_update_app_reporting(
 ) -> Result<(), InstallError> {
     validate_offer_metadata(app)?;
     // The runtime first: an app whose runtime is missing does not start, so
-    // replacing a working build with it would break the app.
-    if let Some(runtime) = app.runtime.as_deref()
-        && !registry_types::is_runtime_package_id(&app.package_id)
-    {
-        ensure_runtime(app, runtime, on_progress)?;
+    // replacing a working build with it would break the app, and there is no
+    // point downloading it.
+    ensure_app_runtime(app, on_progress)?;
+    let staged = stage(app, on_progress)?;
+    install_staged(app, staged, on_progress, change)
+}
+
+/// [`ensure_runtime`] for the runtime `app` declares, when it is an app.
+fn ensure_app_runtime(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    match app.runtime.as_deref() {
+        Some(runtime) if !registry_types::is_runtime_package_id(&app.package_id) => {
+            ensure_runtime(app, runtime, on_progress)
+        }
+        _ => Ok(()),
     }
+}
+
+/// A package downloaded and checked against its signed offer, waiting in the
+/// staging directory for the installer. The file goes when this is dropped:
+/// once installed, its bytes live in the package store; after a failure it is
+/// not worth keeping.
+#[derive(Debug)]
+pub struct StagedPackage {
+    path: PathBuf,
+    bytes: u64,
+}
+
+impl Drop for StagedPackage {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Download `app`'s package into the staging directory and check it against
+/// the signed offer: its length, then its BLAKE3.
+///
+/// # Errors
+///
+/// Returns an error if the offer's metadata is out of bounds, there is
+/// nowhere writable to stage, the download fails, or the bytes are not the
+/// signed ones.
+pub fn stage(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<StagedPackage, InstallError> {
+    validate_offer_metadata(app)?;
     let staging = staging_dir().ok_or(InstallError::NoStagingDir)?;
     // The package id comes from a signed registry entry, but it still
     // becomes a filename here — refuse anything that could escape the
@@ -682,19 +738,82 @@ fn install_or_update_app_reporting(
             }
         })
         .collect();
-    let dest = staging.join(format!("{safe_id}-{}.tapp", app.version.replace('/', "_")));
+    let path = staging.join(format!("{safe_id}-{}.tapp", app.version.replace('/', "_")));
+    let bytes = fetch_verified(app, &path, on_progress)?;
+    Ok(StagedPackage { path, bytes })
+}
 
-    let downloaded = fetch_verified(app, &dest, on_progress)?;
+/// Packages [`stage_each`] downloads at once.
+pub const PARALLEL_DOWNLOADS: usize = 8;
 
-    if let Err(error) = install_optional_runtimes(app, &dest, on_progress) {
-        let _ = std::fs::remove_file(&dest);
-        return Err(error);
-    }
+/// Download the package of every app in `apps`, [`PARALLEL_DOWNLOADS`] at a
+/// time, and hand each to `ready` on the calling thread as soon as it is
+/// staged and checked (or has failed), with its index in `apps`, in the order
+/// they finish. `ready` runs while the rest are still downloading.
+///
+/// Updating many apps waits on the network, not on the installs: fetched one
+/// after another, every package costs at least a round trip to the store
+/// before its first byte, so a run of twenty apps waited twenty round trips
+/// in a row. The installer still runs one package at a time, as the store's
+/// lock requires.
+pub fn stage_each(
+    apps: &[&CatalogueApp],
+    mut ready: impl FnMut(usize, Result<StagedPackage, InstallError>),
+) {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let (sender, staged) = std::sync::mpsc::channel();
+        for _ in 0..PARALLEL_DOWNLOADS.min(apps.len()) {
+            let sender = sender.clone();
+            let next = &next;
+            scope.spawn(move || {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(app) = apps.get(index) else { break };
+                    if sender.send((index, stage(app, &mut |_| {}))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(sender);
+        for (index, result) in staged {
+            ready(index, result);
+        }
+    });
+}
+
+/// Update `app` from the package [`stage`] downloaded for it.
+///
+/// # Errors
+///
+/// Returns an error if the runtime it needs cannot be made available, or
+/// `tilo-install` cannot run or refuses the update.
+pub fn update_staged_reporting(
+    app: &CatalogueApp,
+    staged: StagedPackage,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    ensure_app_runtime(app, on_progress)?;
+    install_staged(app, staged, on_progress, Change::Update)
+}
+
+/// Hand a staged package to `tilo-install`, which verifies it again and
+/// installs, updates or rolls back to it.
+fn install_staged(
+    app: &CatalogueApp,
+    staged: StagedPackage,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+    change: Change,
+) -> Result<(), InstallError> {
+    let dest = staged.path.as_path();
+    let downloaded = staged.bytes;
+    install_optional_runtimes(app, dest, on_progress)?;
     let payload_from = payload_source(app);
     let mut command = Command::new(tilo_install_bin());
     if change == Change::Install {
         command.args(install_argv(
-            &dest,
+            dest,
             &app.publisher_pubkey_hex,
             &app.tapp_root_hash_hex,
             payload_from.as_deref(),
@@ -725,7 +844,7 @@ fn install_or_update_app_reporting(
         },
     });
     let output = run_installer_with_progress(command, downloaded, on_progress);
-    let _ = std::fs::remove_file(&dest);
+    drop(staged);
 
     match output {
         Err(e) => Err(InstallError::InstallerMissing {

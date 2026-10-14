@@ -142,7 +142,7 @@ fn authenticate(stream: &mut UnixStream, password: &str) {
 #[test]
 fn locked_restart_restores_before_the_first_control_response() {
     tilo_test_env::require_isolated_desktop();
-    let runtime = format!("/run/user/{}", unsafe { libc::geteuid() });
+    let runtime = format!("/run/user/{}", rustix::process::geteuid().as_raw());
     fs::create_dir_all(&runtime).unwrap();
     let directory = tempfile::Builder::new()
         .prefix("lr-")
@@ -188,7 +188,7 @@ fn locked_restart_restores_before_the_first_control_response() {
 #[test]
 fn locked_restart_and_crash_refuse_contents_until_verification() {
     tilo_test_env::require_isolated_desktop();
-    let runtime = format!("/run/user/{}", unsafe { libc::geteuid() });
+    let runtime = format!("/run/user/{}", rustix::process::geteuid().as_raw());
     fs::create_dir_all(&runtime).unwrap();
     let directory = tempfile::Builder::new()
         .prefix("lr-")

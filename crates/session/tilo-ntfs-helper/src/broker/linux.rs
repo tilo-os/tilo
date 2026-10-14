@@ -237,7 +237,7 @@ pub(super) fn command(args: &[String]) -> io::Result<()> {
     unsafe {
         libc::alarm(20);
     }
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "explicit administrative invocation required",
