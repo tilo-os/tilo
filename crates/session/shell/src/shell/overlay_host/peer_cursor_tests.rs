@@ -36,6 +36,7 @@ fn one_group_seed() -> WorkspaceTree {
             // A group's active tab has to name a tab it has; `0`
             // names nothing, and the resolvers read this.
             active_tab: tab_id,
+            focus_history: Vec::new(),
         }],
     };
     // Through the constructor rather than a struct literal: a field
@@ -188,6 +189,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
                     },
                 }],
                 active_tab: target_tab,
+                focus_history: Vec::new(),
             });
         tree.desktop
             .collaborators
@@ -368,6 +370,7 @@ fn follow_waits_for_the_live_row_before_recording_its_target() {
                 },
             }],
             active_tab: 201,
+            focus_history: Vec::new(),
         });
         workspace
             .collaborators
@@ -542,6 +545,7 @@ fn cross_app_follow_tree() -> WorkspaceTree {
                 },
             }],
             active_tab: 201,
+            focus_history: Vec::new(),
         });
     tree.desktop.workspaces[0]
         .collaborators

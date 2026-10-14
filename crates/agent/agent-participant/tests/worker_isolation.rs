@@ -5,6 +5,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -44,9 +45,16 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
 /// of its own, or a member's store refuses it as not matching its binding.
 #[test]
 fn a_confined_record_created_under_a_room_route_names_that_route() {
+    assert_seed_route("so.tilo.scratchpad", ui::record::RecordId::room_default());
+}
+
+#[test]
+fn a_confined_room_record_is_created_under_the_package_primary_route() {
+    assert_seed_route("so.tilo.notes", ui::record::RecordId::package_primary());
+}
+
+fn assert_seed_route(app: &str, default: ui::record::RecordId) {
     let catalogue = catalogue();
-    let app = "so.tilo.notes";
-    let default = ui::record::RecordId::room_default();
     let source = ConfinedReplica::open(
         &catalogue,
         app,
@@ -62,10 +70,29 @@ fn a_confined_record_created_under_a_room_route_names_that_route() {
     };
     let doc = automerge::AutoCommit::load(&genesis).unwrap();
     let kind = catalogue.get(app).unwrap().record_kind.clone();
-    assert_eq!(
-        ui::record::identity(&doc),
-        Some(ui::record::RecordCheckout::new(default, kind))
-    );
+    if default.is_package_primary() {
+        // A package primary uses its store namespace, not a minted identity.
+        assert_eq!(ui::record::identity(&doc), None);
+    } else {
+        assert_eq!(ui::record::room_scope(&doc).as_deref(), Some(ROOM));
+        assert_eq!(
+            ui::record::identity(&doc),
+            Some(ui::record::RecordCheckout::new(default, kind))
+        );
+    }
+    // Both route shapes must reopen through the actual confined factory.
+    ConfinedReplica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "member",
+        &tilo_agent_participant::ReplicaActor::Owner,
+        Seed::Existing {
+            record: source.record_id().clone(),
+            changes: vec![genesis],
+        },
+    )
+    .unwrap();
 }
 
 fn edit(text: &str) -> serde_json::Map<String, serde_json::Value> {

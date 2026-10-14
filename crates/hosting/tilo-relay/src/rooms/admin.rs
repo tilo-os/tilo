@@ -191,6 +191,13 @@ impl RoomAdminProtocol {
                 .map(|done| RoomReply::Governance {
                     generation: done.generation,
                 }),
+            RoomCommand::GrantAppAuthorship { room, request } => self
+                .rooms
+                .grant_app_authorship(&room, device, request)
+                .await
+                .map(|done| RoomReply::Governance {
+                    generation: done.generation,
+                }),
         };
         result.unwrap_or_else(|error| RoomReply::Refused(error.to_string()))
     }

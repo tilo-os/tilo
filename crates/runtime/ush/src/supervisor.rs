@@ -1,4 +1,4 @@
-//! The supervisor: one session, from `ush` to the shell exiting.
+//! The supervisor: authenticated control and individually leased shell sessions.
 //!
 //! Runs on the host, in the user's session, outside every app sandbox — the
 //! only thing here that holds `unshare` and `mount`, and it hands none of
@@ -770,6 +770,19 @@ enum Served {
     Done,
     /// An open was refused; the app may ask again on this connection.
     Refused,
+    /// A malformed message cannot retain persistent control.
+    Malformed,
+}
+
+/// Persistent control speaks version two; legacy clients keep their single lease.
+pub const SERVICE_PROTOCOL: u16 = 2;
+const MAX_ACTIVE_SESSIONS: usize = 8;
+const MAX_SERVICE_LINE: u64 = 4096;
+
+struct SessionTransport<'a> {
+    stream: &'a UnixStream,
+    persistent: bool,
+    active: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Result<()> {
@@ -777,39 +790,114 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
     let mut raw = stream.try_clone()?;
     let (caller, carried) = crate::host::read_caller(&mut raw)?;
     let mut reader = BufReader::new(std::io::Cursor::new(carried).chain(raw));
-    for _ in 0..MAX_REQUESTS_PER_CONNECTION {
+    let mut transport = SessionTransport {
+        stream,
+        persistent: false,
+        active: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    };
+    let mut legacy_requests = 0usize;
+    loop {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
+        if reader
+            .by_ref()
+            .take(MAX_SERVICE_LINE + 1)
+            .read_line(&mut line)?
+            == 0
+        {
             return Ok(());
         }
-        if serve_request(stream, &mut writer, store, host_root, &caller, &line)? == Served::Done {
+        anyhow::ensure!(
+            u64::try_from(line.len())? <= MAX_SERVICE_LINE,
+            "ush request exceeds its bound"
+        );
+        if serde_json::from_str::<serde_json::Value>(&line)
+            .ok()
+            .is_some_and(|value| {
+                value.get("op").and_then(serde_json::Value::as_str) == Some("hello")
+            })
+        {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Hello {
+                op: String,
+                protocol: u16,
+            }
+            let hello: Hello = serde_json::from_str(&line)?;
+            anyhow::ensure!(
+                hello.op == "hello" && hello.protocol == SERVICE_PROTOCOL,
+                "ush control protocol is unsupported"
+            );
+            transport.persistent = true;
+            writer.write_all(b"{\"result\":\"ready\",\"protocol\":2}\n")?;
+            writer.flush()?;
+            continue;
+        }
+        if !transport.persistent {
+            if legacy_requests >= MAX_REQUESTS_PER_CONNECTION {
+                return Ok(());
+            }
+            legacy_requests = legacy_requests.saturating_add(1);
+        }
+        let served = serve_request(&transport, &mut writer, store, host_root, &caller, &line)?;
+        if served == Served::Malformed || (!transport.persistent && served == Served::Done) {
             return Ok(());
         }
     }
-    Ok(())
+}
+
+fn session_limit_reached(
+    transport: &SessionTransport<'_>,
+    writer: &mut UnixStream,
+) -> anyhow::Result<bool> {
+    if !transport.persistent
+        || transport.active.load(std::sync::atomic::Ordering::Acquire) < MAX_ACTIVE_SESSIONS
+    {
+        return Ok(false);
+    }
+    reply(
+        writer,
+        &ServeResponse::Denied {
+            reason: "this window has reached its active session limit".into(),
+        },
+        None,
+    )?;
+    Ok(true)
+}
+
+fn parse_service_request(
+    writer: &mut UnixStream,
+    line: &str,
+) -> anyhow::Result<Option<ServeRequest>> {
+    match serde_json::from_str(line) {
+        Ok(request) => Ok(Some(request)),
+        Err(error) => {
+            reply(
+                writer,
+                &ServeResponse::Denied {
+                    reason: format!("malformed request: {error}"),
+                },
+                None,
+            )?;
+            Ok(None)
+        }
+    }
 }
 
 fn serve_request(
-    stream: &UnixStream,
+    transport: &SessionTransport<'_>,
     writer: &mut UnixStream,
     store: &Store,
     host_root: &Path,
     caller: &crate::host::Caller,
     line: &str,
 ) -> anyhow::Result<Served> {
-    let req: ServeRequest = match serde_json::from_str(line) {
-        Ok(r) => r,
-        Err(e) => {
-            reply(
-                writer,
-                &ServeResponse::Denied {
-                    reason: format!("malformed request: {e}"),
-                },
-                None,
-            )?;
-            return Ok(Served::Done);
-        }
+    let Some(req) = parse_service_request(writer, line)? else {
+        return Ok(Served::Malformed);
     };
+    if matches!(req, ServeRequest::OpenSession { .. }) && session_limit_reached(transport, writer)?
+    {
+        return Ok(Served::Refused);
+    }
     match &req {
         ServeRequest::ListEnvironments
         | ServeRequest::CreateEnvironment { .. }
@@ -824,9 +912,9 @@ fn serve_request(
         ServeRequest::OpenSession {
             target: Target::Host,
             ..
-        } => return serve_host(stream, writer, store, caller, &req),
+        } => return serve_host(transport, writer, store, caller, &req),
         ServeRequest::OpenSession { target, .. } if is_relay(target) => {
-            return serve_relay(stream, writer, store, &req);
+            return serve_relay(transport, writer, store, &req);
         }
         ServeRequest::ListRelays => {
             reply(writer, &list_relays(), None)?;
@@ -850,7 +938,7 @@ fn serve_request(
         }
     };
     serve_guest_session(
-        stream,
+        transport,
         writer,
         store,
         host_root,
@@ -860,7 +948,7 @@ fn serve_request(
 }
 
 fn serve_guest_session(
-    stream: &UnixStream,
+    transport: &SessionTransport<'_>,
     writer: &mut UnixStream,
     store: &Store,
     host_root: &Path,
@@ -878,13 +966,21 @@ fn serve_guest_session(
         return Ok(Served::Refused);
     }
 
-    open_environment(stream, writer, store, host_root, environment, &record, req)
+    open_environment(
+        transport,
+        writer,
+        store,
+        host_root,
+        environment,
+        &record,
+        req,
+    )
 }
 
 /// Build the guest of an environment on this device on a fresh pty and hand
 /// its master to the app; the connection is the session's lifetime.
 fn open_environment(
-    stream: &UnixStream,
+    transport: &SessionTransport<'_>,
     writer: &mut UnixStream,
     store: &Store,
     host_root: &Path,
@@ -938,50 +1034,145 @@ fn open_environment(
     // The child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
-    let response = ServeResponse::Session {
-        session: id.clone(),
-        environment: record.clone(),
-        relay_session: None,
-        runs: runs.is_some(),
-        editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
-    };
-    let handed = if let Some((app, _)) = &editor {
-        serde_json::to_vec(&response)
-            .map_err(anyhow::Error::from)
-            .and_then(|mut bytes| {
-                bytes.push(b'\n');
-                runtime_portal::fd_transport::send_with_fds(
-                    &*writer,
-                    &bytes,
-                    &[master.as_fd(), app.as_fd()],
-                )
-                .map_err(anyhow::Error::from)
-            })
+    hand_off_session(
+        transport,
+        writer,
+        store,
+        &ServeResponse::Session {
+            session: id,
+            environment: record,
+            relay_session: None,
+            runs: runs.is_some(),
+            editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
+        },
+        master,
+        child,
+        editor.map(|(app, _)| app),
+        || {},
+    )?;
+    Ok(Served::Done)
+}
+
+struct PendingSessionChild(Option<std::process::Child>);
+
+impl PendingSessionChild {
+    fn transfer(&mut self) -> anyhow::Result<std::process::Child> {
+        self.0
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("session child was already transferred"))
+    }
+}
+
+impl Drop for PendingSessionChild {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn hand_off_session(
+    transport: &SessionTransport<'_>,
+    writer: &mut UnixStream,
+    store: &Store,
+    response: &ServeResponse,
+    master: std::fs::File,
+    child: std::process::Child,
+    editor: Option<runtime_portal::editor::Socket>,
+    on_started: impl FnOnce(),
+) -> anyhow::Result<()> {
+    use std::os::fd::AsFd;
+    #[derive(serde::Serialize)]
+    struct Leased<'a> {
+        #[serde(flatten)]
+        response: &'a ServeResponse,
+        protocol: u16,
+    }
+    let mut child = PendingSessionChild(Some(child));
+    let close_event = if matches!(
+        response,
+        ServeResponse::Session {
+            relay_session: Some(_),
+            ..
+        }
+    ) {
+        "close-relay-session"
     } else {
-        reply(writer, &response, Some(master.as_fd()))
+        "close-session"
     };
-    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+    let ServeResponse::Session {
+        session,
+        environment,
+        ..
+    } = response
+    else {
+        anyhow::bail!("session handoff requires an admitted session");
+    };
+    let (id, record, audit_dir) = (session.clone(), environment.clone(), store.audit_dir());
+    // Terminal gave up on the open before the answer came: nothing holds this
+    // session's terminal, so the pending child is stopped (on drop) and the
+    // close audited rather than left running unseen.
+    let undelivered = |error: anyhow::Error| {
         AuditLog::at(store.audit_dir()).append(
-            &crate::audit::AuditRecord::new(&id, &record, "close-session", true)
+            &crate::audit::AuditRecord::new(&id, &record, close_event, true)
                 .because("terminal gone before the session was handed over"),
         );
+        error
+    };
+    if !transport.persistent {
+        // The legacy lease is the request connection itself: PTY first, then
+        // the editor capability when one was negotiated.
+        if let Some(app) = &editor {
+            let mut bytes = serde_json::to_vec(response)?;
+            bytes.push(b'\n');
+            runtime_portal::fd_transport::send_with_fds(
+                &*writer,
+                &bytes,
+                &[master.as_fd(), app.as_fd()],
+            )
+            .map_err(|error| undelivered(error.into()))?;
+        } else {
+            reply(writer, response, Some(master.as_fd())).map_err(undelivered)?;
+        }
+        drop(editor);
+        drop(master);
+        on_started();
+        let termination = finish_session(transport.stream, child.transfer()?);
+        AuditLog::at(audit_dir).append(
+            &crate::audit::AuditRecord::new(&id, &record, close_event, true).because(termination),
+        );
+        return Ok(());
+    }
+    let (supervisor_lease, terminal_lease) = UnixStream::pair()?;
+    let mut bytes = serde_json::to_vec(&Leased {
+        response,
+        protocol: SERVICE_PROTOCOL,
     })?;
+    bytes.push(b'\n');
+    // Roles, in order: PTY master, private session lease, then the editor
+    // capability when `editor_protocol` was negotiated.
+    let mut rights = vec![master.as_fd(), terminal_lease.as_fd()];
+    if let Some(app) = &editor {
+        rights.push(app.as_fd());
+    }
+    runtime_portal::fd_transport::send_with_fds(&*writer, &bytes, &rights)
+        .map_err(|error| undelivered(error.into()))?;
     drop(editor);
-    // Hold the master open until the app has it: closing before the descriptor
-    // is received would hand over a dead terminal.
     drop(master);
-    // The request connection is the lifetime capability for this guest, in
-    // both directions. When Terminal closes (or crashes) its end, this worker
-    // tears down exactly the child it created: dropping the pty master is not
-    // enough because the PID-namespace init may survive a terminal hangup.
-    // When the guest exits first, this worker reaps it at once and closes the
-    // connection, which is how Terminal tells a finished session from the
-    // hand-off window in which its PTY master also reports `EIO`.
-    let termination = finish_session(stream, child);
-    AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new(&id, &record, "close-session", true).because(termination),
-    );
-    Ok(Served::Done)
+    drop(terminal_lease);
+    on_started();
+    let active = transport.active.clone();
+    let child = child.transfer()?;
+    active.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    std::thread::spawn(move || {
+        let termination = finish_session(&supervisor_lease, child);
+        AuditLog::at(audit_dir).append(
+            &crate::audit::AuditRecord::new(&id, &record, close_event, true).because(termination),
+        );
+        active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    });
+    Ok(())
 }
 
 /// Refuse an open whose environment cannot be built, saying why, logging
@@ -1134,7 +1325,7 @@ fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>,
 /// Run the device's own login shell on a fresh pty and hand its master to
 /// the app — once [`crate::host::decide_host`] allows `caller` this request.
 fn serve_host(
-    stream: &UnixStream,
+    transport: &SessionTransport<'_>,
     writer: &mut UnixStream,
     store: &Store,
     caller: &crate::host::Caller,
@@ -1214,28 +1405,22 @@ fn serve_host(
         &slave,
     )?;
     drop(slave);
-    let handed = reply(
+    hand_off_session(
+        transport,
         writer,
+        store,
         &ServeResponse::Session {
-            session: id.clone(),
+            session: id,
             environment: "host".into(),
             relay_session: None,
             runs: runs.is_some(),
             editor_protocol: None,
         },
-        Some(master.as_fd()),
-    );
-    let child = accept_session_handoff(handed, child).inspect_err(|_| {
-        AuditLog::at(store.audit_dir()).append(
-            &crate::audit::AuditRecord::new(&id, "host", "close-session", true)
-                .because("terminal gone before the session was handed over"),
-        );
-    })?;
-    drop(master);
-    let termination = finish_session(stream, child);
-    AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new(&id, "host", "close-session", true).because(termination),
-    );
+        master,
+        child,
+        None,
+        || {},
+    )?;
     Ok(Served::Done)
 }
 
@@ -1272,7 +1457,7 @@ fn relay_session_to(
 /// gets a pty from this broker whatever the target. The answer names the
 /// relay session, which re-attaches to it later.
 fn serve_relay(
-    stream: &UnixStream,
+    transport: &SessionTransport<'_>,
     writer: &mut UnixStream,
     store: &Store,
     req: &ServeRequest,
@@ -1341,30 +1526,22 @@ fn serve_relay(
         "open-relay-session",
         true,
     ));
-    let handed = reply(
+    hand_off_session(
+        transport,
         writer,
+        store,
         &ServeResponse::Session {
-            session: id.clone(),
-            environment: key.clone(),
+            session: id,
+            environment: key,
             relay_session: Some(session_id),
             runs: false,
             editor_protocol: None,
         },
-        Some(master.as_fd()),
-    );
-    let child = accept_session_handoff(handed, child).inspect_err(|_| {
-        AuditLog::at(store.audit_dir()).append(
-            &crate::audit::AuditRecord::new(&id, &key, "close-relay-session", true)
-                .because("terminal gone before the session was handed over"),
-        );
-    })?;
-    drop(master);
-    adopt_relay_tools(status, store.records_root().to_path_buf());
-    let termination = finish_session(stream, child);
-    AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new(&id, &key, "close-relay-session", true)
-            .because(termination),
-    );
+        master,
+        child,
+        None,
+        || adopt_relay_tools(status, store.records_root().to_path_buf()),
+    )?;
     Ok(Served::Done)
 }
 
@@ -1478,27 +1655,10 @@ fn adopt_relay_tools(mut status: crate::relay::StatusReader, records_root: PathB
     });
 }
 
-/// A spawned local guest, host shell or relay bridge belongs to the
-/// supervisor until its descriptor reply is delivered. An abandoned open
-/// must not leave a running child or a zombie behind.
-fn accept_session_handoff(
-    handed: anyhow::Result<()>,
-    mut child: std::process::Child,
-) -> anyhow::Result<std::process::Child> {
-    match handed {
-        Ok(()) => Ok(child),
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Err(error)
-        }
-    }
-}
-
 /// Wait for whichever side of a served session ends first and tear the
 /// other down; returns the line the audit log records.
 ///
-/// The request connection is the lifetime capability for the session, in
+/// The private lease (or legacy request connection) is the lifetime capability, in
 /// both directions. When Terminal closes (or crashes) its end, this tears
 /// down exactly the child it created: dropping the pty master is not enough
 /// because a PID-namespace init may survive a terminal hangup. When the
@@ -1737,7 +1897,215 @@ pub use runtime_portal::fd_transport::{recv_with_fd, send_with_fd};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use tilo_environment::{DEFAULT_RECORD, PackageId};
+
+    #[test]
+    fn guest_exit_and_failed_handoff_reap_the_exact_child() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::at(root.path().join("store"));
+        store.ensure().unwrap();
+        for fails in [false, true] {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let transport = SessionTransport {
+                stream: &server.try_clone().unwrap(),
+                persistent: true,
+                active: active.clone(),
+            };
+            let (master, slave) = open_pty(80, 24).unwrap();
+            let child = spawn_on_pty(
+                std::process::Command::new(if fails { "cat" } else { "true" }),
+                &slave,
+            )
+            .unwrap();
+            let pid = child.id();
+            drop(slave);
+            if fails {
+                client.shutdown(std::net::Shutdown::Both).unwrap();
+            }
+            let handed = hand_off_session(
+                &transport,
+                &mut server,
+                &store,
+                &ServeResponse::Session {
+                    session: "exact".into(),
+                    environment: "default".into(),
+                    relay_session: None,
+                    runs: false,
+                    editor_protocol: None,
+                },
+                master,
+                child,
+                None,
+                || {},
+            );
+            if fails {
+                assert!(handed.is_err());
+            } else {
+                handed.unwrap();
+                let (_, mut rights) = runtime_portal::fd_transport::recv_with_fds(&client).unwrap();
+                assert_eq!(rights.len(), 2);
+                let mut lease = UnixStream::from(rights.pop().unwrap());
+                lease
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                assert_eq!(
+                    lease.read(&mut [0u8; 1]).unwrap(),
+                    0,
+                    "guest exit must close only its session lease"
+                );
+                client.write_all(b"control").unwrap();
+                let mut bytes = [0u8; 7];
+                server.read_exact(&mut bytes).unwrap();
+                assert_eq!(&bytes, b"control");
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while active.load(std::sync::atomic::Ordering::Acquire) != 0
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(active.load(std::sync::atomic::Ordering::Acquire), 0);
+            assert!(
+                !Path::new(&format!("/proc/{pid}")).exists(),
+                "the exact child must be reaped"
+            );
+        }
+    }
+
+    #[test]
+    fn persistent_session_leases_cancel_and_reap_without_closing_control() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::at(root.path().join("store"));
+        store.ensure().unwrap();
+        let (client, mut server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let transport = SessionTransport {
+            stream: &server.try_clone().unwrap(),
+            persistent: true,
+            active: active.clone(),
+        };
+        for index in 0..13 {
+            let environment = if index % 2 == 0 { "default" } else { "host" };
+            let (master, slave) = open_pty(80, 24).unwrap();
+            let child = spawn_on_pty(std::process::Command::new("cat"), &slave).unwrap();
+            let pid = child.id();
+            drop(slave);
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            hand_off_session(
+                &transport,
+                &mut server,
+                &store,
+                &ServeResponse::Session {
+                    session: id.clone(),
+                    environment: environment.into(),
+                    relay_session: None,
+                    runs: false,
+                    editor_protocol: None,
+                },
+                master,
+                child,
+                None,
+                || {},
+            )
+            .unwrap();
+            let (bytes, mut rights) = runtime_portal::fd_transport::recv_with_fds(&client).unwrap();
+            let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(response["session"], id);
+            assert_eq!(response["environment"], environment);
+            assert_eq!(response["protocol"], SERVICE_PROTOCOL);
+            assert_eq!(rights.len(), 2);
+            // Terminal holds the lease as a `SessionLifetime`, whose drop
+            // shuts the connection down even while a reader's duplicate of
+            // it is still open.
+            let lease = runtime_portal::pending_connection::SessionLifetime::new(UnixStream::from(
+                rights.pop().unwrap(),
+            ));
+            let reader_clone = lease.clone_for_reader().unwrap();
+            let terminal = std::fs::File::from(rights.pop().unwrap());
+            // SAFETY: terminal is an owned live PTY descriptor. isatty reads no user memory.
+            assert_eq!(unsafe { libc::isatty(terminal.as_raw_fd()) }, 1);
+            drop(lease);
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while active.load(std::sync::atomic::Ordering::Acquire) != 0
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(active.load(std::sync::atomic::Ordering::Acquire), 0);
+            assert!(
+                !Path::new(&format!("/proc/{pid}")).exists(),
+                "session child must be reaped"
+            );
+            drop(reader_clone);
+            drop(terminal);
+            (&client).write_all(b"live").unwrap();
+            let mut bytes = [0u8; 4];
+            server.read_exact(&mut bytes).unwrap();
+            assert_eq!(
+                &bytes, b"live",
+                "session cancellation must not consume control"
+            );
+        }
+    }
+
+    #[test]
+    fn persistent_control_negotiates_before_open_and_preserves_the_authenticated_caller() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::at(root.path().join("store"));
+        store.ensure().unwrap();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let worker = std::thread::spawn(move || serve_one(&server, &store, Path::new("/")));
+        client
+            .write_all(&crate::host::encode_handoff("so.tilo.unrelated").unwrap())
+            .unwrap();
+        client
+            .write_all(b"{\"op\":\"hello\",\"protocol\":2}\n")
+            .unwrap();
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        let mut hello = String::new();
+        reader.read_line(&mut hello).unwrap();
+        let accepted = serde_json::from_str::<serde_json::Value>(&hello).unwrap();
+        let mut denied = Vec::new();
+        if accepted["result"] == "ready" {
+            for index in 0..13 {
+                let requested_by = if index % 2 == 0 { "person" } else { "agent" };
+                let request = serde_json::json!({
+                    "op": "open-session", "target": {"kind": "host"},
+                    "requested_by": requested_by
+                });
+                writeln!(client, "{request}").unwrap();
+                let mut response = String::new();
+                reader.read_line(&mut response).unwrap();
+                denied.push(serde_json::from_str::<serde_json::Value>(&response).unwrap());
+            }
+            client.write_all(b"not-json\n").unwrap();
+            let mut malformed = String::new();
+            reader.read_line(&mut malformed).unwrap();
+            let refusal: serde_json::Value = serde_json::from_str(&malformed).unwrap();
+            assert_eq!(refusal["result"], "denied");
+            assert_eq!(reader.read_line(&mut String::new()).unwrap(), 0);
+        }
+        drop(reader);
+        drop(client);
+        worker.join().unwrap().unwrap();
+        assert_eq!(accepted["result"], "ready", "{accepted}");
+        assert_eq!(accepted["protocol"], 2);
+        assert_eq!(denied.len(), 13);
+        for refusal in denied {
+            assert_eq!(refusal["result"], "denied", "{refusal}");
+        }
+    }
 
     #[test]
     fn the_session_ends_when_the_guest_or_the_terminal_does() {
@@ -1829,7 +2197,8 @@ mod tests {
             handed.is_err(),
             "the cancelled terminal cannot accept a descriptor"
         );
-        assert!(accept_session_handoff(handed, child).is_err());
+        // The pending guard owns the child until a handoff is accepted.
+        drop(PendingSessionChild(Some(child)));
         // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
         let mut status = 0;
         assert_eq!(

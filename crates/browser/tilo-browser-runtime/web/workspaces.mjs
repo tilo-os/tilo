@@ -282,6 +282,37 @@ export function keepOwnedHost({origin, userPublicKey}, memberships = globalThis.
 }
 
 /**
+ * Remember that this browser is in `room` at the host at `origin` as
+ * `userPublicKey`, whose root it holds (joined through an invitation, or a
+ * workspace it created on a host it owns), so a later visit reconnects
+ * (`hostToReconnect`).
+ */
+export function keepJoinedHost({origin, room, userPublicKey}, memberships = globalThis.localStorage) {
+  const host = {host: {origin}};
+  const kept = keptMembership(host, memberships);
+  const owner = Boolean(kept?.owner && kept.userPublicKey === userPublicKey);
+  keepMembership(memberships, host, {origin: originOf(origin), room, userPublicKey, ...(owner ? {owner} : {})});
+}
+
+/** The origins of the hosts this browser set up for `userPublicKey`. */
+export function ownedHosts(userPublicKey, memberships = globalThis.localStorage) {
+  return Object.values(readMemberships(memberships))
+    .filter(kept => kept?.owner && kept.origin && kept.userPublicKey === userPublicKey)
+    .map(kept => kept.origin);
+}
+
+/**
+ * What this browser kept for the host at `origin` that the root of
+ * `userPublicKey` it holds can reconnect with, or `null`: a host it set up
+ * or joined as that person. Never a device paired to a person kept
+ * elsewhere, which holds no root of theirs.
+ */
+export function hostToReconnect(origin, userPublicKey, memberships = globalThis.localStorage) {
+  const kept = keptMembership({host: {origin}}, memberships);
+  return kept && !kept.paired && kept.userPublicKey === userPublicKey ? kept : null;
+}
+
+/**
  * Join `workspace` as `identity` (the person, created and kept by the
  * caller) through its host's admission door; resolves to the peer.
  */

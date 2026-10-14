@@ -1071,8 +1071,8 @@ installer registers to open the installed executable. This route launches a
 normal Clocks window; it does not yet focus an already-running instance. The
 registered command ignores URI contents rather than forwarding them as arguments.
 
-For device verification, build `cargo build --locked -p ui-examples --example windows-host
---features notifications`. The helper accepts `history so.tilo.clocks` to inspect
+For device verification, build `cargo build --locked -p ui-examples --example windows-host`.
+The helper accepts `history so.tilo.clocks` to inspect
 only Clocks' notifications and `remove so.tilo.clocks TAG` to dismiss one test
 notification. `show ID TAG TITLE BODY` exercises the production SDK API; Windows
 may reject a settings query before the app's first notification is submitted.

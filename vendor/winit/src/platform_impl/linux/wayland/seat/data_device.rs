@@ -96,10 +96,22 @@ impl DndState {
     ) -> Option<(Self, Channel<DndPayload>)> {
         let manager = DataDeviceManagerState::bind(globals, queue_handle).ok()?;
         let (sender, channel) = channel::channel();
-        Some((Self { manager, sender, hover: None, next_spool: 0 }, channel))
+        Some((
+            Self {
+                manager,
+                sender,
+                hover: None,
+                next_spool: 0,
+            },
+            channel,
+        ))
     }
 
-    pub fn get_data_device(&self, queue_handle: &QueueHandle<WinitState>, seat: &WlSeat) -> DataDevice {
+    pub fn get_data_device(
+        &self,
+        queue_handle: &QueueHandle<WinitState>,
+        seat: &WlSeat,
+    ) -> DataDevice {
         self.manager.get_data_device(queue_handle, seat)
     }
 }
@@ -210,16 +222,21 @@ fn is_writable(dir: &std::path::Path) -> bool {
         Ok(()) => {
             let _ = std::fs::remove_file(&probe);
             true
-        },
+        }
         Err(_) => false,
     }
 }
 
 impl WinitState {
     fn dnd_window_id(&self, surface: &WlSurface) -> Option<WindowId> {
-        let parent = surface.data::<SurfaceData>().and_then(|d| d.parent_surface());
+        let parent = surface
+            .data::<SurfaceData>()
+            .and_then(|d| d.parent_surface());
         let window_id = wayland::make_wid(parent.unwrap_or(surface));
-        self.windows.borrow().contains_key(&window_id).then_some(window_id)
+        self.windows
+            .borrow()
+            .contains_key(&window_id)
+            .then_some(window_id)
     }
 
     /// Synthesise a pointer position for `window_id` from the drag's
@@ -231,14 +248,25 @@ impl WinitState {
         };
         let position: PhysicalPosition<f64> = LogicalPosition::new(x, y).to_physical(scale_factor);
         let device_id = crate::event::DeviceId(crate::platform_impl::DeviceId::Wayland(DeviceId));
-        self.events_sink.push_window_event(WindowEvent::CursorMoved { device_id, position }, window_id);
+        self.events_sink.push_window_event(
+            WindowEvent::CursorMoved {
+                device_id,
+                position,
+            },
+            window_id,
+        );
         self.dispatched_events = true;
     }
 
     /// The event-loop side of a drop: turn the received bytes into paths
     /// and deliver them as winit events.
     pub fn deliver_dnd(&mut self, payload: DndPayload) {
-        let DndPayload { window_id, mime, bytes, offer } = payload;
+        let DndPayload {
+            window_id,
+            mime,
+            bytes,
+            offer,
+        } = payload;
         let paths = if mime == URI_LIST {
             parse_uri_list(&bytes)
         } else {
@@ -246,7 +274,7 @@ impl WinitState {
                 Some(d) => {
                     d.next_spool += 1;
                     d.next_spool
-                },
+                }
                 None => 0,
             };
             let path = spool_dir().join(format!(
@@ -259,14 +287,16 @@ impl WinitState {
                 Err(err) => {
                     tracing::warn!("could not spool a dropped {mime} payload to {path:?}: {err}");
                     Vec::new()
-                },
+                }
             }
         };
         for path in &paths {
-            self.events_sink.push_window_event(WindowEvent::HoveredFile(path.clone()), window_id);
+            self.events_sink
+                .push_window_event(WindowEvent::HoveredFile(path.clone()), window_id);
         }
         for path in paths {
-            self.events_sink.push_window_event(WindowEvent::DroppedFile(path), window_id);
+            self.events_sink
+                .push_window_event(WindowEvent::DroppedFile(path), window_id);
         }
         offer.finish();
         offer.destroy();
@@ -284,8 +314,13 @@ impl DataDeviceHandler for WinitState {
         y: f64,
         wl_surface: &WlSurface,
     ) {
-        let Some(window_id) = self.dnd_window_id(wl_surface) else { return };
-        let Some(offer) = data_device.data::<DataDeviceData>().and_then(|d| d.drag_offer()) else {
+        let Some(window_id) = self.dnd_window_id(wl_surface) else {
+            return;
+        };
+        let Some(offer) = data_device
+            .data::<DataDeviceData>()
+            .and_then(|d| d.drag_offer())
+        else {
             return;
         };
         let mime = offer.with_mime_types(choose_mime);
@@ -296,24 +331,36 @@ impl DataDeviceHandler for WinitState {
         };
         offer.set_actions(DndAction::Copy, DndAction::Copy);
         if let Some(dnd) = self.dnd.as_mut() {
-            dnd.hover = Some(DndHover { window_id, mime, offer, dropped: false });
+            dnd.hover = Some(DndHover {
+                window_id,
+                mime,
+                offer,
+                dropped: false,
+            });
         }
         self.dnd_cursor_moved(window_id, x, y);
     }
 
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
-        let Some(hover) = self.dnd.as_mut().and_then(|d| d.hover.take()) else { return };
+        let Some(hover) = self.dnd.as_mut().and_then(|d| d.hover.take()) else {
+            return;
+        };
         if hover.dropped {
             // The drop is in flight on the reader thread; `deliver_dnd`
             // finishes the offer once the bytes are in.
             return;
         }
-        self.events_sink.push_window_event(WindowEvent::HoveredFileCancelled, hover.window_id);
+        self.events_sink
+            .push_window_event(WindowEvent::HoveredFileCancelled, hover.window_id);
         self.dispatched_events = true;
     }
 
     fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, x: f64, y: f64) {
-        let Some(window_id) = self.dnd.as_ref().and_then(|d| d.hover.as_ref()).map(|h| h.window_id)
+        let Some(window_id) = self
+            .dnd
+            .as_ref()
+            .and_then(|d| d.hover.as_ref())
+            .map(|h| h.window_id)
         else {
             return;
         };
@@ -327,7 +374,9 @@ impl DataDeviceHandler for WinitState {
 
     fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
         let Some(dnd) = self.dnd.as_mut() else { return };
-        let Some(hover) = dnd.hover.as_mut() else { return };
+        let Some(hover) = dnd.hover.as_mut() else {
+            return;
+        };
         hover.dropped = true;
         let pipe = match hover.offer.receive(hover.mime.clone()) {
             Ok(pipe) => pipe,
@@ -335,7 +384,7 @@ impl DataDeviceHandler for WinitState {
                 tracing::warn!("could not receive the dropped {}: {err}", hover.mime);
                 dnd.hover = None;
                 return;
-            },
+            }
         };
         let sender = dnd.sender.clone();
         let window_id = hover.window_id;
@@ -344,22 +393,43 @@ impl DataDeviceHandler for WinitState {
         // Read on a thread: the source writes as the compositor relays, and
         // blocking the event loop on it would also block the reply the
         // source is waiting for.
-        let _ = std::thread::Builder::new().name("winit-dnd-read".into()).spawn(move || {
-            let mut pipe = pipe;
-            let mut bytes = Vec::new();
-            if let Err(err) = pipe.read_to_end(&mut bytes) {
-                tracing::warn!("reading the dropped {mime} failed: {err}");
-                return;
-            }
-            let _ = sender.send(DndPayload { window_id, mime, bytes, offer });
-        });
+        let _ = std::thread::Builder::new()
+            .name("winit-dnd-read".into())
+            .spawn(move || {
+                let mut pipe = pipe;
+                let mut bytes = Vec::new();
+                if let Err(err) = pipe.read_to_end(&mut bytes) {
+                    tracing::warn!("reading the dropped {mime} failed: {err}");
+                    return;
+                }
+                let _ = sender.send(DndPayload {
+                    window_id,
+                    mime,
+                    bytes,
+                    offer,
+                });
+            });
     }
 }
 
 impl DataOfferHandler for WinitState {
-    fn source_actions(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &mut DragOffer, _: DndAction) {}
+    fn source_actions(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &mut DragOffer,
+        _: DndAction,
+    ) {
+    }
 
-    fn selected_action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &mut DragOffer, _: DndAction) {}
+    fn selected_action(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &mut DragOffer,
+        _: DndAction,
+    ) {
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -406,8 +476,11 @@ pub fn register_drag_seat(
     device: WlDataDevice,
     queue_handle: QueueHandle<WinitState>,
 ) {
-    *DRAG_SEAT.lock().unwrap_or_else(|e| e.into_inner()) =
-        Some(DragSeat { manager, device, queue_handle });
+    *DRAG_SEAT.lock().unwrap_or_else(|e| e.into_inner()) = Some(DragSeat {
+        manager,
+        device,
+        queue_handle,
+    });
 }
 
 /// Withdraw the published data device when its seat goes away.
@@ -438,7 +511,9 @@ pub fn start_drag(surface: &WlSurface, serial: u32, offers: Vec<(String, Vec<u8>
         tracing::warn!("a drag was started before the seat had a data device");
         return false;
     };
-    let source = seat.manager.create_data_source(&seat.queue_handle, DataSourceData::default());
+    let source = seat
+        .manager
+        .create_data_source(&seat.queue_handle, DataSourceData::default());
     for (mime, _) in &offers {
         source.offer(mime.clone());
     }
@@ -450,7 +525,10 @@ pub fn start_drag(surface: &WlSurface, serial: u32, offers: Vec<(String, Vec<u8>
     OUTGOING
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push(Outgoing { source: source.id(), offers });
+        .push(Outgoing {
+            source: source.id(),
+            offers,
+        });
     seat.device.start_drag(Some(&source), surface, None, serial);
     true
 }
@@ -458,11 +536,21 @@ pub fn start_drag(surface: &WlSurface, serial: u32, offers: Vec<(String, Vec<u8>
 /// Drop an outgoing drag's payload once the source is done with it.
 fn forget_outgoing(source: &WlDataSource) {
     let id = source.id();
-    OUTGOING.lock().unwrap_or_else(|e| e.into_inner()).retain(|o| o.source != id);
+    OUTGOING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|o| o.source != id);
 }
 
 impl DataSourceHandler for WinitState {
-    fn accept_mime(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: Option<String>) {}
+    fn accept_mime(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlDataSource,
+        _: Option<String>,
+    ) {
+    }
 
     /// The receiver asked for one of the mime types we offered. Write the
     /// bytes registered for it.
@@ -490,12 +578,14 @@ impl DataSourceHandler for WinitState {
         // bigger than the pipe buffer blocks until the receiver drains
         // it, and the receiver may well be waiting on an event this loop
         // has not dispatched yet.
-        let _ = std::thread::Builder::new().name("winit-dnd-write".into()).spawn(move || {
-            let mut pipe = pipe;
-            if let Err(err) = pipe.write_all(&bytes) {
-                tracing::warn!("writing a dragged {mime} to the receiver failed: {err}");
-            }
-        });
+        let _ = std::thread::Builder::new()
+            .name("winit-dnd-write".into())
+            .spawn(move || {
+                let mut pipe = pipe;
+                if let Err(err) = pipe.write_all(&bytes) {
+                    tracing::warn!("writing a dragged {mime} to the receiver failed: {err}");
+                }
+            });
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
@@ -536,12 +626,18 @@ mod tests {
 
     #[test]
     fn a_uri_list_alone_is_accepted() {
-        assert_eq!(choose_mime(&mimes(&["text/uri-list"])).as_deref(), Some("text/uri-list"));
+        assert_eq!(
+            choose_mime(&mimes(&["text/uri-list"])).as_deref(),
+            Some("text/uri-list")
+        );
     }
 
     #[test]
     fn nothing_usable_is_refused() {
-        assert_eq!(choose_mime(&mimes(&["text/plain", "x-special/thing"])), None);
+        assert_eq!(
+            choose_mime(&mimes(&["text/plain", "x-special/thing"])),
+            None
+        );
     }
 
     #[test]
@@ -549,7 +645,10 @@ mod tests {
         let body = b"# a comment\r\nfile:///home/me/photo%20one.png\r\nhttps://example.com/x\r\nfile://localhost/tmp/b.jpg\r\n";
         assert_eq!(
             parse_uri_list(body),
-            vec![PathBuf::from("/home/me/photo one.png"), PathBuf::from("/tmp/b.jpg")]
+            vec![
+                PathBuf::from("/home/me/photo one.png"),
+                PathBuf::from("/tmp/b.jpg")
+            ]
         );
     }
 

@@ -578,6 +578,7 @@ notification-dnd-held = { $status } · { $count } held
 notification-stack-a11y = Notifications
 notification-group-system = System
 notification-center-undo = Undo
+notification-not-now = Not now
 notification-app-failed-title = Couldn't open an app
 notification-service-unavailable = This isn't available on this desktop yet
 
@@ -1103,7 +1104,8 @@ activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
 activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
 activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
-activity-morning-unavailable = Source unavailable in this workspace · no current evidence
+activity-morning-unavailable = This source isn't available here
+activity-morning-source-unnamed = Chosen source
 activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
 
 activity-morning-open = Open morning source

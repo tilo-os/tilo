@@ -58,6 +58,8 @@ tracing.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 [dev-dependencies]
+# Paused time: the process-binding tests prove no clock decides a launch.
+tokio = { workspace = true, features = ["test-util"] }
 # Integration tests start a real relay.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-joined-room = { path = "../tilo-joined-room", features = ["test-support"] }
@@ -74,3 +76,6 @@ tilo-automerge.workspace = true
 tilo-automerge-isolate.workspace = true
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

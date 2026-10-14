@@ -27,6 +27,11 @@ pub(crate) struct VerifiedCohort {
 }
 
 impl VerifiedCohort {
+    /// The applications this cohort selects into the session user's store.
+    pub(crate) fn ids(&self) -> impl Iterator<Item = &str> {
+        self.packages.iter().map(|package| package.row.id.as_str())
+    }
+
     /// A no-op requires every authenticated cohort package to be selected,
     /// not merely present in the system store. A held or missing selection
     /// takes the ordinary installer path instead.
@@ -314,6 +319,34 @@ fn closure(runtime: &Path, entries: Vec<PathBuf>, arch: &str) -> Result<(), Daem
     Ok(())
 }
 
+/// The engines a cohort ships beside its toolkit (the runtimes its apps pin):
+/// each signed by the image's browser-runtime publisher, for this
+/// architecture, in the directory its signed version names.
+fn verify_engines(layer: &Path, engines: &[&fs::DirEntry], arch: &str) -> Result<(), DaemonError> {
+    if engines.is_empty() {
+        return Ok(());
+    }
+    let engine_key = publisher(layer, "browser-runtime-publisher.hex")?;
+    for engine in engines {
+        let engine = within(layer, &engine.path())?;
+        let manifest = verify_bundle_with(
+            &engine,
+            &VerifyOptions {
+                require_publisher: Some(engine_key.clone()),
+                require_signature: true,
+                require_arch: Some(arch.into()),
+            },
+        )
+        .map_err(invalid)?;
+        if engine.file_name().and_then(|name| name.to_str()) != Some(manifest.version.as_str()) {
+            return Err(invalid(
+                "an engine directory disagrees with its signed version",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Membership is part of the signed toolkit payload, not an editable registry.
 /// Replacing that read-only system registry retires obsolete image packages;
 /// account-owned selections are deliberately not removed or rewritten here.
@@ -350,6 +383,30 @@ fn membership(bundle: &Path) -> Result<Option<SystemMembership>, DaemonError> {
     Ok(Some(membership))
 }
 
+/// The cohort's one native toolkit, named by its payload-derived ABI, after
+/// verifying every other bundle as an engine the cohort's apps pin (the
+/// Browser's), shipped at the exact version so the swapped apps find it.
+fn toolkit_after_engines(layer: &Path, arch: &str) -> Result<PathBuf, DaemonError> {
+    let bundles = fs::read_dir(layer.join("usr/lib/tilo-runtime"))
+        .map_err(invalid)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(invalid)?;
+    let (toolkits, engines): (Vec<_>, Vec<_>) = bundles.iter().partition(|entry| {
+        entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| runtime_bundle::split_abi_version(name).is_some())
+    });
+    if toolkits.len() != 1 {
+        return Err(invalid("the cohort must carry exactly one native toolkit"));
+    }
+    verify_engines(layer, &engines, arch)?;
+    Ok(toolkits
+        .first()
+        .ok_or_else(|| invalid("no native toolkit"))?
+        .path())
+}
+
 pub(crate) fn verify(
     layer: &Path,
     base_store: &Path,
@@ -357,18 +414,7 @@ pub(crate) fn verify(
 ) -> Result<VerifiedCohort, DaemonError> {
     let runtime_key = publisher(layer, "runtime-bundle-publisher.hex")?;
     let app_key = publisher(layer, "app-publisher.hex")?;
-    let runtime_root = layer.join("usr/lib/tilo-runtime");
-    let bundles = fs::read_dir(&runtime_root)
-        .map_err(invalid)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(invalid)?;
-    if bundles.len() != 1 {
-        return Err(invalid("the cohort must carry exactly one native toolkit"));
-    }
-    let bundle = bundles
-        .first()
-        .ok_or_else(|| invalid("no native toolkit"))?
-        .path();
+    let bundle = toolkit_after_engines(layer, arch)?;
     let bundle = within(layer, &bundle)?;
     let manifest = verify_bundle_with(
         &bundle,

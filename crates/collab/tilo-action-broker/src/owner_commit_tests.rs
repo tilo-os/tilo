@@ -326,10 +326,22 @@ mod owner_commit_tests {
             .borrow()
             .iter()
             .find_map(|request| match request {
-                CollabRequest::PublishActions { actions, .. } => actions
-                    .iter()
-                    .find(|a| a.action == "append-paragraph")
-                    .map(|a| a.resource.clone()),
+                CollabRequest::PublishActionSurface { delta, .. } => {
+                    let shape = delta
+                        .shapes
+                        .iter()
+                        .find(|(_, shape)| shape.action == "append-paragraph")
+                        .map(|(id, _)| *id)?;
+                    delta
+                        .resources
+                        .iter()
+                        .find(|resource| {
+                            delta.templates.iter().any(|(id, members)| {
+                                *id == resource.template && members.contains(&shape)
+                            })
+                        })
+                        .map(|resource| resource.resource.clone())
+                }
                 _ => None,
             })
             .expect("real checked Writer must publish its operation");

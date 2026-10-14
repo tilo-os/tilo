@@ -1703,6 +1703,7 @@ impl DeviceFabricRuntime {
                     caller: None,
                     badge_count: None,
                     contact_endpoint: None,
+                    sender_name: None,
                     sound: None,
                 });
         }
@@ -6269,6 +6270,8 @@ impl FabricDeviceDirectory {
 
 impl crate::shell::automation_triggers::DeviceDirectory for FabricDeviceDirectory {
     fn personal_devices(&self) -> crate::shell::automation_triggers::PersonalDevices {
+        // Borrowed, not `device_fabric()`: that clones every snapshot, and
+        // this runs on the compositor thread on every trigger observation.
         crate::shell::automation_triggers::PersonalDevices {
             local: self
                 .network
@@ -6276,10 +6279,13 @@ impl crate::shell::automation_triggers::DeviceDirectory for FabricDeviceDirector
                 .map(|(device, _)| device.as_str().to_string()),
             online: self
                 .network
-                .device_fabric()
-                .online_devices()
-                .map(|presence| presence.device.as_str().to_string())
-                .collect(),
+                .with_device_fabric(|fabric| {
+                    fabric
+                        .online_devices()
+                        .map(|presence| presence.device.as_str().to_string())
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }
@@ -7483,27 +7489,36 @@ fn publish_device_displays(
             .filter(|_| policy.permits(ContinuityCapability::DisplayInput))
             .map_or_else(Vec::new, |local| network.person_display_devices(local)),
     };
+    // An unchanged pair is not written again.
     if let Some((saved_snapshot, saved_view)) = published.as_ref()
         && *saved_snapshot == snapshot
         && *saved_view == view
     {
         return;
     }
-    let saved = match snapshot.save() {
-        Ok(()) => true,
-        Err(error) => {
-            tracing::debug!(%error, "could not publish device display observations");
-            false
-        }
-    };
-    let saved = match view.save() {
-        Ok(()) => saved,
-        Err(error) => {
-            tracing::debug!(%error, "could not publish person display observations");
-            false
-        }
-    };
-    *published = saved.then_some((snapshot, view));
+    // Both files are written through an fsync'd atomic replace, which waits on
+    // the filesystem's journal: on the compositor's loop that is a stall of
+    // however long the disk is busy. The durable writer's thread takes it, the
+    // latest snapshot of each file winning.
+    let writer = crate::shell::durable_writer::global();
+    let remembered = (snapshot.clone(), view.clone());
+    writer.submit(
+        std::path::PathBuf::from("device-fabric/device-display-state"),
+        move || {
+            if let Err(error) = snapshot.save() {
+                tracing::debug!(%error, "could not publish device display observations");
+            }
+        },
+    );
+    writer.submit(
+        std::path::PathBuf::from("device-fabric/person-displays"),
+        move || {
+            if let Err(error) = view.save() {
+                tracing::debug!(%error, "could not publish person display observations");
+            }
+        },
+    );
+    *published = Some(remembered);
 }
 
 fn build_local_snapshot(

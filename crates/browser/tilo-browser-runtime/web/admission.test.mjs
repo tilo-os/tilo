@@ -141,3 +141,12 @@ test('a pairing link makes this browser a new device of the person it names, bef
   const bare = doors({pairDevice: undefined});
   await assert.rejects(admit({scope: room, secrets: {pair: person}, deps: bare.deps}), {code: 'unsupported'});
 });
+
+test('a host this browser set up or joined as its person is reconnected to, and anything else stays no access', async () => {
+  const {calls, deps} = doors({reconnect: async ({origin, room: wanted}) => (origin === room.host ? {owner: true, room: wanted} : null)});
+  assert.deepEqual(await admit({scope: room, deps}), {peer: {owner: true, room: room.room}});
+  assert.deepEqual(calls.map(([name]) => name), ['readAccounts']);
+  await assert.rejects(admit({scope: {...room, host: 'https://elsewhere.example'}, deps}), {code: 'no-access', message: NO_ACCESS});
+  const refused = doors({reconnect: async () => { throw new Error('not a member of this room'); }});
+  await assert.rejects(admit({scope: room, deps: refused.deps}), {code: 'no-access', message: NO_ACCESS});
+});

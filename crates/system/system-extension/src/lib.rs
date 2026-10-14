@@ -471,10 +471,13 @@ impl ExtensionStateStore {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(ExtensionStoreError::UnsafeStatePath(self.path.clone()));
         }
-        if metadata.len() > MAX_STATE_BYTES {
-            return Err(ExtensionStoreError::StateTooLarge);
-        }
-        let state: ExtensionState = serde_json::from_slice(&fs::read(&self.path)?)?;
+        let bytes = tilo_files::native::bounded::read_or(
+            &self.path,
+            MAX_STATE_BYTES,
+            ExtensionStoreError::StateTooLarge,
+        )?
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+        let state: ExtensionState = serde_json::from_slice(&bytes)?;
         state.validate()?;
         Ok(state)
     }

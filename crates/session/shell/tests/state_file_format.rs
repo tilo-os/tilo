@@ -47,6 +47,10 @@ fn saved_shortcuts() -> (
 
 /// Every persisted field holding something, including the integer-keyed
 /// maps a JSON object can only carry as string keys.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the fixture sets every persisted field once, read top to bottom"
+)]
 fn populated_tree() -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     let mut ws = Workspace::new(WorkspaceId(1), "Studio");
@@ -99,6 +103,7 @@ fn populated_tree() -> WorkspaceTree {
         active_tab: 5,
         width: WindowWidth::Fraction(420),
         maximized: true,
+        focus_history: Vec::new(),
     });
     strip.window_groups.push(WindowGroup {
         id: 6,
@@ -113,6 +118,7 @@ fn populated_tree() -> WorkspaceTree {
         active_tab: 8,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     });
     ws.strips.push(strip);
     tree.desktop.workspaces.push(ws);

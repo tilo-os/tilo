@@ -715,10 +715,6 @@ mod unavailable {
             false
         }
 
-        pub fn coded_size(&self) -> Option<(u32, u32)> {
-            None
-        }
-
         /// # Errors
         ///
         /// Always [`RealtimeError::NotCompiled`].

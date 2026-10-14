@@ -2234,7 +2234,7 @@ mod tests {
                             "post",
                             "Post message",
                             tilo_actions::OperationKind::Document,
-                            vec![text("value")],
+                            vec![text("message")],
                             Availability::Available,
                             vec![],
                         )
@@ -2389,7 +2389,7 @@ mod tests {
                     (serde_json::json!({"succeeded": {}}), false)
                 }
                 "post" => {
-                    self.posts.push(text("value"));
+                    self.posts.push(text("message"));
                     (serde_json::json!({"succeeded": {}}), false)
                 }
                 "open" => (self.open_writer(), true),
@@ -4226,7 +4226,7 @@ mod tests {
             tools::INVOKE,
             serde_json::json!({
                 "operation": format!("broker:{CHAT_PEER}:chat.channel:general#post"),
-                "parameters": {"value": message}
+                "parameters": {"message": message}
             }),
         )
     }
@@ -4654,7 +4654,7 @@ mod tests {
                 CHAT_PEER,
                 "chat.channel:general",
                 "post",
-                &serde_json::json!({"value": "Standup moved to 10."}),
+                &serde_json::json!({"message": "Standup moved to 10."}),
                 independent,
             ),
             invoke_on(
@@ -4782,7 +4782,7 @@ mod tests {
                             CHAT_PEER,
                             "chat.channel:general",
                             "post",
-                            &serde_json::json!({"value": "Writing the notes."}),
+                            &serde_json::json!({"message": "Writing the notes."}),
                             true,
                         ),
                         invoke_on(
@@ -4806,7 +4806,7 @@ mod tests {
                             CHAT_PEER,
                             "chat.channel:general",
                             "post",
-                            &serde_json::json!({"value": "Notes are drafted."}),
+                            &serde_json::json!({"message": "Notes are drafted."}),
                             false,
                         ),
                     ],
@@ -4853,7 +4853,7 @@ mod tests {
                         CHAT_PEER,
                         "chat.channel:general",
                         "post",
-                        &serde_json::json!({"value": "Standup moved."}),
+                        &serde_json::json!({"message": "Standup moved."}),
                         true,
                     ),
                     invoke_on(
@@ -4914,7 +4914,7 @@ mod tests {
                             CHAT_PEER,
                             "chat.channel:general",
                             "post",
-                            &serde_json::json!({"value": "Standup moved."}),
+                            &serde_json::json!({"message": "Standup moved."}),
                             true,
                         ),
                         invoke_on(

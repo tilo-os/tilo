@@ -8971,7 +8971,8 @@ impl Widget for FileExplorerWidget {
         let changed_directory = (self.directory_changed && !read_deferred).then(|| {
             self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
         });
-        Some(self.nearby_send.next_poll())
+        self.nearby_send
+            .next_poll()
             .into_iter()
             .chain(self.next_metadata_refresh)
             .chain(changed_directory)

@@ -670,6 +670,27 @@ impl VideoPlayer {
         self.dirty = true;
     }
 
+    /// Attach the engine `build` makes, unless one is attached already, and
+    /// answer the attached one. For an app that shows a player long before it
+    /// plays anything, or never does: an engine's first construction starts
+    /// the decode backend (`GStreamer`'s init, plugin registry and playback
+    /// pipeline), which costs hundreds of milliseconds, so building it with
+    /// the window delays the window. The volume and mute already set on the
+    /// player carry over to the engine.
+    pub fn ensure_engine(
+        &mut self,
+        build: impl FnOnce() -> media::MediaEngine,
+    ) -> &mut media::MediaEngine {
+        let volume = self.effective_volume();
+        let engine = self.engine.get_or_insert_with(|| {
+            let mut engine = build();
+            engine.set_volume(volume);
+            engine
+        });
+        self.dirty = true;
+        engine
+    }
+
     /// So the host can `open` a source or drive collaborative transport
     /// (`apply_transport` / `transport_state`).
     pub fn engine_mut(&mut self) -> Option<&mut media::MediaEngine> {
@@ -3211,6 +3232,32 @@ mod tests {
 
     use crate::synthetic_input::mouse_press;
     use crate::testing::dispatch;
+
+    #[test]
+    fn an_engine_attached_when_needed_keeps_the_players_volume_and_is_built_once() {
+        let mut vp = VideoPlayer::new();
+        vp.set_volume(0.3);
+        assert!(vp.engine().is_none(), "a new player starts no engine");
+        let mut built = 0;
+        vp.ensure_engine(|| {
+            built += 1;
+            media::MediaEngine::new_synthesized()
+        });
+        assert!((vp.engine().unwrap().volume() - 0.3).abs() < 1e-6);
+        vp.ensure_engine(|| {
+            built += 1;
+            media::MediaEngine::new_synthesized()
+        });
+        assert_eq!(built, 1, "an attached engine is kept");
+
+        let mut muted = VideoPlayer::new();
+        muted.toggle_mute();
+        let engine = muted.ensure_engine(media::MediaEngine::new_synthesized);
+        assert!(
+            engine.volume().abs() < 1e-6,
+            "a muted player's engine is silent"
+        );
+    }
 
     #[test]
     fn transport_keys_and_surface_clicks_drive_the_engine() {

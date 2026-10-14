@@ -1844,6 +1844,48 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      # The Windows compatibility payload (FEX, the x86 guest root, Proton, the
+      # Steam runtime, virtio-win: about 3.1 GB) is not in the OS image. It is
+      # packed as the tilo-windows-compat system extension, published by
+      # publish-windows-compat and made installable by the signed manifest
+      # extension-manifests.yml writes for each promoted image.
+      - name: Pack the Windows compatibility system extension
+        id: windows-compat-sysext
+        if: needs.plan.outputs.hardware-profile == 'generic' && env.TILO_WITH_WINDOWS == '1'
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+          file: os/Containerfile
+          target: windows-compat-sysext
+          push: false
+          outputs: type=local,dest=windows-compat-sysext
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
+          provenance: false
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: steps.windows-compat-sysext.outcome == 'success'
+        with:
+          name: windows-compat-sysext-${{ matrix.arch }}
+          path: windows-compat-sysext/
+          if-no-files-found: error
+          retention-days: 3
+
       # The rootfs up to the Tilo build outputs: RPMs, initramfs and every
       # slow step. It changes only with os/ inputs, packages and the kernel;
       # the image build below adds the build outputs on top of it.
@@ -2216,6 +2258,37 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "::notice::pushed dev-trust integration image $ref ($digest)"
+
+      # An OS must not creep back to tens of gigabytes. The image just built is
+      # replayed layer by layer (no container engine) and its /usr is held to
+      # the flavour's budget in os/image-size-budget.toml, which also refuses
+      # the Windows compatibility payload back into the base image. Runs on the
+      # fast dev path (the pushed tilo-ci image) and on the full path (the OCI
+      # archive), before any boot work.
+      - name: Check the image-size budget
+        if: steps.dev-image.outputs.digest != '' || (steps.release-mode.outputs.validate == 'true' && steps.build.outcome == 'success')
+        env:
+          ARCH: ${{ matrix.arch }}
+          PROFILE: ${{ needs.plan.outputs.hardware-profile }}
+          DEV_DIGEST: ${{ steps.dev-image.outputs.digest }}
+          BUILD_DIGEST: ${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ $PROFILE == generic ]]; then flavour="production-$ARCH"; else flavour="board-$PROFILE"; fi
+          report="$RUNNER_TEMP/image-size-$ARCH.json"
+          if [[ -n $DEV_DIGEST ]]; then
+            python3 tools/perf/image_size.py --image "registry.tilo.so/tilo/tilo-ci@$DEV_DIGEST" --arch "$ARCH" \
+              --json "$report" --quiet
+          else
+            rm -rf /var/tmp/tilo-image-layout
+            first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
+            first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" "$BUILD_DIGEST")"
+            skopeo copy "oci-archive:/var/tmp/tilo-image.tar:$first_ref" "oci:/var/tmp/tilo-image-layout"
+            python3 tools/perf/image_size.py --oci-layout /var/tmp/tilo-image-layout --arch "$ARCH" \
+              --json "$report" --quiet
+            rm -rf /var/tmp/tilo-image-layout
+          fi
+          python3 os/tests/image_size_budget.py check --flavour "$flavour" --report "$report"
 
       # A real boot of this image's own UKI: from an ESP beside an encrypted
       # Tilo root, on a virtual panel larger than the firmware's mode, filmed
@@ -3605,6 +3678,56 @@ jobs:
               so.tilo.runtime.chromium tilo-app-runtime-chromium "$metadata"
           done
           [[ $found == 1 ]]
+
+  # Publishes the Windows compatibility system extension built next to this
+  # commit's image (os/Containerfile, windows-compat-sysext) to the generic
+  # package registry, content-addressed, plus a descriptor keyed by the commit
+  # that extension-manifests.yml resolves into a signed manifest for the
+  # promoted image. Separate from the image build so a registry refusal does
+  # not hold back the image; the image installs without it and offers
+  # "Install Windows support" until the manifest exists.
+  publish-windows-compat:
+    needs: [plan, build-and-push]
+    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic'
+    runs-on: runner-quality
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.TILO_IMAGE_SOURCE }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        continue-on-error: true
+        with:
+          pattern: windows-compat-sysext-*
+          path: windows-compat
+      - name: Publish the system extension images
+        env:
+          TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
+        run: |
+          set -euo pipefail
+          base=${TILO_PACKAGE_PUBLIC_BASE_URL%/}
+          [[ $base == https://*/api/packages/*/generic ]] || { echo '::error::TILO_PACKAGE_PUBLIC_BASE_URL must be a public HTTPS generic-package base'; exit 1; }
+          shopt -s nullglob
+          found=0
+          for dir in windows-compat/windows-compat-sysext-*; do
+            arch=${dir##*-}
+            [[ $arch == x86_64 || $arch == aarch64 ]] || continue
+            raw=$dir/tilo-windows-compat.raw
+            [[ -s $raw && -s $dir/descriptor.json ]] || { echo "::error::$dir lacks the image or its descriptor"; exit 1; }
+            sha256=$(jq -er .sha256 "$dir/descriptor.json")
+            [[ $(sha256sum "$raw" | cut -d' ' -f1) == "$sha256" ]] || { echo "::error::$raw does not match its descriptor"; exit 1; }
+            [[ $(stat -c %s "$raw") == $(jq -er .size "$dir/descriptor.json") ]]
+            found=1
+            printf '%s\t%s\n' \
+              "$raw" "$base/tilo-windows-compat-image/$arch-$sha256/tilo-windows-compat.raw" \
+              "$dir/descriptor.json" "$base/tilo-windows-compat-image/$arch-$TILO_IMAGE_SOURCE/descriptor.json" \
+              > "$RUNNER_TEMP/windows-compat-uploads.tsv"
+            TILO_PACKAGE_UPLOAD_WORKERS=1 tools/upload_immutable_packages.sh "$RUNNER_TEMP/windows-compat-uploads.tsv"
+          done
+          [[ $found == 1 ]] || echo '::notice::this commit built no Windows compatibility system extension'
 
   promote-multiarch:
     needs: [plan, build-and-push]

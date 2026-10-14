@@ -1144,6 +1144,12 @@ case("tilo-scope-remapped-identity", field(tilo, "signedIdentity", {
 case("tilo-scope-extra-key-data", field(tilo, "keyData", "a2V5"))
 case("tilo-tag-accepts-anything", scope(tilo + ":latest", accept))
 case("legacy-guest-accepts-anything", scope("registry.tilo.so/tilo/legacy-guest", accept))
+# Removing a guarded repository's scope hands it to the permissive default.
+case("legacy-guest-scope-removed", lambda d: d.pop("registry.tilo.so/tilo/legacy-guest"))
+case("dev-scope-removed", lambda d: d.pop("registry.tilo.so/tilo/tilo-dev"))
+case("code-ci-scope-removed", lambda d: d.pop("code.tilo.so/tilo/tilo-ci"))
+# A namespace scope governs every Tilo repository without one of its own.
+case("tilo-namespace-accepts-anything", scope("registry.tilo.so/tilo", accept))
 case("no-docker-scopes", lambda d: d.clear())
 (out / "malformed.json").write_text('{"transports": {"docker": {', encoding="utf-8")
 (out / "duplicate-scope.json").write_text(
@@ -1167,7 +1173,27 @@ for weakened in "$policy_cases"/*.json "$policy_cases/missing.json"; do
     bad "image signature policy check accepts weakened policy $(basename "$weakened")"
   fi
 done
-[ "$weakened_policies" -eq 14 ] \
-  || bad "expected 14 weakened image signature policies, exercised $weakened_policies"
+[ "$weakened_policies" -eq 18 ] \
+  || bad "expected 18 weakened image signature policies, exercised $weakened_policies"
+# The guarded repositories are judged by their effective rule: with no scope of
+# their own under a default reject (the development-trust shape), they pass.
+if ! python3 - "$image_policy" "$policy_cases/guarded-by-default-reject.policy" <<'PY'
+import json, pathlib, sys
+
+policy = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+policy["default"] = [{"type": "reject"}]
+docker = policy["transports"]["docker"]
+for name in list(docker):
+    if name.rsplit("/", 1)[-1] in ("legacy-guest", "tilo-vm", "tilo-ci", "tilo-dev"):
+        del docker[name]
+pathlib.Path(sys.argv[2]).write_text(json.dumps(policy, indent=2), encoding="utf-8")
+PY
+then
+  bad 'could not build the default-reject image signature policy fixture'
+elif python3 "$image_policy_check" "$policy_cases/guarded-by-default-reject.policy" >/dev/null; then
+  ok 'image signature policy check judges guarded repositories by their effective rule'
+else
+  bad 'image signature policy check refuses guarded repositories a default reject already covers'
+fi
 
 exit "$fail"

@@ -701,6 +701,10 @@ pub struct BlockEditor {
     /// Reordering begins only from the quiet six-dot handle, preserving normal
     /// text selection drags everywhere else in a block.
     block_drag: Option<BlockDrag>,
+    /// Edge-scroll timing of the handle drag, shared with every other
+    /// reorder gesture ([`crate::reorder`]): the pointer near the editor's
+    /// top or bottom edge asks the host to scroll.
+    block_drag_scroll: crate::reorder::ReorderController<usize>,
     /// Host clip in window coordinates, including the visible editor gutter.
     /// Tooltip discovery runs independently of paint clipping.
     tooltip_viewport: Option<Rect>,
@@ -727,6 +731,9 @@ pub struct BlockEditor {
     /// Layout must not alternate between a placeholder and the actual aspect ratio.
     image_dimensions: HashMap<String, (u32, u32)>,
     image_attachments: HashMap<String, ImageAttachment>,
+    /// Height of the host's visible document area, which bounds an image
+    /// preview (see [`Self::set_viewport_height`]).
+    viewport_height: Option<f64>,
     formula_chrome: Vec<Option<FormulaChrome>>,
     visual_formulas: HashMap<usize, VisualFormulaState>,
     visual_formula_focus: Option<usize>,
@@ -887,6 +894,7 @@ impl BlockEditor {
             copied_code_feedback: None,
             opening_code_fence: None,
             block_drag: None,
+            block_drag_scroll: crate::reorder::ReorderController::new(),
             tooltip_viewport: None,
             blocks_list: None,
             local_author: None,
@@ -899,6 +907,7 @@ impl BlockEditor {
             image_preview_rects: Vec::new(),
             image_store: None,
             image_dimensions: HashMap::new(),
+            viewport_height: None,
             image_attachments: HashMap::new(),
             formula_chrome: Vec::new(),
             visual_formulas: HashMap::new(),
@@ -970,6 +979,18 @@ impl BlockEditor {
     /// window-coordinate clip as painting (including the handle gutter).
     pub fn set_tooltip_viewport(&mut self, viewport: Option<Rect>) {
         self.tooltip_viewport = viewport;
+    }
+
+    /// The height of the host's visible document area (a scrolling host's
+    /// viewport, not the editor's content extent). An image preview is
+    /// never taller than [`IMAGE_VIEWPORT_FRACTION`] of it, so a large
+    /// picture leaves room to see and drag past it. Hosts refresh it before
+    /// layout; returns whether it changed, so a host can lay out again.
+    pub fn set_viewport_height(&mut self, height: Option<f64>) -> bool {
+        let height = height.filter(|height| height.is_finite() && *height > 0.0);
+        let changed = self.viewport_height != height;
+        self.viewport_height = height;
+        changed
     }
 
     pub fn empty_hint(&self) -> &str {
@@ -1256,7 +1277,7 @@ impl BlockEditor {
                 table.blur_projection();
             }
         }
-        if !focused && self.block_drag.take().is_some() {
+        if !focused && self.take_block_drag().is_some() {
             self.dirty = true;
         }
         if focused == self.is_focused {
@@ -3551,6 +3572,51 @@ impl BlockEditor {
         true
     }
 
+    /// End the handle drag, whatever ends it.
+    fn take_block_drag(&mut self) -> Option<BlockDrag> {
+        self.block_drag_scroll.cancel();
+        self.block_drag.take()
+    }
+
+    /// Whether a block is being dragged by its handle (past the click
+    /// threshold). Such a drag near the edge of the editor's visible area
+    /// needs [`Self::tick_block_drag`] every frame.
+    pub fn block_drag_active(&self) -> bool {
+        self.block_drag.is_some_and(|drag| drag.active)
+    }
+
+    /// How far the host should scroll its document, in logical pixels
+    /// (positive is down), for the `elapsed` since the last tick: nonzero
+    /// while the pointer of an active block drag is in the edge band of
+    /// `viewport`, faster the closer to the edge. The editor does not own
+    /// its scrolling; the host scrolls, lays the editor out again and the
+    /// drop target follows the pointer ([`Self::retarget_block_drag`] runs
+    /// with that layout).
+    pub fn tick_block_drag(&mut self, viewport: Rect, elapsed: crate::time::Duration) -> f64 {
+        if !self.block_drag_active() {
+            return 0.0;
+        }
+        self.block_drag_scroll
+            .tick(viewport, elapsed, crate::time::now())
+            .scroll_delta
+    }
+
+    /// Point the active drag's drop target at the block under the pointer,
+    /// now that the blocks have moved under it (the host scrolled).
+    pub fn retarget_block_drag(&mut self) {
+        let y = self.last_mouse_pos.y;
+        let Some(mut drag) = self.block_drag.filter(|drag| drag.active) else {
+            return;
+        };
+        if let Some(target) = self.block_at_y(y)
+            && target != drag.target
+        {
+            drag.target = target;
+            self.block_drag = Some(drag);
+            self.dirty = true;
+        }
+    }
+
     /// Complete or cancel a handle drag before normal text routing sees its
     /// terminal event. A cancelled drag never changed the projection; a drop
     /// is immediately captured by the semantic action bridge.
@@ -3567,7 +3633,7 @@ impl BlockEditor {
             }
         );
         if (escape || matches!(event, WindowEvent::Focused(false)))
-            && self.block_drag.take().is_some()
+            && self.take_block_drag().is_some()
         {
             *ctx.handled = true;
             self.dirty = true;
@@ -3581,7 +3647,7 @@ impl BlockEditor {
                 ..
             }
         );
-        let Some(drag) = released.then(|| self.block_drag.take()).flatten() else {
+        let Some(drag) = released.then(|| self.take_block_drag()).flatten() else {
             return false;
         };
         if drag.active {
@@ -4188,6 +4254,29 @@ impl BlockEditor {
         b.line.set_cursor_pos(title_end);
         self.dirty = true;
         self.edit_pending = true;
+    }
+
+    /// Where the caret is in the document, for a host that keeps it in
+    /// view while editing: the focused block's caret, never an open
+    /// overlay's field (the slash menu, a link popover, find), whose own
+    /// rect says nothing about where the person is writing.
+    pub fn document_caret_rect(&self) -> Option<Rect> {
+        let block = self.blocks.get(self.focused?)?;
+        if self
+            .image_attachments
+            .get(&block.id)
+            .is_some_and(|image| !image.editing)
+        {
+            return None;
+        }
+        if let Some(rect) = self
+            .table_editors
+            .get(&block.id)
+            .and_then(super::block_editor_table::DocumentTable::projected_ime_rect)
+        {
+            return Some(rect);
+        }
+        Widget::ime_cursor_rect(&block.line)
     }
 
     /// So the host can avoid stealing focus from the popover.
@@ -6602,6 +6691,18 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     }
 }
 
+/// The share of the host's visible height an image preview may take at
+/// most, aspect kept: a large picture never fills the editor.
+pub const IMAGE_VIEWPORT_FRACTION: f64 = 0.6;
+
+/// The largest rect of the picture's aspect inside `rect`, centred.
+fn fitted_image_rect(rect: Rect, (width, height): (u32, u32)) -> Rect {
+    let ratio =
+        (rect.width() / f64::from(width).max(1.0)).min(rect.height() / f64::from(height).max(1.0));
+    let size = (f64::from(width) * ratio, f64::from(height) * ratio);
+    Rect::from_center_size(rect.center(), size)
+}
+
 fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     let Some((alt, destination)) = standalone_markdown_image(source) else {
         return;
@@ -6611,7 +6712,13 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     }
     let scale = f64::from(ctx.theme.text_scale);
     let radius = 8.0 * scale;
-    let shape = vello::kurbo::RoundedRect::from_rect(rect, radius);
+    let image = ctx.image_store.and_then(|store| store.get(destination));
+    // A preview capped to the viewport is narrower than the column: the
+    // plate hugs the picture rather than letterboxing it.
+    let plate = image.as_ref().map_or(rect, |image| {
+        fitted_image_rect(rect, (image.width, image.height))
+    });
+    let shape = vello::kurbo::RoundedRect::from_rect(plate, radius);
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
         ctx.transform,
@@ -6619,13 +6726,8 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         None,
         &shape,
     );
-    if let Some(image) = ctx.image_store.and_then(|store| store.get(destination)) {
-        let ratio = (rect.width() / f64::from(image.width).max(1.0))
-            .min(rect.height() / f64::from(image.height).max(1.0));
-        let width = f64::from(image.width) * ratio;
-        let height = f64::from(image.height) * ratio;
-        let fitted = Rect::from_center_size(rect.center(), (width, height));
-        crate::image_store::paint_image_cover(ctx.scene, ctx.transform, fitted, &image, 0.0);
+    if let Some(image) = image {
+        crate::image_store::paint_image_cover(ctx.scene, ctx.transform, plate, &image, 0.0);
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             ctx.transform,
@@ -7266,6 +7368,13 @@ impl Widget for BlockStackLeaf {
         self.editor().is_some_and(Widget::layout_needs_measure)
     }
 
+    /// Its size is the editor's stack, so it can change only when the editor
+    /// reports a change (a leaf would otherwise always claim one).
+    fn is_layout_dirty(&self) -> bool {
+        self.editor()
+            .is_some_and(|editor| editor.is_layout_dirty() || editor.layout_needs_measure())
+    }
+
     fn name(&self) -> &'static str {
         "BlockStack"
     }
@@ -7359,6 +7468,11 @@ impl BlockEditor {
                     || standalone_markdown_image(block.text()).is_some()
             })
             .collect();
+        let max_image_height = self.viewport_height.map(|height| {
+            crate::num::u32_of_i64(crate::num::i64_of_f64(
+                (height * IMAGE_VIEWPORT_FRACTION).round(),
+            ))
+        });
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let image = self.image_attachments.get(&b.id);
             let image_preview = image
@@ -7368,6 +7482,7 @@ impl BlockEditor {
                 Some(dimensions) => super::rich_text_line::ImagePreview::Present {
                     dimensions,
                     editing: image.is_some_and(|image| image.editing),
+                    max_height: max_image_height,
                 },
                 None => super::rich_text_line::ImagePreview::Absent,
             });
@@ -9128,22 +9243,7 @@ impl Widget for BlockEditor {
         if self.slash_menu.is_visible() {
             return Widget::ime_cursor_rect(&self.slash_menu);
         }
-        let block = self.blocks.get(self.focused?)?;
-        if self
-            .image_attachments
-            .get(&block.id)
-            .is_some_and(|image| !image.editing)
-        {
-            return None;
-        }
-        if let Some(rect) = self
-            .table_editors
-            .get(&block.id)
-            .and_then(super::block_editor_table::DocumentTable::projected_ime_rect)
-        {
-            return Some(rect);
-        }
-        Widget::ime_cursor_rect(&block.line)
+        self.document_caret_rect()
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
@@ -10464,6 +10564,7 @@ impl BlockEditor {
             start: self.last_mouse_pos,
             active: false,
         });
+        self.block_drag_scroll.begin(source, self.last_mouse_pos);
         *ctx.focus_target = Some(ctx.node_id);
         *ctx.handled = true;
         self.dirty = true;
@@ -10605,6 +10706,8 @@ impl BlockEditor {
                 self.dirty = true;
             }
             self.block_drag = Some(drag);
+            self.block_drag_scroll
+                .update(logical, None, crate::time::now(), |_, _| true);
             return;
         }
 
@@ -10675,7 +10778,7 @@ impl BlockEditor {
         true
     }
 
-    /// The leading `/` still falls through to `TextInput` (visible
+    /// The `/` still falls through to `TextInput` (visible
     /// feedback); `slash_open_at` remembers where to strip it on commit.
     /// Code blocks excluded — `/` there is meaningful text.
     fn try_open_slash_menu(&mut self, event: &WindowEvent) {
@@ -10720,6 +10823,17 @@ impl BlockEditor {
                 .selection_range()
                 .map_or(block.line.cursor_pos(), |(start, _)| start)
         });
+        // A `/` inside a word ("and/or", "src/lib") is text. The menu opens
+        // only at the start of a block or after whitespace.
+        let after_boundary = self.blocks.get(focused_idx).is_none_or(|block| {
+            let text = block.line.value();
+            text.get(..trigger_byte.min(text.len()))
+                .and_then(|before| before.chars().next_back())
+                .is_none_or(char::is_whitespace)
+        });
+        if !after_boundary {
+            return;
+        }
         self.slash_menu
             .set_anchor(self.fallback_popover_anchor(focused_idx));
         self.slash_menu.set_filter("");

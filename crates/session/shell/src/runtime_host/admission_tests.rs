@@ -50,8 +50,7 @@ fn readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampe
         let root = PathBuf::from(profile);
         let case = root.file_name().unwrap().to_str().unwrap();
         assert_eq!(
-            // SAFETY: geteuid has no pointer arguments or preconditions.
-            unsafe { libc::geteuid() },
+            rustix::process::geteuid().as_raw(),
             1000,
             "fixture must observe an actual non-root owner"
         );
@@ -89,8 +88,7 @@ fn readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampe
         return;
     }
     assert_eq!(
-        // SAFETY: geteuid has no pointer arguments or preconditions.
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "readonly owner projection fixture requires root parent"
     );

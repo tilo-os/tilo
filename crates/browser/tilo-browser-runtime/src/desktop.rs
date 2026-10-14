@@ -28,13 +28,13 @@ use ui::widget::TileHost;
 
 /// Applications the page can open, in launcher order: every application
 /// the bundle registered from its manifests (`ui::application::registry`),
-/// else the built-in Scratch, so a runtime without apps still opens one.
+/// else the built-in Scratch, so a runtime without apps still opens one. A
+/// bundle whose apps are all still deferred has apps, just none loaded yet.
 pub(crate) fn applications() -> Vec<&'static ApplicationDefinition> {
-    let registered = ui::application::registry::applications();
-    let mut applications = if registered.is_empty() {
+    let mut applications = if ui::application::registry::catalogue().is_empty() {
         vec![crate::scratch::definition()]
     } else {
-        registered
+        ui::application::registry::applications()
     };
     if !applications
         .iter()
@@ -857,8 +857,18 @@ impl Persistence {
     pub fn save(&self, handle: &DesktopHandle) -> Result<(), String> {
         let notifications_revision = self.notifications.revision();
         if notifications_revision != self.saved_notifications_revision.get() {
+            // Asks are the page's to make again: one kept past a reload
+            // could no longer be answered.
+            let history: Vec<_> = self
+                .notifications
+                .log()
+                .history()
+                .iter()
+                .filter(|notification| !tilo_desktop_surface::is_host_offer(notification))
+                .cloned()
+                .collect();
             let bytes = tilo_desktop_surface::notifications::encode_history(
-                self.notifications.log().history(),
+                &history,
                 ui::time::SystemTime::now(),
                 ui::time::now(),
             )

@@ -18,7 +18,7 @@ import {AdmissionError} from './admission.mjs';
 import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
-import {loadRuntime, mountDesktop, prepareGpu} from './host.mjs';
+import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -26,7 +26,13 @@ import {createIdentityActions, syncProfile} from './identity-actions.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
 import {browserIdentity, browserPerson, currentIdentity, IdentityError, MAX_DISPLAY_NAME_BYTES} from './root-identity.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError, joinViaHost, keepOwnedHost, keptMembership, listedWorkspaces, markUnavailable, membershipOrigins, nameEntered, OPEN_WORKSPACE, pairViaHost, randomDisplayName, rememberEntered, spectate, workspaceActions, workspaceChoices} from './workspaces.mjs';
+import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
+import {
+  chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, HostAdmissionError,
+  hostToReconnect, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces, markUnavailable,
+  membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, randomDisplayName, rememberEntered,
+  spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
+} from './workspaces.mjs';
 
 /** Where an embed's state goes: the site that embeds the workspace. */
 const EMBEDDER = 'https://tilo.so';
@@ -176,6 +182,117 @@ function machineCard({details = {}, run}) {
   });
 }
 
+/** A form of one line over the page: resolves to what `save(typed)` resolved
+ * to, or `null` when cancelled. What `save` throws is said in the form,
+ * which stays open. */
+function askLine({label: text, action, save}) {
+  return new Promise(resolve => {
+    const form = document.createElement('form');
+    form.className = 'tilo-entry-card';
+    const label = document.createElement('label');
+    label.textContent = text;
+    const input = Object.assign(document.createElement('input'), {required: true, autocomplete: 'off'});
+    label.append(input);
+    const error = document.createElement('p');
+    error.className = 'tilo-entry-error';
+    error.setAttribute('role', 'alert');
+    error.hidden = true;
+    const submit = Object.assign(document.createElement('button'), {type: 'submit', textContent: action});
+    const cancel = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Cancel'});
+    const done = value => { form.remove(); resolve(value); };
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!input.value.trim()) return;
+      submit.disabled = true;
+      error.hidden = true;
+      try {
+        done(await save(input.value.trim()));
+      } catch (refusal) {
+        error.textContent = refusal?.message ?? String(refusal);
+        error.hidden = false;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    cancel.addEventListener('click', () => done(null));
+    form.append(label, error, submit, cancel);
+    document.body.append(form);
+    input.focus();
+  });
+}
+
+/** A link to hand on: shown to select, with a button that copies it
+ * (inside the person's click, which a browser's clipboard asks for). */
+function shareCard({title, body, link}) {
+  return new Promise(resolve => {
+    const form = document.createElement('form');
+    form.className = 'tilo-entry-card';
+    form.dataset.card = 'share';
+    const heading = Object.assign(document.createElement('p'), {textContent: title});
+    const about = Object.assign(document.createElement('p'), {textContent: body});
+    const field = Object.assign(document.createElement('input'), {name: 'link', value: link, readOnly: true});
+    field.setAttribute('aria-label', 'Link');
+    field.addEventListener('focus', () => field.select());
+    const copy = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Copy link'});
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(link);
+        copy.textContent = 'Copied';
+      } catch {
+        field.focus();
+        copy.textContent = 'Select the link and copy it';
+      }
+    });
+    const done = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Done'});
+    form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
+    form.append(heading, about, field, copy, done);
+    document.body.append(form);
+    copy.focus();
+  });
+}
+
+/** The people waiting to join, each to let in or turn away; read again
+ * after every decision. Resolves when closed. */
+function waitingCard({load, admit, decline}) {
+  return new Promise(resolve => {
+    const form = document.createElement('form');
+    form.className = 'tilo-entry-card';
+    form.dataset.card = 'waiting';
+    const heading = Object.assign(document.createElement('p'), {textContent: 'Waiting to join'});
+    const list = document.createElement('ul');
+    const error = document.createElement('p');
+    error.className = 'tilo-entry-error';
+    error.setAttribute('role', 'alert');
+    error.hidden = true;
+    const close = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Close'});
+    form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
+    const said = refusal => { error.textContent = refusal?.message ?? String(refusal); error.hidden = false; };
+    const show = async () => {
+      let people = [];
+      try { people = await load(); } catch (refusal) { said(refusal); }
+      list.replaceChildren(...people.map(person => {
+        const item = document.createElement('li');
+        const who = Object.assign(document.createElement('span'), {textContent: `${person.name} (${person.role}) `});
+        const letIn = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Let in'});
+        letIn.addEventListener('click', () => decide(admit, person.requestId));
+        const turnAway = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Turn away'});
+        turnAway.addEventListener('click', () => decide(decline, person.requestId));
+        item.append(who, letIn, turnAway);
+        return item;
+      }));
+      if (!people.length) list.replaceChildren(Object.assign(document.createElement('li'), {textContent: 'Nobody is waiting.'}));
+    };
+    const decide = async (choice, requestId) => {
+      error.hidden = true;
+      try { await choice(requestId); } catch (refusal) { said(refusal); }
+      await show();
+    };
+    form.append(heading, list, error, close);
+    document.body.append(form);
+    void show();
+  });
+}
+
 /**
  * The root a machine is set up with: the one this page unlocked, else this
  * browser's own (made now on a first visit). Never a root other than the
@@ -285,6 +402,8 @@ export async function startEntryPage({mode}) {
   let identityActions = null;
   /** Setting up a machine (`machine-setup.mjs`), once the page is open. */
   let setUp = null;
+  /** Workspaces on the person's machines (`workspace-actions.mjs`), once the page is open. */
+  let workspaceActions = null;
   let displayName;
   /** The workspace this page is getting into, by name, once it knows it. */
   let workspaceName = query.get('workspace') || null;
@@ -302,6 +421,7 @@ export async function startEntryPage({mode}) {
     onHostAction: id => {
       if (id === SET_UP.id) void setUp?.();
       else if (id.startsWith(OPEN_WORKSPACE)) void switchWorkspace?.(id);
+      else if (workspaceActions?.handles(id)) void workspaceActions.perform(id);
       else void identityActions?.perform(id);
     },
     ...(query.get('room') ? {room: query.get('room')} : {}),
@@ -342,6 +462,7 @@ export async function startEntryPage({mode}) {
   };
   const deps = {
     loadRuntime: async () => (runtime = await loadRuntime()),
+    prefetchApplication,
     // An embed always shows the workspace the embedding site names.
     chosenWorkspace: () => (embed ? null : remembering(() => chosenWorkspace())),
     onScope: next => {
@@ -382,8 +503,29 @@ export async function startEntryPage({mode}) {
         [['Join', true], ['Not now', false]]);
     },
     joinWorkspace: async options => {
-      return joinWorkspace({...options, identity: await browserPerson(), runtime});
+      const identity = await browserPerson();
+      const peer = await joinWorkspace({...options, identity, runtime});
+      // Kept, so the next visit reconnects as the person let in.
+      keepJoinedHost({origin: options.origin, room: peer.room, userPublicKey: identity.userPublicKey});
+      return peer;
     },
+    reconnect: async ({origin, room}) => {
+      const identity = currentIdentity() ?? await browserIdentity({create: false});
+      const kept = identity && hostToReconnect(origin, identity.userPublicKey);
+      if (!kept) return null;
+      displayName = chosenDisplayName(identity.userPublicKey) ?? randomDisplayName();
+      if (kept.owner) {
+        // On a machine of their own the owner enters any of its rooms
+        // (the host admits this device as its owner); the host refuses
+        // one that does not exist.
+        const lobby = await connectPeer({origin, identity, runtime, displayName, live: false});
+        try { await lobby.workspaces.enter(room); } finally { await lobby.dispose?.(); }
+      }
+      const peer = await connectPeer({origin, room, identity, runtime, displayName});
+      keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
+      return peer;
+    },
+    onInvite: () => { void workspaceActions?.perform(INVITE.id); },
     pairDevice: ({origin, room, userPublicKey, workspace}) => {
       displayName = chosenDisplayName(userPublicKey) ?? randomDisplayName();
       return pairViaHost({origin, room, userPublicKey, workspace, runtime, displayName, label: deviceLabel(),
@@ -432,7 +574,8 @@ export async function startEntryPage({mode}) {
     if (!page) return;
     if (entered) showVisitState({entered, retryAfter, tell, status});
     // Only the desktop lists host actions: a single app's mount refuses them.
-    const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed ? hostActionParts(page.mount, ['identity', 'machine', 'workspaces']) : null;
+    const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed
+      ? hostActionParts(page.mount, ['identity', 'machine', 'workspaces', 'workspace']) : null;
     const here = page.router.route.target.scope;
     if (!embed && !entered && !viaTicket && page.peer && here.kind === 'room') {
       // A room entered as a member: offered again from the person's other workspaces.
@@ -445,7 +588,7 @@ export async function startEntryPage({mode}) {
     if (hostActions) {
       const offered = remembering(() => workspaceChoices({home: page.entry?.home, homeRoom: homeRoomOf(page.entry),
         entered: enteredWorkspaces(), current: here})) ?? [];
-      hostActions('workspaces').setHostActions(workspaceActions(offered));
+      hostActions('workspaces').setHostActions(workspaceSwitchActions(offered));
       switchWorkspace = id => {
         const choice = offered.find(candidate => candidate.id === id);
         return choice ? openWorkspace({choice, page, status}) : undefined;
@@ -471,9 +614,38 @@ export async function startEntryPage({mode}) {
       // root from here on, so offer to keep it.
       identityActions ??= attachIdentity();
       identityActions?.authored();
-      await card(`${new URL(machine.origin).host} is yours now. It hosts your workspaces from here on.`, [['Done', null]]);
+      if (workspaceActions) void workspaceActions.attach(hostActions('workspace'));
+      const next = await card(`${new URL(machine.origin).host} is yours now. It hosts your workspaces from here on.`,
+        [...(workspaceActions ? [['New workspace on it', true]] : []), ['Done', false]]);
+      if (next) await workspaceActions.createOn(machine.origin);
     };
     hostActions?.('machine').setHostActions([SET_UP]);
+    const person = () => page.peer?.userPublicKey ?? currentIdentity()?.userPublicKey;
+    const roomLink = (origin, room) => page.link.format({mode: 'desktop', target: {scope: {kind: 'room', host: origin, room}}});
+    // Only a desktop lists host actions and shows banners.
+    workspaceActions = hostActions ? createWorkspaceActions({
+      peer: page.peer,
+      machines: () => (person() ? ownedHosts(person()) : []),
+      lobby: async origin => connectPeer({origin, identity: await rootOfThisPage(page.peer), runtime, displayName, live: false}),
+      inviteLink: invitation => {
+        const url = roomLink(page.peer.origin, page.peer.room);
+        return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}invite=${invitation}`;
+      },
+      open: async ({origin, room, name}) => {
+        keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});
+        remembering(() => rememberEntered({origin, room, name}));
+        // Creating a room leaves through the same save-and-close path as switching.
+        await openWorkspace({choice: {origin, room, name}, page, status});
+      },
+      ui: {
+        askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
+        chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
+        share: shareCard,
+        waitingList: waitingCard,
+        fail: text => card(text, [['Close', null]]),
+      },
+    }) : null;
+    void workspaceActions?.attach(hostActions('workspace'));
     if (page.install && !embed) void setUpFromLink(page.install, setUp);
     // The outcome, for tests and tools driving the page: open, refused or failed.
     document.documentElement.dataset.entry = 'open';

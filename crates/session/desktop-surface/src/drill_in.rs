@@ -469,6 +469,7 @@ impl DrillInList {
         cursor: Option<Point>,
         trailing_reserve: f64,
         label: &str,
+        detail: Option<(&str, Color)>,
     ) -> Rect {
         let (scene, transform, text, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
@@ -486,18 +487,38 @@ impl DrillInList {
             clippy::cast_possible_truncation,
             reason = "the bounded quick-settings row width is represented as f32 by the text shaper"
         )]
-        let label = text.elide_to_width_style(label, label_width as f32, &style);
+        let label_width = label_width as f32;
+        let label = text.elide_to_width_style(label, label_width, &style);
         let (_, label_height) =
             text.measure_style(&label, None, &style.clone().with_weight(TextWeight::Medium));
+        // A status line (`Connected`) stacks under the label and the pair is
+        // centred as one block, so it stays inside the row at any name length
+        // instead of hanging below it at a fixed offset.
+        let detail = detail.map(|(detail, color)| {
+            let detail = text.elide_to_width_style(detail, label_width, &style);
+            let (_, height) = text.measure_style(&detail, None, &style);
+            (detail, color, f64::from(height))
+        });
+        let block = f64::from(label_height) + detail.as_ref().map_or(0.0, |(_, _, h)| *h);
+        let top = centred_text_top(row, block);
         text.draw_style(
             scene,
             &label,
             theme.tokens.colors.text_primary,
-            transform
-                .pre_translate((label_x, centred_text_top(row, f64::from(label_height))).into()),
+            transform.pre_translate((label_x, top).into()),
             None,
             &style.clone().with_weight(TextWeight::Medium),
         );
+        if let Some((detail, color, _)) = detail {
+            text.draw_style(
+                scene,
+                &detail,
+                color,
+                transform.pre_translate((label_x, top + f64::from(label_height)).into()),
+                None,
+                &style,
+            );
+        }
         glyph
     }
 }
@@ -570,6 +591,7 @@ mod tests {
                 None,
                 0.0,
                 "Coffee shop",
+                None,
             );
             assert_eq!(glyph.width(), f64::from(theme.tokens.metrics.icon_md));
             assert_eq!(glyph.x0, row.x0 + f64::from(theme.tokens.spacing.s3));
