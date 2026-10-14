@@ -818,6 +818,9 @@ pub struct ShellOverlayHost {
     /// whose runtime content was replaced by a `PeerView`. These never enter
     /// `ChromeState` or its replicated workspace document.
     peer_stream_tabs: std::collections::HashMap<(u64, u64), u64>,
+    /// Wakes the compositor loop when a peer stream's picture finishes
+    /// decoding; handed to every peer view this host mounts.
+    peer_picture_wake: Option<media::realtime::PictureWake>,
     /// Quick-settings root-page presentation, geometry and input state.
     qs_root: QuickSettingsRoot,
     // Navigation can shrink the panel before the matching release arrives.
@@ -2455,6 +2458,7 @@ impl ShellOverlayHost {
             notification_stack: NotificationStack::new(),
             last_chrome_revision: u64::MAX,
             peer_stream_tabs: std::collections::HashMap::new(),
+            peer_picture_wake: None,
             // User intent is durable, while the root filters it against the
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
@@ -4548,6 +4552,7 @@ impl ShellOverlayHost {
         );
         peer_view.restart_stream(codec, display_size);
         peer_view.set_input_sink(std::sync::Arc::clone(input_sink));
+        peer_view.set_picture_wake(self.peer_picture_wake.clone());
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: identical to `foreign_surface_rect`: rows are boxed by
             // this host and `&mut self` makes this traversal exclusive.
@@ -4624,6 +4629,14 @@ impl ShellOverlayHost {
                     crate::shell::peer_view::PushOutcome::DecodeFailed
                 )
             })
+    }
+
+    /// How the loop learns that a peer-stream picture finished decoding:
+    /// peer views never wait for their pictures, so `wake` (run on a media
+    /// thread) brings the loop back to [`Self::collect_late_peer_pictures`].
+    /// Views mounted from now on use it.
+    pub fn set_peer_picture_wake(&mut self, wake: media::realtime::PictureWake) {
+        self.peer_picture_wake = Some(wake);
     }
 
     /// Show every peer-stream picture that finished decoding after its frame

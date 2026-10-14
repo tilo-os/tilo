@@ -8978,6 +8978,22 @@ pub fn run() {
         backend.composites_strip_layers(),
     );
     frame_builder.set_scroll_copy_presenter(backend.copies_scrolls());
+    // A peer stream's picture finishes on a media thread after its frame's
+    // push returned (the loop never waits for a decode); this wakes the loop
+    // to show it, with no polling while a stream plays.
+    match calloop::ping::make_ping() {
+        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
+            Ok(_) => frame_builder
+                .host_mut()
+                .set_peer_picture_wake(Arc::new(move || ping.ping())),
+            Err(error) => {
+                tracing::warn!(%error, "could not register the peer picture wake source; peer streams poll for decoded pictures");
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "could not create the peer picture wake source; peer streams poll for decoded pictures");
+        }
+    }
     let clipboard_store = state.selection_store();
     frame_builder
         .host_mut()
