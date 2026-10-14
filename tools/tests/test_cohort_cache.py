@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-import yaml
+import re
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "tools/ci/profile_cohort.py"
@@ -58,16 +58,27 @@ class NativeQualificationTests(unittest.TestCase):
             self.assertEqual(json.loads(observed.stdout), {"cache_hits": 2, "cache_misses": 1})
 
     def test_native_workflow_reaches_producer_and_verifier_without_vm_commands(self):
-        workflow = yaml.load((ROOT / ".forgejo/workflows/cohort-cache-qualification.yml").read_text(),
-                             Loader=yaml.BaseLoader)
-        jobs = workflow["jobs"]
-        self.assertEqual(jobs["producer"]["if"], "github.event_name == 'workflow_dispatch'")
-        self.assertEqual(jobs["builder"]["if"], "github.event_name == 'workflow_dispatch'")
-        commands = "\n".join(step.get("run", "") for job in jobs.values()
-                             for step in job.get("steps", []))
+        workflow = (ROOT / ".forgejo/workflows/cohort-cache-qualification.yml").read_text()
+        sections = dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)",
+                                   workflow.split("jobs:\n", 1)[1], re.M | re.S))
+        self.assertEqual(set(sections), {"tests", "builder", "producer"})
+        for name in ("producer", "builder"):
+            self.assertIn("    if: github.event_name == 'workflow_dispatch'\n", sections[name])
+        blocks = re.findall(r"^        run: \|\n((?:          .*\n|\n)*)", workflow, re.M)
+        self.assertEqual(len(blocks), workflow.count("        run: |"))
+        commands = "\n".join(blocks)
         for forbidden in ("virsh", "libvirt", "qemu", "build-image.sh", "tilo-vm vm", "tilo-vm swap",
                           "scripts/vm-acceptance/run.py", "swap-artifact", "remote_builders", "sudo"):
             self.assertNotIn(forbidden, commands)
+        calls = re.findall(r"^\s+(?:- )?uses: (\S+)", workflow, re.M)
+        allowed = {
+            "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e",
+            "actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e",
+            "./.forgejo/workflows/resolve-builder.yml",
+        }
+        self.assertTrue(calls)
+        self.assertTrue(set(calls) <= allowed)
         self.assertIn('test "$(git rev-parse HEAD)" = "$SOURCE"', commands)
         self.assertIn('git status --porcelain --untracked-files=no', commands)
         self.assertIn('--repo "$PWD"', commands)
@@ -75,9 +86,9 @@ class NativeQualificationTests(unittest.TestCase):
         self.assertIn('--receipt-sha256 "$RECEIPT_SHA256"', commands)
         self.assertIn('--run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"', commands)
         self.assertIn('--check-telemetry', commands)
-        artifacts = [step for step in jobs["producer"]["steps"] if "uses" in step]
-        names = [step.get("with", {}).get("name") for step in artifacts if "artifact@" in step["uses"]]
-        self.assertEqual(names[:2], ["native-cohort-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}"] * 2)
+        transfer = "name: native-cohort-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}"
+        self.assertEqual(workflow.count(transfer), 2)
+
 
 class CacheObservationTests(unittest.TestCase):
     def test_signal_exit_keeps_shell_status_and_raw_observation(self):
