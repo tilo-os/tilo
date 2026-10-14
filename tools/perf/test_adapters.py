@@ -16,7 +16,7 @@ sys.path.insert(0, str(HERE))
 import adapters  # noqa: E402
 import compare  # noqa: E402
 
-GATE = ROOT / "crates/system/fs/tests/performance_gate.rs"
+GATE = ROOT / "crates/system/fs/tests/performance_timing.rs"
 FOOTPRINT = ROOT / "crates/system/fs/tests/document_media_footprint.rs"
 ENV = {"commit": "a" * 40, "profile": "dev", "renderer": "none", "virtualization": "kvm",
        "runner": "runner", "hardware": "test cpu", "started_at": "2026-10-09T01:15:00Z"}

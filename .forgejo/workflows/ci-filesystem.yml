@@ -317,9 +317,7 @@ jobs:
           bash scripts/ci-run.sh "transaction coordinator recovery" -- cargo test --locked -p tilo-fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture
           bash scripts/ci-run.sh "availability receipt tamper refusal" -- cargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_record_id_and_rejects_tampering --lib -- --nocapture
 
-      - name: Enforce deterministic collaborative-files performance SLOs
-        env:
-          TILO_FS_PERF_GATE: "1"
+      - name: Enforce collaborative-files production work counts
         run: >-
           bash scripts/ci-run.sh "collaborative-files performance gate" --
           cargo test --locked -p tilo-fs --test performance_gate -- --nocapture --test-threads=1

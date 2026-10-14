@@ -5,7 +5,7 @@ Each adapter reads what a benchmark already prints and emits records through
 `record.from_samples`. A benchmark that writes records itself needs no adapter.
 
 - `fs-gate LOG...`: the tilo-fs performance gate
-  (`crates/system/fs/tests/performance_gate.rs`, `TILO_FS_PERF_GATE=1`) prints
+  (`crates/system/fs/tests/performance_timing.rs`, `TILO_FS_PERF_GATE=1`) prints
   `PERF <name>: <x> ms (SLO <= <y> ms)` per scenario, and its heap footprint
   test (`crates/system/fs/tests/document_media_footprint.rs`) prints the same
   shape in `MiB`. Each log is one run; repeated runs become the samples of

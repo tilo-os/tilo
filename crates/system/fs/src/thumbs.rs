@@ -25,6 +25,7 @@ pub const MAX_XATTR_THUMB: usize = 60 * 1024;
 pub struct ThumbProvider {
     cache: ThumbCache,
     edge: u32,
+    generations: std::sync::atomic::AtomicU64,
 }
 
 impl ThumbProvider {
@@ -37,7 +38,13 @@ impl ThumbProvider {
         Ok(Self {
             cache: ThumbCache::open(dir)?,
             edge: HOST_EDGE,
+            generations: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// Number of source decode/scale operations attempted by this provider.
+    pub fn generation_count(&self) -> u64 {
+        self.generations.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn edge(&self) -> u32 {
@@ -65,6 +72,8 @@ impl ThumbProvider {
         if !category.has_preview() || bytes.len() > thumbnail::MAX_SOURCE_BYTES {
             return None;
         }
+        self.generations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let thumb = thumbnail::generate(&thumbnail::Source::Bytes(bytes), category, self.edge)?;
         let png = thumbnail::encode_png(&thumb)?;
         self.cache.put(&self.key(content_hash), png.clone());

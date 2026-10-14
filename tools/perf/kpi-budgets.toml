@@ -52,7 +52,7 @@ kpis = ["render.frame_cpu_ms"]
 [lanes.reference-hardware]
 groups = ["hw"]
 
-# tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs), a
+# tilo-fs latency benchmarks (crates/system/fs/tests/performance_timing.rs), a
 # debug build on the shared `runner` class. The ceilings are the gate's own
 # SLO constants (tools/perf/test_adapters.py keeps them equal): twice the p99
 # of 56 CI runs, derived beside the constants; change both together.

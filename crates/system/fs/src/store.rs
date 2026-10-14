@@ -25,7 +25,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::{
     Arc, RwLock,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Duration;
 
@@ -160,7 +160,23 @@ enum Backend {
     Fs(FsStore),
 }
 
+/// Bytes materialized by each local read path, including cache hits.
+/// Per-store counters let callers distinguish bounded range work from whole-blob reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadWork {
+    pub blob_bytes: u64,
+    pub bao_leaf_bytes: u64,
+    pub file_bytes: u64,
+}
+
+#[derive(Default)]
+struct ReadCounters {
+    blob_bytes: AtomicU64,
+    bao_leaf_bytes: AtomicU64,
+}
+
 pub struct ContentStore {
+    reads: ReadCounters,
     backend: Backend,
     cache: Cache<Hash, Bytes>,
     /// Serializes owned-tag installation and release. A concurrent ingest of
@@ -363,6 +379,7 @@ impl ContentStore {
         Ok(Self {
             backend: Backend::Fs(store),
             cache: blob_cache(),
+            reads: ReadCounters::default(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc,
@@ -400,6 +417,7 @@ impl ContentStore {
         Self {
             backend: Backend::Mem(MemStore::new_with_opts(options)),
             cache: blob_cache(),
+            reads: ReadCounters::default(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc,
@@ -442,6 +460,7 @@ impl ContentStore {
                 }),
             })),
             cache: blob_cache(),
+            reads: ReadCounters::default(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
             gc: GcGate::default(),
@@ -461,6 +480,16 @@ impl ContentStore {
             .as_ref()
             .and_then(StoreRuntime::handle)
             .cloned()
+    }
+
+    /// Cumulative local read work. Read after awaited operations (or after joining
+    /// their threads) to obtain a completed-operation snapshot.
+    pub fn read_work(&self) -> ReadWork {
+        ReadWork {
+            blob_bytes: self.reads.blob_bytes.load(Ordering::Relaxed),
+            bao_leaf_bytes: self.reads.bao_leaf_bytes.load(Ordering::Relaxed),
+            file_bytes: self.files.read_bytes(),
+        }
     }
 
     pub fn store(&self) -> &Store {
@@ -535,10 +564,16 @@ impl ContentStore {
     /// file-backed chunk, which is checked against its hash), or `None`.
     pub async fn local(&self, hash: Hash) -> Option<Bytes> {
         if let Some(b) = self.cache.get(&hash) {
+            self.reads
+                .blob_bytes
+                .fetch_add(b.len() as u64, Ordering::Relaxed);
             return Some(b);
         }
         match self.store().blobs().get_bytes(hash).await {
             Ok(b) => {
+                self.reads
+                    .blob_bytes
+                    .fetch_add(b.len() as u64, Ordering::Relaxed);
                 self.cache_insert(hash, b.clone());
                 Some(b)
             }
@@ -662,6 +697,9 @@ impl ContentStore {
         while let Some(item) = items.next().await {
             match item {
                 EncodedItem::Leaf(leaf) => {
+                    self.reads
+                        .bao_leaf_bytes
+                        .fetch_add(leaf.data.len() as u64, Ordering::Relaxed);
                     content::copy_part(&mut out, &leaf.data, leaf.offset, start, end);
                 }
                 EncodedItem::Size(actual) if actual != size => return None,

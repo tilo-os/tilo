@@ -420,6 +420,7 @@ pub struct Namespace {
     record_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[cfg(test)]
     node_entry_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    node_lookups: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Source of `Namespace::verified_generation` values.
@@ -579,6 +580,7 @@ impl Namespace {
             record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            node_lookups: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
@@ -1088,6 +1090,8 @@ impl Namespace {
     }
 
     fn node(&self, id: &str) -> Option<ObjId> {
+        self.node_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         map_at(&self.doc, &self.nodes, id)
     }
 
@@ -1397,6 +1401,11 @@ impl Namespace {
             self.tree.bind_record(&id, record_id);
         }
         self.record_ids_complete = true;
+    }
+
+    /// Cumulative node-object lookups in this namespace's document.
+    pub fn node_lookup_count(&self) -> u64 {
+        self.node_lookups.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn parent_of(&self, id: &str) -> Option<String> {

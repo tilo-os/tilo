@@ -138,7 +138,7 @@ jobs:
     uses: ./.forgejo/workflows/resolve-builder.yml
     secrets: inherit
 
-  # The tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs),
+  # The tilo-fs latency benchmarks (crates/system/fs/tests/performance_timing.rs),
   # five times on the shared `runner` class, through adapters.py fs-gate.
   fs:
     needs: [plan, builder]
@@ -162,12 +162,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build the tilo-fs performance gate
+      - name: Build the tilo-fs latency benchmarks
         run: >-
           bash scripts/ci-run.sh "tilo-fs performance gate build" --
-          cargo test --locked -p tilo-fs --test performance_gate --test document_media_footprint --no-run
+          cargo test --locked -p tilo-fs --test performance_timing --test document_media_footprint --no-run
 
-      - name: Run the gate five times and record it
+      - name: Run the benchmarks five times and record them
         env:
           TILO_FS_PERF_GATE: "1"
         run: |
@@ -175,7 +175,7 @@ jobs:
           mkdir -p perf
           status=0
           for run in 1 2 3 4 5; do
-            cargo test --locked -p tilo-fs --test performance_gate -- --nocapture --test-threads=1 \
+            cargo test --locked -p tilo-fs --test performance_timing -- --nocapture --test-threads=1 \
               2> "perf/fs-gate-$run.log" || status=$?
             # The daemon heap KPIs (fs.*-heap), in the same run's log.
             cargo test --locked -p tilo-fs --test document_media_footprint -- --nocapture \
