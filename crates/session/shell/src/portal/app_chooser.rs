@@ -102,55 +102,52 @@ impl AppChooserBackend {
             let pending = self.pending.clone();
             let chooser = self.ctx.desktop_services.app_chooser.clone();
             let cleanup_handle = request.handle.clone();
-            let registered = self
-                .lifecycle
-                .register_request(connection, &request.handle, entry, move |_| {
-                    if let Ok(mut pending) = pending.lock() {
-                        pending.remove(&cleanup_handle);
-                    }
-                    chooser.cancel(&cleanup_handle);
-                })
-                .await;
-            ensure(matches!(registered, Ok(true)))?;
-            if let Ok(mut pending) = self.pending.lock() {
-                pending.insert(request.handle.clone(), request.clone());
-            }
-            let (reply, rx) = tokio::sync::oneshot::channel();
-            let queued = self
-                .ctx
-                .desktop_services
-                .app_chooser
-                .enqueue(request.clone(), reply);
-            let outcome = match queued {
-                PortalResult::Success(()) => rx.await.unwrap_or(PortalResult::Cancelled),
-                PortalResult::Cancelled => PortalResult::Cancelled,
-                PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
-                PortalResult::Failed(error) => PortalResult::Failed(error),
+            let cancel = move |_: &LifecycleEntry| {
+                if let Ok(mut pending) = pending.lock() {
+                    pending.remove(&cleanup_handle);
+                }
+                chooser.cancel(&cleanup_handle);
             };
-            let live_choices = self
-                .pending
-                .lock()
-                .ok()
-                .and_then(|mut pending| pending.remove(&request.handle))
-                .map(|request| request.choices)
-                .unwrap_or_default();
             self.lifecycle
-                .complete_request_object(connection, &request.handle)
-                .await;
-            let choice = outcome.into_result()?;
-            ensure(live_choices.iter().any(|id| id == &choice.choice))?;
-            let mut out = Results::new();
-            out.insert(
-                "choice".into(),
-                OwnedValue::from(zbus::zvariant::Str::from(choice.choice)),
-            );
-            if let Some(token) = choice.activation_token {
-                out.insert(
-                    "activation_token".into(),
-                    OwnedValue::from(zbus::zvariant::Str::from(token)),
-                );
-            }
-            Ok(out)
+                .with_request(connection, &request.handle, entry, cancel, async {
+                    if let Ok(mut pending) = self.pending.lock() {
+                        pending.insert(request.handle.clone(), request.clone());
+                    }
+                    let (reply, rx) = tokio::sync::oneshot::channel();
+                    let queued = self
+                        .ctx
+                        .desktop_services
+                        .app_chooser
+                        .enqueue(request.clone(), reply);
+                    let outcome = match queued {
+                        PortalResult::Success(()) => rx.await.unwrap_or(PortalResult::Cancelled),
+                        PortalResult::Cancelled => PortalResult::Cancelled,
+                        PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
+                        PortalResult::Failed(error) => PortalResult::Failed(error),
+                    };
+                    let live_choices = self
+                        .pending
+                        .lock()
+                        .ok()
+                        .and_then(|mut pending| pending.remove(&request.handle))
+                        .map(|request| request.choices)
+                        .unwrap_or_default();
+                    let choice = outcome.into_result()?;
+                    ensure(live_choices.iter().any(|id| id == &choice.choice))?;
+                    let mut out = Results::new();
+                    out.insert(
+                        "choice".into(),
+                        OwnedValue::from(zbus::zvariant::Str::from(choice.choice)),
+                    );
+                    if let Some(token) = choice.activation_token {
+                        out.insert(
+                            "activation_token".into(),
+                            OwnedValue::from(zbus::zvariant::Str::from(token)),
+                        );
+                    }
+                    Ok(out)
+                })
+                .await
         })
         .await
     }

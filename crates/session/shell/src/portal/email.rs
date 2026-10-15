@@ -163,43 +163,29 @@ impl EmailBackend {
                 app_id: auth.caller.app_id,
                 resource: LifecycleResource::Prompt,
             };
-            if !matches!(
-                self.lifecycle
-                    .register_request(connection, &path, entry, move |_| {
-                        let _ = dialogs.cancel(&cancel_path);
-                    })
-                    .await,
-                Ok(true)
-            ) {
-                return Err(Ended::Failed);
-            }
-            let review = match self.dialogs.enqueue_review(ReviewRequest {
-                handle: path.clone(),
-                app_id: request.app_id.clone(),
-                title: crate::shell::i18n::t("portal-email-title"),
-                reason: crate::shell::i18n::t("portal-email-reason"),
-                resource: compose_detail(&request),
-                confirm_label: crate::shell::i18n::t("portal-email-confirm"),
-            }) {
-                Ok(review) => review,
-                Err(_) => {
-                    self.lifecycle
-                        .complete_request_object(connection, &path)
-                        .await;
-                    return Err(Ended::Failed);
-                }
+            let cancel = move |_: &LifecycleEntry| {
+                let _ = dialogs.cancel(&cancel_path);
             };
-            if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
-                self.lifecycle
-                    .complete_request_object(connection, &path)
-                    .await;
-                return Err(Ended::Cancelled);
-            }
-            let result = self.ctx.desktop_services.email.compose(&request);
             self.lifecycle
-                .complete_request_object(connection, &path)
-                .await;
-            result.into_result().map(|()| Results::new())
+                .with_request(connection, &path, entry, cancel, async {
+                    let review = self
+                        .dialogs
+                        .enqueue_review(ReviewRequest {
+                            handle: path.clone(),
+                            app_id: request.app_id.clone(),
+                            title: crate::shell::i18n::t("portal-email-title"),
+                            reason: crate::shell::i18n::t("portal-email-reason"),
+                            resource: compose_detail(&request),
+                            confirm_label: crate::shell::i18n::t("portal-email-confirm"),
+                        })
+                        .or_fail()?;
+                    if !matches!(review.await, Ok(ReviewDecision::Confirmed)) {
+                        return Err(Ended::Cancelled);
+                    }
+                    let result = self.ctx.desktop_services.email.compose(&request);
+                    result.into_result().map(|()| Results::new())
+                })
+                .await
         })
         .await
     }
