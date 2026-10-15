@@ -204,9 +204,9 @@ pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
-    ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
-    ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec, ResourceViewRangeSpec,
-    ResourceViewSpec, flatten, sole_text_argument,
+    ControlInvocation, FlatAction, KEY_SEP, NESTED_RESOURCE_FACET, PROMPTED_PARAM, Resource,
+    ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
+    ResourceViewRangeSpec, ResourceViewSpec, flatten, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,

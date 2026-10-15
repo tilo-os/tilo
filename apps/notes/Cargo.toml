@@ -63,6 +63,8 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
+# Decides the changes Notes makes against its committed surface, as receivers do.
+collab-types = { path = "../../crates/collab/collab-types" }
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
