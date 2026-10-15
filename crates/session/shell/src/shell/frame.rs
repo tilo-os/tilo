@@ -6073,6 +6073,7 @@ mod tests {
             tab,
             "Word Processor",
             "Word Processor",
+            "",
         );
         activate(&mut card);
         let wake = frame.peer_windows_poll();

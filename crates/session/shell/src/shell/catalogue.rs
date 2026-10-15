@@ -31,7 +31,7 @@ const FAILED_REFRESH_BACKOFF: Duration = Duration::from_secs(30);
 const LIST_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const INSTALL_OUTPUT_LIMIT: usize = 1024 * 1024;
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub(crate) const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 fn safe_diagnostic(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
@@ -402,6 +402,8 @@ pub fn install_and_launch(
 
         invalidate();
         launcher::invalidate_app_cache();
+        // The install is done; the window is now due as for any start.
+        launcher::hold_presentation_for(&package_id, Duration::ZERO);
 
         launcher::set_workspace_capabilities(capabilities);
         if let Err(e) = launcher::launch(&package_id, room) {

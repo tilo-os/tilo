@@ -943,24 +943,29 @@ fn launch_resolved_installed_app(
         return Ok(());
     }
     // No "Opening…" notification: the person just asked for this app, and
-    // its place on the strip (the placeholder card, then its first frame)
-    // is the feedback. Settled by the window appearing
-    // (`settle_launches_of_opened_windows`) or by the launch failing.
+    // its place on the strip — the opening card, held from this frame,
+    // then its first frame — is the feedback. Settled by the window
+    // appearing (`settle_launches_of_opened_windows`) or by the launch
+    // failing.
     catalogue::note_pending_launch(package_id);
     // Scoped so the borrow is released before the error branch below
     // takes a mutable one.
-    {
+    let held = {
         let st = chrome.borrow();
-        let tree = st.tree();
         // Decided here, while selection and layout are still true — the
         // window itself maps seconds later, on another process.
-        crate::shell::placement::note_placement_for_launch_targeted(
-            package_id,
-            &tree,
+        let placement = crate::shell::placement::placement_for_target(
+            &st.tree(),
             st.strip_viewport(),
             st.open_target,
         );
-    }
+        crate::shell::tab_binding::hold_place_for_launch(
+            &mut st.tree_mut(),
+            package_id,
+            display_name,
+            placement,
+        )
+    };
     // The person opening the app is its author. The queued launch copies
     // the capability list now, so the grant has to be in that copy.
     let launched = {
@@ -988,7 +993,12 @@ fn launch_resolved_installed_app(
     // rest arrive as launch events drained each frame.
     let outcome = launched.unwrap_or(Err(launcher::LaunchError::NoWorkspace));
     // How a caller that cannot see the screen learns the launch failed.
-    outcome.map_err(|err| report_refused_launch(chrome, package_id, display_name, &err))
+    outcome.map_err(|err| {
+        // Refused before any process: there is no window to wait for, so
+        // the held place goes again and the failure notice says why.
+        crate::shell::tab_binding::remove_tab(&mut chrome.borrow().tree_mut(), held);
+        report_refused_launch(chrome, package_id, display_name, &err)
+    })
 }
 
 impl Default for ApplicationsProvider {
