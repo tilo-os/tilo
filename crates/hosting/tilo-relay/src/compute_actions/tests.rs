@@ -332,9 +332,33 @@ async fn inputs_heavier_than_the_gain_keep_the_job_with_its_requester() {
     );
     assert_eq!(unweighed["worker"], json!(hex::encode([6; 32])));
 
+    // Named input by input, their bytes are what is weighed; nothing is
+    // known held yet, so all of them would move.
+    let photo = |seed: u8| json!({ "digest": hex::encode([seed; 32]), "bytes": 50_000_000 });
+    let listed = output(
+        ask(
+            &plane,
+            &owner(),
+            place(json!({
+                "app": APP,
+                "local_wall_ms": 500,
+                "inputs": [photo(1), photo(2), photo(1)],
+            })),
+        )
+        .await,
+    );
+    assert_eq!(listed["worker"], Value::Null, "{listed}");
+    assert_eq!(listed["estimate"]["input_bytes"], json!(100_000_000));
+    assert_eq!(listed["estimate"]["held_bytes"], json!(0));
+
+    let too_many = (0..=64).map(photo).collect::<Vec<_>>();
     for malformed in [
         json!({ "app": APP, "input_bytes": -1, "local_wall_ms": 5 }),
         json!({ "app": APP, "input_bytes": 5, "local_wall_ms": "fast" }),
+        json!({ "app": APP, "local_wall_ms": 5, "inputs": "all" }),
+        json!({ "app": APP, "local_wall_ms": 5, "inputs": [{ "digest": "zz", "bytes": 1 }] }),
+        json!({ "app": APP, "local_wall_ms": 5, "inputs": [{ "digest": hex::encode([1; 32]) }] }),
+        json!({ "app": APP, "local_wall_ms": 5, "inputs": too_many }),
     ] {
         assert!(matches!(
             status(ask(&plane, &owner(), place(malformed)).await),

@@ -28,6 +28,13 @@
 //!   never authority: what the job runs on is still exactly what its
 //!   invoker could produce, it just does not travel.
 //!
+//! The relay notes which inputs it forwarded and which the requester
+//! proved, per live job. When the job completes, an input proven and not
+//! forwarded is one the worker held: placement then weighs only what a
+//! worker would receive
+//! ([`ComputeTransportState::place_weighed`]). That is a routing hint and
+//! grants nothing; the next job proves or fetches like any other.
+//!
 //! Anything else is refused before the other end is asked. Each hop checks
 //! the bytes against the digest and its bound: the source before sending,
 //! the relay while forwarding, the asker on receipt.
@@ -44,6 +51,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::auth::AuthenticatedPeer;
 use crate::compute::{ComputeJobPhase, ComputeJobSpec, MAX_COMPUTE_INPUT_BYTES};
+use crate::compute_transport::{ComputeTransportState, JobScope};
 use crate::environment_host::{EnvironmentStreamError, read_message, write_message};
 use crate::environment_routing::RoutingContext;
 use crate::host_authority::HostOperation;
@@ -303,8 +311,8 @@ struct ContentRoute {
     source: DeviceKey,
     connection: Connection,
     max_bytes: u64,
-    /// The job's requester and worker, whom the bytes move between.
-    pair: (DeviceKey, DeviceKey),
+    /// The job, and the requester and worker the bytes move between.
+    scope: JobScope,
 }
 
 /// The relay's side of [`StreamOpen::ComputeContent`]: decide from the
@@ -364,6 +372,16 @@ pub(crate) async fn route_content(
         let _ = source_receive.stop(0u32.into());
         return refuse(send, "too_large").await;
     }
+    // Inputs are what placement weighs. One the relay forwards is one the
+    // worker did not hold: noted before the first byte moves, so the job
+    // cannot complete ahead of it.
+    let input = route.source == route.scope.pair.0;
+    if input {
+        observe_input(context, workspace_id, route.scope, |compute, now_ms| {
+            compute.observe_forwarded(route.scope, digest, now_ms);
+        })
+        .await;
+    }
     write_message(send, &ContentReply::Found { len }).await?;
     let started = std::time::Instant::now();
     let forwarded = forward(&mut source_receive, send, len).await?;
@@ -376,9 +394,13 @@ pub(crate) async fn route_content(
             elapsed_ms = elapsed.as_millis(),
             "compute content forwarded"
         );
-        // Inputs are what placement weighs, so only they sample the rate.
-        if route.source == route.pair.0 {
-            observe_transfer(context, workspace_id, route.pair, len, elapsed).await;
+        // Only inputs sample the rate, and only transfers large enough to
+        // say something about it.
+        if input && len >= crate::compute_transport::MIN_THROUGHPUT_SAMPLE_BYTES {
+            observe_input(context, workspace_id, route.scope, |compute, _| {
+                compute.observe_transfer(route.scope.pair, len, elapsed);
+            })
+            .await;
         }
     } else {
         // The asker checks too; ending the stream abnormally tells it now.
@@ -446,7 +468,15 @@ pub(crate) async fn route_proof(
     )
     .await;
     match answer {
-        Ok(Ok(Some(proven @ ContentProof::Proven { .. }))) => write_message(send, &proven).await,
+        Ok(Ok(Some(proven @ ContentProof::Proven { .. }))) => {
+            // Whether the worker's copy matched shows when the job
+            // completes without the relay forwarding this input.
+            observe_input(context, workspace_id, route.scope, |compute, now_ms| {
+                compute.observe_proof(route.scope, digest, now_ms);
+            })
+            .await;
+            write_message(send, &proven).await
+        }
         Ok(Ok(Some(ContentProof::Refused { code }))) => {
             refuse_proof(send, &bounded_detail(code)).await
         }
@@ -512,7 +542,7 @@ async fn choose_source(
     let Some(workspace) = context.workspace(workspace_id).await else {
         return Err("not_authorised");
     };
-    let (source, max_bytes, connection, pair) = job_source(
+    let (source, max_bytes, connection, scope) = job_source(
         &*workspace.lock().await,
         &context.trust(),
         peer,
@@ -523,34 +553,30 @@ async fn choose_source(
         source,
         connection: connection.ok_or("source_offline")?,
         max_bytes,
-        pair,
+        scope,
     })
 }
 
-/// Record that `bytes` of job content moved between the job's requester and
-/// worker (`pair`) in `elapsed`: what placement weighs inputs by.
-async fn observe_transfer(
+/// Record what the relay carried for one input of the job `scope` names
+/// (`observe`, given the time): what placement weighs inputs by.
+async fn observe_input(
     context: &RoutingContext,
     workspace_id: u64,
-    pair: (DeviceKey, DeviceKey),
-    bytes: u64,
-    elapsed: Duration,
+    scope: JobScope,
+    observe: impl FnOnce(&mut ComputeTransportState, u64) + Send,
 ) {
-    if bytes < crate::compute_transport::MIN_THROUGHPUT_SAMPLE_BYTES {
+    let Some(workspace) = context.workspace(workspace_id).await else {
         return;
-    }
-    if let Some(workspace) = context.workspace(workspace_id).await {
-        workspace
-            .lock()
-            .await
-            .compute
-            .observe_transfer(pair, bytes, elapsed);
+    };
+    let now_ms = tilo_clock::unix_now_ms();
+    if scope.expires_at_ms > now_ms {
+        observe(&mut workspace.lock().await.compute, now_ms);
     }
 }
 
 /// The end holding the bytes, their bound, its live connection, and the
-/// job's (requester, worker) pair.
-type JobSource = (DeviceKey, u64, Option<Connection>, (DeviceKey, DeviceKey));
+/// job they move for.
+type JobSource = (DeviceKey, u64, Option<Connection>, JobScope);
 
 /// [`choose_source`] under the workspace lock: the peer's admission, the
 /// job's record, and the live connection of the end holding the bytes.
@@ -579,7 +605,11 @@ fn job_source(
         source,
         max_bytes,
         workspace.compute.worker_connection(&source),
-        (record.spec.requester, record.spec.worker),
+        JobScope {
+            job_id,
+            pair: (record.spec.requester, record.spec.worker),
+            expires_at_ms: record.spec.expires_at_ms,
+        },
     ))
 }
 

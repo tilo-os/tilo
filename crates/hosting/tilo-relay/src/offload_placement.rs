@@ -10,7 +10,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
     RemoteActionTarget,
@@ -18,6 +18,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId};
 
 use crate::RelayClient;
+use crate::compute::MAX_COMPUTE_INPUTS;
 use crate::compute_actions::{COMPUTE_PROVIDER, PLACE_JOB, compute_resource};
 use crate::mesh::DeviceKey;
 use crate::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
@@ -41,6 +42,11 @@ pub struct PlacementQuery<'a> {
     pub gpu: bool,
     /// The bytes of its inputs.
     pub input_bytes: u64,
+    /// Its distinct inputs by digest, each with its bytes, so a device
+    /// already holding some is not weighed as receiving them. Named only
+    /// up to [`MAX_COMPUTE_INPUTS`]; past that placement weighs
+    /// `input_bytes` alone.
+    pub inputs: &'a [([u8; 32], u64)],
     /// How long the asking device last took for this job, scaled to inputs
     /// this size; `None` before it has run it. Placement names a worker only
     /// when moving the inputs there is faster.
@@ -89,6 +95,7 @@ impl RelayPlacement {
             app,
             gpu,
             input_bytes,
+            inputs,
             local_wall_ms,
         } = query;
         let invocation = InvocationId::new();
@@ -96,6 +103,13 @@ impl RelayPlacement {
         arguments.insert("app".into(), Value::String(app.into()));
         arguments.insert("gpu".into(), Value::Bool(gpu));
         arguments.insert("input_bytes".into(), Value::from(input_bytes));
+        if !inputs.is_empty() && inputs.len() <= MAX_COMPUTE_INPUTS {
+            let inputs = inputs
+                .iter()
+                .map(|(digest, bytes)| json!({ "digest": hex::encode(digest), "bytes": bytes }))
+                .collect();
+            arguments.insert("inputs".into(), Value::Array(inputs));
+        }
         if let Some(local_wall_ms) = local_wall_ms {
             arguments.insert("local_wall_ms".into(), Value::from(local_wall_ms));
         }
