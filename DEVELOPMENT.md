@@ -1644,7 +1644,7 @@ code 38), which is a refusal, not an unimplemented backend.
 
 A bare `shell --backend winit` has an empty launcher: it lists only installed,
 signed `.tapp` packages. One command builds the shell and the apps through
-`rcargo`, packages and signs the apps with a development key, installs them
+`$CARGO` (a remote cargo drop-in that mirrors artifacts back with `--fetch`), packages and signs the apps with a development key, installs them
 with their runtime bundle into a private store, and starts the nested shell
 beside the model gateway:
 
