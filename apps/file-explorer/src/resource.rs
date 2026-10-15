@@ -852,6 +852,11 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         effect: FilesEffect,
         cx: &mut EffectCx<FileExplorer, Self>,
     ) -> EffectAnswer {
+        // A handed-over file answers with its content, which the next step
+        // takes by address.
+        if let FilesEffect::HandOver { file } = &effect {
+            return Effected::content(&self.hand_over(file)?);
+        }
         let recovery =
             matches!(effect, FilesEffect::RecoverClipboardTransfers) && self.hosted_clipboard();
         let receipt = matches!(effect, FilesEffect::Paste | FilesEffect::Restore { .. })
@@ -1575,6 +1580,19 @@ mod tests {
         assert_eq!(read["format"], "markdown");
         assert_eq!(read["text"], "# Notes\n\nBuy milk.");
         assert_eq!(read["next"], serde_json::Value::Null);
+        let handed = app
+            .effect(&FilesEffect::HandOver {
+                file: "notes.md".into(),
+            })
+            .unwrap();
+        let hash = ui::tilo_actions::content_hash(&handed.resources[0])
+            .expect("a content address")
+            .to_owned();
+        assert_eq!(
+            app.content().read(&hash).as_deref(),
+            Some(b"# Notes\n\nBuy milk.".as_slice()),
+            "the next step reads the file's bytes by their address"
+        );
         app.effect(&FilesEffect::SelectAll).unwrap();
         let selected = app
             .effect(&FilesEffect::SelectedEntries)

@@ -384,6 +384,46 @@ impl Mail {
         self.draft = self.draft.saved(&message.to_draft());
     }
 
+    /// Attach to draft
+    ///
+    /// Attaches a file another step handed over (a file from Files, a
+    /// picture) to the message being written, under the name given. Save
+    /// the draft's text first: saving the draft again keeps only the
+    /// attachments it names. At most 16 attachments of 32 MiB each.
+    #[action(label = "Attach to draft", prepare = prepare_attachment)]
+    pub fn attach(
+        &mut self,
+        #[param("The file another step handed over, by its content address", content)]
+        content: String,
+        #[param(
+            "The attachment's file name, with its extension",
+            example = "report.pdf"
+        )]
+        name: String,
+        #[param("Filled in from the content where it is attached; leave it out")] size: Option<u64>,
+        #[param("Filled in from the name where it is attached; leave it out")] mime: Option<String>,
+    ) -> Result<(), Refusal> {
+        let attachment = DraftAttachment {
+            content_id: content,
+            filename: name,
+            mime: mime.ok_or("the attachment's type is filled in where it is attached")?,
+            size: size.ok_or("the attachment's size is filled in where it is attached")?,
+        };
+        if !crate::attachment_store::is_valid(&attachment) {
+            return Err(Refusal::new("the attachment is not one a draft can carry"));
+        }
+        let mut attachments = self.draft.attachments.clone();
+        attachments.push(attachment);
+        if crate::attachment_store::bounded(&attachments) != attachments {
+            return Err(Refusal::new(
+                "the draft already carries this file, or as many or as large attachments as \
+                 a message can",
+            ));
+        }
+        self.draft.attachments = attachments;
+        Ok(())
+    }
+
     /// Discard draft
     #[action(destructive)]
     pub fn discard_draft(&mut self) {
@@ -439,6 +479,33 @@ impl Mail {
             }
         }
     }
+}
+
+/// Stage the content an attachment names where it is attached: read it from
+/// this device's content store and keep it under the draft's attachment
+/// identity, with its size and type, so every replica applies the same
+/// attachment and the bytes are verified before the draft names them.
+fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
+    let address = params.content.trim();
+    let hash = ui::tilo_actions::content_hash(address)
+        .or_else(|| address.strip_prefix(crate::attachment_store::PREFIX))
+        .unwrap_or(address);
+    if !tilo_content::valid_hash(hash) {
+        return Err(format!(
+            "{address:?} is not a content address: attach what another step handed over"
+        ));
+    }
+    let store = tilo_resource::content::current()
+        .ok_or("this window has no content store to attach from")?;
+    let bytes = store
+        .read(hash)
+        .ok_or("the handed-over file is not on this device; hand it over again here")?;
+    let staged = crate::attachment_store::stage_bytes(&store, &bytes, &params.name)?;
+    params.content = staged.content_id;
+    params.name = staged.filename;
+    params.size = Some(staged.size);
+    params.mime = Some(staged.mime);
+    Ok(())
 }
 
 /// `text` as HTML: each line a paragraph, a line starting with `> `
@@ -1287,6 +1354,57 @@ mod tests {
     use tilo_actions::OperationKind;
     use ui::tilo_resource::Replica;
     use ui::widget::Widget;
+
+    /// A file another step handed over attaches to the draft by its
+    /// content address: staged and verified where it is attached, carried as
+    /// the same attachment on every replica, refused when it is not there.
+    #[test]
+    fn a_handed_over_file_attaches_to_the_draft() {
+        let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
+        let hash = app.content().put(b"quarterly numbers").unwrap();
+        app.call(
+            "attach",
+            serde_json::json!({
+                "content": ui::tilo_actions::content_resource(&hash),
+                "name": "numbers.csv",
+            }),
+        )
+        .unwrap();
+        let attachments = app.state().draft.attachments;
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].filename, "numbers.csv");
+        assert_eq!(attachments[0].size, 17);
+        assert_eq!(
+            crate::attachment_store::materialize(&app.content(), &attachments[0]).unwrap(),
+            b"quarterly numbers"
+        );
+        assert!(
+            app.call(
+                "attach",
+                serde_json::json!({"content": hash, "name": "again.csv"}),
+            )
+            .is_err(),
+            "the same file is attached once"
+        );
+        let missing = tilo_content::hash_bytes(b"never stored");
+        assert!(
+            app.call(
+                "attach",
+                serde_json::json!({"content": missing, "name": "x.txt"}),
+            )
+            .is_err()
+        );
+        assert!(
+            app.call(
+                "attach",
+                serde_json::json!({"content": "/home/you/x.txt", "name": "x.txt"}),
+            )
+            .is_err(),
+            "a path is not content"
+        );
+        assert!(app.undo());
+        assert!(app.state().draft.attachments.is_empty());
+    }
 
     #[test]
     fn effects_reach_the_window_through_the_door() {
