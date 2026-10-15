@@ -8,7 +8,7 @@ description = "A picture's subject, found by the on-device model through the mod
 
 [dependencies]
 # The model runs in the model gateway; this crate only asks it.
-tilo-model-gateway = { path = "../../agent/model-gateway" }
+tilo-model-gateway = { path = "../../agent/model-gateway", default-features = false }
 # The matte, and refining an edge and defringing, which run in the app.
 tilo-segment = { path = "../../media/segment" }
 base64.workspace = true

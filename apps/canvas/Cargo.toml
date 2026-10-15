@@ -64,7 +64,7 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 # A stand-in subject model on the gateway's own descriptor and wire, held
 # mid-inference to show the window keeps taking input.
-tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
+tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false }
 
 [lints]
 workspace = true

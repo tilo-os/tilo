@@ -63,7 +63,9 @@ account-custody = { path = "../../system/account-custody" }
 tilo-oauth = { path = "../../system/tilo-oauth" }
 async-imap.workspace = true
 agent-provider-config = { path = "../../agent/provider-config" }
-tilo-model-gateway = { path = "../../agent/model-gateway" }
+# Only the gateway's client: its daemon (`service`) runs the models and the
+# provider clients, and no app process maps them.
+tilo-model-gateway = { path = "../../agent/model-gateway", default-features = false }
 # Deterministic painting and subject-matte engines belong in the shared runtime. Canvas
 # keeps its resources and actions in the tapp without repeating these engines.
 tilo-wet-media = { path = "../../media/wet-media" }

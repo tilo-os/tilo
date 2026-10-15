@@ -53,7 +53,10 @@ app's tapp; never an OS daemon or other OS-internal crate (the filesystem, the
 launcher, the app host, the install CLI, the peer transport) and nothing no
 app reaches. An app that calls into such a crate links it itself and gets only
 the code it calls; the Store, for one, depends on `app-host` without its
-default `service` feature. `tools/policy/check_runtime_dylib_surface.py` (CI /
+default `service` feature, and Settings, Agent and Canvas depend on
+`tilo-model-gateway` without its: the daemon's provider clients, on-device
+model service and subject-model runtime (rten) stay in the gateway, and an
+app gets only the client that asks it. `tools/policy/check_runtime_dylib_surface.py` (CI /
 fast quality) resolves the runtime with the default collection the way the
 release does and fails on either, and on a crate of an engine that has moved
 out.

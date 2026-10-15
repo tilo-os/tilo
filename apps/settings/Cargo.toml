@@ -76,7 +76,7 @@ account-custody = { path = "../../crates/system/account-custody" }
 agent-provider-config = { path = "../../crates/agent/provider-config", features = ["model"] }
 # Settings uses this only over the launcher-passed service FD to put/remove a
 # key; no vault file or provider network capability is linked into the app.
-tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
+tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false }
 # The audio graph client: enumerate the PipeWire/WirePlumber node graph and
 # route per-application streams. The Sound pane drives audio routing
 # through it (default features only — no gstreamer decode stack pulled in).
