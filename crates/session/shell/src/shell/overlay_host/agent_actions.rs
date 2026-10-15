@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tilo_actions::remote::{
-    ActionHostError, CanonicalActionRoute, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvokeArgument, InvokeRequest, Pending, PendingPoll, ReceiptStatus, workspace_provider,
+    ActionHostError, CataloguePage, CatalogueQuery, InvocationReceipt, InvokeArgument,
+    InvokeRequest, Pending, PendingPoll, ReceiptStatus, workspace_provider,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 
@@ -267,7 +267,7 @@ impl AgentActions {
         {
             return;
         }
-        let (Some(session), Some(owner)) = (&self.session, &self.owner) else {
+        let (Some(session), Some(_)) = (&self.session, &self.owner) else {
             return;
         };
         let deadline = deadline_after(if matches!(operation.purpose, Purpose::Respond(_)) {
@@ -275,24 +275,13 @@ impl AgentActions {
         } else {
             TIMEOUT
         });
-        let phase = if let Some(app) = operation.app {
-            Phase::Providers(watch(session.query(CatalogueQuery {
-                canonical_route: Some(CanonicalActionRoute {
-                    room: owner.room.clone(),
-                    app_id: app.into(),
-                    record_id: String::new(),
-                }),
-                max_results: 0,
-                ..CatalogueQuery::default()
-            })))
-        } else {
-            // Who publishes the desktop's task actions in this room: asked
-            // first, since a native room serves them as an application's.
-            Phase::Providers(watch(session.query(CatalogueQuery {
-                max_results: 0,
-                ..CatalogueQuery::default()
-            })))
-        };
+        // Who publishes the action in this room is asked first: the agent's
+        // own provider, or the desktop's, which a native room serves as an
+        // application's.
+        let phase = Phase::Providers(watch(session.query(CatalogueQuery {
+            max_results: 0,
+            ..CatalogueQuery::default()
+        })));
         self.calls.push(Call {
             operation,
             phase,
@@ -654,6 +643,11 @@ impl AgentActions {
             // The agent could not be asked: the run decides instead. Asking
             // has no effect, so this never does anything twice.
             Purpose::Respond(request) => {
+                tracing::info!(
+                    agent = %request.owner.agent,
+                    unknown,
+                    "the agent could not be asked; its run decides instead"
+                );
                 if self.session.is_some() {
                     self.begin(request_queue(request, None));
                 } else {
@@ -976,14 +970,14 @@ fn provider_step(
     };
     let answer = watch(session.query(CatalogueQuery {
         provider: Some(provider.provider.clone()),
-        needle: operation.action.clone(),
-        max_results: 128,
+        target: Some(ActionAddress::new(&operation.resource, &operation.action)),
+        max_results: 1,
         ..CatalogueQuery::default()
     }));
     Step::Next(Phase::Resolve {
         provider: provider.provider.clone(),
         answer,
-        pages: 16,
+        pages: 1,
         matched: Vec::new(),
     })
 }
@@ -1690,7 +1684,7 @@ mod tests {
                 (Some(provider), Some(target)) if *provider == workspace_provider(&self.id) => {
                     vec![Self::row(provider, "desktop", target)]
                 }
-                (Some(provider), None) if provider == "agent" => vec![Self::row(
+                (Some(provider), Some(_)) if provider == "agent" => vec![Self::row(
                     provider,
                     AGENT,
                     &ActionAddress::new(
