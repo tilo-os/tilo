@@ -131,9 +131,10 @@ impl Frame {
 
     /// The system-memory planes behind a planar picture, for a direct upload.
     pub fn planar(&self) -> Option<&Arc<PlanarImage>> {
-        match &self.payload {
-            FramePayload::Planar(p) => Some(p),
-            _ => None,
+        if let FramePayload::Planar(p) = &self.payload {
+            Some(p)
+        } else {
+            None
         }
     }
 

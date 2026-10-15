@@ -1401,8 +1401,8 @@ pub fn verify_agent_delegation(
         clippy::cast_sign_loss,
         reason = "a page clock in milliseconds is well inside u64 nanoseconds"
     )]
-    let now_ns = (now_ms.max(0.0) as u64).saturating_mul(1_000_000);
-    delegation.verify(&user, now_ns).map_err(js_error)?;
+    let at_ns = (now_ms.max(0.0) as u64).saturating_mul(1_000_000);
+    delegation.verify(&user, at_ns).map_err(js_error)?;
     let agent_id = delegation
         .delegate
         .agent_id()

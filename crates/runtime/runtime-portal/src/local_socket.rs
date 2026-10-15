@@ -24,6 +24,13 @@ pub type Stream = tokio::io::DuplexStream;
 ///
 /// Returns the connection error, or `Unsupported` where [`SUPPORTED`] is
 /// `false`.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unused_async,
+        reason = "shares the signature of the Unix connect"
+    )
+)]
 pub async fn connect(path: &Path) -> io::Result<Stream> {
     #[cfg(unix)]
     {

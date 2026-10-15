@@ -237,6 +237,13 @@ pub enum Placement {
 /// `planes` are the overlay planes on the CRTC; `taken` the ids already used
 /// this frame. The first plane that can show the picture wins, so callers list
 /// them in preference order.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::needless_return,
+        reason = "the Unix placement follows the early return"
+    )
+)]
 pub fn place(
     request: &VideoSurfaceRequest<'_>,
     output: (u32, u32),

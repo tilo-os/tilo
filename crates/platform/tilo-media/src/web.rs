@@ -78,7 +78,7 @@ fn to_ms(value: f64) -> Option<u64> {
         clippy::cast_sign_loss,
         reason = "checked finite and non-negative; the element reports whole milliseconds"
     )]
-    (value.is_finite() && value >= 0.0).then(|| value as u64)
+    (value.is_finite() && value >= 0.0).then_some(value as u64)
 }
 
 pub(crate) struct WebState {
@@ -158,15 +158,15 @@ impl WebState {
         self.ended_reported = false;
     }
 
-    pub(crate) fn set_volume(&mut self, volume: f32) {
+    pub(crate) fn set_volume(&self, volume: f32) {
         self.element.set_volume(f64::from(volume));
     }
 
-    pub(crate) fn set_muted(&mut self, muted: bool) {
+    pub(crate) fn set_muted(&self, muted: bool) {
         self.element.set_muted(muted);
     }
 
-    pub(crate) fn set_rate(&mut self, rate: f32) {
+    pub(crate) fn set_rate(&self, rate: f32) {
         self.element.set_rate(f64::from(rate));
     }
 
