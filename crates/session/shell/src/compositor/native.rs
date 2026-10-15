@@ -7777,7 +7777,7 @@ fn install_wifi_secret_bridge(
 fn spawn_session_peer_sync(
     frame_builder: &mut FrameBuilder,
     state: &mut State,
-    tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    tree_handle: &crate::shell::state::WorkspaceTreeHandle,
 ) -> Option<Arc<crate::shell::network::ShellNetwork>> {
     match crate::shell::network::ShellNetwork::spawn_for_session(tree_handle.clone()) {
         Ok(handle) => Some(install_session_peer_sync(
@@ -7851,7 +7851,7 @@ fn install_legacy_streams(state: &mut State, net: &Arc<crate::shell::network::Sh
 fn install_session_peer_sync(
     frame_builder: &mut FrameBuilder,
     state: &mut State,
-    tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    tree_handle: &crate::shell::state::WorkspaceTreeHandle,
     handle: crate::shell::network::ShellNetwork,
 ) -> Arc<crate::shell::network::ShellNetwork> {
     let _ = handle.join_default_workspace();
@@ -7871,7 +7871,7 @@ fn install_session_peer_sync(
     frame_builder.host_mut().set_personal_devices(Arc::new(
         crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
     ));
-    install_window_hosting(&net, &tree_handle);
+    install_window_hosting(&net, tree_handle);
     let hosted_net = Arc::clone(&net);
     frame_builder.with_chrome(move |chrome| {
         chrome.window_transfers.set_hosted_rooms(Box::new(
@@ -9316,7 +9316,7 @@ pub fn run() {
     // Peer sync is constructed here because this is the compositor that boots
     // as the Tilo session.
     let mut peer_sync = enable_peer_sync
-        .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
+        .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, &tree_handle))
         .flatten();
     let mut device_fabric_runtime = peer_sync.as_ref().map(|network| {
         crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(network, notif_bridge.clone())
@@ -12675,7 +12675,7 @@ pub fn run() {
                     peer_sync = Some(install_session_peer_sync(
                         &mut frame_builder,
                         &mut state,
-                        tree_handle.clone(),
+                        &tree_handle,
                         network,
                     ));
                     if let Some(net) = peer_sync.as_ref() {

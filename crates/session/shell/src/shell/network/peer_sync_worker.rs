@@ -162,9 +162,8 @@ impl ShellNetwork {
             return Err(job);
         };
         match worker.send(Work::Job(job)) {
-            Ok(()) => Ok(()),
             Err(mpsc::SendError(Work::Job(job))) => Err(job),
-            Err(mpsc::SendError(Work::FinishSharedRooms)) => Ok(()),
+            Ok(()) | Err(mpsc::SendError(Work::FinishSharedRooms)) => Ok(()),
         }
     }
 
