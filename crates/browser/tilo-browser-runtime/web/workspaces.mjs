@@ -446,9 +446,12 @@ export async function spectate({
   });
   runtime ??= await loadRuntime();
   const {hostCert} = JSON.parse(await runtime.hostInfo(httpsPost(origin, fetch)));
+  // The certificate arrives as JSON text and is passed on as such: its
+  // nanosecond timestamps exceed what a JavaScript number holds exactly, and
+  // a rounded copy no longer matches its signature.
   return connect({
     ...connectOptions, origin, room, runtime, custody, store: memoryStore(), fetch,
-    userPublicKey: hex(certificate.user_public_key), label: 'Spectator',
-    deviceCertificate: JSON.stringify({cert: certificate, hostCert}),
+    userPublicKey: hex(JSON.parse(certificate).user_public_key), label: 'Spectator',
+    deviceCertificate: `{"cert":${certificate},"hostCert":${JSON.stringify(hostCert)}}`,
   });
 }

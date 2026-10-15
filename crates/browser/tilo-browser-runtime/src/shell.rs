@@ -32,7 +32,7 @@ use tilo_desktop::chrome::{
     TopBarWidget, TopBarWidgets,
 };
 use tilo_desktop::collaborators::{
-    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, RosterRow, RosterStatus,
+    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, LineSource, RosterRow, RosterStatus,
 };
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadCopy};
 use tilo_desktop::overview::{OverviewHost, room_cards};
@@ -61,6 +61,10 @@ pub(crate) enum HostRequest {
     /// (`mountDesktop({hostActions, onHostAction})`), by id.
     Action(String),
 }
+
+/// The page's host action that lets the person choose their name; the
+/// People panel offers it on the own name when the page lists it.
+const RENAME_ACTION: &str = "set-name";
 
 /// Requests the desktop queued since the page last read its status.
 pub(crate) type HostRequests = Rc<RefCell<Vec<HostRequest>>>;
@@ -181,7 +185,7 @@ pub(crate) fn now_ms() -> u64 {
 fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
     let status = |line: &tilo_desktop::here::Line| RosterStatus {
         text: line.text.clone(),
-        automatic: line.automatic,
+        source: LineSource::generated_if(line.automatic),
     };
     RosterRow {
         id: person.id.clone(),
@@ -415,10 +419,6 @@ impl BrowserShell {
         let watching = usize::try_from(here.watching()).unwrap_or(usize::MAX);
         let sharing = here.sharing();
         drop(here);
-        let own_initial = own_label
-            .chars()
-            .next()
-            .map_or('\u{2022}', |c| c.to_uppercase().next().unwrap_or(c));
         self.people.draw(
             scene,
             transform,
@@ -427,14 +427,16 @@ impl BrowserShell {
             &CollaboratorsModel {
                 host: self.rect,
                 rows: &rows,
-                own_initial,
+                own_label: &own_label,
                 own_color: theme.tokens.colors.presence.of_rgb(own_rgb),
+                own_rename: self.handle.offers_host_action(RENAME_ACTION),
                 unavailable: None,
                 may_invite: self.offers.invite,
                 followed_id: None,
                 following_pairs: &[],
                 own_status: None,
                 own_activity: own_status.as_ref().map(|line| line.text.as_str()),
+                own_activity_generated: own_status.as_ref().is_some_and(|line| line.automatic),
                 own_status_automatic: false,
                 status_sharing: sharing,
                 status_editing: false,
@@ -459,18 +461,19 @@ impl BrowserShell {
                 self.people_open = false;
                 self.activity();
             }
+            CollaboratorsHit::Rename => {
+                self.people_open = false;
+                self.requests
+                    .borrow_mut()
+                    .push(HostRequest::Action(RENAME_ACTION.to_owned()));
+            }
+            CollaboratorsHit::ChangeSharing => self.people.toggle_sharing_choices(),
             CollaboratorsHit::SetStatusSharing(mode) => {
                 self.chrome.here.borrow_mut().set_sharing(mode);
             }
             CollaboratorsHit::ToggleDetails(index) => {
                 let id = self.people.details_target(index).map(str::to_owned);
                 self.expanded = if self.expanded == id { None } else { id };
-            }
-            CollaboratorsHit::PreviousPeople | CollaboratorsHit::NextPeople => {
-                let tree = self.handle.read(Clone::clone);
-                let count = self.chrome.people(&tree).len();
-                self.people
-                    .change_people_page(hit == CollaboratorsHit::NextPeople, count);
             }
             _ => {}
         }

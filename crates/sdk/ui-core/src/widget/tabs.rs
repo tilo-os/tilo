@@ -700,7 +700,15 @@ impl TabBar {
         // compresses with the body when pressed.
         let transform = pill_transform;
 
-        Self::draw_pill_presence(scene, transform, &shape, r, t, theme, presence);
+        // Faces name who is here; the mist only stands in when no face fits,
+        // so a pill never carries both and is never washed in their colours.
+        if self
+            .pill_faces
+            .get(i)
+            .is_none_or(|faces| faces.slots() == 0)
+        {
+            Self::draw_pill_presence(scene, transform, &shape, r, t, theme, presence);
+        }
 
         // Chip strength ramps 0→1 as the trailing zone opens, reaching full once the
         // zone clears the chip by CHIP_FADE_PX. Close-hover tints red; tab-hover
@@ -1017,7 +1025,7 @@ impl TabBar {
     /// How many peer faces pill `i` has room for: up to [`PILL_MAX_FACES`]
     /// plus a "+N" disc, fewer when the title would drop under
     /// its full width or [`MIN_TITLE_PX`], none on a pinned pill or one too narrow for even a
-    /// single face. The mist still says someone is there.
+    /// single face. The mist then says someone is there.
     fn fit_pill_faces(&self, i: usize, presence: &PresenceCtx) -> PillFaces {
         let (Some(tab), Some(&r)) = (self.tabs.get(i), self.tab_rects.get(i)) else {
             return PillFaces::default();
@@ -1079,7 +1087,13 @@ impl TabBar {
         let metrics = self.face_metrics;
         let x0 = r.x1 - reserve - faces.width(metrics) + metrics.gap;
         let cy = r.center().y;
-        let ring = ctx.theme.tokens.colors.surfaces.overlay;
+        // The ring is the pill's own ground (its glass film over the strip),
+        // so overlapping faces read as cut out of the tab, not stickered on.
+        let ring = crate::tokens::colors::over(
+            ctx.theme.tokens.colors.surfaces.base,
+            pill.look.fill.with_alpha(1.0),
+            pill.look.fill.components[3],
+        );
         let face_rect = |slot: usize| {
             square_at(
                 Point::new(
@@ -2481,7 +2495,7 @@ const MODIFIED_DOT_R: f64 = 3.5;
 /// Fits an app glyph, a couple of characters, and the close chip.
 const PILL_MIN_PX: f64 = 84.0;
 /// Peer faces on a pill: at most this many faces before a "+N" disc.
-const PILL_MAX_FACES: usize = 3;
+const PILL_MAX_FACES: usize = 2;
 /// Below this a pill can't host a legible title fragment alongside the close
 /// chip, so squeezing further would be worse than eliding harder.
 const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
@@ -2699,25 +2713,31 @@ struct PillFaces {
     overflow: usize,
 }
 
-/// Sizes of a pill's peer faces, from the theme: each face is a small icon
-/// wide, overlaps its neighbour by the smallest spacing step, and keeps that
-/// step from the title.
+/// Sizes of a pill's peer faces, from the theme: each face is a medium icon
+/// wide (large enough for a legible initial), keeps the smallest spacing
+/// step from the title, and overlaps its neighbour by only half that step so
+/// both initials stay whole.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct FaceMetrics {
     face: f64,
     gap: f64,
+    overlap: f64,
 }
 
 impl FaceMetrics {
     fn of(theme: &Theme) -> Self {
+        let gap = f64::from(theme.tokens.spacing.s1);
         Self {
-            face: f64::from(theme.tokens.metrics.icon_sm),
-            gap: f64::from(theme.tokens.spacing.s1),
+            face: f64::from(theme.tokens.metrics.icon_md),
+            gap,
+            // The ring alone overlaps the next face onto this one's edge,
+            // never onto its initial.
+            overlap: 0.0,
         }
     }
 
     fn step(self) -> f64 {
-        self.face - self.gap
+        self.face - self.overlap
     }
 }
 
@@ -5256,10 +5276,10 @@ mod tests {
             assert_eq!(
                 wide[1],
                 PillFaces {
-                    faces: 3,
-                    overflow: 2
+                    faces: 2,
+                    overflow: 3
                 },
-                "three faces, the rest folded into +2"
+                "two faces, the rest folded into +3"
             );
             assert!(
                 wide_trailing
@@ -5270,8 +5290,8 @@ mod tests {
             assert_eq!(
                 medium[1],
                 PillFaces {
-                    faces: 2,
-                    overflow: 3
+                    faces: 1,
+                    overflow: 4
                 },
                 "a tighter pill keeps a legible title and shows fewer faces"
             );

@@ -56,8 +56,11 @@ pub struct SpectateRequest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpectateAnswer {
-    /// The device certificate in the form the browser runtime takes.
-    pub certificate: serde_json::Value,
+    /// The device certificate in the form the browser runtime takes, as JSON
+    /// text the page passes on unparsed: its nanosecond timestamps are
+    /// larger than a JavaScript number holds exactly, and the signature
+    /// covers them, so a parsed and re-serialized copy no longer verifies.
+    pub certificate: String,
     pub origin: String,
     pub room: String,
 }
@@ -74,7 +77,7 @@ pub enum JoinRefusal {
 /// What the child answered one waiting request.
 enum Answer {
     Invitation(String),
-    Certificate(serde_json::Value),
+    Certificate(String),
 }
 
 type Waiters = HashMap<String, oneshot::Sender<std::result::Result<Answer, String>>>;
@@ -478,7 +481,7 @@ impl Persistent {
                     certificate,
                 }) => self.settle(
                     &format!("spectate:{device_public_key}"),
-                    serde_json::to_value(&certificate)
+                    serde_json::to_string(&certificate)
                         .map(Answer::Certificate)
                         .map_err(|error| error.to_string()),
                 ),
@@ -1127,10 +1130,13 @@ mod tests {
         let answer = watching.await.unwrap().unwrap();
         assert_eq!(answer.room, "room-uuid");
         assert_eq!(answer.origin, "https://rooms.example");
+        // The certificate stays JSON text, so its timestamps reach the page
+        // exactly and the signature still verifies there.
         assert_eq!(
-            answer.certificate,
-            serde_json::to_value(&certificate).unwrap()
+            serde_json::from_str::<tilo_user_identity::DeviceCert>(&answer.certificate).unwrap(),
+            certificate
         );
+        assert!(answer.certificate.contains("1791962530023125779"));
     }
 
     #[tokio::test]
@@ -1162,8 +1168,10 @@ mod tests {
             device_public_key: [4; 32],
             device_label: "Watching visitor".into(),
             capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: Some(2),
+            // A real clock reading: beyond 2^53, so a JavaScript number
+            // would round it.
+            issued_at_ns: 1_791_962_530_023_125_779,
+            expires_at_ns: Some(1_791_966_130_023_125_779),
             signature: [3; 64],
         }
     }
