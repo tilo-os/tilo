@@ -1666,6 +1666,7 @@ dependencies = [
  "tilo-content",
  "tilo-files",
  "tilo-model-gateway",
+ "tilo-paint-engine",
  "tilo-subject",
  "tilo-test-env",
  "tilo-wet-media",
@@ -9331,6 +9332,7 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-vello",
  "tilo-winit",
+ "tilo-youtube-engine",
  "tokio",
  "tracing",
  "url",
@@ -13145,7 +13147,6 @@ dependencies = [
  "roxmltree 0.21.1",
  "runtime-fs",
  "runtime-identity",
- "rustypipe",
  "settings-store",
  "tilo-actions",
  "tilo-app",
@@ -13163,11 +13164,9 @@ dependencies = [
  "tilo-pdf",
  "tilo-relay-protocol",
  "tilo-rich-text",
- "tilo-subject",
  "tilo-thumbnail",
  "tilo-ui",
  "tilo-user-identity",
- "tilo-wet-media",
  "vte",
  "workspace-hack",
  "xattr",
@@ -17913,6 +17912,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-paint-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-subject",
+ "tilo-wet-media",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-paint-stream"
 version = "0.1.0"
 dependencies = [
@@ -18803,6 +18812,7 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-spotify",
+ "tilo-youtube-engine",
  "workspace-hack",
 ]
 
@@ -19382,6 +19392,15 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-user-identity",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-youtube-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "rustypipe",
  "workspace-hack",
 ]
 
@@ -20005,6 +20024,7 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-winit",
+ "tilo-youtube-engine",
  "tracing",
  "tracing-subscriber",
  "uuid",

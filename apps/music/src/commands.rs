@@ -10,6 +10,10 @@
 //!   playback's self-check without an account, network or audio device. In a
 //!   release build that code is in `libtilo_spotify_engine.so`, so the check
 //!   proves Music loads its engine library and runs it.
+//! - `--probe-youtube-engine VALUE` (the value is ignored) runs the `YouTube`
+//!   client's self-check without a network. It needs `runtime-engine`, the
+//!   release build, where that code is in `libtilo_youtube_engine.so`; the
+//!   check proves Music loads that library and runs it.
 
 use ui::framework::Command;
 
@@ -27,7 +31,23 @@ pub const COMMANDS: &[Command] = &[
         option: "--probe-spotify-engine",
         run: probe_spotify_engine,
     },
+    Command {
+        option: "--probe-youtube-engine",
+        run: probe_youtube_engine,
+    },
 ];
+
+#[cfg(feature = "runtime-engine")]
+fn probe_youtube_engine(_: &str) -> Result<(), String> {
+    let report = tilo_youtube_engine::self_check()?;
+    println!("music --probe-youtube-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_youtube_engine(_: &str) -> Result<(), String> {
+    Err("the YouTube engine library needs the `runtime-engine` feature".to_string())
+}
 
 #[cfg(feature = "spotify-native")]
 fn probe_spotify_engine(_: &str) -> Result<(), String> {

@@ -13,13 +13,17 @@ extends = ["default"]
 include = ["file-explorer", "settings", "terminal"]
 
 [features]
-# Spotify playback from its engine library beside the runtime.
+# Spotify playback and the YouTube client from their engine libraries beside
+# the runtime.
 music = ["audio", "live", "runtime-engine"]
 video-player = ["decode"]
 camera = ["live-capture"]
-tube = ["live", "media", "grayjay-sync"]
+# The YouTube client from its engine library beside the runtime.
+tube = ["live", "media", "grayjay-sync", "runtime-engine"]
 mail = ["live"]
 disks = ["live"]
 video-editor = ["decode", "gst"]
 # Typst from its engine library beside the runtime.
 typst-editor = ["runtime-engine"]
+# The painting engines from their engine library beside the runtime.
+canvas = ["runtime-engine"]

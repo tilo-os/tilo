@@ -3,5 +3,8 @@
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+// The YouTube client comes from its engine library, not this executable.
+#[cfg(feature = "runtime-engine")]
+extern crate tilo_youtube_engine;
 
 ui::main!(tube::TubeShell);
