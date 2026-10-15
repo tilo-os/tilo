@@ -108,7 +108,11 @@ beside the focused one.
   scheduled's `stream` group) adds the real encoder -> host -> Chrome WebCodecs
   half: the `legacy_stream_source` example streams a drawn window through the
   production H.264 encoder to a release desktop bundle, which must show every
-  frame it draws correctly, end on the last one and deliver each click back.
+  frame it draws correctly, end on the last one and deliver each click back,
+  then holds the acceptance cases of `native_stream_acceptance.mjs` (focus,
+  paste, input-method text, resize, the HTTPS fallback, a viewer without
+  control, a dropped live plane, no typing into a stale window) in a governed
+  room.
   Neither is a Linux Wayland capture -> native seat proof. That requires an
   isolated Linux compositor and a consented legacy client.
 - The bridge carries H.264 only, and a session encodes H.264 only with a
