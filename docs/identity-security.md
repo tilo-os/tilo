@@ -175,18 +175,20 @@ does not load and is not re-keyed or moved, the store file is unchanged, and a
 new key falls back to the file. Once the device identity is back, the original
 key signs again. A truncated record fails its launch with a named error.
 
-The same test runs clients that turned themselves non-dumpable, in child
-processes, against a store that holds no capabilities (as its unit
-`CapabilityBoundingSet=` runs it). One with no device key, and one that read
-another machine's device key, are refused and fall back to the file; that
-refusal is also what shows the store really cannot read their executables.
-One that read this machine's device key, as the compositor does, gets
-`secret-service-v1` and no key file, signs, stays non-dumpable, and signs
-again after the store restarts under it. A second test serves the store's
-management interface with that test binary as portal host: a non-dumpable
-host is refused `SandboxSecret` until its connection proves the device key,
-a proof from another device's key is refused, and a proof covers only the
-connection that made it.
+The same test runs clients in child processes, against a store, both
+without capabilities (as the store's unit `CapabilityBoundingSet=` and a
+person's session run them). A dumpable client is the control: the store
+examines it and keeps its key. Clients that turned themselves non-dumpable
+with no device key, or after reading another machine's device key, are
+refused and fall back to the file; with the control, that refusal is what
+shows the store really cannot read a non-dumpable executable. One that read
+this machine's device key, as the compositor does, gets `secret-service-v1`
+and no key file, signs, stays non-dumpable, and signs again after the store
+restarts under it. A second test serves the store's management interface
+with that test binary as portal host: a dumpable host is answered by its
+executable, a non-dumpable host is refused `SandboxSecret` until its
+connection proves the device key, a proof from another device's key is
+refused, and a proof covers only the connection that made it.
 
 Nothing exercises a hardware TPM: no TPM provider exists, so no identity is
 ever reported as hardware-backed.
