@@ -770,7 +770,7 @@ pub(crate) struct ControlAvailability {
 }
 
 /// Reserved transport namespace. Domain resources never contain this rewrite.
-pub(crate) const PUBLICATION_PREFIX: &str = "tilo-ui-bound:v1:";
+pub(crate) const PUBLICATION_PREFIX: &str = tilo_actions::BOUND_RESOURCE_PREFIX;
 const MAX_PUBLICATION_ALIAS: usize = 4096;
 pub(crate) struct BoundPublication {
     host: uuid::Uuid,

@@ -214,8 +214,8 @@ pub use schema::{
     catalogue_schema, catalogue_schema_bytes,
 };
 pub use selection::{
-    MAX_EXCERPT_BYTES, MAX_EXCERPT_CHARS, MAX_SELECTED_ITEMS, SelectionAnchor, SelectionPlace,
-    SelectionSubject, excerpt_of,
+    BOUND_RESOURCE_PREFIX, MAX_EXCERPT_BYTES, MAX_EXCERPT_CHARS, MAX_SELECTED_ITEMS,
+    SelectionAnchor, SelectionPlace, SelectionSubject, excerpt_of, logical_resource_id,
 };
 /// Grants and the decisions over them, as apps read and show them.
 pub use tilo_action_policy as policy;

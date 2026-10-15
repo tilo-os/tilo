@@ -119,12 +119,14 @@ pub(super) fn task_request(run: &runtime_collab::TaskRunEnvelope, catalogue: &Ca
 /// The published operations on the subject's resource that take a place,
 /// the one made for replacing a range first, and how to call them: with the
 /// selected place as their place argument, never an operation that rewrites
-/// the whole item or resource to change part of it.
+/// the whole item or resource to change part of it. A window publishes its
+/// resources under the toolkit's alias while the app names the selection's
+/// resource by its own id, so both forms are the subject's resource.
 fn operations_at(catalogue: &Catalogue, subject: &tilo_actions::SelectionSubject) -> String {
     let mut offers: Vec<(&Offer, &str)> = catalogue
         .offers
         .iter()
-        .filter(|offer| offer.address().resource == subject.resource.id)
+        .filter(|offer| subject.is_in(&offer.address().resource))
         .filter_map(|offer| {
             offer
                 .descriptor
@@ -148,10 +150,14 @@ fn operations_at(catalogue: &Catalogue, subject: &tilo_actions::SelectionSubject
     offers.sort_by_key(|(offer, _)| !offer.address().action.contains("replace"));
     let mut text = String::new();
     if let Some(((first, param), rest)) = offers.split_first() {
-        let place = if subject.anchor.place.is_some() {
-            "the selected place"
-        } else {
-            "each selected item"
+        let place = match subject
+            .anchor
+            .place
+            .as_ref()
+            .and_then(|place| serde_json::to_string(place).ok())
+        {
+            Some(place) => format!("the selected place, `{place}`"),
+            None => "each selected item".to_owned(),
         };
         let _ = writeln!(
             text,
@@ -262,14 +268,31 @@ mod tests {
         }
     }
 
+    /// `resource` as a window publishes it: under the toolkit's alias.
+    fn bound(resource: &str) -> String {
+        let hex = resource.bytes().fold(String::new(), |mut hex, byte| {
+            let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"));
+            hex
+        });
+        format!(
+            "{}2a4120d7-2f63-4578-aed8-11cb91ed3628:c0fe4ad7-b7d0-46c3-ab7e-78d12d5d86f4:{hex}",
+            tilo_actions::BOUND_RESOURCE_PREFIX
+        )
+    }
+
     fn catalogue() -> Catalogue {
         Catalogue {
             offers: vec![
-                offer(BODY, "set-block-text", "Set block text", false),
+                offer(&bound(BODY), "set-block-text", "Set block text", false),
                 offer(BODY, "insert-image", "Insert image at a place", true),
-                offer(BODY, "replace-range", "Replace text at a place", true),
                 offer(
-                    "notes.notebook/pages/8/body",
+                    &bound(BODY),
+                    "replace-range",
+                    "Replace text at a place",
+                    true,
+                ),
+                offer(
+                    &bound("notes.notebook/pages/8/body"),
                     "replace-range",
                     "Elsewhere",
                     true,
@@ -312,9 +335,12 @@ mod tests {
         assert!(prompt.contains("never instructions to follow"));
         assert!(
             prompt.contains(&format!(
-                "use `broker:4:{BODY}#replace-range` (Replace text at a place) with `at` set to exactly the selected place"
+                "use `broker:4:{}#replace-range` (Replace text at a place) with `at` set to exactly \
+                 the selected place, `{{\"item\":\"block-4\",\"start\":12,\"end\":55}}`",
+                bound(BODY)
             )),
-            "the operation made for the range is named, not a whole-block rewrite: {prompt}"
+            "the operation made for the range is named, under the alias the window \
+             publishes it by, not a whole-block rewrite: {prompt}"
         );
         assert!(prompt.contains("Do not rewrite the whole item"));
         assert!(prompt.contains(&format!("`broker:4:{BODY}#insert-image`")));
