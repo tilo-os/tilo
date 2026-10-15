@@ -344,6 +344,7 @@ impl WideDirectory {
             descriptor: Some(descriptor),
             has_children: false,
             visibility: Some(runtime_collab::RowVisibility {
+                governing_kind: Some(tilo_actions::OperationKind::View),
                 action: "open".into(),
                 contract,
             }),
@@ -413,6 +414,8 @@ async fn query_wide_page(
         41,
         RegisteredActionDirectory {
             registration: Rc::new(uuid::Uuid::new_v4()),
+            pagination: directory_pagination::DirectoryPagination::default(),
+            publishing_person: Some(owner()),
             app_id: route.app_id.clone(),
             route,
             directory: capnp_rpc::new_client(WideDirectory),

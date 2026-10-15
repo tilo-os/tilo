@@ -400,18 +400,8 @@ impl TransferObserver for NoopTransferObserver {}
 
 struct MountedImportObserver;
 impl TransferObserver for MountedImportObserver {
-    fn destination_permissions(
-        &mut self,
-        mut source: std::fs::Permissions,
-    ) -> std::fs::Permissions {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            source.set_mode(source.mode() | 0o200);
-        }
-        #[cfg(not(unix))]
-        source.set_readonly(false);
-        source
+    fn destination_permissions(&mut self, source: std::fs::Permissions) -> std::fs::Permissions {
+        tilo_cloud_files::owner_writable(source)
     }
 }
 

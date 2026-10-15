@@ -316,8 +316,12 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
             root.rows[0].descriptor.as_ref().unwrap().operation_kind,
             tilo_actions::OperationKind::Effect
         );
-        let contract = &root.rows[0].visibility.as_ref().unwrap().contract;
-        assert_eq!(contract.kind, tilo_actions::ActionKind::Undoable);
+        let visibility = root.rows[0].visibility.as_ref().unwrap();
+        assert_eq!(
+            visibility.governing_kind,
+            Some(tilo_actions::OperationKind::Effect)
+        );
+        assert_eq!(visibility.contract.kind, tilo_actions::ActionKind::Undoable);
     }
 
     // Case `directory_snapshot_parent_merges_exact_provider_extensions_without_duplicates`.
@@ -349,6 +353,13 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
             ]
         );
         assert_eq!(rows[0].resource_label, "Published label");
+        for row in &rows {
+            let visibility = row.visibility.as_ref().unwrap();
+            assert!(visibility.governing_kind.is_some());
+            if let Some(descriptor) = &row.descriptor {
+                assert_eq!(visibility.governing_kind, Some(descriptor.operation_kind));
+            }
+        }
         let contract = &rows[0].visibility.as_ref().unwrap().contract;
         assert_eq!(contract.kind, tilo_actions::ActionKind::Read);
         let revision = app.action_directory_revision();

@@ -319,41 +319,49 @@ fn answer(
                 _ => Reply::Cancelled { id },
             }
         }
-        Request::Open { id, path } => {
-            let paths = match permitted(&context.grants, caller, &[path], PickMode::Open) {
-                Ok(paths) => paths,
-                Err(reason) => return Reply::Failed { id, reason },
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return Reply::Failed {
-                    id,
-                    reason: t("portal-chooser-no-file"),
-                };
-            };
-            let (reply, outcome) = mpsc::channel();
-            if opens
-                .send(OpenRequest {
-                    caller: caller.clone(),
-                    path,
-                    reply,
-                })
-                .is_err()
-            {
-                return Reply::Failed {
-                    id,
-                    reason: t("portal-chooser-session-closing"),
-                };
-            }
-            (context.wake)();
-            match outcome.recv() {
-                Ok(Ok(())) => Reply::Opened { id },
-                Ok(Err(reason)) => Reply::Failed { id, reason },
-                Err(_) => Reply::Failed {
-                    id,
-                    reason: t("portal-chooser-session-closing"),
-                },
-            }
-        }
+        Request::Open { id, path } => answer_open(context, opens, caller, id, path),
+    }
+}
+
+fn answer_open(
+    context: &ChooserContext,
+    opens: &mpsc::Sender<OpenRequest>,
+    caller: &PortalCaller,
+    id: u64,
+    path: PathBuf,
+) -> Reply {
+    let paths = match permitted(&context.grants, caller, &[path], PickMode::Open) {
+        Ok(paths) => paths,
+        Err(reason) => return Reply::Failed { id, reason },
+    };
+    let Some(path) = paths.into_iter().next() else {
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-no-file"),
+        };
+    };
+    let (reply, outcome) = mpsc::channel();
+    if opens
+        .send(OpenRequest {
+            caller: caller.clone(),
+            path,
+            reply,
+        })
+        .is_err()
+    {
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        };
+    }
+    (context.wake)();
+    match outcome.recv() {
+        Ok(Ok(())) => Reply::Opened { id },
+        Ok(Err(reason)) => Reply::Failed { id, reason },
+        Err(_) => Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        },
     }
 }
 

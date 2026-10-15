@@ -1288,71 +1288,86 @@ mod command_path_tests {
             crate::remote_accounts::RemoteAccountKind::Dropbox,
             crate::remote_accounts::RemoteAccountKind::GoogleDrive,
         ] {
-            let home = tempfile::tempdir().unwrap();
-            let mount = home.path().join("Remote/Cloud");
-            let destination = home.path().join("Downloads");
-            std::fs::create_dir_all(&mount).unwrap();
-            std::fs::create_dir(&destination).unwrap();
-            std::fs::create_dir(mount.join("Folder")).unwrap();
-            std::fs::write(mount.join("Folder/document.txt"), b"original bytes").unwrap();
-            // Provider-native documents are already projected as link files.
-            std::fs::write(
-                mount.join("Folder/document.gdoc"),
-                b"{\"url\":\"https://docs.google.com/document/d/test\"}",
-            )
-            .unwrap();
-            let mut account = remote_account(
-                crate::remote_accounts::RemoteAccountHealth::Healthy,
-                Some(mount.clone()),
-            );
-            account.kind = kind;
-            let mut files = FileExplorerWidget::with_persistence_dirs(
-                None,
-                Some(home.path().to_path_buf()),
-                favorites::UserDirs {
+            one_time_cloud_import_for_kind(kind);
+        }
+    }
+
+    fn one_time_cloud_import_for_kind(kind: crate::remote_accounts::RemoteAccountKind) {
+        let home = tempfile::tempdir().unwrap();
+        let mount = home.path().join("Remote/Cloud");
+        let destination = home.path().join("Downloads");
+        std::fs::create_dir_all(&mount).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::create_dir(mount.join("Folder")).unwrap();
+        std::fs::write(mount.join("Folder/document.txt"), b"original bytes").unwrap();
+        // Provider-native documents are already projected as link files.
+        std::fs::write(
+            mount.join("Folder/document.gdoc"),
+            b"{\"url\":\"https://docs.google.com/document/d/test\"}",
+        )
+        .unwrap();
+        let mut account = remote_account(
+            crate::remote_accounts::RemoteAccountHealth::Healthy,
+            Some(mount.clone()),
+        );
+        account.kind = kind;
+        let mut app =
+            ui::prelude::TestApp::<crate::FileExplorerShell>::launched(&[mount.to_str().unwrap()])
+                .unwrap();
+        let row = app
+            .with_surface(|files: &mut FileExplorerWidget| {
+                files.home_path = Some(home.path().to_path_buf());
+                files.user_dirs = favorites::UserDirs {
                     downloads: Some(destination.clone()),
                     ..Default::default()
-                },
-            );
-            files.startup_accounts = Some(vec![account]);
-            files.navigate(mount.clone());
-            let row = files
-                .published_rows()
-                .into_iter()
-                .find(|row| row.label == "Folder")
-                .unwrap();
-            assert!(row.actions.iter().any(|action| action.id == "import-once"));
-            let mut doc = automerge::AutoCommit::new();
-            published::invoke(
-                &mut files,
-                &mut doc,
-                row.id.as_str(),
-                "import-once",
-                &serde_json::json!({"folder": destination}),
-            )
+                };
+                files.startup_accounts = Some(vec![account]);
+                files.navigate(mount.clone());
+                files
+                    .published_rows()
+                    .into_iter()
+                    .find(|row| row.label == "Folder")
+                    .unwrap()
+            })
             .unwrap();
-            assert_eq!(
-                std::fs::read(destination.join("Folder/document.txt")).unwrap(),
-                b"original bytes"
-            );
-            assert_eq!(
-                std::fs::read(destination.join("Folder/document.gdoc")).unwrap(),
-                std::fs::read(mount.join("Folder/document.gdoc")).unwrap()
-            );
-            std::fs::write(mount.join("Folder/document.txt"), b"later remote edit").unwrap();
-            assert_eq!(
-                std::fs::read(destination.join("Folder/document.txt")).unwrap(),
-                b"original bytes"
-            );
-            std::fs::write(
-                destination.join("Folder/document.txt"),
-                b"local import edit",
-            )
-            .unwrap();
-            assert_eq!(
-                std::fs::read(mount.join("Folder/document.txt")).unwrap(),
-                b"later remote edit"
-            );
+        assert!(row.actions.iter().any(|action| action.id == "import-once"));
+        app.call_on(
+            row.id.as_str(),
+            "import-once",
+            serde_json::json!({"folder": destination}),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !destination.join("Folder/document.txt").exists()
+            || app.state().ops.pending().next().is_some()
+        {
+            assert!(std::time::Instant::now() < deadline);
+            app.settle();
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            std::fs::read(destination.join("Folder/document.txt")).unwrap(),
+            b"original bytes"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("Folder/document.gdoc")).unwrap(),
+            std::fs::read(mount.join("Folder/document.gdoc")).unwrap()
+        );
+        std::fs::write(mount.join("Folder/document.txt"), b"later remote edit").unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("Folder/document.txt")).unwrap(),
+            b"original bytes"
+        );
+        std::fs::write(
+            destination.join("Folder/document.txt"),
+            b"local import edit",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(mount.join("Folder/document.txt")).unwrap(),
+            b"later remote edit"
+        );
+        app.with_surface(|files: &mut FileExplorerWidget| {
             let index = files
                 .displayed_entries()
                 .iter()
@@ -1366,20 +1381,19 @@ mod command_path_tests {
                     .all(|(label, _)| !label.contains("Downloads")),
                 "cloud import never chooses a destination on the person's behalf"
             );
-            // A symlink cannot turn the local destination into a cloud folder.
-            let link = home.path().join("cloud-link");
-            std::os::unix::fs::symlink(&mount, &link).unwrap();
-            assert!(
-                published::invoke(
-                    &mut files,
-                    &mut doc,
-                    row.id.as_str(),
-                    "import-once",
-                    &serde_json::json!({"folder": link})
-                )
-                .is_err()
-            );
-        }
+        })
+        .unwrap();
+        // A symlink cannot turn the local destination into a cloud folder.
+        let link = home.path().join("cloud-link");
+        std::os::unix::fs::symlink(&mount, &link).unwrap();
+        assert!(
+            app.call_on(
+                row.id.as_str(),
+                "import-once",
+                serde_json::json!({"folder": link})
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1397,34 +1411,59 @@ mod command_path_tests {
             Some(mount.clone()),
         );
         account.kind = crate::remote_accounts::RemoteAccountKind::Dropbox;
-        let mut files = FileExplorerWidget::with_persistence(None, Some(home.path().to_path_buf()));
-        files.startup_accounts = Some(vec![account]);
-        files.navigate(mount.clone());
-        // Use the production document queue, withholding execution until the
-        // admitted alias has been redirected into the remote mount.
-        files.dispatcher = Some(ui::framework::testing::dispatcher::<
-            crate::resource::FileExplorer,
-        >("files"));
-        files.device = Some("test-device".into());
-        let row = files
-            .published_rows()
-            .into_iter()
-            .find(|row| row.label == "document.txt")
+        let mut app =
+            ui::prelude::TestApp::<crate::FileExplorerShell>::launched(&[mount.to_str().unwrap()])
+                .unwrap();
+        // Hold the surface's submission until the admitted alias is redirected.
+        // Execution below still goes through the receiving host's checked door.
+        let row = app
+            .with_surface(|files: &mut FileExplorerWidget| {
+                files.home_path = Some(home.path().to_path_buf());
+                files.startup_accounts = Some(vec![account]);
+                files.navigate(mount.clone());
+                files.dispatcher = Some(ui::framework::testing::dispatcher::<
+                    crate::resource::FileExplorer,
+                >("files"));
+                files
+                    .published_rows()
+                    .into_iter()
+                    .find(|row| row.label == "document.txt")
+                    .unwrap()
+            })
             .unwrap();
-        let mut doc = automerge::AutoCommit::new();
-        published::invoke(
-            &mut files,
-            &mut doc,
+        app.call_on(
             row.id.as_str(),
             "import-once",
-            &serde_json::json!({"folder": alias}),
+            serde_json::json!({"folder": alias}),
         )
         .unwrap();
         assert!(!destination.join("document.txt").exists());
-        assert_eq!(files.awaiting_ops.len(), 1);
+        let op = app
+            .with_surface(|files: &mut FileExplorerWidget| {
+                assert_eq!(files.awaiting_ops.len(), 1);
+                files.awaiting_ops[0].0.clone()
+            })
+            .unwrap();
         std::fs::remove_file(&alias).unwrap();
         std::os::unix::fs::symlink(&mount, &alias).unwrap();
-        let outcome = crate::file_ops::execute(&files.awaiting_ops[0].0, None);
+        app.invoke(crate::resource::FileExplorer::queueing("test-device", op).unwrap())
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.state().ops.pending().next().is_some() {
+            assert!(std::time::Instant::now() < deadline);
+            app.settle();
+            std::thread::yield_now();
+        }
+        let state = app.state();
+        let outcome = state
+            .ops
+            .entries()
+            .next()
+            .unwrap()
+            .1
+            .settled
+            .as_ref()
+            .unwrap();
         assert!(
             matches!(outcome, ui::tilo_resource::Settled::Done(_)),
             "{outcome:?}"
@@ -1448,16 +1487,14 @@ mod command_path_tests {
         // The action schema requires an absolute folder, even when a
         // submitted relative folder exists and canonicalizes successfully.
         assert!(
-            published::invoke(
-                &mut files,
-                &mut doc,
+            app.call_on(
                 row.id.as_str(),
                 "import-once",
-                &serde_json::json!({"folder": "."}),
+                serde_json::json!({"folder": "."})
             )
             .is_err()
         );
-        assert_eq!(files.awaiting_ops.len(), 1);
+        assert_eq!(app.state().ops.entries().count(), 1);
     }
 
     fn remote_account(
@@ -5712,6 +5749,67 @@ mod breadcrumb_home_tests {
     }
 }
 
+// Exercise metadata projection inside the same checked callback entry the
+// host uses for its catalogue. Keeping the real component alive preserves
+// its registry owner, record lifetime and immutable local-person identity.
+fn with_owner_callback(callback: impl FnOnce() + 'static) {
+    use std::cell::RefCell;
+    use ui::widget::Widget;
+
+    struct Probe<F>(RefCell<Option<F>>);
+    impl<F: FnOnce() + 'static> ui::resources::PublishesResources for Probe<F> {
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+            assert!(ui::bound_dispatch::host_person_invocation_permitted());
+            self.0.borrow_mut().take().unwrap()();
+            Vec::new()
+        }
+    }
+    impl<F: FnOnce() + 'static> Widget for Probe<F> {
+        ui::provides!(dyn ui::resources::PublishesResources);
+        fn name(&self) -> &'static str {
+            "Owner metadata callback"
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            _: &ui::Theme,
+            _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            taffy.new_leaf(taffy::Style::default()).unwrap()
+        }
+    }
+    struct Boundary<F> {
+        binding: ui::bound_dispatch::CallbackBinding,
+        probe: Probe<F>,
+    }
+    impl<F: FnOnce() + 'static> Widget for Boundary<F> {
+        fn name(&self) -> &'static str {
+            "Checked component callback"
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            theme: &ui::Theme,
+            nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            self.probe.build_layout(taffy, theme, nodes)
+        }
+        fn callback_binding(&self) -> Option<ui::bound_dispatch::CallbackBinding> {
+            Some(self.binding.clone())
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            vec![&self.probe]
+        }
+    }
+    let mut app = ui::prelude::TestApp::<crate::resource::FileExplorerShell>::new().unwrap();
+    let boundary = Boundary {
+        binding: app.harness().root_widget().callback_binding().unwrap(),
+        probe: Probe(RefCell::new(Some(callback))),
+    };
+    ui::widget::published_resources(&boundary, &automerge::AutoCommit::new());
+    assert!(boundary.probe.0.borrow().is_none(), "checked callback ran");
+}
+
 #[cfg(test)]
 mod injected_startup_tests {
     use super::*;
@@ -5756,6 +5854,10 @@ mod injected_startup_tests {
 
     #[test]
     fn a_remote_account_is_a_folder_with_a_health_badge() {
+        with_owner_callback(remote_account_folder_with_health_badge);
+    }
+
+    fn remote_account_folder_with_health_badge() {
         let home = tempfile::tempdir().unwrap();
         let child = owned_child(home.path());
         let mount = home.path().join("Remote/Cloud");
@@ -6592,6 +6694,10 @@ mod oauth_cloud_location_tests {
 
     #[test]
     fn canonical_oauth_accounts_publish_sidebar_resources_and_open_exact_cloud_mounts() {
+        with_owner_callback(canonical_oauth_accounts);
+    }
+
+    fn canonical_oauth_accounts() {
         let config = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let _store = fixture_store(config.path());
@@ -6679,6 +6785,10 @@ mod oauth_cloud_location_tests {
 
     #[test]
     fn disabled_and_removed_oauth_accounts_update_existing_places_and_semantic_actions() {
+        with_owner_callback(disabled_and_removed_oauth_accounts);
+    }
+
+    fn disabled_and_removed_oauth_accounts() {
         let config = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let mut store = fixture_store(config.path());

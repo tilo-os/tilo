@@ -1,5 +1,5 @@
 //! Device-local cloud transfers, isolated by their stable operation IDs.
-use crate::file_ops::{Change, FileOp, Outcome, TransferProgress};
+use crate::file_ops::{FileOp, Outcome, TransferProgress};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -18,6 +18,189 @@ struct Job {
     cancel: AtomicBool,
     progress: Mutex<TransferProgress>,
     lifecycle: Mutex<Lifecycle>,
+}
+
+thread_local! {
+    // Issuers never enter a record. Each checked component lifetime has its own.
+    static APPROVALS: std::cell::RefCell<HashMap<uuid::Uuid, tilo_cloud_files::ImportAuthority>> = std::cell::RefCell::new(HashMap::new());
+}
+
+pub(crate) fn approve(device: &str, op: &FileOp, entry: &str) -> Result<(), String> {
+    if ui::tilo_actions::executor::is_replaying() {
+        return Err("replay cannot approve a private cloud import".into());
+    }
+    if !ui::bound_dispatch::host_person_invocation_permitted() {
+        return Err("only the host person can approve a personal cloud import".into());
+    }
+    let scope = ui::bound_dispatch::executing_host_scope()
+        .ok_or("cloud import requires a checked host issuer")?;
+    let FileOp::CloudImport {
+        job_id,
+        account,
+        entries,
+        folder,
+        destination,
+    } = op
+    else {
+        return Err("approval requires a cloud import".into());
+    };
+    APPROVALS.with_borrow_mut(|issuers| {
+        issuers.entry(scope).or_default().approve(
+            &format!("{entry}:{job_id}"),
+            account,
+            entries,
+            folder,
+            destination,
+            device,
+        )
+    })
+}
+
+/// Called on the checked host thread, before a worker or source request exists.
+/// Do not re-check the current collaborator: an already approved owner job may
+/// complete while another collaborator is interacting with the document.
+pub(crate) fn consume(
+    device: &str,
+    op: &FileOp,
+    entry: &str,
+) -> Result<tilo_cloud_files::ImportConsent, String> {
+    let scope = ui::bound_dispatch::executing_host_scope()
+        .ok_or("cloud import requires a checked host issuer")?;
+    let FileOp::CloudImport {
+        job_id,
+        account,
+        entries,
+        folder,
+        destination,
+    } = op
+    else {
+        return Err("approval requires a cloud import".into());
+    };
+    APPROVALS.with_borrow_mut(|issuers| {
+        issuers
+            .get_mut(&scope)
+            .ok_or("cloud import has no local issuer")?
+            .consume(
+                &format!("{entry}:{job_id}"),
+                account,
+                entries,
+                folder,
+                destination,
+                device,
+            )
+    })
+}
+
+/// A mounted import grant never enters the replicated outbox.
+pub(crate) struct MountedConsent {
+    paths: Vec<String>,
+    folder: String,
+    destination: tilo_cloud_files::DestinationIdentity,
+}
+
+struct MountedApproval {
+    device: String,
+    op: FileOp,
+    destination: tilo_cloud_files::DestinationIdentity,
+}
+
+thread_local! {
+    static MOUNTED_APPROVALS: std::cell::RefCell<HashMap<(uuid::Uuid, String), Option<MountedApproval>>> = std::cell::RefCell::new(HashMap::new());
+}
+
+pub(crate) fn approve_mounted(device: &str, op: &FileOp, entry: &str) -> Result<(), String> {
+    if ui::tilo_actions::executor::is_replaying() {
+        return Err("replay cannot approve a private mounted import".into());
+    }
+    if !ui::bound_dispatch::host_person_invocation_permitted()
+        || ui::bound_dispatch::executing_host_device().as_deref() != Some(device)
+    {
+        return Err("only the receiving host's person can approve a mounted import".into());
+    }
+    let scope = ui::bound_dispatch::executing_host_scope()
+        .ok_or("mounted import requires a checked host issuer")?;
+    let FileOp::ImportMounted { folder, .. } = op else {
+        return Err("approval requires a mounted import".into());
+    };
+    let destination = crate::cloud_transfer::pin_destination(folder, std::iter::empty())?;
+    MOUNTED_APPROVALS.with_borrow_mut(|approvals| {
+        use std::collections::hash_map::Entry;
+        match approvals.entry((scope, entry.into())) {
+            Entry::Occupied(_) => Err("mounted import already admitted".into()),
+            Entry::Vacant(slot) => {
+                slot.insert(Some(MountedApproval {
+                    device: device.into(),
+                    op: op.clone(),
+                    destination,
+                }));
+                Ok(())
+            }
+        }
+    })
+}
+
+pub(crate) fn consume_mounted(
+    device: &str,
+    op: &FileOp,
+    entry: &str,
+) -> Result<MountedConsent, String> {
+    let scope = ui::bound_dispatch::executing_host_scope()
+        .ok_or("mounted import requires a checked host issuer")?;
+    MOUNTED_APPROVALS.with_borrow_mut(|approvals| {
+        let MountedApproval {
+            device: approved_device,
+            op: approved_op,
+            destination,
+        } = approvals
+            .get_mut(&(scope, entry.into()))
+            .and_then(Option::take)
+            .ok_or("mounted import has no unused local approval")?;
+        if approved_device != device
+            || approved_op != *op
+            || ui::bound_dispatch::executing_host_device().as_deref() != Some(device)
+        {
+            return Err("mounted import differs from its local approval".into());
+        }
+        let FileOp::ImportMounted { paths, folder } = approved_op else {
+            return Err("approval requires a mounted import".into());
+        };
+        Ok(MountedConsent {
+            paths,
+            folder,
+            destination,
+        })
+    })
+}
+
+impl MountedConsent {
+    pub(crate) fn execute(self) -> Outcome {
+        let mut changes = Vec::new();
+        let result = (|| {
+            if crate::cloud_transfer::pin_destination(&self.folder, std::iter::empty())?
+                != self.destination
+            {
+                return Err("mounted import destination changed since approval".into());
+            }
+            for path in self.paths {
+                let copied = crate::fileops::import_mounted_into(
+                    std::path::Path::new(&path),
+                    std::path::Path::new(&self.folder),
+                )?;
+                changes.push(crate::file_ops::Change::Copied {
+                    from: path,
+                    to: copied.display().to_string(),
+                });
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Settled::Done(changes),
+            Err(reason) => Settled::Failed {
+                reason,
+                partial: changes,
+            },
+        }
+    }
 }
 
 fn jobs() -> &'static Mutex<HashMap<String, Arc<Job>>> {
@@ -51,7 +234,7 @@ pub(crate) fn cancel(id: &str) {
     job(id).cancel.store(true, Ordering::Release);
 }
 
-pub(crate) fn run(op: &FileOp, reverting: Option<&[Change]>) -> Outcome {
+pub(crate) fn run(op: &FileOp, consent: tilo_cloud_files::ImportConsent) -> Outcome {
     let FileOp::CloudImport { job_id, .. } = op else {
         return Settled::Failed {
             reason: "cloud runner requires a cloud import".into(),
@@ -59,7 +242,7 @@ pub(crate) fn run(op: &FileOp, reverting: Option<&[Change]>) -> Outcome {
         };
     };
     run_job(job_id, |cancel, progress| {
-        crate::file_ops::execute_with_progress(op, reverting, cancel, progress)
+        crate::cloud_transfer::execute(consent, cancel, progress)
     })
 }
 
@@ -108,6 +291,42 @@ fn run_job(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Lifecycle::Finished;
     outcome
+}
+
+/// Explicit authorized fixture; no production path falls back to this issuer.
+#[cfg(test)]
+pub(crate) fn fixture_consent(op: &FileOp) -> tilo_cloud_files::ImportConsent {
+    let FileOp::CloudImport {
+        job_id,
+        account,
+        entries,
+        folder,
+        destination,
+    } = op
+    else {
+        panic!("cloud fixture requires an import");
+    };
+    let mut issuer = tilo_cloud_files::ImportAuthority::default();
+    issuer
+        .approve(
+            job_id,
+            account,
+            entries,
+            folder,
+            destination,
+            "fixture-device",
+        )
+        .unwrap();
+    issuer
+        .consume(
+            job_id,
+            account,
+            entries,
+            folder,
+            destination,
+            "fixture-device",
+        )
+        .unwrap()
 }
 
 #[cfg(test)]
@@ -172,11 +391,11 @@ mod tests {
         };
         register(&job_id);
         cancel(&job_id);
-        let outcome = run(&op, None);
+        let outcome = run(&op, fixture_consent(&op));
         assert_eq!(outcome.reason(), Some("cloud import cancelled"));
         assert!(outcome.result().is_empty());
         assert_eq!(snapshot(&job_id).phase, "cancelled");
-        assert!(!run(&op, None).is_done());
+        assert!(!run(&op, fixture_consent(&op)).is_done());
         assert_eq!(snapshot(&job_id).phase, "cancelled");
     }
 }

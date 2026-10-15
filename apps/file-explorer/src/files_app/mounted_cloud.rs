@@ -3,8 +3,8 @@
 #[path = "mounted_cloud_tests.rs"]
 mod tests;
 use super::*;
-use runtime_fs::cloud::{CloudClient, FileDescription, FileReply, FileRequest};
 use std::sync::mpsc::{Receiver, channel};
+use tilo_cloud_files::cloud::{CloudClient, FileDescription, FileReply, FileRequest};
 
 type Descriptions = Vec<(PathBuf, Option<FileDescription>)>;
 
@@ -145,7 +145,7 @@ impl FileExplorerWidget {
                 let (tx, rx) = channel();
                 self.mounted_cloud.pending = Some(rx);
                 std::thread::spawn(move || {
-                    let mut client = runtime_fs::cloud::default_files_socket()
+                    let mut client = tilo_cloud_files::cloud::default_files_socket()
                         .and_then(|socket| CloudClient::connect(socket).ok());
                     let replies = work
                         .into_iter()

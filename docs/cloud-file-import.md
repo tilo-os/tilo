@@ -1,6 +1,9 @@
 # Connecting cloud accounts and importing files
 
-In **Settings → Accounts**, add Google or Dropbox. For Google, choose **Files**,
+In **Settings → Accounts**, connected accounts appear first. Use the single
+**Add account** section to choose any provider, including Google or Dropbox.
+Thunderbird settings import and existing browser identities remain below it.
+For Google, choose **Files**,
 **Mail**, or both; Mail appears in the Mail app after Gmail access and the mailbox
 identity have been verified. Choose **Keep files in sync** for an ongoing
 connection or **Import files once** for independent local copies, then select
@@ -64,11 +67,23 @@ Pending work prevents the change; finish syncing and retry. An interrupted commi
 has an explicit recovery action in Settings and does not automatically restart
 writable sync underneath it.
 
+## Personal accounts and shared workspaces
+
+Permission to edit a workspace is not permission to use its host's personal
+cloud accounts. Fresh imports require the host person's admission and a private,
+single-use approval bound to the exact operation and selection. Replicated job
+records and caller-supplied account IDs do not grant source access. Account
+controls and account-resource catalogues are restricted to the host person.
+Imported copies become ordinary files subject to the destination's permissions.
+
 ## Actions and history
 
 Browse, selection, import, progress, cancellation, retry and reveal use the same
-typed Files effects as the visible controls. Cloud rows expose selection and
-folder-opening actions. Discover the current action directory with:
+typed Files effects as the visible controls. The public `import-cloud` effect
+accepts an optional `folder` argument for coordinate-free automation. Omitting it
+opens the shared writable-directory chooser, just as the visible button does.
+An explicit folder undergoes the same native destination checks before queuing.
+Cloud rows expose selection and folder-opening actions. Discover the current action directory with:
 
 ```sh
 tilo-control actions list
@@ -80,12 +95,23 @@ refuses another device as its target before inspecting the destination. Invoke
 Files on the receiving device and choose the destination in its workspace
 instead. A sender's local inode is not receiving-device consent.
 
+The canonical action records the destination path and pinned identity as durable,
+non-authoritative evidence. Historical replay, verification and undo preview only
+validate the payload and reconstruct the queued task; they need neither the
+original directory nor host identity or access to private sources. Fresh actions
+still require the immutable host person and device and revalidate the actual
+directory against that evidence. A caller-supplied witness grants no authority.
+The native worker must consume a host-memory, single-use approval bound to the
+exact outbox entry and payload. Replay never creates or renews that approval.
+
 The worker records the admitted directory identity and each actual output's
 identity and path. Undo refuses replaced outputs, renamed or replaced destinations,
 and symlink substitutions. Compensation uses anchored directories and no-replace
 moves; its Trash receipt retains the identities for redo. It does not alter the
-cloud originals. Interrupted, unfinished outbox operations are not a durable
-resumable-download protocol.
+cloud originals. Approvals are not durable: unfinished operations after a host
+restart fail closed without contacting the source. Historical document replay
+cannot recreate them. Interrupted, unfinished outbox operations are not a durable
+resumable-download protocol; a new import needs fresh native admission.
 
 The compatibility `import-once` action on a mounted entry still accepts an
 explicit `folder` destination and uses the ordinary mounted-file copy path.

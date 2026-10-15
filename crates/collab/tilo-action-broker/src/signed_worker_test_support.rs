@@ -155,7 +155,9 @@ impl action_directory::Server for DurableDirectory {
         let descriptor = row.descriptor.as_mut().unwrap();
         descriptor.operation_kind = tilo_actions::OperationKind::Effect;
         descriptor.contract.clone_from(&contract);
-        row.visibility.as_mut().unwrap().contract = contract;
+        let visibility = row.visibility.as_mut().unwrap();
+        visibility.contract = contract;
+        visibility.governing_kind = Some(descriptor.operation_kind);
         runtime_collab::write_action_directory_row(
             results.get().init_resolution().init_found(),
             &row,

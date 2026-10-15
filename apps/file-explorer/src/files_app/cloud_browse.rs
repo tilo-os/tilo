@@ -10,9 +10,9 @@ mod job_window_tests;
 mod tests;
 use super::*;
 use crate::effects::FilesEffect;
-use runtime_fs::cloud::{CloudClient, ImportEntry, ImportKind, ImportReply, ImportRequest};
 use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, channel};
+use tilo_cloud_files::cloud::{CloudClient, ImportEntry, ImportKind, ImportReply, ImportRequest};
 
 #[derive(Default)]
 pub(super) struct CloudView {
@@ -85,8 +85,8 @@ impl FileExplorerWidget {
         self.cloud.pending = Some(rx);
         std::thread::spawn(move || {
             let result = (|| {
-                let socket =
-                    runtime_fs::cloud::default_files_socket().ok_or("cloud service unavailable")?;
+                let socket = tilo_cloud_files::cloud::default_files_socket()
+                    .ok_or("cloud service unavailable")?;
                 CloudClient::connect(socket)
                     .and_then(|mut client| {
                         client.import(&account, ImportRequest::Browse { folder, offset })
@@ -141,7 +141,7 @@ impl FileExplorerWidget {
                     self.cloud.selected.insert(entry);
                 }
             }
-            FilesEffect::ImportCloud => {
+            FilesEffect::ImportCloud { folder } => {
                 if !self.cloud.active {
                     return Err("cloud view is no longer active".into());
                 }
@@ -158,13 +158,17 @@ impl FileExplorerWidget {
                 if self.cloud.proposal.is_empty() {
                     return Err(t("files-selection-empty"));
                 }
-                self.cloud.chooser = Some(
-                    ui::portal::PickRequest::writable_directory(
-                        &t("files-cloud-destination"),
-                        &t("files-cloud-import"),
-                    )
-                    .send(),
-                );
+                if let Some(folder) = folder {
+                    self.admit_cloud_destination(PathBuf::from(folder))?;
+                } else {
+                    self.cloud.chooser = Some(
+                        ui::portal::PickRequest::writable_directory(
+                            &t("files-cloud-destination"),
+                            &t("files-cloud-import"),
+                        )
+                        .send(),
+                    );
+                }
             }
             FilesEffect::CloudProgress => {
                 return Ok(Some(serde_json::json!({
@@ -470,7 +474,7 @@ impl FileExplorerWidget {
         body = body.push(self.cloud_button(
             "files.cloud.import",
             &t("files-cloud-import"),
-            FilesEffect::ImportCloud,
+            FilesEffect::ImportCloud { folder: None },
         ));
         if !self.cloud.progress.phase.is_empty() {
             body = body.push(Box::new(Text::new(&t_args(

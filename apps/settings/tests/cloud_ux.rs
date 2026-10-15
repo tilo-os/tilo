@@ -123,6 +123,19 @@ fn assert_frame<A: ui::framework::ResourceApp>(
             usize::from(running),
             "activity only while running"
         );
+    } else if name == "google-mail-only" {
+        assert!(inspection.contains("ada@example.org"));
+        assert!(inspection.contains("Mail · Gmail"));
+        assert!(!inspection.contains("Files · Google Drive"));
+        assert!(!inspection.contains("No Email accounts yet"));
+        assert!(!inspection.contains("No Google accounts yet"));
+        assert!(
+            !bindings
+                .iter()
+                .any(|binding| binding.control_id.starts_with("settings.accounts.files."))
+        );
+    } else if name.starts_with("google-connected") {
+        assert_connected_frame(app, inspection, bindings);
     } else {
         assert!(inspection.contains("Connect Google"));
         assert!(!inspection.contains("Connect Google Drive"));
@@ -138,6 +151,82 @@ fn assert_frame<A: ui::framework::ResourceApp>(
                 "{id} is bound to {action}"
             );
         }
+    }
+}
+
+fn assert_connected_frame<A: ui::framework::ResourceApp>(
+    app: &mut TestApp<A>,
+    inspection: &str,
+    bindings: &[ui::widget::ControlBindingMetadata],
+) {
+    assert!(inspection.contains("ada@example.org"));
+    assert!(!inspection.contains("mail.google.com"));
+    assert!(!inspection.contains("drive.google.com"));
+    assert!(inspection.contains("Import only"));
+    assert!(inspection.contains("No ongoing sync"));
+    assert!(inspection.contains("Connected · not synced yet"));
+    assert!(!inspection.contains("Not checked yet"));
+    assert!(!inspection.contains("No synchronization status"));
+    for empty in [
+        "No Email accounts",
+        "No Calendar accounts",
+        "No Nextcloud accounts",
+        "Tilo browser identities",
+    ] {
+        assert!(
+            !inspection.contains(empty),
+            "empty provider omitted: {empty}"
+        );
+    }
+    assert!(inspection.find("Google · ada@example.org") < inspection.find("Add account"));
+    assert!(
+        inspection.find("Add account") < inspection.find("Import Thunderbird account settings")
+    );
+    assert!(!inspection.contains("google-drive://"));
+    assert!(!inspection.contains("No Mail accounts"));
+    assert!(!inspection.contains("Connect Google"));
+    for kind in settings::accounts::AccountKind::ALL {
+        let id = format!("settings.accounts.add.{}", kind.slug());
+        assert!(
+            bindings.iter().any(|binding| binding.control_id == id
+                && matches!(&binding.kind, ui::widget::ControlBindingKind::Action(address)
+                if address.action == "add-account")),
+            "provider remains reachable: {id}"
+        );
+    }
+    let nodes = app.harness().a11y_nodes();
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some("Google · ada@example.org"))
+            .count(),
+        1,
+        "one Google provider card"
+    );
+    for label in [
+        "Remove Files",
+        "Disconnect Mail",
+        "Sign in again — Files",
+        "Sign in again — Mail",
+    ] {
+        assert_button(app, label);
+    }
+    for (id, action) in [
+        ("settings.accounts.reauth.ada@example.org", "sign-in-again"),
+        ("settings.accounts.remove.ada@example.org", "remove-account"),
+        ("settings.accounts.edit.ada@example.org", "edit-account"),
+        ("settings.accounts.test.ada@example.org", "test-account"),
+    ] {
+        assert_eq!(
+            bindings
+                .iter()
+                .filter(|binding| binding.control_id == id
+                    && matches!(&binding.kind, ui::widget::ControlBindingKind::Action(address)
+                    if address.action == action && address.resource == "settings.account:ada@example.org"))
+                .count(),
+            1,
+            "linked Gmail keeps {id}"
+        );
     }
 }
 
@@ -485,6 +574,172 @@ fn assert_imported_data(
         !home.join("Downloads").exists(),
         "no implicit Downloads destination"
     );
+}
+
+fn assert_google_completion(
+    finished: bool,
+    store: &accounts::AccountStore,
+    gmail: &test_http::Responder,
+    count: usize,
+) {
+    assert!(finished);
+    assert_eq!(store.len(), count);
+    assert_eq!(gmail.next_request().target, "/profile");
+}
+
+fn assert_google_link(files: &accounts::Account) {
+    assert_eq!(
+        files
+            .config
+            .get(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY)
+            .and_then(serde_json::Value::as_str),
+        Some("ada@example.org")
+    );
+}
+
+fn assert_reauth_cancelled(current: &accounts::AccountStore, previous: &accounts::AccountStore) {
+    assert_eq!(current, previous);
+}
+
+fn assert_mail_remaining(store: &accounts::AccountStore, inspection: &str) {
+    assert_eq!(store.len(), 1);
+    let mail = store.all().first();
+    assert_eq!(mail.map(|mail| mail.type_id.as_str()), Some("email"));
+    assert_eq!(
+        mail.and_then(|mail| mail.config.get("email"))
+            .and_then(serde_json::Value::as_str),
+        Some("ada@example.org")
+    );
+    assert!(inspection.contains("ada@example.org"));
+    assert!(!inspection.contains("Files · Google Drive"));
+}
+
+#[test]
+fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
+    let profile = Profile::new()?;
+    let drive = cloud_source_gdrive::fake::FakeDrive::start();
+    let auth = tilo_oauth::fake::FakeAuthorizationServer::start();
+    auth.issue_access_token(cloud_source_gdrive::fake::SOURCE_TOKEN);
+    let gmail = test_http::Responder::start(vec![
+        test_http::Reply::status(200)
+            .header("Content-Type", "application/json")
+            .body(r#"{"emailAddress":"ada@example.org"}"#),
+    ]);
+    let custodian = profile
+        .root
+        .custodian()
+        .with_issuer_endpoints(account_custody::OAuthIssuer::Google, auth.provider())
+        .with_provider(
+            account_custody::OAuthCloud::GoogleDrive,
+            auth.provider(),
+            "drive-client",
+        )
+        .with_gmail_profile_endpoint(format!("{}/profile", gmail.url()))
+        .with_storage_config(
+            account_custody::OAuthCloud::GoogleDrive,
+            serde_json::to_value(drive.config())?,
+        );
+    let mut settings = open_settings(&profile.root, &custodian)?;
+    settings.call_on(
+        "settings.root",
+        "select-account-services",
+        serde_json::json!({
+            "files": true, "mail": true, "files_mode": "import"
+        }),
+    )?;
+    settings.call_on("settings.root", "save-account-form", serde_json::json!({}))?;
+    let finished = settings
+        .surface::<settings::SettingsApp, _>(|app| {
+            app.accounts()
+                .model()
+                .borrow_mut()
+                .finish_sign_in_step_for_test(tilo_test_env::hang_bound())
+        })
+        .ok_or("sign-in result")?;
+    let store = profile.root.store();
+    assert_google_completion(finished, &store, &gmail, 2);
+    let files = store
+        .list(&account_custody::providers::GOOGLE_DRIVE_TYPE.into())
+        .first()
+        .copied()
+        .ok_or("connected Files service")?;
+    assert_google_link(files);
+    settings.harness().resize((1100, 1500))?;
+    for (name, theme) in [("dark", ui::Theme::dark()), ("light", ui::Theme::light())] {
+        settings.harness().set_theme(theme);
+        capture(
+            &mut settings,
+            &format!("google-connected-files-gmail-{name}"),
+        )?;
+        settings.harness().resize((640, 1800))?;
+        capture(
+            &mut settings,
+            &format!("google-connected-files-gmail-{name}-640"),
+        )?;
+        settings.harness().resize((1100, 1500))?;
+    }
+    settings.call_on(
+        "settings.account:ada@example.org",
+        "sign-in-again",
+        serde_json::json!({}),
+    )?;
+    settings.call_on(
+        "settings.root",
+        "cancel-account-form",
+        serde_json::json!({}),
+    )?;
+    assert_reauth_cancelled(&profile.root.store(), &store);
+    // Files removal must leave the independently bound Gmail service intact.
+    settings.call_confirmed_on(
+        &format!("settings.account:{}", files.id),
+        "remove-account",
+        serde_json::json!({}),
+    )?;
+    settings.settle();
+    assert_mail_remaining(
+        &profile.root.store(),
+        &settings.harness().inspection_json()?,
+    );
+    Ok(())
+}
+
+#[test]
+fn google_mail_only_is_not_presented_as_drive() -> TestResult {
+    let profile = Profile::new()?;
+    let auth = tilo_oauth::fake::FakeAuthorizationServer::start();
+    let gmail = test_http::Responder::start(vec![
+        test_http::Reply::status(200)
+            .header("Content-Type", "application/json")
+            .body(r#"{"emailAddress":"ada@example.org"}"#),
+    ]);
+    let custodian = profile
+        .root
+        .custodian()
+        .with_issuer_endpoints(account_custody::OAuthIssuer::Google, auth.provider())
+        .with_gmail_profile_endpoint(format!("{}/profile", gmail.url()));
+    let mut settings = open_settings(&profile.root, &custodian)?;
+    settings.call_on(
+        "settings.root",
+        "select-account-services",
+        serde_json::json!({
+            "files": false, "mail": true, "files_mode": "import"
+        }),
+    )?;
+    settings.call_on("settings.root", "save-account-form", serde_json::json!({}))?;
+    let finished = settings
+        .surface::<settings::SettingsApp, _>(|app| {
+            app.accounts()
+                .model()
+                .borrow_mut()
+                .finish_sign_in_step_for_test(tilo_test_env::hang_bound())
+        })
+        .ok_or("sign-in result")?;
+    let store = profile.root.store();
+    assert_google_completion(finished, &store, &gmail, 1);
+    assert_mail_remaining(&store, &settings.harness().inspection_json()?);
+    settings.harness().resize((1100, 1500))?;
+    capture(&mut settings, "google-mail-only")?;
+    Ok(())
 }
 
 #[test]

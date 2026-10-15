@@ -16,6 +16,7 @@ fn container_rows_preserve_their_canonical_visibility_contract() {
         action: None,
         has_children: true,
         visibility: Some(tilo_actions::remote::RowVisibility {
+            governing_kind: Some(tilo_actions::OperationKind::View),
             action: "read".into(),
             contract: contract.clone(),
         }),
@@ -42,6 +43,7 @@ fn a_resolved_row_says_each_thing_once() {
     );
     row.parent_resource = "doc:1".into();
     row.visibility = Some(tilo_actions::remote::RowVisibility {
+        governing_kind: Some(tilo_actions::OperationKind::Document),
         action: "save-as".into(),
         contract: tilo_actions::ActionContract::default(),
     });
@@ -68,6 +70,7 @@ fn a_resolved_row_says_each_thing_once() {
 
     // A visibility other than the action's own contract is kept.
     row.visibility = Some(tilo_actions::remote::RowVisibility {
+        governing_kind: Some(tilo_actions::OperationKind::View),
         action: "read".into(),
         contract: tilo_actions::ActionContract::view(),
     });

@@ -963,6 +963,7 @@ impl App {
             visibility: Some(tilo_actions::remote::RowVisibility {
                 action: visibility.address.action,
                 contract: visibility.contract,
+                governing_kind: Some(visibility.kind),
             }),
         })
     }
@@ -987,6 +988,7 @@ impl App {
             visibility: Some(tilo_actions::remote::RowVisibility {
                 action: action_id.to_owned(),
                 contract: exported.contract.clone(),
+                governing_kind: Some(exported.operation_kind),
             }),
             descriptor: Some(exported),
             has_children: false,
