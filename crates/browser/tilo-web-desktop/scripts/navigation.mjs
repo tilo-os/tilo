@@ -1,6 +1,7 @@
 // The desktop's own navigation, driven through the browser as a person does
-// it: a mouse's sideways wheel steps one window per notch, the way a native
-// wheel does; the top bar's arrows switch workspaces; the desktop shortcuts
+// it: a spin of a mouse's sideways wheel pans the strip and focus follows
+// to the window it stopped on; the top bar's arrows switch workspaces; the
+// desktop shortcuts
 // move between workspaces and windows even while an app's text field holds
 // the keyboard. Every input is a trusted event from Chrome's input pipeline.
 //
@@ -15,6 +16,12 @@ import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
 
 const bundle = process.argv[2];
 if (!bundle) throw Error('usage: node navigation.mjs BUNDLE_DIR');
+// A page that stops answering fails the run rather than holding the runner.
+const watchdog = setTimeout(() => {
+  console.error(`navigation: no result within ten minutes; last step: ${progress}`);
+  process.exit(1);
+}, 600_000);
+let progress = 'loading';
 const server = await serve(resolve(bundle));
 // Software Vulkan, as the CI mount test runs Chrome.
 const browser = await launch({args: ['--no-sandbox', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']});
@@ -41,6 +48,7 @@ const workspace = s => s.workspaces.findIndex(w => w.id === s.activeWorkspace);
 // land on the next drawn frame, and headless Chrome may draw only about once
 // a second.
 async function polls(what, read, expected, tries = 150) {
+  progress = what;
   let got;
   for (let i = 0; i < tries; i++) {
     got = await read();
@@ -102,15 +110,87 @@ const order = (await snapshot()).entries.map(e => e.label);
 const {width, height} = await evaluate('(({width,height})=>({width,height}))(tiloMount.canvas.getBoundingClientRect())');
 const [cx, cy] = [Math.round(width / 2), Math.round(height * 0.6)];
 
-// Sideways wheel: a notch right is the next window, a notch left the previous.
+// Sideways wheel: a spin's notches pan the strip, a line (40 px) a notch,
+// and focus follows to the window it stopped on. The three
+// windows overflow the strip, each two thirds of it wide, and the last one
+// opened shows at its right end.
 await settles('the last opened window is active', label, order[2]);
+const pan = async () => (await snapshot()).desktopPan;
+// A spin's notches leave back to back, none waiting for the page to take
+// the one before: headless Chrome answers a wheel event only with a later
+// frame, which it draws about once a second. Chrome merges notches queued
+// up that way, summing their pixels and their `wheelDelta`, and answers
+// some before the page has them: the rest reach it later. So the page
+// counts the notches that reach it, by their pixels (120 a notch here) and
+// by `wheelDelta`, and the lines the host hands the runtime for them, and
+// a spin is checked once all of them are in.
+await evaluate(`(()=>{const seen=window.wheelSeen={events:0,notches:0,ticks:0,lines:0};
+  addEventListener('wheel',e=>{if(e.isTrusted){seen.events++;seen.notches+=e.deltaX/120;seen.ticks+=-e.wheelDeltaX/120}},{capture:true,passive:true});
+  tiloMount.canvas.addEventListener('wheel',e=>{if(!e.isTrusted&&e.deltaMode===1)seen.lines+=e.deltaX},{passive:true});
+  // Each frame where the pan, the notches in or the focused window changed,
+  // for a failure to show how the strip got where it is.
+  const trace=window.wheelTrace=[],t0=performance.now();let last='';
+  (function frame(){const n=tiloMount.navigation.getSnapshot(),row=[n.desktopPan?.offset??null,seen.notches,n.active?.group??null];
+    const key=JSON.stringify(row);if(key!==last){last=key;trace.push([Math.round(performance.now()-t0),...row]);if(trace.length>400)trace.shift()}
+    requestAnimationFrame(frame);})();})()`);
+const seen = () => evaluate('({...window.wheelSeen})');
+const spin = async (notches, deltaX) => {
+  progress = `a spin of ${notches} notches (${deltaX})`;
+  const before = await seen();
+  await Promise.all(Array.from({length: notches}, () => notch(cx, cy, deltaX)));
+  return {sent: notches * Math.sign(deltaX), before};
+};
 await mouse('mouseMoved', cx, cy);
-await notch(cx, cy, -120);
-await settles('a notch left steps to the previous window', label, order[1]);
-await notch(cx, cy, -120);
-await settles('another notch left steps once more', label, order[0]);
-await notch(cx, cy, 120);
-await settles('a notch right steps back', label, order[1]);
+// The strip eases the last opened window into view; a spin's travel is
+// measured from where it comes to rest, the same offset a second apart.
+progress = 'the strip comes to rest';
+let start = (await pan()).offset;
+for (let same = 0; same < 3;) {
+  await sleep(1000);
+  const now = (await pan()).offset;
+  same = Math.abs(now - start) < 0.01 ? same + 1 : 0;
+  start = now;
+}
+assert.ok(start > 600, `the strip shows the last window, panned ${start}`);
+// Waits for every notch of a spin to reach the page, each as a line, and
+// the strip to pan from `from` the way they went. How far it pans is left
+// to the surface's and the host's replay tests: in headless Chrome, whose
+// frames and wheel answers come about a second apart, two runs in three
+// panned 20 notches about 28 lines.
+async function travels(what, from, {sent, before}) {
+  progress = what;
+  let got, moved;
+  const deadline = Date.now() + 240_000;
+  for (;;) {
+    const now = await seen();
+    got = {sent, events: now.events - before.events, notches: now.notches - before.notches,
+      ticks: now.ticks - before.ticks, lines: now.lines - before.lines};
+    const {offset, max} = await pan();
+    moved = {lines: (offset - from) / 40, offset, max};
+    if (got.notches === sent && moved.lines * Math.sign(sent) >= 1) break;
+    if (Date.now() > deadline) {
+      if (process.env.SHOTS_DIR) writeFileSync(join(process.env.SHOTS_DIR, 'navigation-failed.png'), await tab.screenshot());
+      assert.fail(`${what}: ${JSON.stringify({moved, got})} from ${from}; [ms, offset, notches, group]: ${JSON.stringify(await evaluate('wheelTrace'))}; windows: ${JSON.stringify((await snapshot()).entries.map(e => [e.label, e.route.group]))}`);
+    }
+    await sleep(250);
+  }
+  console.log(JSON.stringify({step: 'wheel', spin: got, moved}));
+  assert.equal(got.ticks, sent, `${what}: wheelDelta counts every notch: ${JSON.stringify(got)}`);
+  assert.ok(Math.abs(got.lines - sent) < 0.01, `${what}: each notch is a line: ${JSON.stringify(got)}`);
+}
+await travels('a spin left pans the strip left', start, await spin(20, -120));
+await settles('and focus follows to a window it brought into view', s => order.slice(0, 2).includes(label(s)), true);
+// Every notch of it reaches the page before anything else is checked, so
+// none still arriving lands on the steps after.
+const {sent, before} = await spin(40, 120);
+progress = 'a long spin right reaches the page whole and pans the strip to its end';
+for (const deadline = Date.now() + 240_000; ;) {
+  const [now, {offset, max}] = [await seen(), await pan()];
+  if (now.notches - before.notches === sent && Math.abs(offset - max) < 0.5) break;
+  assert.ok(Date.now() < deadline, `${progress}: ${JSON.stringify({notches: now.notches - before.notches, sent, offset, max})}`);
+  await sleep(250);
+}
+await settles('and focus follows to the last window', label, order[2]);
 console.log(JSON.stringify({step: 'wheel', ok: true}));
 
 // A second workspace, through the overview; then the top bar's arrows.
@@ -179,3 +259,4 @@ assert.deepEqual(errors, [], 'no page exception');
 assert.equal(await evaluate('tiloMount.state().error ?? null'), null, 'the desktop kept drawing');
 await browser.close();
 await server.close();
+clearTimeout(watchdog);

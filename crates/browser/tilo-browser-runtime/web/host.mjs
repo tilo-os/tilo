@@ -431,14 +431,15 @@ export async function mountDesktop(target,options={}) {
     on(accessibility,'focusin',event=>{if(!accessibility.contains(event.relatedTarget))requestSemantics();});
 
     on(canvas,'pointerdown',()=>report({lastInput:'pointer'}));
-    // Every wheel over the surface is the runtime's: sideways swipes step the
+    // Every wheel over the surface is the runtime's: sideways swipes pan the
     // strip or scroll an app, Ctrl+wheel is pinch zoom. None may scroll,
     // zoom or navigate the page's history.
     // A mouse wheel's notches reach the runtime as the lines a native wheel
     // sends; this runs before the runtime's own canvas listener.
+    const wheelNotch={x:0,y:0};
     on(surface,'wheel',event=>{
       if(event.target!==canvas)return;
-      const lines=wheelNotchesAsLines(event,config.mac);
+      const lines=wheelNotchesAsLines(event,config.mac,wheelNotch);
       if(!lines)return;
       event.preventDefault();event.stopImmediatePropagation();
       canvas.dispatchEvent(new WheelEvent('wheel',lines));
