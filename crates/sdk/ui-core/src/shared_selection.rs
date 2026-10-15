@@ -54,6 +54,21 @@ impl SharedSelection {
         }
     }
 
+    /// Several whole items selected, each `(id, label)` in the order shown
+    /// (files in a folder, rows of a list): every item named as a place and
+    /// the excerpt listing their labels.
+    #[must_use]
+    pub fn of_items<I, L>(items: impl IntoIterator<Item = (I, L)>) -> Self
+    where
+        I: Into<String>,
+        L: AsRef<str>,
+    {
+        Self {
+            anchor: SelectionAnchor::of_items(items),
+            ..Self::default()
+        }
+    }
+
     /// This selection at `place`.
     #[must_use]
     pub fn at(mut self, place: SelectionPlace) -> Self {

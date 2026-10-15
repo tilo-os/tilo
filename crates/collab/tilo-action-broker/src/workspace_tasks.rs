@@ -63,6 +63,9 @@ const MAX_ARGUMENT_BYTES: usize = 8192;
 const MAX_QUEUE_ARGUMENT_BYTES: usize =
     tilo_desktop_model::MAX_WORKSPACE_TASK_INSTRUCTION_BYTES * 6 + 4096;
 const MAX_CURRENT_TASKS: usize = 256;
+/// A selection's subject: a resource, up to the selected items' places and
+/// a bounded excerpt.
+const MAX_SUBJECT_BYTES: usize = 48 * 1024;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,10 +75,6 @@ struct ResourceInput {
     id: String,
     kind: String,
     label: String,
-    /// What the person had selected in the resource, for the agent to act
-    /// at. Context only: it widens no permission.
-    #[serde(default)]
-    anchor: Option<tilo_actions::SelectionAnchor>,
 }
 
 fn resource(encoded: &str) -> Result<WorkspaceTaskResource, String> {
@@ -90,12 +89,21 @@ fn resource(encoded: &str) -> Result<WorkspaceTaskResource, String> {
         kind: input.kind,
         label: input.label,
         agent_request: None,
-        anchor: input
-            .anchor
-            .and_then(tilo_actions::SelectionAnchor::non_empty),
     };
     validate_manual_resource(&value)?;
     Ok(value)
+}
+
+/// What a queued request is about, as the person's desktop sent it: bounded
+/// and well formed, and never more than the request's subject.
+fn subject(encoded: &str) -> Result<tilo_actions::SelectionSubject, String> {
+    if encoded.len() > MAX_SUBJECT_BYTES {
+        return Err("task subject exceeds bounded input".into());
+    }
+    let subject: tilo_actions::SelectionSubject =
+        serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+    subject.validate()?;
+    Ok(subject)
 }
 
 fn argument(envelope: &InvocationEnvelope) -> Result<&str, String> {
@@ -157,7 +165,7 @@ fn queue_instruction_command(
         assigned_agent: String,
         planning: String,
         #[serde(default)]
-        resource_json: Option<String>,
+        subject_json: Option<String>,
     }
     let input: Input =
         serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
@@ -166,13 +174,13 @@ fn queue_instruction_command(
         "rules_only" => WorkspaceTaskRoute::RulesOnly,
         _ => return Err("managed task planning must be model or rules_only".into()),
     };
-    Ok(match input.resource_json.as_deref() {
-        Some(encoded) => WorkspaceTaskCommand::QueueInstructionOn {
+    Ok(match input.subject_json.as_deref() {
+        Some(encoded) => WorkspaceTaskCommand::QueueInstructionAbout {
             title: input.title,
             instruction: input.instruction,
             assigned_agent: input.assigned_agent,
             route,
-            resource: Box::new(resource(encoded)?),
+            subject: Box::new(subject(encoded)?),
         },
         None => WorkspaceTaskCommand::QueueInstruction {
             title: input.title,
@@ -377,7 +385,7 @@ fn queue_action(workspace_label: &str) -> PublishedAction {
             ActionParam::optional(
                 "resource_json",
                 ParamType::Text,
-                "Ordinary resource JSON: app_id, app_label, id, kind, label, and an optional anchor (place, interaction, excerpt) naming what the person selected in it; grants no authority",
+                "Ordinary resource JSON: app_id, app_label, id, kind, label; grants no authority",
             ),
         ],
         false,
@@ -529,7 +537,7 @@ fn create_manual_task_action(workspace_label: &str) -> PublishedAction {
             ActionParam::optional(
                 "resource_json",
                 ParamType::Text,
-                "Ordinary resource JSON: app_id, app_label, id, kind, label, and an optional anchor (place, interaction, excerpt) naming what the person selected in it; grants no authority",
+                "Ordinary resource JSON: app_id, app_label, id, kind, label; grants no authority",
             ),
         ],
         false,
@@ -576,9 +584,9 @@ fn queue_instruction_action() -> PublishedAction {
                 "model or rules_only; never manual",
             ),
             ActionParam::optional(
-                "resource_json",
+                "subject_json",
                 ParamType::Text,
-                "The resource the task is about, as JSON: app_id, app_label, id, kind, label, and an optional anchor (place, interaction, excerpt) naming what the person selected in it; grants no authority",
+                "What the request is about, as JSON: app_id, app_label, resource (id, kind, label) and anchor (place, items, excerpt) naming what the person selected; the subject only, never a scope or an authority",
             ),
         ],
         false,
@@ -781,6 +789,11 @@ pub(super) fn inspect(
     let mut public_task = task.clone();
     if let Some(resource) = &mut public_task.resource {
         resource.agent_request = None;
+    }
+    // What was selected is the request's content, private as its
+    // instruction is; where it is stays readable.
+    if let Some(subject) = &mut public_task.subject {
+        subject.anchor.excerpt = None;
     }
     let mut output = serde_json::json!({"task":public_task,"grants":grants,
         "grants_read":tilo_action_policy::describe(&held, &tilo_action_policy::Ids),"coordination_only":manual(task),
@@ -1139,6 +1152,7 @@ mod tests {
                 route: WorkspaceTaskRoute::Model,
                 status: tilo_desktop_model::WorkspaceTaskStatus::Done,
                 resource: None,
+                subject: None,
                 created_at: 1,
                 updated_at: 3,
                 audit: vec![
@@ -1438,6 +1452,7 @@ mod tests {
             route: WorkspaceTaskRoute::Manual,
             status: tilo_desktop_model::WorkspaceTaskStatus::Queued,
             resource: None,
+            subject: None,
             created_at: 1,
             updated_at: 1,
             audit: Vec::new(),

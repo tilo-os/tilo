@@ -3654,6 +3654,7 @@ impl WorkspaceTree {
             route,
             status: WorkspaceTaskStatus::Queued,
             resource,
+            subject: None,
             created_at: now,
             updated_at: now,
             audit: vec![WorkspaceTaskAuditEvent::new(
@@ -9717,7 +9718,6 @@ mod workspace_tree_lifecycle_tests {
                         kind: "document".into(),
                         label: "Release brief".into(),
                         agent_request: None,
-                        anchor: None,
                     }),
                 )
                 .expect("non-empty task is created");

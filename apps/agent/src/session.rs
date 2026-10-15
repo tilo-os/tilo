@@ -1256,7 +1256,7 @@ mod tests {
             task_id: "task:review".into(),
             title: "Review draft".into(),
             instruction: None,
-            anchor: None,
+            subject: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::RulesOnly,

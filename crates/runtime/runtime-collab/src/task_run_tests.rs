@@ -7,7 +7,7 @@ fn task_run_wire_is_typed_and_rejects_unknown_fields() {
         task_id: "task:1".into(),
         title: "Review proposal".into(),
         instruction: Some("Review the complete proposal and list every blocker".into()),
-        anchor: None,
+        subject: None,
         run_id: 7,
         lease: "broker-lease".into(),
         planning: TaskRunPlanning::RulesOnly,
@@ -47,14 +47,23 @@ fn task_run_wire_is_typed_and_rejects_unknown_fields() {
 
 #[test]
 fn task_run_carries_the_selection_it_is_about_without_breaking_older_runs() {
-    let anchor = tilo_actions::SelectionAnchor::of_text("the opening sentence")
-        .at(tilo_actions::SelectionPlace::range("block-1", 0, 20));
+    let subject = tilo_actions::SelectionSubject {
+        app_id: "so.tilo.notes".into(),
+        app_label: "Notes".into(),
+        resource: tilo_actions::ActionResource {
+            id: "notes.notebook/pages/1/body".into(),
+            kind: "rich-text".into(),
+            label: "Ideas".into(),
+        },
+        anchor: tilo_actions::SelectionAnchor::of_text("the opening sentence")
+            .at(tilo_actions::SelectionPlace::range("block-1", 0, 20)),
+    };
     let envelope = TaskRunEnvelope {
         version: 1,
         task_id: "task:2".into(),
         title: "Tighten this".into(),
         instruction: Some("Tighten the opening sentence".into()),
-        anchor: Some(anchor.clone()),
+        subject: Some(subject.clone()),
         run_id: 8,
         lease: "broker-lease".into(),
         planning: TaskRunPlanning::Model,
@@ -62,22 +71,22 @@ fn task_run_carries_the_selection_it_is_about_without_breaking_older_runs() {
         action_context: serde_json::json!({"purpose": "Tighten this"}),
     };
     let json = serde_json::to_value(&envelope).unwrap();
-    assert_eq!(json["anchor"]["place"]["start"], 0);
-    assert_eq!(json["anchor"]["excerpt"], "the opening sentence");
+    assert_eq!(json["subject"]["anchor"]["place"]["start"], 0);
+    assert_eq!(json["subject"]["resource"]["label"], "Ideas");
     assert_eq!(
         serde_json::from_value::<TaskRunEnvelope>(json)
             .unwrap()
-            .anchor,
-        Some(anchor)
+            .subject,
+        Some(subject)
     );
     let without = TaskRunEnvelope {
-        anchor: None,
+        subject: None,
         ..envelope
     };
     assert!(
         serde_json::to_value(&without)
             .unwrap()
-            .get("anchor")
+            .get("subject")
             .is_none(),
         "a run about no selection is the run an older agent reads"
     );

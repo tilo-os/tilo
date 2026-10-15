@@ -6755,3 +6755,54 @@ mod oauth_cloud_location_tests {
         );
     }
 }
+
+/// Selected files are shared with an agent as their rows' published
+/// resources, each a whole item, in the order shown.
+#[test]
+fn selected_files_are_shared_as_the_items_an_agent_acts_on() {
+    let folder = tempfile::tempdir().unwrap();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::write(folder.path().join(name), name).unwrap();
+    }
+    let mut files = FileExplorerWidget::new();
+    files.navigate(folder.path().to_path_buf());
+    assert!(ui::shared_selection::selection_of(&files).is_none());
+    let displayed = files.displayed_entries();
+    let index = |name: &str| {
+        displayed
+            .iter()
+            .position(|entry| entry.name == name)
+            .unwrap()
+    };
+    files.selection.select_only(index("a.txt"));
+    files.selection.toggle(index("c.txt"));
+    let selection = ui::shared_selection::selection_of(&files).expect("two files selected");
+    let ids: Vec<String> = ["a.txt", "c.txt"]
+        .iter()
+        .map(|name| FileExplorerWidget::entry_resource_id(&displayed[index(name)]))
+        .collect();
+    assert_eq!(
+        selection
+            .anchor
+            .items
+            .iter()
+            .map(|item| item.item.clone())
+            .collect::<Vec<_>>(),
+        ids
+    );
+    assert!(
+        selection
+            .anchor
+            .items
+            .iter()
+            .all(|item| item.start.is_none() && item.at.is_none())
+    );
+    assert_eq!(
+        selection.anchor.excerpt.as_deref(),
+        Some("- a.txt\n- c.txt")
+    );
+    assert_eq!(
+        selection.resource_kind.as_deref(),
+        Some(<crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND)
+    );
+}

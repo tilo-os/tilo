@@ -23,6 +23,9 @@ pub const MAX_EXCERPT_BYTES: usize = 4 * 1024;
 pub const MAX_PLACE_ITEM_BYTES: usize = 512;
 /// The most bytes an interaction anchor may take, encoded.
 pub const MAX_SELECTION_ANCHOR_BYTES: usize = 8 * 1024;
+/// The most items a selection of several items (files, rows, cards) names
+/// one by one; the excerpt counts the rest.
+pub const MAX_SELECTED_ITEMS: usize = 64;
 
 /// Where a selection is inside a resource: an item, a caret or a character
 /// range inside one item. Its JSON form is exactly what an action's place
@@ -102,6 +105,10 @@ impl SelectionPlace {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SelectionAnchor {
     pub place: Option<SelectionPlace>,
+    /// Every item of a selection of several (files in a folder, rows of a
+    /// list), each the whole of one item, in the order shown. Empty for a
+    /// selection inside one item, which [`Self::place`] names.
+    pub items: Vec<SelectionPlace>,
     pub interaction: Option<InteractionAnchor>,
     pub excerpt: Option<String>,
 }
@@ -111,6 +118,8 @@ pub struct SelectionAnchor {
 struct SelectionAnchorWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     place: Option<SelectionPlace>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    items: Vec<SelectionPlace>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     interaction: Option<InteractionAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -121,6 +130,7 @@ impl Serialize for SelectionAnchor {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let wire = SelectionAnchorWire {
             place: self.place.clone(),
+            items: self.items.clone(),
             interaction: self.interaction.clone(),
             excerpt: self.excerpt.clone(),
         };
@@ -144,6 +154,7 @@ impl<'de> Deserialize<'de> for SelectionAnchor {
         };
         Ok(Self {
             place: wire.place,
+            items: wire.items,
             interaction: wire.interaction,
             excerpt: wire.excerpt,
         })
@@ -157,6 +168,69 @@ impl SelectionAnchor {
     pub fn of_text(excerpt: &str) -> Self {
         Self {
             excerpt: excerpt_of(excerpt),
+            ..Self::default()
+        }
+    }
+
+    /// A selection of several whole items, each `(id, label)` in the order
+    /// shown: every item named as a place (at most [`MAX_SELECTED_ITEMS`]),
+    /// and an excerpt listing their labels, counting any beyond that.
+    #[must_use]
+    pub fn of_items<I, L>(items: impl IntoIterator<Item = (I, L)>) -> Self
+    where
+        I: Into<String>,
+        L: AsRef<str>,
+    {
+        let mut places = Vec::new();
+        let mut labels = Vec::new();
+        let mut total = 0_usize;
+        for (id, label) in items {
+            total = total.saturating_add(1);
+            if places.len() == MAX_SELECTED_ITEMS {
+                continue;
+            }
+            let id = id.into();
+            let label = label.as_ref().trim();
+            labels.push(if label.is_empty() {
+                id.clone()
+            } else {
+                label.to_owned()
+            });
+            places.push(SelectionPlace::item(id));
+        }
+        // List names while they fit the excerpt, leaving room to count the
+        // rest, so the excerpt never ends cut mid-name.
+        let budget = MAX_EXCERPT_CHARS.saturating_sub(32);
+        let mut listed = String::new();
+        let mut shown = 0_usize;
+        for label in &labels {
+            let line = format!("- {label}");
+            let used = listed
+                .chars()
+                .count()
+                .saturating_add(line.chars().count())
+                .saturating_add(1);
+            if used > budget {
+                break;
+            }
+            if !listed.is_empty() {
+                listed.push('\n');
+            }
+            listed.push_str(&line);
+            shown = shown.saturating_add(1);
+        }
+        let more = total.saturating_sub(shown);
+        if more > 0 {
+            if !listed.is_empty() {
+                listed.push('\n');
+            }
+            listed.push_str("- and ");
+            listed.push_str(&more.to_string());
+            listed.push_str(" more");
+        }
+        Self {
+            items: places,
+            excerpt: excerpt_of(&listed),
             ..Self::default()
         }
     }
@@ -205,7 +279,10 @@ impl SelectionAnchor {
     /// Whether the anchor says nothing at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.place.is_none() && self.interaction.is_none() && self.excerpt.is_none()
+        self.place.is_none()
+            && self.items.is_empty()
+            && self.interaction.is_none()
+            && self.excerpt.is_none()
     }
 
     /// The anchor, unless it says nothing.
@@ -223,6 +300,12 @@ impl SelectionAnchor {
         if let Some(place) = &self.place {
             place.validate()?;
         }
+        if self.items.len() > MAX_SELECTED_ITEMS {
+            return Err("a selection names too many items".into());
+        }
+        for item in &self.items {
+            item.validate()?;
+        }
         if let Some(excerpt) = &self.excerpt
             && (excerpt.len() > MAX_EXCERPT_BYTES
                 || excerpt.chars().count() > MAX_EXCERPT_CHARS + 1
@@ -239,6 +322,48 @@ impl SelectionAnchor {
             }
         }
         Ok(())
+    }
+}
+
+/// What a request is about: the resource a person had selected something in,
+/// and the selection. Only the subject of the request: it carries no
+/// authority, so a run about a selection may act anywhere its starter and
+/// its agent may (other resources, other apps), as any task may.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectionSubject {
+    /// The application the resource is in, by package id.
+    pub app_id: String,
+    pub app_label: String,
+    pub resource: crate::ActionResource,
+    pub anchor: SelectionAnchor,
+}
+
+impl SelectionSubject {
+    /// Whether the subject is within bounds, so a receiver may keep it.
+    ///
+    /// # Errors
+    ///
+    /// Names the first oversized or malformed part.
+    pub fn validate(&self) -> Result<(), String> {
+        for (value, maximum, name) in [
+            (self.app_id.as_str(), 256, "app"),
+            (self.app_label.as_str(), 512, "app label"),
+            (self.resource.id.as_str(), 2048, "resource id"),
+            (self.resource.kind.as_str(), 128, "resource kind"),
+            (self.resource.label.as_str(), 512, "resource label"),
+        ] {
+            if value.len() > maximum || value.chars().any(char::is_control) {
+                return Err(format!("a selection's {name} is oversized or malformed"));
+            }
+        }
+        if self.resource.id.trim().is_empty() || self.app_id.trim().is_empty() {
+            return Err("a selection names its application and resource".into());
+        }
+        if self.anchor.is_empty() {
+            return Err("a selection says what was selected".into());
+        }
+        self.anchor.validate()
     }
 }
 
@@ -273,11 +398,57 @@ mod tests {
     fn anchor() -> SelectionAnchor {
         SelectionAnchor {
             place: Some(SelectionPlace::range("block-1", 4, 9)),
+            items: Vec::new(),
             interaction: Some(InteractionAnchor::Objects {
                 ids: vec!["block-1".into()],
             }),
             excerpt: Some("quick".into()),
         }
+    }
+
+    #[test]
+    fn a_selection_of_several_items_names_each_and_lists_them() {
+        let anchor = SelectionAnchor::of_items(
+            (0..MAX_SELECTED_ITEMS + 2).map(|n| (format!("file:{n}"), format!("report-{n}.pdf"))),
+        );
+        assert_eq!(anchor.items.len(), MAX_SELECTED_ITEMS);
+        assert_eq!(anchor.items[1], SelectionPlace::item("file:1"));
+        let excerpt = anchor.excerpt.as_deref().unwrap();
+        assert!(excerpt.starts_with("- report-0.pdf\n- report-1.pdf\n"));
+        assert!(excerpt.ends_with(" more"), "{excerpt}");
+        assert!(!excerpt.contains('…'), "the list is never cut mid-name");
+        let listed = excerpt
+            .lines()
+            .filter(|line| line.starts_with("- report-"))
+            .count();
+        assert!(
+            excerpt.ends_with(&format!("- and {} more", MAX_SELECTED_ITEMS + 2 - listed)),
+            "{excerpt}"
+        );
+        assert!(anchor.validate().is_ok());
+        let json = serde_json::to_value(&anchor).unwrap();
+        assert_eq!(json["items"][0], serde_json::json!({"item": "file:0"}));
+        assert_eq!(
+            serde_json::from_value::<SelectionAnchor>(json).unwrap(),
+            anchor
+        );
+        let encoded = postcard::to_allocvec(&anchor).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<SelectionAnchor>(&encoded).unwrap(),
+            anchor
+        );
+        assert!(
+            serde_json::to_value(SelectionAnchor::of_text("x"))
+                .unwrap()
+                .get("items")
+                .is_none(),
+            "a selection inside one item writes what it wrote before"
+        );
+        let too_many = SelectionAnchor {
+            items: vec![SelectionPlace::item("f"); MAX_SELECTED_ITEMS + 1],
+            ..SelectionAnchor::default()
+        };
+        assert!(too_many.validate().is_err());
     }
 
     #[test]

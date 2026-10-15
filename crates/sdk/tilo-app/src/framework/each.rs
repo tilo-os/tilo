@@ -33,7 +33,7 @@ enum MenuEntry {
         prompts: bool,
     },
     /// Ask the desktop's agent about this row: its item, in its resource.
-    AskAgent(ui_core::shared_selection::SharedSelection),
+    AskAgent(Box<ui_core::shared_selection::SharedSelection>),
     /// The rule above it, which the menu counts as a row.
     Separator,
 }
@@ -560,7 +560,7 @@ impl<R: Resource> Each<R> {
                 ui_core::i18n::I18nManager::lookup_plain("ask-agent-about-selection"),
                 || {},
             ));
-            entries.push(MenuEntry::AskAgent(selection));
+            entries.push(MenuEntry::AskAgent(Box::new(selection)));
         }
         #[allow(
             clippy::cast_possible_truncation,
@@ -585,7 +585,7 @@ impl<R: Resource> Each<R> {
                 }
             }
             Some(MenuEntry::AskAgent(selection)) => {
-                ui_core::shared_selection::ask_agent(Some(selection.clone()));
+                ui_core::shared_selection::ask_agent(Some(selection.as_ref().clone()));
             }
             Some(MenuEntry::Separator) | None => {}
         }

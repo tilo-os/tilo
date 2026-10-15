@@ -16,6 +16,7 @@ fn task(id: &str, agent: &str, route: WorkspaceTaskRoute) -> WorkspaceTask {
         route,
         status: WorkspaceTaskStatus::InProgress,
         resource: None,
+        subject: None,
         created_at: 1,
         updated_at: 2,
         audit: Vec::new(),
@@ -146,66 +147,58 @@ fn queue_keeps_the_full_instruction_distinct_from_its_public_title() {
 }
 
 #[test]
-fn queue_about_a_selection_carries_its_resource_and_anchor() {
-    let resource = serde_json::json!({
-        "app_id": "so.tilo.word-processor",
-        "app_label": "Writer",
-        "id": "doc:proposal",
-        "kind": "word-processor.document",
-        "label": "Proposal",
+fn queue_about_a_selection_carries_its_subject_and_attaches_nothing() {
+    let subject = serde_json::json!({
+        "app_id": "so.tilo.files",
+        "app_label": "Files",
+        "resource": {"id": "files:folder/reports", "kind": "files.folder", "label": "Reports"},
         "anchor": {
-            "place": {"item": "block-3", "start": 4, "end": 19},
-            "excerpt": "the second claim"
+            "items": [{"item": "q1.pdf"}, {"item": "q2.pdf"}],
+            "excerpt": "- q1.pdf\n- q2.pdf"
         }
     });
-    let request = envelope(
-        COLLECTION,
-        "queue",
-        Some(serde_json::json!({
-            "title": "Tighten this",
-            "instruction": "Tighten the selected sentence",
-            "assigned_agent": "scribe",
-            "planning": "model",
-            "resource_json": resource.to_string(),
-        })),
-    );
-    let Some(WorkspaceTaskCommand::QueueInstructionOn {
-        instruction,
-        resource,
-        route: WorkspaceTaskRoute::Model,
-        ..
-    }) = command(&request).unwrap()
-    else {
-        panic!("a queue about a resource keeps the resource")
-    };
-    assert_eq!(instruction, "Tighten the selected sentence");
-    assert_eq!(resource.id, "doc:proposal");
-    let anchor = resource
-        .anchor
-        .expect("the selection travels with the task");
-    assert_eq!(
-        anchor.place,
-        Some(tilo_actions::SelectionPlace::range("block-3", 4, 19))
-    );
-    assert_eq!(anchor.excerpt.as_deref(), Some("the second claim"));
-
-    for forged in [
-        serde_json::json!({"app_id":"so.tilo.word-processor","app_label":"Writer","id":"doc","kind":"k","label":"l","anchor":{"place":{"item":"b","start":9,"end":2}}}),
-        serde_json::json!({"app_id":"so.tilo.word-processor","app_label":"Writer","id":"doc","kind":"k","label":"l","anchor":{"lease":"x"}}),
-        serde_json::json!({"app_id":"so.tilo.word-processor","app_label":"Writer","id":"doc","kind":"k","label":"l","agent_request":{}}),
-    ] {
-        let request = envelope(
+    let queue = |subject: &serde_json::Value| {
+        envelope(
             COLLECTION,
             "queue",
             Some(serde_json::json!({
-                "title": "Tighten this",
-                "instruction": "Tighten it",
+                "title": "Summarize these",
+                "instruction": "Summarize the selected reports",
                 "assigned_agent": "scribe",
                 "planning": "model",
-                "resource_json": forged.to_string(),
+                "subject_json": subject.to_string(),
             })),
+        )
+    };
+    let Some(WorkspaceTaskCommand::QueueInstructionAbout {
+        instruction,
+        subject: about,
+        route: WorkspaceTaskRoute::Model,
+        ..
+    }) = command(&queue(&subject)).unwrap()
+    else {
+        panic!("a queue about a selection keeps the selection")
+    };
+    assert_eq!(instruction, "Summarize the selected reports");
+    assert_eq!(about.resource.id, "files:folder/reports");
+    assert_eq!(
+        about.anchor.items,
+        [
+            tilo_actions::SelectionPlace::item("q1.pdf"),
+            tilo_actions::SelectionPlace::item("q2.pdf")
+        ]
+    );
+
+    for forged in [
+        serde_json::json!({"app_id":"so.tilo.files","app_label":"Files","resource":{"id":"r","kind":"k","label":"l"},"anchor":{"place":{"item":"b","start":9,"end":2}}}),
+        serde_json::json!({"app_id":"so.tilo.files","app_label":"Files","resource":{"id":"r","kind":"k","label":"l"},"anchor":{"lease":"x"}}),
+        serde_json::json!({"app_id":"so.tilo.files","app_label":"Files","resource":{"id":"r","kind":"k","label":"l"},"anchor":{}}),
+        serde_json::json!({"app_id":"so.tilo.files","app_label":"Files","resource":{"id":"r","kind":"k","label":"l"},"anchor":{"excerpt":"x"},"scope":"room"}),
+    ] {
+        assert!(
+            command(&queue(&forged)).is_err(),
+            "{forged} must be refused"
         );
-        assert!(command(&request).is_err(), "{forged} must be refused");
     }
 }
 
@@ -464,7 +457,6 @@ fn inspection_redacts_private_instruction_in_legacy_chat_attachment() {
             instruction: "Private attachment instruction".into(),
             invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(92)),
         }),
-        anchor: None,
     });
     let read = inspect(&state, &envelope("desktop:task:model", "inspect", None)).unwrap();
     assert_eq!(read["task"]["resource"]["id"], "message:source");

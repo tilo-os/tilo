@@ -515,7 +515,7 @@ impl CapnpBrokerState {
                         .clone()
                         .unwrap_or_else(|| task.title.clone()),
                 ),
-                anchor: task.selection_anchor().cloned(),
+                subject: task.subject.clone(),
                 run_id,
                 lease,
                 planning,

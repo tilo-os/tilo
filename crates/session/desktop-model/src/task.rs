@@ -85,15 +85,11 @@ pub struct WorkspaceTaskResource {
     /// display title, so an offline agent receives it byte-for-byte later.
     #[serde(default)]
     pub agent_request: Option<WorkspaceAgentRequest>,
-    /// What the person had selected in this resource when they asked: the
-    /// place an agent acts at and a short excerpt. Context, never authority.
-    #[serde(default)]
-    pub anchor: Option<tilo_actions::SelectionAnchor>,
 }
 
-// Absent optional parts are left out of JSON, so the room document reads
-// as it did before they existed, but every part is written in a binary
-// format: postcard reads fields by position and cannot skip one.
+// An absent Chat request is left out of JSON, so the room document reads as
+// it always has, but every part is written in a binary format: postcard
+// reads fields by position and cannot skip one.
 impl Serialize for WorkspaceTaskResource {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         #[derive(Serialize)]
@@ -106,8 +102,6 @@ impl Serialize for WorkspaceTaskResource {
             label: &'a str,
             #[serde(skip_serializing_if = "Option::is_none")]
             agent_request: Option<&'a WorkspaceAgentRequest>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            anchor: Option<&'a tilo_actions::SelectionAnchor>,
         }
         #[derive(Serialize)]
         #[serde(rename = "WorkspaceTaskResource")]
@@ -118,7 +112,6 @@ impl Serialize for WorkspaceTaskResource {
             kind: &'a str,
             label: &'a str,
             agent_request: Option<&'a WorkspaceAgentRequest>,
-            anchor: Option<&'a tilo_actions::SelectionAnchor>,
         }
         if serializer.is_human_readable() {
             Readable {
@@ -128,7 +121,6 @@ impl Serialize for WorkspaceTaskResource {
                 kind: &self.kind,
                 label: &self.label,
                 agent_request: self.agent_request.as_ref(),
-                anchor: self.anchor.as_ref(),
             }
             .serialize(serializer)
         } else {
@@ -139,7 +131,6 @@ impl Serialize for WorkspaceTaskResource {
                 kind: &self.kind,
                 label: &self.label,
                 agent_request: self.agent_request.as_ref(),
-                anchor: self.anchor.as_ref(),
             }
             .serialize(serializer)
         }
@@ -551,7 +542,15 @@ pub struct WorkspaceTask {
     pub assigned_agent: Option<String>,
     pub route: WorkspaceTaskRoute,
     pub status: WorkspaceTaskStatus,
+    /// The scope-narrowing attachment: a task attached to a resource runs
+    /// only within it.
     pub resource: Option<WorkspaceTaskResource>,
+    /// What the request is about, when the person asked about a selection:
+    /// the resource and exactly what was selected in it. Context only, kept
+    /// apart from [`Self::resource`] so it never narrows (or widens) what
+    /// the run may do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<tilo_actions::SelectionSubject>,
     pub created_at: i64,
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "crate::history::omitted")]
@@ -574,14 +573,6 @@ impl WorkspaceTask {
             }
         }
         context
-    }
-
-    /// What the person had selected in the task's resource when they asked,
-    /// for the agent to act at. Rides beside the action context rather than
-    /// in it: the context is copied into every change the run makes, and a
-    /// selection is the request's context, not each change's.
-    pub fn selection_anchor(&self) -> Option<&tilo_actions::SelectionAnchor> {
-        self.resource.as_ref()?.anchor.as_ref()
     }
 }
 
@@ -667,11 +658,11 @@ mod effect_receipt_redaction_tests {
 }
 
 #[cfg(test)]
-mod selection_anchor_tests {
+mod selection_subject_tests {
     use super::{WorkspaceTask, WorkspaceTaskResource};
-    use tilo_actions::{SelectionAnchor, SelectionPlace};
+    use tilo_actions::{ActionResource, SelectionAnchor, SelectionPlace, SelectionSubject};
 
-    fn resource(anchor: Option<SelectionAnchor>) -> WorkspaceTaskResource {
+    fn resource() -> WorkspaceTaskResource {
         WorkspaceTaskResource {
             app_id: Some("so.tilo.word-processor".into()),
             app_label: Some("Writer".into()),
@@ -679,46 +670,62 @@ mod selection_anchor_tests {
             kind: "word-processor.document".into(),
             label: "Proposal".into(),
             agent_request: None,
-            anchor,
         }
     }
 
     #[test]
-    fn a_task_resource_written_before_anchors_still_reads() {
+    fn an_attachment_reads_and_writes_as_it_always_has() {
         let older = serde_json::json!({
             "app_id": "so.tilo.word-processor", "app_label": "Writer",
             "id": "doc:1", "kind": "word-processor.document", "label": "Proposal"
         });
         let read: WorkspaceTaskResource = serde_json::from_value(older.clone()).unwrap();
-        assert_eq!(read, resource(None));
+        assert_eq!(read, resource());
+        assert_eq!(serde_json::to_value(&read).unwrap(), older);
+        let encoded = postcard::to_allocvec(&read).unwrap();
         assert_eq!(
-            serde_json::to_value(&read).unwrap(),
-            older,
-            "a resource without a selection writes what older readers wrote"
+            postcard::from_bytes::<WorkspaceTaskResource>(&encoded).unwrap(),
+            read,
+            "a binary format writes the absent Chat request too"
         );
     }
 
     #[test]
-    fn a_task_keeps_the_selection_it_was_asked_about() {
-        let anchor = SelectionAnchor::of_text("the second paragraph")
-            .at(SelectionPlace::range("block-7", 0, 20));
-        let encoded = serde_json::to_value(resource(Some(anchor.clone()))).unwrap();
-        assert_eq!(encoded["anchor"]["place"]["item"], "block-7");
-        let task: WorkspaceTask = serde_json::from_value(serde_json::json!({
+    fn a_task_about_a_selection_keeps_it_apart_from_any_attachment() {
+        let subject = SelectionSubject {
+            app_id: "so.tilo.word-processor".into(),
+            app_label: "Writer".into(),
+            resource: ActionResource {
+                id: "doc:1".into(),
+                kind: "word-processor.document".into(),
+                label: "Proposal".into(),
+            },
+            anchor: SelectionAnchor::of_text("the second paragraph")
+                .at(SelectionPlace::range("block-7", 0, 20)),
+        };
+        let mut task: WorkspaceTask = serde_json::from_value(serde_json::json!({
             "id": "task:1", "title": "Tighten this", "created_by": "ada",
             "assigned_agent": "scribe", "route": "model", "status": "queued",
-            "resource": encoded, "created_at": 1, "updated_at": 1
+            "resource": null, "created_at": 1, "updated_at": 1
         }))
         .unwrap();
-        assert_eq!(task.selection_anchor(), Some(&anchor));
-        let context = task.action_context();
-        assert_eq!(
-            context.resource.map(|resource| resource.id).as_deref(),
-            Some("doc:1")
-        );
+        assert!(task.subject.is_none(), "a task from before subjects reads");
         assert!(
-            context.item.is_none(),
-            "the selection never becomes every change's item"
+            serde_json::to_value(&task)
+                .unwrap()
+                .get("subject")
+                .is_none(),
+            "and writes what it wrote"
+        );
+        task.subject = Some(subject.clone());
+        let read: WorkspaceTask =
+            serde_json::from_value(serde_json::to_value(&task).unwrap()).unwrap();
+        assert_eq!(read.subject, Some(subject));
+        assert!(read.resource.is_none(), "a selection is no attachment");
+        let context = read.action_context();
+        assert!(
+            context.resource.is_none() && context.item.is_none(),
+            "nor every change's resource or item"
         );
     }
 }
