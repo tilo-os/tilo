@@ -2206,8 +2206,9 @@ mod tests {
     }
 
     /// The compositor loop binds a workspace's X display through
-    /// `session_for`, and that includes writing the authority file. Nothing
-    /// on that path may wait for the disk: under I/O or memory pressure an
+    /// `session_for`, which writes the display's authority file, and its
+    /// supervisor gives the composing input method every cookie. Nothing on
+    /// those paths may wait for the disk: under I/O or memory pressure an
     /// fsync there froze input and presentation for seconds.
     #[test]
     fn binding_a_display_never_waits_for_the_disk() {
@@ -2240,6 +2241,16 @@ mod tests {
                 bytes.ends_with(&display.cookie),
                 "the file carries the cookie"
             );
+
+            let composer = fixture.displays.paths.runtime.join("composer-Xauthority");
+            super::super::xwayland_composer::write_composer_authority(
+                &composer,
+                std::slice::from_ref(&display.authority),
+            )
+            .expect("installing the composer's authority must not sync to disk");
+            let metadata = fs::metadata(&composer).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            assert_eq!(fs::read(&composer).unwrap(), bytes);
         })
         .join()
         .unwrap();
