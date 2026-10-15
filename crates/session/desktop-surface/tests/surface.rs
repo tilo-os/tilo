@@ -800,19 +800,26 @@ fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
     let drawn = first_window_x(&driver);
     let start = pan_offset(&handle);
     let frames = driver.relayout_frames();
-    for _ in 0..3 {
-        driver.send_host_event(&ui::winit::event::WindowEvent::MouseWheel {
-            device_id: ui::winit::event::DeviceId::dummy(),
-            delta: ui::winit::event::MouseScrollDelta::PixelDelta(
-                ui::winit::dpi::PhysicalPosition::new(-10.0, 0.0),
-            ),
-            phase: ui::winit::event::TouchPhase::Moved,
-        });
-    }
+    let ((), wheels) = tilo_resource::profiling::observe(|| {
+        for _ in 0..3 {
+            driver.send_host_event(&pixel_wheel(-10.0, 0.0));
+        }
+    });
     assert_eq!(driver.relayout_frames(), frames, "a wheel lays nothing out");
+    assert_eq!(
+        phase_calls(&wheels, "ui.host_tick"),
+        0,
+        "a strip pan is view-only: its tick is the frame's"
+    );
     assert!(driver.frame_schedule().queued_work, "it asks for a frame");
 
-    assert!(driver.poll_frame().unwrap());
+    let (polled, frame) = tilo_resource::profiling::observe(|| driver.poll_frame().unwrap());
+    assert!(polled);
+    assert_eq!(
+        phase_calls(&frame, "ui.host_tick"),
+        1,
+        "the frame ticks once"
+    );
     assert_eq!(
         driver.relayout_frames(),
         frames + 1,
@@ -836,6 +843,39 @@ fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
         !driver.frame_schedule().queued_work,
         "the frame took the wheels' work"
     );
+}
+
+fn pixel_wheel(dx: f64, dy: f64) -> ui::winit::event::WindowEvent {
+    ui::winit::event::WindowEvent::MouseWheel {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+            ui::winit::dpi::PhysicalPosition::new(dx, dy),
+        ),
+        phase: ui::winit::event::TouchPhase::Moved,
+    }
+}
+
+fn phase_calls(rows: &[tilo_resource::profiling::Sample], phase: &str) -> usize {
+    rows.iter()
+        .find(|row| row.phase == phase)
+        .map_or(0, |row| row.calls)
+}
+
+/// Only a wheel the strip pans with skips its own tick: one that reaches the
+/// window under the pointer may dispatch there, so it ticks at once.
+#[test]
+fn a_wheel_the_strip_does_not_pan_with_ticks_at_once() {
+    let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
+    driver.set_coalesce_wheel_frames(true);
+    let start = pan_offset(&handle);
+    let ((), rows) = tilo_resource::profiling::observe(|| {
+        driver.send_host_event(&pixel_wheel(0.0, -10.0));
+    });
+    assert!(
+        (pan_offset(&handle) - start).abs() < 0.01,
+        "a vertical wheel pans nothing"
+    );
+    assert_eq!(phase_calls(&rows, "ui.host_tick"), 1, "{rows:?}");
 }
 
 #[test]

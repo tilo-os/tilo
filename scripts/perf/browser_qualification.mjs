@@ -268,10 +268,25 @@ const PHASE_PROBE = `(() => {
   new MutationObserver(records => { for (const r of records) { const phase = r.target.dataset?.phase;
     if (phase && !(phase in times)) times[phase] = performance.now(); } })
     .observe(document, {subtree: true, attributes: true, attributeFilter: ['data-phase']});
-  const modules = globalThis.__tiloModules = {}, instantiate = WebAssembly.instantiateStreaming;
+  const modules = globalThis.__tiloModules = {}, urls = new WeakMap();
+  const file = url => new URL(url).pathname.split('/').pop();
+  const instantiateStreaming = WebAssembly.instantiateStreaming;
   WebAssembly.instantiateStreaming = async (source, imports) => {
-    const response = await source, result = await instantiate(response, imports);
-    modules[new URL(response.url).pathname.split('/').pop()] = performance.now();
+    const response = await source, result = await instantiateStreaming(response, imports);
+    modules[file(response.url)] = performance.now();
+    return result;
+  };
+  // The split loader compiles a module ahead of its first use (a prefetch)
+  // and instantiates the compiled module when the app first needs it.
+  const compileStreaming = WebAssembly.compileStreaming, instantiate = WebAssembly.instantiate;
+  WebAssembly.compileStreaming = async source => {
+    const response = await source, module = await compileStreaming(response);
+    urls.set(module, response.url);
+    return module;
+  };
+  WebAssembly.instantiate = async (source, imports) => {
+    const result = await instantiate(source, imports);
+    if (urls.has(source)) modules[file(urls.get(source))] = performance.now();
     return result;
   };
 })();`;
@@ -318,7 +333,11 @@ export function appModules(split, app) {
   const modules = new Map((split?.modules ?? []).map(entry => [entry.module, entry]));
   const own = modules.get(name);
   if (!own) return [];
-  return [...(own.shared ?? []).map(shared => modules.get(shared)?.file ?? `tilo_browser_runtime.${shared}.wasm`), own.file];
+  // The splitter names a shared chunk by its module or, since it writes
+  // chunks of its own, by the chunk's file.
+  const file = shared => shared.endsWith('.wasm') ? shared
+    : modules.get(shared)?.file ?? `tilo_browser_runtime.${shared}.wasm`;
+  return [...(own.shared ?? []).map(file), own.file];
 }
 
 const activateExpression = (route, timeoutMs) => `(async () => {
@@ -376,7 +395,9 @@ const demoExpression = seconds => `(async () => {
     for (const [widget, n] of Object.entries(mount.measuredBy ?? {})) measuredBy[widget] = (measuredBy[widget] ?? 0) + n;
   }
   const during = times.filter(t => t <= inputEnd + 50);
-  return {times: during, work, stages, measuredBy, dropped, wheels: sent, seconds: (inputEnd - start) / 1000,
+  const requesters = {};
+  for (const mount of metrics) for (const [k, n] of Object.entries(mount.requesters ?? {})) requesters[k] = (requesters[k] ?? 0) + n;
+  return {requesters, times: during, work, stages, measuredBy, dropped, wheels: sent, seconds: (inputEnd - start) / 1000,
     distinctOffsets: offsets.size, max};
 })()`;
 
@@ -453,7 +474,7 @@ async function measureDemo(page, windows, options, index) {
   if (!demo.work.length || demo.dropped) {
     throw new Invalid(`round ${index}: frame metrics incomplete (${demo.work.length} samples, ${demo.dropped} dropped)`);
   }
-  return {intervals: intervals(demo.times), work: demo.work, stages: demo.stages, frames: demo.times.length,
+  return {requesters: demo.requesters, intervals: intervals(demo.times), work: demo.work, stages: demo.stages, frames: demo.times.length,
     wheels: demo.wheels, seconds: demo.seconds, fps: demo.times.length / demo.seconds, distinctOffsets: demo.distinctOffsets,
     measuredBy: demo.measuredBy};
 }
@@ -630,7 +651,7 @@ async function main() {
       },
       rounds: rounds.map(({resources, ...r}) => ({...r, demo: {frames: r.demo.frames, wheels: r.demo.wheels,
         seconds: r.demo.seconds, fps: r.demo.fps, distinctOffsets: r.demo.distinctOffsets, stages: r.demo.stages,
-        measuredBy: r.demo.measuredBy}})),
+        measuredBy: r.demo.measuredBy, requesters: r.demo.requesters}})),
     };
     writeFileSync(options.out, JSON.stringify(report, null, 1) + '\n');
     console.log(formatSummary(report));
