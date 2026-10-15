@@ -1097,116 +1097,54 @@ pub fn draw_form_field(ctx: &mut PaintCtx<'_>, r: Rect, zoom: f64, value: Option
 // Thumbnails — the page's content in miniature
 // ----------------------------------------------------------------------
 
-/// One page-rail thumbnail's content: the page, its width in points (the
-/// block sketch's scale) and the engine bitmap when the raster backend has
-/// one. The rail frames it, marks it and lifts the current page.
+/// A miniature of the same page content and saved markup as the canvas.
+/// The rail supplies the frame, page number and current-page indication.
 pub struct Thumbnail<'a> {
     pub page: &'a Page,
     pub page_w: f64,
+    pub page_h: f64,
     pub raster: Option<&'a PenikoImage>,
+    pub markup: Markup<'a>,
 }
 
 impl Thumbnail<'_> {
-    pub fn draw(&self, scene: &mut Scene, base: Affine, rect: Rect) {
-        scene.fill(Fill::NonZero, base, paper(), None, &rect);
-        // Raster backend: paint the real page miniature.
-        if let Some(img) = self.raster {
-            if img.width > 0 && img.height > 0 {
-                scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &rect);
-                // Same fit as the page itself, so a rotated page's miniature
-                // keeps its aspect.
-                let (iw, ih) = (f64::from(img.width), f64::from(img.height));
-                let s = crate::model::fit_scale(rect.width(), rect.height(), iw, ih);
-                let dx = ((rect.width() - iw * s) / 2.0).max(0.0);
-                let dy = ((rect.height() - ih * s) / 2.0).max(0.0);
-                let tf = base
-                    * Affine::translate((rect.x0 + dx, rect.y0 + dy))
-                    * Affine::scale_non_uniform(s, s);
-                scene.draw_image(img, tf);
-                scene.pop_layer();
-            }
-            return;
-        }
-        draw_thumbnail_vector_blocks(scene, base, self.page, rect, self.page_w);
-    }
-}
-
-/// The block model in miniature (vector backend): a bar per heading, body
-/// line and figure, in the document's ink, readable at thumbnail size.
-fn draw_thumbnail_vector_blocks(
-    scene: &mut Scene,
-    base: Affine,
-    page: &Page,
-    rect: Rect,
-    page_w: f64,
-) {
-    let scale = rect.width() / page_w;
-    let cx = rect.x0 + MARGIN * scale;
-    let cw = (page_w - 2.0 * MARGIN) * scale;
-    let mut y = rect.y0;
-    let line_col = alpha(ink_faint(), 140);
-    let head_col = ink_soft();
-    let bar = |scene: &mut Scene, y: f64, hgt: f64, x: f64, w: f64, color: Color| {
-        let r = Rect::new(x, y, x + w, y + hgt);
-        scene.fill(Fill::NonZero, base, color, None, &r);
-    };
-    for block in &page.blocks {
-        match block {
-            Block::Spacer(h) => y += h * scale,
-            Block::Divider => {
-                bar(scene, y + 3.0 * scale, 1.0, cx, cw, line_col);
-                y += 16.0 * scale;
-            }
-            Block::Figure { height, .. } => {
-                let h = height * scale;
-                bar(scene, y, h, cx, cw, alpha(ink_faint(), 50));
-                y += h + 10.0 * scale;
-            }
-            Block::Title(_) => {
-                bar(
-                    scene,
-                    y + 2.0 * scale,
-                    (16.0 * scale).max(2.5),
-                    cx,
-                    cw * 0.85,
-                    head_col,
-                );
-                y += 30.0 * scale;
-            }
-            Block::H1(_) | Block::H2(_) => {
-                bar(
-                    scene,
-                    y + 1.0 * scale,
-                    (8.0 * scale).max(2.0),
-                    cx,
-                    cw * 0.55,
-                    head_col,
-                );
-                y += 18.0 * scale;
-            }
-            Block::Quote(t) | Block::Body(t) | Block::Caption(t) => {
-                let lines = (t.len() / 52).clamp(1, 8);
-                let lh = 6.0 * scale;
-                let indent = if matches!(block, Block::Quote(_)) {
-                    10.0 * scale
-                } else {
-                    0.0
-                };
-                for i in 0..lines {
-                    let w = if i == lines - 1 {
-                        cw * 0.6
-                    } else {
-                        cw - indent
-                    };
-                    bar(scene, y, (2.2 * scale).max(1.0), cx + indent, w, line_col);
-                    y += lh;
-                }
-                y += 6.0 * scale;
-            }
-        }
-        if y > rect.y1 {
-            break;
-        }
+    pub fn draw(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
+        let scale = crate::model::fit_scale(rect.width(), rect.height(), self.page_w, self.page_h);
+        let origin = Point::new(
+            rect.center().x - self.page_w * scale / 2.0,
+            rect.center().y - self.page_h * scale / 2.0,
+        );
+        // Lay out at the document's own point size, then scale the complete
+        // page scene. Tiny font sizes must not change wrapping or glyph positions.
+        let transform =
+            ctx.transform * Affine::translate((origin.x, origin.y)) * Affine::scale(scale);
+        let text_scale = ctx.text.text_scale();
+        ctx.text.set_text_scale(1.0);
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &rect,
+        );
+        draw_page(
+            &mut PaintCtx::new(ctx.scene, transform, ctx.text, ctx.theme),
+            self.page,
+            PageFrame {
+                origin: Point::ZERO,
+                scale: 1.0,
+                page_w: self.page_w,
+                page_h: self.page_h,
+            },
+            PageRaster {
+                image: self.raster,
+                tiles: None,
+            },
+            &[],
+            self.markup,
+        );
+        ctx.scene.pop_layer();
+        ctx.text.set_text_scale(text_scale);
     }
 }
 

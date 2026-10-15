@@ -1542,26 +1542,32 @@ impl PdfApp {
         if !self.show_rail {
             return;
         }
-        let pw = self.pw();
+        let (pw, ph) = (self.pw(), self.ph());
 
         // The shared page rail draws its region, the thumbnails' frames,
         // the current-page lift, page numbers, markup dots, drag reflow +
         // ghost, scrollbar, context menu and the import affordance. It renders
         // the page content through this closure — a real engine bitmap when
-        // the raster backend has one, otherwise the block sketch. Move the
+        // the raster backend has one, otherwise the actual vector page. Move the
         // rail out of `self` so the closure can borrow the (immutable)
         // document alongside it.
         let mut sb = std::mem::replace(&mut self.page_sidebar, PageSidebar::new(1.0));
         let doc = &self.doc;
-        sb.render(scene, base, tr, theme, |scene, _tr, base, i, rect| {
+        sb.render(scene, base, tr, theme, |scene, tr, base, i, rect| {
             let num = i + 1;
             if let Some(page) = doc.page(num) {
                 render::Thumbnail {
                     page,
                     page_w: pw,
+                    page_h: ph,
                     raster: thumb_imgs.get(&num),
+                    markup: render::Markup {
+                        annotations: &self.annotations,
+                        signatures: &self.signatures,
+                        selected: None,
+                    },
                 }
-                .draw(scene, base, rect);
+                .draw(&mut PaintCtx::new(scene, base, tr, theme), rect);
             }
         });
         self.page_sidebar = sb;

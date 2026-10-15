@@ -1073,7 +1073,7 @@ impl PdfApp {
             comments: Vec::new(),
             signatures: Vec::new(),
             rect: Rect::ZERO,
-            fit: FitMode::Page,
+            fit: FitMode::Width,
             viewport: ViewportState::new()
                 .with_zoom_bounds(ZOOM_MIN, ZOOM_MAX)
                 .with_padding(DEFAULT_PADDING)
@@ -1094,7 +1094,8 @@ impl PdfApp {
             sidebar_tab: SidebarTab::Comments,
             show_sidebar: true,
             show_rail: true,
-            rail_w: f64::from(ui::tokens::Metrics::BASE.sidebar_min_width),
+            // A preview rail, not a text sidebar: 168 px at 1.5× UI scale.
+            rail_w: 112.0,
             page_sidebar: PageSidebar::new(PAGE_H / PAGE_W).with_add("Import…"),
             pages_dirty: false,
             portal_import_rx: None,
@@ -1821,7 +1822,7 @@ impl PdfApp {
     /// page rather than the whole stack.
     fn fit_page_zoom(&self) -> f64 {
         let r = self.viewport.rect();
-        let padding = f64::from(self.layout_theme.tokens.spacing.s6);
+        let padding = f64::from(self.layout_theme.tokens.spacing.s3);
         let avail_w = r.width() - 2.0 * padding;
         let avail_h = r.height() - 2.0 * padding;
         if self.pw() <= 0.0 || self.ph() <= 0.0 || avail_w <= 0.0 || avail_h <= 0.0 {
@@ -1842,7 +1843,16 @@ impl PdfApp {
             FitMode::Width => self.viewport.fit_width_zoom(),
             FitMode::Custom(z) => z.clamp(ZOOM_MIN, ZOOM_MAX),
         };
+        // A derived fit follows the canvas size, not a focal-point gesture.
+        // Keep the same document position at the viewport's leading edge;
+        // centre-anchored zoom would scroll a newly opened page past its title
+        // when the host applies its theme or resizes the window.
+        let ratio = z / self.zoom();
+        let scroll = (self.scroll_x() * ratio, self.scroll_y() * ratio);
         self.viewport.set_zoom(z);
+        if !matches!(self.fit, FitMode::Custom(_)) {
+            self.viewport.set_scroll(scroll.0, scroll.1);
+        }
     }
 
     /// Whether the zoomed page is wider than the viewport — drives whether
@@ -4125,7 +4135,7 @@ impl PdfApp {
                     self.source_path = Some(request.path.clone());
                     self.load_error = None;
                     self.status_note = None;
-                    self.fit = FitMode::Page;
+                    self.fit = FitMode::Width;
                     self.viewport.set_scroll(0.0, 0.0);
                     self.current_page = 1;
                     self.resource_page_ids = (1..=self.doc.page_count())
@@ -4187,6 +4197,16 @@ impl PdfApp {
                         .raster_handle
                         .as_ref()
                         .and_then(|handle| handle.discard_document(request.id).ok());
+                }
+                RasterEvent::VisualWorkEvicted => {
+                    // A wider canvas can complete more tiles than fit in one
+                    // result burst. Cached results remain valid; only missing
+                    // work must be eligible for submission again.
+                    self.raster_render_pending.clear();
+                    self.raster_text_pending.clear();
+                    self.raster_links_pending.clear();
+                    self.raster_tile_batch.clear();
+                    self.dirty = true;
                 }
                 RasterEvent::Rendered { request, image }
                     if self
@@ -4560,7 +4580,7 @@ impl Widget for PdfApp {
         // Keep a user-resized rail proportional when the host changes UI scale.
         self.rail_w *= f64::from(theme.ui_scale / self.layout_theme.ui_scale);
         self.viewport =
-            std::mem::take(&mut self.viewport).with_padding(f64::from(theme.tokens.spacing.s6));
+            std::mem::take(&mut self.viewport).with_padding(f64::from(theme.tokens.spacing.s3));
         self.layout_theme = theme.clone();
         if let Some(Editing {
             input: EditInput::Rich(field),
@@ -6921,6 +6941,121 @@ mod tests {
         app
     }
 
+    #[test]
+    fn opened_pdf_defaults_to_width_fit() {
+        let (_dir, path, _) = two_documents();
+        let mut app = launched(&path);
+        let reader = app.surface_mut::<PdfApp>();
+        assert!(matches!(reader.fit, FitMode::Width));
+        assert!((reader.zoom() - reader.viewport.fit_width_zoom()).abs() < 0.01);
+    }
+
+    #[test]
+    fn default_width_fit_tracks_the_canvas_and_preserves_explicit_zoom() {
+        let state = crate::scenarios::sample_state();
+        let mut app = framed_with_theme(
+            crate::scenarios::sample_reader(),
+            state,
+            1440.0,
+            810.0,
+            None,
+            Theme::dark().with_ui_scale(1.5),
+        );
+        assert!(matches!(app.fit, FitMode::Width));
+        assert!((app.rail_rect.width() - 168.0).abs() < 0.01);
+        assert!(
+            app.zoom() > 1.15,
+            "default paper is enlarged, not fit to height"
+        );
+        for (width, height) in [(1440.0, 810.0), (1600.0, 900.0), (1200.0, 810.0)] {
+            full_frame(&mut app, width, height, None);
+            let origin = app
+                .page_origins()
+                .first()
+                .copied()
+                .expect("first page origin");
+            let card = render::page_card_rect(origin, app.zoom(), app.pw(), app.ph());
+            let gutter = f64::from(app.layout_theme.tokens.spacing.s3);
+            assert!((card.x0 - app.canvas_rect.x0 - gutter).abs() < 0.01);
+            assert!((app.canvas_rect.x1 - card.x1 - gutter).abs() < 0.01);
+            assert!((card.y0 - app.canvas_rect.y0 - gutter).abs() < 0.01);
+            assert!(!app.is_overflowing_x());
+        }
+        app.fit_page();
+        full_frame(&mut app, 1440.0, 810.0, None);
+        assert!(app.ph() * app.zoom() < app.canvas_rect.height());
+        app.set_custom_zoom(1.75);
+        full_frame(&mut app, 1600.0, 900.0, None);
+        assert!((app.zoom() - 1.75).abs() < 0.01);
+        app.fit_width();
+        full_frame(&mut app, 1440.0, 810.0, None);
+        assert!((app.pw() * app.zoom() - (app.canvas_rect.width() - 36.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn vector_thumbnails_keep_the_pages_glyphs_figures_and_markup() {
+        let (app, _) = app_with_state();
+        let theme = Theme::dark().with_ui_scale(1.5);
+        let mut text = TextRenderer::new();
+        for page in &app.doc.pages {
+            let markup = render::Markup {
+                annotations: &app.annotations,
+                signatures: &app.signatures,
+                selected: None,
+            };
+            let mut page_scene = Scene::new();
+            text.set_text_scale(1.0);
+            render::draw_page(
+                &mut PaintCtx::new(&mut page_scene, Affine::IDENTITY, &mut text, &theme),
+                page,
+                render::PageFrame {
+                    origin: Point::ZERO,
+                    scale: 1.0,
+                    page_w: app.pw(),
+                    page_h: app.ph(),
+                },
+                render::PageRaster {
+                    image: None,
+                    tiles: None,
+                },
+                &[],
+                markup,
+            );
+            let mut thumbnail = Scene::new();
+            text.set_text_scale(1.5);
+            render::Thumbnail {
+                page,
+                page_w: app.pw(),
+                page_h: app.ph(),
+                raster: None,
+                markup,
+            }
+            .draw(
+                &mut PaintCtx::new(&mut thumbnail, Affine::IDENTITY, &mut text, &theme),
+                Rect::new(10.0, 20.0, 122.0, 20.0 + 112.0 * app.ph() / app.pw()),
+            );
+            assert!((text.text_scale() - 1.5).abs() < f32::EPSILON);
+            let glyphs = |scene: &Scene| {
+                scene
+                    .encoding()
+                    .resources
+                    .glyphs
+                    .iter()
+                    .map(|g| (g.id, g.x.to_bits(), g.y.to_bits()))
+                    .collect::<Vec<_>>()
+            };
+            assert!(glyphs(&page_scene).len() > 50, "actual page text, not bars");
+            assert_eq!(glyphs(&thumbnail), glyphs(&page_scene));
+            assert!(
+                thumbnail
+                    .encoding()
+                    .path_data
+                    .ends_with(&page_scene.encoding().path_data),
+                "the miniature keeps the real figures, highlights and signature paths",
+            );
+        }
+    }
+
     /// Set the zoom to an exact factor via the viewport kernel + fit intent
     /// before [`framed`]'s first frame at 1280×800.
     fn framed_at_zoom(mut app: PdfApp, st: ui::State, z: f64, out: Option<&str>) -> Framed<PdfApp> {
@@ -8540,7 +8675,12 @@ mod tests {
             }
             assert!(
                 ui::time::now() < deadline,
-                "the viewport's tiles never all arrived"
+                "the viewport's tiles never all arrived: pending renders {:?}, cached images {:?}, queued tiles {}, cached tiles {}, status {:?}",
+                app.raster_render_pending,
+                app.raster_images.keys().collect::<Vec<_>>(),
+                app.raster_tile_batch.len(),
+                app.raster_tiles.keys().count(),
+                app.status_note
             );
             std::thread::sleep(Duration::from_millis(5));
             let (reader, st) = Framed::split(app);
@@ -9293,7 +9433,8 @@ mod tests {
     #[test]
     fn reader_panels_and_page_fit_apply_ui_scale_once() {
         for scale in [0.75_f32, 1.0, 1.5, 2.0] {
-            let (app, st) = app_with_state();
+            let (mut app, st) = app_with_state();
+            app.fit = FitMode::Page;
             let theme = Theme::dark().with_ui_scale(scale);
             let mut frame = framed_with_theme(
                 app,
@@ -9306,10 +9447,10 @@ mod tests {
             assert!(!frame.overlay_mode, "panels dock at {scale}×");
             assert!(frame.show_rail && frame.show_sidebar);
             assert!((frame.sidebar_rect.width() - 300.0 * f64::from(scale)).abs() < 0.01);
-            assert!((frame.rail_rect.width() - 200.0 * f64::from(scale)).abs() < 0.01);
+            assert!((frame.rail_rect.width() - 112.0 * f64::from(scale)).abs() < 0.01);
             let origin = frame.page_origins()[0];
             let card = render::page_card_rect(origin, frame.zoom(), frame.pw(), frame.ph());
-            let gutter = f64::from(theme.tokens.spacing.s6);
+            let gutter = f64::from(theme.tokens.spacing.s3);
             assert!(card.x0 >= frame.canvas_rect.x0 + gutter - 0.01);
             assert!(card.x1 <= frame.canvas_rect.x1 - gutter + 0.01);
             assert!(card.y0 >= frame.canvas_rect.y0 + gutter - 0.01);
@@ -9322,7 +9463,7 @@ mod tests {
             }
             // Repeated layout does not compound rail scaling.
             full_frame(&mut frame, 960.0 * f64::from(scale), 810.0, None);
-            assert!((frame.rail_rect.width() - 200.0 * f64::from(scale)).abs() < 0.01);
+            assert!((frame.rail_rect.width() - 112.0 * f64::from(scale)).abs() < 0.01);
         }
     }
 

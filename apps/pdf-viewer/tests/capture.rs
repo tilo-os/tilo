@@ -121,7 +121,7 @@ fn scaled_review_keeps_one_header_and_docked_panels() {
         "canvas starts below the single toolbar"
     );
     assert!(
-        (canvas.x0 - 300.0).abs() < 0.01,
+        (canvas.x0 - 168.0).abs() < 0.01,
         "scaled page thumbnails remain docked"
     );
     assert!(
