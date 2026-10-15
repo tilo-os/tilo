@@ -63,4 +63,17 @@ impl PublicationSchedule {
     pub(crate) fn due(&self) -> Option<Instant> {
         self.due
     }
+
+    /// Hold a change until `at`, as if [`Self::defer`] had.
+    pub(crate) fn hold(&mut self, at: Instant) {
+        self.due = Some(at);
+    }
+
+    /// Whether [`Self::defer`] would hold a change at `now`, without
+    /// scheduling anything.
+    pub(crate) fn would_defer(&self, now: Instant) -> bool {
+        self.last
+            .and_then(|last| last.checked_add(self.window))
+            .is_some_and(|due| now < due)
+    }
 }
