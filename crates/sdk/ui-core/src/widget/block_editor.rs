@@ -8439,6 +8439,7 @@ impl Widget for BlockEditor {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = crate::doc::document_ref(state, path);
+        self.retire_finished_handle_fade();
         self.refresh_image_attachments();
         let Some(list) = self.blocks_list.clone() else {
             // Unbound (examples / tests): local-mode, nothing to sync.
@@ -9715,6 +9716,7 @@ impl Widget for BlockEditor {
             .iter()
             .filter_map(|block| block.line.next_wake_deadline())
             .chain(self.handle_fade_deadline())
+            .chain(self.handle_fade_end())
             .min();
         self.for_each_child(&mut |child| {
             if let Some(deadline) = child.next_wake_deadline() {
