@@ -5687,26 +5687,63 @@ impl ShellNetwork {
             &crate::shell::device_fabric::FabricStamp,
         ),
     ) -> Result<(), String> {
+        self.modify_local_device_fabric(|snapshot, stamp| {
+            update(&mut snapshot.unlock, stamp);
+            Ok(())
+        })
+    }
+
+    /// Edit this device's own fabric snapshot and publish it under the next
+    /// stamp. The read, the edit and the write happen under one hold of the
+    /// fabric, so an edit never builds on a snapshot another thread (the
+    /// device fabric's pump) has replaced meanwhile, and two edits never
+    /// claim the same stamp. `edit` must not take the fabric itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this device has no fabric identity or presence
+    /// yet, `edit` refuses, or the edited snapshot is invalid.
+    fn modify_local_device_fabric(
+        &self,
+        edit: impl FnOnce(
+            &mut crate::shell::device_fabric::DeviceFabricSnapshot,
+            &crate::shell::device_fabric::FabricStamp,
+        ) -> Result<(), String>,
+    ) -> Result<(), String> {
         let local = self
             .personal_continuity_device
             .clone()
             .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
-        let fabric = self.device_fabric();
-        let mut snapshot = fabric
-            .snapshots()
-            .get(&local)
-            .cloned()
-            .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
-        let stamp = crate::shell::device_fabric::FabricStamp {
-            counter: fabric.max_counter().saturating_add(1).max(1),
-            device: local,
+        let changed = {
+            let mut fabric = self.device_fabric.lock().map_err(|_| {
+                crate::shell::device_fabric::FabricError::InvalidCheckpoint.to_string()
+            })?;
+            let mut snapshot = fabric
+                .snapshots()
+                .get(&local)
+                .cloned()
+                .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
+            let stamp = crate::shell::device_fabric::FabricStamp {
+                counter: fabric.max_counter().saturating_add(1).max(1),
+                device: local,
+            };
+            edit(&mut snapshot, &stamp)?;
+            snapshot.presence.stamp = stamp;
+            snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
+            let changed = fabric.upsert(snapshot).map_err(|error| error.to_string())?;
+            if changed
+                && let Some(path) = self.device_fabric_path.as_deref()
+                && let Err(error) = self.persist_device_fabric(path, &fabric)
+            {
+                tracing::warn!(%error, "device fabric persistence failed");
+            }
+            drop(fabric);
+            changed
         };
-        update(&mut snapshot.unlock, &stamp);
-        snapshot.presence.stamp = stamp;
-        snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
-        self.upsert_local_device_fabric(snapshot)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        if changed {
+            self.publish_device_fabric_snapshot();
+        }
+        Ok(())
     }
 
     /// Encrypt and publish a newly learned Wi-Fi passphrase to the local
@@ -5740,39 +5777,23 @@ impl ShellNetwork {
                 }
             }));
         }
-        let local = self
-            .personal_continuity_device
-            .clone()
-            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
-        let fabric = self.device_fabric();
-        let mut snapshot = fabric
-            .snapshots()
-            .get(&local)
-            .cloned()
-            .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
         let recipients = self.certified_secret_recipients();
-        let stamp = crate::shell::device_fabric::FabricStamp {
-            counter: fabric.max_counter().saturating_add(1).max(1),
-            device: local,
-        };
-        let credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
-            ssid,
-            security,
-            password,
-            &snapshot.owner,
-            recipients.iter().cloned(),
-            stamp.clone(),
-        )
-        .map_err(|error| error.to_string())?;
-        snapshot
-            .wifi
-            .retain(|saved| saved.network_id != credential.network_id);
-        snapshot.wifi.push(credential);
-        snapshot.presence.stamp = stamp;
-        snapshot.presence.last_seen_unix_ms = tilo_clock::unix_now().saturating_mul(1000);
-        self.upsert_local_device_fabric(snapshot)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        self.modify_local_device_fabric(|snapshot, stamp| {
+            let credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+                ssid,
+                security,
+                password,
+                &snapshot.owner,
+                recipients.iter().cloned(),
+                stamp.clone(),
+            )
+            .map_err(|error| error.to_string())?;
+            snapshot
+                .wifi
+                .retain(|saved| saved.network_id != credential.network_id);
+            snapshot.wifi.push(credential);
+            Ok(())
+        })
     }
 
     /// Decrypt a retained credential only for this certified device.
