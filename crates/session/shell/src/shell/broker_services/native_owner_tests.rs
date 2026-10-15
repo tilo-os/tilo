@@ -2,7 +2,7 @@ use super::*;
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable;
 use collab_types::CommitNamed as _;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
 #[allow(
     clippy::too_many_lines,
     reason = "one owner-service scenario run with and without an injected state-file failure; \

@@ -159,6 +159,7 @@ members = [
     "crates/collab/collab-fixtures",
     "crates/collab/collab-types",
     "crates/collab/neighbour-wire",
+    "crates/collab/owner-commit",
     "crates/collab/reference",
     "crates/collab/feedback-review",
     "crates/collab/feedback",

@@ -63,10 +63,7 @@ impl crate::services::WorkspaceMemberships for CountedRoom {
         })
     }
 
-    fn execute(
-        &self,
-        _: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
+    fn execute(&self, _: tilo_owner_commit::OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
         Box::pin(async { Err("the policy turn fixture never commits".into()) })
     }
 }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tilo_action_broker::services::WorkspaceAuthority;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
 use tilo_identity_host::broker::WorkspaceMembership;
-use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+use tilo_owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
 
 pub(super) struct Rooms {
     pub(super) profile: Arc<ProfileWorkspace>,

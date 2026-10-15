@@ -1,10 +1,16 @@
 //! Host-local durable handoff. This is not a neighbour message or a wire capability.
 //! A receipt binds the exact signed mutation/receipt basis, never queue admission.
+pub mod desktop_command;
 mod policy_basis;
 pub use policy_basis::{PrivatePolicyBasis, canonical_owner, governance_revision};
 
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
+use tilo_peer_state::{
+    document_import::ImportAction,
+    workspace_membership::WorkspaceMembershipCommand,
+    workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand},
+};
 
 pub type CommitFuture = Pin<Box<dyn Future<Output = Result<OwnerCommitReceipt, String>> + Send>>;
 
@@ -42,21 +48,21 @@ pub enum CommitOperation {
     DocumentImport {
         invocation: uuid::Uuid,
         caller: tilo_user_identity::DeviceCert,
-        action: crate::document_import::ImportAction,
+        action: ImportAction,
     },
     /// Typed mutation of the room-owned Task Center state. The broker retains
     /// the authentic person or pinned-host authority; arguments never choose it.
     WorkspaceTaskCommand {
         invocation: uuid::Uuid,
-        authority: crate::workspace_task::WorkspaceTaskAuthority,
-        command: crate::workspace_task::WorkspaceTaskCommand,
+        authority: WorkspaceTaskAuthority,
+        command: WorkspaceTaskCommand,
     },
     /// Original authenticated person command; governor signing custody is
     /// supplied out of band by the installed owning host, never by arguments.
     WorkspaceMembershipCommand {
         invocation: uuid::Uuid,
         caller: tilo_user_identity::DeviceCert,
-        command: crate::workspace_membership::WorkspaceMembershipCommand,
+        command: WorkspaceMembershipCommand,
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,7 +213,7 @@ impl OwnerCommitRequest {
 fn membership_binding(
     invocation: uuid::Uuid,
     caller: &tilo_user_identity::DeviceCert,
-    command: &crate::workspace_membership::WorkspaceMembershipCommand,
+    command: &WorkspaceMembershipCommand,
 ) -> Result<(CommitTarget, Vec<u8>), String> {
     if invocation.is_nil() {
         return Err("invalid workspace membership invocation".into());
@@ -223,14 +229,14 @@ fn membership_binding(
 }
 fn task_binding(
     invocation: uuid::Uuid,
-    authority: &crate::workspace_task::WorkspaceTaskAuthority,
-    command: &crate::workspace_task::WorkspaceTaskCommand,
+    authority: &WorkspaceTaskAuthority,
+    command: &WorkspaceTaskCommand,
 ) -> Result<(CommitTarget, Vec<u8>), String> {
     let certificate = authority.certificate();
     if invocation.is_nil() {
         return Err("invalid workspace task invocation".into());
     }
-    if let crate::workspace_task::WorkspaceTaskAuthority::Agent { agent_id, .. } = authority
+    if let WorkspaceTaskAuthority::Agent { agent_id, .. } = authority
         && (agent_id.is_empty() || agent_id.len() > 256)
     {
         return Err("workspace task agent identity is malformed".into());
@@ -248,7 +254,7 @@ fn task_binding(
 fn import_binding(
     invocation: uuid::Uuid,
     caller: &tilo_user_identity::DeviceCert,
-    action: &crate::document_import::ImportAction,
+    action: &ImportAction,
 ) -> Result<(CommitTarget, Vec<u8>), String> {
     if invocation.is_nil() || caller.capabilities.can_act_as_host {
         return Err("invalid document import binding".into());

@@ -639,7 +639,7 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
 
 #[test]
 fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_device() {
-    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let owner = open(tree_at(&path)).unwrap();

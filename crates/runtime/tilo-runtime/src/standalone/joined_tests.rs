@@ -17,10 +17,10 @@ use tilo_action_broker::channel_encryption::{
 };
 use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
 use tilo_joined_room::testing::governor::TestGovernor;
+use tilo_owner_commit::CommitOperation;
 use tilo_peer_state::{
     StatePeer,
     join::{self, JoinTransportRequest, JoinTransportResponse, MemberRole},
-    owner_commit::CommitOperation,
 };
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
