@@ -7,7 +7,7 @@
 
 use crate::widget::ModelPath;
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -17,9 +17,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
-use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
-};
+use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
 
 #[derive(Clone, Debug)]
 pub struct HeatmapCell {
@@ -223,24 +221,15 @@ impl InteractiveChart for Heatmap {
         self.activated = Some(cell.id.clone());
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self
-            .cells
-            .iter()
+    fn keyboard_items(&self) -> Vec<usize> {
+        let placed = self.cells.iter().map(|cell| self.cell_rect(cell).is_some());
+        placed
             .enumerate()
-            .filter(|(_, cell)| self.cell_rect(cell).is_some())
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
-        if let Some(rect) = self
-            .inspection
-            .hovered
-            .and_then(|index| self.cells.get(index))
-            .and_then(|cell| self.cell_rect(cell))
-        {
-            self.inspection.pointer = rect.center();
-        }
-        self.inspection.hovered.is_some()
+            .filter_map(|(index, placed)| placed.then_some(index))
+            .collect()
+    }
+    fn anchor(&self, &index: &usize) -> Option<Point> {
+        Some(self.cell_rect(self.cells.get(index)?)?.center())
     }
 }
 
@@ -259,15 +248,7 @@ impl Widget for Heatmap {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.inspection.keyboard
-            && let Some(rect) = self
-                .inspection
-                .hovered
-                .and_then(|index| self.cells.get(index))
-                .and_then(|cell| self.cell_rect(cell))
-        {
-            self.inspection.pointer = rect.center();
-        }
+        self.follow_keyboard_anchor();
         let low = self
             .style
             .low_color

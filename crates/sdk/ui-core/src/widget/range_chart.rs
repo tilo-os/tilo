@@ -20,9 +20,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_index,
-};
+use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
 use crate::widget::{TaffyTreeExt, Widget};
 
 /// One interval. Equal start/end values render as milestones.
@@ -155,14 +153,7 @@ impl RangeChart {
             .any(|bar| bar.valid() && bar.id == id)
             .then(|| id.to_owned());
         self.inspection.keyboard = self.inspection.hovered.is_some();
-        if let Some(rect) = self
-            .hits
-            .iter()
-            .find(|(candidate, _)| Some(candidate) == self.inspection.hovered.as_ref())
-            .map(|(_, rect)| *rect)
-        {
-            self.inspection.pointer = rect.center();
-        }
+        self.anchor_hovered();
         self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
@@ -235,30 +226,13 @@ impl InteractiveChart for RangeChart {
         self.activated = Some(id.clone());
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self
-            .bars
-            .iter()
-            .filter(|bar| bar.valid())
-            .map(|bar| bar.id.as_str())
-            .collect::<Vec<_>>();
-        let current = self
-            .inspection
-            .hovered
-            .as_deref()
-            .and_then(|id| candidates.iter().position(|candidate| *candidate == id));
-        self.inspection.hovered = moved_index(current, candidates.len(), action)
-            .and_then(|index| candidates.get(index))
-            .map(|id| (*id).to_owned());
-        if let Some(rect) = self
-            .hits
-            .iter()
-            .find(|(candidate, _)| Some(candidate) == self.inspection.hovered.as_ref())
-            .map(|(_, rect)| *rect)
-        {
-            self.inspection.pointer = rect.center();
-        }
-        self.inspection.hovered.is_some()
+    fn keyboard_items(&self) -> Vec<String> {
+        let valid = self.bars.iter().filter(|bar| bar.valid());
+        valid.map(|bar| bar.id.clone()).collect()
+    }
+    fn anchor(&self, id: &String) -> Option<Point> {
+        let (_, rect) = self.hits.iter().find(|(candidate, _)| candidate == id)?;
+        Some(rect.center())
     }
 }
 
@@ -419,15 +393,7 @@ impl Widget for RangeChart {
             };
             self.hits.push((bar.id.clone(), rect));
         }
-        if self.inspection.keyboard
-            && let Some(rect) = self
-                .hits
-                .iter()
-                .find(|(candidate, _)| Some(candidate) == self.inspection.hovered.as_ref())
-                .map(|(_, rect)| *rect)
-        {
-            self.inspection.pointer = rect.center();
-        }
+        self.follow_keyboard_anchor();
         let hovered = self
             .inspection
             .hovered

@@ -19,9 +19,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
-};
+use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
 
 #[derive(Clone, Debug)]
 pub struct DistributionSeries {
@@ -364,19 +362,19 @@ impl InteractiveChart for DistributionChart {
         self.activated = Some(series.id.clone());
         true
     }
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self
-            .summaries()
-            .iter()
+    fn keyboard_items(&self) -> Vec<usize> {
+        let summaries = self.summaries();
+        let present = summaries.iter().map(Option::is_some);
+        present
             .enumerate()
-            .filter(|(_, summary)| summary.is_some())
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
-        if let Some(index) = self.inspection.hovered {
-            self.inspection.pointer = Point::new(self.center_x(index), self.plot_rect().center().y);
-        }
-        self.inspection.hovered.is_some()
+            .filter_map(|(index, present)| present.then_some(index))
+            .collect()
+    }
+    fn anchor(&self, &index: &usize) -> Option<Point> {
+        Some(Point::new(
+            self.center_x(index),
+            self.plot_rect().center().y,
+        ))
     }
 }
 
@@ -398,11 +396,7 @@ impl Widget for DistributionChart {
         let summaries = self.summaries();
         let range = Self::range(&summaries);
         let plot = self.plot_rect();
-        if self.inspection.keyboard
-            && let Some(index) = self.inspection.hovered
-        {
-            self.inspection.pointer = Point::new(self.center_x(index), plot.center().y);
-        }
+        self.follow_keyboard_anchor();
         if !self.title.is_empty() {
             tr.draw_style(
                 scene,
