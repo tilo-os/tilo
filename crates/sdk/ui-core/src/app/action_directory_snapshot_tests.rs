@@ -1,3 +1,52 @@
+#[test]
+fn directory_disclosure_prefers_document_reads_to_private_views() {
+    let view = ActionSpec::operation(
+        "render",
+        "Private window",
+        OperationKind::View,
+        COUNTER_TYPE,
+        &CounterAction::Bump,
+    )
+    .unwrap();
+    let read = ActionSpec::operation(
+        "read",
+        "Read document",
+        OperationKind::View,
+        COUNTER_TYPE,
+        &CounterAction::Bump,
+    )
+    .unwrap()
+    .reads_document();
+    let resource = Resource::new("readable", "test.document", "Document")
+        .with_action(view)
+        .with_action(read);
+    let (app, _) = declared_directory(0);
+    let row = app.directory_resource_row(&resource, "", true).unwrap();
+    assert_eq!(row.visibility.as_ref().unwrap().action, "read");
+    let resources = vec![resource];
+    let descriptors = tilo_actions::door::survey(&resources);
+    let snapshot = crate::app::action_directory_snapshot::ActionDirectorySnapshot::build(
+        &resources,
+        &descriptors,
+        |_| None,
+    );
+    assert_eq!(
+        snapshot.roots[0].visibility.as_ref().unwrap().action,
+        "read"
+    );
+    // An explicit private disclosure binding must never be replaced by a
+    // different action merely because that action is remotely readable.
+    let snapshot = crate::app::action_directory_snapshot::ActionDirectorySnapshot::build(
+        &resources,
+        &descriptors,
+        |_| Some(tilo_actions::ActionAddress::new("readable", "render")),
+    );
+    assert_eq!(
+        snapshot.roots[0].visibility.as_ref().unwrap().action,
+        "render"
+    );
+}
+
 // No bounded page or exact-resource override: this is the ordinary app declaration API.
 struct DeclaredDirectory {
     calls: std::rc::Rc<Cell<usize>>,

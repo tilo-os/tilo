@@ -34,7 +34,29 @@ impl Resource for Document {
             .and_then(|(value, _)| value.as_str().map(str::to_owned))
             .ok_or_else(|| ModelError::invalid("missing document body"))
     }
-    fn read_content(state: &String, _: &Doc, _: Option<&str>) -> Result<Value, String> {
+    fn children(_: &String) -> Vec<tilo_actions::Resource> {
+        vec![
+            tilo_actions::Resource::new("public-body", "text", "Public body"),
+            tilo_actions::Resource::new("private-account", "account", "Secret account")
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "render",
+                        "Private view",
+                        tilo_actions::OperationKind::View,
+                        "test.private-view",
+                        &Noop,
+                    )
+                    .unwrap(),
+                ),
+        ]
+    }
+    fn document_child(_: &String, id: &str) -> bool {
+        id == "public-body"
+    }
+    fn read_content(state: &String, _: &Doc, item: Option<&str>) -> Result<Value, String> {
+        if item.is_some_and(|id| id != "public-body") {
+            return Err("not part of the document".into());
+        }
         Ok(json!({"body":state}))
     }
 }
@@ -56,6 +78,35 @@ fn invoke(action: &str, args: Map<String, Value>, expected: Option<&str>) -> Act
         confirmation_phrase: None,
         expect_error: expected.map(str::to_owned),
     })
+}
+
+#[test]
+fn readable_parent_does_not_promote_private_custom_children() {
+    let mut app = TestApp::<DocumentApp>::new().unwrap();
+    app.settle();
+    let resources = app.harness().resources();
+    let root = resources
+        .iter()
+        .find(|r| r.id.as_str() == Document::KIND)
+        .unwrap();
+    let public = root
+        .children
+        .iter()
+        .find(|r| r.id.as_str() == "public-body")
+        .unwrap();
+    let private = root
+        .children
+        .iter()
+        .find(|r| r.id.as_str() == "private-account")
+        .unwrap();
+    assert!(public.actions.iter().any(|a| a.contract.reads_document()));
+    assert!(!private.actions.iter().any(|a| a.contract.reads_document()));
+    assert_eq!(private.label, "Secret account");
+    assert_eq!(private.actions[0].kind, tilo_actions::OperationKind::View);
+    assert!(
+        app.call("read", json!({"item": "private-account"}))
+            .is_err()
+    );
 }
 
 #[test]

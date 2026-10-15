@@ -11213,9 +11213,16 @@ impl<'a> DirectoryQuestion<'a> {
             action,
             field: contract.field.as_deref(),
             kind: contract.kind,
+            // Read kind alone does not make a private UI view public.
+            // A declared document read, however, discloses document state
+            // under the caller's ordinary resource policy, not owner UI.
+            // That exception requires a known View kind: a tag alone cannot
+            // disclose resource-only metadata with an unknown governing kind.
             private_view: (operation == Some(tilo_actions::OperationKind::View)
                 || operation.is_none())
-                && !contract.is_participant_view(),
+                && !contract.is_participant_view()
+                && !(operation == Some(tilo_actions::OperationKind::View)
+                    && contract.reads_document()),
         }
     }
 

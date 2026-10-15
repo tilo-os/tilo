@@ -95,13 +95,21 @@ impl<F: Fn(&Resource) -> Option<ActionAddress>> Builder<'_, F> {
         self.effective.resource(resource);
         let start = self.offset;
         let mut actions = Vec::new();
-        let mut first_view = None;
+        let mut first_view: Option<usize> = None;
         for action in &resource.actions {
             let address = ActionAddress::new(resource.id.as_str(), &action.id);
             if let Some(index) = self.by_address.get(&address).copied()
                 && let Some(descriptor) = self.descriptors.get(index)
             {
-                if first_view.is_none() && descriptor.kind == OperationKind::View {
+                if descriptor.kind == OperationKind::View
+                    && (first_view.is_none()
+                        || (descriptor.contract.reads_document()
+                            && first_view.is_some_and(|old| {
+                                !self.descriptors[old].contract.reads_document()
+                            })))
+                {
+                    // Prefer document disclosure over the first private UI
+                    // view, as the bounded provider path does too.
                     first_view = Some(index);
                 }
                 self.effective.action(resource.id.as_str(), action);
