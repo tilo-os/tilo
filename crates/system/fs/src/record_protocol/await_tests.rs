@@ -26,9 +26,15 @@ use crate::share_refresh::{
 /// answered within 5 s.
 const WRITE_BOUND: Duration = Duration::from_millis(100);
 
-/// How soon a revoked grant must end a held await: the bound the idle serve gate keeps
-/// for a revoked mount.
-const REVOKE_BOUND: Duration = Duration::from_secs(1);
+/// Records wakes of the production request future without scheduling it.
+#[derive(Default)]
+struct RequestWake(AtomicU64);
+
+impl std::task::Wake for RequestWake {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 /// Counts the connections a host accepts.
 #[derive(Clone, Debug)]
@@ -342,40 +348,98 @@ async fn a_host_write_answers_a_held_await_at_once() {
     assert_eq!(accepted.load(Ordering::SeqCst), 2);
 }
 
-/// Revoking the grant wakes a held await, which is answered `Denied`, and
-/// no request after it gets the record.
+/// The production request must register a grant-change wake and return
+/// `Denied` on its very next poll, without waiting for the minute-long limit.
+/// No executor, filesystem latency or network scheduling is timed here.
+#[tokio::test]
+async fn revocation_wakes_the_pending_request_and_answers_denied() {
+    use std::future::Future as _;
+    use std::task::{Context, Poll, Waker};
+
+    let fixture = Fixture::new().await;
+    let protocol = fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT);
+    let cert = fixture.recipient.credentials.cert().clone();
+    let peer = crate::peer_auth::AuthenticatedFsPeer {
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
+        device_label: cert.device_label.clone(),
+        capabilities: cert.capabilities.clone(),
+        cert,
+    };
+    let request = |operation| RecordProtocolRequestV1 {
+        protocol_version: RECORD_PROTOCOL_VERSION,
+        credential: RecordProtocolCredentialV1::BearerLinkV2(fixture.link.encode_uri().unwrap()),
+        operation,
+    };
+    let RecordProtocolResponseV1::Snapshot { snapshot, .. } = protocol
+        .handle_request(peer.clone(), request(RecordProtocolOperationV1::Read))
+        .await
+    else {
+        panic!("the live grant must first serve the record");
+    };
+    let pending = protocol.handle_request(
+        peer,
+        request(RecordProtocolOperationV1::AwaitChange {
+            known: snapshot.digest().unwrap(),
+        }),
+    );
+    tokio::pin!(pending);
+    let notifications = Arc::new(RequestWake::default());
+    let waker = Waker::from(Arc::clone(&notifications));
+    let mut context = Context::from_waker(&waker);
+    assert!(pending.as_mut().poll(&mut context).is_pending());
+    assert_eq!(
+        protocol.awaits.available_permits(),
+        MAX_RECORD_CHANGE_AWAITS - 1
+    );
+    let before = notifications.0.load(Ordering::SeqCst);
+    assert!(fixture.authority.revoke(fixture.link.invite.id).unwrap());
+    assert!(
+        notifications.0.load(Ordering::SeqCst) > before,
+        "revocation must wake the actual pending request, not just change authority state"
+    );
+    assert!(matches!(
+        pending.as_mut().poll(&mut context),
+        Poll::Ready(RecordProtocolResponseV1::Denied)
+    ));
+    assert_eq!(
+        protocol.awaits.available_permits(),
+        MAX_RECORD_CHANGE_AWAITS
+    );
+}
+
+/// Revoking the grant also delivers `Denied` over the real authenticated
+/// stream, and no request after it gets the record. Wake/response ordering
+/// is checked independently above, not by timing durable fsync plus QUIC.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_revoked_grant_ends_a_held_await_at_once() {
     let fixture = Fixture::new().await;
     let protocol = fixture.protocol(RECORD_AWAIT_CHANGE_LIMIT);
-    let (_router, _accepted) = fixture.serve(protocol.clone());
+    let (_router, accepted) = fixture.serve(protocol.clone());
     let mut refresher = fixture.refresher().await;
     let waiting = tokio::spawn(async move {
         let refresh = refresher.next().await;
-        (refresh, Instant::now())
+        (refresh, refresher)
     });
     until_held(&protocol).await;
-    let revoked = Instant::now();
     assert!(fixture.authority.revoke(fixture.link.invite.id).unwrap());
-    let (refresh, answered) = waiting.await.unwrap();
-    let latency = answered.saturating_duration_since(revoked);
-    eprintln!(
-        "a revocation ended the held await in {} us",
-        latency.as_micros()
-    );
+    let (refresh, refresher) = waiting.await.unwrap();
     assert!(
         matches!(refresh, Err(SharedFetchError::Denied)),
         "{refresh:?}"
     );
-    assert!(
-        latency <= REVOKE_BOUND,
-        "the held await outlived its revocation by {} ms",
-        latency.as_millis()
+    assert_eq!(refresher.mode(), ShareRefreshMode::Await);
+    assert_eq!(refresher.connections(), 1);
+    assert_eq!(accepted.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        protocol.awaits.available_permits(),
+        MAX_RECORD_CHANGE_AWAITS
     );
     assert!(matches!(
         fetch_shared_snapshot(&fixture.client(), &fixture.credential()).await,
         Err(SharedFetchError::Denied)
     ));
+    assert_eq!(accepted.load(Ordering::SeqCst), 3);
 }
 
 /// A host that predates `AwaitChange` answers it `InvalidRequest`; the
