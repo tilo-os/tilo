@@ -80,6 +80,7 @@ pub mod realtime;
 pub mod receipt;
 pub mod redaction;
 pub mod role;
+pub mod signer;
 pub mod space;
 pub mod surface;
 pub mod task_budget;

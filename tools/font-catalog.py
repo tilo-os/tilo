@@ -231,6 +231,14 @@ def verify_prepared(root, source, scope):
             raise ValueError(f"prepared font provenance differs: {name}")
 
 
+
+def default_cache():
+    """The artifact cache: TILO_FONT_ASSET_CACHE, else font-artifacts in the cargo target directory."""
+    if cache := os.environ.get("TILO_FONT_ASSET_CACHE"):
+        return Path(cache)
+    target = os.environ.get("CARGO_TARGET_DIR")
+    return Path(target) / "font-artifacts" if target else AUTHORITATIVE.parents[5] / "target/font-artifacts"
+
 def prepared_root(source, scope, cache=None, offline=None):
     """Return a verified materialized catalog, without changing the source."""
     source = Path(source)
@@ -243,8 +251,7 @@ def prepared_root(source, scope, cache=None, offline=None):
         verify(source, scope)
         return source
     artifact_entries(source)
-    cache = Path(cache or os.environ.get(
-        "TILO_FONT_ASSET_CACHE", AUTHORITATIVE.parents[5] / "target/font-artifacts"))
+    cache = Path(cache or default_cache())
     if offline is None:
         offline = os.environ.get("TILO_FONT_ASSETS_OFFLINE") == "1"
     identity = hashlib.sha256()
@@ -295,8 +302,7 @@ def main():
     prepared.add_argument("source", type=Path)
     prepared.add_argument("dest", type=Path)
     prepared.add_argument("--scope", choices=list(SCOPES), required=True)
-    prepared.add_argument("--cache", type=Path, default=Path(os.environ.get(
-        "TILO_FONT_ASSET_CACHE", AUTHORITATIVE.parents[5] / "target/font-artifacts")))
+    prepared.add_argument("--cache", type=Path, default=default_cache())
     prepared.add_argument("--offline", action="store_true", default=os.environ.get("TILO_FONT_ASSETS_OFFLINE") == "1")
     locate = commands.add_parser("root", help="print a verified catalog root for build consumers")
     locate.add_argument("source", type=Path)

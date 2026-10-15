@@ -81,6 +81,10 @@ test("an app's code is its split-off module, after the shared modules it needs",
   assert.deepEqual(appModules(split, 'so.tilo.notes'), ['tilo_browser_runtime.notes.wasm']);
   assert.deepEqual(appModules(split, 'so.tilo.clocks'), [], 'an app linked into the start module has no module to wait for');
   assert.deepEqual(appModules(null, 'so.tilo.notes'), []);
+  const chunked = {modules: [{module: 'notes', file: 'tilo_browser_runtime.notes.wasm',
+    shared: ['tilo_browser_runtime.shared0.wasm', 'tilo_browser_runtime.shared2.wasm']}]};
+  assert.deepEqual(appModules(chunked, 'so.tilo.notes'), ['tilo_browser_runtime.shared0.wasm',
+    'tilo_browser_runtime.shared2.wasm', 'tilo_browser_runtime.notes.wasm'], 'shared chunks listed by file');
 });
 
 test("Chrome's flags follow the renderer and whether the run is root's", () => {

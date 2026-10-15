@@ -485,8 +485,7 @@ fn restore_owner_from_parent(path: &std::path::Path) -> anyhow::Result<()> {
         use std::os::unix::ffi::OsStrExt as _;
         use std::os::unix::fs::MetadataExt as _;
 
-        // SAFETY: geteuid has no preconditions.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Ok(());
         }
         let parent = path
@@ -529,8 +528,7 @@ fn share_directory_like_parent(directory: &std::path::Path) -> anyhow::Result<()
         if !current.is_dir() {
             bail!("{} is not a directory", directory.display());
         }
-        // SAFETY: geteuid has no preconditions.
-        let euid = unsafe { libc::geteuid() };
+        let euid = rustix::process::geteuid().as_raw();
         if current.mode() & 0o7777 != wanted && (euid == 0 || euid == current.uid()) {
             std::fs::set_permissions(directory, std::fs::Permissions::from_mode(wanted))
                 .context("share the enrollment directory like its parent")?;
@@ -544,8 +542,7 @@ fn owns_directory(directory: &std::path::Path) -> anyhow::Result<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
-        // SAFETY: geteuid has no preconditions.
-        Ok(std::fs::metadata(directory)?.uid() == unsafe { libc::geteuid() })
+        Ok(std::fs::metadata(directory)?.uid() == rustix::process::geteuid().as_raw())
     }
     #[cfg(not(unix))]
     {
@@ -3702,7 +3699,7 @@ mod tests {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::MetadataExt as _;
-                let uid = unsafe { libc::geteuid() };
+                let uid = rustix::process::geteuid().as_raw();
                 assert_eq!(
                     std::fs::metadata(identity_dir.path().join("registry.json"))
                         .unwrap()

@@ -537,6 +537,15 @@ on GL"). `Renderer::new` is unchanged except that the parallel initial build
 starts the longest shaders first. `deferred_pipelines()` reports what is
 pending and what a render had to build itself.
 
+`Renderer::new_async_deferring(device, options, deferral)` is the same for
+`new_async`, which the browser uses: it awaits only the pipelines `deferral`
+does not defer. `start_deferred_pipelines_async` then starts every deferred
+pipeline through `create_compute_pipeline_async` without waiting. Renders poll
+those compiles before encoding and install the finished ones. A render can't
+wait for a promise, so a deferred pipeline it dispatches whose compile is not
+in yet is created synchronously, and the GPU process compiles it before the
+dispatch. This works on every target; native windows keep the threads.
+
 ## zlink-macros
 
 `vendor/zlink-macros` is crates.io `zlink-macros` 0.7.0 (checksum

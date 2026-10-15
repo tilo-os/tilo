@@ -1451,7 +1451,7 @@ fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> io::
 /// caller-named source path with root authority.
 #[cfg(target_os = "linux")]
 fn bind_linux_helper_source(request: &mut WriteRequest, _caller_uid: u32) -> io::Result<()> {
-    if unsafe { libc::geteuid() } != 0 {
+    if tilo_process::effective_uid() != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "write helper must run through pkexec",
@@ -2209,7 +2209,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             let mut env = tilo_test_env::ScopedEnv::new();
             #[cfg(target_os = "linux")]
-            env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
+            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
             let work = tempfile::Builder::new()
                 .prefix("tilo-imager-write-")
                 .tempdir()
@@ -2254,7 +2254,7 @@ mod tests {
             let request_path = work.path().join("request.json");
             std::fs::write(&request_path, b"{}").unwrap();
             std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-            env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
+            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
 
             let error = read_linux_helper_request(&request_path).unwrap_err();
 
@@ -2276,7 +2276,7 @@ mod tests {
             std::fs::write(&outside, b"root-only payload").unwrap();
             symlink(&outside, &request).unwrap();
             std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-            env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
+            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
 
             let error = read_linux_helper_request(&request).unwrap_err();
 

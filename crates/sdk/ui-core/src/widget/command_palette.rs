@@ -450,6 +450,12 @@ pub struct CommandPalette {
     /// Skip the built-in fuzzy filter when `true`, for provider hosts whose
     /// pre-matched result set should show verbatim.
     bypass_fuzzy: bool,
+    /// More results are still coming ([`Self::set_searching`]).
+    searching: bool,
+    /// [`crate::search::engine_generation`] the entries were ranked with:
+    /// where the index's code loads on first use, they are ranked again
+    /// once it is in.
+    ranked_generation: u64,
     /// Suppress the palette's built-in filter strip (and its reserved
     /// height) so a host rendering its own strip doesn't duplicate it.
     hide_filter_strip: bool,
@@ -513,6 +519,8 @@ impl CommandPalette {
                 crate::control_custody::ControlProducerDiscipline::ReplaceOne,
             ),
             bypass_fuzzy: false,
+            searching: false,
+            ranked_generation: crate::search::engine_generation(),
             hide_filter_strip: false,
             host_filter_strip: false,
             host_filter_strip_rows: 1,
@@ -935,6 +943,13 @@ impl CommandPalette {
             entry.badge = Some(badge.into());
             entry.description = Some(description.into());
         }
+    }
+
+    /// Whether more results are still on their way (an index whose code is
+    /// still loading): an empty list then says "Searching…" instead of
+    /// "No results".
+    pub fn set_searching(&mut self, searching: bool) {
+        self.searching = searching;
     }
 
     /// Every entry passes through unless [`Self::search_filter`] rejects it.
@@ -1929,6 +1944,9 @@ impl CommandPalette {
             None,
             &title_style,
         );
+        if self.is_searching() {
+            return;
+        }
         let hint_style = theme.text(TextRole::Caption);
         let hint = crate::i18n!("palette-no-results-hint");
         let hint = hint.as_str();
@@ -1946,8 +1964,16 @@ impl CommandPalette {
         );
     }
 
+    fn is_searching(&self) -> bool {
+        // Entries this palette ranks itself wait for the index's code too.
+        (self.searching || (!self.bypass_fuzzy && !crate::search::engine_ready()))
+            && !self.query.is_empty()
+    }
+
     fn empty_results_title(&self) -> String {
-        if self.query.is_empty() {
+        if self.is_searching() {
+            crate::i18n!("palette-searching")
+        } else if self.query.is_empty() {
             crate::i18n!("palette-empty")
         } else {
             crate::i18n!("palette-no-results", "query" => self.query.as_str())
@@ -2064,6 +2090,13 @@ impl Widget for CommandPalette {
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
+        let generation = crate::search::engine_generation();
+        if self.ranked_generation != generation {
+            self.ranked_generation = generation;
+            if !self.bypass_fuzzy {
+                self.rebuild();
+            }
+        }
         // `desired_size` is the single source of truth so a hand-placed
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();

@@ -381,6 +381,9 @@ def call(command: list[str], log: Path, cwd: Path, env: dict[str, str] | None = 
 
 
 def run_hosting(ctx: RunContext) -> list[record.Record]:
+    # Historical refs predate this gate; every side that has it must pass it.
+    if "keystroke_writes" in ctx.bins:
+        call([ctx.bins["keystroke_writes"]], ctx.dir / "keystroke-writes.log", ctx.repo)
     # Both sides need a bench that knows --relay-cpus; an older one refuses it.
     cpus = ["--relay-cpus", str(ctx.options.hosting_relay_cpus)] if ctx.options.hosting_relay_cpus else []
     call([ctx.bins["relay_load"], "--collaborators", "100", "--minutes", str(ctx.options.hosting_minutes),
@@ -497,7 +500,11 @@ BROWSER_BUILD = ("bash", "-c",
 GROUPS: dict[str, Group] = {group.name: group for group in (
     Group("hosting", "release", "none",
           (("cargo", "build", "--locked", "--release", "-p", "tilo-relay", "--example", "relay_load"),),
-          {"relay_load": "target/release/examples/relay_load"}, {}, {}, run_hosting),
+          {"relay_load": "target/release/examples/relay_load"}, {}, {}, run_hosting,
+          {"keystroke_writes": ("crates/hosting/tilo-relay/examples/keystroke_writes.rs",
+                                ("cargo", "build", "--locked", "-p", "tilo-relay", "--example",
+                                 "keystroke_writes"),
+                                "target/debug/examples/keystroke_writes")}),
     Group("latency", "dev", "lavapipe",
           (("cargo", "build", "--locked", "-p", "shell", "--bin", "shell"),),
           {"shell": "target/debug/shell"}, {}, {}, run_latency),

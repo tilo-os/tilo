@@ -59,6 +59,128 @@ pub trait WindowHeader {
     /// or none (`None`: the app has no History, or the host's own chrome
     /// presents it).
     fn set_history_control(&mut self, control: Option<HistoryControl>);
+
+    /// Show the window's sync status ("Working offline…") as quiet text in
+    /// the row, before its trailing controls, or none. Returns whether the
+    /// row shows it; a row that does not leaves the host to present it.
+    fn set_sync_status(&mut self, status: Option<&str>) -> bool {
+        let _ = status;
+        false
+    }
+}
+
+/// Hand the window's sync status to the first header row in `root`'s tree.
+/// Returns whether a row shows it.
+pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&str>) -> bool {
+    if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
+        return header.set_sync_status(status);
+    }
+    root.children_mut()
+        .into_iter()
+        .any(|child| offer_sync_status(child, status))
+}
+
+/// The window's sync status in a header row: quiet text, right-aligned
+/// against the row's trailing controls, announced politely when it changes.
+/// A header row keeps one, paints it into the room its own layout leaves
+/// ([`Self::paint`]) and lists it among its children for assistive
+/// technology.
+#[derive(Debug, Default)]
+pub struct HeaderStatus {
+    text: Option<String>,
+    rect: Rect,
+}
+
+impl HeaderStatus {
+    /// Set what the status says. Returns whether it changed.
+    pub fn set(&mut self, text: Option<&str>) -> bool {
+        let text = text.map(str::trim).filter(|text| !text.is_empty());
+        if self.text.as_deref() == text {
+            return false;
+        }
+        self.text = text.map(str::to_owned);
+        if self.text.is_none() {
+            self.rect = Rect::ZERO;
+        }
+        true
+    }
+
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        self.text.as_deref()
+    }
+
+    /// Paint the status right-aligned in `x0..x1` of `row`, vertically
+    /// centred, elided to fit. Paints nothing when the span is too narrow
+    /// to say anything legible.
+    pub fn paint(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        x0: f64,
+        x1: f64,
+    ) {
+        self.rect = Rect::ZERO;
+        let Some(status) = self.text.as_deref() else {
+            return;
+        };
+        let style = theme.text(crate::tokens::TextRole::Caption);
+        let room = x1 - x0;
+        let (_, line) = text.measure_style("Ag", None, &style);
+        if room < f64::from(line) * 4.0 {
+            return;
+        }
+        let shown = text.elide_to_width_style(status, crate::num::f32_of_f64(room), &style);
+        let (w, h) = text.measure_style(&shown, None, &style);
+        let (w, h) = (f64::from(w), f64::from(h));
+        let origin = Point::new(x1 - w, row.center().y - h / 2.0);
+        text.draw_style(
+            scene,
+            &shown,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate(origin.to_vec2()),
+            None,
+            &style,
+        );
+        self.rect = Rect::new(origin.x, origin.y, origin.x + w, origin.y + h);
+    }
+}
+
+impl Widget for HeaderStatus {
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        use super::TaffyTreeExt;
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn name(&self) -> &'static str {
+        "HeaderStatus"
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Politeness, Role};
+        let text = self.text.as_deref()?;
+        Some(
+            AccessNode::new(Role::StaticText)
+                .with_name(text)
+                .with_live(Politeness::Polite),
+        )
+    }
 }
 
 /// Hand `control` to the first header row in `root`'s tree. Returns whether

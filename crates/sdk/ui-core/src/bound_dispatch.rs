@@ -3670,6 +3670,29 @@ impl Drop for RestoreFrame<'_> {
     }
 }
 
+/// The undo bracket a widget reported since the last sweep, with what the
+/// boundary keeps of it: whether the widget keeps the step open, and its
+/// ephemeral state. Reading it needs only the widget, so a sweep takes it
+/// first and opens the widget's record frame only when there is one.
+pub(crate) struct TakenActionBracket {
+    before: Vec<ChangeHash>,
+    keep_open: bool,
+    metadata: Option<String>,
+}
+
+impl TakenActionBracket {
+    /// `widget`'s bracket, if it reported one. Rising-edge, like
+    /// [`crate::undo::take_committed_action`]: taking it clears it.
+    pub(crate) fn take(widget: &mut dyn Widget) -> Option<Self> {
+        let before = crate::undo::take_committed_action(widget)?;
+        Some(Self {
+            before,
+            keep_open: crate::undo::keeps_undo_step_open(widget),
+            metadata: crate::undo::get_state(widget),
+        })
+    }
+}
+
 impl PendingRecordAction {
     fn new(binding: &CallbackBinding, before: Vec<ChangeHash>) -> Self {
         Self {
@@ -4151,11 +4174,23 @@ impl CallbackBinding {
         widget: &mut dyn Widget,
         doc: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
-        let Some(before) = crate::undo::take_committed_action(widget) else {
+        let Some(taken) = TakenActionBracket::take(widget) else {
             return Ok(false);
         };
-        let keep_open = crate::undo::keeps_undo_step_open(widget);
-        let metadata = crate::undo::get_state(widget);
+        self.drain_taken_actions(taken, doc)
+    }
+    /// Record what [`TakenActionBracket::take`] read from a widget, under
+    /// the record frame this binding's caller holds open.
+    pub(crate) fn drain_taken_actions(
+        &self,
+        taken: TakenActionBracket,
+        doc: &mut AutoCommit,
+    ) -> Result<bool, BoundDispatchError> {
+        let TakenActionBracket {
+            before,
+            keep_open,
+            metadata,
+        } = taken;
         let handle = ACTIVE
             .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
             .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
@@ -4462,6 +4497,7 @@ impl CallbackBinding {
                 Ok(callback(outer, &ROOT))
             };
         }
+        let _phase = tilo_resource::profiling::Phase::start("ui.record_frame");
         self.records
             .with_action_state(&self.checkout.id, |document, history, state| {
                 let frame = Rc::new(RefCell::new(Some(ActionFrame {
