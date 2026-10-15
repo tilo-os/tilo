@@ -44,6 +44,9 @@ pub struct ReplayId(pub [u8; 16]);
 pub(crate) struct CaptureLeases {
     held: AtomicUsize,
     deferred: std::sync::Mutex<std::collections::BTreeSet<PathBuf>>,
+    /// The store's owner, woken when the last lease ends so what waited is
+    /// collected without waiting for its next job.
+    wake: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 impl CaptureLeases {
     /// The leases of the store at `root`, shared by every handle on it.
@@ -75,10 +78,29 @@ impl CaptureLeases {
 pub(crate) struct CaptureLease(Arc<CaptureLeases>);
 impl Drop for CaptureLease {
     fn drop(&mut self) {
-        self.0.held.fetch_sub(1, Ordering::SeqCst);
+        if self.0.held.fetch_sub(1, Ordering::SeqCst) == 1
+            && !self.0.deferred().is_empty()
+            && let Some(wake) = self
+                .0
+                .wake
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+        {
+            wake.notify_one();
+        }
     }
 }
 impl WorkspaceStore {
+    /// Wake `owner` when the last capture lease ends with collections
+    /// waiting for it.
+    pub(crate) fn wake_on_capture_release(&self, owner: Arc<tokio::sync::Notify>) {
+        *self
+            .capture_leases
+            .wake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(owner);
+    }
     fn lease_capture(&self) -> CaptureLease {
         self.capture_leases.held.fetch_add(1, Ordering::SeqCst);
         CaptureLease(Arc::clone(&self.capture_leases))

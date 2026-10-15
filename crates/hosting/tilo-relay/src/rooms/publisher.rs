@@ -114,6 +114,13 @@ impl RoomPublisher {
         Epoch(progress.epoch)
     }
 
+    /// The first publication position a failed admission left unretained,
+    /// until the next [`Self::reconcile`] takes it: a room record written
+    /// meanwhile must not claim it published.
+    pub(super) fn unretained_from(&self) -> Option<usize> {
+        self.shared.progress().failed
+    }
+
     /// Hand `publications` over to be admitted after every batch handed
     /// over before them, in their order. Returns at once.
     pub(super) fn push(
@@ -171,8 +178,27 @@ impl RoomPublisher {
 /// Record that changes at `positions` were not admitted. `failed` is a new
 /// failure, which drops every batch handed over before it; a batch dropped
 /// for an earlier failure only adds its positions.
+///
+/// A channel change has no position: the steward moved on when it handed
+/// the change over, so a dropped one is gone, as one whose own admission
+/// failed always was. Say so.
 fn unretained(shared: &Shared, positions: impl IntoIterator<Item = Option<usize>>, failed: bool) {
-    let first = positions.into_iter().flatten().min();
+    let mut channel_changes = 0usize;
+    let first = positions
+        .into_iter()
+        .filter_map(|position| {
+            if position.is_none() {
+                channel_changes = channel_changes.saturating_add(1);
+            }
+            position
+        })
+        .min();
+    if channel_changes != 0 {
+        tracing::warn!(
+            channel_changes,
+            "channel governance dropped: a change of the room was not admitted"
+        );
+    }
     let mut progress = shared.progress();
     if failed {
         progress.epoch = progress.epoch.wrapping_add(1);

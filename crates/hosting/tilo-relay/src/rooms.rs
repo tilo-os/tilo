@@ -276,7 +276,17 @@ impl GovernedRoom {
     }
 
     fn persist(&self) -> Result<(), String> {
-        let bytes = postcard::to_stdvec(&self.record).map_err(|error| error.to_string())?;
+        // What the publisher could not admit is not published yet, whatever
+        // `published` says until the next settle takes the failure back.
+        let bytes = match self.publisher.unretained_from() {
+            Some(first) if first < self.record.published => {
+                let mut record = self.record.clone();
+                record.published = first;
+                postcard::to_stdvec(&record)
+            }
+            _ => postcard::to_stdvec(&self.record),
+        }
+        .map_err(|error| error.to_string())?;
         tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())
     }
 
