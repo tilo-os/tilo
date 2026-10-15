@@ -260,6 +260,68 @@ pub(crate) async fn enqueue_federated(
     .await
     .map(drop)
 }
+
+/// What the capacity timings call a change's owner turn and publication:
+/// by author (this host or a member) and retention kind. Read only while
+/// the timings are recorded.
+fn state_timing_steps(host: bool, delta: &[u8]) -> (&'static str, &'static str) {
+    if !crate::timing::enabled() {
+        return ("", "");
+    }
+    match (
+        host,
+        crate::coedit::retention_metadata(delta).map(|(_, kind)| kind),
+    ) {
+        (true, Some(crate::coedit::RetentionKind::Checkpoint)) => (
+            "state.host_checkpoint.persist",
+            "state.host_checkpoint.publish",
+        ),
+        (true, Some(crate::coedit::RetentionKind::Delta)) => {
+            ("state.host_delta.persist", "state.host_delta.publish")
+        }
+        (false, Some(crate::coedit::RetentionKind::Checkpoint)) => device_checkpoint_steps(delta),
+        (false, Some(crate::coedit::RetentionKind::Delta)) => {
+            ("state.delta.persist", "state.delta.publish")
+        }
+        (_, None) => ("state.plain.persist", "state.plain.publish"),
+    }
+}
+
+/// [`state_timing_steps`] for a member's checkpoint: the governance it
+/// carries, when it is a channel request, acknowledgement or certificate.
+fn device_checkpoint_steps(delta: &[u8]) -> (&'static str, &'static str) {
+    use neighbour_wire::NeighbourMsg;
+    let plain = ("state.checkpoint.persist", "state.checkpoint.publish");
+    let Some(crate::coedit::CoeditPayload::Checkpoint { body, .. }) =
+        crate::coedit::CoeditPayload::decode(delta)
+    else {
+        return plain;
+    };
+    match postcard::from_bytes::<NeighbourMsg>(&body) {
+        Ok(NeighbourMsg::MlsAccessRequest { .. }) => (
+            "state.checkpoint.request.persist",
+            "state.checkpoint.request.publish",
+        ),
+        Ok(NeighbourMsg::MlsRoutedAccessRequest { .. }) => (
+            "state.checkpoint.routed_request.persist",
+            "state.checkpoint.routed_request.publish",
+        ),
+        Ok(NeighbourMsg::MlsGovernanceAck { .. }) => (
+            "state.checkpoint.ack.persist",
+            "state.checkpoint.ack.publish",
+        ),
+        Ok(NeighbourMsg::IdentityHello { .. }) => (
+            "state.checkpoint.hello.persist",
+            "state.checkpoint.hello.publish",
+        ),
+        Ok(NeighbourMsg::AppDocument { .. }) => (
+            "state.checkpoint.document.persist",
+            "state.checkpoint.document.publish",
+        ),
+        _ => plain,
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
@@ -295,6 +357,10 @@ pub(super) async fn enqueue_state_inner(
         tracing::info!(phase = "server_delta_admit", workspace_id, authored_at_ns);
     }
     let charge = delta.len().saturating_add(256).saturating_mul(3);
+    let (persist_step, publish_step) = state_timing_steps(source.is_none(), delta);
+    let persist_begun = Arc::new(std::sync::OnceLock::new());
+    let persist_ended = persist_begun.clone();
+    let timed_bytes = delta.len() as u64;
     trace_native_publication("admission_started", &envelope, None);
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
     if source
@@ -415,6 +481,9 @@ pub(super) async fn enqueue_state_inner(
         },
         move |state, prepared| {
             if commit.is_none() {
+                if let Some(begun) = crate::timing::start() {
+                    let _ = persist_begun.set(begun);
+                }
                 if let Some(trace) = &operation_trace {
                     trace.emit("persistence_owner_started");
                 }
@@ -600,6 +669,8 @@ pub(super) async fn enqueue_state_inner(
             Ok(Step::Done(commit.take().invariant("commit missing")?))
         },
         move |result| async move {
+            crate::timing::event(persist_step, persist_ended.get().copied(), timed_bytes);
+            let publishing = crate::timing::start();
             let result = async {
                 let mut commit = result?;
                 trace_native_publication(
@@ -815,6 +886,7 @@ pub(super) async fn enqueue_state_inner(
             {
                 let _ = source.disconnect.try_send(());
             }
+            crate::timing::event(publish_step, publishing, timed_bytes);
             result
         },
     ))

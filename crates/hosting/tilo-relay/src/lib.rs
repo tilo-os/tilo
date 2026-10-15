@@ -146,6 +146,8 @@ pub mod rooms;
 pub mod store;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod surfaces;
+#[cfg(not(target_arch = "wasm32"))]
+mod timing;
 #[cfg(feature = "web")]
 pub mod web;
 #[cfg(not(target_arch = "wasm32"))]

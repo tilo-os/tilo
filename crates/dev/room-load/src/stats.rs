@@ -42,7 +42,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// The `q` quantile of `values` (nearest rank).
-fn quantile(values: &mut [f64], q: f64) -> f64 {
+pub fn quantile(values: &mut [f64], q: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
     }

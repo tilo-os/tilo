@@ -335,7 +335,9 @@ impl ReplayPendingWork {
                 // Not the device's durable queue: one fsynced file per
                 // catching-up session for each commit made a crowd joining
                 // at once write the room's every change once per newcomer.
+                let holding = crate::timing::start();
                 target.catchup.hold(sequence, &frame.bytes)?;
+                crate::timing::window("state.held_write", holding);
             }
             self.written = self.written.saturating_add(frame.bytes.len() as u64);
         }

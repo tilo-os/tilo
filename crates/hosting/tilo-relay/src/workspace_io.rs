@@ -184,13 +184,18 @@ async fn fresh_membership_inner(
     trace: Option<MembershipTrace>,
 ) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
     {
+        let locking = crate::timing::start();
         let runtime = workspace.lock().await;
+        crate::timing::window("room.lock", locking);
         if runtime.membership_is_current() {
             // No disk IO, no worker, no lane.
             return Ok(runtime);
         }
     }
-    reload_membership(workspace, trace).await
+    let reloading = crate::timing::start();
+    let reloaded = reload_membership(workspace, trace).await;
+    crate::timing::window("room.membership_reload", reloading);
+    reloaded
 }
 
 async fn reload_membership(

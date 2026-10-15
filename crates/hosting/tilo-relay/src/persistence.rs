@@ -729,6 +729,7 @@ async fn run_owner(
             reclaiming = true;
         }
         let shared = state.clone();
+        let reclaiming_at = crate::timing::start();
         let _ = blocking(workers.clone(), move || {
             let mut state = shared
                 .lock()
@@ -751,6 +752,7 @@ async fn run_owner(
             drop(state);
         })
         .await;
+        crate::timing::window("owner.reclaim", reclaiming_at);
     }
 }
 
@@ -881,7 +883,15 @@ impl Persistence {
             .clone()
             .try_acquire_many_owned(byte_count)
             .map_err(|_| error("state byte backpressure"))?;
-        let (job, rx) = resumable_job(slot, bytes, byte_count, preparation, operation, completion);
+        let (job, rx) = resumable_job(
+            slot,
+            bytes,
+            byte_count,
+            NORMAL_STEPS,
+            preparation,
+            operation,
+            completion,
+        );
         let permit = self
             .tx
             .try_reserve()
@@ -935,7 +945,15 @@ impl Persistence {
             .acquire_many_owned(byte_count)
             .await
             .map_err(|_| error("state persistence unavailable"))?;
-        let (job, rx) = resumable_job(slot, bytes, byte_count, preparation, operation, completion);
+        let (job, rx) = resumable_job(
+            slot,
+            bytes,
+            byte_count,
+            NORMAL_STEPS,
+            preparation,
+            operation,
+            completion,
+        );
         let permit = self
             .tx
             .reserve()
@@ -997,7 +1015,9 @@ impl Persistence {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .workers
                         .clone();
+                    let running = crate::timing::start();
                     let result = run(state, workers).await;
+                    crate::timing::window("owner.sequence", running);
                     let _ = tx.send(result);
                 })
             },
@@ -1057,7 +1077,15 @@ impl Persistence {
             .acquire_many_owned(byte_count)
             .await
             .map_err(|_| error("state persistence unavailable"))?;
-        let (job, rx) = resumable_job(slot, bytes, byte_count, preparation, operation, completion);
+        let (job, rx) = resumable_job(
+            slot,
+            bytes,
+            byte_count,
+            REPLAY_STEPS,
+            preparation,
+            operation,
+            completion,
+        );
         let _admission = self.admission.lock().await;
         let prerequisite = capture.then(|| self.normal_sequence.load(Ordering::Acquire));
         #[cfg(test)]
@@ -1076,14 +1104,42 @@ impl Persistence {
         bytes: usize,
         operation: impl FnOnce(&mut State) -> Result<T, StoreError> + Send + 'static,
     ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError> {
+        // Counted: how many of the owner's normal jobs are reads.
+        crate::timing::window("owner.read_jobs", crate::timing::start());
         self.submit(bytes, operation, |result| async { result })
     }
 }
+
+/// What an owner job's phases are timed as ([`crate::timing::window`]).
+#[derive(Clone, Copy)]
+struct JobSteps {
+    /// From admission to the owner taking it up.
+    queue: &'static str,
+    /// Its asynchronous preparation, in owner order.
+    prepare: &'static str,
+    /// Its blocking transaction: every quantum and the waits for a worker.
+    persist: &'static str,
+    /// Its asynchronous completion (publication), in owner order.
+    complete: &'static str,
+}
+const NORMAL_STEPS: JobSteps = JobSteps {
+    queue: "owner.normal.queue",
+    prepare: "owner.normal.prepare",
+    persist: "owner.normal.persist",
+    complete: "owner.normal.complete",
+};
+const REPLAY_STEPS: JobSteps = JobSteps {
+    queue: "owner.replay.queue",
+    prepare: "owner.replay.prepare",
+    persist: "owner.replay.persist",
+    complete: "owner.replay.complete",
+};
 
 fn resumable_job<P, PF, T, F, C, CF>(
     slot: OwnedSemaphorePermit,
     bytes: OwnedSemaphorePermit,
     byte_count: u32,
+    steps: JobSteps,
     preparation: PF,
     operation: F,
     completion: C,
@@ -1098,6 +1154,7 @@ where
 {
     let (tx, rx) = oneshot::channel();
     let queued = std::time::Instant::now();
+    let timed = crate::timing::start();
     // The operation and its preparation go into and out of the job's box and
     // the blocking pool on every quantum: on the heap, each move is a pointer.
     let mut operation = Box::new(operation);
@@ -1111,11 +1168,15 @@ where
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .workers
                     .clone();
+                crate::timing::window(steps.queue, timed);
+                let preparing = crate::timing::start();
                 let result = match preparation.await {
                     Err(error) => Err(error),
                     Ok(prepared) => {
+                        crate::timing::window(steps.prepare, preparing);
+                        let persisting = crate::timing::start();
                         let mut prepared = Some(prepared);
-                        loop {
+                        let result = loop {
                             let shared = state.clone();
                             let quantum = blocking(workers.clone(), move || {
                                 let start = std::time::Instant::now();
@@ -1155,12 +1216,16 @@ where
                                 Ok(Step::Done(value)) => break Ok(value),
                                 Err(error) => break Err(error),
                             }
-                        }
+                        };
+                        crate::timing::window(steps.persist, persisting);
+                        result
                     }
                 };
                 // The owner serializes this asynchronous authorization/publication
                 // step as well as the blocking transaction, even if tx is closed.
+                let completing = crate::timing::start();
                 let result = completion(result).await;
+                crate::timing::window(steps.complete, completing);
                 let _ = tx.send(result);
             })
         },
