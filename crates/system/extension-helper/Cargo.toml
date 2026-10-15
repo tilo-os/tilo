@@ -27,6 +27,7 @@ tempfile.workspace = true
 tilo-advisory-lock = { path = "../advisory-lock" }
 # The one blocking HTTP client builder on Tilo's TLS provider and trust.
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+tilo-pycompat = { path = "../tilo-pycompat" }
 workspace-hack = { version = "0.1" }
 
 [lints]

@@ -16364,6 +16364,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-pycompat",
  "workspace-hack",
 ]
 
@@ -17067,6 +17068,7 @@ dependencies = [
  "tempfile",
  "tilo-advisory-lock",
  "tilo-net",
+ "tilo-pycompat",
  "workspace-hack",
 ]
 
@@ -17411,6 +17413,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "tilo-pycompat",
  "workspace-hack",
 ]
 
@@ -18108,6 +18111,15 @@ dependencies = [
  "x509-parser 0.18.1",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-pycompat"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
