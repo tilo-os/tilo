@@ -249,12 +249,14 @@ impl HeldContent for WorkspaceContent {
 ///
 /// The replica process holds its stores open, so this reads their
 /// file-backed versions without opening them
-/// ([`ContentStore::read_file_version_unlocked`]). A version is found only
-/// by the requester's locator — the manifest hash it proved its copy under —
-/// and returned only when its bytes hash to the input digest: a partly
-/// hydrated, replaced or foreign file is simply not held, and the input is
-/// fetched instead. Versions small enough to be loose blobs are not
-/// reachable this way and are fetched too.
+/// ([`ContentStore::read_file_version_unlocked`]), and asks the replica for
+/// smaller ones, which are loose blobs inside its database, over the
+/// owner-only socket each workspace's replica serves in its own cache
+/// directory ([`fs::replica_content`]). A version is found only by the
+/// requester's locator — the manifest hash it proved its copy under — and
+/// returned only when its bytes hash to the input digest: a partly hydrated,
+/// replaced, foreign or misreported version is simply not held, and the
+/// input is fetched instead.
 #[derive(Clone, Debug)]
 pub struct ReplicaContent {
     cache_dirs: Vec<std::path::PathBuf>,
@@ -282,7 +284,11 @@ impl HeldContent for ReplicaContent {
         };
         let mut failure = None;
         for dir in &self.cache_dirs {
-            match ContentStore::read_file_version_unlocked(dir, manifest, max_bytes) {
+            let read = match ContentStore::read_file_version_unlocked(dir, manifest, max_bytes) {
+                Ok(None) => fs::replica_content::read(dir, manifest, max_bytes),
+                file => file,
+            };
+            match read {
                 Ok(Some(bytes)) if blake3::hash(&bytes).as_bytes() == &digest => {
                     return Ok(Some(bytes));
                 }
@@ -393,5 +399,107 @@ mod tests {
         assert_eq!(held.held(digest, Some([4; 32]), u64::MAX), Ok(None));
         assert_eq!(held.held(digest, Some(manifest), len - 1), Ok(None));
         drop(store);
+    }
+
+    /// Serve `store` as `fs replica` does, from `cache_dir`.
+    fn serve_replica(
+        cache_dir: &std::path::Path,
+        store: Arc<ContentStore>,
+    ) -> tokio::task::JoinHandle<()> {
+        let socket = fs::replica_content::socket_path(cache_dir);
+        let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::UnixListener::from_std(listener).unwrap();
+        tokio::spawn(fs::replica_content::serve(listener, store))
+    }
+
+    /// `held.held(..)` off the runtime, as staging calls it.
+    async fn held_off_runtime(
+        held: &ReplicaContent,
+        digest: [u8; 32],
+        locator: [u8; 32],
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let held = held.clone();
+        tokio::task::spawn_blocking(move || held.held(digest, Some(locator), max_bytes))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replica_holds_its_small_versions_through_the_replica_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let replica = root.path().join("replica");
+        let store = Arc::new(ContentStore::open(&replica).await.unwrap());
+        // Small enough to be loose blobs inside the store's database.
+        let bytes: Vec<u8> = (0..200 * 1024_u32)
+            .map(|index| u8::try_from(index % 241).unwrap())
+            .collect();
+        let digest = *blake3::hash(&bytes).as_bytes();
+        let manifest = *store
+            .write_content(&bytes)
+            .await
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+        let len = u64::try_from(bytes.len()).unwrap();
+        let held = ReplicaContent::new(vec![replica.clone()]);
+        // Not a file: unreachable until the replica answers for it.
+        assert_eq!(
+            held_off_runtime(&held, digest, manifest, len).await,
+            Ok(None)
+        );
+
+        let server = serve_replica(&replica, Arc::clone(&store));
+        assert_eq!(
+            held_off_runtime(&held, digest, manifest, len).await,
+            Ok(Some(bytes))
+        );
+        // Still only the located version that hashes to the digest.
+        assert_eq!(
+            held_off_runtime(&held, [3; 32], manifest, len).await,
+            Ok(None)
+        );
+        assert_eq!(
+            held_off_runtime(&held, digest, [4; 32], len).await,
+            Ok(None)
+        );
+        assert_eq!(
+            held_off_runtime(&held, digest, manifest, len - 1).await,
+            Ok(None)
+        );
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bytes_a_replica_misreports_are_not_held() {
+        let root = tempfile::tempdir().unwrap();
+        let replica = root.path().join("replica");
+        std::fs::create_dir_all(&replica).unwrap();
+        let listener =
+            std::os::unix::net::UnixListener::bind(fs::replica_content::socket_path(&replica))
+                .unwrap();
+        // A replica answering every request with bytes that are not the
+        // version asked for.
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let framing = fs::replica_content::FRAMING;
+                if let Ok(Some(_)) =
+                    framing.read_value::<_, fs::replica_content::Request>(&mut stream)
+                {
+                    let wrong = fs::replica_content::Response::Found(b"other bytes".to_vec());
+                    let _ = framing.write_value(&mut stream, &wrong);
+                }
+            }
+        });
+        let bytes = b"the requester's bytes".to_vec();
+        let digest = *blake3::hash(&bytes).as_bytes();
+        let held = ReplicaContent::new(vec![replica]);
+        assert_eq!(
+            held_off_runtime(&held, digest, [5; 32], u64::MAX).await,
+            Ok(None),
+            "fetched instead"
+        );
     }
 }

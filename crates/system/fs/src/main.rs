@@ -1417,6 +1417,26 @@ fn export_home_peer(
     Ok(())
 }
 
+/// Serve this replica's small file versions to the compute worker beside it
+/// ([`fs::replica_content`]), owner-only, from the workspace's own cache
+/// directory. Best-effort: without it the worker fetches those inputs.
+fn spawn_replica_content(
+    cache_dir: &Path,
+    store: Arc<ContentStore>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let socket = fs::replica_content::socket_path(cache_dir);
+    match bind_private_socket(&socket) {
+        Ok(listener) => Some(tokio::spawn(fs::replica_content::serve(listener, store))),
+        Err(error) => {
+            eprintln!(
+                "could not serve replica content at {}: {error}",
+                socket.display()
+            );
+            None
+        }
+    }
+}
+
 /// Join a workspace as a durable, serving peer without a FUSE mount. The
 /// normal workspace router keeps the supplied live capability policy in front
 /// of its blob provider, so a home peer never becomes an unenforced source.
@@ -1513,6 +1533,7 @@ async fn replica_workspace(
     let acl = authority.handle();
     let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret).await?;
     let store = Arc::new(open_store(Some(bundle.cache_dir.clone())).await?);
+    let _replica_content = spawn_replica_content(&bundle.cache_dir, Arc::clone(&store));
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
     let namespace_path = namespace_path(Some(&bundle.cache_dir));
     let bootstrap = bootstrap_peers(&ticket, Some(&bundle.cache_dir))?;
