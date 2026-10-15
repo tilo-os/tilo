@@ -92,8 +92,27 @@ repair entry, because that is derived from a UKI.
 The counter is only removed when the boot is declared good.
 `tilo-boot-health.service` is what declares it: it is ordered before
 `boot-complete.target`, which `systemd-bless-boot.service` requires, so an
-unblessed boot keeps its spent try. Health means **greetd came up**, i.e. the
-machine reached the point where a person can log in.
+unblessed boot keeps its spent try. Health means **the greeter came up and
+stayed up**, i.e. the machine reached the point where a person can log in:
+greetd is active, its greeter has presented a frame (or a person is already
+signed in through greetd), and for 20 seconds after that greetd is not
+restarted and the greeter keeps presenting. The check waits up to three
+minutes for the first frame, because a machine that renders in software needs
+tens of seconds for it.
+
+`greetd is active` alone is not enough. greetd restarts when its greeter
+exits, so it is active between restarts, and a greeter that cannot draw (an
+update that breaks the GPU driver, cage or the greeter) crash-loops behind an
+active greetd. Judged by that alone, such a boot was blessed on its first try
+and the machine never rolled back. The greeter's evidence is its own startup
+record, `/run/tilo-greeter/startup-metrics.json`, which its first presented
+frame completes; `journalctl -b -u tilo-boot-health` says which of the checks
+a failed boot missed.
+
+One machine keeps the plain verdict: a virtual machine made without any display
+device (the headless dev VMs reached over SSH), where no greeter can present on
+any generation. On real hardware no display device at all is what a broken GPU
+driver leaves behind, so there the greeter is still required.
 
 Blessing renames the booted entry (`name+2-1.conf` to `name.conf`) on the ESP,
 which stays mounted read-only. `systemd-bless-boot.service` therefore remounts
@@ -257,9 +276,15 @@ TILO_CFS_SESSION_OK=0 ./os/dev/composefs/build.sh 2
 # the boot loader goes back by itself. RUNNER is anything that runs a command
 # line in the guest; RESET power-cycles a guest that stopped answering. CI runs
 # it on a published dev disk: Dev / native disk boot diagnostic with
-# boot_assessment_image set.
+# boot_assessment_image set. FAULT=greeter keeps greetd active and makes its
+# greeter exit 12 s after each start instead, the crash loop a check of
+# "greetd is active" would bless (boot_assessment_fault=greeter in CI).
 RUNNER='./os/dev/vm.sh ssh' SUDO_PASS=tilo \
   ./os/tests/boot_assessment_rollback.sh registry.tilo.so/tilo/tilo-vm@sha256:<other-digest>
+
+# The health verdict itself against a stand-in greetd, no VM: a crash-looping
+# greeter fails, one that holds passes, boards are judged by their own unit.
+./os/tests/boot_health_greeter.sh
 
 # The state-version refusal, against the compositor binary:
 cargo build -p shell --bin shell

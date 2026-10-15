@@ -72,6 +72,10 @@ on:
         description: "Stage this immutable tilo-vm dev image, make only it unable to reach the greeter, and require the boot loader to spend its tries and go back by itself (os/tests/boot_assessment_rollback.sh)."
         required: false
         default: ""
+      boot_assessment_fault:
+        description: "With boot_assessment_image: greetd (greetd fails to start) or greeter (greetd stays active while its greeter keeps exiting)."
+        required: false
+        default: greetd
 
 jobs:
   boot:
@@ -102,6 +106,7 @@ jobs:
       SHARED_DISK_ESP: ${{ github.event.inputs.shared_disk_esp }}
       SHARED_DISK_SWITCH_IMAGE: ${{ github.event.inputs.shared_disk_switch_image }}
       BOOT_ASSESSMENT_IMAGE: ${{ github.event.inputs.boot_assessment_image }}
+      BOOT_ASSESSMENT_FAULT: ${{ github.event.inputs.boot_assessment_fault || 'greetd' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -207,6 +212,10 @@ jobs:
           [[ -z $BOOT_ASSESSMENT_IMAGE || ( $BOOT_ASSESSMENT_IMAGE =~ ^registry\.tilo\.so/tilo/tilo-vm@sha256:[0-9a-f]{64}$ \
              && $BOOT_ASSESSMENT_IMAGE != "$UPGRADE_IMAGE" && $SHARED_DISK_ESP == false && $DEV_UKI_BOOT == false ) ]] || {
             echo '::error::boot_assessment_image must pin a tilo-vm dev image digest other than upgrade_image, without shared_disk_esp or dev_uki_boot'
+            exit 1
+          }
+          [[ $BOOT_ASSESSMENT_FAULT == greetd || $BOOT_ASSESSMENT_FAULT == greeter ]] || {
+            echo '::error::boot_assessment_fault must be greetd or greeter'
             exit 1
           }
           export TILO_KVM_CPU_VARIANT="$CPU_VARIANT"
@@ -427,7 +436,7 @@ jobs:
           # It ends booted on the deployment that came back, so the greeter
           # checks below also prove that machine reaches its greeter.
           if [[ -n $BOOT_ASSESSMENT_IMAGE ]]; then
-            RUNNER='./os/dev/vm.sh ssh' SUDO_PASS="$TILO_PASS" \
+            RUNNER='./os/dev/vm.sh ssh' SUDO_PASS="$TILO_PASS" FAULT="$BOOT_ASSESSMENT_FAULT" \
               RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk '$overlay'" \
               ./os/tests/boot_assessment_rollback.sh "$BOOT_ASSESSMENT_IMAGE" "$TILO_RUN/boot-assessment"
           fi

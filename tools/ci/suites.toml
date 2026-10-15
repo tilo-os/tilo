@@ -99,6 +99,7 @@ suites = [
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",
+  "os/tests/boot_health_greeter.sh",
   "os/tests/board_release_promotion.py",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
