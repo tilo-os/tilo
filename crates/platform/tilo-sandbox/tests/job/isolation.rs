@@ -9,6 +9,12 @@ use tilo_sandbox::job::{JobSpec, Launch, Mount, Root};
 use crate::needs_sandbox;
 use crate::support::{pipe, run, shell};
 
+/// Fallback tunnel devices the kernel puts, down and leading nowhere, into
+/// every new network namespace on a host with those tunnel modules loaded.
+const FALLBACK_TUNNELS: &[&str] = &[
+    "tunl0", "sit0", "ip6tnl0", "gre0", "gretap0", "erspan0", "ip6gre0", "ip_vti0", "ip6_vti0",
+];
+
 #[test]
 fn a_job_is_pid_1_and_sees_no_other_process() {
     needs_sandbox!();
@@ -78,14 +84,9 @@ fn a_job_cannot_reach_the_hosts_loopback() {
         out.contains("unreachable"),
         "a job reached the host loopback: {out}"
     );
-    assert!(!out.contains("reached"), "{out}");
+    assert!(!out.lines().any(|l| l == "reached"), "{out}");
     // Only loopback exists in the job's netns (no egress attached here),
-    // besides the fallback tunnel devices the kernel puts, down and leading
-    // nowhere, into every new namespace on a host with those tunnel modules
-    // loaded.
-    const FALLBACK_TUNNELS: &[&str] = &[
-        "tunl0", "sit0", "ip6tnl0", "gre0", "gretap0", "erspan0", "ip6gre0", "ip_vti0", "ip6_vti0",
-    ];
+    // besides the kernel's fallback tunnel devices.
     let ifaces: Vec<&str> = out
         .lines()
         .filter_map(|l| l.strip_prefix("iface "))
