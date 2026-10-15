@@ -95,6 +95,12 @@ const SDK_EVENT_QUEUE: usize = 256;
 /// invocation argument may be large.
 const SDK_COMMAND_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const SDK_EVENT_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+/// The retained budget of the one action catalogue snapshot in flight
+/// (each read waits for the previous one to be taken): apart from control
+/// events, so a large workspace's catalogue neither starves action results
+/// nor fails the bridge. A snapshot larger than this is trimmed to fit
+/// ([`fit_catalogue`]).
+const SDK_CATALOGUE_EVENT_BYTES: usize = 16 * 1024 * 1024;
 /// Separate retained budgets for document traffic. A document change may be
 /// as large as [`collab_types::MAX_DOCUMENT_TRANSFER_BYTES`]; accounting it
 /// apart from control traffic means one large edit in flight can neither
@@ -1427,6 +1433,45 @@ fn action_catalogue_bytes(
     }
 }
 
+/// `surfaces` trimmed until their retained size fits `limit`, and the apps of
+/// the surfaces dropped. Inert surfaces (an app only offered to open) go
+/// before live ones, the last listed first, so the operations of the open
+/// windows survive longest.
+fn fit_catalogue(
+    mut surfaces: Vec<BrokerActionSurface>,
+    limit: usize,
+) -> (Vec<BrokerActionSurface>, Vec<String>) {
+    let size = |surfaces: &[BrokerActionSurface]| {
+        let mut meter = ByteMeter(Some(std::mem::size_of::<CollabEvent>()));
+        action_catalogue_bytes(surfaces, surfaces.len(), &mut meter);
+        meter.0.unwrap_or(usize::MAX)
+    };
+    // Measured as kept: a decoded list may hold spare capacity.
+    for surface in &mut surfaces {
+        surface.actions.shrink_to_fit();
+    }
+    let empty = size(&[]);
+    let mut total = size(&surfaces);
+    if total <= limit {
+        return (surfaces, Vec::new());
+    }
+    let mut dropped = Vec::new();
+    while total > limit {
+        let Some(at) = surfaces
+            .iter()
+            .rposition(|surface| !surface.live)
+            .or_else(|| surfaces.len().checked_sub(1))
+        else {
+            break;
+        };
+        let surface = surfaces.remove(at);
+        total = total.saturating_sub(size(std::slice::from_ref(&surface)).saturating_sub(empty));
+        dropped.push(surface.app_id);
+    }
+    surfaces.shrink_to_fit();
+    (surfaces, dropped)
+}
+
 fn scrollback_batch_bytes(
     ops: &[Box<SignedOp>],
     op_capacity: usize,
@@ -1742,6 +1787,7 @@ struct BridgeState {
     event_bytes: ByteBudget,
     document_command_bytes: ByteBudget,
     document_event_bytes: ByteBudget,
+    catalogue_event_bytes: ByteBudget,
     owner_wake: crate::wake::WakeHandle,
     wake_pending: Arc<AtomicBool>,
     /// How far the shovel has got establishing the session. Written by the
@@ -1900,6 +1946,7 @@ impl BridgeState {
             event_bytes: ByteBudget::new(),
             document_command_bytes: ByteBudget::with_room_wake(outbound_room),
             document_event_bytes: ByteBudget::new(),
+            catalogue_event_bytes: ByteBudget::new(),
             owner_wake,
             wake_pending: Arc::new(AtomicBool::new(false)),
             connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
@@ -2324,6 +2371,12 @@ impl InboundBridge {
         turn: Option<EventTurn>,
         serialized_bytes: Option<usize>,
     ) -> bool {
+        let event = match event {
+            CollabEvent::ActionCatalogue { surfaces } => {
+                return self.send_catalogue(surfaces, turn, serialized_bytes);
+            }
+            event => event,
+        };
         let required_bytes = event_bytes(&event).unwrap_or(usize::MAX);
         let Some(reservation) = self
             .state
@@ -2355,6 +2408,58 @@ impl InboundBridge {
             );
             self.state.fail_closed("inbound event byte budget");
             return false;
+        };
+        if self
+            .tx
+            .try_send(QueuedCollabEvent {
+                event,
+                _reservation: reservation,
+                _turn: turn,
+            })
+            .is_ok()
+        {
+            self.state.notify_events();
+            true
+        } else {
+            self.state.fail_closed("inbound event queue");
+            false
+        }
+    }
+
+    /// Queue an action catalogue snapshot against its own budget, trimmed
+    /// to fit when it is larger. An agent then decides against most of a
+    /// very large workspace's operations rather than losing its connection.
+    fn send_catalogue(
+        &self,
+        surfaces: Vec<BrokerActionSurface>,
+        turn: Option<EventTurn>,
+        serialized_bytes: Option<usize>,
+    ) -> bool {
+        let (surfaces, dropped) = fit_catalogue(surfaces, SDK_CATALOGUE_EVENT_BYTES);
+        if !dropped.is_empty() {
+            tracing::error!(
+                ?serialized_bytes,
+                limit_bytes = SDK_CATALOGUE_EVENT_BYTES,
+                kept_surfaces = surfaces.len(),
+                dropped_surfaces = dropped.len(),
+                dropped_apps = ?dropped,
+                "collab: action catalogue exceeds its budget; trimmed to fit"
+            );
+        }
+        let event = CollabEvent::ActionCatalogue { surfaces };
+        let bytes = event_bytes(&event).unwrap_or(usize::MAX);
+        let Some(reservation) = self
+            .state
+            .catalogue_event_bytes
+            .reserve_sole(bytes, SDK_CATALOGUE_EVENT_BYTES)
+        else {
+            // Another snapshot is still held; the next read brings the
+            // latest again, so this one can go.
+            tracing::warn!(
+                bytes,
+                "collab: action catalogue snapshot skipped while one is held"
+            );
+            return true;
         };
         if self
             .tx
@@ -12917,6 +13022,114 @@ mod tests {
             "the watch delivered its next snapshot"
         );
         assert!(state.is_healthy());
+    }
+
+    /// An agent in a large workspace (many open windows, many apps) receives
+    /// a catalogue larger than the control events' budget whole and stays
+    /// connected: charged to that budget, it once failed the agent's whole
+    /// connection before its first task run.
+    #[test]
+    #[cfg(unix)]
+    fn an_agent_receives_a_catalogue_larger_than_the_control_budget() {
+        let cluster = Uuid::new_v4();
+        let snapshot = notebook_action_catalogue_fixture(cluster, 2049);
+        let decoded: BrokerActionCatalogueWire = serde_json::from_str(&snapshot).unwrap();
+        let retained = event_bytes(&CollabEvent::ActionCatalogue {
+            surfaces: decoded.surfaces,
+        })
+        .unwrap();
+        assert!(
+            retained > SDK_EVENT_QUEUE_BYTES,
+            "larger than the control budget"
+        );
+        assert!(
+            retained < SDK_CATALOGUE_EVENT_BYTES,
+            "within its own budget"
+        );
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                action_catalogue_fixture: Some(vec![snapshot]),
+                ..Captures::default()
+            })),
+            ..FakeBroker::default()
+        };
+        let (fd, _captures, worker) = stand_up_fake_broker(broker);
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "agent",
+                signer: harness_document_signer(),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::with_transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "so.tilo.agent".into(),
+            cluster_id: cluster,
+            record: None,
+            record_kind: None,
+            handle: None,
+        }));
+        let admission = manager.await_primary_route();
+        let state = broker_state(&manager);
+        let catalogue = manager.poll().into_iter().find_map(|event| match event {
+            CollabEvent::ActionCatalogue { surfaces } => Some(surfaces),
+            _ => None,
+        });
+        let healthy = state.is_healthy();
+        drop(manager);
+        worker.join().unwrap();
+        assert!(admission.is_ok(), "the agent joins: {admission:?}");
+        assert!(healthy, "the catalogue must not disconnect the agent");
+        assert_eq!(catalogue.expect("the catalogue")[0].actions.len(), 2049);
+    }
+
+    /// A catalogue too large even for its own budget is trimmed rather than
+    /// failing the bridge: apps only offered to open go first, the last
+    /// listed first, and what is kept fits.
+    #[test]
+    fn an_oversized_catalogue_keeps_the_open_windows_first() {
+        let surface = |app: &str, live: bool, actions: usize| {
+            let wire: BrokerActionCatalogueWire = serde_json::from_str(
+                &notebook_action_catalogue_fixture(Uuid::from_u128(1), actions),
+            )
+            .unwrap();
+            let mut surface = wire.surfaces.into_iter().next().unwrap();
+            surface.app_id = app.into();
+            surface.live = live;
+            surface
+        };
+        let surfaces = vec![
+            surface("so.tilo.notes", true, 40),
+            surface("host:one", false, 1),
+            surface("so.tilo.settings", true, 40),
+            surface("host:two", false, 1),
+        ];
+        let size = |surfaces: &[BrokerActionSurface]| {
+            event_bytes(&CollabEvent::ActionCatalogue {
+                surfaces: surfaces.to_vec(),
+            })
+            .unwrap()
+        };
+        let whole = size(&surfaces);
+        let (kept, dropped) = fit_catalogue(surfaces.clone(), whole);
+        assert_eq!(
+            (kept.len(), dropped.len()),
+            (4, 0),
+            "a fitting catalogue is whole"
+        );
+
+        let limit = size(&surfaces[..3]) - 1;
+        let (kept, dropped) = fit_catalogue(surfaces, limit);
+        assert_eq!(dropped, ["host:two", "host:one"], "inert surfaces go first");
+        assert_eq!(
+            kept.iter()
+                .map(|surface| surface.app_id.as_str())
+                .collect::<Vec<_>>(),
+            ["so.tilo.notes", "so.tilo.settings"]
+        );
+        assert!(size(&kept) <= limit);
     }
 
     /// Ordinary application startup must not acquire an unrelated workspace's
