@@ -691,6 +691,8 @@ impl StateTurn {
         state: &mut crate::persistence::State,
         prepared: &mut Option<AdmissionRecipients>,
     ) -> Result<Step<StateCommit>, crate::store::StoreError> {
+        // This job changes retained history only through retention.
+        state.retaining_only();
         if let Some(begun) = crate::timing::start() {
             let _ = self.persist_begun.set(begun);
         }

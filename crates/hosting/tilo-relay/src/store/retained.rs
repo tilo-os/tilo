@@ -749,6 +749,7 @@ impl CheckpointStage {
     /// Returns an error when `CURRENT` cannot be switched durably.
     pub fn promote(&mut self) -> Result<(), StoreError> {
         if matches!(self.build.phase, RetainPhase::Commit) {
+            self.build.store.forget_lineage_listing(&self.build.lineage);
             let staged = self
                 .build
                 .staged
@@ -804,6 +805,7 @@ impl RetainBuild {
     pub(crate) fn scratch(&self) -> &Path {
         &self.scratch
     }
+
     /// Whether this build made its scratch directory: a checkpoint's ordered
     /// pass and a shell selection do; a plain delta never does, so its owner
     /// has nothing to dispose of afterwards.
@@ -918,6 +920,7 @@ impl RetainBuild {
                 // Written behind the index's back: never overwrite it; list.
                 return self.rescan();
             }
+            self.store.forget_lineage_listing(&self.lineage);
             if std::mem::take(&mut self.fresh) {
                 // An append goes into the selected generation, where a
                 // continuity marker reserves its slot: select it first.
@@ -1232,6 +1235,7 @@ impl RetainBuild {
             RetainPhase::Commit => {
                 let staged = self.staged.as_ref().invariant("staged missing")?;
                 tail_index::forget(&self.lineage);
+                self.store.forget_lineage_listing(&self.lineage);
                 if !self.staged_synced {
                     sync_dir(staged)?;
                 }

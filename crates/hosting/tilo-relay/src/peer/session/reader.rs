@@ -57,7 +57,11 @@ async fn durable_barrier(session: &SessionCtx<'_>, subscribed: &[u64]) -> Result
                 .submit_prepared_wait(
                     1,
                     async { Ok(()) },
-                    |_, ()| Ok(()),
+                    // A fence: it retains nothing.
+                    |state, ()| {
+                        state.retaining_only();
+                        Ok(())
+                    },
                     |result| async { result },
                 )
                 .await?;
