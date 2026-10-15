@@ -153,6 +153,7 @@ shortcut-name-magnifier-zoom-out = Magnifier zoom out
 shortcut-name-power-menu = Power menu
 shortcut-name-next-input-source = Next keyboard layout
 shortcut-name-emoji-picker = Emoji
+shortcut-name-ask-agent = Ask agent about selection
 
 # The groups desktop shortcuts are listed in
 shortcut-category-system = System
@@ -905,6 +906,7 @@ osd-microphone-on = Microphone on
 osd-keyboard-backlight-off = Keyboard backlight off
 osd-keyboard-backlight = Keyboard backlight { $percent }%
 osd-no-backlight = No adjustable display
+osd-no-agent = No agent is available here
 osd-airplane-mode-on = Airplane mode on
 osd-airplane-mode-off = Airplane mode off
 osd-touchpad-on = Touchpad on
@@ -2586,6 +2588,8 @@ portal-chooser-file-grant-unavailable = The selected file is no longer available
 
 ## The agent composer: one field to ask an agent or tell it what to do
 agent-quick-title = { $agent }
+agent-quick-about-selection = About your selection in { $app }: “{ $selection }”
+agent-quick-about-window = About { $app }; nothing is selected
 agent-quick-accessible-name = Agent composer
 agent-quick-shots-context = About your selection in Notes: “[tilo OS](search for the tilo homepage)”
 agent-quick-shots-draft = What does this link point to?

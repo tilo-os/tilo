@@ -23,6 +23,7 @@ use crate::shell::agent_quick_composer::{
 };
 use crate::shell::certified_action_session::{ActionSessionSource, DesktopActionSession};
 use crate::shell::search::invocation_wake::{poll, waker, watch};
+use crate::shell::selection_agent::SelectionSeed;
 
 const REFRESH: Duration = Duration::from_secs(1);
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -429,7 +430,8 @@ impl AgentActions {
             changed = true;
         }
         if let Some(choice) = composer.take_answer_use() {
-            self.use_answer(&owner, choice);
+            let about = composer.about().cloned();
+            self.use_answer(&owner, choice, about.as_ref());
             changed = true;
         }
         changed
@@ -447,20 +449,29 @@ impl AgentActions {
     }
 
     /// Hand what the person chose to do with an answer to the agent as work.
-    fn use_answer(&mut self, owner: &ComposerOwner, choice: AnswerUse) {
-        let (title, instruction) = match choice {
+    /// An answer put at the selection carries that selection, so the agent
+    /// is told the exact place.
+    fn use_answer(
+        &mut self,
+        owner: &ComposerOwner,
+        choice: AnswerUse,
+        about: Option<&SelectionSeed>,
+    ) {
+        let (title, instruction, about) = match choice {
             AnswerUse::Insert(text) => (
                 "Insert the answer at the selection",
                 format!(
                     "Put this text where my selection is, in place of the selected text:\n<<<\n{text}\n>>>"
                 ),
+                about,
             ),
             AnswerUse::SaveAsNote(text) => (
                 "Save the answer as a note",
                 format!("Save this text as a new note:\n<<<\n{text}\n>>>"),
+                None,
             ),
         };
-        self.begin(queue_operation(owner, None, title, &instruction));
+        self.begin(queue_operation(owner, None, title, &instruction, about));
     }
 
     fn advance(&mut self, call: &mut Call, composer: &mut AgentQuickComposer) -> bool {
@@ -843,11 +854,18 @@ fn respond_operation(request: ComposerRequest) -> Operation {
 /// first line.
 fn request_queue(request: &ComposerRequest, title: Option<String>) -> Operation {
     let title = title.unwrap_or_else(|| request.text.lines().next().unwrap_or_default().into());
+    // A selection travels as the task's own record of it; the composer's
+    // context line only shows it, so it is not repeated as text.
+    let instruction = match &request.about {
+        Some(about) => instruction(&about.instruction(&request.text), "", &request.conversation),
+        None => instruction(&request.text, &request.context, &request.conversation),
+    };
     queue_operation(
         &request.owner,
         Some(request.clone()),
         &title,
-        &instruction(&request.text, &request.context, &request.conversation),
+        &instruction,
+        request.about.as_ref(),
     )
 }
 
@@ -856,6 +874,7 @@ fn queue_operation(
     request: Option<ComposerRequest>,
     title: &str,
     instruction: &str,
+    about: Option<&SelectionSeed>,
 ) -> Operation {
     let title: String = title.trim().chars().take(TITLE_CHARS).collect();
     let instruction: String = instruction
@@ -865,15 +884,21 @@ fn queue_operation(
             (*bytes <= tilo_desktop_model::MAX_WORKSPACE_TASK_INSTRUCTION_BYTES).then_some(c)
         })
         .collect();
+    let mut arguments = Map::from_iter([
+        ("title".into(), title.clone().into()),
+        ("instruction".into(), instruction.into()),
+        ("assigned_agent".into(), owner.agent.clone().into()),
+        ("planning".into(), "model".into()),
+    ]);
+    // The selection rides as the task resource's anchor, so the agent is
+    // told the exact place to act at.
+    if let Some(resource) = about.and_then(SelectionSeed::resource_json) {
+        arguments.insert("resource_json".into(), resource.into());
+    }
     Operation {
         resource: TASKS.into(),
         action: "queue".into(),
-        arguments: Map::from_iter([
-            ("title".into(), title.clone().into()),
-            ("instruction".into(), instruction.into()),
-            ("assigned_agent".into(), owner.agent.clone().into()),
-            ("planning".into(), "model".into()),
-        ]),
+        arguments,
         purpose: Purpose::Queue { request, title },
         app: None,
     }
@@ -1409,6 +1434,7 @@ mod tests {
                     text: "Nowhere yet.".into(),
                 },
             ],
+            about: None,
         }
     }
 
@@ -1493,6 +1519,58 @@ mod tests {
         assert!(instruction.contains("You: Nowhere yet."));
         let untitled = request_queue(&asked, None);
         assert_eq!(untitled.arguments["title"], "Fix the link");
+    }
+
+    #[test]
+    fn work_about_a_selection_attaches_it_as_the_task_resource_anchor() {
+        use ui::shared_selection::SharedSelection;
+
+        let mut request = request(ComposerIntent::Request);
+        request.text = "Tighten this".into();
+        request.conversation.clear();
+        request.about = Some(SelectionSeed::new(
+            "so.tilo.word-processor",
+            "Writer",
+            Some(
+                SharedSelection::of_text("which were late")
+                    .at(tilo_actions::SelectionPlace::range("block-4", 12, 27))
+                    .in_resource(tilo_actions::ActionResource {
+                        id: "doc:proposal".into(),
+                        kind: "word-processor.document".into(),
+                        label: "Proposal".into(),
+                    }),
+            ),
+        ));
+        let operation = request_queue(&request, None);
+        assert_eq!(operation.action, "queue");
+        assert_eq!(
+            operation.arguments["instruction"], "Tighten this",
+            "the excerpt travels in the anchor, not the instruction"
+        );
+        let resource: Value =
+            serde_json::from_str(operation.arguments["resource_json"].as_str().unwrap()).unwrap();
+        assert_eq!(resource["app_id"], "so.tilo.word-processor");
+        assert_eq!(resource["id"], "doc:proposal");
+        assert_eq!(resource["kind"], "word-processor.document");
+        assert_eq!(
+            resource["anchor"]["place"],
+            serde_json::json!({"item": "block-4", "start": 12, "end": 27})
+        );
+        assert_eq!(resource["anchor"]["excerpt"], "which were late");
+
+        // Text with no resource behind it (another app's primary selection)
+        // is quoted into the instruction instead.
+        request.about = Some(SelectionSeed::new(
+            "org.example.term",
+            "Terminal",
+            Some(SharedSelection::of_text("ls -la /srv")),
+        ));
+        let operation = request_queue(&request, None);
+        assert!(operation.arguments.get("resource_json").is_none());
+        let instruction = operation.arguments["instruction"].as_str().unwrap();
+        assert!(instruction.starts_with("Tighten this\n\n"));
+        assert!(instruction.contains("selected in Terminal"));
+        assert!(instruction.contains("<<<\nls -la /srv\n>>>"));
     }
 
     #[test]

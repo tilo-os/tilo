@@ -53,7 +53,7 @@ pub(crate) struct ComposerTurn {
 
 /// A user's intention, not an execution authority. The adapter re-resolves
 /// the actions and rechecks this exact owner/run/revision before submitting.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComposerRequest {
     pub owner: ComposerOwner,
     pub intent: ComposerIntent,
@@ -66,6 +66,9 @@ pub(crate) struct ComposerRequest {
     pub context: String,
     /// The conversation before this request, oldest first.
     pub conversation: Vec<ComposerTurn>,
+    /// The selection the request is about, when the composer was opened
+    /// on one ([`AgentQuickComposer::open_about`]).
+    pub about: Option<super::selection_agent::SelectionSeed>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -255,6 +258,8 @@ pub(crate) struct AgentQuickComposer {
     placeholder: String,
     pending_editor: Option<(u64, String)>,
     focus_reset: bool,
+    /// What the composer was opened about, which a queued task carries.
+    about: Option<super::selection_agent::SelectionSeed>,
 }
 
 impl Default for AgentQuickComposer {
@@ -281,6 +286,7 @@ impl Default for AgentQuickComposer {
             placeholder: String::new(),
             pending_editor: None,
             focus_reset: false,
+            about: None,
         };
         composer.popover = composer.controls();
         composer
@@ -442,6 +448,7 @@ impl AgentQuickComposer {
         viewport: Rect,
     ) {
         self.save_draft();
+        self.about = None;
         label.clone_into(&mut self.label);
         self.view
             .title
@@ -462,6 +469,42 @@ impl AgentQuickComposer {
         self.popover.set_open(true);
         self.refresh();
         self.focus_reset = true;
+    }
+
+    /// Open on what the person selected: the composer shows what it is
+    /// about, offers to put a text answer at the selection, and work it
+    /// queues carries the selection so the agent acts at that place.
+    pub(crate) fn open_about(
+        &mut self,
+        owner: ComposerOwner,
+        label: &str,
+        origin: AgentQuickComposerOrigin,
+        viewport: Rect,
+        about: super::selection_agent::SelectionSeed,
+    ) {
+        self.open(
+            owner,
+            label,
+            AgentQuickComposerOrigin {
+                context: about.context(),
+                ..origin
+            },
+            viewport,
+        );
+        self.selection = about.selection.is_some();
+        self.about = Some(about);
+        self.refresh();
+    }
+
+    /// The selection the composer was opened about, if it was.
+    pub(crate) fn about(&self) -> Option<&super::selection_agent::SelectionSeed> {
+        self.about.as_ref()
+    }
+
+    /// Whether the composer is open about a selection rather than beside an
+    /// agent's marker, so it stays while that agent shows no marker.
+    pub(crate) fn about_selection(&self) -> bool {
+        self.is_open() && self.about.is_some()
     }
 
     /// Offer to insert a text answer at the selection the composer was
@@ -629,6 +672,7 @@ impl AgentQuickComposer {
             stop,
             context: self.context.clone(),
             conversation: self.conversations.get(&owner).cloned().unwrap_or_default(),
+            about: self.about.clone().filter(|_| !stop),
         };
         self.refresh();
         Some(request)
@@ -1398,9 +1442,57 @@ mod tests {
     }
 
     #[test]
+    fn a_composer_opened_on_a_selection_carries_it_with_the_request() {
+        use super::super::selection_agent::SelectionSeed;
+        let mut composer = AgentQuickComposer::default();
+        let mut doc = automerge::AutoCommit::new();
+        let tide = owner("tide");
+        let seed = SelectionSeed::new(
+            "so.tilo.word-processor",
+            "Writer",
+            Some(
+                ui::shared_selection::SharedSelection::of_text("which were late")
+                    .at(tilo_actions::SelectionPlace::range("block-4", 12, 27)),
+            ),
+        );
+        composer.open_about(
+            tide.clone(),
+            "Tide",
+            AgentQuickComposerOrigin {
+                marker: Rect::new(400.0, 200.0, 401.0, 201.0),
+                protected: Rect::new(400.0, 200.0, 401.0, 201.0),
+                context: String::new(),
+            },
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            seed.clone(),
+        );
+        assert!(composer.about_selection());
+        assert!(composer.selection, "a text answer may go at the selection");
+        assert!(
+            composer.view.context.get().contains("which were late"),
+            "the composer shows what it is about: {}",
+            composer.view.context.get()
+        );
+        edit(&mut composer, &mut doc, "Tighten this");
+        let request = submit(&mut composer, &mut doc);
+        assert_eq!(request.intent, ComposerIntent::Request);
+        assert_eq!(request.text, "Tighten this");
+        assert!(request.context.contains("which were late"));
+        assert_eq!(request.about, Some(seed));
+
+        open(&mut composer, tide);
+        assert!(
+            !composer.about_selection() && !composer.selection,
+            "a composer opened at a marker is about nothing selected"
+        );
+    }
+
+    #[test]
     fn every_composer_string_is_in_every_catalogue() {
         const KEYS: &[&str] = &[
             "agent-quick-title",
+            "agent-quick-about-selection",
+            "agent-quick-about-window",
             "agent-quick-accessible-name",
             "agent-quick-close",
             "agent-quick-insert",

@@ -237,6 +237,7 @@ shortcut-name-magnifier-zoom-out = Lupe verkleinern
 shortcut-name-power-menu = Ein/Aus-Menü
 shortcut-name-next-input-source = Nächstes Tastaturlayout
 shortcut-name-emoji-picker = Emoji
+shortcut-name-ask-agent = Agent zur Auswahl fragen
 shortcut-category-system = System
 shortcut-category-navigation = Navigation
 shortcut-category-windows = Fenster
