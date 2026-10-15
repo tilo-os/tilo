@@ -1680,31 +1680,49 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
             accepted,
             authorization,
         } => {
+            let awaiting = |state: &RemoteAudioState| {
+                state
+                    .outbound
+                    .get(session_id)
+                    .filter(|route| {
+                        route.target == envelope.source && route.authorization.is_none()
+                    })
+                    .map(|route| route.selection.clone())
+            };
+            let selection = state().lock().ok().and_then(|state| awaiting(&state));
             let mut remove = false;
-            if let Ok(mut state) = state().lock()
-                && let Some(route) = state.outbound.get_mut(session_id)
-                && route.target == envelope.source
-                && route.authorization.is_none()
-            {
-                if *accepted {
-                    if let Some(authorization) = authorization {
-                        match PcmCapture::start(&route.selection) {
-                            Ok(capture) => {
+            if let Some(selection) = selection {
+                // Starting a capture asks PipeWire for its graph and waits for
+                // the stream (seconds on a busy graph). The route state stays
+                // free meanwhile: the compositor's Quick Settings reads it.
+                let capture = (*accepted)
+                    .then_some(authorization.as_ref())
+                    .flatten()
+                    .map(|_| PcmCapture::start(&selection));
+                let mut unused = None;
+                if let Ok(mut state) = state().lock()
+                    && awaiting(&state).as_ref() == Some(&selection)
+                {
+                    match (capture, authorization) {
+                        (Some(Ok(capture)), Some(authorization)) => {
+                            if let Some(route) = state.outbound.get_mut(session_id) {
                                 let now = Instant::now();
                                 route.authorization = Some(*authorization);
                                 route.capture = Some(capture);
                                 route.last_audio = now;
                                 route.last_heard = now;
                             }
-                            Err(_) => remove = true,
+                        }
+                        (None, _) if *accepted => {}
+                        _ => {
+                            remove = true;
+                            unused = state.outbound.remove(session_id);
                         }
                     }
-                } else {
-                    remove = true;
                 }
-                if remove {
-                    state.outbound.remove(session_id);
-                }
+                // A route or capture that is let go stops its stream, which
+                // joins the stream's thread: not under the state lock.
+                drop(unused);
             }
             if remove && let Some(authorization) = authorization {
                 let _ = network.send_personal_fabric_action(

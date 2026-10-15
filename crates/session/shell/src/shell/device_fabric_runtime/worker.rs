@@ -8,6 +8,55 @@
 //! during which no key, click or frame got through. The compositor now only
 //! hands the pump the turn's local facts ([`FabricWorker::tick`], which never
 //! waits) and picks up what it produced through the fabric's own queues.
+//!
+//! # Lock order
+//!
+//! This thread and the compositor's share state behind locks. Every path
+//! takes them in this order, outermost first, and only ever releases out of
+//! it; a new path that needs two of them takes them in this order too:
+//!
+//! 1. `ShellNetwork::event_rx` (the loop's event drain in `tick` only).
+//! 2. Relay-room and native-enrollment state, then the joined room's
+//!    `owner.mutation`.
+//! 3. `ShellNetwork::room_push`.
+//! 4. `personal_continuity_fingerprint`, then `personal_continuity_counter`,
+//!    then `personal_continuity`.
+//! 5. `ShellNetwork::replica`.
+//! 6. The workspace tree. Taken inside it: the native store writer, owner
+//!    authority, `personal_workspaces`, `next_sync_pull`, the continuation
+//!    registry (`personal_continuity_registry::global_registry`), and last
+//!    the tree guard's own holder and policy locks.
+//! 7. Input-control operations, then input declines.
+//! 8. Subsystem roots, never held together: media-handoff statuses, the
+//!    gamepad manager, speaker-group routes (then remote audio, then the
+//!    speaker core and clock state), remote capture (then its adapter and
+//!    broker), the realtime adapter, MPRIS.
+//! 9. `authenticated_personal_routes`.
+//! 10. `spatial_input_state`, then peer departures.
+//! 11. Sending: `personal_device_peers`, then registered home devices; then
+//!     `joined_topics` on its own.
+//! 12. `device_fabric`, then the state writer's queue.
+//! 13. Leaves, under which nothing else is taken: Nearby drop state, the
+//!     Nearby store thread's follow-up and wake slots, the selection store,
+//!     the settings store, `KnownContents`, the continuity durability ledger
+//!     (its obligations run after it is released), the wake state, queued
+//!     personal fabric actions, the state writer's queue, and this worker's
+//!     slot. The Nearby transfer store itself is taken only on its own
+//!     thread and by staging threads; this thread and the loop queue work
+//!     to it and never take it.
+//!
+//! This thread never takes 1 to 6: the pump reaches neither the tree, the
+//! replica, the continuity ledger nor the event drain. What the two threads
+//! share sits in 7 to 13, so a cycle needs one of them to break the order.
+//!
+//! The order rules out deadlock, not waiting. A lock the loop takes may not
+//! be held here across the disk, a process or the kernel. So: Nearby store
+//! work, with its fsyncs, runs on the store's own thread, and what follows
+//! it comes back here as a follow-up; a remote audio capture starts outside
+//! the route state's lock; the interface scan for wake routes runs outside
+//! the wake state's lock; and this device's own fabric snapshot is read,
+//! edited and written under one hold of `device_fabric`, so an edit on the
+//! loop never builds on a snapshot this thread replaced meanwhile.
 
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
