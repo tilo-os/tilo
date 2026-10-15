@@ -1291,6 +1291,7 @@ mod tests {
             route: WorkspaceTaskRoute::RulesOnly,
             status: WorkspaceTaskStatus::InProgress,
             resource: None,
+            subject: None,
             created_at: 42,
             updated_at: 42,
             audit: vec![

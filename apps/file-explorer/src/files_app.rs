@@ -8869,10 +8869,37 @@ impl Collaborative for FileExplorerWidget {
     }
 }
 
+/// The selected files and folders, for asking an agent about them: each
+/// row's published resource as a whole item, in the order shown, and their
+/// names listed.
+impl ui::presence::capability::PublishesPresence for FileExplorerWidget {
+    fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
+        let displayed = self.displayed_entries();
+        let picked: Vec<&Entry> = self
+            .selection
+            .selected()
+            .into_iter()
+            .filter_map(|index| displayed.get(index))
+            .collect();
+        if picked.is_empty() {
+            return None;
+        }
+        Some(
+            ui::shared_selection::SharedSelection::of_items(
+                picked
+                    .iter()
+                    .map(|entry| (Self::entry_resource_id(entry), entry.name.as_str())),
+            )
+            .in_kind(<crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND),
+        )
+    }
+}
+
 impl Widget for FileExplorerWidget {
     ui::provides!(
         dyn ui::widget::Collaborative,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {

@@ -5539,7 +5539,6 @@ impl RoomActivityPane {
                     kind: resource.kind.clone(),
                     label: resource.label.clone(),
                     agent_request: None,
-                    anchor: None,
                 })
         });
     }

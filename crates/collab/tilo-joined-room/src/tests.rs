@@ -318,7 +318,6 @@ fn chat_task_retry_after_owner_restart_keeps_one_executable_task() {
                         instruction: "Prepare complete release notes".into(),
                         invocation: serde_json::from_value(serde_json::json!(parent)).unwrap(),
                     }),
-                    anchor: None,
                 })),
             },
         },
@@ -1433,7 +1432,6 @@ fn manual_resource(id: &str) -> tilo_desktop_model::WorkspaceTaskResource {
         kind: "chip_design.verification".into(),
         label: "Mapped tile evidence".into(),
         agent_request: None,
-        anchor: None,
     }
 }
 

@@ -816,7 +816,7 @@ impl Session {
             task: format!(
                 "{}The request:\n\n{}",
                 self.memory.render(),
-                super::selection_prompt::task_request(run)
+                super::selection_prompt::task_request(run, &catalogue)
             ),
         };
         let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &first);
@@ -2971,7 +2971,7 @@ mod tests {
             task_id: "task:loop".into(),
             title: title.into(),
             instruction: None,
-            anchor: None,
+            subject: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::Model,

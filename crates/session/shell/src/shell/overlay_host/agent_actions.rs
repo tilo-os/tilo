@@ -890,10 +890,11 @@ fn queue_operation(
         ("assigned_agent".into(), owner.agent.clone().into()),
         ("planning".into(), "model".into()),
     ]);
-    // The selection rides as the task resource's anchor, so the agent is
-    // told the exact place to act at.
-    if let Some(resource) = about.and_then(SelectionSeed::resource_json) {
-        arguments.insert("resource_json".into(), resource.into());
+    // The selection rides as the task's subject, so the agent is told the
+    // exact place to act at; it attaches nothing, so the run's authority
+    // stays a room-wide task's.
+    if let Some(subject) = about.and_then(SelectionSeed::subject_json) {
+        arguments.insert("subject_json".into(), subject.into());
     }
     Operation {
         resource: TASKS.into(),
@@ -1522,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn work_about_a_selection_attaches_it_as_the_task_resource_anchor() {
+    fn work_about_a_selection_carries_it_as_the_subject_and_attaches_nothing() {
         use ui::shared_selection::SharedSelection;
 
         let mut request = request(ComposerIntent::Request);
@@ -1547,16 +1548,20 @@ mod tests {
             operation.arguments["instruction"], "Tighten this",
             "the excerpt travels in the anchor, not the instruction"
         );
-        let resource: Value =
-            serde_json::from_str(operation.arguments["resource_json"].as_str().unwrap()).unwrap();
-        assert_eq!(resource["app_id"], "so.tilo.word-processor");
-        assert_eq!(resource["id"], "doc:proposal");
-        assert_eq!(resource["kind"], "word-processor.document");
+        assert!(
+            operation.arguments.get("resource_json").is_none(),
+            "a selection attaches nothing that would narrow the run"
+        );
+        let subject: Value =
+            serde_json::from_str(operation.arguments["subject_json"].as_str().unwrap()).unwrap();
+        assert_eq!(subject["app_id"], "so.tilo.word-processor");
+        assert_eq!(subject["resource"]["id"], "doc:proposal");
+        assert_eq!(subject["resource"]["kind"], "word-processor.document");
         assert_eq!(
-            resource["anchor"]["place"],
+            subject["anchor"]["place"],
             serde_json::json!({"item": "block-4", "start": 12, "end": 27})
         );
-        assert_eq!(resource["anchor"]["excerpt"], "which were late");
+        assert_eq!(subject["anchor"]["excerpt"], "which were late");
 
         // Text with no resource behind it (another app's primary selection)
         // is quoted into the instruction instead.
@@ -1566,7 +1571,7 @@ mod tests {
             Some(SharedSelection::of_text("ls -la /srv")),
         ));
         let operation = request_queue(&request, None);
-        assert!(operation.arguments.get("resource_json").is_none());
+        assert!(operation.arguments.get("subject_json").is_none());
         let instruction = operation.arguments["instruction"].as_str().unwrap();
         assert!(instruction.starts_with("Tighten this\n\n"));
         assert!(instruction.contains("selected in Terminal"));
