@@ -2823,6 +2823,24 @@ struct ReplayPendingWork {
     frame: Option<ReplayPendingFrame>,
     written: u64,
 }
+/// Advance a commit's pending replay by one output budget; once it finishes,
+/// the bytes it wrote count toward the commit.
+fn step_commit_replay(
+    replay: &mut Option<ReplayPendingWork>,
+    commit: &mut Option<StateCommit>,
+    state: &mut crate::persistence::State,
+) -> Result<Step<()>, crate::store::StoreError> {
+    if let Some(work) = replay {
+        let Step::Done(written) = work.step(state, crate::persistence::output_budget())? else {
+            return Ok(Step::More);
+        };
+        let commit = commit.as_mut().invariant("commit missing")?;
+        commit.persisted_bytes = commit.persisted_bytes.saturating_add(written);
+        *replay = None;
+    }
+    Ok(Step::Done(()))
+}
+
 impl ReplayPendingWork {
     fn original(
         envelope: Arc<Envelope>,
@@ -3495,17 +3513,11 @@ impl ProjectedCheckpointCommit {
                 });
                 return Ok(ProjectedCheckpointStep::More);
             }
-            if let Some(replay) = &mut self.replay {
-                match replay.step(state, crate::persistence::output_budget())? {
-                    Step::More => return Ok(ProjectedCheckpointStep::More),
-                    Step::Done(written) => {
-                        self.commit
-                            .as_mut()
-                            .invariant("commit missing")?
-                            .persisted_bytes = written;
-                        self.replay = None;
-                    }
-                }
+            if matches!(
+                step_commit_replay(&mut self.replay, &mut self.commit, state)?,
+                Step::More
+            ) {
+                return Ok(ProjectedCheckpointStep::More);
             }
             self.supplemental_recovery = None;
             return Ok(ProjectedCheckpointStep::Commit(Box::new(
@@ -3547,22 +3559,11 @@ impl ProjectedCheckpointCommit {
                 self.commit = Some(commit);
                 return Ok(ProjectedCheckpointStep::More);
             }
-            if let Some(replay) = &mut self.replay {
-                match replay.step(state, crate::persistence::output_budget())? {
-                    Step::More => return Ok(ProjectedCheckpointStep::More),
-                    Step::Done(written) => {
-                        self.commit
-                            .as_mut()
-                            .invariant("commit missing")?
-                            .persisted_bytes = self
-                            .commit
-                            .as_ref()
-                            .invariant("commit missing")?
-                            .persisted_bytes
-                            .saturating_add(written);
-                        self.replay = None;
-                    }
-                }
+            if matches!(
+                step_commit_replay(&mut self.replay, &mut self.commit, state)?,
+                Step::More
+            ) {
+                return Ok(ProjectedCheckpointStep::More);
             }
             self.publication_index = self.publication_index.saturating_add(1);
             return Ok(ProjectedCheckpointStep::Commit(Box::new(
@@ -3636,15 +3637,11 @@ impl ProjectedCheckpointCommit {
             };
             return Ok(ProjectedCheckpointStep::More);
         }
-        if let Some(replay) = &mut self.replay {
-            match replay.step(state, crate::persistence::output_budget())? {
-                Step::More => return Ok(ProjectedCheckpointStep::More),
-                Step::Done(written) => {
-                    let commit = self.commit.as_mut().invariant("commit missing")?;
-                    commit.persisted_bytes = commit.persisted_bytes.saturating_add(written);
-                    self.replay = None;
-                }
-            }
+        if matches!(
+            step_commit_replay(&mut self.replay, &mut self.commit, state)?,
+            Step::More
+        ) {
+            return Ok(ProjectedCheckpointStep::More);
         }
         self.emission_done = true;
         Ok(ProjectedCheckpointStep::Commit(Box::new(
@@ -3797,10 +3794,6 @@ impl SerialCheckpointCommit {
         })
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-    )]
     fn step(
         &mut self,
         state: &mut crate::persistence::State,
@@ -3892,22 +3885,11 @@ impl SerialCheckpointCommit {
             };
             return Ok(Step::More);
         }
-        if let Some(replay) = &mut self.replay {
-            match replay.step(state, crate::persistence::output_budget())? {
-                Step::More => return Ok(Step::More),
-                Step::Done(written) => {
-                    self.commit
-                        .as_mut()
-                        .invariant("commit missing")?
-                        .persisted_bytes = self
-                        .commit
-                        .as_ref()
-                        .invariant("commit missing")?
-                        .persisted_bytes
-                        .saturating_add(written);
-                    self.replay = None;
-                }
-            }
+        if matches!(
+            step_commit_replay(&mut self.replay, &mut self.commit, state)?,
+            Step::More
+        ) {
+            return Ok(Step::More);
         }
         Ok(Step::Done(self.commit.take().invariant("commit missing")?))
     }
@@ -5670,13 +5652,7 @@ async fn handle_delta(
         }
         runtime.governor_tap.clone()
     };
-    let governor = governor_tap.and_then(|tap| {
-        let Envelope::Delta { delta, .. } = &env else {
-            return None;
-        };
-        let (_, _, body) = crate::coedit::retention_view(delta)?;
-        Some((tap, body.to_vec()))
-    });
+    let governor = governor_tap.and_then(|tap| Some((tap, governor_notice(&env)?)));
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
     if let Some((tap, body)) = governor {
         let _ = tap.try_send((peer.device_public_key, body));
@@ -5687,6 +5663,18 @@ async fn handle_delta(
     drop(admitting);
 
     Ok(None)
+}
+
+/// What the room's governor follows of `env`, a member's state change: its
+/// retained body. The room's governor stewards its channels and creates
+/// records from these, so every change the relay keeps must reach it, one
+/// sent alone and one in a checkpoint prefix alike.
+fn governor_notice(env: &Envelope) -> Option<Vec<u8>> {
+    let Envelope::Delta { delta, .. } = env else {
+        return None;
+    };
+    let (_, _, body) = crate::coedit::retention_view(delta)?;
+    Some(body.to_vec())
 }
 
 /// A member volunteering to compact sealed routes, or its coverage
@@ -6152,11 +6140,33 @@ async fn handle_delta_prefix(
     for envelope in &envelopes {
         trace_native_publication("server_authorized", envelope, None);
     }
-    let governed_source = {
+    let (governed_source, governor_tap) = {
         let runtime = workspace.lock().await;
-        checkpoint_prefix_recovery_allowed(&runtime, peer, *author_device_public_key, &source)
+        (
+            checkpoint_prefix_recovery_allowed(&runtime, peer, *author_device_public_key, &source),
+            runtime.governor_tap.clone(),
+        )
     };
-    if !governed_source {
+    // Every change of the prefix reaches the room's governor once it is
+    // kept, as one sent alone does (`handle_delta`): an access request and
+    // the next checkpoint arriving together must not hide the request from
+    // the channel's steward.
+    let notices: Vec<Vec<u8>> = if governor_tap.is_some() {
+        envelopes.iter().filter_map(governor_notice).collect()
+    } else {
+        Vec::new()
+    };
+    if governed_source {
+        enqueue_checkpoint_prefix(
+            &workspace,
+            envelopes,
+            source,
+            peer.role,
+            session.metrics.clone(),
+            inbound_budget,
+        )
+        .await?;
+    } else {
         for (envelope, budget) in envelopes.into_iter().zip(inbound_budget) {
             enqueue_state(
                 &workspace,
@@ -6168,17 +6178,12 @@ async fn handle_delta_prefix(
             .await?;
             drop(budget);
         }
-        return Ok(None);
     }
-    enqueue_checkpoint_prefix(
-        &workspace,
-        envelopes,
-        source,
-        peer.role,
-        session.metrics.clone(),
-        inbound_budget,
-    )
-    .await?;
+    if let Some(tap) = governor_tap {
+        for body in notices {
+            let _ = tap.try_send((peer.device_public_key, body));
+        }
+    }
     Ok(None)
 }
 
@@ -6554,7 +6559,8 @@ fn serve_locally(
             "this host does not serve apps",
         ));
     }
-    let Some(reply) = plane.serve(workspace_id, &caller, request.message) else {
+    let Some(reply) = plane.serve_certified(workspace_id, &caller, &peer.cert, request.message)
+    else {
         return Ok(None);
     };
     let outbound = session.outbound.clone();

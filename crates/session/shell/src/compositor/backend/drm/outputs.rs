@@ -147,6 +147,7 @@ mod tests {
             height: 1080,
             refresh_mhz: 60_000,
             preferred: true,
+            interlaced: false,
         }
     }
 
@@ -156,6 +157,7 @@ mod tests {
             height: 2160,
             refresh_mhz: 60_000,
             preferred: false,
+            interlaced: false,
         }
     }
 

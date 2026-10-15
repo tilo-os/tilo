@@ -543,8 +543,10 @@ fn a_read_deny_below_the_room_refuses_only_what_it_names() {
 /// A steward withholds a record's channel from exactly the member devices
 /// that may not read the record, by the same decision as
 /// [`StatePeer::check_document_read`]: a Read Deny naming one record
-/// withholds that record's channel alone, and a record reopened by a more
-/// specific Allow is withheld from nobody.
+/// withholds that record's channel alone, a Deny over an app withholds every
+/// record of it a device proved the route of, a record reopened by a more
+/// specific Allow is withheld from nobody, and a channel whose record nobody
+/// named is withheld from whoever the app's Deny keeps out, and no one else.
 #[test]
 fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
     let (mut peer, source, now) = fixture();
@@ -560,7 +562,9 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
         .into_iter()
         .collect();
     assert!(devices.contains(&source));
-    assert!(peer.withheld_record_readers(now).unwrap().is_empty());
+    let open = peer.withheld_record_readers(now, &[]).unwrap();
+    assert!(open.withheld.is_empty());
+    assert!(open.unrouted.is_empty());
     let read_grant = |id: &str, node: TreePath, answer: Answer| {
         Grant::new(
             id,
@@ -590,19 +594,44 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
     ] {
         put_grant(&mut peer, &grant);
     }
-    let withheld = peer.withheld_record_readers(now).unwrap();
-    let payroll = collab_types::document_channel_id("app", &room_id, "payroll");
-    assert_eq!(withheld.get(&payroll), Some(&devices));
-    assert_eq!(withheld.len(), 1);
-    assert!(
-        peer.check_document_read(source, "app", "payroll", now)
-            .is_err()
-    );
-    for (app, record) in [("app", "notes"), ("finance", "summary")] {
-        assert!(peer.check_document_read(source, app, record, now).is_ok());
+    let routes = [
+        collab_types::ChannelRoute::new("finance", "q3"),
+        collab_types::ChannelRoute::new("finance", "summary"),
+        collab_types::ChannelRoute::new("app", "notes"),
+    ];
+    for known in [&[][..], &routes[..]] {
+        let readers = peer.withheld_record_readers(now, known).unwrap();
+        let payroll = collab_types::document_channel_id("app", &room_id, "payroll");
+        assert_eq!(readers.withheld.get(&payroll), Some(&devices));
         assert!(
-            !withheld.contains_key(&collab_types::document_channel_id(app, &room_id, record)),
-            "{app}/{record}"
+            peer.check_document_read(source, "app", "payroll", now)
+                .is_err()
         );
+        // The finance Deny names no record: whoever it keeps out reads no
+        // channel whose record is unknown.
+        assert_eq!(readers.unrouted, devices);
+        let q3 = collab_types::document_channel_id("finance", &room_id, "q3");
+        assert!(
+            peer.check_document_read(source, "finance", "q3", now)
+                .is_err()
+        );
+        assert_eq!(
+            readers.withheld.get(&q3),
+            (!known.is_empty()).then_some(&devices)
+        );
+        for (app, record) in [("app", "notes"), ("finance", "summary")] {
+            assert!(peer.check_document_read(source, app, record, now).is_ok());
+            assert!(
+                readers
+                    .withheld
+                    .get(&collab_types::document_channel_id(app, &room_id, record))
+                    .is_none_or(std::collections::BTreeSet::is_empty),
+                "{app}/{record}"
+            );
+        }
+        // Nothing is withheld that the read decision allows.
+        for (channel, withheld) in &readers.withheld {
+            assert!(*channel == payroll || *channel == q3 || withheld.is_empty());
+        }
     }
 }

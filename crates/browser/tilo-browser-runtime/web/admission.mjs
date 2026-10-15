@@ -43,7 +43,10 @@ async function ready(peer) {
 /** Admission through `workspace`'s host door, held to the room the link names. */
 async function viaHost({workspace, room, deps, onProgress}) {
   onProgress({phase: 'joining'});
-  const peer = await deps.enterViaHost({workspace});
+  // The room a link names, if any: what this browser kept for a host set up
+  // again is offered to be joined again only from the bare entry, where the
+  // door's room is the one the person asked for.
+  const peer = await deps.enterViaHost(room ? {workspace, room} : {workspace});
   if (room && peer?.room && peer.room !== room) {
     await peer.dispose?.();
     throw new AdmissionError('no-access', NO_ACCESS);

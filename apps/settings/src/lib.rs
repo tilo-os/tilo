@@ -74,6 +74,8 @@ pub mod prefs;
 pub(crate) mod radios;
 pub mod search;
 pub mod settings_app;
+#[cfg(test)]
+mod settings_write_tests;
 pub mod sidebar;
 pub mod speaker_setup;
 pub mod widgets;

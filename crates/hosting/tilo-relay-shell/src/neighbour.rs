@@ -84,6 +84,7 @@ impl ShellPayloads for NeighbourPayloads {
         let kind = match &msg {
             NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. } => CheckpointKind::Governance,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key, ..

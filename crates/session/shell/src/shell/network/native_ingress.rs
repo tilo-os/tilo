@@ -177,6 +177,22 @@ impl ShellNetwork {
                     self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
                         room,
                         request: request.clone(),
+                        route: None,
+                    });
+                }
+                true
+            }
+            NeighbourMsg::MlsRoutedAccessRequest {
+                room: named,
+                request,
+                route,
+                ..
+            } => {
+                if RoomId::parse(named) == Some(room) {
+                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
+                        room,
+                        request: request.clone(),
+                        route: Some(route.clone()),
                     });
                 }
                 true

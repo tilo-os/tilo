@@ -179,7 +179,10 @@ containerfile="$repo/os/Containerfile"
 # The cache cleanup's policy (/etc/tilo/cache-gc.toml, beside desktop.toml) and
 # its system and user tilo-cache-gc.service/.timer units ride existing COPY
 # instructions; they are the intentional payload rows.
-expected_contract=f8da8f778e14a85961c51848e523d9fce7097fe2b2952bd1b854c0c62ef66a9b
+# systemd-bless-boot's drop-in, which lets blessing rename the booted entry on
+# the read-only ESP, is one intentional payload row with a COPY of its own: no
+# existing instruction copies into that drop-in directory.
+expected_contract=bbe63ef7a63db5c3790095d91b09cb4f292e2b99ace8b5a9d82336618b42c9c9
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

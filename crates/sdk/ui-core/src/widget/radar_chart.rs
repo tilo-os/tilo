@@ -22,7 +22,7 @@ use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
-    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_index,
+    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
 };
 
 #[derive(Clone, Debug)]
@@ -116,7 +116,7 @@ impl Default for RadarStyle {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Hovered {
     series: usize,
     axis: usize,
@@ -351,9 +351,8 @@ impl InteractiveChart for RadarChart {
         true
     }
 
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
-        let candidates = self
-            .series
+    fn keyboard_items(&self) -> Vec<Hovered> {
+        self.series
             .iter()
             .enumerate()
             .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
@@ -366,21 +365,10 @@ impl InteractiveChart for RadarChart {
                         .map(|_| Hovered { series, axis })
                 })
             })
-            .collect::<Vec<_>>();
-        let current = self.inspection.hovered.and_then(|hovered| {
-            candidates.iter().position(|candidate| {
-                candidate.series == hovered.series && candidate.axis == hovered.axis
-            })
-        });
-        self.inspection.hovered = moved_index(current, candidates.len(), action)
-            .and_then(|index| candidates.get(index).copied());
-        if let Some(hovered) = self.inspection.hovered
-            && let Some(series) = self.series.get(hovered.series)
-            && let Some(point) = self.value_point(series, hovered.axis)
-        {
-            self.inspection.pointer = point;
-        }
-        self.inspection.hovered.is_some()
+            .collect()
+    }
+    fn anchor(&self, hovered: &Hovered) -> Option<Point> {
+        self.value_point(self.series.get(hovered.series)?, hovered.axis)
     }
 }
 
@@ -403,23 +391,8 @@ impl Widget for RadarChart {
             return;
         }
         let (center, radius) = self.geometry();
-        if self.inspection.keyboard
-            && let Some(hovered) = self.inspection.hovered
-            && let Some(series) = self.series.get(hovered.series)
-            && let Some(point) = self.value_point(series, hovered.axis)
-        {
-            self.inspection.pointer = point;
-        }
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        self.follow_keyboard_anchor();
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         let grid = Color::from_rgba8(
             theme.tokens.colors.border_standard.r(),
             theme.tokens.colors.border_standard.g(),

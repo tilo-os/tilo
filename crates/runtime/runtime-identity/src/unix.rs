@@ -203,6 +203,8 @@ pub struct IdentityMetadata {
     pub threshold: u16,
     pub total_shares: u16,
     pub share_index: u16,
+    /// Whether the record is a 1-of-1 identity holding a local share.
+    pub single_device: bool,
 }
 
 const ACTIVE_FILE: &str = "active";
@@ -500,8 +502,8 @@ fn import_identity_unlocked(
 }
 
 /// Move one record's inline key into its secret provider. Idempotent. Only
-/// provisioning and Settings secure records; an app launch reads them through
-/// [`load_for_launch`] and never writes the store.
+/// provisioning and Settings secure records; an app launch reads only their
+/// public fields through [`load_metadata_for_launch`] and never writes the store.
 ///
 /// # Errors
 ///
@@ -1296,34 +1298,6 @@ impl SigningIdentity {
         }
     }
 
-    /// Whether a signature from this identity would be made with the
-    /// person's root (group) key rather than an enrolled device key. A
-    /// single-device record's local secret *is* the root scalar, and no
-    /// application may ever obtain a root signature: one over a
-    /// `DeviceCert` digest enrols an attacker's machine as one of the
-    /// person's devices, one over a revocation digest evicts the real ones.
-    pub(crate) fn signs_with_root_key(&self) -> bool {
-        self.device_certificate.is_none() || self.signing_public_key == self.group_public_key
-    }
-
-    fn sign_local(&self, message: &[u8]) -> io::Result<[u8; 64]> {
-        match &self.source {
-            SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
-            SigningSource::Local(None) => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "threshold signing requires the multi-device orchestrator",
-            )),
-            SigningSource::LocalThreshold(_) => Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "threshold signature requires a confirmed broker quorum",
-            )),
-            SigningSource::Broker(_) | SigningSource::ActionBroker(_) => Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "refusing to chain identity brokers",
-            )),
-        }
-    }
-
     fn from_local_parts(
         display_name: String,
         avatar_color: [u8; 3],
@@ -1422,6 +1396,7 @@ pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
         threshold: identity.threshold(),
         total_shares: identity.total_shares(),
         share_index: identity.share_index(),
+        single_device: identity.is_single_device(),
     })
 }
 
@@ -1524,26 +1499,39 @@ fn load_record(
     identity_from_record(record, Some(secret.as_slice()))
 }
 
-/// Load a record from the identity store for an app launch, strictly
-/// read-only.
+/// Read a record from the identity store for an app launch: its public
+/// fields only, strictly read-only, never contacting its secret provider.
 ///
-/// The record must already be in the form provisioning leaves it: a secured
-/// record whose key its secret provider holds, or a joined device's public
-/// record. One still carrying its key inline is refused, never rewritten:
-/// securing it belongs to provisioning and Settings, not to a launch.
+/// A launch holds no secret. The per-launch broker answers metadata and
+/// refuses every signature, and application signatures come from the
+/// identity service, so loading the person's key here would only leave it in
+/// launcher memory for the app's lifetime.
+///
+/// The record must still be in the form provisioning leaves it: a secured
+/// record naming a secret provider this session can resolve, or a joined
+/// device's public record. One still carrying its key inline is refused,
+/// never rewritten: securing it belongs to provisioning and Settings, not to
+/// a launch, and refusing it here is how an unsecured record gets noticed.
 ///
 /// # Errors
 ///
-/// As [`load_from_path`], and [`NotAvailable::ConnectionFailed`] naming
-/// Settings when the record's key is not secured.
-pub fn load_for_launch(path: &std::path::Path) -> Result<SigningIdentity, NotAvailable> {
+/// As [`load_metadata_from_path`]; [`NotAvailable::ConnectionFailed`] naming
+/// Settings when the record's key is not secured, and when no provider this
+/// session has could hold it.
+pub fn load_metadata_for_launch(path: &std::path::Path) -> Result<IdentityMetadata, NotAvailable> {
     let bytes =
         read_record_bytes(path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
     let record = parse_record(&bytes)?;
-    if record.protection() == KeyProtection::LegacyPlaintext {
-        return Err(LoadFailure::KeyNotSecured.into_not_available());
+    match record.protection() {
+        KeyProtection::LegacyPlaintext => Err(LoadFailure::KeyNotSecured.into_not_available()),
+        KeyProtection::Unavailable => {
+            Err(LoadFailure::SecuredRecordNeedsProvider.into_not_available())
+        }
+        KeyProtection::SecretService
+        | KeyProtection::BrokerFile
+        | KeyProtection::HardwareBacked
+        | KeyProtection::DeviceCertificate => Ok(metadata_from_record(record)),
     }
-    load_record(path, record)
 }
 
 /// Read the public presentation and quorum fields of a private identity
@@ -1560,16 +1548,25 @@ pub fn load_for_launch(path: &std::path::Path) -> Result<SigningIdentity, NotAva
 pub fn load_metadata_from_path(path: &std::path::Path) -> Result<IdentityMetadata, NotAvailable> {
     let bytes = read_record_bytes(path)
         .map_err(|error| LoadFailure::ReadFailed(error).into_not_available())?;
-    let record = parse_record(&bytes)?;
-    let identity = record.threshold_identity;
-    Ok(IdentityMetadata {
-        display_name: record.display_name,
-        avatar_color: record.avatar_color,
+    Ok(metadata_from_record(parse_record(&bytes)?))
+}
+
+/// A record's public fields, as [`load_from_path`]'s identity reports them.
+/// A 1-of-1 record counts as single-device when it carries a share, inline
+/// or with its provider.
+fn metadata_from_record(record: ondisk::IdentityRecord) -> IdentityMetadata {
+    let identity = &record.threshold_identity;
+    let single_device = identity.single_device
+        && (!identity.secret_bytes.is_empty() || record.secret_ref.is_some());
+    IdentityMetadata {
         group_public_key: identity.group_public_key,
         threshold: identity.threshold,
         total_shares: identity.total_shares,
         share_index: identity.share_index,
-    })
+        single_device,
+        display_name: record.display_name,
+        avatar_color: record.avatar_color,
+    }
 }
 
 /// Same as [`load`] but parses from an in-memory byte slice.
@@ -2746,7 +2743,7 @@ mod tests {
         let path = dir.path().join("primary.json");
         write_private_atomic(&path, &bytes).unwrap();
 
-        let Err(error) = load_for_launch(&path) else {
+        let Err(error) = load_metadata_for_launch(&path) else {
             panic!("an inline key must be refused");
         };
         assert!(error.to_string().contains("Settings > Users"), "{error}");
@@ -2757,7 +2754,128 @@ mod tests {
         // Once secured, the same record launches.
         secure_identity_with_provider(dir.path(), "primary", &BrokerFileProvider::new(dir.path()))
             .unwrap();
-        assert!(load_for_launch(&path).unwrap().sign(b"secured").is_ok());
+        assert!(load_metadata_for_launch(&path).is_ok());
+    }
+
+    fn metadata_of(identity: &SigningIdentity) -> IdentityMetadata {
+        IdentityMetadata {
+            display_name: identity.display_name().to_owned(),
+            avatar_color: identity.avatar_color(),
+            group_public_key: identity.group_public_key(),
+            threshold: identity.threshold(),
+            total_shares: identity.total_shares(),
+            share_index: identity.share_index(),
+            single_device: identity.is_single_device(),
+        }
+    }
+
+    fn remove_secret_files(dir: &std::path::Path) -> usize {
+        let files: Vec<_> = fs::read_dir(dir.join("secrets"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        for file in &files {
+            fs::remove_file(file).unwrap();
+        }
+        files.len()
+    }
+
+    fn rewrite_record(path: &std::path::Path, edit: impl FnOnce(&mut serde_json::Value)) {
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        edit(&mut record);
+        write_private_atomic(path, &serde_json::to_vec(&record).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_launch_reads_public_fields_without_the_secret_provider() {
+        // phase: launch_metadata_equals_the_full_records_public_fields
+        // phase: a_launch_succeeds_with_the_secret_absent_from_its_provider
+        // The secret is deleted from its provider: a load that touched the
+        // provider would fail, so a launch that still answers never read it.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = import_identity_with_provider(
+                dir.path(),
+                "primary",
+                &record_bytes("Ada", 61),
+                &BrokerFileProvider::new(dir.path()),
+            )
+            .unwrap();
+            let full = metadata_of(&load_from_path(path.clone()).unwrap());
+            assert!(full.single_device);
+            assert_eq!(load_metadata_for_launch(&path).unwrap(), full);
+
+            assert_eq!(remove_secret_files(dir.path()), 1);
+            assert!(
+                load_from_path(path.clone()).is_err(),
+                "the secret is gone from its provider"
+            );
+            assert_eq!(load_metadata_for_launch(&path).unwrap(), full);
+        }
+        // phase: a_secret_service_record_launches_without_a_lookup
+        // No Secret Service answers in a test, and none holds this locator.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = import_identity_with_provider(
+                dir.path(),
+                "primary",
+                &record_bytes("Ada", 62),
+                &BrokerFileProvider::new(dir.path()),
+            )
+            .unwrap();
+            let full = metadata_of(&load_from_path(path.clone()).unwrap());
+            remove_secret_files(dir.path());
+            rewrite_record(&path, |record| {
+                record["secret_ref"]["backend"] = "secret-service-v1".into();
+                record["secret_ref"]["locator"] = "absent-from-every-store".into();
+            });
+            assert_eq!(load_metadata_for_launch(&path).unwrap(), full);
+        }
+        // phase: a_record_no_session_provider_can_hold_still_fails_the_launch
+        for backend in ["tpm2-sealed-v1", "unknown-backend"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = import_identity_with_provider(
+                dir.path(),
+                "primary",
+                &record_bytes("Ada", 63),
+                &BrokerFileProvider::new(dir.path()),
+            )
+            .unwrap();
+            rewrite_record(&path, |record| {
+                record["secret_ref"]["backend"] = backend.into();
+            });
+            let Err(error) = load_metadata_for_launch(&path) else {
+                panic!("{backend}: a record with no reachable provider must not launch");
+            };
+            assert!(error.to_string().contains("secret provider"), "{error}");
+        }
+        // phase: a_secured_record_without_a_reference_fails_the_launch
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = import_identity_with_provider(
+                dir.path(),
+                "primary",
+                &record_bytes("Ada", 64),
+                &BrokerFileProvider::new(dir.path()),
+            )
+            .unwrap();
+            rewrite_record(&path, |record| {
+                record.as_object_mut().unwrap().remove("secret_ref");
+            });
+            assert!(load_metadata_for_launch(&path).is_err());
+        }
+        // phase: a_joined_devices_public_record_launches
+        {
+            let dir = tempfile::tempdir().unwrap();
+            ensure_private_dir(dir.path()).unwrap();
+            let path = dir.path().join("identity-joined.json");
+            let record = public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
+            write_private_atomic(&path, &record).unwrap();
+            let full = metadata_of(&load_from_path(path.clone()).unwrap());
+            assert!(!full.single_device);
+            assert_eq!(load_metadata_for_launch(&path).unwrap(), full);
+        }
     }
 
     #[test]

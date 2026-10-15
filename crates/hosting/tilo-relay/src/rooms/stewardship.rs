@@ -7,8 +7,12 @@
 //! rooms it governs: it admits exactly the room's governed member devices
 //! that ask for a channel, removes the ones governance removed, and sends
 //! each of them the channel's governance frames. A channel is one record's:
-//! a device a Read Deny on that record withholds ([`Readers`]) is kept out
-//! of that channel alone. A relay with a plain host
+//! a device a Read Deny on that record, its app or a pattern over it
+//! withholds ([`Readers`]) is kept out of that channel alone. A channel id
+//! is a hash of its record's route, so the steward keeps each route a device
+//! proved with its request ([`Steward::learn_route`]); a channel whose route
+//! it does not know is withheld from whoever a Deny over a pattern could
+//! keep out of it. A relay with a plain host
 //! certificate governs rooms without stewarding them; members accept a
 //! steward only from a device certified to own workspaces.
 //!
@@ -16,50 +20,71 @@
 //! device key, which already lives beside it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use channel_crypto::{ChannelSteward, VaultKey};
-use collab_types::{ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1};
+use collab_types::{
+    ChannelId, ChannelRoute, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1,
+};
 use ed25519_dalek::SigningKey;
 use tilo_peer_state::NeighbourMsg;
 
 /// Channels one room keeps a steward for.
 const MAX_CHANNELS: usize = 4096;
 
+/// Routes one room keeps: one per channel it may steward, and as many again
+/// for channels asked about that it never opened.
+const MAX_ROUTES: usize = 2 * MAX_CHANNELS;
+
 /// The devices governance lets read a room's channels: every reader of the
-/// room, less the ones a Read Deny keeps out of one record's channel
+/// room, less the ones a Read Deny keeps out of a record's channel
 /// (`tilo_peer_state::StatePeer::withheld_record_readers`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Readers {
     room: BTreeSet<Ed25519PublicKey>,
+    /// Each channel whose record the steward can name, and who may not read
+    /// that record.
     withheld: HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>,
+    /// Who is kept out of every channel whose record the steward cannot
+    /// name: whoever a Deny over a pattern of records could keep out of it.
+    unrouted: BTreeSet<Ed25519PublicKey>,
 }
 
 impl Readers {
     pub(super) fn new(
         room: BTreeSet<Ed25519PublicKey>,
         withheld: HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>,
+        unrouted: BTreeSet<Ed25519PublicKey>,
     ) -> Self {
-        Self { room, withheld }
+        Self {
+            room,
+            withheld,
+            unrouted,
+        }
     }
 
     /// The devices that may read `channel`.
     pub(super) fn of(&self, channel: ChannelId) -> BTreeSet<Ed25519PublicKey> {
-        match self.withheld.get(&channel) {
-            Some(withheld) => self.room.difference(withheld).copied().collect(),
-            None => self.room.clone(),
-        }
+        let withheld = self.withheld.get(&channel).unwrap_or(&self.unrouted);
+        self.room.difference(withheld).copied().collect()
     }
 
     /// Whether every device these readers let read a channel, `later` lets
     /// read it too: `later` only lets devices in.
     fn within(&self, later: &Self) -> bool {
-        // A channel `later` withholds nothing from is read by its whole
-        // room, which then holds all of this room.
-        self.room.is_subset(&later.room)
-            && later
+        // A channel neither names is read by each room less its unrouted.
+        let unnamed = |readers: &Self| -> BTreeSet<Ed25519PublicKey> {
+            readers
+                .room
+                .difference(&readers.unrouted)
+                .copied()
+                .collect()
+        };
+        unnamed(self).is_subset(&unnamed(later))
+            && self
                 .withheld
                 .keys()
+                .chain(later.withheld.keys())
                 .all(|channel| self.of(*channel).is_subset(&later.of(*channel)))
     }
 }
@@ -88,17 +113,115 @@ pub(super) struct Steward {
     /// channel, so the room hands its readers over without waiting for an
     /// admission in progress.
     readers: std::sync::Mutex<Option<(u64, Readers)>>,
+    /// The route of each channel's record a device proved, kept on disk
+    /// beside the channels. Apart from the channels too: readers are read
+    /// with them before the channels are taken.
+    routes: std::sync::Mutex<Routes>,
     pub(super) channels: tokio::sync::Mutex<Stewardship>,
+}
+
+/// The routes a room's steward knows, and where it keeps them.
+struct Routes {
+    room: String,
+    dir: PathBuf,
+    known: HashMap<ChannelId, ChannelRoute>,
 }
 
 impl Steward {
     pub(super) fn new(channels: Stewardship) -> Self {
+        let routes = Routes::load(&channels.room, &channels.dir);
         Self {
             readers: std::sync::Mutex::new(None),
+            routes: std::sync::Mutex::new(routes),
             channels: tokio::sync::Mutex::new(channels),
         }
     }
 
+    fn known_routes(&self) -> std::sync::MutexGuard<'_, Routes> {
+        self.routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Every route this steward knows, for deciding Read on the records
+    /// their channels carry.
+    pub(super) fn routes(&self) -> Vec<ChannelRoute> {
+        self.known_routes().known.values().cloned().collect()
+    }
+
+    /// Keep `route` as `channel`'s, durably, when it proves to be the
+    /// channel's route in this room. Returns whether it is now known; a
+    /// route that does not prove itself, or one past the room's bound, is
+    /// not, and the channel stays decided as one whose record is unknown.
+    pub(super) fn learn_route(&self, channel: ChannelId, route: &ChannelRoute) -> bool {
+        self.known_routes().learn(channel, route)
+    }
+}
+
+impl Routes {
+    fn path(dir: &Path, channel: ChannelId) -> PathBuf {
+        dir.join(format!("{}.route", channel.0))
+    }
+
+    /// The routes kept under `dir` that still prove themselves in `room`.
+    fn load(room: &str, dir: &Path) -> Self {
+        let mut known = HashMap::new();
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("route") {
+                continue;
+            }
+            let Some(channel) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(|stem| uuid::Uuid::parse_str(stem).ok())
+                .map(ChannelId)
+            else {
+                continue;
+            };
+            let route = std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| postcard::from_bytes::<ChannelRoute>(&bytes).ok())
+                .filter(|route| route.proves(room, channel));
+            if let Some(route) = route
+                && known.len() < MAX_ROUTES
+            {
+                known.insert(channel, route);
+            }
+        }
+        Self {
+            room: room.to_owned(),
+            dir: dir.to_owned(),
+            known,
+        }
+    }
+
+    fn learn(&mut self, channel: ChannelId, route: &ChannelRoute) -> bool {
+        if self.known.contains_key(&channel) {
+            return true;
+        }
+        if !route.proves(&self.room, channel) || self.known.len() >= MAX_ROUTES {
+            return false;
+        }
+        let saved = std::fs::create_dir_all(&self.dir)
+            .and_then(|()| postcard::to_stdvec(route).map_err(std::io::Error::other))
+            .and_then(|bytes| {
+                tilo_files::native::atomic::write_with_mode(
+                    &Self::path(&self.dir, channel),
+                    &bytes,
+                    0o600,
+                )
+            });
+        if let Err(error) = saved {
+            // Known for now; after a restart the device proves it again.
+            tracing::warn!(room = %self.room, %error, "channel route could not be saved");
+        }
+        self.known.insert(channel, route.clone());
+        true
+    }
+}
+
+impl Steward {
     fn handed_over(&self) -> std::sync::MutexGuard<'_, Option<(u64, Readers)>> {
         self.readers
             .lock()
@@ -228,10 +351,14 @@ impl Stewardship {
         &mut self,
         author: [u8; 32],
         request: MlsAccessRequestV1,
+        route: Option<&ChannelRoute>,
         allowed: &Readers,
     ) -> Result<(), String> {
         if request.device.as_bytes() != &author || request.verify().is_err() {
             return Err("access request is not the sender's own".into());
+        }
+        if route.is_some_and(|route| !route.proves(&self.room, request.channel)) {
+            return Err("access request names a route that is not its channel's".into());
         }
         if !allowed.of(request.channel).contains(&request.device) {
             return Ok(());
@@ -362,7 +489,7 @@ mod tests {
     }
 
     fn readers(devices: &[u8]) -> Readers {
-        Readers::new(self::devices(devices), HashMap::new())
+        Readers::new(self::devices(devices), HashMap::new(), BTreeSet::new())
     }
 
     #[test]
@@ -403,7 +530,11 @@ mod tests {
         let (payroll, notes) = (ChannelId::new(), ChannelId::new());
         let room = readers(&[1, 2]);
         steward.hand_over(1, &room);
-        let denied = Readers::new(devices(&[1, 2]), HashMap::from([(payroll, devices(&[2]))]));
+        let denied = Readers::new(
+            devices(&[1, 2]),
+            HashMap::from([(payroll, devices(&[2]))]),
+            BTreeSet::new(),
+        );
         assert_eq!(denied.of(payroll), devices(&[1]));
         assert_eq!(denied.of(notes), devices(&[1, 2]));
         assert!(steward.moves_channels(&denied));
@@ -414,11 +545,20 @@ mod tests {
         assert!(!steward.moves_channels(&Readers::new(
             devices(&[1, 2, 3]),
             HashMap::from([(payroll, devices(&[2]))]),
+            BTreeSet::new(),
         )));
         // Withholding a second record from the device moves them again.
         assert!(steward.moves_channels(&Readers::new(
             devices(&[1, 2]),
             HashMap::from([(payroll, devices(&[2])), (notes, devices(&[2]))]),
+            BTreeSet::new(),
+        )));
+        // So does a Deny over an app: every channel whose record is
+        // unknown may be one of it.
+        assert!(steward.moves_channels(&Readers::new(
+            devices(&[1, 2]),
+            HashMap::from([(payroll, devices(&[2]))]),
+            devices(&[2]),
         )));
     }
 
@@ -439,6 +579,7 @@ mod tests {
         let allowed = Readers::new(
             BTreeSet::from([device_key]),
             HashMap::from([(payroll, BTreeSet::from([device_key]))]),
+            BTreeSet::new(),
         );
         std::fs::create_dir_all(tmp.path().join("member")).unwrap();
         for channel in [payroll, notes] {
@@ -456,7 +597,7 @@ mod tests {
             .unwrap()
             .unwrap();
             stewardship
-                .request(device.verifying_key().to_bytes(), request, &allowed)
+                .request(device.verifying_key().to_bytes(), request, None, &allowed)
                 .unwrap();
         }
         stewardship.admit_pending(&allowed).unwrap();
@@ -470,5 +611,140 @@ mod tests {
                 .members()
                 .contains(&device_key)
         );
+    }
+
+    /// The access request `device` makes for `channel`, as a member would.
+    fn access_request(dir: &Path, device: &SigningKey, channel: ChannelId) -> MlsAccessRequestV1 {
+        std::fs::create_dir_all(dir).unwrap();
+        let device_key = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+        channel_crypto::ChannelMember::open(
+            dir,
+            channel,
+            device_key,
+            Ed25519PublicKey::from_bytes(
+                SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes(),
+            ),
+            &VaultKey::new([2; 32]),
+        )
+        .unwrap()
+        .access_request(device, 1, &VaultKey::new([2; 32]))
+        .unwrap()
+        .unwrap()
+    }
+
+    /// "Finance: Deny Read" for one device, as `readers` hands it over: every
+    /// finance channel whose route the steward knows is withheld from it, as
+    /// is a channel whose record it does not know; another app's routed
+    /// channel is not. A route that is not its channel's refuses the request.
+    #[test]
+    fn a_read_deny_over_an_app_withholds_its_routed_and_its_unknown_channels() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut stewardship = Stewardship::new(
+            "room",
+            tmp.path().join("room.channels"),
+            &SigningKey::from_bytes(&[9; 32]),
+        );
+        let (denied, other) = (
+            SigningKey::from_bytes(&[2; 32]),
+            SigningKey::from_bytes(&[3; 32]),
+        );
+        let key =
+            |device: &SigningKey| Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+        let payroll = ChannelRoute::new("finance", "payroll");
+        let draft = ChannelRoute::new("notes", "draft");
+        let unknown = ChannelRoute::new("notes", "plan").channel("room");
+        let (payroll_channel, draft_channel) = (payroll.channel("room"), draft.channel("room"));
+        // As `withheld_record_readers` decides it with both routes known.
+        let allowed = Readers::new(
+            BTreeSet::from([key(&denied), key(&other)]),
+            HashMap::from([
+                (payroll_channel, BTreeSet::from([key(&denied)])),
+                (draft_channel, BTreeSet::new()),
+            ]),
+            BTreeSet::from([key(&denied)]),
+        );
+        assert_eq!(allowed.of(payroll_channel), BTreeSet::from([key(&other)]));
+        assert_eq!(allowed.of(unknown), BTreeSet::from([key(&other)]));
+        assert_eq!(
+            allowed.of(draft_channel),
+            BTreeSet::from([key(&denied), key(&other)])
+        );
+
+        let member = tmp.path().join("member");
+        for device in [&denied, &other] {
+            for (channel, route) in [
+                (payroll_channel, Some(&payroll)),
+                (draft_channel, Some(&draft)),
+                (unknown, None),
+            ] {
+                let request = access_request(
+                    &member.join(hex::encode(device.to_bytes())),
+                    device,
+                    channel,
+                );
+                stewardship
+                    .request(device.verifying_key().to_bytes(), request, route, &allowed)
+                    .unwrap();
+            }
+        }
+        // A route that hashes to another channel is a forgery.
+        let forged = access_request(&member.join("forged"), &other, unknown);
+        assert!(
+            stewardship
+                .request(
+                    other.verifying_key().to_bytes(),
+                    forged,
+                    Some(&draft),
+                    &allowed
+                )
+                .is_err()
+        );
+        stewardship.admit_pending(&allowed).unwrap();
+        let members = |channel: ChannelId| stewardship.stewards[&channel].members();
+        assert!(!members(payroll_channel).contains(&key(&denied)));
+        assert!(members(payroll_channel).contains(&key(&other)));
+        assert!(!members(unknown).contains(&key(&denied)));
+        assert!(members(unknown).contains(&key(&other)));
+        assert!(members(draft_channel).contains(&key(&denied)));
+        assert!(members(draft_channel).contains(&key(&other)));
+    }
+
+    /// A route a device proved is kept with the room's channels: a steward
+    /// opened again knows it from the start, a route that does not prove its
+    /// channel is never kept, and a kept file that no longer proves its
+    /// channel names nothing.
+    #[test]
+    fn learned_routes_survive_a_restart_and_only_true_ones_are_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("room.channels");
+        let open = || {
+            Steward::new(Stewardship::new(
+                "room",
+                dir.clone(),
+                &SigningKey::from_bytes(&[9; 32]),
+            ))
+        };
+        let payroll = ChannelRoute::new("finance", "payroll");
+        let channel = payroll.channel("room");
+        let steward = open();
+        assert!(steward.routes().is_empty());
+        assert!(!steward.learn_route(channel, &ChannelRoute::new("finance", "budget")));
+        assert!(!steward.learn_route(
+            ChannelRoute::new("notes", "x").channel("other"),
+            &ChannelRoute::new("notes", "x")
+        ));
+        assert!(steward.learn_route(channel, &payroll));
+        assert_eq!(steward.routes(), vec![payroll.clone()]);
+        drop(steward);
+
+        assert_eq!(open().routes(), vec![payroll]);
+        // A file swapped for another channel's route proves nothing.
+        let budget = ChannelRoute::new("finance", "budget");
+        std::fs::write(
+            Routes::path(&dir, channel),
+            postcard::to_stdvec(&budget).unwrap(),
+        )
+        .unwrap();
+        assert!(open().routes().is_empty());
     }
 }

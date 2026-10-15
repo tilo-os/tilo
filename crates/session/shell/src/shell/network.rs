@@ -2292,6 +2292,7 @@ impl ShellNetwork {
             | NeighbourMsg::SyncResp { room, .. }
             | NeighbourMsg::MlsGovernance { room, .. }
             | NeighbourMsg::MlsAccessRequest { room, .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { room, .. }
             | NeighbourMsg::MlsGovernanceAck { room, .. } => Some(room.as_str()),
             NeighbourMsg::AppDocument { cluster_id, .. }
             | NeighbourMsg::AppPresenceV2 { cluster_id, .. }
@@ -2716,6 +2717,7 @@ impl ShellNetwork {
             message,
             NeighbourMsg::MlsGovernance { .. }
                 | NeighbourMsg::MlsAccessRequest { .. }
+                | NeighbourMsg::MlsRoutedAccessRequest { .. }
                 | NeighbourMsg::MlsGovernanceAck { .. }
         ) {
             return false;
@@ -4296,24 +4298,27 @@ impl ShellNetwork {
         let route =
             crate::shell::invite_policy::may_issue_invitation(&tree, &ws, &local_user, governor);
         drop(tree);
-        let relay_room = match route {
-            InviteRoute::Relay => Some(
-                self.administered_room(ws.room)
-                    .ok_or("this workspace's relay is not reachable yet; try again in a moment")?,
-            ),
-            InviteRoute::ShareOnRelay => self.share_on_home_relay(local, ws.room, &ws.name)?,
+        let terms = relay_rooms::RelayInvitation {
+            role,
+            recipient: recipient_user_public_key,
+            invitee,
+            lifetime: expiry_seconds_from_now,
+        };
+        match route {
+            InviteRoute::Relay => {
+                let held = self
+                    .administered_room(ws.room)
+                    .ok_or("this workspace's relay is not reachable yet; try again in a moment")?;
+                return self.issue_relay_invitation(&held, &terms);
+            }
+            InviteRoute::ShareOnRelay => {
+                if let Some(token) = self.share_on_home_relay(local, ws.room, &ws.name, &terms)? {
+                    return Ok(token);
+                }
+            }
             InviteRoute::ViaGovernor | InviteRoute::Refused(_) => {
                 return Err(route.refusal().unwrap_or_default().into());
             }
-        };
-        if let Some(relay_room) = relay_room {
-            return self.issue_relay_invitation(
-                &relay_room,
-                role,
-                recipient_user_public_key,
-                invitee,
-                expiry_seconds_from_now,
-            );
         }
         // The invitee will dial this device, so the invite names its home
         // relay: from behind a NAT a direct address alone may not reach it,
@@ -7035,6 +7040,21 @@ impl ShellNetwork {
                     self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
                         room,
                         request,
+                        route: None,
+                    });
+                }
+            }
+            NeighbourMsg::MlsRoutedAccessRequest {
+                room,
+                request,
+                route,
+                ..
+            } => {
+                if let Some(room) = RoomId::parse(&room) {
+                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
+                        room,
+                        request,
+                        route: Some(route),
                     });
                 }
             }
@@ -7269,6 +7289,7 @@ impl ShellNetwork {
             | NeighbourMsg::RemoteAction { .. }
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
             | NeighbourMsg::PersonalWorkspaces { .. } => None,
         }
@@ -14295,7 +14316,7 @@ mod tests {
         assert!(
             matches!(
                 queued.as_slice(),
-                [InboundChannelGovernance::AccessRequest { room: queued_room, request }]
+                [InboundChannelGovernance::AccessRequest { room: queued_room, request, route: None }]
                     if *queued_room == room && request.channel == channel
             ),
             "only the copy on the room's own topic is queued: {queued:?}"

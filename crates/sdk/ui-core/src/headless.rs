@@ -3093,42 +3093,47 @@ impl FrameHarness {
             });
         } else {
             let admitted = self.history_focus_admission();
-            let allowed: Vec<_> = self
-                .node_map
-                .keys()
-                .copied()
-                .filter(|&node| {
-                    (self.focus_trap_active
-                        || self
-                            .history
-                            .as_ref()
-                            .is_some_and(|history| history.captures_input())
-                        || self.active_input_instance.is_none_or(|instance| {
-                            self.bindings
-                                .binding_for(node)
-                                .is_some_and(|binding| binding.instance_id == instance)
-                                && self.app_focus_eligible(node)
-                        }))
-                        && admitted(node)
-                })
-                .collect();
-            drop(admitted);
+            let eligible = |node: NodeId| {
+                (self.focus_trap_active
+                    || self
+                        .history
+                        .as_ref()
+                        .is_some_and(|history| history.captures_input())
+                    || self.active_input_instance.is_none_or(|instance| {
+                        self.bindings
+                            .binding_for(node)
+                            .is_some_and(|binding| binding.instance_id == instance)
+                            && self.app_focus_eligible(node)
+                    }))
+                    && admitted(node)
+            };
             // An exact owner restored above outranks unrelated retained focus
             // flags (several mounted editors may initially report focus).
-            self.focused = self.focused.filter(|node| {
-                allowed.contains(node)
+            // Asked of that one node: the whole eligible set is collected
+            // only when focus has to be found again.
+            let kept = self.focused.filter(|&node| {
+                self.node_map.contains_key(&node)
+                    && eligible(node)
                     && self
-                        .inspect_node(*node, |widget| {
+                        .inspect_node(node, |widget| {
                             widget.is_focusable() && widget.is_enabled() && widget.is_focused()
                         })
                         .unwrap_or(false)
             });
-            if self.focused.is_none() {
+            let found = if kept.is_none() {
+                let allowed: Vec<_> = self
+                    .node_map
+                    .keys()
+                    .copied()
+                    .filter(|&node| eligible(node))
+                    .collect();
                 // SAFETY: these maps describe this exclusive runner's current tree.
-                self.focused = unsafe {
-                    CompositionFocus::current(&self.node_map, &self.bindings, Some(&allowed))
-                };
-            }
+                unsafe { CompositionFocus::current(&self.node_map, &self.bindings, Some(&allowed)) }
+            } else {
+                kept
+            };
+            drop(admitted);
+            self.focused = found;
         }
 
         self.update_focus_trap(focus);
@@ -3440,22 +3445,35 @@ impl FrameHarness {
     /// bound is measured on it too: an executor with a virtual clock (a
     /// pumped test) cannot run the bound out before an entrance has ended.
     pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
+        /// How long [`Self::settle_for_capture`] waits between idle passes.
+        const CAPTURE_IDLE_SLICE: crate::time::Duration = crate::time::Duration::from_millis(16);
         let Some(deadline) = crate::time::now().checked_add(bound) else {
             return false;
         };
         loop {
             self.relayout();
             self.idle_control_tick();
+            // A live window hands edits to the record's writer on its idle
+            // pass, so a first save confirms while the window settles.
+            self.persist_tick();
             self.relayout();
             if crate::time::now() > deadline {
                 return false;
             }
+            // Wait in slices: each ends in the idle pass above, which a
+            // pending save needs to be written at all.
+            let slice = crate::time::now()
+                .checked_add(CAPTURE_IDLE_SLICE)
+                .map_or(deadline, |slice| slice.min(deadline));
             if !self.capture_is_ready()
-                && !self.wait_until_deadline(deadline, crate::time::now, |driver| {
+                && !self.wait_until_deadline(slice, crate::time::now, |driver| {
                     crate::time::now() <= deadline && driver.capture_is_ready()
                 })
             {
-                return false;
+                if crate::time::now() >= deadline {
+                    return false;
+                }
+                continue;
             }
             // Endpoint draw can invalidate layout or start another finite
             // image/detail job. Flush it, then await that work within the
@@ -5582,6 +5600,9 @@ impl FrameHarness {
                 .is_some_and(|history| history.controls_event(event, self.input_scale));
         let framework_frame = FrameworkInputFrame::new(&self.framework_input, history_input);
         self.pump_component_wakes();
+        // Read before dispatch, as the live App reads it: a wheel the root
+        // declares view-only moves scroll geometry and nothing else.
+        let view_only_wheel = !history_input && self.is_view_only_scroll(event);
         let detected = if self.dispatching_touch_pointer {
             None
         } else {
@@ -5725,6 +5746,13 @@ impl FrameHarness {
             // when no focus target exists, matching the live App contract.
             handled = true;
         }
+        // A view-only wheel the host's next frame takes dispatched nothing,
+        // focused nothing and queued nothing (the contract of
+        // `Widget::view_only_scroll`): its tick would find no bracket, no
+        // control and no undo request. The frame's own tick, before that
+        // frame lays out, runs for whatever else is pending.
+        let coalesced_view_only =
+            self.coalesce_wheel_frames && !history_input && focus_target.is_none();
         if history_handled {
             if let Err(error) = self.history_tick() {
                 tracing::debug!(%error, "headless History input refused");
@@ -5765,7 +5793,7 @@ impl FrameHarness {
                         &self.permissions,
                     );
                 }
-            } else {
+            } else if !(coalesced_view_only && view_only_wheel) {
                 self.host_tick();
             }
         }
@@ -5813,6 +5841,21 @@ impl FrameHarness {
     /// against the last frame's layout, as a native window dispatches it.
     pub fn set_coalesce_wheel_frames(&mut self, coalesce: bool) {
         self.coalesce_wheel_frames = coalesce;
+    }
+
+    /// Whether `event` is a wheel the root declares view-only
+    /// ([`Widget::view_only_scroll`]), under the conditions the live App
+    /// trusts that declaration in: no modifier or modal capture changes what
+    /// the wheel does, and no floating surface takes it.
+    fn is_view_only_scroll(&self, event: &WindowEvent) -> bool {
+        matches!(event, WindowEvent::MouseWheel { .. })
+            && self.modifiers.state().is_empty()
+            && self.root.modal_capture().is_none()
+            && crate::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(
+                self.root.as_ref(),
+            )
+            .is_empty()
+            && self.root.view_only_scroll(event)
     }
 
     fn frame_schedule_demands_frame(&self) -> bool {
@@ -5932,6 +5975,7 @@ impl FrameHarness {
     }
 
     fn host_tick(&mut self) {
+        let _phase = tilo_resource::profiling::Phase::start("ui.host_tick");
         if let Err(error) = self.readmit_owner_service_layout() {
             tracing::warn!(
                 ?error,

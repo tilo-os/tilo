@@ -3058,7 +3058,9 @@ pub use nav_shell::{
     InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
     SidebarPlacement,
 };
-pub use window_header::{HISTORY_CONTROL_ID, HistoryControl, HistoryOpener, WindowHeader};
+pub use window_header::{
+    HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, WindowHeader,
+};
 mod nav_list;
 pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
 mod document_viewport;

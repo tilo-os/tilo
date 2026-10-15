@@ -172,6 +172,7 @@ impl ChannelDirectory for Directory {
         &self,
         room: RoomId,
         _channel: collab_types::ChannelId,
+        _route: Option<&collab_types::ChannelRoute>,
         _now: u64,
     ) -> BTreeSet<Ed25519PublicKey> {
         if room == self.own_room {

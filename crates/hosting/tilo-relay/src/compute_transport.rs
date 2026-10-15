@@ -4,7 +4,9 @@
 //! signed packages and content digests, while results contain only output
 //! digests and a tightly bounded diagnostic tail. The relay derives the
 //! sender from the certified connection and persists the exact route binding
-//! before forwarding anything.
+//! before forwarding anything. The bytes behind those digests move on
+//! job-scoped streams of their own ([`crate::compute_content`]), authorised
+//! by the binding persisted here.
 
 #![allow(
     missing_docs,
@@ -12,6 +14,7 @@
 )]
 
 use std::collections::{BTreeSet, HashMap};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -33,6 +36,15 @@ pub const MAX_COMPUTE_ADVERTISED_APPS: usize = 128;
 pub const MAX_COMPUTE_ADVERTISED_APP_BYTES: usize = 32 * 1024;
 pub const MAX_COMPUTE_LOG_BYTES: usize = 16 * 1024;
 pub const MAX_COMPUTE_JOB_LOG_BYTES: u64 = 64 * 1024;
+/// The latency placement ranks a worker by while the relay has no RTT
+/// observation of it: after every measured worker, never ahead of one.
+pub const UNMEASURED_LATENCY_MS: u32 = u32::MAX;
+/// RTT observations above this are clamped: a path that slow is reported as
+/// this slow, and one stray sample cannot overflow the smoothed estimate.
+const MAX_OBSERVED_RTT: Duration = Duration::from_secs(60);
+/// Each new observation moves the smoothed RTT by this fraction of the
+/// difference, rounded up so sustained samples converge exactly.
+const RTT_SMOOTHING_DIVISOR: u64 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ComputeEnvelope {
@@ -144,7 +156,7 @@ impl ComputeWorkerAdvertisement {
         Ok(())
     }
 
-    fn server_advertisement(&self) -> ServerAdvertisement {
+    fn server_advertisement(&self, latency_ms: u32) -> ServerAdvertisement {
         ServerAdvertisement {
             device: self.worker,
             role: DeviceRole::AlwaysOnServer,
@@ -156,7 +168,7 @@ impl ComputeWorkerAdvertisement {
             apps: self.apps.clone(),
             accelerators: self.accelerators.clone(),
             priority: 0,
-            latency_ms: 0,
+            latency_ms,
             power: self.power,
             energy_saver: self.energy_saver,
             active_assignments: self.active_assignments,
@@ -230,10 +242,64 @@ pub enum ComputeTransportError {
     Store(#[from] StoreError),
 }
 
+/// A worker's relay-to-worker round trip, smoothed across observations.
+///
+/// Fed only from what the transport already measures: the QUIC RTT estimate
+/// of the worker's compute connection, read when its periodic advertisement
+/// arrives. Measuring adds no packet, task or timer, so an idle relay stays
+/// idle. Latency is a routing hint; eligibility never depends on it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SmoothedRtt {
+    micros: Option<u64>,
+}
+
+impl SmoothedRtt {
+    fn observe(&mut self, sample: Duration) {
+        let sample = u64::try_from(sample.min(MAX_OBSERVED_RTT).as_micros()).unwrap_or(u64::MAX);
+        self.micros =
+            Some(match self.micros {
+                None => sample,
+                Some(smoothed) if sample >= smoothed => smoothed
+                    .saturating_add(sample.abs_diff(smoothed).div_ceil(RTT_SMOOTHING_DIVISOR)),
+                Some(smoothed) => smoothed
+                    .saturating_sub(smoothed.abs_diff(sample).div_ceil(RTT_SMOOTHING_DIVISOR)),
+            });
+    }
+
+    /// Whole milliseconds, rounded up so a measured worker never reads as
+    /// the zero an unmeasured one used to.
+    fn millis(self) -> u32 {
+        self.micros.map_or(UNMEASURED_LATENCY_MS, |micros| {
+            u32::try_from(micros.div_ceil(1_000).max(1))
+                .unwrap_or(UNMEASURED_LATENCY_MS.saturating_sub(1))
+        })
+    }
+}
+
+/// The RTT of the path a connection sends on now, or the best open path's
+/// when none is selected; `None` once the connection has closed.
+fn connection_rtt(connection: &iroh::endpoint::Connection) -> Option<Duration> {
+    if connection.close_reason().is_some() {
+        return None;
+    }
+    let paths = connection.paths();
+    let mut fastest = None::<Duration>;
+    for path in &paths {
+        let rtt = path.rtt();
+        if path.is_selected() {
+            return Some(rtt);
+        }
+        fastest = Some(fastest.map_or(rtt, |best| best.min(rtt)));
+    }
+    fastest
+}
+
 #[derive(Default)]
 pub struct ComputeTransportState {
     workers: HashMap<DeviceKey, ComputeWorkerAdvertisement>,
     sessions: HashMap<DeviceKey, ComputeSubscriber>,
+    /// Smoothed relay-to-worker RTT per attached worker connection.
+    latency: HashMap<DeviceKey, SmoothedRtt>,
     /// Members' environment sessions and legacy launches routed to workers.
     pub environments: crate::environment_routing::WorkspaceEnvironments,
 }
@@ -263,7 +329,34 @@ impl ComputeTransportState {
         }
         advertisement.validate(authenticated_worker, now_ms)?;
         self.workers.insert(authenticated_worker, advertisement);
+        // The advertisement is the worker's heartbeat; sampling the RTT the
+        // transport already keeps here costs no wakeup of its own.
+        if let Some(rtt) = self
+            .sessions
+            .get(&authenticated_worker)
+            .and_then(|subscriber| subscriber.connection.as_ref())
+            .and_then(connection_rtt)
+        {
+            self.observe_latency(authenticated_worker, rtt);
+        }
         Ok(())
+    }
+
+    /// Fold one relay-to-worker RTT observation into the worker's smoothed
+    /// latency.
+    fn observe_latency(&mut self, worker: DeviceKey, rtt: Duration) {
+        self.latency.entry(worker).or_default().observe(rtt);
+    }
+
+    /// The smoothed relay-to-worker latency placement ranks `worker` by, or
+    /// [`UNMEASURED_LATENCY_MS`] before the relay has observed it.
+    #[must_use]
+    pub fn latency_ms(&self, worker: &DeviceKey) -> u32 {
+        self.latency
+            .get(worker)
+            .copied()
+            .unwrap_or_default()
+            .millis()
     }
 
     /// Choose the worker for a job needing `needs` among the workers
@@ -284,7 +377,7 @@ impl ComputeTransportState {
             .workers
             .iter()
             .map(|(worker, advertisement)| {
-                let mut server = advertisement.server_advertisement();
+                let mut server = advertisement.server_advertisement(self.latency_ms(worker));
                 server.online = advertisement.validate(*worker, now_ms).is_ok();
                 server
             })
@@ -303,6 +396,8 @@ impl ComputeTransportState {
         disconnect: mpsc::Sender<()>,
         connection: Option<iroh::endpoint::Connection>,
     ) {
+        // A new connection is a new path; the old one's RTT says nothing.
+        self.latency.remove(&device);
         self.sessions.insert(
             device,
             ComputeSubscriber {
@@ -384,6 +479,7 @@ impl ComputeTransportState {
     pub fn detach(&mut self, device: &DeviceKey) {
         self.sessions.remove(device);
         self.workers.remove(device);
+        self.latency.remove(device);
     }
 
     /// Durably enqueue an envelope and attempt immediate delivery when the
@@ -443,8 +539,12 @@ impl ComputeTransportState {
             .get(&spec.worker)
             .ok_or(ComputeTransportError::WorkerUnavailable)?;
         worker.validate(spec.worker, now_ms)?;
-        admit_compute_job(spec, &worker.server_advertisement(), now_ms)
-            .map_err(|_| ComputeTransportError::WorkerUnavailable)?;
+        admit_compute_job(
+            spec,
+            &worker.server_advertisement(self.latency_ms(&spec.worker)),
+            now_ms,
+        )
+        .map_err(|_| ComputeTransportError::WorkerUnavailable)?;
         let record = DurableComputeJob {
             spec: spec.clone(),
             lifecycle: ComputeJobLifecycle::new(spec.job_id)
@@ -747,6 +847,114 @@ mod tests {
                 .all(|candidate| candidate.verdict == Err(crate::placement::Ineligible::Offline)),
             "{expired}"
         );
+    }
+
+    #[test]
+    fn placement_prefers_the_lower_latency_worker_among_equals() {
+        let mut state = ComputeTransportState::default();
+        let needs = spec();
+        let mut far = advertisement(false);
+        far.worker = [2; 32];
+        let mut near = advertisement(false);
+        near.worker = [5; 32];
+        state.advertise([2; 32], 7, 200, far).unwrap();
+        state.advertise([5; 32], 7, 200, near).unwrap();
+        assert_eq!(state.latency_ms(&[5; 32]), UNMEASURED_LATENCY_MS);
+
+        // Unmeasured, equal workers fall through to the device key; a
+        // measured worker beats one the relay has not observed yet.
+        assert_eq!(
+            state.place(&needs.requirements(), 200).unwrap().worker,
+            [2; 32]
+        );
+        state.observe_latency([2; 32], Duration::from_millis(40));
+        let placement = state.place(&needs.requirements(), 200).unwrap();
+        assert_eq!((placement.worker, placement.rank.latency_ms), ([2; 32], 40));
+
+        // Equal priority, power and load: the closer worker wins.
+        state.observe_latency([5; 32], Duration::from_millis(5));
+        let placement = state.place(&needs.requirements(), 200).unwrap();
+        assert_eq!((placement.worker, placement.rank.latency_ms), ([5; 32], 5));
+        assert!(
+            placement.to_string().contains("latency 5 ms"),
+            "{placement}"
+        );
+
+        // One stray sample moves the estimate a quarter of the way, not all
+        // of it; sustained samples converge.
+        state.observe_latency([5; 32], Duration::from_millis(405));
+        assert_eq!(state.latency_ms(&[5; 32]), 105);
+        for _ in 0..64 {
+            state.observe_latency([5; 32], Duration::from_millis(80));
+        }
+        assert_eq!(state.latency_ms(&[5; 32]), 80);
+        assert_eq!(
+            state.place(&needs.requirements(), 200).unwrap().worker,
+            [2; 32]
+        );
+
+        // A reattached worker starts unmeasured again, and a sub-millisecond
+        // LAN round trip on its new connection still reads as measured.
+        let (sender, _receiver) = mpsc::channel(1);
+        let (disconnect, _disconnected) = mpsc::channel(1);
+        state.attach([2; 32], sender, disconnect, None);
+        assert_eq!(state.latency_ms(&[2; 32]), UNMEASURED_LATENCY_MS);
+        state.observe_latency([2; 32], Duration::from_micros(300));
+        assert_eq!(state.latency_ms(&[2; 32]), 1);
+    }
+
+    /// The worker's advertisement samples the RTT its live compute connection
+    /// already measures; doing so spawns nothing, so an idle relay gains no
+    /// task or timer to wake for.
+    #[tokio::test(flavor = "current_thread")]
+    async fn advertisement_samples_the_live_connection_rtt_without_new_tasks() {
+        use iroh::endpoint::presets;
+        const ALPN: &[u8] = b"tilo/test/compute-latency";
+
+        let relay = iroh::Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .alpns(vec![ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap();
+        let worker = iroh::Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let (dialled, accepted) = tokio::join!(worker.connect(relay.addr(), ALPN), async {
+            relay.accept().await.unwrap().await.unwrap()
+        });
+        let _dialled = dialled.unwrap();
+
+        let now_ms = tilo_clock::unix_now_ms();
+        let mut live = advertisement(false);
+        live.issued_at_ms = now_ms;
+        live.expires_at_ms = now_ms.saturating_add(MAX_COMPUTE_ADVERTISEMENT_LIFETIME_MS);
+        let mut state = ComputeTransportState::default();
+        let runtime = tokio::runtime::Handle::current().metrics();
+        let tasks_before = runtime.num_alive_tasks();
+
+        let (sender, _receiver) = mpsc::channel(1);
+        let (disconnect, _disconnected) = mpsc::channel(1);
+        state.attach([2; 32], sender, disconnect, Some(accepted));
+        assert_eq!(state.latency_ms(&[2; 32]), UNMEASURED_LATENCY_MS);
+        state.advertise([2; 32], 7, now_ms, live).unwrap();
+        let placement = state.place(&spec().requirements(), now_ms).unwrap();
+
+        assert_eq!(placement.worker, [2; 32]);
+        assert!(
+            (1..UNMEASURED_LATENCY_MS).contains(&placement.rank.latency_ms),
+            "measured latency is reported: {placement}"
+        );
+        assert_eq!(placement.rank.latency_ms, state.latency_ms(&[2; 32]));
+        assert_eq!(
+            runtime.num_alive_tasks(),
+            tasks_before,
+            "measuring latency must not spawn a probe"
+        );
+        worker.close().await;
+        relay.close().await;
     }
 
     #[test]

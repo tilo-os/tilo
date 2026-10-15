@@ -228,11 +228,7 @@ pub struct ServiceLaunchContext<'a> {
 
 /// Discover `$XDG_RUNTIME_DIR/tilo/services/`.
 pub fn services_root() -> PathBuf {
-    let runtime = tilo_paths::xdg::runtime_dir().unwrap_or_else(|| {
-        let uid = unsafe { libc::geteuid() };
-        PathBuf::from(format!("/run/user/{uid}"))
-    });
-    runtime.join("tilo/services")
+    tilo_paths::xdg::runtime_dir_or_default().join("tilo/services")
 }
 
 pub fn socket_for(name: &str) -> PathBuf {

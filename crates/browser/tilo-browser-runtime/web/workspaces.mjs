@@ -19,6 +19,14 @@
  * (`POST <admission>join`) and the page joins with the invitation and
  * one-time token at once, with no pairing code.
  *
+ * A host set up again (a new device key behind the same origin) is not the
+ * one this browser kept the person's state for. Nothing kept is reused or
+ * handed to it: the page asks the person (`confirmRejoin`) and, if they
+ * agree, the person joins it through its door once, like anyone new; the
+ * peer then keeps that host's state in a namespace of its own
+ * (`peer.mjs`), and what this browser kept for the previous host stays on
+ * this device.
+ *
  * Pairing (`pairViaHost`): a person's new device becomes theirs without
  * their root. It asks the host for a certificate for that person, shows its
  * pairing code, and one of the person's devices that holds the root
@@ -41,7 +49,8 @@
  * no person is created, so a visitor who only scrolls past leaves no member
  * behind.
  */
-import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, pairDevice} from './peer.mjs';
+import {AdmissionError} from './admission.mjs';
+import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, NOT_REJOINED, pairDevice} from './peer.mjs';
 
 const MEMBERSHIPS = 'tilo-host-memberships';
 const ADJECTIVES = ['Brave', 'Calm', 'Clever', 'Curious', 'Eager', 'Gentle', 'Happy', 'Jolly', 'Kind', 'Lively', 'Lucky', 'Merry', 'Nimble', 'Quiet', 'Swift', 'Witty'];
@@ -314,11 +323,15 @@ export function hostToReconnect(origin, userPublicKey, memberships = globalThis.
 
 /**
  * Join `workspace` as `identity` (the person, created and kept by the
- * caller) through its host's admission door; resolves to the peer.
+ * caller) through its host's admission door; resolves to the peer. When
+ * the host was set up again since this browser joined it,
+ * `confirmRejoin()` asks the person whether to join it again (resolving to
+ * whether they do); without it, or when they decline, the `host-changed`
+ * refusal stands and no join is made.
  */
 export async function joinViaHost({
   workspace, identity, displayName = randomDisplayName(), fetch = globalThis.fetch, memberships = globalThis.localStorage,
-  join = joinWorkspace, connect = connectPeer, onProgress, ...connectOptions
+  join = joinWorkspace, connect = connectPeer, onProgress, confirmRejoin, ...connectOptions
 }) {
   admissionDoor(workspace);
   const known = keptMembership(workspace, memberships);
@@ -344,13 +357,18 @@ export async function joinViaHost({
       // so the membership stays, and joining again would spend a seat and
       // a join to fail the same way.
       if (error?.name === 'CustodyError' || error?.name === 'TimeoutError') throw error;
-      // Another host answers at this origin now: joining it again would only
-      // meet the pin on what this browser kept for the previous one.
-      if (error?.code === 'host-changed') throw error;
-      // The membership is gone (pruned after a long absence, or the host
-      // started its room anew): ask the host to admit the same person again
-      // rather than stop at an error.
-      console.warn('host admission: reconnecting failed, asking to join again', error);
+      if (error?.code === 'host-changed') {
+        // Another host answers at this origin now. Joining it is the
+        // person's choice: it is a new admission, and what this browser kept
+        // stays pinned to the previous host.
+        if (!confirmRejoin) throw error;
+        if (!await confirmRejoin()) throw new AdmissionError('host-changed', NOT_REJOINED);
+      } else {
+        // The membership is gone (pruned after a long absence, or the host
+        // started its room anew): ask the host to admit the same person
+        // again rather than stop at an error.
+        console.warn('host admission: reconnecting failed, asking to join again', error);
+      }
       keepMembership(memberships, workspace, null);
     }
   }

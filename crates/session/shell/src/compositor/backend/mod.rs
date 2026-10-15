@@ -445,6 +445,47 @@ pub enum BackendEvent {
     Focus(bool),
 }
 
+impl BackendEvent {
+    /// Whether this event is the person using an input device, which keeps
+    /// the session from dimming, blanking, locking and suspending. It does
+    /// not matter who receives it: a pen stroke or a two-finger pinch that
+    /// goes straight to an app is as much use as a key the shell handles.
+    /// Exhaustive, so a new kind of input has to say whether it counts.
+    pub fn is_person_input(&self) -> bool {
+        match self {
+            Self::Input(_)
+            | Self::PhysicalKey { .. }
+            | Self::RelativePointerMotion { .. }
+            | Self::ModifiersChanged(_)
+            | Self::Tablet(_)
+            | Self::TabletPad(_)
+            | Self::TabletPadMap { .. }
+            | Self::Gesture(_)
+            | Self::ShellGesture(_)
+            | Self::Touch(_)
+            | Self::TabletMode(_)
+            // A key press an accessibility filter rejected was still pressed.
+            | Self::VisualAlert => true,
+            // Devices and outputs come and go on their own (a Bluetooth
+            // reconnect, a monitor waking), and the rest is bookkeeping that
+            // follows input already counted.
+            Self::CloseRequested
+            | Self::OutputResized { .. }
+            | Self::OutputsChanged
+            | Self::TabletPadAdded(_)
+            | Self::TabletPadRemoved(_)
+            | Self::InputStateReset
+            | Self::KeyboardConfiguration { .. }
+            | Self::InputDeviceAdded { .. }
+            | Self::InputDeviceRemoved { .. }
+            | Self::InputUsed(_)
+            | Self::PointerMotionUsed
+            | Self::Redraw
+            | Self::Focus(_) => false,
+        }
+    }
+}
+
 /// The physical tablet a tool is used on.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TabletDevice {

@@ -3,7 +3,7 @@
 // the `Browser / authentication` workflow has.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {joinsTo, membershipFor, parseArgs, parseBanner, SETTLED} from './auth-e2e.mjs';
+import {joinsTo, keptApart, keptNamespaces, membershipFor, parseArgs, parseBanner, SETTLED} from './auth-e2e.mjs';
 
 test('the arguments name every input, absolute', () => {
   const options = parseArgs(['--bundle', 'b', '--relay-bin', 'r', '--room-service-bin', 's', '--out', 'o',
@@ -45,4 +45,35 @@ test('only POSTs to the door are joins', () => {
 
 test('the settled entry states are the ones the entry page sets', () => {
   assert.deepEqual(SETTLED, ['open', 'refused', 'failed', 'unsupported']);
+});
+
+test('what a browser kept is read per namespace, with the host its certificate is from', () => {
+  const certificate = device => JSON.stringify({cert: {}, hostCert: {device_public_key: Array(32).fill(device)}});
+  const rows = [
+    {device: 'tilo-browser-device', key: 'b', digest: '02', certificate: null},
+    {device: 'tilo-browser-device', key: 'a', digest: '01', certificate: certificate(1)},
+    {device: `tilo-browser-device:${'02'.repeat(32)}`, key: 'a', digest: '03', certificate: certificate(2)},
+  ];
+  const kept = keptNamespaces(rows);
+  assert.equal(kept['tilo-browser-device'].rows, 2);
+  assert.equal(kept['tilo-browser-device'].hostDevice, '01'.repeat(32));
+  assert.equal(kept[`tilo-browser-device:${'02'.repeat(32)}`].hostDevice, '02'.repeat(32));
+  assert.equal(keptNamespaces([...rows].reverse())['tilo-browser-device'].digest, kept['tilo-browser-device'].digest, 'in any order');
+  assert.notEqual(keptNamespaces([{...rows[0], digest: 'ff'}, rows[1]])['tilo-browser-device'].digest, kept['tilo-browser-device'].digest,
+    'any changed row changes the digest');
+});
+
+test('state kept apart means the old namespace untouched and a new one certified by the new host', () => {
+  const fresh = `tilo-browser-device:${'02'.repeat(32)}`;
+  const old = {rows: 3, digest: 'd1', hostDevice: '01'.repeat(32)};
+  const before = {current: 'tilo-browser-device', namespaces: {'tilo-browser-device': old}};
+  const after = {current: fresh, namespaces: {'tilo-browser-device': old, [fresh]: {rows: 2, digest: 'd2', hostDevice: '02'.repeat(32)}}};
+  assert.equal(keptApart(before, after), true);
+  // The old namespace written to (reused), never moved off, a new one of the
+  // old host, or nothing read: each fails.
+  assert.equal(keptApart(before, {...after, namespaces: {...after.namespaces, 'tilo-browser-device': {...old, digest: 'd3'}}}), false);
+  assert.equal(keptApart(before, {current: 'tilo-browser-device', namespaces: before.namespaces}), false);
+  assert.equal(keptApart(before, {...after, namespaces: {...after.namespaces, [fresh]: {rows: 2, digest: 'd2', hostDevice: old.hostDevice}}}), false);
+  assert.equal(keptApart({current: null, namespaces: {}, error: 'unreadable'}, after), false);
+  assert.equal(keptApart(before, {current: null, namespaces: {}, error: 'unreadable'}), false);
 });

@@ -7,8 +7,24 @@
 //! invitations, admits and declines join requests, sets roles, restricts and
 //! unbans members and runs calls over `Envelope::RemoteAction`, without the
 //! `tilo-room-admin/1` and `/rooms` doors those callers cannot speak. The
-//! desktop administers the rooms it holds this way too; those doors keep
-//! working as they were.
+//! desktop administers the rooms it holds this way too.
+//!
+//! Beside it, two providers carry what is not one room's governance
+//! (`tilo_relay_session::rooms` names them):
+//!
+//! - the host's own operations ([`HOST_ACTIONS_PROVIDER`], `host`):
+//!   creating, listing and entering rooms and letting an app author one,
+//!   which only devices of the relay's own person may, decided as
+//!   [`Rooms::authorize`] decides every [`RoomOp::Host`]. They are asked on any workspace the device holds on
+//!   the relay (its person's continuity workspace, before it holds a room),
+//!   and need the device's certificate as the relay's handshake verified it,
+//!   which entering admits to the room. Creating a room may issue its first
+//!   invitation and entering answers the invitation the device redeems, so
+//!   a desktop shares a workspace without any governance before it holds
+//!   the room.
+//! - a member's own business in a room ([`MEMBER_ACTIONS_PROVIDER`],
+//!   `member`): claiming their topology namespace and recording their own
+//!   effect receipt, decided by the room methods the wire door called.
 //!
 //! Nothing here decides who may. Every invocation calls the [`Rooms`] method
 //! its wire door calls, and with it [`Rooms::authorize`]; the catalogue asks
@@ -21,7 +37,8 @@
 //! host cannot yet ask for. They are left out of the catalogue, and a caller
 //! the room would let take one is refused with
 //! [`ActionHostError::ConfirmationRequired`]; a caller's own `confirm` is
-//! never taken for the person's. Until then those stay on the wire doors.
+//! never taken for the person's. Until then removing a member stays on
+//! `tilo-room-admin/1` and the `/rooms` pages.
 //!
 //! What the host does for its embedder is unchanged: [`GovernedPlane`]
 //! answers this provider and hands every other request to the app-serving
@@ -44,8 +61,12 @@ use tilo_actions::{
 };
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_protocol::voice::{CallOperation, Directions};
+use tilo_relay_session::rooms::{HOST_ACTIONS_PROVIDER, MEMBER_ACTIONS_PROVIDER};
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
+
+mod host;
+mod member;
 
 use super::authority::RoomOp;
 use super::{
@@ -304,23 +325,51 @@ fn call_params() -> Vec<ActionParam> {
     ]
 }
 
+/// Where a provider publishes its verbs: the provider and the kind of
+/// resource it publishes them on.
+#[derive(Clone, Copy)]
+struct Publisher {
+    provider: &'static str,
+    kind: &'static str,
+}
+
+/// A room's own governance.
+const GOVERNANCE: Publisher = Publisher {
+    provider: ROOM_GOVERNANCE_PROVIDER,
+    kind: ROOM_GOVERNANCE_KIND,
+};
+
+impl Publisher {
+    /// The catalogue entry naming this provider, offered on `room` (empty
+    /// for the host's own).
+    fn entry(self, room: &str) -> CatalogueProvider {
+        CatalogueProvider {
+            provider: self.provider.into(),
+            app_id: self.provider.into(),
+            room: room.to_owned(),
+            record_id: String::new(),
+            browsable: false,
+        }
+    }
+}
+
 impl Verb {
-    fn row(&self, resource: &str, label: &str) -> CatalogueRow {
+    fn row(&self, publisher: Publisher, resource: &str, label: &str) -> CatalogueRow {
         let params = (self.params)();
         CatalogueRow {
-            provider: ROOM_GOVERNANCE_PROVIDER.into(),
-            app_id: ROOM_GOVERNANCE_PROVIDER.into(),
+            provider: publisher.provider.into(),
+            app_id: publisher.provider.into(),
             parent_resource: String::new(),
             resource: CatalogueResource {
                 id: resource.into(),
-                kind: ROOM_GOVERNANCE_KIND.into(),
+                kind: publisher.kind.into(),
                 label: label.into(),
                 presentation: None,
             },
             action: Some(ActionDescriptor {
                 semantic_identity: None,
                 address: ActionAddress::new(resource, self.id),
-                resource_kind: ROOM_GOVERNANCE_KIND.into(),
+                resource_kind: publisher.kind.into(),
                 resource_label: label.into(),
                 action_label: self.label.into(),
                 description: None,
@@ -432,7 +481,12 @@ impl Args {
     }
 
     fn role(&self) -> Result<MemberRole, ActionHostError> {
-        match self.required_text("role")? {
+        self.role_at("role")
+    }
+
+    /// The role the argument `name` names.
+    fn role_at(&self, name: &str) -> Result<MemberRole, ActionHostError> {
+        match self.required_text(name)? {
             "viewer" => Ok(MemberRole::Viewer),
             "commenter" => Ok(MemberRole::Commenter),
             "editor" => Ok(MemberRole::Editor),
@@ -526,6 +580,41 @@ fn request_id(person: &[u8; 32], invocation: InvocationId) -> [u8; 32] {
 /// A governed room, locked.
 type Governed = Arc<AsyncMutex<GovernedRoom>>;
 
+/// Whether `caller` is a person acting themselves: an agent or a bot
+/// governs nothing and holds no room's business of its own.
+fn speaks_for_themselves(caller: &Caller) -> bool {
+    matches!(caller.principal(), CallerPrincipal::Person(_))
+}
+
+/// What a catalogue offers its caller, before it is paged.
+#[derive(Default)]
+struct Offer {
+    /// The governance generation of the room it is about, if any: the
+    /// page's revision.
+    generation: u64,
+    rows: Vec<CatalogueRow>,
+    providers: Vec<CatalogueProvider>,
+}
+
+impl Offer {
+    /// Offer `rows`, which `publisher` publishes on `room`; a provider
+    /// offering nothing is not named.
+    fn add(&mut self, publisher: Publisher, room: &str, rows: Vec<CatalogueRow>) {
+        if !rows.is_empty() {
+            self.providers.push(publisher.entry(room));
+            self.rows.extend(rows);
+        }
+    }
+
+    fn page(self, query: &CatalogueQuery) -> CataloguePage {
+        let mut page = CataloguePage::from_rows(self.generation.to_string(), self.rows, query);
+        if query.provider.is_none() {
+            page.providers = self.providers;
+        }
+        page
+    }
+}
+
 impl Rooms {
     /// The room `workspace_id` carries, and the certificate of `caller`'s
     /// device in it: the one the room's governance certified, or the relay's
@@ -537,9 +626,9 @@ impl Rooms {
         workspace_id: u64,
         caller: &Caller,
     ) -> Option<(Governed, DeviceCert)> {
-        let CallerPrincipal::Person(_) = caller.principal() else {
+        if !speaks_for_themselves(caller) {
             return None;
-        };
+        }
         let (user, device) = (caller.user_public_key()?, caller.device_public_key()?);
         let rooms = self
             .inner
@@ -567,36 +656,78 @@ impl Rooms {
         None
     }
 
-    /// What `caller` may do with the room `workspace_id` carries.
-    async fn governance_catalogue(
+    /// What `caller`, on the device `certificate` when the transport named
+    /// it, may do here about workspace `workspace_id`: the governance of
+    /// the room it carries, their own business in that room, and the host's
+    /// operations when they are its person's.
+    async fn catalogue(
         &self,
         workspace_id: u64,
         caller: &Caller,
+        certificate: Option<&DeviceCert>,
         query: &CatalogueQuery,
     ) -> CataloguePage {
-        let Some((governed, device)) = self.governed_by(workspace_id, caller).await else {
-            return CataloguePage::from_rows("0".into(), Vec::new(), query);
+        let wants = |provider: &str| {
+            query
+                .provider
+                .as_deref()
+                .is_none_or(|wanted| wanted == provider)
         };
-        let room = governed.lock().await;
-        let now = tilo_clock::unix_now_ns();
-        let resource = room_governance_resource(room.room());
-        let rows = VERBS
-            .iter()
-            .filter(|verb| self.permits(&device, Some(&room), RoomOp::Govern(verb.gate), now))
-            .map(|verb| verb.row(&resource, &room.record.name))
-            .collect::<Vec<_>>();
-        let offered = !rows.is_empty();
-        let mut page = CataloguePage::from_rows(room.record.generation.to_string(), rows, query);
-        if query.provider.is_none() && offered {
-            page.providers = vec![CatalogueProvider {
-                provider: ROOM_GOVERNANCE_PROVIDER.into(),
-                app_id: ROOM_GOVERNANCE_PROVIDER.into(),
-                room: room.room().to_owned(),
-                record_id: String::new(),
-                browsable: false,
-            }];
+        let mut offer = Offer::default();
+        if (wants(ROOM_GOVERNANCE_PROVIDER) || wants(MEMBER_ACTIONS_PROVIDER))
+            && let Some((governed, device)) = self.governed_by(workspace_id, caller).await
+        {
+            let room = governed.lock().await;
+            offer.generation = room.record.generation;
+            if wants(ROOM_GOVERNANCE_PROVIDER) {
+                let now = tilo_clock::unix_now_ns();
+                let resource = room_governance_resource(room.room());
+                let rows = VERBS
+                    .iter()
+                    .filter(|verb| {
+                        self.permits(&device, Some(&room), RoomOp::Govern(verb.gate), now)
+                    })
+                    .map(|verb| verb.row(GOVERNANCE, &resource, &room.record.name))
+                    .collect();
+                offer.add(GOVERNANCE, room.room(), rows);
+            }
+            if wants(MEMBER_ACTIONS_PROVIDER) {
+                offer.add(member::MEMBER, room.room(), member::rows(&room));
+            }
         }
-        page
+        if wants(HOST_ACTIONS_PROVIDER)
+            && let Some(certificate) = certificate.filter(|_| speaks_for_themselves(caller))
+        {
+            offer.add(host::HOST, "", self.host_rows(certificate));
+        }
+        offer.page(query)
+    }
+
+    /// Run `request` from `caller`, on the device `certificate` when the
+    /// transport named it, by the provider it names.
+    async fn invoke(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionHostError> {
+        match request.target.provider.as_str() {
+            ROOM_GOVERNANCE_PROVIDER => self.governance_invoke(workspace_id, caller, request).await,
+            MEMBER_ACTIONS_PROVIDER => self.member_invoke(workspace_id, caller, request).await,
+            HOST_ACTIONS_PROVIDER => {
+                // Unknown and forbidden are the same answer.
+                let certificate = certificate
+                    .filter(|certificate| {
+                        speaks_for_themselves(caller)
+                            && caller.device_public_key() == Some(&certificate.device_public_key)
+                            && caller.user_public_key() == Some(&certificate.user_public_key)
+                    })
+                    .ok_or(ActionHostError::UnknownAction)?;
+                self.host_invoke(certificate, request).await
+            }
+            _ => Err(ActionHostError::UnknownAction),
+        }
     }
 
     /// Run `request` from `caller` against the room `workspace_id` carries,
@@ -847,7 +978,9 @@ impl HostRoomActions {
         let _ = self.shared.rooms.set(rooms);
     }
 
-    /// This host for requests about workspace `workspace_id`.
+    /// This host for requests about workspace `workspace_id`, from a caller
+    /// whose device certificate the transport did not name: everything but
+    /// the host's own operations.
     #[must_use]
     pub(crate) fn in_workspace(
         &self,
@@ -856,6 +989,23 @@ impl HostRoomActions {
         InWorkspace {
             host: self.clone(),
             workspace_id,
+            certificate: None,
+        }
+    }
+
+    /// This host for requests about workspace `workspace_id`, from the
+    /// device whose certificate the relay's handshake verified as
+    /// `certificate`.
+    #[must_use]
+    pub(crate) fn in_workspace_as(
+        &self,
+        workspace_id: u64,
+        certificate: &DeviceCert,
+    ) -> impl ActionHost + Clone + Send + 'static {
+        InWorkspace {
+            host: self.clone(),
+            workspace_id,
+            certificate: Some(certificate.clone()),
         }
     }
 
@@ -885,11 +1035,14 @@ impl HostRoomActions {
     }
 }
 
-/// [`HostRoomActions`] for the room one workspace carries.
+/// [`HostRoomActions`] for the room one workspace carries, and for the
+/// host's own operations asked on it.
 #[derive(Clone)]
 struct InWorkspace {
     host: HostRoomActions,
     workspace_id: u64,
+    /// The caller's device certificate, as the transport verified it.
+    certificate: Option<DeviceCert>,
 }
 
 impl ActionHost for InWorkspace {
@@ -901,10 +1054,11 @@ impl ActionHost for InWorkspace {
         let Some(rooms) = self.host.shared.rooms.get().cloned() else {
             return Pending::ready(Ok(CataloguePage::from_rows("0".into(), Vec::new(), &query)));
         };
-        let (caller, workspace_id) = (caller.clone(), self.workspace_id);
+        let (caller, workspace_id, certificate) =
+            (caller.clone(), self.workspace_id, self.certificate.clone());
         self.host.spawn(async move {
             Ok(rooms
-                .governance_catalogue(workspace_id, &caller, &query)
+                .catalogue(workspace_id, &caller, certificate.as_ref(), &query)
                 .await)
         })
     }
@@ -937,10 +1091,15 @@ impl ActionHost for InWorkspace {
             }
             Ok(tilo_actions::remote::Reservation::Reserved) => {}
         }
-        let (host, caller, workspace_id) = (self.host.clone(), caller.clone(), self.workspace_id);
+        let (host, caller, workspace_id, certificate) = (
+            self.host.clone(),
+            caller.clone(),
+            self.workspace_id,
+            self.certificate.clone(),
+        );
         self.host.spawn(async move {
             let ran = rooms
-                .governance_invoke(workspace_id, &caller, &request)
+                .invoke(workspace_id, &caller, certificate.as_ref(), &request)
                 .await;
             match ran {
                 Ok(value) => {
@@ -982,9 +1141,18 @@ impl ActionHost for InWorkspace {
     }
 }
 
+/// The providers a relay that governs rooms answers itself.
+const PROVIDERS: [&str; 3] = [
+    ROOM_GOVERNANCE_PROVIDER,
+    MEMBER_ACTIONS_PROVIDER,
+    HOST_ACTIONS_PROVIDER,
+];
+
 /// What a relay that governs rooms answers remote actions addressed to it
-/// with: the rooms' governance (provider [`ROOM_GOVERNANCE_PROVIDER`]), and
-/// the app-serving plane its embedder supplied for everything else.
+/// with: the rooms' governance (provider [`ROOM_GOVERNANCE_PROVIDER`]), a
+/// member's own business in them ([`MEMBER_ACTIONS_PROVIDER`]), the host's
+/// own operations ([`HOST_ACTIONS_PROVIDER`]), and the app-serving plane its
+/// embedder supplied for everything else.
 pub(crate) struct GovernedPlane {
     /// Answers the rooms' governance.
     pub(crate) governance: HostRoomActions,
@@ -993,12 +1161,12 @@ pub(crate) struct GovernedPlane {
 }
 
 impl GovernedPlane {
-    /// Whether `message` from `caller` is the rooms' governance to answer.
+    /// Whether `message` from `caller` is the rooms' to answer.
     fn governs(&self, caller: &Caller, message: &RemoteActionMessage) -> bool {
         match message {
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 match query.provider.as_deref() {
-                    Some(provider) => provider == ROOM_GOVERNANCE_PROVIDER,
+                    Some(provider) => PROVIDERS.contains(&provider),
                     // With no apps, the rooms are all this host publishes.
                     None => {
                         self.apps.is_none()
@@ -1008,7 +1176,7 @@ impl GovernedPlane {
                 }
             }
             RemoteActionMessage::Invoke(request) => {
-                request.target.provider == ROOM_GOVERNANCE_PROVIDER
+                PROVIDERS.contains(&request.target.provider.as_str())
             }
             RemoteActionMessage::Observe { invocation, .. }
             | RemoteActionMessage::Cancel { invocation } => {
@@ -1042,6 +1210,25 @@ impl AppServingPlane for GovernedPlane {
             );
         }
         self.apps.as_ref()?.serve(workspace_id, caller, message)
+    }
+
+    fn serve_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        if self.governs(caller, &message) {
+            return tilo_actions::remote::serve(
+                &self.governance.in_workspace_as(workspace_id, certificate),
+                caller,
+                message,
+            );
+        }
+        self.apps
+            .as_ref()?
+            .serve_certified(workspace_id, caller, certificate, message)
     }
 }
 
