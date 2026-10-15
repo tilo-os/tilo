@@ -1481,6 +1481,151 @@ vendored-sys = { path = "vendor/vendored-sys" }
 """
 
 
+class DependencyKindTests(unittest.TestCase):
+    """Normal and build edges propagate a change; a dev edge stops after one hop.
+
+    A dev-dependency enters only the dependant's own test, example and bench
+    targets. The library the dependant's own dependants link is unchanged, so
+    linting them cannot find anything the change caused.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / "Cargo.toml").write_text("[workspace]\n")
+        # The contract packages every plan adds, kept apart from the graph.
+        self.contracts = sorted(ci_select.ALWAYS_PACKAGES)
+
+    def metadata(self, graph: dict[str, list[tuple[str, str | None]]],
+                 wasm: frozenset[str] = frozenset()) -> dict:
+        """`graph`: package -> [(dependency, kind)] with Cargo's kinds (None, "build", "dev")."""
+        names = set(graph) | set(self.contracts)
+        packages = []
+        for name in sorted(names):
+            dependencies = [{"name": dep, "kind": kind, "path": str(self.root / dep)}
+                            for dep, kind in graph.get(name, [])]
+            if name in wasm:
+                dependencies.append({"name": "wasm-bindgen", "kind": None})
+            packages.append({"name": name, "manifest_path": str(self.root / name / "Cargo.toml"),
+                             "targets": [{"name": name}], "dependencies": dependencies})
+        return {"packages": packages}
+
+    def selected(self, metadata: dict, changed: str) -> set[str]:
+        plan = ci_select.make_plan(metadata, self.root, [f"{changed}/src/lib.rs"], 2)
+        selected = set(plan["selected"])
+        self.assertLessEqual(set(self.contracts), selected)
+        # What Clippy actually receives is the selection, nothing more.
+        linted = {name for row in plan["clippy_matrix"]["include"]
+                  for name in row["packages"].split()[1::2]}
+        self.assertEqual(linted, selected)
+        return selected - set(self.contracts)
+
+    def test_a_normal_chain_is_followed_to_its_end(self):
+        metadata = self.metadata({"a": [], "b": [("a", None)], "c": [("b", None)], "d": [("c", None)]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b", "c", "d"})
+        self.assertEqual(self.selected(metadata, "c"), {"c", "d"})
+
+    def test_a_dev_edge_selects_the_dev_dependant_and_stops(self):
+        # b's tests use a; c's tests use b's library, which a does not reach.
+        metadata = self.metadata({"a": [], "b": [("a", "dev")], "c": [("b", "dev")]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b"})
+        plan = ci_select.make_plan(metadata, self.root, ["a/src/lib.rs"], 2)
+        self.assertIn("b", plan["tested"], "a dev dependant's own tests changed and still run")
+
+    def test_a_dev_edge_then_a_normal_edge_stops_at_the_dev_dependant(self):
+        metadata = self.metadata({"a": [], "b": [("a", "dev")], "c": [("b", None)],
+                                  "d": [("c", "build")]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b"})
+        # The library b's dependants link is what a change to b itself reaches.
+        self.assertEqual(self.selected(metadata, "b"), {"b", "c", "d"})
+
+    def test_a_normal_edge_then_a_dev_edge_adds_one_dev_hop_from_anywhere_in_the_closure(self):
+        metadata = self.metadata({"a": [], "b": [("a", None)], "c": [("b", "dev")],
+                                  "d": [("c", None)], "e": [("c", "dev")]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b", "c"})
+
+    def test_a_build_dependency_propagates_like_a_normal_one(self):
+        # A build script can generate the library's code, so b's library changes.
+        metadata = self.metadata({"a": [], "b": [("a", "build")], "c": [("b", None)],
+                                  "d": [("c", "dev")], "e": [("d", None)]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b", "c", "d"})
+
+    def test_a_dependency_declared_both_normal_and_dev_propagates(self):
+        # Cargo lists a crate twice when it is, e.g., a target-specific normal
+        # dependency and an unconditional dev-dependency.
+        metadata = self.metadata({"a": [], "b": [("a", "dev"), ("a", None)], "c": [("b", None)]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b", "c"})
+
+    def test_an_unknown_dependency_kind_propagates(self):
+        metadata = self.metadata({"a": [], "b": [("a", "artifact")], "c": [("b", None)]})
+        self.assertEqual(self.selected(metadata, "a"), {"a", "b", "c"})
+
+    def test_a_test_support_cycle_selects_both_ends_without_the_dev_side_dependants(self):
+        # The common test-helper shape: support links core; core's tests use support.
+        metadata = self.metadata({"core": [], "support": [("core", None)],
+                                  "core-user": [("core", None)], "support-user": [("support", None)],
+                                  "core-dev-user": [("core", "dev")]})
+        self.assertEqual(self.selected(metadata, "core"),
+                         {"core", "support", "core-user", "support-user", "core-dev-user"})
+        cyclic = self.metadata({"core": [("support", "dev")], "support": [("core", None)],
+                                "core-user": [("core", None)], "support-user": [("support", None)]})
+        self.assertEqual(self.selected(cyclic, "support"), {"support", "core", "support-user"})
+        self.assertEqual(self.selected(cyclic, "core"), {"core", "support", "core-user", "support-user"})
+
+    def test_the_selection_never_drops_a_direct_dependant_and_never_grows(self):
+        graph = {"a": [], "b": [("a", "dev")], "c": [("a", None)], "d": [("b", None)],
+                 "e": [("c", "dev")], "f": [("e", None), ("d", "build")], "g": [("f", "dev")]}
+        metadata = self.metadata(graph)
+        packages, _ = ci_select.package_maps(metadata, self.root)
+        reverse = ci_select.reverse_dependencies(packages, self.root)
+        edges = ci_select.dependency_edges(packages)
+        self.assertEqual({name: edges.linked[name] | edges.dev[name] for name in packages}, reverse)
+        for name in graph:
+            selected = self.selected(metadata, name)
+            self.assertLessEqual({name} | reverse[name], selected, name)
+            self.assertLessEqual(selected, ci_select.closure({name}, reverse), name)
+
+    def test_the_owner_commit_vocabulary_no_longer_lints_relay_or_the_wasm_crates(self):
+        # The workspace shape around tilo-owner-commit when it moved out of
+        # tilo-peer-state. Every edge kind is the one Cargo metadata reported.
+        graph = {
+            "tilo-owner-commit": [],
+            "tilo-action-broker": [("tilo-owner-commit", None)],
+            "tilo-joined-room": [("tilo-owner-commit", None)],
+            "shell": [("tilo-owner-commit", None)],
+            "tilo-runtime": [("tilo-owner-commit", None)],
+            "agent": [("shell", "dev")],
+            "tilo-browser-peer": [("tilo-joined-room", "dev")],
+            "tilo-relay": [("tilo-browser-peer", None)],
+            "tilo-agent-participant": [("tilo-browser-peer", None), ("agent", None)],
+            "tilo-room-load": [("tilo-browser-peer", None)],
+            "tilo-browser-runtime": [("tilo-browser-peer", None)],
+            "tilo-web-desktop": [("tilo-browser-runtime", None)],
+            "tilo-relay-shell": [("tilo-relay", "dev")],
+            "discord-worker": [("tilo-relay", "dev")],
+        }
+        metadata = self.metadata(graph, wasm=frozenset({"tilo-browser-runtime", "tilo-web-desktop"}))
+        packages, _ = ci_select.package_maps(metadata, self.root)
+        every_edge = ci_select.closure({"tilo-owner-commit"}, ci_select.reverse_dependencies(packages, self.root))
+        self.assertEqual(len(every_edge | set(self.contracts)), 18, "the selection before dev edges stopped")
+        plan = ci_select.make_plan(metadata, self.root, ["tilo-owner-commit/src/lib.rs"], 2)
+        self.assertEqual(plan["selected_count"], 11)
+        self.assertEqual(set(plan["selected"]) - set(self.contracts), {
+            "tilo-owner-commit", "tilo-action-broker", "tilo-joined-room", "shell",
+            "tilo-runtime", "agent", "tilo-browser-peer"})
+        self.assertEqual(plan["wasm"], [])
+        self.assertFalse(plan["wasm_required"])
+        # Every direct dependant, the dev one included, is still tested.
+        self.assertLessEqual({"tilo-action-broker", "tilo-joined-room", "shell", "tilo-runtime"},
+                             set(plan["tested"]))
+        # A change to browser-peer itself still reaches relay and the wasm crates.
+        plan = ci_select.make_plan(metadata, self.root, ["tilo-browser-peer/src/lib.rs"], 2)
+        self.assertLessEqual({"tilo-relay", "tilo-relay-shell", "discord-worker", "tilo-web-desktop"},
+                             set(plan["selected"]))
+        self.assertEqual(plan["wasm"], ["tilo-browser-runtime", "tilo-web-desktop"])
+
+
 class ManifestAttributionTests(unittest.TestCase):
     """Root Cargo.toml and Cargo.lock changes select only what they reach."""
 

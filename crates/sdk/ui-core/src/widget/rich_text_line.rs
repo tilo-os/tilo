@@ -483,6 +483,12 @@ impl RichTextLine {
         &self.marks
     }
 
+    /// What the line's accessibility node is built from besides its text:
+    /// [`TextInput::accessibility_state`].
+    pub(crate) fn accessibility_state(&self) -> crate::widget::text_input::TextAccessibilityState {
+        self.inner.accessibility_state()
+    }
+
     pub fn set_marks(&mut self, mut marks: Vec<MarkSpan>) {
         marks.sort_by_key(|s| s.range.start);
         self.dirty.styled_layout |= self.marks != marks;

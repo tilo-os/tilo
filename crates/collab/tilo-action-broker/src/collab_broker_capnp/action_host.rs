@@ -727,13 +727,14 @@ impl CapnpBrokerState {
             .as_ref()
             .filter(|_| caller.device_public_key().is_none());
         let mut keymap = None;
-        // Pairing runs on this machine's LAN for the person at it: offered
+        // Host steps (pairing on this machine's LAN, administering the
+        // identity this machine keeps) run for the person at it: offered
         // only in the room a local caller's connection was admitted to.
-        let pairing = self
-            .services
-            .device_pairing
-            .as_ref()
-            .filter(|_| caller.device_public_key().is_none());
+        let host_steps = if caller.device_public_key().is_none() {
+            super::host_steps::HostSteps::installed(&self.services)
+        } else {
+            Vec::new()
+        };
         for (workspace, policy, now) in self.workspaces_for(caller) {
             let first = rows.len();
             let room = workspace.room.to_string();
@@ -805,39 +806,12 @@ impl CapnpBrokerState {
                     browsable: true,
                 });
             }
-            if let Some(service) = pairing
-                && caller.room() == Some(room.as_str())
-                && scope.wants(tilo_actions::remote::device_pairing::PROVIDER)
-            {
-                let start = rows.len();
-                rows.extend(
-                    service
-                        .descriptors()
-                        .into_iter()
-                        .filter(|descriptor| {
-                            Self::offered(
-                                &workspace,
-                                &policy,
-                                now,
-                                service.app_id(),
-                                (
-                                    &descriptor.resource_kind,
-                                    &descriptor.address.resource,
-                                    &descriptor.address.action,
-                                ),
-                                &descriptor.contract,
-                            )
-                        })
-                        .map(|descriptor| {
-                            CatalogueRow::for_action(
-                                tilo_actions::remote::device_pairing::PROVIDER.to_owned(),
-                                service.app_id(),
-                                descriptor,
-                            )
-                        }),
-                );
-                if let Some(added) = rows.get_mut(start..) {
-                    Self::mark_asks(&workspace, &policy, now, added);
+            if caller.room() == Some(room.as_str()) {
+                for steps in host_steps
+                    .iter()
+                    .filter(|steps| scope.wants(steps.provider()))
+                {
+                    Self::host_step_rows((&workspace, &policy, now), steps, &mut rows);
                 }
             }
             let provider = workspace_provider(&room);
@@ -979,6 +953,46 @@ impl CapnpBrokerState {
     /// Mark each of `rows` whose action the room's grants let `actor` take
     /// only after asking: it asks for confirmation, which the person gives
     /// on their own device.
+    /// The rows of host steps `steps` that `actor` is offered in
+    /// `workspace` at `now`, appended to `rows`, each marked where it asks
+    /// first.
+    fn host_step_rows(
+        (workspace, actor, now): (&Workspace, &BrokerActor, u64),
+        steps: &super::host_steps::HostSteps,
+        rows: &mut Vec<CatalogueRow>,
+    ) {
+        let start = rows.len();
+        rows.extend(
+            steps
+                .descriptors()
+                .into_iter()
+                .filter(|descriptor| {
+                    Self::offered(
+                        workspace,
+                        actor,
+                        now,
+                        steps.app_id(),
+                        (
+                            &descriptor.resource_kind,
+                            &descriptor.address.resource,
+                            &descriptor.address.action,
+                        ),
+                        &descriptor.contract,
+                    )
+                })
+                .map(|descriptor| {
+                    CatalogueRow::for_action(
+                        steps.provider().to_owned(),
+                        steps.app_id(),
+                        descriptor,
+                    )
+                }),
+        );
+        if let Some(added) = rows.get_mut(start..) {
+            Self::mark_asks(workspace, actor, now, added);
+        }
+    }
+
     fn mark_asks(workspace: &Workspace, actor: &BrokerActor, now: u64, rows: &mut [CatalogueRow]) {
         for row in rows {
             let app = row.app_id.clone();
@@ -1318,8 +1332,10 @@ impl CapnpBrokerState {
         {
             return Pending::ready(self.invoke_shortcut_run(caller, room, shortcut, request));
         }
-        if request.target.provider == tilo_actions::remote::device_pairing::PROVIDER {
-            return Pending::ready(self.invoke_device_pairing(caller, request));
+        if let Some(steps) =
+            super::host_steps::HostSteps::for_provider(&self.services, &request.target.provider)
+        {
+            return Pending::ready(self.invoke_host_step(caller, &steps, request));
         }
         Pending::ready(self.invoke_eager(caller, own_peer, launch, origin, request))
     }
@@ -2541,19 +2557,22 @@ impl CapnpBrokerState {
         Ok(self.receipt_for(request.invocation, job))
     }
 
-    /// Admit one nearby-pairing step for `caller` and start it on the host.
+    /// Admit one host step (pairing a nearby device, administering the
+    /// person's identity) for `caller` and start it on the host.
     ///
-    /// Pairing runs on this machine, for the person at it: a remote device
-    /// is never offered it, and the caller must be confined to the room its
+    /// Host steps run on this machine, for the person at it: a remote device
+    /// is never offered them, and the caller must be confined to the room its
     /// connection was admitted to, whose policy decides the step under the
     /// service's app id. A step whose contract asks first needs the
     /// person's own confirmation, or the answer they gave on their device.
-    /// The host then decides whether the actor may pair at all. The
+    /// The host then decides whether the actor may take it at all. The
     /// invocation answers `Accepted` at once and records the outcome when
-    /// the host's step ends, which for an approval may be minutes later.
-    fn invoke_device_pairing(
+    /// the host's step ends, which for a pairing approval may be minutes
+    /// later.
+    fn invoke_host_step(
         self: &Arc<Self>,
         caller: &Caller,
+        steps: &super::host_steps::HostSteps,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let abandon = |error: ActionHostError| {
@@ -2575,19 +2594,14 @@ impl CapnpBrokerState {
                 .map(|job| self.receipt_for(request.invocation, job))
                 .ok_or(ActionHostError::UnknownInvocation);
         }
-        let Some(service) = self
-            .services
-            .device_pairing
-            .as_ref()
-            .filter(|_| caller.device_public_key().is_none())
-        else {
+        if caller.device_public_key().is_some() {
             return Err(abandon(ActionHostError::UnknownAction));
-        };
+        }
         let Some(room) = caller.room() else {
             return Err(abandon(ActionHostError::NotPermitted));
         };
         let address = &request.target.address;
-        let Some(descriptor) = service
+        let Some(descriptor) = steps
             .descriptors()
             .into_iter()
             .find(|descriptor| &descriptor.address == address)
@@ -2604,7 +2618,7 @@ impl CapnpBrokerState {
         let argument = request.argument.to_slot();
         self.admit_answer(
             (&workspace, &policy, now),
-            service.app_id(),
+            steps.app_id(),
             &descriptor,
             (argument.as_deref(), request.confirmation.as_ref()),
         )
@@ -2617,13 +2631,8 @@ impl CapnpBrokerState {
         ) {
             return Err(abandon(ActionHostError::ConfirmationRequired));
         }
-        let started = service
-            .start(&crate::services::DevicePairingRequest {
-                room,
-                actor: &policy,
-                address,
-                argument: argument.as_deref(),
-            })
+        let started = steps
+            .start(room, &policy, address, argument.as_deref())
             .map_err(|reason| abandon(ActionHostError::Refused { reason }))?;
         let id = self.follow_host_step(&policy, started);
         if let Ok(mut ledger) = self.remote_invocations.lock() {

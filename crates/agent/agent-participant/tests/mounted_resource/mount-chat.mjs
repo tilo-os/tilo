@@ -3,14 +3,14 @@ export async function mountChat(tab) {
   return await tab.evaluate(`(async () => { try {
     const host = await import('/host.mjs');
     window.runtime = await host.loadRuntime();
-    const {profileDevice, profileStore} = await import('/peer.mjs');
+    const {profileStore, profileDevice} = await import('/peer.mjs');
     const {idbStorage} = await import('/device-custody.mjs');
     const storage = idbStorage();
     for (const [root, bytes] of [[fixture.root, fixture.accounts],
       [fixture.decoy, fixture.decoyAccounts]]) {
       const profile = 'tilo-identity:' + root + '@' + new URL(fixture.origin).host;
-      // Entry admission reads only the profile's current device namespace.
-      // Seed the same namespace rather than an undiscoverable fixture-only one.
+      // Seed the namespace the entry page actually discovers, including when
+      // a profile has moved after its host was set up again.
       const device = profileDevice(profile);
       const opened = await host.openProfileStorage(profile, device);
       await opened.lease.commit([{key: runtime.browser_accounts_key(root), bytes: new Uint8Array(bytes), revision: '0'}]);

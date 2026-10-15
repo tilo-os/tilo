@@ -1,0 +1,30 @@
+[package]
+name = "tilo-owner-commit"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+description = "The request and receipt vocabulary hosts use to ask a room's owner to commit"
+
+# Owners and brokers speak this; the admission core in `tilo-peer-state` never
+# reads it, so it sits above peer-state and a change here rebuilds only them.
+[dependencies]
+serde.workspace = true
+# A request's digest and committed basis are taken over its postcard bytes.
+postcard = { workspace = true, features = ["alloc", "use-std"] }
+blake3.workspace = true
+uuid.workspace = true
+# Document writes carry a signed op and are checked against their route.
+collab-types = { path = "../collab-types" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+# The desktop command vocabulary, re-exported as `desktop_command`.
+tilo-desktop-model = { path = "../../session/desktop-model" }
+# Import, task and membership commands, and the legacy policy basis.
+tilo-peer-state = { path = "../tilo-peer-state" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

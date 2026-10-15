@@ -62,6 +62,7 @@ arrival-tip-operating-system = Tilo is an operating system. This one runs in you
 #   Wiggle your cursor next to someone to chat with them
 #   Strips as places
 
-## Said instead of a line when the network is slow
+## Said instead of a line when the network, or the first frame, is slow
 arrival-slow-loading = Still loading. Your network may be slow.
 arrival-slow-connecting = Still connecting. Your network may be slow.
+arrival-slow-drawing = Still starting graphics. Without a graphics card this takes longer.

@@ -56,4 +56,13 @@
 			precompressed zstd br
 		}
 	}
+
+	# No cache may keep an error, least of all one under /v/ as immutable: a
+	# file this image lacks may be served by the next pod. During a rolling
+	# update a page from a new pod asks an old one for the new version's
+	# files, and a cached 404 would outlive the rollout at that edge.
+	handle_errors {
+		header Cache-Control "no-store"
+		respond "{err.status_code} {err.status_text}" {err.status_code}
+	}
 }

@@ -10,6 +10,8 @@
 //! deterministically and a delete never disturbs another item's identity —
 //! none of which a list stored by position can promise.
 
+use std::collections::HashSet;
+
 use automerge::ObjId;
 
 use crate::collection::{Id, VALUE, store_in_order, stored_entries};
@@ -81,17 +83,16 @@ impl ItemStorage for Arranged {
         path: &[Segment],
         out: &mut Vec<Edit<R>>,
     ) {
-        removed_and_changed(before, after, path, out);
-        let present = |id: &Id| after.iter().any(|item| &item.id() == id);
+        let after_ids: Vec<Id> = after.iter().map(Identified::id).collect();
+        let before_ids = removed_and_changed(before, after, &after_ids, path, out);
+        let present: HashSet<&Id> = after_ids.iter().collect();
         // Walk `after` against the order the edits so far leave: what
         // survived of `before`, then each item put where `after` has it.
-        let mut order: Vec<Id> = before
-            .iter()
-            .map(Identified::id)
-            .filter(|id| present(id))
+        let mut order: Vec<Id> = before_ids
+            .into_iter()
+            .filter(|id| present.contains(id))
             .collect();
-        for (index, item) in after.iter().enumerate() {
-            let id = item.id();
+        for (index, (item, id)) in after.iter().zip(after_ids.iter().cloned()).enumerate() {
             match order.iter().position(|candidate| candidate == &id) {
                 Some(now) if now == index => {}
                 Some(now) => {

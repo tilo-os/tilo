@@ -12,7 +12,14 @@
 //! and none is published before its own barrier. One edit costs two fsyncs
 //! (the record, then its directory), plus [`State::next_sequence`]'s
 //! reservation renewal at most once per [`SEQUENCE_RESERVATION_NS`] of host
-//! clock per workspace.
+//! clock per workspace. A checkpoint that starts its lineage (each
+//! newcomer's first record) is staged and made durable before its turn,
+//! which then selects the stage with one barrier
+//! (`WorkspaceStore::stage_fresh_checkpoint`).
+//!
+//! A replay capture lists the retained frames in its turn and pins them when
+//! it is prepared, off the owner; retention collects nothing a listed frame
+//! is in until then (`store::replay::CaptureLeases`).
 //!
 //! Host order (`seq`, `Committed::seq`) increases strictly across restarts,
 //! even when the clock steps back over one, and resumes at most
@@ -48,6 +55,8 @@ const REPLAY_BYTES: usize = 64 * 1024;
 const NORMAL_MESSAGES: usize = GLOBAL_MESSAGES - REPLAY_MESSAGES;
 const NORMAL_BYTES: usize = GLOBAL_BYTES - REPLAY_BYTES;
 const BLOCKING_WORKERS: usize = 4;
+/// The most blocking workers a host with many cores runs at once.
+const MAX_BLOCKING_WORKERS: usize = 16;
 const RECLAIM_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 const RECLAIM_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
 /// How far past the sequence it hands out [`State::next_sequence`] reserves
@@ -91,9 +100,22 @@ fn replay_byte_budget() -> &'static Arc<Semaphore> {
     BYTES.get_or_init(|| Arc::new(Semaphore::new(REPLAY_BYTES)))
 }
 
+/// Blocking workers every workspace's owner, replay and publication share:
+/// one per core the process may use, between [`BLOCKING_WORKERS`] (what a
+/// small node keeps) and [`MAX_BLOCKING_WORKERS`]. A crowd joining a room
+/// prepares one replay per newcomer, each as large as the room, and four
+/// workers left a large host's cores idle while the replays queued.
+fn blocking_workers() -> usize {
+    std::thread::available_parallelism().map_or(BLOCKING_WORKERS, |cores| {
+        cores.get().clamp(BLOCKING_WORKERS, MAX_BLOCKING_WORKERS)
+    })
+}
+
+/// Detached replay preparation takes at most half the blocking workers, so
+/// owners always find one.
 fn detached_replay_budget() -> &'static Arc<Semaphore> {
     static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    WORKERS.get_or_init(|| Arc::new(Semaphore::new(2)))
+    WORKERS.get_or_init(|| Arc::new(Semaphore::new((blocking_workers() / 2).max(2))))
 }
 
 #[derive(Clone)]
@@ -447,11 +469,15 @@ async fn run_owner(
     // ticket wakes this task (`reclaim_wake`). From then on the owner steps
     // the released entries one per interval, between jobs, until none is
     // left; with none it sleeps until a job or a released ticket arrives.
-    let reclaim_wake = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .replays
-        .reclaim_wake();
+    let reclaim_wake = {
+        let state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let wake = state.replays.reclaim_wake();
+        // So are collections that waited for the last capture to pin.
+        state.store.wake_on_capture_release(wake.clone());
+        wake
+    };
     let mut idle = tokio::time::interval(RECLAIM_INTERVAL);
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut reclaiming = false;
@@ -640,6 +666,46 @@ async fn run_owner(
                     Err(error) => {
                         tracing::warn!(%error, "checkpoint stage disposal failed");
                         tokio::time::sleep(RECLAIM_RETRY).await;
+                    }
+                }
+            }
+        }
+        // Generations retention replaced while a capture still had to pin
+        // them, collected once no capture does. A failed collection is
+        // left to the lineage's next commit, which collects all of them.
+        let deferred = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .store
+            .deferred_collections();
+        for lineage in deferred {
+            let mut collect = None;
+            loop {
+                let lineage = lineage.clone();
+                let Ok((next, result)) = blocking(workers.clone(), move || {
+                    let result = (|| {
+                        let gc = match &mut collect {
+                            Some(gc) => gc,
+                            None => {
+                                collect.insert(crate::store::retained::GenerationGc::new(lineage)?)
+                            }
+                        };
+                        gc.step(WorkLimit::default())
+                    })();
+                    (collect, result)
+                })
+                .await
+                else {
+                    tracing::error!("deferred retention collection worker unavailable");
+                    return;
+                };
+                collect = next;
+                match result {
+                    Ok(Step::Done(())) => break,
+                    Ok(Step::More) => tokio::task::yield_now().await,
+                    Err(error) => {
+                        tracing::warn!(%error, "deferred retention collection failed");
+                        break;
                     }
                 }
             }
@@ -1130,7 +1196,7 @@ pub(crate) fn delivery_budget(
 
 fn blocking_budget() -> &'static Arc<Semaphore> {
     static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    WORKERS.get_or_init(|| Arc::new(Semaphore::new(BLOCKING_WORKERS)))
+    WORKERS.get_or_init(|| Arc::new(Semaphore::new(blocking_workers())))
 }
 
 pub(crate) async fn blocking<T: Send + 'static>(

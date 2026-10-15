@@ -54,6 +54,12 @@
 (allow file-read-metadata (path-ancestors (param "DARWIN_CACHE_DIR")))
 (allow file-read-metadata (path-ancestors (param "READ_0")))
 (allow file-read-metadata (path-ancestors (param "WRITE_0")))
+(deny file-read* file-write*
+  (subpath (param "HIDDEN_0")))
+(deny file-write*
+  (literal (param "PINNED_0"))
+  (literal (param "PINNED_1"))
+  (literal (param "PINNED_2")))
 (deny file-write*
   (subpath (param "PAYLOAD_DIR"))
   (subpath (param "RUNTIME_DIR")))

@@ -3,7 +3,10 @@ name = "tilo-workspace-join"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
-publish.workspace = true
+# `tilo-relay-protocol` is published and re-exports the delegations, so this is too.
+publish = true
+repository.workspace = true
+homepage.workspace = true
 description = "Signed workspace invitations, join and membership proofs, and transport hints"
 
 # The invitation and join contract, below room state: pure types and signature
@@ -27,8 +30,10 @@ blake3.workspace = true
 uuid.workspace = true
 serde_json.workspace = true
 # A member role maps onto the collaboration role.
-collab-types = { path = "../collab-types" }
-tilo-user-identity = { path = "../tilo-user-identity" }
+collab-types = { version = "0.1.0", path = "../collab-types" }
+tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
+# Why a delegation is not usable.
+thiserror.workspace = true
 
 [lints]
 workspace = true

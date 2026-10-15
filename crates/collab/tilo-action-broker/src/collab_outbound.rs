@@ -58,7 +58,7 @@ pub trait PeerPublishSink: Send + Sync {
 /// has one answer per session.
 pub struct PeerPublisher {
     sink: Option<Arc<dyn PeerPublishSink>>,
-    owner_commit: Option<Arc<dyn tilo_peer_state::owner_commit::OwnerCommitService>>,
+    owner_commit: Option<Arc<dyn tilo_owner_commit::OwnerCommitService>>,
     /// Set the first time a publish is dropped for no network — keeps
     /// the "collaboration is off" line to one per session.
     warned_no_network: AtomicBool,
@@ -78,14 +78,14 @@ impl PeerPublisher {
     /// A legacy sink's wired status never supplies this authority.
     pub fn with_owner_commit(
         sink: Arc<dyn PeerPublishSink>,
-        owner: Arc<dyn tilo_peer_state::owner_commit::OwnerCommitService>,
+        owner: Arc<dyn tilo_owner_commit::OwnerCommitService>,
     ) -> Arc<Self> {
         Self::with_optional_owner_commit(Some(sink), owner)
     }
     /// Keep a real local durable owner even when no network sink is installed.
     pub fn with_optional_owner_commit(
         sink: Option<Arc<dyn PeerPublishSink>>,
-        owner: Arc<dyn tilo_peer_state::owner_commit::OwnerCommitService>,
+        owner: Arc<dyn tilo_owner_commit::OwnerCommitService>,
     ) -> Arc<Self> {
         Arc::new(Self {
             sink,
@@ -118,9 +118,9 @@ impl PeerPublisher {
     /// Returns a message when no healthy owner commit is installed or the commit fails.
     pub async fn commit_owner(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        request: tilo_owner_commit::OwnerCommitRequest,
         record_kind: Option<String>,
-    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
         let owner = self
             .owner_commit
             .as_ref()
@@ -139,9 +139,9 @@ impl PeerPublisher {
     /// Refuses unavailable governor custody or a receipt for a different request.
     pub async fn commit_member_effect_receipt(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        request: tilo_owner_commit::OwnerCommitRequest,
         caller: tilo_user_identity::DeviceCert,
-    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
         let owner = self
             .owner_commit
             .as_ref()
@@ -510,10 +510,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_owner_commit_carries_the_record_kind_to_the_owner() {
-        use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest};
+        use tilo_owner_commit::{CommitFuture, OwnerCommitRequest};
         #[derive(Default)]
         struct Recording(std::sync::Mutex<Vec<Option<String>>>);
-        impl tilo_peer_state::owner_commit::OwnerCommitService for Recording {
+        impl tilo_owner_commit::OwnerCommitService for Recording {
             fn commit(&self, _: OwnerCommitRequest) -> CommitFuture {
                 Box::pin(async { Err("only commits naming their kind are expected".into()) })
             }
@@ -533,7 +533,7 @@ mod tests {
         let publisher = PeerPublisher::with_optional_owner_commit(None, owner.clone());
         let request = OwnerCommitRequest {
             room: "77777777-7777-4777-8777-777777777777".into(),
-            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+            operation: tilo_owner_commit::CommitOperation::EffectReceipt {
                 invocation: uuid::Uuid::from_u128(1),
                 redacted: b"{}".to_vec(),
             },

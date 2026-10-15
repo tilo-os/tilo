@@ -1725,7 +1725,10 @@ pub fn collect_text(record: &RecordDesc, value: &dyn Any, out: &mut Vec<String>)
 }
 
 /// [`Model::diff`] of a record: each field that is not read-only, at its
-/// key.
+/// key. A field that would store as it is ([`Model::stores_as`]) has
+/// nothing to submit and is passed over, compared in memory: no path made
+/// for it, nothing turned into JSON. The path of a field compared further
+/// is made once, in one buffer.
 pub fn diff(
     record: &RecordDesc,
     before: &dyn Any,
@@ -1733,6 +1736,7 @@ pub fn diff(
     path: &[Segment],
     out: &mut Vec<Edit<()>>,
 ) {
+    let mut at: Vec<Segment> = Vec::new();
     for (index, field) in record.fields.iter().enumerate() {
         if field.readonly {
             continue;
@@ -1741,7 +1745,15 @@ pub fn diff(
         else {
             continue;
         };
-        let mut at = path.to_vec();
+        if (field.table.ops.stores_as)(field.table, now, was) {
+            continue;
+        }
+        if at.is_empty() {
+            at.reserve_exact(path.len().saturating_add(1));
+            at.extend_from_slice(path);
+        } else {
+            at.truncate(path.len());
+        }
         at.push(Segment::Field(field.key.to_owned()));
         (field.table.ops.diff)(field.table, was, now, &at, out);
     }
@@ -2458,6 +2470,9 @@ pub struct JsonDesc {
     /// The value's JSON form, or why it has none: what its stored text is
     /// written from ([`json_text`]).
     pub try_value: fn(&dyn Any) -> Result<serde_json::Value, ModelError>,
+    /// The value serialised, as compact JSON text: equal texts are equal
+    /// JSON forms, so two values compare without building either form.
+    pub bytes: fn(&dyn Any) -> Option<Vec<u8>>,
     /// Put the value of a JSON form into `out`, an `Option` of the type. The
     /// stored text is read through it too ([`json_text`]).
     pub from_value: fn(&serde_json::Value, &mut dyn Any) -> Result<(), ModelError>,
@@ -2531,6 +2546,7 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
             crate::__private::json_via_bytes(value.downcast_ref::<T>().ok_or_else(mismatch)?)
                 .map_err(serde_invalid)
         },
+        bytes: |value| serde_json::to_vec(value.downcast_ref::<T>()?).ok(),
         from_value: |value, out| {
             put::<T>(
                 out,
@@ -2560,6 +2576,7 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Default + 'static> Json
             )
             .map_err(serde_invalid)
         },
+        bytes: |value| serde_json::to_vec(&value.downcast_ref::<crate::Json<T>>()?.0).ok(),
         from_value: |value, out| {
             put(
                 out,
@@ -2631,6 +2648,14 @@ pub static JSON_OPS: ModelOps = ModelOps {
         )
     },
     diff: |table, before, after, path, out| {
+        // The same text is the same form; a different text may still be
+        // (a map's keys serialised in another order), so the forms decide.
+        if let Some(json) = table.json()
+            && let Some(was) = (json.bytes)(before)
+            && (json.bytes)(after).is_some_and(|now| now == was)
+        {
+            return;
+        }
         let value = (JSON_OPS.to_json)(table, after);
         if (JSON_OPS.to_json)(table, before) != value {
             out.push(Edit::new(path.to_vec(), EditOp::Set { value }));
@@ -2963,7 +2988,7 @@ impl<T: 'static> MapEntries for std::collections::BTreeMap<String, T> {
     }
 }
 
-/// What `BTreeMap<String, T>`'s table reaches into one with.
+/// What the table of a map of string keys reaches into one with.
 #[allow(
     clippy::type_complexity,
     reason = "each field reaches into the map one way"
@@ -2980,31 +3005,26 @@ pub struct MapDesc {
     item_staged: (fn() -> Box<dyn Any>, Unstage),
 }
 
-/// The [`MapDesc`] of `BTreeMap<String, T>`.
-pub struct MapOf<T>(PhantomData<T>);
+/// The [`MapDesc`] of the map `M` of string keys to `T`s: a
+/// `BTreeMap<String, T>` ([`MapOf`]) or a [`Map`](crate::Map), stored
+/// alike.
+pub struct MapIn<T, M>(PhantomData<fn() -> (T, M)>);
 
-impl<T: Model> MapOf<T> {
+/// The [`MapDesc`] of `BTreeMap<String, T>`.
+pub type MapOf<T> = MapIn<T, std::collections::BTreeMap<String, T>>;
+
+impl<T: Model, M: MapEntries + Default + 'static> MapIn<T, M> {
     pub const DESC: MapDesc = MapDesc {
         item: T::TABLE,
         item_nullable: T::NULLABLE,
-        entries: |value| {
-            Some(value.downcast_ref::<std::collections::BTreeMap<String, T>>()? as &dyn MapEntries)
-        },
-        entries_mut: |value| {
-            Some(
-                value.downcast_mut::<std::collections::BTreeMap<String, T>>()?
-                    as &mut dyn MapEntries,
-            )
-        },
+        entries: |value| Some(value.downcast_ref::<M>()? as &dyn MapEntries),
+        entries_mut: |value| Some(value.downcast_mut::<M>()? as &mut dyn MapEntries),
         fresh: |out| {
-            let out = out.downcast_mut::<Option<std::collections::BTreeMap<String, T>>>()?;
-            Some(out.insert(std::collections::BTreeMap::new()) as &mut dyn MapEntries)
+            let out = out.downcast_mut::<Option<M>>()?;
+            Some(out.insert(M::default()) as &mut dyn MapEntries)
         },
-        staged: (
-            empty_of::<std::collections::BTreeMap<String, T>>,
-            unwrap_of::<std::collections::BTreeMap<String, T>>,
-        ),
-        replace: replace_of::<std::collections::BTreeMap<String, T>>,
+        staged: (empty_of::<M>, unwrap_of::<M>),
+        replace: replace_of::<M>,
         item_staged: (empty_of::<T>, unwrap_of::<T>),
     };
 

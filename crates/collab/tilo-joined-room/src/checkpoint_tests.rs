@@ -509,16 +509,15 @@ fn checkpoint_reader_fixture() -> (
         fixture
             .owner
             .commit_workspace_membership_command(
-                tilo_peer_state::owner_commit::OwnerCommitRequest {
+                tilo_owner_commit::OwnerCommitRequest {
                     room: testing::ROOM.into(),
-                    operation:
-                        tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
-                            invocation: uuid::Uuid::new_v4(),
-                            caller: fixture.certificate.clone(),
-                            command: WorkspaceMembershipCommand::Grant {
-                                grant: grant.clone(),
-                            },
+                    operation: tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                        invocation: uuid::Uuid::new_v4(),
+                        caller: fixture.certificate.clone(),
+                        command: WorkspaceMembershipCommand::Grant {
+                            grant: grant.clone(),
                         },
+                    },
                 },
                 &fixture.certificate,
                 &fixture.key,
@@ -636,21 +635,40 @@ fn checkpoint_public_commands_bind_original_invocation_and_caller() {
 
 fn deny_checkpoint_naming(fixture: &Fixture, member: &tilo_user_identity::DeviceCert) {
     // This member's fixture role includes writing; explicitly revoke room naming.
-    fixture.owner.commit_workspace_membership_command(
-        tilo_peer_state::owner_commit::OwnerCommitRequest {
-            room: testing::ROOM.into(),
-            operation: tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
-                invocation: uuid::Uuid::new_v4(), caller: fixture.certificate.clone(),
-                command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant {
-                    grant: tilo_action_policy::Grant::new("checkpoint-no-naming",
-                        tilo_action_policy::Subject::person(blake3::Hash::from_bytes(member.user_public_key).to_hex().as_str()),
-                        tilo_action_policy::TreePath::room(testing::ROOM),
-                        tilo_action_policy::KindSet::UNDOABLE, tilo_action_policy::Answer::Deny,
-                        tilo_action_policy::Subject::person(blake3::Hash::from_bytes(fixture.certificate.user_public_key).to_hex().as_str())),
+    fixture
+        .owner
+        .commit_workspace_membership_command(
+            tilo_owner_commit::OwnerCommitRequest {
+                room: testing::ROOM.into(),
+                operation: tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                    invocation: uuid::Uuid::new_v4(),
+                    caller: fixture.certificate.clone(),
+                    command:
+                        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant {
+                            grant: tilo_action_policy::Grant::new(
+                                "checkpoint-no-naming",
+                                tilo_action_policy::Subject::person(
+                                    blake3::Hash::from_bytes(member.user_public_key)
+                                        .to_hex()
+                                        .as_str(),
+                                ),
+                                tilo_action_policy::TreePath::room(testing::ROOM),
+                                tilo_action_policy::KindSet::UNDOABLE,
+                                tilo_action_policy::Answer::Deny,
+                                tilo_action_policy::Subject::person(
+                                    blake3::Hash::from_bytes(fixture.certificate.user_public_key)
+                                        .to_hex()
+                                        .as_str(),
+                                ),
+                            ),
+                        },
                 },
             },
-        }, &fixture.certificate, &fixture.key, fixture.now,
-    ).unwrap();
+            &fixture.certificate,
+            &fixture.key,
+            fixture.now,
+        )
+        .unwrap();
 }
 
 #[test]
@@ -723,15 +741,7 @@ fn checkpoint_public_read_and_mutation_require_current_source_rights() {
             .execute_checkpoint(&naming, &fixture.key, fixture.now)
             .is_err()
     );
-    fixture.owner.commit_workspace_membership_command(
-        tilo_peer_state::owner_commit::OwnerCommitRequest {
-            room: testing::ROOM.into(),
-            operation: tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
-                invocation: uuid::Uuid::new_v4(), caller: fixture.certificate.clone(),
-                command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Revoke { grant: grants[2].id.clone() },
-            },
-        }, &fixture.certificate, &fixture.key, fixture.now,
-    ).unwrap();
+    revoke_membership_grant(&fixture, grants[2].id.clone());
     assert!(
         fixture
             .owner
@@ -749,9 +759,31 @@ fn checkpoint_public_read_and_mutation_require_current_source_rights() {
     );
 }
 
+/// Revoke `grant` through the owner's membership command path.
+fn revoke_membership_grant(fixture: &Fixture, grant: tilo_action_policy::GrantId) {
+    fixture
+        .owner
+        .commit_workspace_membership_command(
+            tilo_owner_commit::OwnerCommitRequest {
+                room: testing::ROOM.into(),
+                operation: tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                    invocation: uuid::Uuid::new_v4(),
+                    caller: fixture.certificate.clone(),
+                    command:
+                        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Revoke {
+                            grant,
+                        },
+                },
+            },
+            &fixture.certificate,
+            &fixture.key,
+            fixture.now,
+        )
+        .unwrap();
+}
+
 #[test]
 fn checkpoint_current_member_route_revocation_gates_reads_and_retries() {
-    use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
     let (fixture, member, grants) = checkpoint_reader_fixture();
     let id = uuid::Uuid::new_v4();
     let ack = capture_member(&fixture, &fixture.owner, &member, id).unwrap();
@@ -764,25 +796,7 @@ fn checkpoint_current_member_route_revocation_gates_reads_and_retries() {
         ack
     );
     let path = fixture.directory.path().join("owner.json");
-    fixture
-        .owner
-        .commit_workspace_membership_command(
-            tilo_peer_state::owner_commit::OwnerCommitRequest {
-                room: testing::ROOM.into(),
-                operation:
-                    tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
-                        invocation: uuid::Uuid::new_v4(),
-                        caller: fixture.certificate.clone(),
-                        command: WorkspaceMembershipCommand::Revoke {
-                            grant: grants[2].id.clone(),
-                        },
-                    },
-            },
-            &fixture.certificate,
-            &fixture.key,
-            fixture.now,
-        )
-        .unwrap();
+    revoke_membership_grant(&fixture, grants[2].id.clone());
     let reopened = open_file(&path).unwrap();
     let durable = std::fs::read(&path).unwrap();
     for owner in [&fixture.owner, &reopened] {

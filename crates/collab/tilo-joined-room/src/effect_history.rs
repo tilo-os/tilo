@@ -3,7 +3,7 @@
 //! before installing the new root, and are never collected from an incomplete root set.
 use crate::Store;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::owner_commit::{OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_owner_commit::{OwnerCommitReceipt, OwnerCommitRequest};
 
 pub(crate) const MAX_BLOCK: usize = 80 * 1024;
 
@@ -206,7 +206,7 @@ fn insert_at(
 pub(crate) fn request(room: &str, fact: &Fact) -> OwnerCommitRequest {
     OwnerCommitRequest {
         room: room.into(),
-        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+        operation: tilo_owner_commit::CommitOperation::EffectReceipt {
             invocation: fact.invocation,
             redacted: fact.redacted.clone(),
         },

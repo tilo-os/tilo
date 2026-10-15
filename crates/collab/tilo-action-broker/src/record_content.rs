@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tilo_content::{hash_bytes, valid_hash};
 use tokio::sync::mpsc;
 
 use crate::route::CrdtRoute;
@@ -107,17 +108,6 @@ pub struct ContentArrival {
     pub bytes: Vec<u8>,
 }
 
-/// The hex blake3 of `bytes`, the address content is kept and asked for
-/// under.
-pub fn content_hash(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex().to_string()
-}
-
-/// Whether `hash` has the shape of a content address.
-pub fn valid_hash(hash: &str) -> bool {
-    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
 /// A request this device made and the pieces gathered for it.
 struct Want {
     asked: Instant,
@@ -166,7 +156,7 @@ impl RouteContent {
         if bytes.len() as u64 > MAX_CONTENT_BYTES {
             return Err("content is larger than a record may reference".into());
         }
-        if content_hash(bytes) != hash {
+        if hash_bytes(bytes) != hash {
             return Err("content does not match its address".into());
         }
         let scope = ContentScope::of(route);
@@ -309,7 +299,7 @@ impl RouteContent {
         let Some(bytes) = complete else {
             return;
         };
-        if content_hash(&bytes) != hash {
+        if hash_bytes(&bytes) != hash {
             tracing::warn!(%hash, "record content from a peer did not match its address");
             return;
         }

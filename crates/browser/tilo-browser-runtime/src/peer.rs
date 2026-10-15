@@ -2013,6 +2013,39 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
+    /// Tell the host which video codecs this page decodes (`codecs`, a JSON
+    /// array of `SurfaceStreamStart` labels such as `["h264","vp9"]`), so
+    /// sessions stream their legacy windows in `room` in one every member
+    /// plays. Resolves `false` when the host predates codec adverts.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed arguments, or when the host is not reached or
+    /// refuses the advert.
+    #[wasm_bindgen(js_name = legacyCodecs)]
+    pub async fn legacy_codecs(&self, room: String, codecs: String) -> Result<bool, JsError> {
+        let request = tilo_relay_protocol::legacy_window::CodecsRequest {
+            workspace_id: workspace(&room)?,
+            decode: serde_json::from_str(&codecs).map_err(js_error)?,
+        };
+        if !request.valid() {
+            return Err(js_error("codecs out of bounds"));
+        }
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .legacy_codecs_then(
+                request,
+                Box::new(move |taken| {
+                    let _ = reply.send(taken);
+                }),
+            )
+            .map_err(js_error)?;
+        receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)
+    }
+
     /// How many changes this page made to its room: records it sent, and
     /// windows the person opened, closed or moved on its desktop.
     #[wasm_bindgen(js_name = authoredChanges)]

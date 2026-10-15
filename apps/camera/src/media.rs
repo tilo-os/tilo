@@ -14,7 +14,7 @@ pub const MAX_MEDIA_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn is_media_id(id: &str) -> bool {
     id.strip_prefix(MEDIA_PREFIX)
-        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .is_some_and(tilo_content::valid_hash)
 }
 
 pub fn store(content: &ContentStore, bytes: &[u8]) -> Option<String> {

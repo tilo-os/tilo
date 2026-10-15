@@ -1179,12 +1179,12 @@ mod tests {
 
     fn assert_non_person_queue_refused(
         owner: &tilo_joined_room::NativeWorkspaceOwner,
-        request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
+        request: &tilo_owner_commit::OwnerCommitRequest,
         certificate: &tilo_user_identity::DeviceCert,
         snapshot: &WorkspaceTaskSnapshot,
         context: (tilo_desktop_model::RoomId, std::time::SystemTime),
     ) {
-        use tilo_peer_state::owner_commit::CommitOperation;
+        use tilo_owner_commit::CommitOperation;
         use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
         let (room, now) = context;
         for authority in [
@@ -1219,7 +1219,7 @@ mod tests {
     #[test]
     fn public_queue_commits_an_admitted_agent_and_retains_a_receipt_without_a_run() {
         use tilo_action_policy::roles::AgentPreset;
-        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+        use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
         use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
         use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
         let (_directory, owner, certificate, key) = enrolled_queue_owner();

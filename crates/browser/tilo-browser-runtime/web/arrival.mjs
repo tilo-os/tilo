@@ -133,11 +133,12 @@ export const STEP_NOTES = new Set([
   'Connecting…', 'Asking to join…', 'Joining…', 'Asking to pair this device…',
 ]);
 
-/** Said in place of the line when a step that waits on the network runs
- * long; the locale file may word them. */
+/** Said in place of the line when a step that waits on the network, or on
+ * the GPU's first frame, runs long; the locale file may word them. */
 export const SLOW_NOTES = {
   fetch: ['arrival-slow-loading', 'Still loading. Your network may be slow.'],
   join: ['arrival-slow-connecting', 'Still connecting. Your network may be slow.'],
+  draw: ['arrival-slow-drawing', 'Still starting graphics. Without a graphics card this takes longer.'],
 };
 
 /**
@@ -149,7 +150,7 @@ export const SLOW_NOTES = {
  * line, note or bar: its status says what went wrong.
  */
 export function createArrival({lines = {jokes: [], tips: []}, random = Math.random, reducedMotion = false,
-  delayMs = 1000, periodMs = 2500, slowMs = {fetch: 8000, join: 6000}, slowNotes = {}} = {}) {
+  delayMs = 1000, periodMs = 2500, slowMs = {fetch: 8000, join: 6000, draw: 10_000}, slowNotes = {}} = {}) {
   let rotation = createRotation(lines, random);
   let line = null;
   let shownAt = null;

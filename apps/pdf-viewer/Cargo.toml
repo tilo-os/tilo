@@ -19,6 +19,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 fnv.workspace = true
+hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true

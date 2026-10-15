@@ -23,6 +23,7 @@
 use aes::Aes128;
 use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 use hkdf::Hkdf;
+use hkdf::hmac::{Hmac, KeyInit, Mac};
 use num_bigint::BigUint;
 use sha2::Sha256;
 use std::ops::{Add, Rem, Sub};
@@ -71,6 +72,91 @@ pub fn store_key(
         .expand(&info, out.as_mut())
         .map_err(|_| Error::InvalidKey)?;
     Ok(SymmetricKey::from_bytes(*out))
+}
+
+/// Length of a [`CallerKey`] proof.
+pub const CALLER_PROOF_LEN: usize = 32;
+
+/// What a process that holds the device identity proves it with, to the
+/// person's Secret Service, when the service cannot read its executable.
+///
+/// A process that loads the device key makes itself non-dumpable, and the
+/// kernel then refuses its `/proc/<pid>/exe` to every other process of the
+/// user, the service included. Such a process answers the service's
+/// challenge instead: `HMAC-SHA256(key, challenge ‖ caller ‖ program)`, each
+/// field preceded by its length as a big-endian `u64`, where `caller` is the
+/// process's unique bus name and `program` the executable it names, and
+/// `key = HKDF-SHA256(ikm = device secret, salt = none, info =`
+/// [`crate::Label::StoreCallerProof`]`)`.
+///
+/// The proof grants nothing its holder does not already have: the device
+/// secret, together with the person's salt in their own data directory, is
+/// exactly what derives [`store_key`], so whoever can prove can already open
+/// the store's file. The key is used for nothing else.
+#[derive(Clone)]
+pub struct CallerKey(Zeroizing<[u8; 32]>);
+
+impl CallerKey {
+    /// The caller key of `device_secret`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidKey`] for a device secret shorter than 16 bytes, which
+    /// cannot be a key.
+    pub fn derive(device_secret: &[u8]) -> Result<Self> {
+        if device_secret.len() < 16 {
+            return Err(Error::InvalidKey);
+        }
+        let mut out = Zeroizing::new([0_u8; 32]);
+        Hkdf::<Sha256>::new(None, device_secret)
+            .expand(crate::Label::StoreCallerProof.as_bytes(), out.as_mut())
+            .map_err(|_| Error::InvalidKey)?;
+        Ok(Self(out))
+    }
+
+    /// The proof that answers `challenge` for the bus name `caller` running
+    /// `program`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidKey`] if HMAC refuses the key, which it never does
+    /// for 32 bytes.
+    pub fn prove(
+        &self,
+        challenge: &[u8],
+        caller: &str,
+        program: &[u8],
+    ) -> Result<[u8; CALLER_PROOF_LEN]> {
+        Ok(self
+            .mac(challenge, caller, program)?
+            .finalize()
+            .into_bytes()
+            .into())
+    }
+
+    /// Whether `proof` answers `challenge` for `caller` running `program`.
+    /// The comparison takes the same time however much of it matches.
+    #[must_use]
+    pub fn verify(&self, challenge: &[u8], caller: &str, program: &[u8], proof: &[u8]) -> bool {
+        self.mac(challenge, caller, program)
+            .is_ok_and(|mac| mac.verify_slice(proof).is_ok())
+    }
+
+    fn mac(&self, challenge: &[u8], caller: &str, program: &[u8]) -> Result<Hmac<Sha256>> {
+        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(self.0.as_ref())
+            .map_err(|_| Error::InvalidKey)?;
+        for field in [challenge, caller.as_bytes(), program] {
+            mac.update(&u64::try_from(field.len()).unwrap_or(u64::MAX).to_be_bytes());
+            mac.update(field);
+        }
+        Ok(mac)
+    }
+}
+
+impl std::fmt::Debug for CallerKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CallerKey(..)")
+    }
 }
 
 /// RFC 2409, section 6.2: the second Oakley group's 1024-bit safe prime.
@@ -233,6 +319,40 @@ mod tests {
         );
         // A fresh IV per secret.
         assert_ne!(iv, client_key.encrypt(b"hunter2").unwrap().0);
+    }
+
+    /// Computed independently with Python's `hmac` and `hashlib`: HKDF-SHA256
+    /// of `[7; 32]` with an all-zero salt, then HMAC-SHA256 over the
+    /// length-prefixed fields.
+    #[test]
+    fn a_caller_proof_matches_an_independent_computation() {
+        let key = CallerKey::derive(&[7; 32]).unwrap();
+        let proof = key.prove(&[9; 32], ":1.42", b"/usr/bin/shell").unwrap();
+        assert_eq!(
+            hex::encode(proof),
+            "57ce696f68420fb60ceab4713cfc659f39b2d97e01b5f7ee2e377a4f9740d943"
+        );
+        assert!(key.verify(&[9; 32], ":1.42", b"/usr/bin/shell", &proof));
+    }
+
+    #[test]
+    fn a_caller_proof_binds_the_device_the_challenge_the_caller_and_the_program() {
+        let key = CallerKey::derive(&[7; 32]).unwrap();
+        let proof = key.prove(&[9; 32], ":1.42", b"/usr/bin/shell").unwrap();
+        let other_device = CallerKey::derive(&[8; 32]).unwrap();
+        assert!(!other_device.verify(&[9; 32], ":1.42", b"/usr/bin/shell", &proof));
+        assert!(!key.verify(&[10; 32], ":1.42", b"/usr/bin/shell", &proof));
+        assert!(!key.verify(&[9; 32], ":1.43", b"/usr/bin/shell", &proof));
+        assert!(!key.verify(&[9; 32], ":1.42", b"/usr/bin/sh", &proof));
+        // Field boundaries are part of the proof: moving bytes between the
+        // caller and the program is another proof.
+        assert!(!key.verify(&[9; 32], ":1.42/", b"usr/bin/shell", &proof));
+        assert!(!key.verify(&[9; 32], ":1.42", b"/usr/bin/shell", &proof[..31]));
+        assert!(CallerKey::derive(&[7; 15]).is_err());
+        // The key is not the store's key under another name.
+        let salt = [0_u8; 32];
+        let store = store_key(&[7; 32], &salt, b"").unwrap();
+        assert_ne!(store.expose_secret(), &*key.0);
     }
 
     /// Computed independently: Python big-integer `pow`, HMAC-SHA256 HKDF

@@ -24,7 +24,24 @@ fi
 command -v docker >/dev/null || { printf 'package-lane.sh needs docker or podman on this node\n' >&2; exit 1; }
 printf 'container engine: %s\n' "$engine"
 
+# fetch-package-env-runtime.sh copies the env-runtime image with skopeo, which a node with only
+# a container engine runs from its pinned image.
+if ! command -v skopeo >/dev/null; then
+  shim=${shim:-$(mktemp -d "${TMPDIR:-/tmp}/docker-shim.XXXXXX")}
+  cat > "$shim/skopeo" <<'SH'
+#!/bin/sh
+work=${TMPDIR:-/tmp}
+exec docker run --rm --network host -v "$PWD:$PWD" -v "$work:$work" -w "$PWD" \
+  quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f "$@"
+SH
+  chmod +x "$shim/skopeo"
+  PATH=$shim:$PATH
+fi
+
 rm -rf dist/ci-output
+# The cached Cosign installer reports its directory the way a workflow step would.
+export RUNNER_TEMP=${RUNNER_TEMP:-$(mktemp -d "${TMPDIR:-/tmp}/package-lane.XXXXXX")}
+export GITHUB_PATH=${GITHUB_PATH:-$RUNNER_TEMP/path}
 bash dist/ci/fetch-package-env-runtime.sh
 export TILO_ENABLE_REMOTE_CACHE=0 TILO_CARGO_JOBS=${TILO_CARGO_JOBS:-6}
 while IFS='|' read -r distro image revision; do

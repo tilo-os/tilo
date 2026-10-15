@@ -1,6 +1,6 @@
 use crate::application_record::tests::fixture;
 use crate::{RoomId, testing};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 #[test]

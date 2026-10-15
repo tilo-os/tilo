@@ -3,7 +3,10 @@
 
 The selector works from Cargo metadata rather than a hand-maintained package
 list.  A package is selected when its own files change, or when it transitively
-depends on a changed workspace package.  Root Cargo.toml and Cargo.lock changes
+depends on a changed workspace package through normal or build dependencies, or
+dev-depends on one of those (a dev-dependency reaches only the dependent's own
+test, example and bench targets, not the library its dependents link).  Root
+Cargo.toml and Cargo.lock changes
 are attributed to the packages they reach when the difference can be proved;
 other repository-wide build inputs fall back to the complete workspace.
 Ordinary feedback checks the closure on x86 and tests changed packages, their
@@ -86,7 +89,6 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/compiler_cache_metrics.py": "tools/tests/test_ci_compiler_cache_metrics.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
-    "tools/ci/app_sdk_affected.py": "tools/tests/test_app_sdk_affected.py",
     "tools/ci/macos_apps.py": "tools/tests/test_dev_macos_workflows.py",
     "tools/ci/prewarm_test_binaries.py": "tools/tests/test_prewarm_test_binaries.py",
     "tools/ci/recheck_base.py": "tools/tests/test_recheck_base.py",
@@ -494,6 +496,56 @@ def resolve_manifest_inputs(
     return resolved
 
 
+class DependencyEdges(NamedTuple):
+    """Provider -> consumers, split by what the edge carries into the consumer.
+
+    ``linked``: normal and build dependencies (and any kind Cargo may add
+    later). They change the consumer's library, so they propagate further.
+    ``dev``: dev-dependencies. They reach only the consumer's own test,
+    example and bench targets, which no other package compiles.
+    """
+    linked: dict[str, set[str]]
+    dev: dict[str, set[str]]
+
+
+def dependency_edges(packages: dict[str, dict]) -> DependencyEdges:
+    """Workspace path-dependency edges by kind; see `DependencyEdges`.
+
+    Resolves providers exactly like workspace_graph.reverse_dependencies (by
+    manifest path), so the union of both maps is that function's result. It
+    lives here rather than there because release selection fingerprints
+    workspace_graph.py.
+    """
+    manifest_to_name = {
+        str(Path(pkg["manifest_path"]).resolve()): name for name, pkg in packages.items()
+    }
+    linked: dict[str, set[str]] = {name: set() for name in packages}
+    dev: dict[str, set[str]] = {name: set() for name in packages}
+    for consumer, pkg in packages.items():
+        for dependency in pkg.get("dependencies", []):
+            dep_path = dependency.get("path")
+            if not dep_path:
+                continue
+            provider = manifest_to_name.get(str(Path(dep_path).resolve() / "Cargo.toml"))
+            if provider:
+                (dev if dependency.get("kind") == "dev" else linked)[provider].add(consumer)
+    return DependencyEdges(linked, dev)
+
+
+def check_closure(seeds: set[str], edges: DependencyEdges) -> set[str]:
+    """Every package with a compiled target (lib, bin, test, example, bench)
+    that a change to `seeds` reaches.
+
+    A change to A reaches B's library when B depends on A as a normal or build
+    dependency, and so on transitively. When B dev-depends on A, A enters only
+    B's own test/example/bench targets: B is selected, and nothing that links
+    B is, because B's library is unchanged. Each package of the linked closure
+    therefore adds its dev dependants, and those are not expanded further.
+    """
+    linked = closure(seeds, edges.linked)
+    return linked | {consumer for package in linked for consumer in edges.dev.get(package, ())}
+
+
 def package_cost(pkg: dict) -> int:
     """Stable relative cost used only to balance shards.
 
@@ -811,7 +863,10 @@ def make_plan(
                   "repository-wide build input changed" if global_change else "workspace path has no package owner")
         full = True
     else:
-        selected = closure(seeds | checked, reverse)
+        # Normal/build edges propagate; a dev edge adds one dependant whose
+        # own tests change and stops (check_closure). Test selection below
+        # keeps every direct dependant, dev ones included, via `reverse`.
+        selected = check_closure(seeds | checked, dependency_edges(packages))
         reached = selected | readers
         selected.update(ALWAYS_PACKAGES & packages.keys())
         selected.update(readers)

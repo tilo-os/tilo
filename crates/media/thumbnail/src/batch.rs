@@ -131,8 +131,7 @@ pub fn run_compute_request(request: &Path, outputs: &Path) -> Result<(), BatchEr
     let mut seen = std::collections::BTreeSet::new();
     let mut inputs = Vec::with_capacity(staged.inputs.len());
     for digest in staged.inputs {
-        let valid = digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit());
-        if !valid {
+        if !tilo_content::valid_hash(&digest) {
             return Err(BatchError::Request("input is not a digest".into()));
         }
         if seen.insert(digest.clone()) {

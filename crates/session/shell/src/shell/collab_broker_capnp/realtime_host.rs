@@ -426,7 +426,7 @@ impl RealtimeFabricAppBridge {
         session: &str,
         target: &crate::shell::personal_continuity::DeviceId,
     ) -> Result<(), String> {
-        if !crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+        if !crate::shell::continuity_policy::ContinuityPolicySnapshot::current()
             .permits(crate::shell::continuity_policy::ContinuityCapability::RealtimeSessions)
         {
             return Err("realtime session continuity is disabled".into());
@@ -474,7 +474,7 @@ impl RealtimeFabricAppBridge {
     /// any mismatch between the imported session and this local target.
     pub fn resolve_consent(&self, session: &str, approved: bool) -> Result<(), String> {
         self.resolve_consent_with_policy(session, approved, || {
-            crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::current()
                 .permits(crate::shell::continuity_policy::ContinuityCapability::RealtimeSessions)
         })
     }

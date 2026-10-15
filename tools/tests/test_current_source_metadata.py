@@ -43,6 +43,17 @@ class CurrentSourceMetadataTests(unittest.TestCase):
         self.assertEqual(json.loads(output.read_text()), self.metadata)
         self.assertEqual(json.loads(result.stdout)["workspace_packages"], 1)
 
+    def test_a_root_that_also_names_crate_directories_maps_only_as_a_prefix(self):
+        metadata = {"workspace_root": "/src", "target_directory": "/src/target",
+                    "packages": [{"id": "path+file:///src/crates/a#a@0.1.0",
+                                  "manifest_path": "/src/crates/a/Cargo.toml",
+                                  "targets": [{"src_path": "/src/crates/a/src/lib.rs"}],
+                                  "source": "registry+https://github.com/rust-lang/crates.io-index"}]}
+        mapped = module.map_strings(metadata, "/src", module.ROOT)
+        self.assertEqual(mapped["packages"][0]["targets"][0]["src_path"], module.ROOT + "/crates/a/src/lib.rs")
+        self.assertEqual(mapped["packages"][0]["id"], "path+file://" + quote(module.ROOT, safe="/") + "/crates/a#a@0.1.0")
+        self.assertEqual(module.map_strings(mapped, module.ROOT, "/src"), metadata)
+
     def test_complete_round_trip_preserves_ids_dependency_and_target_details(self):
         bundle = module.seal(self.root, self.metadata)
         self.assertNotIn(str(self.root), json.dumps(bundle))

@@ -629,7 +629,7 @@ impl Here {
         let Some(line) = line else {
             return;
         };
-        let now_ms = tilo_clock::unix_now_ns() / 1_000_000;
+        let now_ms = tilo_clock::unix_now_ms();
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(entry) = state
             .workspaces

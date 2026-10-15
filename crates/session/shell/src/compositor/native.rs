@@ -9018,6 +9018,9 @@ pub fn run() {
     if let Some(reason) = live_settings.degraded() {
         tracing::warn!(%reason, "settings changes may arrive late");
     }
+    // Continuity checks run per fabric message on this loop: from here on
+    // they read this snapshot, never the settings document.
+    crate::shell::continuity_policy::follow(&live_settings);
     spawn_auto_brightness_worker(live_settings.clone());
 
     // `--backend drm|winit` selects the native backend implementation.
@@ -11402,7 +11405,7 @@ pub fn run() {
                 // older periodic sample.
                 crate::shell::device_fabric_runtime::person_layout::refresh(
                     network,
-                    crate::shell::continuity_policy::ContinuityPolicySnapshot::load(),
+                    continuity_policy.current(),
                 );
                 if let Some(view) =
                     crate::shell::device_fabric_runtime::person_layout::current(network)
@@ -12233,7 +12236,7 @@ pub fn run() {
         let pump_bookkeeping_done = Instant::now();
         let pump_network_started = pump_bookkeeping_done;
         if let Some(net) = peer_sync.as_ref() {
-            pump_phase!("network-tick", net.tick());
+            pump_phase!("network-tick", net.frame_tick());
             let runtime = device_fabric_runtime.get_or_insert_with(|| {
                 crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
                     net,

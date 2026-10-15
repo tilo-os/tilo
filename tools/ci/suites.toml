@@ -99,6 +99,7 @@ suites = [
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",
+  "os/tests/boot_health_greeter.sh",
   "os/tests/board_release_promotion.py",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
@@ -170,14 +171,11 @@ suites = [
   "os/tests/test_image_cohort_archives.py",
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
-  "os/tests/test_install_dev_ssh.py",
-  "os/tests/test_install_handoff_copy.py",
   "os/tests/test_installed_development_disk.py",
   "os/tests/test_loop_partition_nodes.py",
   "os/tests/test_installer_bootc_helper.py",
   "os/tests/test_installer_cmdline_projection.py",
   "os/tests/test_installer_firstboot_runtime.py",
-  "os/tests/test_installer_offline_target.py",
   "os/tests/test_installer_dev_target_uki.py",
   "os/tests/test_installer_code_refresh.py",
   "os/tests/test_installer_overlay.py",
@@ -216,7 +214,6 @@ suites = [
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
-  "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_probe_kvm.py",
   "os/tests/test_windows_dualboot_preflight.py",
@@ -787,6 +784,20 @@ inputs = [
 readers = ["crates/system/staging-reclaim/tests/reclaim.rs"]
 
 [[cargo]]
+package = "tilo-install-helpers"
+# The helpers' tests check how the installer backend and its guided
+# partitioner call them.
+inputs = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition"]
+readers = [
+  "crates/system/install-helpers/tests/handoff_copy.rs",
+  "crates/system/install-helpers/tests/dev_ssh.rs",
+  "crates/system/install-helpers/tests/bootc_copy_cache.rs",
+  "crates/system/install-helpers/tests/offline_target.rs",
+  "crates/system/install-helpers/tests/staging_handoff.rs",
+  "crates/system/install-helpers/tests/install_proof.rs",
+]
+
+[[cargo]]
 package = "greeter"
 # The greeter offers exactly the sessions the image ships.
 inputs = ["os/usr/share/wayland-sessions/*.desktop"]
@@ -1219,10 +1230,6 @@ by = "os/tests/imager_release_invariants.sh"
 suite = "os/tests/winget_publication_idempotency.sh"
 by = "os/tests/imager_release_invariants.sh"
 
-[[covered]]
-suite = "tools/ci/focused_test.py"
-by = "tools/tests/test_focused_test.py"
-
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.
 
@@ -1529,6 +1536,10 @@ workflow = "dev-disk-boot-diagnostic.yml"
 suite = "os/tests/shared_disk_esp.sh"
 reason = "runs inside a booted guest, as root, and repartitions its disk"
 workflow = "dev-disk-boot-diagnostic.yml"
+
+[[unrequired]]
+suite = "os/tests/development_signing_native.sh"
+reason = "needs a privileged node for nested Podman: t's development-signing-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/release_tools_image.sh"

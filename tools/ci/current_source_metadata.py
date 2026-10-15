@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Seal CI Cargo metadata and validate it for a clean exact-source worktree.
 
-This program never runs Cargo. The explicit CI workflow produces the complete
+This program never runs Cargo. t's source-metadata check produces the complete
 --locked --no-deps export; validation binds it to Git source and manifest bytes.
 """
 import argparse
@@ -30,11 +30,24 @@ def identity(root):
             "manifests": manifests}
 
 
+def map_path(value, old, new):
+    """Replace `old` where it starts the path: the export may have been made at
+    `/src`, which also occurs inside every crate's own `src/` paths."""
+    for scheme in ("path+file://", "file://"):
+        if value.startswith(scheme):
+            rest = value[len(scheme):]
+            quoted = quote(old, safe="/")
+            if rest == quoted or rest.startswith((quoted + "/", quoted + "#")):
+                return scheme + quote(new, safe="/") + rest[len(quoted):]
+            return value
+    if value == old or value.startswith(old + "/"):
+        return new + value[len(old):]
+    return value
+
+
 def map_strings(value, old, new):
     if isinstance(value, str):
-        if value.startswith(("path+file://", "file://")):
-            return value.replace(quote(old, safe="/"), quote(new, safe="/"))
-        return value.replace(old, new)
+        return map_path(value, old, new)
     if isinstance(value, list):
         return [map_strings(item, old, new) for item in value]
     if isinstance(value, dict):

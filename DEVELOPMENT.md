@@ -256,55 +256,15 @@ fails, is in `docs/measurements/`: [performance KPIs and A/B runs](docs/measurem
 
 ## Fast checks before assembly
 
-For a native integration test without a full workspace dispatch, use
-**Dev / focused test** (`dev-focused-test.yml`). Select a full source
-commit SHA, one Cargo package, integration target and exact Rust test path. For
-example: package `shell`, target `it`, test
-`concept_parity_spec::overview_add_workspace::overview_add_workspace_button_renders_and_click_appends_workspace`.
-Use operation `check-tests` with the target/name empty to compile that package's
-test targets. Both modes use `--locked` on one native x86-64 runner and share the
-normal download/compiler caches. Missing or ignored tests fail. The job records
-source SHA, workflow SHA, builder digest and exit status; its diagnostic result
-does not replace required PR checks or trigger publication.
-
-For a related group, set `target_kind=lib` (leave `test_target` empty), or keep
-`target_kind=integration` and name the integration target. Supply `test_names` as
-a JSON array of up to 32 exact paths, leaving `test_name` empty. All names must
-exist before any case runs. Every case runs even if an earlier case fails, and
-the run fails if any case fails or is ignored. One job reuses one target tree;
-there is no workspace-wide selection or per-case runner dispatch.
-
-For example, write `["tests::first_case", "tests::second_case"]` to `cases.json`
-and submit directly through the scheduler (replace the example package and SHA):
+For a native integration test without a full workspace run, ask t for exactly
+that test; it runs on x86-64 in the builder image with the same caches, never
+from a stored result ([docs/t.md](docs/t.md)):
 
 ```sh
-jq -n --rawfile tests cases.json --arg source FULL_SOURCE_SHA \
-  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"test",target_kind:"lib",test_names:$tests}}' \
-  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
+t test test/shell --test 'concept_parity_spec::overview_add_workspace::'
+t cargo check -p shell --tests        # compile a package's test targets
+t test clippy/shell clippy/tilo-relay # CI's Clippy gate, also for crates macOS cannot build
 ```
-
-Use this structured request for lists: the installed `fgj workflow run` does not
-expand `-F` files and parses `-f` values as CSV, which breaks JSON arrays.
-
-Do not reserve runners or ask another agent to allocate a slot. Each case's
-result and the exact source/workflow/builder identities appear in the run summary.
-
-Use operation `clippy` to meet CI's lint gate before pushing, including for
-crates that do not build on macOS (`shell`, `tilo-relay`, `launcher`). It runs
-the source's own `tools/ci/clippy-check.sh -p <pkg>…` (all targets,
-`-D warnings`, the workspace lint table), on the runner label, builder image,
-environment and checkout path of CI's `clippy` job, so the two share compiler
-cache entries and a warm package takes minutes. Name one `package`, or up to 64
-in `packages`; leave the test fields empty. A failure prints the rendered
-Clippy diagnostics; the run summary lists the compiler-cache statistics.
-
-```sh
-jq -n --arg source "$(git rev-parse HEAD)" \
-  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"clippy"}}' \
-  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
-```
-
-The source commit must be pushed (any branch) so the runner can fetch it.
 
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 

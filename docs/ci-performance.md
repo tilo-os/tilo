@@ -4,7 +4,9 @@ Current deployment and measured startup results are recorded in the
 [emergency runbook](ci-emergency-relief.md). CI has three complementary paths:
 
 - `check.yml` uses one x86-64 shard for targeted push/PR feedback. It checks all
-  targets in the affected reverse-dependency closure, while linking and running
+  targets in the affected reverse-dependency closure (normal and build
+  dependencies transitively; a dev-dependency adds only the package whose own
+  tests use it, since its library is unchanged), while linking and running
   tests for directly changed packages plus `collab-types`, `pkg`, and `qdoc`.
   Repository-wide build inputs and unmapped workspace paths retain full-workspace
   check/test selection. Manual dispatch and the explicit desktop release branch

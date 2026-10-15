@@ -145,73 +145,98 @@ impl Store for TreeStore {
 
 /// The owner of the state file behind `tree`, attached to its writer.
 ///
+/// The tree is never held across the state file's I/O: binding the writer
+/// (its lease, and on first use syncing every directory up to `/`) and the
+/// reopened generation's publication (a data and a directory sync) each take
+/// seconds on a loaded disk, and the frame loop reads the tree every tick.
+/// The record is encoded from one read of the tree, published, and the
+/// owner installed under a short write only if the tree still holds that
+/// record. Opens of one writer are serialized by the writer itself.
+///
 /// # Errors
-/// The writer belongs to another tree, the file's record is invalid, or the
-/// reopened generation cannot be published.
+/// The writer belongs to another tree, the file's record is invalid, the
+/// tree's record changed while it was being published, or the reopened
+/// generation cannot be published.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "callers hand over their tree handle; the owner retains a clone of it"
 )]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the state writer stays locked from owner lookup through installation and export"
+    reason = "the writer's opening guard is held from the owner lookup through attachment, so two opens never both restore an owner"
 )]
 pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, String> {
-    let mut native = tree.write();
-    if let Some(owner) = native.native_runtime.owner_of(&tree)? {
-        return Ok(owner);
-    }
-    store::preflight(&native.native_authority, store::MAX_AUTHORITY_BYTES)
-        .map_err(|e| e.to_string())?;
-    let path = native
-        .persist_path
-        .clone()
-        .ok_or("native owner requires the actual state-file path")?;
-    native
-        .native_runtime
-        .bind(&path, &native.native_authority)
-        .map_err(|e| e.to_string())?;
-    if !native.native_authority.every_pending_has_slot() {
-        return Err("native pending enrollment has no local slot".into());
-    }
-    store::preflight(&*native, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
-    let reopened = native.clone();
+    let runtime = tree.read().native_runtime.clone();
+    let _opening = runtime.opening();
+    let (path, authority, encoded, sequence) = {
+        let native = tree.read();
+        if !native.native_runtime.is(&runtime) {
+            return Err("native state writer replaced while the owner was opening".into());
+        }
+        if let Some(owner) = runtime.owner_of(&tree)? {
+            return Ok(owner);
+        }
+        store::preflight(&native.native_authority, store::MAX_AUTHORITY_BYTES)
+            .map_err(|e| e.to_string())?;
+        let path = native
+            .persist_path
+            .clone()
+            .ok_or("native owner requires the actual state-file path")?;
+        if !native.native_authority.every_pending_has_slot() {
+            return Err("native pending enrollment has no local slot".into());
+        }
+        store::preflight(&*native, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
+        let encoded = persist::encode_tree(&native).map_err(|e| e.to_string())?;
+        // Taken while the tree is held, so a save of any later state of it
+        // carries a later sequence.
+        let sequence = runtime.next_sequence();
+        (path, native.native_authority.clone(), encoded, sequence)
+    };
+    runtime.bind(&path, &authority).map_err(|e| e.to_string())?;
     let owner = NativeWorkspaceOwner::restore(
         std::sync::Arc::new(TreeStore {
             tree: tree.clone(),
-            runtime: native.native_runtime.clone(),
+            runtime: runtime.clone(),
             history: tilo_joined_room::HistoryContent::for_state_file(&path),
         }),
-        native.native_authority.clone(),
+        authority.clone(),
         std::time::SystemTime::now(),
     )?;
     // Re-establish the publication barrier before exposing a reopened generation.
     // The reopened record is the one the file holds.
-    let encoded = persist::encode_tree(&reopened).map_err(|e| e.to_string())?;
-    let sequence = native.native_runtime.next_sequence();
-    let published = native
-        .native_runtime
-        .publish(
-            &path,
-            encoded.authority,
-            &reopened.native_authority,
-            &encoded,
-            sequence,
-        )
+    let published = runtime
+        .publish(&path, encoded.authority, &authority, &encoded, sequence)
         .map_err(|e| e.to_string())?;
-    if published == store::Publication::Superseded {
+    // A save of a later state of the tree landed first. No owner exists to
+    // change the record, so that save carried this same record and is the
+    // barrier; the writer confirms it is what the file holds.
+    if published == store::Publication::Superseded && !runtime.holds(encoded.authority) {
         return Err("reopened native generation was superseded".into());
     }
-    *native = reopened;
+    let mut native = tree.write();
+    if !native.native_runtime.is(&runtime) {
+        return Err("native state writer replaced while the owner was opening".into());
+    }
+    if store::digest(&native.native_authority).map_err(|e| e.to_string())? != encoded.authority {
+        return Err("native authority changed while the owner was opening".into());
+    }
     for room in owner.rooms() {
         owner.with_current(room, |view| {
             native.project_native_room(room, view.peer());
             Ok(())
         })?;
     }
-    native.native_runtime.attach(&owner, &tree);
+    runtime.attach(&owner, &tree);
     native.export_fs_capabilities();
+    drop(native);
     Ok(owner)
+}
+
+/// The owner already attached to `tree`'s writer, which an [`open`] of it
+/// would answer, found without waiting for the writer's file.
+pub(crate) fn attached(tree: &WorkspaceTreeHandle) -> Option<NativeWorkspaceOwner> {
+    let runtime = tree.read().native_runtime.clone();
+    runtime.owner_of(tree).ok().flatten()
 }
 
 #[cfg(test)]

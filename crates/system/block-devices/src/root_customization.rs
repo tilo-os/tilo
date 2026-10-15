@@ -26,7 +26,7 @@ pub struct Requests {
 /// sshd's unit, as the image's enablement link names it.
 const SSHD_UNIT: &str = "/usr/lib/systemd/system/sshd.service";
 
-/// The key-only login `tilo-install-dev-ssh.py` configures on a self-install.
+/// The key-only login `tilo-install-dev-ssh` configures on a self-install.
 fn bringup_sshd_config(username: &str) -> String {
     format!(
         "AllowUsers {username}\nPermitRootLogin no\nPasswordAuthentication no\n\

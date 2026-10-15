@@ -79,9 +79,18 @@ fn record_at(key: &str, at: u64) {
     };
     let text = usage.frecency.serialize();
     drop(usage);
-    if let Err(error) = write_private(&path, text.as_bytes()) {
-        tracing::warn!(%error, "could not save the palette's usage history");
-    }
+    save_in_background(path, text);
+}
+
+/// Hand the record to the state writer. A palette activation runs on the
+/// compositor's loop, and the write's fsyncs can take seconds under I/O
+/// pressure. A newer record that has not started replaces this one.
+fn save_in_background(path: PathBuf, text: String) {
+    crate::shell::durable_writer::global().submit(path.clone(), move || {
+        if let Err(error) = write_private(&path, text.as_bytes()) {
+            tracing::warn!(%error, "could not save the palette's usage history");
+        }
+    });
 }
 
 fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -143,5 +152,27 @@ mod tests {
         assert!(boost("usage-test", "often") > boost("usage-test", "never"));
         assert_eq!(boost("usage-test", "never"), 0);
         assert!(boost("usage-test", "often") <= MAX_BOOST);
+    }
+
+    /// Choosing a palette row runs on the compositor's loop; the record's
+    /// write must not wait for the disk there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn saving_a_choice_never_waits_for_the_disk() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state/tilo/search-usage.tsv");
+        let mut frecency = Frecency::default();
+        frecency.record("usage-test:chosen", now());
+        let text = frecency.serialize();
+        let target = path.clone();
+        let expected = text.clone();
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(move || {
+            save_in_background(target, text);
+        });
+        crate::shell::durable_writer::global().flush();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "the usage record is private");
     }
 }

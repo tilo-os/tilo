@@ -11,8 +11,6 @@ ignored = ["serde_bytes"]
 
 [dependencies]
 tilo-actions = { path = "../actions" }
-# The shell retention authority a relay binding pins.
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 fnv.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true

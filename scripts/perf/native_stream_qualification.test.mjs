@@ -41,7 +41,7 @@ test('a picture with one wrong block is corrupt, never another frame', () => {
   for (let flip = 0; flip < CODE_BITS; flip++) assert.equal(readCode(rows(300, 1280, {flip}), 1280), null);
 });
 
-test('arguments: required pieces, carrier, window and defaults', () => {
+test('arguments: required pieces, carrier, codec, window and defaults', () => {
   const base = ['bundle', '--out', 'r.json', '--relay', 'relay', '--source', 'source', '--renderer', 'swiftshader'];
   const options = parseArgs(base);
   assert.equal(options.carrier, 'webtransport');
@@ -50,6 +50,9 @@ test('arguments: required pieces, carrier, window and defaults', () => {
   assert.deepEqual(parseArgs([...base, '--window', '640x360', '--carrier', 'https']).window, {width: 640, height: 360});
   assert.throws(() => parseArgs(base.slice(0, -2)), /usage/);
   assert.throws(() => parseArgs([...base, '--carrier', 'carrier-pigeon']), /--carrier/);
+  assert.equal(options.codec, 'h264', 'H.264 by default');
+  assert.equal(parseArgs([...base, '--codec', 'vp9']).codec, 'vp9');
+  assert.throws(() => parseArgs([...base, '--codec', 'hevc-main10']), /--codec/);
   assert.throws(() => parseArgs([...base, '--window', '641x360']), /even/);
 });
 

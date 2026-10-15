@@ -19,7 +19,8 @@ mkdir -p "$work/bin"
 cat >"$work/bin/cage" <<'EOF'
 #!/bin/sh
 printf 'args=%s\n' "$*"
-for name in WLR_RENDERER WLR_DRM_NO_ATOMIC WLR_NO_HARDWARE_CURSORS; do
+printf 'umask=%s\n' "$(umask)"
+for name in WLR_RENDERER WLR_DRM_NO_ATOMIC WLR_NO_HARDWARE_CURSORS TILO_STARTUP_METRICS_PATH; do
   eval "value=\${$name-unset}"
   printf '%s=%s\n' "$name" "$value"
 done
@@ -36,11 +37,13 @@ card() {
   printf 'DRIVER=%s\nPCI_ID=%s\n' "$2" "$3" >"$work/drm/$1/device/uevent"
 }
 
-run() {
-  env -u WLR_RENDERER -u WLR_DRM_NO_ATOMIC -u WLR_NO_HARDWARE_CURSORS \
+mkdir -p "$work/run-greeter"
+run_program() {
+  env -u WLR_RENDERER -u WLR_DRM_NO_ATOMIC -u WLR_NO_HARDWARE_CURSORS -u TILO_STARTUP_METRICS_PATH \
     PATH="$work/bin:$PATH" TILO_DRM_SYSFS="$work/drm" TILO_CAGE="$work/bin/cage" \
-    bash "$wrapper" /usr/bin/tilo-greeter
+    TILO_GREETER_RECORD_DIR="$work/run-greeter" "$@" bash "$wrapper" "$program"
 }
+run() { program=/usr/bin/tilo-greeter run_program "$@"; }
 
 # --- a physical GPU ------------------------------------------------------
 rm -rf "$work/drm"
@@ -70,5 +73,38 @@ grep -qx 'WLR_NO_HARDWARE_CURSORS=1' <<<"$out" \
   || bad "virtio-gpu kept the broken hardware cursor: $out"
 grep -qx 'WLR_RENDERER=pixman' <<<"$out" && grep -qx 'WLR_DRM_NO_ATOMIC=1' <<<"$out" \
   && ok 'virtio-gpu renders with pixman on legacy modesetting' || bad "virtio-gpu renderer: $out"
+
+# --- the greeter's startup record --------------------------------------------
+# tilo-boot-health reads it to tell a greeter that presented a frame from one
+# that crash-loops while greetd stays active; both must name the same file.
+rm -rf "$work/drm"
+card card0 amdgpu 1002:73BF
+out="$(run)"
+grep -qx "TILO_STARTUP_METRICS_PATH=$work/run-greeter/startup-metrics.json" <<<"$out" \
+  && ok "the greeter writes its startup record where the boot assessment reads it" \
+  || bad "the greeter's startup record is not in its record directory: $out"
+record="$(sed -n 's/^GREETER_RECORD="\${TILO_BOOT_HEALTH_GREETER_RECORD:-\(.*\)}"$/\1/p' \
+  "$repo/os/usr/libexec/tilo-boot-health")"
+default_dir="$(sed -n 's/^greeter_record_dir="\${TILO_GREETER_RECORD_DIR:-\(.*\)}"$/\1/p' "$wrapper")"
+[ -n "$record" ] && [ "$record" = "$default_dir/startup-metrics.json" ] \
+  && ok "tilo-boot-health reads the record tilo-cage-session asks for ($record)" \
+  || bad "tilo-boot-health reads '${record:-?}', tilo-cage-session writes '${default_dir:-?}/startup-metrics.json'"
+grep -Eq "^d +$default_dir +0755 +greetd +greetd " "$repo/os/usr/lib/tmpfiles.d/tilo.conf" \
+  && ok "$default_dir exists at boot, writable by the greeter user alone" \
+  || bad "tmpfiles.d/tilo.conf does not create $default_dir 0755 greetd:greetd"
+out="$(run TILO_STARTUP_METRICS_PATH=/tmp/diagnostic.json)"
+grep -qx 'TILO_STARTUP_METRICS_PATH=/tmp/diagnostic.json' <<<"$out" \
+  && ok "an explicit startup record path is kept" || bad "the wrapper replaced an explicit record path: $out"
+out="$(umask 0077; run)"
+grep -qx 'umask=0022' <<<"$out" \
+  && ok "the record stays readable to the health check under a strict session umask" \
+  || bad "the greeter's record would be private to it: $out"
+out="$(program=/usr/bin/tilo-installer run_program)"
+grep -qx 'TILO_STARTUP_METRICS_PATH=unset' <<<"$out" \
+  && ok "the installer does not write the greeter's record" || bad "the installer was given the greeter's record: $out"
+rmdir "$work/run-greeter"
+out="$(run)"
+grep -qx 'TILO_STARTUP_METRICS_PATH=unset' <<<"$out" \
+  && ok "no record directory, no record" || bad "the greeter was pointed at a missing directory: $out"
 
 exit "$fail"

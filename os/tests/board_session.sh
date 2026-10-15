@@ -238,7 +238,9 @@ if grep -q 'is-active --quiet tilo-board-headless-session@you.service' "$work/he
 else
   bad 'a board boot was not judged by its session'
 fi
-health TILO_BOOT_HEALTH_BOARD_MARKER="$work/missing"
+# No greeter presents in this stand-in, so the desktop verdict is decided at
+# once (os/tests/boot_health_greeter.sh judges the greeter itself).
+health TILO_BOOT_HEALTH_BOARD_MARKER="$work/missing" TILO_BOOT_HEALTH_TIMEOUT=0
 if grep -q 'is-active --quiet greetd.service' "$work/health.log"; then
   ok 'a desktop is still judged by greetd'
 else

@@ -1403,8 +1403,11 @@ mmap-written). [R9]
 
 **Implemented:** the content store's file area is the one bounded cache.
 Its entries carry a retention class: fetched content is *cached* and is
-evicted least recently used first once cached resident bytes exceed the
-budget (a quarter of the area's filesystem by default); content this device
+evicted once cached resident bytes exceed the budget (a quarter of the
+area's filesystem by default): first what a host acknowledged holding with
+a replica receipt for the current version, outside the eight most recently
+used entries (the file being read and those predicted next), then the
+rest, least recently used first within each; content this device
 may be the only holder of (what it authored) is *local-only*, and "Keep
 offline" hydration makes an entry *pinned*; neither is ever evicted by the
 budget. Explicit eviction through the queue above removes area entries by
@@ -1430,10 +1433,15 @@ partially cold files are not implemented; eviction is per entry.
   between the same person's devices**, never with collaborators. They are what
   makes "continue on the desktop what you did on the laptop" instant. The
   "recently used on another device" hint is the `ReplicationIntent` seam
-  (`docs/device-mesh.md`).
-- **Directory locality:** opening a file hydrates the directory's small
-  siblings. This is today's rule with the limits raised (`smart.rs:19-23` caps
-  it at 32 MiB files, 2 concurrent, 128 MiB queued).
+  (`docs/device-mesh.md`). Today (`smart/history.rs`) the graph is per mount,
+  in memory and bounded: two files opened within two minutes of each other on
+  two separate occasions predict each other, and a partner is fetched only if
+  the mount's identity may read it. Sharing between devices is still to come.
+- **Directory locality:** opening a file hydrates the directory's next
+  siblings of the same type in natural order (`page-9` before `page-10`): two
+  ahead, or four once three files were opened in order, forwards or
+  backwards; a cold open of the last files looks back. The limits are
+  `smart.rs`'s: 32 MiB files, 2 concurrent, 128 MiB queued.
 - **Gates:** predictive and backfill work respects the existing network,
   battery and disk gates (`smart_monitor.rs`). Foreground and pinned work does
   not.

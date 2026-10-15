@@ -46,6 +46,8 @@ tempfile.workspace = true
 # keep their keys when this service answers, is locked, or is absent.
 runtime-identity = { path = "../../runtime/runtime-identity" }
 tilo-secret-vault = { path = "../secret-vault" }
+# The client half of the device-identity proof a non-dumpable caller makes.
+tilo-secrets = { path = "../../platform/tilo-secrets" }
 ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 

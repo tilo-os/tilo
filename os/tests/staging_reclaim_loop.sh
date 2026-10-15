@@ -6,15 +6,20 @@
 # into their space, and every other partition keeps its exact geometry.
 #
 # Needs root and loop devices (CI disk runners). A run that cannot observe the
-# real disk path fails instead of skipping: the unprivileged fixtures in
-# staging_handoff_test.py and staging_reclaim_test.py cannot stand in for it.
+# real disk path fails instead of skipping: the unprivileged fixtures in the
+# two crates' tests cannot stand in for it.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-handoff_helper="$repo/os/usr/libexec/tilo-staging-handoff"
-# The reclaim logic is compiled (crates/system/staging-reclaim); its fixture
-# example takes the record, root mount and loop allowance from the environment,
-# which the shipped binary never does.
+# The handoff guard and the reclaim logic are compiled
+# (crates/system/install-helpers, crates/system/staging-reclaim); their fixture
+# examples take the firmware variables, ESP and lsblk output, and the record,
+# root mount and loop allowance, from the environment, which the shipped
+# binaries never do.
+cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-install-helpers \
+  --example staging-handoff-fixture \
+  || { echo 'FAIL  cannot build the staging handoff fixture' >&2; exit 1; }
+handoff_helper="${CARGO_TARGET_DIR:-$repo/target}/debug/examples/staging-handoff-fixture"
 cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-staging-reclaim \
   --example staging-reclaim-fixture \
   || { echo 'FAIL  cannot build the staging reclaim fixture' >&2; exit 1; }
@@ -143,7 +148,7 @@ json.dump(d, sys.stdout)' "$root_node" > "$fixture/lsblk.json"
 check() {
   TILO_STAGING_EFIVARS="$fixture/efivars" TILO_STAGING_ESP_DIR="$fixture/esp" \
   TILO_STAGING_LSBLK_JSON="$fixture/lsblk.json" \
-    python3 "$handoff_helper" check-install --handoff "$fixture/handoff.json" --disk "$loop" \
+    "$handoff_helper" check-install --handoff "$fixture/handoff.json" --disk "$loop" \
       --mode "$1" --sector-size 512 \
       --free-start-bytes $((1126 * mib * 512)) --free-size-bytes $((3328 * mib * 512)) \
       --efi-start-bytes $((1126 * mib * 512)) --efi-size-bytes $((2048 * mib * 512)) \

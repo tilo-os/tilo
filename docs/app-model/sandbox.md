@@ -388,6 +388,7 @@ because Seatbelt matches real paths (`/tmp` is `/private/tmp`).
 | Container | Read and write, never exec: `~/Library/Application Support/Tilo/tilo-rooms/<room>/<package>`, which is also `HOME`, `XDG_*` and `TMPDIR` |
 | Shader cache | Read and write, never exec: the app's own directory below the per-user cache directory, `…/C/so.tilo+<room>+<package>`. The launcher sets `DIRHELPER_USER_DIR_SUFFIX` so `confstr(_CS_DARWIN_USER_CACHE_DIR)` names it, and Metal keeps compiled shaders there across launches. No app reaches another's |
 | User grants | `ro_paths` read, `rw_paths` read and write |
+| Tilo's private stores | Denied outright after every grant and picked path: `$XDG_CONFIG_HOME/tilo`, `~/.config/tilo`, `$TILO_SECRETS_DIR`. Every directory and symlink on a store's path is denied writes (no rename, removal or repoint), so the store cannot be moved aside and replaced. The plan is confined as on Linux first: a grant inside a store is dropped, a store a grant reaches is created before launch |
 | Picked files | Read and write, never exec, of exactly what the person picked in a chooser the runtime showed (below) |
 | Camera, microphone | No device and no TCC service; frames and samples arrive over an inherited socket from the runtime (below) |
 | Network: off | No sockets beyond `AF_UNIX` creation. No connect or bind, IP or filesystem |
