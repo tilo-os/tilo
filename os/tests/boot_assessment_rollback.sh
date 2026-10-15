@@ -315,10 +315,14 @@ EOF
 systemctl daemon-reload" > "$OUT/03-fault.txt" 2>&1 || fail "could not write $DROPIN"
 else
   # greetd's own command line, so the deployment that is not under test runs
-  # exactly what it ran before.
-  GREETD_ARGV="$(guest 'systemctl show -p ExecStart --value greetd.service' | tr -d '\r' \
-    | sed -n 's/.*argv\[\]=\([^;]*[^; ]\) *;.*/\1/p' | head -1)"
-  [[ "$GREETD_ARGV" == /* ]] || fail "could not read greetd's ExecStart to wrap it (got '$GREETD_ARGV')"
+  # exactly what it ran before. The unit may name the program bare
+  # (ExecStart=greetd); `path=` is what systemd resolved it to, and argv after
+  # the first word are its arguments.
+  GREETD_EXEC="$(guest 'systemctl show -p ExecStart --value greetd.service' | tr -d '\r' | head -1)"
+  greetd_path="$(sed -n 's/.*path=\([^ ;]*\).*/\1/p' <<<"$GREETD_EXEC")"
+  greetd_args="$(sed -n 's/.*argv\[\]=\([^;]*[^; ]\) *;.*/\1/p' <<<"$GREETD_EXEC" | cut -s -d' ' -f2-)"
+  GREETD_ARGV="$greetd_path${greetd_args:+ $greetd_args}"
+  [[ "$greetd_path" == /* ]] || fail "could not read greetd's ExecStart to wrap it (got '$GREETD_EXEC')"
   as_root "install -d -m 0755 $DROPIN_DIR && cat > $FAULT_CONFIG <<EOF
 # Written by os/tests/boot_assessment_rollback.sh: the real greeter, cut off
 # 12 s after it starts, for the deployment under test only (see $DROPIN).
