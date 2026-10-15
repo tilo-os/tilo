@@ -19,6 +19,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+hex.workspace = true
 runtime-collab = { path = "../../../crates/runtime/runtime-collab" }
 runtime-fs = { path = "../../../crates/runtime/runtime-fs" }
 runtime-identity = { path = "../../../crates/runtime/runtime-identity" }

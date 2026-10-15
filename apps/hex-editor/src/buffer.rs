@@ -47,7 +47,7 @@ impl Hex {
     /// The bytes as lowercase hexadecimal digits, two per byte.
     #[must_use]
     pub fn text(&self) -> String {
-        hex_text(&self.0)
+        hex::encode(&self.0)
     }
 }
 
@@ -85,15 +85,6 @@ impl JsonSchema for Hex {
             "description": "hexadecimal bytes, e.g. `de ad be ef`",
         })
     }
-}
-
-fn hex_text(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut text = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(text, "{byte:02x}");
-    }
-    text
 }
 
 /// A file's bytes, kept in pages. See the [module docs](self).
@@ -180,7 +171,7 @@ impl fmt::Debug for ByteBuffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         const SHOWN: usize = 64;
         let head: Vec<u8> = self.iter().take(SHOWN).collect();
-        write!(f, "ByteBuffer({} bytes: {}", self.len(), hex_text(&head))?;
+        write!(f, "ByteBuffer({} bytes: {}", self.len(), hex::encode(head))?;
         if self.len() > SHOWN {
             f.write_str("…")?;
         }
@@ -434,7 +425,7 @@ impl Model for ByteBuffer {
 
     /// The bytes as hexadecimal text.
     fn to_json(&self) -> serde_json::Value {
-        serde_json::Value::String(hex_text(&self.to_vec()))
+        serde_json::Value::String(hex::encode(self.to_vec()))
     }
 
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {

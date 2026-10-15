@@ -2260,6 +2260,7 @@ dependencies = [
  "chrono",
  "cloud-source",
  "cloud-source-onedrive",
+ "hex",
  "percent-encoding",
  "reqwest 0.13.4",
  "serde",
@@ -3472,6 +3473,7 @@ dependencies = [
 name = "discord-wire"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -4131,6 +4133,7 @@ dependencies = [
 name = "example-shared-checklist"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "runtime-dylib",
  "tilo-app",
  "workspace-hack",
@@ -6055,6 +6058,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 name = "hello"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "runtime-collab",
  "runtime-dylib",
  "runtime-fs",
@@ -6094,6 +6098,7 @@ dependencies = [
 name = "hex-editor"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -11010,6 +11015,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "fnv",
+ "hex",
  "image",
  "runtime-dylib",
  "serde",
@@ -16817,6 +16823,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "collab-types",
+ "hex",
  "serde",
  "serde_json",
  "taffy",
@@ -17353,6 +17360,7 @@ name = "tilo-install-helpers"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "hex",
  "rustix 1.1.4",
  "serde",
  "serde_json",

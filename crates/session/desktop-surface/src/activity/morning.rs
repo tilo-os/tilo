@@ -19,12 +19,7 @@ pub struct MorningSource {
 }
 impl MorningSource {
     pub fn key(&self) -> String {
-        use std::fmt::Write as _;
-        let mut key = String::new();
-        for byte in self.app.bytes().chain([0]).chain(self.resource.bytes()) {
-            let _ = write!(key, "{byte:02x}");
-        }
-        key
+        hex::encode([self.app.as_bytes(), &[0], self.resource.as_bytes()].concat())
     }
     pub fn matches(&self, target: &ui::HistoryResourceTarget) -> bool {
         target.app_id.as_deref() == Some(self.app.as_str()) && target.id == self.resource

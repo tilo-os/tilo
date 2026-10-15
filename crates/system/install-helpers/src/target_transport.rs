@@ -456,5 +456,5 @@ pub fn file_sha256(path: &Path) -> Result<String> {
         }
         digest.update(chunk.get(..count).unwrap_or_default());
     }
-    Ok(crate::py::hex(&digest.finalize()))
+    Ok(hex::encode(digest.finalize()))
 }

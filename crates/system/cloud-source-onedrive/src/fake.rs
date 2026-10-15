@@ -369,7 +369,7 @@ fn split_path(path: &str) -> (&str, &str) {
 
 fn guid_for(id: &str) -> String {
     let digest = sha2::Sha256::digest(id.as_bytes());
-    let hex = upper_hex(&digest);
+    let hex = hex::encode_upper(digest);
     let part = |range: std::ops::Range<usize>| hex.get(range).unwrap_or("0").to_owned();
     format!(
         "{}-{}-{}-{}-{}",
@@ -379,14 +379,6 @@ fn guid_for(id: &str) -> String {
         part(16..20),
         part(20..32)
     )
-}
-
-fn upper_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        let _ = write!(out, "{byte:02X}");
-        out
-    })
 }
 
 fn in_an_hour() -> SystemTime {
@@ -709,7 +701,7 @@ impl State {
             Kind::File => {
                 let mut hashes = json!({"quickXorHash": quick_xor_base64(&node.bytes)});
                 if !business {
-                    let sha = upper_hex(&sha2::Sha256::digest(&node.bytes));
+                    let sha = hex::encode_upper(sha2::Sha256::digest(&node.bytes));
                     hashes["sha256Hash"] = json!(sha);
                 }
                 value["file"] = json!({
