@@ -280,7 +280,7 @@ async fn refusal(client: &RelayClient, who: &str) -> Option<UnavailableReason> {
 }
 
 #[tokio::test]
-async fn removed_member_remote_action_is_refused_before_audit() {
+async fn removed_member_session_closes_without_serving_an_action() {
     let user = TestUser::fresh("Alice");
     let host = user.enrol("home", DeviceCapabilities::host());
     let host_key = host.device_pubkey();
@@ -299,20 +299,30 @@ async fn removed_member_remote_action_is_refused_before_audit() {
     let _a_client = subscribed(addr.clone(), &user, &a).await;
     let b_client = subscribed(addr, &user, &b).await;
 
-    // B leaves the room; its connection, and the room in its session's
-    // subscribed list, are still there until the next access audit.
+    // Membership replacement wakes the access audit. Observe its completion
+    // rather than racing a send against the client's outbound pump closing.
+    // The per-frame refusal before an audit is covered at the handler boundary
+    // by peer::private_transport_tests::removed_member_remote_action_is_refused.
     relay
         .relay
         .set_workspace_membership(WS, true, vec![a.device_pubkey()], relay.state_root.clone())
         .await
         .unwrap();
-    b_client
-        .send(directed(host_key, frame(invoke(InvocationId::new()))))
-        .unwrap();
-    let refused = refusal(&b_client, "B").await;
     assert!(
-        refused.is_none_or(|reason| reason == UnavailableReason::NotAuthorised),
-        "got {refused:?}"
+        tilo_test_env::within("removed member's session to close", b_client.recv())
+            .await
+            .is_none()
+    );
+    tilo_test_env::within(
+        "removed member's outbound pump to close",
+        b_client.outbound.closed(),
+    )
+    .await;
+    assert!(
+        b_client
+            .send(directed(host_key, frame(invoke(InvocationId::new()))))
+            .is_err(),
+        "the closed session cannot queue another action"
     );
     assert!(
         actions.callers.lock().unwrap().is_empty(),
