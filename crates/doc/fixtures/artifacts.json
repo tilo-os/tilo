@@ -78,6 +78,12 @@
       "sha256": "106abd35af58c97a31404d56a89e2da46bcd5d16f065272d0564b4b157f7013a",
       "bytes": 306784,
       "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/106abd35af58c97a31404d56a89e2da46bcd5d16f065272d0564b4b157f7013a/zipbomb.docx"
+    },
+    {
+      "file": "python-docx-merged-cells.docx",
+      "sha256": "dc01708a24c5e940c94b99b7ee496606e5f17152bc41cec211c9f8c72334cb22",
+      "bytes": 36051,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/dc01708a24c5e940c94b99b7ee496606e5f17152bc41cec211c9f8c72334cb22/python-docx-merged-cells.docx"
     }
   ]
 }

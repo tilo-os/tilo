@@ -26,6 +26,9 @@ class RegistryRuntimeReadinessTest(unittest.TestCase):
                 'set -euo pipefail\n'
                 f'cd {shlex.quote(directory)}\n'
                 f'source {shlex.quote(str(HELPER))}\n'
+                # Unsetting removes Bash's wall-clock behavior; the production
+                # helper still reads SECONDS, advanced explicitly by each case.
+                'unset SECONDS\nSECONDS=0\n'
                 'readiness_deadline=$((SECONDS + 1200))\n'
                 + textwrap.dedent(body)
             )
@@ -92,23 +95,38 @@ class RegistryRuntimeReadinessTest(unittest.TestCase):
         self.assertIn('waiting for signed-catalogue promotion', result.stderr)
 
     def test_provider_after_deadline_is_not_accepted(self):
-        result = self.run_case('''
-            SECONDS=$((readiness_deadline - 2))
-            attempts=0; fetches=0; promoted=false
-            cli() {
-              attempts=$((attempts + 1))
-              if [[ $promoted == true ]]; then printf 'late signed entry\\n'; return 0; fi
-              printf '%s\\n' '{"package_id":"so.tilo.agent","version":"1.0.8","architecture":"aarch64","runtime":"tilo-runtime/exact"}' > refusal
-              return 1
-            }
-            sleep() { [[ $1 == 2 ]] || return 9; SECONDS=$((readiness_deadline + 1)); }
-            fetch_snapshot() { fetches=$((fetches + 1)); promoted=true; }
-            if await_registry_runtime_ready "$readiness_deadline" request refusal cli; then exit 1; fi
-            [[ $attempts == 1 && $fetches == 1 ]]
-            [[ ! -s request ]]
-        ''')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('still absent from the signed catalogue after 20 minutes', result.stderr)
+        for offset in (-1, 0, 1):
+            with self.subTest(promotion_offset=offset):
+                result = self.run_case(f'promotion_offset={offset}\n' + '''
+                    SECONDS=$((readiness_deadline - 2))
+                    attempts=0; fetches=0; promoted=false
+                    cli() {
+                      attempts=$((attempts + 1))
+                      if [[ $promoted == true ]]; then printf 'signed entry\\n'; return 0; fi
+                      printf '%s\\n' '{"package_id":"so.tilo.agent","version":"1.0.8","architecture":"aarch64","runtime":"tilo-runtime/exact"}' > refusal
+                      return 1
+                    }
+                    sleep() { [[ $1 == 2 ]]; }
+                    fetch_snapshot() {
+                      fetches=$((fetches + 1)); promoted=true
+                      SECONDS=$((readiness_deadline + promotion_offset))
+                    }
+                    status=0
+                    await_registry_runtime_ready "$readiness_deadline" request refusal cli || status=$?
+                    [[ $fetches == 1 ]]
+                    if (( promotion_offset < 0 )); then
+                      [[ $status == 0 && $attempts == 2 ]]
+                      [[ $(cat request) == 'signed entry' ]]
+                    else
+                      [[ $status == 1 && $attempts == 1 ]]
+                      [[ ! -s request ]]
+                    fi
+                ''')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if offset >= 0:
+                    self.assertIn('still absent from the signed catalogue after 20 minutes', result.stderr)
+                else:
+                    self.assertNotIn('still absent', result.stderr)
 
     def test_deadline_is_shared_across_multiple_entries(self):
         result = self.run_case('''
