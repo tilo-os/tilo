@@ -1390,7 +1390,13 @@ async fn serve_operator(
             _ = online_tick.tick() => {
                 let sessions = context.web.online_users();
                 let people = sessions.keys().filter(|user| **user != spectator).count();
-                let spectators = sessions.get(&spectator).copied().unwrap_or(0);
+                // Seated ones only: a page refused for want of a seat keeps
+                // its web session open while it waits, but watches nothing.
+                let spectators = context
+                    .rooms
+                    .seated_spectators(&context.room)
+                    .await
+                    .unwrap_or(0);
                 let online = (
                     u32::try_from(people).unwrap_or(u32::MAX),
                     u32::try_from(spectators).unwrap_or(u32::MAX),
