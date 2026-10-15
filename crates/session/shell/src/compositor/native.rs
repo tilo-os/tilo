@@ -12233,7 +12233,7 @@ pub fn run() {
         let pump_bookkeeping_done = Instant::now();
         let pump_network_started = pump_bookkeeping_done;
         if let Some(net) = peer_sync.as_ref() {
-            pump_phase!("network-tick", net.tick());
+            pump_phase!("network-tick", net.frame_tick());
             let runtime = device_fabric_runtime.get_or_insert_with(|| {
                 crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
                     net,

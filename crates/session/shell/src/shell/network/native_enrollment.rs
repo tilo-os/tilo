@@ -35,6 +35,26 @@ struct Background {
 
 type Retained<'a> = MutexGuard<'a, Option<NativeWorkspaceOwner>>;
 
+/// Where the native owner stands, for a caller that must not wait for it.
+pub(crate) enum NativeOwnerStatus {
+    /// Open and retained.
+    Open(NativeWorkspaceOwner),
+    /// Being opened off the caller's thread; the loop is woken once it is.
+    Opening,
+    /// Neither open nor opening: the tree has no state file, or the last
+    /// open failed and is not tried again yet.
+    Unavailable,
+}
+
+impl NativeOwnerStatus {
+    pub(crate) fn open(self) -> Option<NativeWorkspaceOwner> {
+        match self {
+            Self::Open(owner) => Some(owner),
+            Self::Opening | Self::Unavailable => None,
+        }
+    }
+}
+
 impl ShellNetwork {
     fn native_tree(&self) -> Result<WorkspaceTreeHandle, String> {
         Ok(self
@@ -47,7 +67,7 @@ impl ShellNetwork {
 
     /// The native owner, opened here if it is not yet: binding its writer
     /// and publishing its reopened generation, which can wait for the disk.
-    /// The frame loop asks [`Self::opened_native_owner`] instead.
+    /// The frame loop asks [`Self::native_owner_status`] instead.
     pub(crate) fn native_owner(&self) -> Result<NativeWorkspaceOwner, String> {
         let tree = self.native_tree()?;
         let retained = self
@@ -58,36 +78,71 @@ impl ShellNetwork {
         if let Some(owner) = retained.as_ref() {
             return Ok(owner.clone());
         }
-        let owner = crate::shell::native_workspace_owner::open(tree.clone())?;
+        // An owner the background open finished is this writer's: opening
+        // again would only look it up.
+        let finished = self
+            .native_enrollment
+            .background
+            .lock()
+            .ok()
+            .and_then(|mut background| background.opened.take());
+        let owner = match finished {
+            Some(owner) => owner,
+            None => crate::shell::native_workspace_owner::open(tree.clone())?,
+        };
         Ok(self.retain_native_owner(retained, &tree, owner))
     }
 
     /// The native owner if it is already open, for the frame loop, which
-    /// must never wait for the state file: opening an owner takes its
-    /// writer's lease, syncs its directory chain on first use and publishes
-    /// it, seconds on a loaded disk. When none is open, one is opened on a
-    /// thread of its own (again at most every [`REOPEN_AFTER`] after a
-    /// failure), the loop is woken once it is, and this returns `None`.
+    /// must never wait for the state file ([`Self::native_owner_status`]).
     pub(crate) fn opened_native_owner(&self) -> Option<NativeWorkspaceOwner> {
+        self.native_owner_status().open()
+    }
+
+    /// Where the native owner stands, never waiting for the state file:
+    /// opening an owner takes its writer's lease, syncs its directory chain
+    /// on first use and publishes it, seconds on a loaded disk. An owner
+    /// already attached to the tree's writer is retained here. When none
+    /// is, one is opened on a thread of its own (again at most every
+    /// [`REOPEN_AFTER`] after a failure), the loop is woken once that open
+    /// ends, and this answers [`NativeOwnerStatus::Opening`].
+    pub(crate) fn native_owner_status(&self) -> NativeOwnerStatus {
         // The replica before the owner, in the order `native_owner` takes them.
-        let tree = self.native_tree().ok()?;
-        // Held only by a caller opening the owner itself: go without.
-        let retained = self.native_enrollment.owner.try_lock().ok()?;
+        let Ok(tree) = self.native_tree() else {
+            return NativeOwnerStatus::Unavailable;
+        };
+        // Held only by a caller opening the owner itself.
+        let retained = match self.native_enrollment.owner.try_lock() {
+            Ok(retained) => retained,
+            Err(std::sync::TryLockError::WouldBlock) => return NativeOwnerStatus::Opening,
+            Err(std::sync::TryLockError::Poisoned(_)) => return NativeOwnerStatus::Unavailable,
+        };
         if let Some(owner) = retained.as_ref() {
-            return Some(owner.clone());
+            return NativeOwnerStatus::Open(owner.clone());
         }
-        let mut background = self.native_enrollment.background.lock().ok()?;
-        if let Some(owner) = background.opened.take() {
+        let Ok(mut background) = self.native_enrollment.background.lock() else {
+            return NativeOwnerStatus::Unavailable;
+        };
+        let opened = background
+            .opened
+            .take()
+            .or_else(|| crate::shell::native_workspace_owner::attached(&tree));
+        if let Some(owner) = opened {
             drop(background);
-            return Some(self.retain_native_owner(retained, &tree, owner));
+            return NativeOwnerStatus::Open(self.retain_native_owner(retained, &tree, owner));
         }
         drop(retained);
-        if background.running
+        if background.running {
+            return NativeOwnerStatus::Opening;
+        }
+        // Without a state file no open can succeed: say so now, rather than
+        // once a thread found out.
+        if tree.read().persist_path.is_none()
             || background
                 .failed_at
                 .is_some_and(|failed| failed.elapsed() < REOPEN_AFTER)
         {
-            return None;
+            return NativeOwnerStatus::Unavailable;
         }
         background.running = true;
         drop(background);
@@ -106,18 +161,17 @@ impl ShellNetwork {
                     Ok(owner) => {
                         background.opened = Some(owner);
                         background.failed_at = None;
-                        drop(background);
-                        // Only news wakes the loop: a failure changes
-                        // nothing it shows, and an idle desktop stays idle.
-                        if let Some(wake) = wake.get() {
-                            wake();
-                        }
                     }
                     Err(error) => {
                         background.failed_at = Some(Instant::now());
-                        drop(background);
                         tracing::debug!(%error, "native owner unavailable");
                     }
+                }
+                drop(background);
+                // Either way the loop has news: inbound events it held back
+                // for the open go on now, with the owner or without one.
+                if let Some(wake) = wake.get() {
+                    wake();
                 }
             });
         if let Err(error) = spawned {
@@ -126,8 +180,9 @@ impl ShellNetwork {
                 background.running = false;
                 background.failed_at = Some(Instant::now());
             }
+            return NativeOwnerStatus::Unavailable;
         }
-        None
+        NativeOwnerStatus::Opening
     }
 
     /// Keep `owner` for every later lookup, and connect the rooms it holds.

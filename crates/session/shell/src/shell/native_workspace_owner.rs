@@ -232,6 +232,13 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
     Ok(owner)
 }
 
+/// The owner already attached to `tree`'s writer, which an [`open`] of it
+/// would answer, found without waiting for the writer's file.
+pub(crate) fn attached(tree: &WorkspaceTreeHandle) -> Option<NativeWorkspaceOwner> {
+    let runtime = tree.read().native_runtime.clone();
+    runtime.owner_of(tree).ok().flatten()
+}
+
 #[cfg(test)]
 pub(crate) fn test_tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
     tests::tree_of(owner)

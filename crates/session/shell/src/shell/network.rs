@@ -17,6 +17,9 @@ mod idle_quiet_tests;
 mod input_declines;
 #[cfg(test)]
 mod live_identity_tests;
+mod native_admission;
+#[cfg(test)]
+mod native_admission_tests;
 mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
@@ -27,6 +30,7 @@ mod personal_device_peers;
 #[cfg(test)]
 mod reachability_tests;
 mod record_content;
+pub(crate) use native_enrollment::NativeOwnerStatus;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
 mod agent_question_tests;
@@ -936,6 +940,15 @@ struct RoomPush {
 /// until the next frame instead of losing ordering or data.
 const MAX_NET_EVENTS_PER_TICK: usize = 8;
 
+/// Where a tick admits signed relay input.
+#[derive(Clone, Copy)]
+enum Admission {
+    /// On the ticking thread, which may wait for the state file.
+    InPlace,
+    /// On the admission worker: the compositor's frame loop.
+    OffLoop,
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 pub struct PendingInvitation {
     pub id: [u8; 32],
@@ -1344,6 +1357,7 @@ fn write_pending_invitations(path: &Path, bytes: &[u8]) {
 /// [`WorkspaceTreeReplica`], and the actor↔replica event channel.
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
+    native_admission: native_admission::State,
     hosted_topology: hosted_topology::State,
     relay_rooms: relay_rooms::State,
     record_content: record_content::State,
@@ -2079,6 +2093,7 @@ impl ShellNetwork {
             pending_invitations_path: Some(pending_invitations_path),
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
+            native_admission: native_admission::State::default(),
             hosted_topology: hosted_topology::State::default(),
             relay_rooms: relay_rooms::State::default(),
             record_content: record_content::State::default(),
@@ -6372,7 +6387,23 @@ impl ShellNetwork {
     /// variants into the replica's `handle`, and publish each resulting
     /// outbound message via `cmd_tx`. Transport polling never blocks; durable
     /// native admission yields after one event so replay cannot monopolize a turn.
+    ///
+    /// Signed relay input is admitted in place, which publishes the state
+    /// file: for a thread that may wait for the disk. The compositor's loop
+    /// ticks with [`Self::frame_tick`].
     pub fn tick(&self) {
+        self.tick_with(Admission::InPlace);
+    }
+
+    /// [`Self::tick`] for the compositor's frame loop, which must never wait
+    /// for the state file: signed relay input is admitted on a worker
+    /// ([`native_admission`]), and no later event is handled until that
+    /// admission's remainder ran here.
+    pub fn frame_tick(&self) {
+        self.tick_with(Admission::OffLoop);
+    }
+
+    fn tick_with(&self, admission: Admission) {
         self.remote_action_replies.expire(std::time::Instant::now());
         self.note_session_reachability(false);
         // Local room changes go out the tick they land; the periodic pull
@@ -6391,16 +6422,40 @@ impl ShellNetwork {
         let Ok(mut event_rx) = self.event_rx.lock() else {
             return;
         };
+        // An admission handed off the loop completes before any later event.
+        match self.take_native_admission() {
+            native_admission::Lane::Busy => return,
+            native_admission::Lane::Finished(admitted) => self.complete_native_input(*admitted),
+            native_admission::Lane::Idle => {}
+        }
+        // Inbound events read the room's governance from the native owner.
+        // While it opens (off this thread: binding its writer and publishing
+        // its generation can take seconds) they stay queued, in order, and
+        // the open wakes the loop once it ends.
+        if !event_rx.is_empty()
+            && matches!(
+                self.native_owner_status(),
+                native_enrollment::NativeOwnerStatus::Opening
+            )
+        {
+            return;
+        }
         for _ in 0..MAX_NET_EVENTS_PER_TICK {
             let Ok(event) = event_rx.try_recv() else {
                 break;
             };
-            let native_admission = matches!(&event, NetEvent::NativeInput(_));
-            self.dispatch_net_event(event);
+            let admits = matches!(&event, NetEvent::NativeInput(_));
+            match (admission, event) {
+                (Admission::OffLoop, NetEvent::NativeInput(input)) => {
+                    self.dispatch_native_input_off_loop(input);
+                }
+                (_, event) => self.dispatch_net_event(event),
+            }
             // Signed replay may cross a durable writer and publish app state.
             // Leave the remaining FIFO queued until the next UI turn, where
-            // control requests can progress between actual admissions.
-            if native_admission {
+            // control requests can progress between actual admissions; an
+            // admission off the loop holds them until it is back.
+            if admits {
                 break;
             }
         }
@@ -6415,7 +6470,7 @@ impl ShellNetwork {
     )]
     fn dispatch_net_event(&self, event: NetEvent) {
         match event {
-            NetEvent::NativeInput(input) => self.dispatch_native_input(&input),
+            NetEvent::NativeInput(input) => self.dispatch_native_input(input),
             NetEvent::Live { ws, from, frame } => self.handle_live_frame(ws, from, &frame),
             NetEvent::HostReady { ws, peer } => {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
@@ -8133,6 +8188,7 @@ pub(crate) fn shell_network_for_test(
         pending_invitations_path: None,
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
+        native_admission: native_admission::State::default(),
         hosted_topology: hosted_topology::State::default(),
         relay_rooms: relay_rooms::State::default(),
         record_content: record_content::State::default(),
