@@ -28,6 +28,8 @@
 //!   it names the file version as the proof's locator
 //!   ([`ComputeContentStore::locator`]), and a worker whose own replica has
 //!   that version whole runs the job on it instead of fetching the bytes.
+//!   On an always-on device that replica is the filesystem's home-peer
+//!   replica, read from beside it ([`ReplicaContent`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -241,6 +243,61 @@ impl HeldContent for WorkspaceContent {
     }
 }
 
+/// The workspace content an always-on device's filesystem replica keeps
+/// (`fs replica`, one store per home-peer workspace), as [`HeldContent`]
+/// for the compute worker running beside it.
+///
+/// The replica process holds its stores open, so this reads their
+/// file-backed versions without opening them
+/// ([`ContentStore::read_file_version_unlocked`]). A version is found only
+/// by the requester's locator — the manifest hash it proved its copy under —
+/// and returned only when its bytes hash to the input digest: a partly
+/// hydrated, replaced or foreign file is simply not held, and the input is
+/// fetched instead. Versions small enough to be loose blobs are not
+/// reachable this way and are fetched too.
+#[derive(Clone, Debug)]
+pub struct ReplicaContent {
+    cache_dirs: Vec<std::path::PathBuf>,
+}
+
+impl ReplicaContent {
+    /// The replica stores at `cache_dirs`.
+    #[must_use]
+    pub fn new(cache_dirs: Vec<std::path::PathBuf>) -> Self {
+        Self { cache_dirs }
+    }
+}
+
+impl HeldContent for ReplicaContent {
+    fn held(
+        &self,
+        digest: [u8; 32],
+        locator: Option<[u8; 32]>,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        // Without the requester's file version there is nothing to look up:
+        // a digest alone names no file here.
+        let Some(manifest) = locator else {
+            return Ok(None);
+        };
+        let mut failure = None;
+        for dir in &self.cache_dirs {
+            match ContentStore::read_file_version_unlocked(dir, manifest, max_bytes) {
+                Ok(Some(bytes)) if blake3::hash(&bytes).as_bytes() == &digest => {
+                    return Ok(Some(bytes));
+                }
+                Ok(_) => {}
+                Err(error) => failure = Some(error.to_string()),
+            }
+        }
+        failure.map_or(Ok(None), Err)
+    }
+
+    fn locates(&self) -> bool {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +362,39 @@ mod tests {
             .unwrap();
         let manifest = content.manifest_of(digest).unwrap();
         assert_eq!(read_version(&store, manifest).await.unwrap(), output);
+    }
+
+    #[tokio::test]
+    async fn a_replica_holds_only_the_located_version_that_hashes_to_the_digest() {
+        let root = tempfile::tempdir().unwrap();
+        let replica = root.path().join("replica");
+        // The replica process keeps its store open throughout.
+        let store = ContentStore::open(&replica).await.unwrap();
+        let bytes: Vec<u8> = (0..2 * 1024 * 1024_u32)
+            .map(|index| u8::try_from(index % 241).unwrap())
+            .collect();
+        let digest = *blake3::hash(&bytes).as_bytes();
+        let manifest = *store
+            .write_content(&bytes)
+            .await
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+        let len = u64::try_from(bytes.len()).unwrap();
+        let held = ReplicaContent::new(vec![root.path().join("absent"), replica]);
+        assert!(held.locates());
+
+        assert_eq!(
+            held.held(digest, Some(manifest), len),
+            Ok(Some(bytes.clone()))
+        );
+        // A digest names no file here: without the requester's locator,
+        // nothing is held.
+        assert_eq!(held.held(digest, None, u64::MAX), Ok(None));
+        // The located file is these bytes only if they hash to the digest.
+        assert_eq!(held.held([3; 32], Some(manifest), u64::MAX), Ok(None));
+        assert_eq!(held.held(digest, Some([4; 32]), u64::MAX), Ok(None));
+        assert_eq!(held.held(digest, Some(manifest), len - 1), Ok(None));
+        drop(store);
     }
 }

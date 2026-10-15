@@ -53,7 +53,7 @@ use crate::compute_content::fetch_job_content;
 use crate::compute_session::{ComputeClient, ComputeSessionError};
 use crate::compute_transport::{ComputeEnvelope, ComputeJobBinding, ComputeResultUpdate};
 use crate::mesh::DeviceKey;
-pub use crate::offload_content::{BindError, WorkspaceContent};
+pub use crate::offload_content::{BindError, ReplicaContent, WorkspaceContent};
 pub use crate::offload_placement::{
     ComputePlacement, PLACEMENT_TIMEOUT, Placed, PlacementAnswer, PlacementQuery, RelayPlacement,
 };

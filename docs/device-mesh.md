@@ -129,7 +129,17 @@ worker happening to hold the bytes, grants nothing. The requester still reads
 its copy to prove it; the upload is what is saved. The worker's sources are
 `HeldContent`: its retained outputs (a job chained on an earlier output runs
 without the requester sending it back) and, where the worker keeps a replica
-of the workspace, that replica's file versions (`WorkspaceContent`).
+of the workspace, that replica's file versions (`WorkspaceContent`). On an
+always-on device the replica is the home peer's (`fs replica`, the stores the
+home-peer bundle names): the relay daemon hands its worker each bundle
+workspace's cache directory for the relay workspaces it backs, and a job in
+one of those workspaces may run on the replica's file versions
+(`ReplicaContent`; a job in any other workspace never reaches it). The
+replica process keeps its stores open, so the worker reads a version's file
+beside it without opening the store, found by the requester's locator and
+used only when the bytes hash to the digest and match the proof; a partly
+hydrated or replaced file is fetched instead. Versions of 1 MiB or less are
+loose blobs inside the store's database and are fetched too.
 `InputTransfer` reports fetched and held inputs separately; the
 `offloadable_action` and `compute_content` relay tests print both timings.
 On a shared CI runner (requester, relay and worker on one host), offloading

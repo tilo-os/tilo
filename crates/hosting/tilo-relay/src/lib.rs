@@ -204,9 +204,9 @@ pub use compute_transport::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use compute_worker::{
     ComputeAssignment, ComputeWorkerError, FileComputeContentStore, InputStaging, InputTransfer,
-    ProductionComputeWorkerConfig, WorkerEnvironments, hydrate_job_inputs, run_compute_assignment,
-    run_production_compute_worker, serve_worker_stream, serve_worker_stream_with,
-    spawn_worker_stream,
+    ProductionComputeWorkerConfig, WorkerEnvironments, WorkerHeldContent, hydrate_job_inputs,
+    run_compute_assignment, run_production_compute_worker, serve_worker_stream,
+    serve_worker_stream_with, spawn_worker_stream,
 };
 pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 #[cfg(not(target_arch = "wasm32"))]

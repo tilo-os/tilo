@@ -302,7 +302,7 @@ impl FileArea {
     }
 
     fn open_with(dir: &Path, db: Database, budget: u64, durable: bool) -> io::Result<Self> {
-        let data = dir.join("data");
+        let data = data_dir(dir);
         std::fs::create_dir_all(&data)?;
         {
             let txn = db.begin_write().map_err(db_error)?;
@@ -1284,6 +1284,54 @@ fn parse_hex(name: &str) -> Option<AreaKey> {
     let mut key = [0_u8; 32];
     hex::decode_to_slice(name, &mut key).ok()?;
     Some(key)
+}
+
+/// Where the area under `dir` keeps its entries' files.
+fn data_dir(dir: &Path) -> PathBuf {
+    dir.join("data")
+}
+
+/// `key`'s whole file from the area under `dir`, read without opening the
+/// area: for another process that must not take the area's database lock,
+/// such as a compute worker beside a home peer's replica. `Ok(None)` when
+/// there is no regular file for `key` or it is longer than `max_bytes`.
+///
+/// The bytes are neither verified nor known to be wholly resident (missing
+/// ranges of a sparse entry read as zeros): the caller checks them against
+/// a hash it trusts.
+///
+/// # Errors
+///
+/// Returns an error when the file exists but cannot be read.
+pub fn read_entry_unlocked(
+    dir: &Path,
+    key: &AreaKey,
+    max_bytes: u64,
+) -> io::Result<Option<Vec<u8>>> {
+    use std::os::unix::fs::MetadataExt as _;
+    let path = data_dir(dir).join(hex::encode(key));
+    let listed = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !listed.is_file() || listed.len() > max_bytes {
+        return Ok(None);
+    }
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    // The file read must be the one inspected: an entry replaced in
+    // between is simply not read this time.
+    let opened = file.metadata()?;
+    if (opened.dev(), opened.ino()) != (listed.dev(), listed.ino()) || opened.len() > max_bytes {
+        return Ok(None);
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(opened.len()).unwrap_or(0));
+    file.take(max_bytes).read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
 }
 
 /// BLAKE3 of a file, streamed.
