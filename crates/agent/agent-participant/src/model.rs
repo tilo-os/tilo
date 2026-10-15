@@ -2337,6 +2337,95 @@ fn response_functions(definitions: &serde_json::Value) -> serde_json::Value {
 /// How an answer the provider cut short is reported.
 const CUT_SHORT: &str = "the model's answer was cut short";
 
+/// The most characters of a refusal's own words kept in an error or a
+/// usage line.
+const MOST_REFUSAL_CHARS: usize = 300;
+
+/// The refusal in a provider's answer, in its own words (empty when it gave
+/// none): Anthropic's `stop_reason: "refusal"`, a Responses `refusal`
+/// content part, a chat message's `refusal` or a chat choice cut by the
+/// content filter. A refusal often arrives with no content at all, which
+/// read as an empty answer would hide why the plan failed.
+pub(crate) fn refusal(answer: &serde_json::Value) -> Option<String> {
+    let bounded = |text: &str| text.trim().chars().take(MOST_REFUSAL_CHARS).collect();
+    if answer
+        .get("stop_reason")
+        .and_then(serde_json::Value::as_str)
+        == Some("refusal")
+    {
+        let text: String = answer
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block.get("text").and_then(serde_json::Value::as_str))
+            .collect();
+        return Some(bounded(&text));
+    }
+    let parts = answer
+        .get("output")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("content").and_then(serde_json::Value::as_array))
+        .flatten();
+    for part in parts {
+        if part.get("type").and_then(serde_json::Value::as_str) == Some("refusal") {
+            let text = part
+                .get("refusal")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            return Some(bounded(text));
+        }
+    }
+    if let Some(text) = answer
+        .pointer("/choices/0/message/refusal")
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+    {
+        return Some(bounded(text));
+    }
+    (answer
+        .pointer("/choices/0/finish_reason")
+        .and_then(serde_json::Value::as_str)
+        == Some("content_filter"))
+    .then(|| "the provider's content filter stopped the answer".to_owned())
+}
+
+/// A chat-completions answer's first choice ([`openai::read_turn`]).
+///
+/// # Errors
+///
+/// An unreadable answer, or a refusal with no call: asking again for a
+/// call would only hide why there is no plan.
+fn read_chat_turn(answer: &serde_json::Value) -> Result<openai::Turn, String> {
+    let reply = openai::read_turn(answer)?;
+    match refusal(answer) {
+        Some(said) if reply.calls.is_empty() => Err(refused(&said)),
+        _ => Ok(reply),
+    }
+}
+
+/// Why the provider stopped writing an answer: Anthropic's `stop_reason`,
+/// a chat choice's `finish_reason`, or why a Responses answer is
+/// incomplete.
+fn stop_reason(answer: &serde_json::Value) -> Option<&str> {
+    answer
+        .get("stop_reason")
+        .or_else(|| answer.pointer("/choices/0/finish_reason"))
+        .or_else(|| answer.pointer("/incomplete_details/reason"))
+        .and_then(serde_json::Value::as_str)
+}
+
+/// A plan's error for a model that refused, with what it said.
+pub(crate) fn refused(said: &str) -> String {
+    if said.is_empty() {
+        "the model refused".to_owned()
+    } else {
+        format!("the model refused: {said}")
+    }
+}
+
 /// One Responses API answer: its id (to chain the next turn), its function
 /// calls and any text it wrote.
 fn read_response_turn(
@@ -2357,6 +2446,7 @@ fn read_response_turn(
     }
     let mut calls = Vec::new();
     let mut text = String::new();
+    let refused_with = refusal(response);
     for item in response
         .get("output")
         .and_then(serde_json::Value::as_array)
@@ -2398,6 +2488,11 @@ fn read_response_turn(
             }
             _ => {}
         }
+    }
+    if calls.is_empty()
+        && let Some(said) = refused_with
+    {
+        return Err(refused(&said));
     }
     Ok((id, calls, (!text.is_empty()).then_some(text)))
 }
@@ -2833,7 +2928,7 @@ impl ModelRequest {
 fn record_usage(
     model: &str,
     agent: Option<&str>,
-    (elapsed, (pictures, picture_bytes)): (std::time::Duration, (usize, usize)),
+    timing: (std::time::Duration, (usize, usize)),
     answer: &Result<serde_json::Value, String>,
     hedge: bool,
 ) {
@@ -2841,22 +2936,7 @@ fn record_usage(
     let Some(path) = std::env::var_os("TILO_AGENT_USAGE_LOG") else {
         return;
     };
-    let line = serde_json::json!({
-        "at_unix_ms": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis()),
-        "agent": agent,
-        "model": model,
-        "elapsed_ms": elapsed.as_millis(),
-        "ok": answer.is_ok(),
-        "error": answer.as_ref().err(),
-        "usage": answer.as_ref().ok().and_then(|answer| answer.get("usage")),
-        // The tier the call was served and billed at.
-        "service_tier": answer.as_ref().ok().and_then(|answer| answer.get("service_tier")),
-        "pictures": pictures,
-        "picture_bytes": picture_bytes,
-        "hedge": hedge,
-    });
+    let line = usage_line(model, agent, timing, answer, hedge);
     // One write per line: `writeln!` writes in pieces, and agents in other
     // processes append to the same log at once.
     let written = std::fs::OpenOptions::new()
@@ -2867,6 +2947,36 @@ fn record_usage(
     if let Err(error) = written {
         tracing::warn!(%error, "cannot record model usage");
     }
+}
+
+/// The line [`record_usage`] appends for one model call.
+fn usage_line(
+    model: &str,
+    agent: Option<&str>,
+    (elapsed, (pictures, picture_bytes)): (std::time::Duration, (usize, usize)),
+    answer: &Result<serde_json::Value, String>,
+    hedge: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "at_unix_ms": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis()),
+        "agent": agent,
+        "model": model,
+        "elapsed_ms": elapsed.as_millis(),
+        "ok": answer.is_ok(),
+        "error": answer.as_ref().err(),
+        "usage": answer.as_ref().ok().and_then(|answer| answer.get("usage")),
+        // Why the model stopped (a refusal, a cut-off), so an empty answer
+        // is told from a refused one.
+        "stop_reason": answer.as_ref().ok().and_then(stop_reason),
+        "refusal": answer.as_ref().ok().and_then(refusal),
+        // The tier the call was served and billed at.
+        "service_tier": answer.as_ref().ok().and_then(|answer| answer.get("service_tier")),
+        "pictures": pictures,
+        "picture_bytes": picture_bytes,
+        "hedge": hedge,
+    })
 }
 
 impl PlanModel for OpenAiModel {
@@ -2961,7 +3071,7 @@ impl PlanModel for OpenAiModel {
             });
             let key = openai::turn_key(&run, turn, &body);
             let answer = self.post(&body, &key, deadline)?;
-            let reply = openai::read_turn(&answer)?;
+            let reply = read_chat_turn(&answer)?;
             // A plan written out as JSON instead of called is read as the
             // call it stands for.
             if reply.calls.is_empty()
@@ -5331,5 +5441,68 @@ pub(crate) mod tests {
             text.contains(&format!("{} picture shown below, 8×6 PNG", reads.rendered)),
             "{text}"
         );
+    }
+
+    /// A Responses refusal part and a chat message's refusal fail the turn
+    /// saying the model refused, with its words; the usage line says why
+    /// each answer stopped and what was refused.
+    #[test]
+    fn a_refusal_from_either_openai_shape_is_reported_and_logged() {
+        let responses = serde_json::json!({"id": "resp_1", "output": [{"type": "message",
+            "content": [{"type": "refusal", "refusal": "I can't help with that."}]}]});
+        assert_eq!(
+            read_response_turn(&responses).err().as_deref(),
+            Some("the model refused: I can't help with that.")
+        );
+        let chat = serde_json::json!({"choices": [{"message": {"role": "assistant",
+            "content": null, "refusal": "No."}, "finish_reason": "stop"}]});
+        assert_eq!(refusal(&chat).as_deref(), Some("No."));
+        let filtered = serde_json::json!({"choices": [{"message": {"role": "assistant",
+            "content": null}, "finish_reason": "content_filter"}]});
+        assert!(refusal(&filtered).is_some_and(|said| said.contains("content filter")));
+        let plain = serde_json::json!({"choices": [{"message": {"role": "assistant",
+            "content": "hello"}, "finish_reason": "stop"}]});
+        assert_eq!(refusal(&plain), None);
+
+        let claude = serde_json::json!({"stop_reason": "refusal", "content": [],
+            "usage": {"input_tokens": 10, "output_tokens": 1}});
+        let line = usage_line(
+            "claude-fable-5-1",
+            Some("pia"),
+            (std::time::Duration::from_millis(5), (0, 0)),
+            &Ok(claude),
+            false,
+        );
+        assert_eq!(line["stop_reason"], "refusal");
+        assert_eq!(line["refusal"], "");
+        assert_eq!(line["usage"]["output_tokens"], 1);
+        let line = usage_line(
+            "gpt",
+            None,
+            (std::time::Duration::from_millis(5), (0, 0)),
+            &Ok(plain),
+            false,
+        );
+        assert_eq!(line["stop_reason"], "stop");
+        assert!(line["refusal"].is_null());
+    }
+
+    /// A chat-completions plan whose model refuses ends at once, saying so:
+    /// it is not reminded to call a tool.
+    #[test]
+    fn a_chat_plan_the_model_refuses_fails_saying_it_refused() {
+        let refusal = serde_json::json!({"choices": [{"message": {"role": "assistant",
+            "content": null, "refusal": "I won't do that."}, "finish_reason": "stop"}]});
+        let (url, sent) = endpoint(vec![http("200 OK", &refusal.to_string())]);
+        let mut model = OpenAiModel::new(
+            &url,
+            "local",
+            ApiKey::None,
+            std::time::Duration::from_secs(30),
+            ApiTarget::Standard,
+        );
+        let error = model.choose("open notes", &open_notes(), None).unwrap_err();
+        assert_eq!(error, "the model refused: I won't do that.");
+        assert_eq!(sent.try_iter().count(), 1);
     }
 }

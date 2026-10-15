@@ -283,8 +283,21 @@ struct Call {
     input: serde_json::Value,
 }
 
+/// Why a Messages answer may end with no tool call and still be an
+/// answer: it ended its turn, or stopped at a stop sequence.
+const ENDED: &[&str] = &["end_turn", "tool_use", "stop_sequence"];
+
 /// The tool calls of `answer` and its text, if any.
-fn read_answer(answer: &serde_json::Value) -> (Vec<Call>, String) {
+///
+/// # Errors
+///
+/// A refusal (`stop_reason: "refusal"`), with the model's words when it
+/// gave any; or an answer that stopped for another reason (`max_tokens`,
+/// `pause_turn`, …) with no call, which says why.
+fn read_answer(answer: &serde_json::Value) -> Result<(Vec<Call>, String), String> {
+    if let Some(said) = crate::model::refusal(answer) {
+        return Err(crate::model::refused(&said));
+    }
     let mut calls = Vec::new();
     let mut text = String::new();
     for block in answer
@@ -318,7 +331,22 @@ fn read_answer(answer: &serde_json::Value) -> (Vec<Call>, String) {
             _ => {}
         }
     }
-    (calls, text)
+    if calls.is_empty()
+        && let Some(reason) = answer
+            .get("stop_reason")
+            .and_then(serde_json::Value::as_str)
+            .filter(|reason| !ENDED.contains(reason))
+    {
+        return Err(format!(
+            "the model stopped without planning ({reason}){}",
+            if text.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", text.chars().take(300).collect::<String>())
+            }
+        ));
+    }
+    Ok((calls, text))
 }
 
 impl PlanModel for AnthropicModel {
@@ -373,7 +401,7 @@ impl PlanModel for AnthropicModel {
             eyes.next_turn();
             let key = format!("{}-{turn}", hex::encode(run));
             let answer = self.turn(&tools, &messages, &key, deadline)?;
-            let (calls, text) = read_answer(&answer);
+            let (calls, text) = read_answer(&answer)?;
             if calls.is_empty() && !self.forced && !reminded {
                 // Left the choice, the model wrote instead of calling a
                 // tool: it is reminded once.
@@ -524,11 +552,67 @@ mod tests {
                 {"type": "text", "text": "Planning."},
                 {"type": "tool_use", "id": "toolu_1", "name": "plan", "input": {"steps": []}},
             ]
-        }));
+        }))
+        .unwrap();
         assert_eq!(text, "Planning.");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].id, "toolu_1");
         assert_eq!(calls[0].name, "plan");
+    }
+
+    /// A refusal with no content is reported as a refusal, not as an empty
+    /// answer, and so is one with words; another stop with no call says
+    /// why it stopped.
+    #[test]
+    fn a_refusal_or_a_cut_off_answer_says_so_rather_than_looking_empty() {
+        let bare = read_answer(&serde_json::json!({"stop_reason": "refusal", "content": []}));
+        assert_eq!(bare.err().as_deref(), Some("the model refused"));
+        let said = read_answer(&serde_json::json!({"stop_reason": "refusal", "content": [
+            {"type": "text", "text": "I can't help with that."}]}));
+        assert_eq!(
+            said.err().as_deref(),
+            Some("the model refused: I can't help with that.")
+        );
+        let cut = read_answer(&serde_json::json!({"stop_reason": "max_tokens", "content": []}));
+        assert!(
+            cut.as_ref()
+                .is_err_and(|error| error.contains("(max_tokens)")),
+            "{:?}",
+            cut.err()
+        );
+        let ended = read_answer(&serde_json::json!({"stop_reason": "end_turn", "content": [
+            {"type": "text", "text": "Done."}]}));
+        assert!(
+            ended.is_ok(),
+            "an ended turn without a call is reminded, not refused"
+        );
+    }
+
+    /// A plan whose model answers with a captured refusal body fails saying
+    /// the model refused, at once: no reminder is sent after a refusal.
+    #[test]
+    fn a_plan_the_model_refuses_fails_saying_it_refused() {
+        use crate::Planner as _;
+        use crate::model::tests::{endpoint, http, look_context};
+        let (url, sent) = endpoint(vec![http(
+            "200 OK",
+            r#"{"id":"msg_1","type":"message","role":"assistant","model":"claude-fable-5-1","content":[],"stop_reason":"refusal","stop_sequence":null,"usage":{"input_tokens":12000,"output_tokens":3}}"#,
+        )]);
+        let model = AnthropicModel::new(
+            &url,
+            "claude-fable-5-1",
+            ApiKey::None,
+            std::time::Duration::from_secs(30),
+        );
+        let error = crate::ModelPlanner::new(Box::new(model))
+            .plan("draw a band", &look_context())
+            .unwrap_err();
+        assert_eq!(error, "the model refused");
+        assert_eq!(
+            sent.try_iter().count(),
+            1,
+            "nothing is sent after a refusal"
+        );
     }
 
     /// A Messages answer calling `name` with `input`.
