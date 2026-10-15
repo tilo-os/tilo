@@ -99,6 +99,14 @@ impl IdleFade {
             .filter(|deadline| *deadline > now)
     }
 
+    /// When the fade will have run its course, if the chrome was woken.
+    #[must_use]
+    pub fn fade_end(&self) -> Option<Instant> {
+        self.last_activity?
+            .checked_add(self.hold)?
+            .checked_add(self.fade)
+    }
+
     /// Whether the fade has run its course at `now`.
     #[must_use]
     pub fn finished_at(&self, now: Instant) -> bool {
