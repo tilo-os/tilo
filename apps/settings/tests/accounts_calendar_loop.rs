@@ -227,7 +227,7 @@ fn changing_or_canceling_a_live_discovery_draft_never_commits_it() {
             "password" => pane.set_form_password_for_test("other-password"),
             "cancel" | "cancel-before-result" => pane.command(AccountViewCommand::Cancel),
             "switch" | "switch-before-result" => {
-                pane.command(AccountViewCommand::Add(AccountKind::WebDav))
+                pane.command(AccountViewCommand::Add(AccountKind::WebDav));
             }
             _ => pane.set_form_fields_for_test("Cloud", "", "different-user", &url),
         }
