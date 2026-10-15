@@ -29,6 +29,7 @@ import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
+import {memberText, objectText} from './json-text.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -1438,13 +1439,15 @@ async function join({
   signal?.throwIfAborted();
   onProgress?.({phase: 'asking'});
   const token = admissionToken ? new TextEncoder().encode(admissionToken) : undefined;
-  const host = JSON.parse(await runtime.hostInfo(post));
+  const hostText = await runtime.hostInfo(post);
+  const host = JSON.parse(hostText);
   const kept = certified ? null : await keptDeviceCertificate({runtime, profile, store: connectOptions.store,
     desktop: connectOptions.desktop, namespaces: connectOptions.namespaces, custody: custodyForWasm, identity, host});
   const held = certified ?? kept;
-  const asked = JSON.parse(held
+  const askedText = held
     ? await runtime.askToJoinAs(post, bytes, held, custodyForWasm, requestId, fitDisplayName(displayName || label), token)
-    : await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId, fitDisplayName(displayName || label), fitDisplayName(label), token));
+    : await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId, fitDisplayName(displayName || label), fitDisplayName(label), token);
+  const asked = JSON.parse(askedText);
   let reply = asked.reply;
   const device = hexOf(asked.cert.device_public_key);
   while (reply.kind === 'waiting') {
@@ -1466,8 +1469,9 @@ async function join({
   return connect({
     ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, room: reply.room, label, displayName, custody, runtime, signal,
     profile: connectOptions.store ? undefined : profile,
-    // The kept certificate goes on as the text it was kept as: its
-    // nanosecond timestamps exceed what a JavaScript number holds exactly.
-    fetch: fetcher, deviceCertificate: kept ?? JSON.stringify({cert: asked.cert, hostCert: host.hostCert}),
+    // Certificates go on as the text they were kept or written as: their
+    // nanosecond timestamps exceed what a JavaScript number holds exactly
+    // (json-text.mjs).
+    fetch: fetcher, deviceCertificate: kept ?? objectText({cert: memberText(askedText, 'cert'), hostCert: memberText(hostText, 'hostCert')}),
   });
 }
