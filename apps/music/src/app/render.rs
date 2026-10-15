@@ -771,6 +771,11 @@ impl Widget for MusicApp {
                 .iter()
                 .filter_map(|slot| slot.table.host.visible().map(|table| table as &dyn Widget)),
         );
+        children.extend(
+            self.media_grids
+                .iter()
+                .filter_map(|grid| grid.host.visible().map(|grid| grid as &dyn Widget)),
+        );
         let mode = self.source_widget_mode();
         match mode {
             2 | 3 => children.extend(
@@ -816,6 +821,11 @@ impl Widget for MusicApp {
                 .host
                 .visible_mut()
                 .map(|table| table as &mut (dyn Widget + '_))
+        }));
+        children.extend(self.media_grids.iter_mut().filter_map(|grid| {
+            grid.host
+                .visible_mut()
+                .map(|grid| grid as &mut (dyn Widget + '_))
         }));
         match mode {
             2 | 3 => children.extend(
@@ -1048,6 +1058,16 @@ impl Widget for MusicApp {
         // The body's scrolling: wheel and touchpad over it, its bar, and
         // Page Up/Down, Home/End and the arrows.
         if let Some(theme) = self.frame_theme.take() {
+            // Keyboard scrolling keeps the bar visible, but pointer browsing
+            // must not pin a focused scrollbar on screen forever.
+            match event {
+                WindowEvent::KeyboardInput { .. } => self.body_scroll.set_focused(true),
+                WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Focused(false) => self.body_scroll.set_focused(false),
+                _ => {}
+            }
             self.dirty |= self.body_scroll.handle_event(event, ctx, &theme);
             self.frame_theme = Some(theme);
             if *ctx.handled {
@@ -1125,6 +1145,43 @@ impl Widget for MusicApp {
                 .with_name("Open lyrics")
                 .with_action_target("music.nav.lyrics"),
         ];
+        let controls = controls
+            .into_iter()
+            .map(|node| {
+                let rect = match node.action_target.as_deref() {
+                    Some("music.seek") => Some(self.scrubber_hit),
+                    Some("music.volume") => Some(if self.volume_btn_rect.area() > 0.0 {
+                        self.volume_btn_rect
+                    } else {
+                        self.volume_hit
+                    }),
+                    target => {
+                        let action = match target {
+                            Some("music.previous") => Some(Action::Prev),
+                            Some("music.toggle-play") => Some(Action::TogglePlay),
+                            Some("music.next") => Some(Action::Next),
+                            Some("music.toggle-shuffle") => Some(Action::ToggleShuffle),
+                            Some("music.cycle-repeat") => Some(Action::CycleRepeat),
+                            Some("music.toggle-mute") => Some(Action::ToggleMute),
+                            Some("music.nav.queue") => Some(Action::ToggleQueue),
+                            Some("music.nav.lyrics") => Some(Action::Nav(View::Lyrics)),
+                            _ => None,
+                        };
+                        action.and_then(|action| {
+                            self.hits
+                                .iter()
+                                .rev()
+                                .find(|hit| hit.action == action)
+                                .map(|hit| hit.rect)
+                        })
+                    }
+                };
+                match rect.filter(|rect| rect.area() > 0.0) {
+                    Some(rect) => node.with_bounds(rect),
+                    None => node,
+                }
+            })
+            .collect();
         let player_status = if let Some(error) = &self.playback_error {
             error.clone()
         } else if self.active_resolve_request.is_some() {
@@ -2686,8 +2743,11 @@ impl MusicApp {
         let look = Look::of(ctx.theme);
         self.drawer.scale_for(ctx.theme);
         self.drawer.tick(ctx.theme);
-        let content = self.drawer.resolve(self.rect);
         let r = self.rect;
+        let compact = Self::compact_bar(ctx.theme, &self.drawer, r.width());
+        self.bar_h = Self::bar_height(ctx, &look, compact);
+        let bar = self.nowplaying_rect();
+        let content = self.drawer.resolve(Rect::new(r.x0, r.y0, r.x1, bar.y0));
         // The window's header row: across the content column, with the
         // toggle in it while the sidebar is hidden or floats (a floating
         // sidebar opens under the row); a docked sidebar holds the toggle
@@ -2707,11 +2767,7 @@ impl MusicApp {
         if !self.nav_back.is_empty() {
             header = header.with_back();
         }
-        let content = self.drawer.resolve(self.rect);
         let header_h = header.row.height();
-        let compact = Self::compact_bar(ctx.theme, &self.drawer, content.width());
-        self.bar_h = Self::bar_height(ctx, &look, compact);
-        let bar = self.nowplaying_rect();
         // The body scrolls in the toolkit's region; its content is laid out
         // beside the bar's lane while it overflows.
         self.body_scroll.set_viewport(
@@ -2938,6 +2994,9 @@ impl MusicApp {
             &PresenceCtx::empty(),
         );
         self.history_rect = face.history_rect();
+        if let Some(button) = self.history.button_mut() {
+            button.apply_layout_external(self.history_rect);
+        }
         self.history.paint(
             ctx.scene,
             ctx.transform,
@@ -3273,15 +3332,8 @@ impl MusicApp {
         let mut y = y + look.gutter;
         self.refresh_spotify_control_flags();
         y = self.position_source_buttons(ctx, look, body, y);
-        if !self.lib.tracks.is_empty() {
-            y = self.draw_recommendations(
-                ctx,
-                (body.x0 + look.gutter, body.x1 - look.gutter),
-                y,
-                false,
-            ) + look.gutter;
-        }
-
+        // Put the library and catalogue first: recommendations complement
+        // browsing instead of pushing every cover below the first screen.
         // Remote catalogue content when it has landed.
         if let Some(home) = self.home.take() {
             for section in &home.sections {
@@ -3290,7 +3342,7 @@ impl MusicApp {
                 y += look.gutter;
             }
             self.home = Some(home);
-            return y;
+            return self.draw_home_recommendations(ctx, look, body, y);
         }
 
         // While a real Home fetch is in flight, show the shape of the grid
@@ -3333,12 +3385,31 @@ impl MusicApp {
             .map(|tk| tk.id.clone())
             .collect();
         let rows = self.gather_tracks(&ids);
-        self.draw_track_table(
+        let y = self.draw_track_table(
             ctx,
             look,
             body,
             y,
             &TrackTable::new(&rows, &ids).without_album(),
+        );
+        self.draw_home_recommendations(ctx, look, body, y + look.gutter)
+    }
+
+    fn draw_home_recommendations(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        look: &Look,
+        body: Rect,
+        y: f64,
+    ) -> f64 {
+        if self.lib.tracks.is_empty() {
+            return y;
+        }
+        self.draw_recommendations(
+            ctx,
+            (body.x0 + look.gutter, body.x1 - look.gutter),
+            y,
+            false,
         )
     }
 
@@ -3800,7 +3871,11 @@ impl MusicApp {
             title: tk.title.clone(),
             artist: tk.artist.clone(),
             second,
-            number: tk.no.max(index as u32 + 1),
+            number: if matches!(self.view, View::Album(_)) {
+                tk.no.max(index as u32 + 1)
+            } else {
+                index as u32 + 1
+            },
             duration: if tk.dur > 0 {
                 ui::format::timecode(u64::from(tk.dur))
             } else {
@@ -4057,13 +4132,11 @@ impl MusicApp {
         let y = y + look.gutter;
         let left = body.x0 + look.gutter;
         let right = body.x1 - look.gutter;
-        let wide = body.width() >= 3.0 * MediaSize::Regular.extent(theme);
-        let side = if wide {
-            MediaSize::Regular.extent(theme)
-        } else {
-            MediaSize::Small.extent(theme)
-        }
-        .min(right - left);
+        // Reserve a readable text column, not three large covers. At high
+        // UI scales the old cover-multiple breakpoint stacked a desktop hero
+        // and pushed virtually its entire track list below the fold.
+        let side = MediaSize::Small.extent(theme).min(right - left);
+        let wide = right - left >= side + look.gutter + MediaSize::Regular.extent(theme);
         let art = Rect::new(left, y, left + side, y + side);
         if matches!(header.kind, DetailKind::Artist { .. }) {
             self.draw_portrait(ctx, art, header.id, header.title);
@@ -4842,7 +4915,8 @@ impl MusicApp {
         let side = row_h - look.related;
         for tk in &rows {
             let art = Rect::new(panel.x0 + pad, y, panel.x0 + pad + side, y + side);
-            self.draw_cover(ctx, art, &tk.cover_id(), &tk.album);
+            let cover = self.best_cover_id(&tk.id, &tk.album_id);
+            self.draw_cover(ctx, art, &cover, &tk.album);
             let tx = art.x1 + look.sibling;
             let maxw = panel.x1 - pad - tx;
             let block = line_of(ctx, &body) + line_of(ctx, &caption);
@@ -5082,7 +5156,8 @@ impl MusicApp {
         let maxw = band.width().max(1.0);
         for (i, line) in self.lyrics.iter().enumerate() {
             let ly = band.y0 + i as f64 * line_h - auto;
-            if ly < band.y0 - line_h || ly > band.y1 {
+            // Do not leave half a lyric line cut against the header or player.
+            if ly < band.y0 || ly + line_h > band.y1 {
                 continue;
             }
             let active = Some(i) == current;
@@ -5166,7 +5241,7 @@ impl MusicApp {
 
     // ---- now playing bar --------------------------------------------------
 
-    /// The transport along the bottom of the content column: the song and its
+    /// The transport along the bottom of the window: the song and its
     /// like and lyrics actions, the playback controls over the scrubber, and
     /// the queue and volume. It is part of the content, set apart by one
     /// hairline. On a narrow content column it folds to the song,
@@ -5198,10 +5273,18 @@ impl MusicApp {
         let theme = ctx.theme;
         // Three columns: the song, the transport, the queue and volume. The
         // volume slider folds to a button with a popover on a narrower bar.
-        let show_slider = w >= 2.5 * MediaSize::Large.extent(theme);
-        let side_w = (w * 0.3).min(MediaSize::Large.extent(theme) * 1.25);
-        let left = Rect::new(inner.x0, inner.y0, inner.x0 + side_w, inner.y1);
-        let right = Rect::new(inner.x1 - side_w, inner.y0, inner.x1, inner.y1);
+        let show_slider = w >= 3.0 * MediaSize::Large.extent(theme);
+        let control = ButtonFace::height(ControlSize::Regular, theme);
+        let right_w = 2.0 * control
+            + look.related
+            + if show_slider {
+                MediaSize::Small.extent(theme) / 2.0 + look.tight
+            } else {
+                0.0
+            };
+        let left_w = (w * 0.36).min(MediaSize::Large.extent(theme));
+        let left = Rect::new(inner.x0, inner.y0, inner.x0 + left_w, inner.y1);
+        let right = Rect::new(inner.x1 - right_w, inner.y0, inner.x1, inner.y1);
         let center = Rect::new(
             left.x1 + look.gutter,
             inner.y0,
@@ -5226,7 +5309,9 @@ impl MusicApp {
             text_in_band(ctx, "Nothing playing", &body, look.dim, r.x0, r, r.width());
             return;
         };
-        let art = Rect::new(r.x0, r.y0, r.x0 + r.height(), r.y1);
+        let art_side =
+            TransportFace::side(TransportControl::PlayPause { playing: false }, ctx.theme);
+        let art = square_around(Point::new(r.x0 + art_side / 2.0, r.center().y), art_side);
         let cover = self.best_cover_id(&tk.id, &tk.album_id);
         self.draw_cover(ctx, art, &cover, &tk.album);
         // Clicking the art jumps to its album.
@@ -5417,7 +5502,7 @@ impl MusicApp {
             // Inline slider; the speaker is a mute toggle.
             self.volume_btn_rect = Rect::ZERO;
             self.volume_popover_open = false;
-            let slider_w = MediaSize::Small.extent(ctx.theme);
+            let slider_w = MediaSize::Small.extent(ctx.theme) / 2.0;
             let slider = Rect::new(x - slider_w, mid - control / 2.0, x, mid + control / 2.0);
             self.draw_volume_slider(ctx, slider);
             x = slider.x0 - look.tight;
@@ -5747,14 +5832,6 @@ impl MusicApp {
                 count: p.len(),
             })
             .collect()
-    }
-}
-
-impl TrackDisp {
-    /// Cover-cache key for this track: the track id (live results record a
-    /// per-track cover) falling back to album art via the placeholder.
-    fn cover_id(&self) -> String {
-        self.id.clone()
     }
 }
 

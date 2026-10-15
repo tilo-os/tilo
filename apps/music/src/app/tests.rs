@@ -4370,6 +4370,74 @@ fn draw_at(app: &mut MusicApp, doc: &mut AutoCommit, w: f64, h: f64) {
     app.render_frame(&mut scene, Affine::IDENTITY, &mut tr, &theme);
 }
 
+#[test]
+fn playlist_numbers_follow_the_playlist_not_the_source_album() {
+    let (mut app, mut doc) = app_with_doc();
+    app.view = View::Playlist("pl_drive".into());
+    draw_at(&mut app, &mut doc, 1440.0, 810.0);
+    let numbers: Vec<_> = app.track_tables[0]
+        .table
+        .rows()
+        .iter()
+        .map(|row| row.number)
+        .collect();
+    assert_eq!(numbers, [1, 2, 3, 4, 5, 6]);
+}
+
+#[test]
+fn scaled_player_and_detail_keep_content_above_the_fold() {
+    for theme in [Theme::dark(), Theme::light()] {
+        let theme = theme.with_ui_scale(1.5);
+        let (mut app, doc) = app_with_doc();
+        app.disconnect();
+        app.playback_loaded = true;
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
+        app.view = View::Album("al_glasslight".into());
+        app.rect = Rect::new(0.0, 0.0, 1440.0, 810.0);
+        app.sync(&doc, &automerge::ROOT);
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        app.render_frame(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        let bar = app.nowplaying_rect();
+        assert_eq!(bar.x0, app.rect.x0, "the sidebar cannot squeeze the song");
+        assert!(app.sidebar_rect().y1 <= bar.y0);
+        assert!(app.body_rect.y1 <= bar.y0);
+        assert_eq!(
+            app.body_rect.y0,
+            f64::from(theme.tokens.metrics.header_height)
+        );
+        let rows = app.track_tables.first().expect("album tracks");
+        let first = rows.table.row_rect(0).expect("first track");
+        let third = rows.table.row_rect(2).expect("third track");
+        assert!(third.y1 <= bar.y0, "three complete rows fit below the hero");
+        let art = app
+            .hits
+            .iter()
+            .find(|hit| {
+                matches!(
+                    &hit.action, Action::Nav(View::Album(id)) if id == "al_glasslight"
+                )
+            })
+            .expect("player artwork")
+            .rect;
+        assert!(art.y0 >= bar.y0 && art.y1 <= bar.y1);
+        assert!(
+            art.height() < bar.height(),
+            "art must not consume the whole bar"
+        );
+        let lyrics = app
+            .hits
+            .iter()
+            .find(|hit| hit.action == Action::Nav(View::Lyrics))
+            .expect("lyrics shortcut")
+            .rect;
+        assert!(lyrics.x1 < app.scrubber_rect.x0);
+        assert!(app.scrubber_rect.width() > 2.0 * art.width());
+        assert!(first.y0 > app.body_rect.y0);
+    }
+}
+
 // ---- 20. lyrics: synced load + moving highlight ------------------------
 
 // ---- 21. favourites sync via the CRDT document ------------------------

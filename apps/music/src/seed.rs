@@ -1,14 +1,19 @@
 //! The bundled offline sample library.
 //!
-//! Shipping a populated catalog means the `--shots` screenshot (and a
-//! first-run with no synced devices) shows a browsable library and a
-//! now-playing track. Every track carries a synthetic `yt_id`; the streaming
-//! path ([`crate::backend`]) would
-//! replace these with live YouTube-Music ids resolved from a search.
+//! Screenshot scenarios and tests can browse this catalogue without a
+//! network. The live app starts empty. Every track carries a synthetic
+//! `yt_id`; the streaming path replaces these with real search results.
 
 use ui::tilo_resource::{Id, Invoke};
 
 use crate::model::{Album, Artist, CatalogueTrack, Library, Playlist, Track};
+
+mod covers;
+
+/// Original illustrations, staged only by screenshot scenarios.
+pub(crate) fn cover_urls() -> Vec<(String, String)> {
+    covers::urls()
+}
 
 fn artist(id: &str, name: &str, genre: &str, listeners: u64) -> Artist {
     Artist {

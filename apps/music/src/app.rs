@@ -850,12 +850,7 @@ impl MusicApp {
             new_playlist_track: None,
             rect: Rect::ZERO,
             body_rect: Rect::ZERO,
-            body_scroll: {
-                let mut region = ui::widget::ScrollRegion::vertical();
-                // The page is the window's content: its keys scroll it.
-                region.set_focused(true);
-                region
-            },
+            body_scroll: ui::widget::ScrollRegion::vertical(),
             scroll_target: None,
             frame_theme: None,
             content_height: 0.0,
@@ -4168,19 +4163,16 @@ impl MusicApp {
         (self.drawer.content_rect().x0 - self.rect.x0).max(0.0)
     }
 
-    /// The sidebar's on-screen rect (from the drawer's last `resolve`). Spans
-    /// the full window height; the now-playing transport is inset to its right
-    /// (see `nowplaying_rect`) so the two never overlap.
+    /// The sidebar's on-screen rect, ending above the persistent transport.
     fn sidebar_rect(&self) -> Rect {
         self.drawer.sidebar_rect()
     }
 
-    /// The now-playing transport's on-screen rect: it starts at the content
-    /// column's left edge (right of the docked sidebar; full-width in overlay,
-    /// where the floating sidebar draws above it) and spans to the right edge.
+    /// Playback belongs to every destination, so its transport spans the
+    /// window rather than competing with the sidebar for the song's width.
     fn nowplaying_rect(&self) -> Rect {
         let r = self.rect;
-        Rect::new(self.drawer.content_rect().x0, r.y1 - self.bar_h, r.x1, r.y1)
+        Rect::new(r.x0, r.y1 - self.bar_h, r.x1, r.y1)
     }
 
     /// Whether the sidebar toggle sits in the window's header row rather
@@ -4229,6 +4221,7 @@ impl MusicApp {
     /// Stage the view state of the screenshot scenario `scenario`, once its
     /// library is in place.
     pub(crate) fn stage_scenario(&mut self, scenario: &str) {
+        self.art_urls.extend(crate::seed::cover_urls());
         match scenario {
             "recommendations" | "recommendations-feedback" | "recommendations-empty" => {
                 self.view = View::Recommendations;
@@ -4292,6 +4285,33 @@ impl MusicApp {
     pub fn snap_skeleton(&mut self) {
         self.shot_stage = Some(ShotStage::Skeleton);
         self.view = View::Home;
+    }
+
+    /// Give a hermetic screenshot session real, decodable offline audio.
+    /// The caller owns the temporary cache directory and removes it afterwards.
+    /// Unlike staging a playhead, subsequent pointer playback exercises the
+    /// normal verified-cache and decoder path.
+    ///
+    /// # Errors
+    /// Refuses a live session, or returns an error if a cache object cannot be
+    /// installed. This never replaces the person's live playback cache.
+    pub fn snap_cached_audio(
+        &mut self,
+        root: PathBuf,
+        tracks: impl IntoIterator<Item = (String, Vec<u8>)>,
+    ) -> std::io::Result<()> {
+        if self.allow_network || self.persist_device_profile {
+            return Err(std::io::Error::other(
+                "sample audio requires a capture session",
+            ));
+        }
+        let mut cache = crate::storage::MediaCache::default();
+        for (id, bytes) in tracks {
+            cache.install_bytes(&root, &id, &bytes, u64::MAX)?;
+        }
+        self.media_cache_root = root;
+        self.media_cache = cache;
+        Ok(())
     }
 
     /// Stage a bundled track playing for a now-playing `--shots` frame (cover
