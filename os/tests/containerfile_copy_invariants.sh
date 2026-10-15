@@ -182,7 +182,28 @@ containerfile="$repo/os/Containerfile"
 # systemd-bless-boot's drop-in, which lets blessing rename the booted entry on
 # the read-only ESP, is one intentional payload row with a COPY of its own: no
 # existing instruction copies into that drop-in directory.
-expected_contract=bbe63ef7a63db5c3790095d91b09cb4f292e2b99ace8b5a9d82336618b42c9c9
+# tilo-esp-generator, which mounts the boot loader's ESP at /boot/efi on an
+# installed system, is one intentional payload row with a COPY of its own, and
+# its helper tilo-esp-mount rides the existing recovery-files libexec COPY.
+# The firstboot file helper is now compiled: it arrives from the firstboot-files
+# component as /usr/libexec/tilo-firstboot-files, with the mode it had, instead
+# of from the context as tilo-firstboot-files.py.
+# The board-successor verifier is now compiled: the user-identity component
+# installs the tilo-board-successor build output as
+# /usr/libexec/tilo-board-successor, with the mode the script had, instead of
+# the manifest's tilo-board-successor.py.
+# The boot audit's image signature policy checker is now compiled: it arrives
+# from the image-policy-check component at the same path and mode instead of
+# from the context.
+# The dual-boot enlist helper is now compiled. The base image carries it from
+# the boot-order component (one new row): it used to reach only the installer
+# image, from the installer's overlay of os/usr, and the installer now
+# inherits it.
+# The staging reclaim helper is now compiled. The base image carries it from
+# the staging-reclaim component (one new row): it used to reach only the
+# installer image, from the installer's overlay of os/usr, and the installer
+# and the targets it installs now inherit it.
+expected_contract=4ff4b32cc912e6b618758eb82dbe3e35bf9d0e2036adf50c9fd184ebb8777890
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -274,7 +295,6 @@ for path in \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
-  os/usr/libexec/tilo-image-policy-check \
   os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |
     awk -v path="$path" '

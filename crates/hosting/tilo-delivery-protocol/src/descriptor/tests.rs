@@ -1,12 +1,12 @@
 use super::*;
 use crate::auth;
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::join::TransportHint;
-use tilo_peer_state::{SeedState, StatePeer, join, seed_room};
+use tilo_peer_state::{SeedState, StatePeer, seed_room};
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_workspace_join::{self as join, TransportHint};
 use web_time::{Duration, SystemTime};
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const NS: u64 = 1_000_000_000;

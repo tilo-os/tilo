@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody} from './peer.mjs';
+import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const SEALED = 0x53;
@@ -110,7 +110,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
         const listeners = [];
         const durable = [];
         peer = {
-          config: JSON.parse(config), custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0,
+          config: JSON.parse(config), configText: config, custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0,
           phase,
           records: [],
           admission: 'ready',
@@ -218,6 +218,46 @@ test('a page holding the root certifies itself, with no pairing code, and renews
   assert.equal(runtime.calls.certify.length, 2, 'one about to expire is issued anew');
   await renewed.dispose();
   await assert.rejects(connect(options(runtime, store, {userPublicKey: 'cc'.repeat(32), identity})), TypeError);
+});
+
+test('a watching page sees the members live and sends nothing of its own', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers, watching: true}));
+  assert.equal(runtime.peer.config.watching, true, 'the session asks no channel for access');
+  assert.equal(peer.voice, undefined, 'a watching page joins no call');
+  await until(() => peer.live.state === 'live', 'the live layer');
+  const [session] = liveCarriers.connects;
+  assert.deepEqual(session.options.directions, {publish: false, subscribe: true});
+
+  const presence = [];
+  peer.live.onPresence(value => presence.push(value.publisher));
+  session.memberWatcher(OTHER, true);
+  session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: Date.now(), focus: null, pointer: [1, 2], selection: null, drag: null}), performance.now());
+  await until(() => presence.length, 'a member\'s cursor');
+
+  peer.live.publishPresence({pointer: [5, 6]});
+  const record = {app: 'so.tilo.notes', record: 'note-1'};
+  assert.equal(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'x'}]), false);
+  peer.live.endPreview(record);
+  peer.setDisplayName('Visitor');
+  runtime.peer.here = async () => { throw new Error('a watching page posted /here'); };
+  assert.deepEqual(await peer.here(null, [{id: '01', action: 'Edited', resource: 'Note', app: 'Notes', at_ms: 1}]), []);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.deepEqual(session.presence, []);
+  assert.deepEqual(session.ops, []);
+  assert.deepEqual(session.closedOps, []);
+  await peer.dispose();
+});
+
+test('a member page publishes on the live plane and keeps its call', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  assert.equal(runtime.peer.config.watching, false);
+  await until(() => peer.live.state === 'live', 'the live layer');
+  assert.deepEqual(liveCarriers.connects[0].options.directions, {publish: true, subscribe: true});
+  await peer.dispose();
 });
 
 test('the live layer joins over the carrier with the session grant and interpolates members', async () => {
@@ -395,7 +435,11 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   assert.equal(textOf(values.get(`${profile}/${PROFILE_DEVICE}/certificate`)), kept, 'what was kept for the previous host is untouched');
   assert.deepEqual(JSON.parse(textOf(values.get(`${profile}/${fresh}/certificate`))).hostCert, hostCertOf(1, 3));
   assert.equal(profileDevice(profile, namespaces), fresh, 'the profile keeps its peer there from now on');
-  assert.deepEqual(handles.map(handle => [handle.device, handle.released]), [[PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [fresh, 0]]);
+  assert.equal(runtime.calls.asked.root, identity, 'the kept certificate is the previous host\'s: the device is certified anew');
+  // The refused reconnect, the join reading the device's certificate there,
+  // the admitted session leaving it, and the new host's namespace.
+  assert.deepEqual(handles.map(handle => [handle.device, handle.released]),
+    [[PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [fresh, 0]]);
   assert.equal(vaultStorage.rows.size, 2, 'the new namespace seals its channel state with a vault of its own');
   assert.equal((await peer.mountDesktop('target', {app: 'scratch'})).device, fresh, 'its desktops mount there too');
   await peer.dispose();
@@ -408,6 +452,51 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   // and outbox never reached the new host.
   assert.ok(runtime.calls.started.every(started => JSON.parse(started.namespace).device === fresh));
   assert.equal(runtime.calls.started.length, 2);
+});
+
+test('a device the room let go asks to join again under the certificate it already holds from that host', async () => {
+  // The room keeps the certificate of every device it admitted, also once
+  // its person was removed or pruned after an absence, and refuses the same
+  // device under another one: a certificate made anew would never get back in.
+  const runtime = fakeRuntime();
+  const {values, handles, desktop, namespaces, vaultStorage} = profileFakes(runtime);
+  const profile = 'tilo-identity:ee@host.example:8443';
+  const identity = person();
+  const host = hostCertOf(1, 2);
+  const certificate = {user_public_key: Array(32).fill(0xee), device_public_key: Array.from(custody.publicKey), issued_at_ns: 5};
+  // Nanoseconds past what a JavaScript number holds exactly: only the kept
+  // text itself still matches the certificate's signature.
+  const kept = JSON.stringify({cert: certificate, hostCert: host}).replace('"issued_at_ns":5', '"issued_at_ns":1792040183583123457');
+  values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(kept));
+  runtime.hostInfo = async () => JSON.stringify({hostCert: host, webtransportPort: 443});
+  runtime.askToJoinAs = async (post, invitation, held, custodyKey, requestId, name, token) => {
+    runtime.calls.askedAs = {held, token: token && new TextDecoder().decode(token)};
+    return JSON.stringify({reply: {kind: 'admitted', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor'}, cert: JSON.parse(held).cert});
+  };
+  const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, vaultStorage, profile,
+    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); }};
+  const peer = await joinWorkspace({...common, invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
+  assert.equal(runtime.calls.askedAs.held, kept, 'asked under the certificate the device holds');
+  assert.equal(runtime.calls.askedAs.token, 'one-time-token');
+  assert.equal(runtime.calls.asked, undefined, 'no certificate made anew');
+  assert.match(runtime.peer.configText, /"issued_at_ns":1792040183583123457[,}]/, 'and the session runs under it, exactly');
+  assert.equal(textOf(values.get(`${profile}/${PROFILE_DEVICE}/certificate`)), kept, 'kept as the very text it was');
+  assert.equal(runtime.calls.certify.length, 0);
+  assert.deepEqual(handles.map(handle => [handle.device, handle.released]), [[PROFILE_DEVICE, 1], [PROFILE_DEVICE, 0]]);
+  await peer.dispose();
+
+  // Not the device's, or not the person's: certified anew, as before.
+  for (const other of [{...certificate, device_public_key: Array(32).fill(0xdd)}, {...certificate, user_public_key: Array(32).fill(0xaa)}]) {
+    const fresh = fakeRuntime();
+    const fakes = profileFakes(fresh);
+    fakes.values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(JSON.stringify({cert: other, hostCert: host})));
+    fresh.hostInfo = runtime.hostInfo;
+    fresh.askToJoinAs = async () => assert.fail('another device\'s or person\'s certificate is never presented');
+    const joined = await joinWorkspace({...common, runtime: fresh, desktop: fakes.desktop, namespaces: fakes.namespaces,
+      vaultStorage: fakes.vaultStorage, invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
+    assert.equal(fresh.calls.asked.root, identity);
+    await joined.dispose();
+  }
 });
 
 test('a peer with a store of its own never moves it: a host set up again is refused even once it admitted the device', async () => {
@@ -1140,4 +1229,12 @@ test('every disposal caller observes storage release failure', async () => {
   await assert.rejects(peer.dispose(), error => error === failure);
   assert.equal(releases, 1);
   assert.equal(runtime.peer.disposed, true);
+});
+
+test('the peer starts from the certificate text, keeping nanosecond timestamps exact', () => {
+  const certified = '{"cert":{"issued_at_ns":1791962530023125779,"expires_at_ns":1792048930023125779},"hostCert":{"issued_at_ns":1}}';
+  const started = withStartFields(certified, {displayName: 'Ada'});
+  assert.ok(started.includes('1791962530023125779') && started.includes('1792048930023125779'));
+  assert.equal(JSON.parse(started).displayName, 'Ada');
+  assert.equal(withStartFields(certified, {displayName: undefined}), certified);
 });

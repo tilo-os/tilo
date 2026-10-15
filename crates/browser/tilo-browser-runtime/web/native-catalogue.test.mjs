@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createNativeCatalogueBridge} from './native-catalogue.mjs';
+import {createNativeCatalogueBridge, invokeRoomMembership, roomGovernanceResource} from './native-catalogue.mjs';
 
 test('native requests preserve their correlation and exact query through the certified catalogue', async () => {
   const query = {provider:'record:so.tilo.chat:', view_resource:{id:'chat.message:fixture', kind:'chat.message'}};
@@ -98,4 +98,39 @@ test('an app\'s share-link asks the room\'s host as the person and answers with 
     options:{invocation}}]);
   assert.deepEqual(replies, [{Receipt:{invocation, status:{Completed:{output:{value:{url}, resources:[]}}}}}]);
   bridge.dispose();
+});
+
+test('the page removes someone through its own door: the room\'s membership request, on confirmation only', async () => {
+  const calls = [];
+  const room = 'r1';
+  const person = 'bb'.repeat(32);
+  const membership = {
+    remove: async who => { calls.push(['remove', who]); return {room, members: [{userPublicKey: who, removed: true}]}; },
+    unban: async who => { calls.push(['unban', who]); return {room, members: []}; },
+  };
+  const invoke = (action, args, options = {}) => invokeRoomMembership({membership, room,
+    resource: roomGovernanceResource(room), action, args, ...options});
+  // Not the room's membership: the application's door answers.
+  assert.equal(invokeRoomMembership({membership, room, resource: 'notes.page:1', action: 'remove-member', args: {person}}), undefined);
+  assert.equal(invokeRoomMembership({membership, room, resource: roomGovernanceResource('r2'), action: 'remove-member', args: {person}}),
+    undefined, 'another room\'s governance');
+  assert.equal(invoke('invite', {}), undefined, 'a verb the page does not take here');
+  assert.equal(invoke('constructor', {person}), undefined, 'an inherited name is no verb');
+  assert.equal(invokeRoomMembership({membership, room: undefined, resource: roomGovernanceResource(undefined),
+    action: 'remove-member', args: {person}}), undefined, 'a peer in no room');
+  // Removing someone asks first, and is the host's to decide.
+  await assert.rejects(invoke('remove-member', {person}), /^Error: action_confirmation_required: /);
+  await assert.rejects(invoke('remove-member', {person: 'u_guest'}, {confirm: true}), /^Error: invalid_arguments: /);
+  await assert.rejects(invoke('remove-member', {person, reason: 'spam'}, {confirm: true}), /^Error: invalid_arguments: /);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await invoke('remove-member', {person}, {confirm: true}),
+    {state: 'completed', output: {value: {room, members: [{userPublicKey: person, removed: true}]}}});
+  // Letting someone back in takes nothing from anyone: no confirmation.
+  assert.equal((await invoke('unban', {person})).state, 'completed');
+  assert.deepEqual(calls, [['remove', person], ['unban', person]]);
+  membership.remove = async () => { throw Error('a Moderator cannot do this to a Moderator'); };
+  await assert.rejects(invoke('remove-member', {person}, {confirm: true}),
+    {message: 'action_failed: a Moderator cannot do this to a Moderator'});
+  await assert.rejects(invokeRoomMembership({membership: undefined, room, resource: roomGovernanceResource(room),
+    action: 'remove-member', args: {person}, confirm: true}), /^Error: action_unavailable: /);
 });

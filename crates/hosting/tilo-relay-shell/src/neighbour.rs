@@ -108,4 +108,8 @@ impl ShellPayloads for NeighbourPayloads {
     fn decoded_overhead(&self) -> usize {
         std::mem::size_of::<NeighbourMsg>()
     }
+
+    fn replay(&self) -> Option<&dyn tilo_relay_store::shell::ShellReplay> {
+        Some(&crate::NeighbourReplay)
+    }
 }

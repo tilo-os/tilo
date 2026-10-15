@@ -35,6 +35,26 @@ pub(super) fn observe(
     Ok(readiness)
 }
 
+/// Run `start` as one identified launch attempt, without observing its
+/// startup: the attempt's token, which the launch record of the process it
+/// starts keeps, so the broker can tie that process's connection back to
+/// this launch. Correlation only; it settles nothing.
+pub(super) fn identified(start: impl FnOnce() -> Result<(), String>) -> Result<u64, String> {
+    let token = next_token()?;
+    let _scope = Scope(CURRENT.with(|current| current.replace(Some(token))));
+    start()?;
+    Ok(token)
+}
+
+/// A token no other attempt of this session holds, observed or not.
+fn next_token() -> Result<u64, String> {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+        next.checked_add(1)
+    })
+    .map_err(|_| "application startup identity exhausted".into())
+}
+
 pub(super) fn attach(command: &mut super::launcher::LaunchCommand) {
     if let Some(token) = CURRENT.with(Cell::get) {
         command.env.push((TOKEN_ENV.to_string(), token.to_string()));
@@ -68,7 +88,6 @@ pub(super) struct StartupObservations(Arc<Mutex<HashMap<u64, Pending>>>);
 
 impl StartupObservations {
     pub fn reserve(&self) -> Result<(u64, LaunchReadiness), String> {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
         let mut pending = self
             .0
             .lock()
@@ -76,11 +95,7 @@ impl StartupObservations {
         if pending.len() >= MAX_PENDING {
             return Err("too many applications are waiting to start".into());
         }
-        let token = NEXT
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-                next.checked_add(1)
-            })
-            .map_err(|_| "application startup identity exhausted")?;
+        let token = next_token()?;
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let (adoption, adopted) = tokio::sync::oneshot::channel();
         pending.insert(

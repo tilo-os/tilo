@@ -320,8 +320,11 @@ async fn choose_source(
     job_id: [u8; 16],
     digest: [u8; 32],
 ) -> Result<ContentRoute, &'static str> {
-    // Job content is compute control: the host's own person's devices.
-    if !HostOperation::ComputeControl.permits(&context.own_user_public_key, &peer.user_public_key) {
+    // Job content is compute control: the host's own person's devices, and
+    // never an agent of theirs.
+    if !HostOperation::ComputeControl.permits(&context.own_user_public_key, &peer.user_public_key)
+        || context.trust().is_agent(&peer.device_public_key)
+    {
         return Err("not_authorised");
     }
     let Some(workspace) = context.workspace(workspace_id).await else {

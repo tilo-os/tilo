@@ -92,6 +92,11 @@ pub struct PersistentArgs {
     /// Apply per-person change and content budgets to members.
     #[arg(long = "member-limits")]
     pub member_limits: bool,
+    /// Visitors watching the room at once. Each watching page reads the
+    /// room as its spectator person and writes nothing; past this many the
+    /// relay refuses the next one's subscription.
+    #[arg(long = "max-spectators", default_value_t = 1000)]
+    pub max_spectators: usize,
     /// A person (user public key, hex) made an Owner of the room once they
     /// joined; repeatable. A key removed from the list loses the role.
     #[arg(long = "owner", value_name = "HEX")]
@@ -930,6 +935,25 @@ pub(crate) async fn run(
     let room = governed_room(&rooms, &shown, &id_file, &store, &root).await?;
     let spectator = spectator_root(&store, &room)?;
     ensure_spectator_member(&rooms, &host_cert, &root, &room, &spectator).await?;
+    let workspace_id = rooms
+        .summary(&room)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?
+        .workspace_id;
+    hosted
+        .relay
+        .admit_spectators(
+            workspace_id,
+            tilo_relay::Spectators {
+                root: spectator.verifying_key().to_bytes(),
+                seats: persistent.max_spectators,
+                // Every visitor may join this room as a guest, and so read
+                // its channels: one who only watches may read them too.
+                public: true,
+            },
+        )
+        .await
+        .context("let visitors watch the room")?;
     seed_apps(
         &rooms,
         &room,
@@ -1366,7 +1390,13 @@ async fn serve_operator(
             _ = online_tick.tick() => {
                 let sessions = context.web.online_users();
                 let people = sessions.keys().filter(|user| **user != spectator).count();
-                let spectators = sessions.get(&spectator).copied().unwrap_or(0);
+                // Seated ones only: a page refused for want of a seat keeps
+                // its web session open while it waits, but watches nothing.
+                let spectators = context
+                    .rooms
+                    .seated_spectators(&context.room)
+                    .await
+                    .unwrap_or(0);
                 let online = (
                     u32::try_from(people).unwrap_or(u32::MAX),
                     u32::try_from(spectators).unwrap_or(u32::MAX),

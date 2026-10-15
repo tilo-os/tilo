@@ -31,9 +31,8 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::GovernedMember;
-use tilo_peer_state::join::MemberRole;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_join::{GovernedMember, MemberRole};
 
 /// The provider a relay answers its host operations under: creating,
 /// listing and entering the rooms it governs. Only the devices of the

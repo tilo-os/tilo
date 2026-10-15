@@ -1,7 +1,7 @@
 //! Inert invitation discovery locator; signatures do not grant session authority.
 use super::WorkspaceJoinError;
-use tilo_peer_state::join::TransportHint;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_join::TransportHint;
 
 /// Kind bound by the existing `TransportHint` signing domain.
 pub const TRANSPORT_DELIVERY_ORIGIN_V1: &str = "tilo-delivery-origin-v1";
@@ -42,7 +42,7 @@ impl DeliveryOriginLocatorV1 {
         self.validate()?;
         let payload = serde_json::to_string(self)
             .map_err(|error| WorkspaceJoinError::Encode(error.to_string()))?;
-        tilo_peer_state::join::sign_transport_hint(
+        tilo_workspace_join::sign_transport_hint(
             TRANSPORT_DELIVERY_ORIGIN_V1,
             payload,
             host.clone(),
@@ -82,7 +82,7 @@ impl DeliveryOriginLocatorV1 {
                 "noncanonical delivery locator".into(),
             ));
         }
-        tilo_peer_state::join::verify_transport_hint(hint).map_err(WorkspaceJoinError::Protocol)?;
+        tilo_workspace_join::verify_transport_hint(hint).map_err(WorkspaceJoinError::Protocol)?;
         Ok(locator)
     }
 }

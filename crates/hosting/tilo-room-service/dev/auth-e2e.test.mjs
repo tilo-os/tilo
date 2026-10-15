@@ -3,7 +3,8 @@
 // the `Browser / authentication` workflow has.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {joinsTo, keptApart, keptNamespaces, membershipFor, parseArgs, parseBanner, SETTLED} from './auth-e2e.mjs';
+import {joinsTo, keptApart, keptNamespaces, membershipFor, parseArgs, parseBanner, PRUNE_AFTER_MINS, PRUNE_WAIT_MS, REMOVE_MEMBER, SETTLED}
+  from './auth-e2e.mjs';
 
 test('the arguments name every input, absolute', () => {
   const options = parseArgs(['--bundle', 'b', '--relay-bin', 'r', '--room-service-bin', 's', '--out', 'o',
@@ -76,4 +77,31 @@ test('state kept apart means the old namespace untouched and a new one certified
   assert.equal(keptApart(before, {...after, namespaces: {...after.namespaces, [fresh]: {rows: 2, digest: 'd2', hostDevice: old.hostDevice}}}), false);
   assert.equal(keptApart({current: null, namespaces: {}, error: 'unreadable'}, after), false);
   assert.equal(keptApart(before, {current: null, namespaces: {}, error: 'unreadable'}), false);
+});
+
+test('the pruned person is waited for past the horizon and two prune passes', () => {
+  // The relay prunes once a minute at most, and a guest it has no record of
+  // on a pass is recorded then and pruned on a later one.
+  const pass = Math.max(60, PRUNE_AFTER_MINS * 15) * 1000;
+  assert.ok(PRUNE_WAIT_MS > PRUNE_AFTER_MINS * 60_000 + pass);
+  assert.ok(PRUNE_WAIT_MS <= 5 * 60_000, 'the check stays a few minutes long');
+});
+
+test("a moderator removes someone through the desktop's door, confirmed, and only a completed removal counts", async () => {
+  const person = 'bb'.repeat(32);
+  const asked = [];
+  const answer = result => async (...args) => { asked.push(args); return result; };
+  try {
+    globalThis.tiloMount = {invokeAction: answer({state: 'completed', output: {value: {members: [{userPublicKey: person, removed: true}]}}})};
+    assert.deepEqual(await eval(REMOVE_MEMBER('room-1', person)), {ok: true, state: 'completed', removed: true});
+    assert.deepEqual(asked[0], ['workspace.permissions:room-1', 'remove-member', {person}, {confirm: true}]);
+    globalThis.tiloMount = {invokeAction: answer({state: 'completed', output: {value: {members: [{userPublicKey: person, removed: false}]}}})};
+    assert.equal((await eval(REMOVE_MEMBER('room-1', person))).ok, false, 'still a member');
+    globalThis.tiloMount = {invokeAction: async () => { throw Error('action_failed: not a moderator'); }};
+    assert.deepEqual(await eval(REMOVE_MEMBER('room-1', person)), {ok: false, error: 'action_failed: not a moderator'});
+    delete globalThis.tiloMount;
+    assert.equal((await eval(REMOVE_MEMBER('room-1', person))).ok, false, 'no desktop');
+  } finally {
+    delete globalThis.tiloMount;
+  }
 });

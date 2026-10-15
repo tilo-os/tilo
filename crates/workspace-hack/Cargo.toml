@@ -206,6 +206,7 @@ strict-num = { version = "0.1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
+sysinfo = { version = "0.36" }
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
@@ -444,6 +445,7 @@ subtle = { version = "2", features = ["const-generics"] }
 syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["extra-traits", "full", "visit", "visit-mut"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
+sysinfo = { version = "0.36" }
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }

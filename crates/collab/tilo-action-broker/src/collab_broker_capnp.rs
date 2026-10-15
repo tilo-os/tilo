@@ -2051,6 +2051,7 @@ mod app_consent;
 mod launchable;
 mod local_action_host;
 mod witness;
+mod workspace_open;
 pub use local_action_host::CertifiedPersonContext;
 
 pub use launchable::launchable_provider;
@@ -3263,6 +3264,8 @@ pub struct CapnpBrokerState {
     /// Last published surface per app, workspace and record, kept across
     /// restarts. Catalogue state, never an executable capability by itself.
     launchable: launchable::LaunchableCatalogue,
+    /// Workspace `open`s waiting for the instance each started to publish.
+    workspace_opens: workspace_open::WorkspaceOpens,
     /// Pull-only, revisioned directories owned by currently connected apps.
     /// This intentionally has no durable/archive counterpart: retaining a
     /// capability after disconnect would make a stale live-only row look
@@ -3657,16 +3660,19 @@ impl CapnpBrokerState {
     const DIRECTORY_OWNER_HUNG: Duration = Duration::from_secs(60);
 
     fn expire_stale_invocations(&self) {
+        let now = std::time::Instant::now();
         self.expire_stale_invocations_at(
-            std::time::Instant::now(),
+            now,
             Self::INVOCATION_IDLE_TIMEOUT,
             Self::CANCELLATION_GRACE,
         );
+        self.expire_workspace_opens(now);
     }
 
     /// When the next pending invocation can expire. `None` while nothing is
     /// in flight, so the accept loop parks instead of waking every 100 ms.
     fn next_invocation_deadline(&self) -> Option<std::time::Instant> {
+        let opens = self.workspace_opens.next_deadline();
         let pending = self.pending_invocations.lock().ok()?;
         pending
             .values()
@@ -3682,6 +3688,7 @@ impl CapnpBrokerState {
                     _ => idle_at,
                 })
             })
+            .chain(opens)
             .min()
     }
 
@@ -4072,6 +4079,7 @@ impl CapnpBrokerState {
                 surface_tables: Mutex::new(HashMap::new()),
                 surface_changes: tokio::sync::watch::Sender::new(0),
                 launchable: launchable::LaunchableCatalogue::new(),
+                workspace_opens: workspace_open::WorkspaceOpens::default(),
                 action_directory_bridge: ActionDirectoryRequestQueue {
                     sender: bridge_tx,
                     turn: std::sync::Arc::clone(&local_turn),
@@ -6587,6 +6595,7 @@ impl CapnpBrokerState {
     }
 
     fn remove_connection(&self, peer_id: u64) {
+        self.launch_disconnected(peer_id);
         if let Ok(mut directories) = self.canonical_directories.lock() {
             directories.remove(peer_id);
         }
@@ -9616,6 +9625,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 rows.push(runtime_collab::decode_exported_action(row)?);
             }
             let actions = validate_published_surface(rows)?;
+            let offers = !actions.is_empty();
             let surface = PublishedSurface {
                 peer_id,
                 app_id,
@@ -9637,6 +9647,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .insert(peer_id, surface);
             state.surfaces_changed();
             state.publish_action_catalogue();
+            if offers {
+                state.launch_published(peer_id);
+            }
             Ok(())
         })
     }
@@ -9677,6 +9690,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 capnp::Error::failed(format!("action surface delta refused: {reason}"))
             })?;
             let actions = validate_published_surface(table.actions())?;
+            let offers = !actions.is_empty();
             let surface = PublishedSurface {
                 peer_id,
                 app_id,
@@ -9697,6 +9711,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .insert(peer_id, surface);
             state.surfaces_changed();
             state.publish_action_catalogue();
+            if offers {
+                state.launch_published(peer_id);
+            }
             Ok(())
         })
     }
@@ -9776,6 +9793,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         // The directory can alter remote discoverability without an eager
         // action snapshot changing, so notify legacy catalogue subscribers.
         self.state.publish_action_catalogue();
+        self.state.launch_published(self.peer_id);
         Promise::ok(())
     }
 
@@ -13267,17 +13285,26 @@ struct LaunchRefusal {
     answerable: bool,
 }
 
+/// What authenticating a launcher's handoff established about a connection.
+#[derive(Default)]
+struct AuthenticatedHandoff {
+    /// The exact process, where the kernel pins it.
+    local_media: Option<Arc<native_media::LocalAppConnection>>,
+    /// The launch that started it, where its host keeps a ticket for it.
+    launch: Option<workspace_open::ConnectedLaunch>,
+}
+
 async fn authenticate_launcher_handoff(
     stream: &mut tokio::net::UnixStream,
     services: &HostServices,
-) -> Result<Option<Arc<native_media::LocalAppConnection>>, LaunchRefusal> {
+) -> Result<AuthenticatedHandoff, LaunchRefusal> {
     let LauncherHandoff {
         handoff,
         pid,
         media_process,
     } = match read_launcher_handoff(stream).await {
         Ok(Some(read)) => read,
-        Ok(None) => return Ok(None),
+        Ok(None) => return Ok(AuthenticatedHandoff::default()),
         Err(error) => {
             let peer = stream.peer_cred().ok().and_then(|c| c.pid()).map_or_else(
                 || "a peer without credentials".to_owned(),
@@ -13346,11 +13373,21 @@ async fn authenticate_launcher_handoff(
                 answerable: false,
             });
         }
-        return Ok(native_media::LocalAppConnection::from_launch(
-            handoff,
-            media_process,
-            launch,
-        ));
+        let opened = launch
+            .launch_ticket
+            .map(|ticket| workspace_open::ConnectedLaunch {
+                ticket,
+                app_id: handoff.app_id.clone(),
+                room: handoff.workspace_id.clone(),
+            });
+        return Ok(AuthenticatedHandoff {
+            local_media: native_media::LocalAppConnection::from_launch(
+                handoff,
+                media_process,
+                launch,
+            ),
+            launch: opened,
+        });
     }
     let error = if services.launcher.is_none() {
         "collaboration launch cannot be attested: this broker has no launcher service"
@@ -13474,7 +13511,15 @@ async fn drive_connection(
     let mut stream = stream;
     let local_media = if worker.is_none() {
         match authenticate_launcher_handoff(&mut stream, &state.services).await {
-            Ok(local_media) => local_media,
+            Ok(AuthenticatedHandoff {
+                local_media,
+                launch,
+            }) => {
+                if let Some(launch) = launch {
+                    state.launch_connected(peer_id, &launch);
+                }
+                local_media
+            }
             Err(refusal) => {
                 // Error, not warning: an app the shell launched is about to
                 // exit for this, and the default session log keeps errors only.
@@ -13985,6 +14030,21 @@ pub mod tests {
                 .iter()
                 .any(|(recorded, a, r)| *recorded == pid && a == app && r == room)
         }
+        /// Every recorded launch was started by the `open` holding ticket 31.
+        fn authenticated_launch(
+            &self,
+            pid: u32,
+            app: &str,
+            room: &str,
+        ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
+            Ok(self.attest_process(pid, app, room).then_some(
+                crate::services::AuthenticatedApplicationLaunch {
+                    creation: None,
+                    continuation_instance: None,
+                    launch_ticket: Some(31),
+                },
+            ))
+        }
     }
 
     /// Attestation is one look at the launch record: a launcher whose host
@@ -14023,7 +14083,17 @@ pub mod tests {
                 "attestation waited (recorded: {recorded})"
             );
             match attested {
-                Ok(_) => assert!(recorded, "an unrecorded launcher was attested"),
+                Ok(handoff) => {
+                    assert!(recorded, "an unrecorded launcher was attested");
+                    // The connection names the launch that started it, from
+                    // the host's record, for the app and room it was
+                    // admitted for.
+                    let launch = handoff.launch.expect("the recorded launch's ticket");
+                    assert_eq!(
+                        (launch.ticket, launch.app_id.as_str(), launch.room.as_str()),
+                        (31, APP, ROOM)
+                    );
+                }
                 Err(refusal) => {
                     assert!(
                         !recorded,

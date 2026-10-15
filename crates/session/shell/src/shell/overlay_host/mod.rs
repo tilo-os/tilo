@@ -15008,28 +15008,6 @@ impl ShellOverlayHost {
         ) {
             self.end_status_edit();
         }
-        if matches!(
-            hit,
-            CollaboratorsHit::PreviousPeople | CollaboratorsHit::NextPeople
-        ) {
-            let member_count = self
-                .chrome
-                .as_ref()
-                .map(|chrome| {
-                    let state = chrome.borrow();
-                    let local_user = state.active_local_user();
-                    tilo_desktop::collaborators::collaborator_roster_rows(
-                        &state.tree().desktop,
-                        &local_user,
-                    )
-                    .len()
-                })
-                .unwrap_or_default();
-            self.collaborators_overlay
-                .change_people_page(hit == CollaboratorsHit::NextPeople, member_count);
-            *handled = true;
-            return;
-        }
         match hit {
             CollaboratorsHit::ToggleDetails(index) => self.toggle_collaborator_details(index),
             CollaboratorsHit::ToggleFollow(index) => self.toggle_follow_row(index),
@@ -15050,6 +15028,11 @@ impl ShellOverlayHost {
             }
             CollaboratorsHit::SetStatusSharing(mode) => {
                 self.set_status_sharing(mode);
+                *handled = true;
+                return;
+            }
+            CollaboratorsHit::ChangeSharing => {
+                self.collaborators_overlay.toggle_sharing_choices();
                 *handled = true;
                 return;
             }
@@ -15077,9 +15060,9 @@ impl ShellOverlayHost {
                 }
                 CollaboratorsHit::ToggleFollow(_)
                 | CollaboratorsHit::ToggleDetails(_)
-                | CollaboratorsHit::PreviousPeople
-                | CollaboratorsHit::NextPeople
                 | CollaboratorsHit::EditStatus
+                | CollaboratorsHit::ChangeSharing
+                | CollaboratorsHit::Rename
                 | CollaboratorsHit::SetStatusSharing(_)
                 | CollaboratorsHit::Absorb => {}
             }
@@ -21613,7 +21596,11 @@ impl ShellOverlayHost {
                     row.status = presence.status_for(&id, now).map(|status| {
                         tilo_desktop::collaborators::RosterStatus {
                             text: status.text.clone(),
-                            automatic: matches!(status.origin, ui::StatusOrigin::Inferred { .. }),
+                            source: if matches!(status.origin, ui::StatusOrigin::Inferred { .. }) {
+                                tilo_desktop::collaborators::LineSource::Generated
+                            } else {
+                                tilo_desktop::collaborators::LineSource::Written
+                            },
                         }
                     });
                 }
@@ -21654,11 +21641,6 @@ impl ShellOverlayHost {
                         interaction.action.label, interaction.resource.label
                     )
                 });
-            let own_initial = own_label
-                .chars()
-                .next()
-                .unwrap_or('\u{2022}')
-                .to_ascii_uppercase();
             let (red, green, blue) =
                 ui::presence::identity_rgb(crate::shell::state::local_presence_hue());
             self.collaborators_overlay.draw(
@@ -21669,7 +21651,9 @@ impl ShellOverlayHost {
                 &CollaboratorsModel {
                     host: self.rect,
                     rows: &rows,
-                    own_initial,
+                    own_label: &own_label,
+                    // Native names come from the account, renamed in Settings.
+                    own_rename: false,
                     own_color: theme.tokens.colors.presence.of_rgb((red, green, blue)),
                     unavailable: unavailable.as_deref(),
                     followed_id: self.followed_peer.as_deref(),
@@ -21681,6 +21665,8 @@ impl ShellOverlayHost {
                         self.local_status.as_deref()
                     },
                     own_activity: own_activity.as_deref(),
+                    // Read off the person's own semantic actions.
+                    own_activity_generated: false,
                     own_status_automatic: matches!(
                         self.local_status_origin,
                         ui::StatusOrigin::Inferred { .. }

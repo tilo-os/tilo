@@ -34,7 +34,7 @@ rustls.workspace = true
 rustls-native-certs.workspace = true
 # The verifier reqwest uses: the Tilo bundle (through the patched
 # rustls-native-certs) on Linux, the Keychain on macOS.
-rustls-platform-verifier = "0.6.2"
+rustls-platform-verifier = "0.7"
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-rustls = { workspace = true, optional = true }

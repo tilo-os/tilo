@@ -24,7 +24,8 @@ use super::{RETAINED_DIR, StoreError, WorkspaceStore};
 pub(crate) struct ChannelEntry {
     /// Authenticated author of the lineage it is in.
     pub author: [u8; 32],
-    /// The retained co-edit body (for documents, a `NeighbourMsg`).
+    /// The retained co-edit body (for documents, the desktop's peer-sync
+    /// message, which only the injected `ShellPayloads` adapter reads).
     pub body: Vec<u8>,
     /// Digest of the whole file, which [`WorkspaceStore::replace_channel`]
     /// removes by.

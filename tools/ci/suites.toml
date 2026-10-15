@@ -94,7 +94,6 @@ suites = [
   "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",
   "os/tests/board_release_promotion.py",
-  "os/tests/test_board_successor.py",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
   "os/tests/board_audio_contract.sh",
@@ -111,12 +110,10 @@ suites = [
   "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
+  "os/tests/esp_generator.sh",
   "os/tests/airplay_encrypted_session_test.sh",
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
-  "os/tests/test_firstboot_credential_transport.py",
-  "os/tests/test_firstboot_transaction.py",
-  "os/tests/boot_order_enlist_test.py",
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
   "os/tests/test_oci_archive_layer_report.py",
@@ -735,6 +732,47 @@ inputs = [
   "os/components.toml",
 ]
 readers = ["crates/system/extension-helper/tests/support/mod.rs"]
+
+[[cargo]]
+package = "tilo-firstboot-files"
+# The first-boot cases run the shipped tilo-firstboot-user with this helper.
+inputs = ["os/usr/libexec/tilo-firstboot-user"]
+readers = ["crates/system/firstboot-files/tests/firstboot_user.rs"]
+
+[[cargo]]
+package = "tilo-board-successor"
+# The selector's tests run the shipped tilo-verified-update with it, read the
+# shipped hardware definitions as profile fixtures, and hold the reader to the
+# module the installer still uses.
+inputs = [
+  "os/usr/libexec/tilo-verified-update",
+  "os/hardware/profiles/*.json",
+  "os/dev/hardware_profile.py",
+]
+readers = [
+  "crates/system/board-successor/tests/successor.rs",
+  "crates/system/board-successor/tests/profile.rs",
+]
+
+[[cargo]]
+package = "tilo-image-policy-check"
+# The checker's tests judge the shipped container policy and check that the
+# boot audit runs it.
+inputs = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
+readers = ["crates/system/image-policy-check/tests/policy.rs"]
+
+[[cargo]]
+package = "tilo-staging-reclaim"
+# The reclaim tests check the units on both sides of a USB-free install, the
+# installer image that enables them and the component that ships the helper.
+inputs = [
+  "os/usr/lib/systemd/system/tilo-staging-reclaim.service",
+  "os/usr/lib/systemd/system/tilo-staging-handoff.service",
+  "os/usr/lib/systemd/system/tilo-installer-grow-root.service",
+  "os/Containerfile.installer",
+  "os/components.toml",
+]
+readers = ["crates/system/staging-reclaim/tests/reclaim.rs"]
 
 [[cargo]]
 package = "greeter"

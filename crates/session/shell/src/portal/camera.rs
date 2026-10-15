@@ -170,33 +170,27 @@ impl AccessBackend {
                 app_id: auth.caller.app_id.clone(),
                 resource: LifecycleResource::Prompt,
             };
-            if !matches!(
-                self.lifecycle
-                    .register_request(connection, &request, entry, move |_| {
-                        cancellation.store(true, Ordering::Release);
-                        prompts.cancel_request(&cancellation_request);
-                    })
-                    .await,
-                Ok(true)
-            ) {
-                return Err(Ended::Failed);
-            }
-            let (kind, cap_template) = camera_capability();
-            let outcome = flow::resolve_for_request(
-                &self.ctx,
-                auth.caller,
-                kind,
-                cap_template,
-                request.clone(),
-            )
-            .await;
+            let cancel = move |_: &LifecycleEntry| {
+                cancellation.store(true, Ordering::Release);
+                prompts.cancel_request(&cancellation_request);
+            };
             self.lifecycle
-                .complete_request_object(connection, &request)
-                .await;
-            if cancelled.load(Ordering::Acquire) {
-                return Err(Ended::Cancelled);
-            }
-            access_outcome(outcome)
+                .with_request(connection, &request, entry, cancel, async {
+                    let (kind, cap_template) = camera_capability();
+                    let outcome = flow::resolve_for_request(
+                        &self.ctx,
+                        auth.caller,
+                        kind,
+                        cap_template,
+                        request.clone(),
+                    )
+                    .await;
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(Ended::Cancelled);
+                    }
+                    access_outcome(outcome)
+                })
+                .await
         })
         .await
     }

@@ -198,12 +198,13 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_TRUSTED_PROXIES` | none | CIDRs whose `X-Forwarded-For` is believed |
 | `TILO_ROOMS_MAX_GUESTS` | `300` | people online at once (up to 10000; one room admitted 100 with join p99 under 10 s and stopped admitting past about 250 in the last capacity sweep, `docs/benchmarks/room-host-capacity-2026-10.md`) |
 | `TILO_ROOMS_MAX_SPECTATORS` | `1000` | watching sessions at once |
-| `TILO_ROOMS_GUEST_JOINS_PER_10_MIN`, `TILO_ROOMS_GUEST_JOINS_PER_DAY` | `5`, `30` | guest joins one address may make (an IPv6 address counts by its /64); a visitor past them watches until the window frees up. Raise them where many visitors share an address: offices, schools, mobile carriers' NAT |
+| `TILO_ROOMS_GUEST_JOINS_PER_10_MIN`, `TILO_ROOMS_GUEST_JOINS_PER_DAY` | `5`, `30` | guest joins one address may make (an IPv6 address counts by its /64); a visitor past them watches until the window frees up. The windows are rebuilt from the guest ledger on the volume at start, so a restart does not reset them; a join the room never answered (it was restarting) does not count. Raise them where many visitors share an address: offices, schools, mobile carriers' NAT |
 | `TILO_ROOMS_SPECTATES_PER_10_MIN` | `30` | spectator certificates one address may take |
 | `TILO_ROOMS_OWNERS`, `TILO_ROOMS_MODERATORS` | none | user keys (hex), comma-separated |
 | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat,so.tilo.notes,so.tilo.canvas` | apps added to the room once, comma-separated; notes and canvas start with a welcome note and starter shapes in the room's default record |
 | `TILO_ROOMS_BOTS` | none | bots installed at the first start, `;`-separated, each `<entry> key=value …`, where the entry is a directory bot or a program file such as the image's `/usr/local/share/tilo/bots/discord-bridge.json`; the Discord bridge takes `guild=<server id>`, optionally `channel=<channel id>` to bridge only that channel and `server=<name>`, and the host connects the room's Chat to that server before the bridge runs |
 | `TILO_ROOMS_DISCORD_TOKEN_FILE` | `/run/secrets/discord-bot-token` if present | the Discord bot token, read only when bots run |
+| `TILO_ROOMS_PRUNE_AFTER_MINS` | `60` | minutes (1–525600) a guest may go without a session before the relay removes them from the room, so the room does not slow with every visitor it ever had; a pruned guest who comes back joins through the door again as the same person, and their address is not cooled down. Owners and moderators are never pruned |
 | `TILO_ROOMS_RESET_SECS` | `21600` | every this many seconds, snapshot the seeded notes and canvas (last 10 kept under `<state>/relay/snapshots/<app>/`) and reset them to their starting content; chat is never reset; `0` disables |
 
 Every guest and every spectator holds a web session on the child relay, so
@@ -277,7 +278,22 @@ starts `run.py` from prebuilt binaries and a bundle and writes
 `summary.json` and `summary.md`; the `Browser / authentication` workflow
 runs it nightly and on demand.
 
+`dev/limits-e2e.py` checks the persistent room's enabled limits and what
+it keeps, over plain HTTP with no browser or bundle: on scratch state with
+small caps it fills the guest cap, the spectator cap and each per-address
+join window exactly, checks every refusal's status, wording and
+`Retry-After`, that a refused visitor holds no seat and that one told "full"
+gets in once an unused seat's hold ends, the caps and refusal counters on
+`/metrics`; then it restarts the service and checks the room, its spectator
+person, the guest ledger and each address's join window survive, that each
+seeded app keeps exactly its ten newest reset snapshots (chat none), and
+that SIGTERM stops the service and its relay within 20 seconds (eu1's
+grace period). The same workflow runs it before the browser check.
+
 ```sh
+python3 crates/hosting/tilo-room-service/dev/limits-e2e.py \
+  --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
+  --out target/limits-e2e
 node crates/hosting/tilo-room-service/dev/auth-e2e.mjs --bundle DIR \
   --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
   --out target/auth-e2e [--allow-dev]
