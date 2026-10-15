@@ -24,6 +24,7 @@ const REFRESH: Duration = Duration::from_secs(1);
 const TIMEOUT: Duration = Duration::from_secs(30);
 const TASKS: &str = "desktop:tasks";
 const CHAT: &str = "so.tilo.chat";
+const DESKTOP: &str = tilo_desktop_model::commands::APP_ID;
 
 #[derive(Clone)]
 enum Purpose {
@@ -178,19 +179,12 @@ impl AgentActions {
                 ..CatalogueQuery::default()
             })))
         } else {
-            let provider = workspace_provider(&owner.room);
-            let answer = watch(session.query(CatalogueQuery {
-                provider: Some(provider.clone()),
-                target: Some(ActionAddress::new(&operation.resource, &operation.action)),
-                max_results: 1,
+            // Who publishes the desktop's task actions in this room: asked
+            // first, since a native room serves them as an application's.
+            Phase::Providers(watch(session.query(CatalogueQuery {
+                max_results: 0,
                 ..CatalogueQuery::default()
-            }));
-            Phase::Resolve {
-                provider,
-                answer,
-                pages: 1,
-                matched: Vec::new(),
-            }
+            })))
         };
         self.calls.push(Call {
             operation,
@@ -609,6 +603,23 @@ fn provider_step(
     if !page.exhausted || page.stale_cursor || page.budget_exhausted {
         return Step::Refused(false);
     }
+    if !operation.chat {
+        let Some(provider) = desktop_provider(&page, &owner.room) else {
+            return Step::Refused(false);
+        };
+        let answer = watch(session.query(CatalogueQuery {
+            provider: Some(provider.clone()),
+            target: Some(ActionAddress::new(&operation.resource, &operation.action)),
+            max_results: 1,
+            ..CatalogueQuery::default()
+        }));
+        return Step::Next(Phase::Resolve {
+            provider,
+            answer,
+            pages: 1,
+            matched: Vec::new(),
+        });
+    }
     let providers: Vec<_> = page
         .providers
         .iter()
@@ -629,6 +640,23 @@ fn provider_step(
         pages: 16,
         matched: Vec::new(),
     })
+}
+
+/// The provider of the desktop's task actions in `room`: the desktop's own
+/// application surface there, which is how a native room publishes them,
+/// else the workspace provider of a room whose desktop serves them itself.
+/// Two desktop surfaces in one room name no single publisher.
+fn desktop_provider(page: &CataloguePage, room: &str) -> Option<String> {
+    let desktop: Vec<_> = page
+        .providers
+        .iter()
+        .filter(|provider| provider.app_id == DESKTOP && provider.room == room)
+        .collect();
+    match desktop.as_slice() {
+        [] => Some(workspace_provider(room)),
+        [provider] => Some(provider.provider.clone()),
+        _ => None,
+    }
 }
 
 fn resolve_step(
@@ -887,6 +915,185 @@ mod tests {
         let empty = actions.tasks.is_empty();
         drop(actions);
         assert!(empty, "malformed inventories still fail closed");
+    }
+
+    /// A room whose desktop publishes its task actions as the desktop
+    /// application's surface, as a native room does.
+    struct NativeRoom {
+        room: String,
+        queries: std::sync::Mutex<Vec<CatalogueQuery>>,
+    }
+
+    impl tilo_actions::remote::ActionHost for NativeRoom {
+        fn query(
+            &self,
+            _: &tilo_actions::remote::Caller,
+            query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionHostError>> {
+            self.queries.lock().unwrap().push(query.clone());
+            let provider = |provider: &str, app_id: &str, room: &str| {
+                tilo_actions::remote::CatalogueProvider {
+                    provider: provider.into(),
+                    app_id: app_id.into(),
+                    room: room.into(),
+                    record_id: "membership".into(),
+                    browsable: false,
+                }
+            };
+            if query.max_results == 0 {
+                return Pending::ready(Ok(CataloguePage {
+                    providers: vec![
+                        provider("7", DESKTOP, &self.room),
+                        provider("9", DESKTOP, "another-room"),
+                    ],
+                    exhausted: true,
+                    ..CataloguePage::default()
+                }));
+            }
+            let rows = match (&query.provider, &query.target) {
+                (Some(provider), Some(target)) if provider == "7" => {
+                    let descriptor: tilo_actions::ActionDescriptor =
+                        serde_json::from_value(serde_json::json!({
+                            "address": {"resource": target.resource, "action": target.action},
+                            "resource_kind": "desktop.tasks", "resource_label": "Tasks",
+                            "action_label": target.action,
+                            "locus": tilo_actions::ExecutionLocus::default(),
+                            "kind": tilo_actions::OperationKind::Effect,
+                            "contract": tilo_actions::ActionContract::view(),
+                            "input": tilo_actions::InputSpec::None, "params": []
+                        }))
+                        .unwrap();
+                    vec![tilo_actions::remote::CatalogueRow {
+                        provider: "7".into(),
+                        app_id: DESKTOP.into(),
+                        parent_resource: String::new(),
+                        resource: tilo_actions::remote::CatalogueResource {
+                            id: target.resource.clone(),
+                            kind: "desktop.tasks".into(),
+                            label: "Tasks".into(),
+                            presentation: None,
+                        },
+                        action: Some(descriptor),
+                        has_children: false,
+                        visibility: None,
+                    }]
+                }
+                _ => Vec::new(),
+            };
+            Pending::ready(Ok(CataloguePage {
+                rows,
+                revision: "1".into(),
+                exhausted: true,
+                ..CataloguePage::default()
+            }))
+        }
+        fn invoke(
+            &self,
+            _: &tilo_actions::remote::Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+            Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput::default(),
+                },
+            }))
+        }
+        fn observe(
+            &self,
+            _: &tilo_actions::remote::Caller,
+            _: &InvocationId,
+        ) -> Option<tilo_actions::remote::InvocationState> {
+            None
+        }
+        fn cancel(
+            &self,
+            _: &tilo_actions::remote::Caller,
+            _: &InvocationId,
+        ) -> Result<(), ActionHostError> {
+            Err(ActionHostError::UnknownInvocation)
+        }
+    }
+
+    #[test]
+    fn a_native_rooms_task_actions_are_found_under_the_desktop_application() {
+        let host = std::sync::Arc::new(NativeRoom {
+            room: uuid::Uuid::new_v4().to_string(),
+            queries: std::sync::Mutex::default(),
+        });
+        let owner = ComposerOwner {
+            room: host.room.clone(),
+            ..request(ComposerIntent::Queue).owner
+        };
+        let mut actions = AgentActions::default();
+        assert!(actions.open(
+            ActionSessionSource::with_mock(
+                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+                host.clone(),
+            ),
+            owner.clone(),
+        ));
+        let mut composer = AgentQuickComposer::default();
+        composer.open(
+            owner,
+            "Tide",
+            crate::shell::agent_quick_composer::AgentQuickComposerOrigin {
+                marker: vello::kurbo::Rect::new(0.0, 0.0, 1.0, 1.0),
+                protected: vello::kurbo::Rect::new(0.0, 0.0, 1.0, 1.0),
+                context: String::new(),
+            },
+            vello::kurbo::Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        for _ in 0..6 {
+            actions.pump(&mut composer);
+        }
+        let offered = actions
+            .offers
+            .contains_key(&ActionAddress::new(TASKS, "queue"));
+        drop(actions);
+        assert!(
+            offered,
+            "queueing is offered once the desktop's own surface answers"
+        );
+        let queries = host.queries.lock().unwrap().clone();
+        assert!(queries.iter().any(|query| {
+            query.provider.as_deref() == Some("7")
+                && query.target == Some(ActionAddress::new(TASKS, "queue"))
+        }));
+        assert!(
+            queries
+                .iter()
+                .all(|query| query.provider.as_deref() != Some("9")),
+            "another room's desktop is never asked"
+        );
+    }
+
+    #[test]
+    fn a_room_without_a_desktop_surface_asks_its_workspace_provider() {
+        let page = |providers| CataloguePage {
+            providers,
+            ..CataloguePage::default()
+        };
+        let desktop = |provider: &str| tilo_actions::remote::CatalogueProvider {
+            provider: provider.into(),
+            app_id: DESKTOP.into(),
+            room: "room".into(),
+            record_id: String::new(),
+            browsable: false,
+        };
+        assert_eq!(
+            desktop_provider(&page(Vec::new()), "room"),
+            Some(workspace_provider("room"))
+        );
+        assert_eq!(
+            desktop_provider(&page(vec![desktop("7")]), "room").as_deref(),
+            Some("7")
+        );
+        assert_eq!(
+            desktop_provider(&page(vec![desktop("7"), desktop("8")]), "room"),
+            None,
+            "two desktops in one room name no single publisher"
+        );
     }
 
     fn request(intent: ComposerIntent) -> ComposerRequest {
