@@ -399,6 +399,37 @@ fn a_range_of_a_block_is_replaced_and_the_rest_of_the_page_stays() {
     .unwrap();
     assert_eq!(page(&replica)[1], "- see also the search docs for xy");
 
+    // A link written as Markdown is a link without saying so, and
+    // `markdown: false` keeps the characters as they are.
+    let mut carol = replica.fork();
+    call(
+        &mut carol,
+        "replace-range",
+        json!({
+            "at": { "item": item, "start": 9, "end": 24 },
+            "text": "[the search docs](https://example.org/docs)",
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        page(&carol)[1],
+        "- see also [the search docs](https://example.org/docs) for xy"
+    );
+    call(
+        &mut replica,
+        "replace-range",
+        json!({
+            "at": { "item": item, "start": 9, "end": 24 },
+            "text": "[a](https://example.org/)",
+            "markdown": false,
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        page(&replica)[1],
+        "- see also \\[a\\](https://example.org/) for xy"
+    );
+
     for (at, text, refusal) in [
         (
             json!({ "item": item, "start": 4, "end": 99 }),
