@@ -258,6 +258,8 @@ fn answer(
         | MessagesEffect::Send { .. } => {
             return Err(CATALOG.t("messages-transport-unavailable"));
         }
+        // Answered from the record before any selection is consulted.
+        MessagesEffect::SearchMessages { .. } | MessagesEffect::ExportContent { .. } => {}
     }
     Ok(Effected::done())
 }
@@ -522,6 +524,11 @@ fn register_effects(
     let jobs = cx.jobs();
     let status_history = history.clone();
     cx.effects(move |effect: MessagesEffect, cx| {
+        // Reading the record's own conversations needs no account, person or
+        // selection: the same in every window and an agent's headless one.
+        if let Some(answer) = crate::store::answer_effect(&effect, cx) {
+            return answer;
+        }
         if crate::setup::SetupView::handles(&effect) { return effect_setup.effect(&effect_sources, effect, cx); }
         if matches!(effect, MessagesEffect::OpenPerson { .. } | MessagesEffect::Back) { effect_setup.close(); }
 
