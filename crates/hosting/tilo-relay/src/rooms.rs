@@ -35,6 +35,8 @@ mod member_records;
 pub use member_records::PreparedRecord;
 mod pages;
 mod publisher;
+#[cfg(any(feature = "agents", feature = "web"))]
+mod sealed_records;
 #[cfg(feature = "web")]
 mod spectator_keys;
 #[cfg(feature = "agents")]
@@ -880,24 +882,29 @@ impl Rooms {
     }
 
     /// The governor's copy of record `record` (`""` for the primary) of
-    /// `app` in `room`, saved, when the room holds it in plaintext.
+    /// `app` in `room`, saved: a record members write sealed is read with
+    /// the keys this relay holds as its channel's steward.
     ///
     /// # Errors
     ///
-    /// The room is not governed here.
+    /// The room is not governed here, or a sealed record cannot be opened.
     pub async fn record_document(
         &self,
         room: &str,
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, CollaborationError> {
-        Ok(self
-            .room(room)
-            .await?
-            .lock()
+        let state = self.room(room).await?;
+        let governed = state.lock().await;
+        #[cfg(any(feature = "agents", feature = "web"))]
+        let document = governed
+            .readable_document(app, record)
             .await
-            .peer()
-            .document(app, record))
+            .map_err(CollaborationError::new)?;
+        #[cfg(not(any(feature = "agents", feature = "web")))]
+        let document = governed.peer().document(app, record);
+        drop(governed);
+        Ok(document)
     }
 
     /// The `(app, record)` of every record of `room` the governor's copy
