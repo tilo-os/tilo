@@ -39,8 +39,8 @@ fn run(args: &Cli, input: &mut impl Read, output: &mut impl Write) -> Result<(),
     unsafe {
         local_model_service::speech::worker::prepare()?;
     }
-    // SAFETY: these argument-free identity queries cannot fail.
-    let elevated = unsafe { libc::geteuid() == 0 || libc::geteuid() != libc::getuid() };
+    let elevated = rustix::process::geteuid().as_raw() == 0
+        || rustix::process::geteuid().as_raw() != rustix::process::getuid().as_raw();
     if elevated
         && (args.root.is_some()
             || args.catalog.is_some()

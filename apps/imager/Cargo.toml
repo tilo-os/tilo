@@ -66,6 +66,7 @@ block-devices = { path = "../../crates/system/block-devices" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 workspace-hack = { version = "0.1" }
+tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
