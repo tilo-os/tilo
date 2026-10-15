@@ -17875,6 +17875,7 @@ name = "tilo-polkit-agent"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustix 1.1.4",
  "tilo-copy-lint",
  "tokio",
  "tokio-util",
