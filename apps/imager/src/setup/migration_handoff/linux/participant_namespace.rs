@@ -38,7 +38,7 @@ impl ParticipantNamespace {
         selected: &fs::File,
         entry: &EntryBinding,
     ) -> io::Result<Self> {
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         if capture_mounted_entry(path, selected, entry.kind())? != *entry {
@@ -143,7 +143,7 @@ impl ParticipantNamespace {
     /// synthetic directory Home or cleanup authority is introduced.
     pub(in crate::setup) fn reopen_read_only(entry: &EntryBinding) -> io::Result<Self> {
         entry.validate()?;
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let facts = Facts::read()?;
@@ -305,7 +305,7 @@ mod tests {
         let error = ParticipantNamespace::admit(&first, &selected, &binding)
             .err()
             .expect("mismatched actual descriptor must refuse before creating any namespace");
-        if unsafe { libc::geteuid() } == 0 {
+        if rustix::process::geteuid().as_raw() == 0 {
             assert_eq!(
                 error.to_string(),
                 "Mounted entry differs from actual selected descriptor"

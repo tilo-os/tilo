@@ -261,14 +261,7 @@ impl ReviewedOriginalImage {
         }
         let after = file.metadata()?;
         if offset != self.source.size
-            || self.source.expected_sha256.as_deref()
-                != Some(
-                    hash.finalize()
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect::<String>()
-                        .as_str(),
-                )
+            || self.source.expected_sha256.as_deref() != Some(hex::encode(hash.finalize()).as_str())
             || (
                 before.dev(),
                 before.ino(),
@@ -412,10 +405,7 @@ mod tests {
         let file = std::fs::File::open(&path).unwrap();
         let mut release = crate::model::sample_releases().remove(0);
         release.size = file.metadata().unwrap().len();
-        release.image_sha256 = Sha256::digest(b"reviewed image bytes")
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        release.image_sha256 = hex::encode(Sha256::digest(b"reviewed image bytes"));
         let mut source = release.to_source();
         source.path = path.to_string_lossy().into_owned();
         source.identity = crate::model::SourceIdentity::from_file(&file).unwrap();

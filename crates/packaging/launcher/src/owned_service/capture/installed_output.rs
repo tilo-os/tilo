@@ -40,8 +40,17 @@ pub struct InstalledCopyOutputFiles {
 /// setup/source review and actual target QPE/person proof. Bare UI paths or an
 /// implementation of this trait alone are not authenticated operation authority.
 pub trait InstalledCopyOutputCustody: ServiceAuthority {
+    /// Return the authenticated installed transaction binding.
+    /// # Errors
+    /// Refuses unavailable, retired or changed transaction authority.
     fn binding(&self) -> io::Result<InstalledCopyOutputBinding>;
+    /// Clone the held output and namespace descriptors.
+    /// # Errors
+    /// Refuses unavailable custody or descriptor duplication failures.
     fn files(&self) -> io::Result<InstalledCopyOutputFiles>;
+    /// Return the authenticated executing target peer.
+    /// # Errors
+    /// Refuses an unavailable or unauthenticated target session.
     fn target_peer(&self) -> io::Result<Arc<ExecutingPeer>>;
     /// Defaults refuse. The actual canonical Store/source scratch owner must
     /// replay ALL protected Home, mounted and Flatpak physical-source geometry
@@ -50,9 +59,14 @@ pub trait InstalledCopyOutputCustody: ServiceAuthority {
     /// Actual durable export phase requires new allocation. Independent
     /// verification reads already allocated ciphertext and requires zero more.
     /// Defaults refuse; caller-authored phase flags cannot reduce a reservation.
+    /// # Errors
+    /// Refuses absent physical-source proof or an unavailable allocation budget.
     fn additional_output_reservation(&self) -> io::Result<u64> {
         Err(refuse())
     }
+    /// Revalidate physical disjointness and the operation lease.
+    /// # Errors
+    /// Refuses absent proof, overlapping physical sources or retired operation custody.
     fn check_physical_and_operation_custody(&self) -> io::Result<()> {
         Err(refuse())
     }
@@ -110,10 +124,13 @@ fn mount_id(file: &File) -> io::Result<u64> {
 }
 
 impl InstalledCopyOutputAdmission {
+    /// Admit held output for an authenticated installed-copy transaction.
+    /// # Errors
+    /// Refuses non-root callers, invalid custody, changed descriptors or insufficient space.
     pub fn admit(custody: Arc<dyn InstalledCopyOutputCustody>) -> io::Result<Self> {
         // SAFETY: observes real/effective/fs uid without changing it.
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || unsafe { libc::setfsuid(u32::MAX) } != 0
         {
             return Err(refuse());

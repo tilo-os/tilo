@@ -109,7 +109,7 @@ impl<'a, R: OfflineRunner> PackageRunner<'a, R> {
                 }
                 Ok(result)
             }
-            Some("remotes") if arguments.contains(&"--user".into()) => {
+            Some("remotes" | "info") if arguments.contains(&"--user".into()) => {
                 self.native.run(self.source, arguments)
             }
             Some("remotes") => {
@@ -126,9 +126,6 @@ impl<'a, R: OfflineRunner> PackageRunner<'a, R> {
                     ));
                 }
                 Ok(output)
-            }
-            Some("info") if arguments.contains(&"--user".into()) => {
-                self.native.run(self.source, arguments)
             }
             Some("info") => {
                 let item = self.lookup(arguments)?;

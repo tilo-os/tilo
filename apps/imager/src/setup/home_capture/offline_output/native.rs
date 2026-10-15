@@ -251,7 +251,7 @@ impl NativeMediumOutput {
         read: Arc<OfflineReadAdmission>,
         cancellation: ServiceCancellation,
     ) -> io::Result<(Arc<Self>, Store)> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(refused("Original output mount requires root controller"));
         }
         let cancel = AtomicBool::new(false);

@@ -1,5 +1,10 @@
-//! Canonical NamespaceOwner's target endpoint; no public path constructor.
-use super::*;
+//! Canonical `NamespaceOwner`'s target endpoint; no public path constructor.
+use super::{
+    Arc, File, MetadataExt, OsStringExt, Record, SealedSelectedParentScope,
+    TargetProjectionAdmission, TargetProjectionAuthority, TargetProjectionMode, UnixStream, Write,
+    io, mount_id, receive_record, refused, root, selected_parent_scope,
+};
+use getrandom::rand_core::TryRng as _;
 use runtime_portal::process_binding::{self, ExecutingPeer};
 use std::os::fd::AsFd;
 
@@ -19,7 +24,7 @@ pub struct TargetProjectionEndpoint {
     observation_peer: std::sync::Mutex<Option<ExecutingPeer>>,
 }
 impl TargetProjectionEndpoint {
-    /// Called only by canonical NamespaceOwner after it held the actual init
+    /// Called only by canonical `NamespaceOwner` after it held the actual init
     /// pidfd/PID namespace. An ordinary callback cannot mint mount authority.
     pub(in crate::owned_service) fn receive(
         service: super::super::ServiceEndpoint,
@@ -50,7 +55,7 @@ impl TargetProjectionEndpoint {
             stream.write_all(&[1])?;
         }
         let detached_view = held.pop().ok_or(io::ErrorKind::InvalidData)?;
-        if mount_id(&detached_view)? == mount_id(&held[0])? {
+        if mount_id(&detached_view)? == mount_id(held.first().ok_or(io::ErrorKind::InvalidData)?)? {
             return Err(refused("Target detached clone mount differs"));
         }
         let receipt = held.pop().ok_or(io::ErrorKind::InvalidData)?;
@@ -72,17 +77,25 @@ impl TargetProjectionEndpoint {
             || record.fuse != expected.fuse
             || record.baseline != expected.baseline
             || record.namespaces.last() != expected.namespaces.last()
-            || record.namespaces[..5]
+            || record
+                .namespaces
+                .get(..5)
+                .ok_or(io::ErrorKind::InvalidData)?
                 .iter()
-                .zip(&expected.namespaces[..5])
+                .zip(
+                    expected
+                        .namespaces
+                        .get(..5)
+                        .ok_or(io::ErrorKind::InvalidData)?,
+                )
                 .any(|(a, b)| a == b)
         {
             return Err(refused("Root ready record differs from native admission"));
         }
         let m = mount_namespace.metadata()?;
         let p = service.namespace.metadata()?;
-        if (m.dev(), m.ino()) != record.namespaces[0]
-            || (p.dev(), p.ino()) != record.namespaces[1]
+        if Some(&(m.dev(), m.ino())) != record.namespaces.first()
+            || Some(&(p.dev(), p.ino())) != record.namespaces.get(1)
             || mount_id(&view)? != record.mount_id.ok_or(io::ErrorKind::InvalidData)?
             || !peer.current()
         {
@@ -109,9 +122,15 @@ impl TargetProjectionEndpoint {
     pub fn projection_mode(&self) -> TargetProjectionMode {
         self.record.mode
     }
+    ///
+    /// # Errors
+    /// Returns an error if the owned service's stopped state cannot be observed.
     pub fn observed_stopped(&self) -> io::Result<bool> {
         self.service.observed_stopped()
     }
+    ///
+    /// # Errors
+    /// Returns an error if authority, custody, or the object's authenticated binding is no longer valid.
     pub fn check(&self) -> io::Result<()> {
         root()?;
         if self
@@ -134,7 +153,7 @@ impl TargetProjectionEndpoint {
         }
         self.service.custody()?;
         let m = self.mount_namespace.metadata()?;
-        if (m.dev(), m.ino()) != self.record.namespaces[0]
+        if Some(&(m.dev(), m.ino())) != self.record.namespaces.first()
             || mount_id(&self.view)? != self.record.mount_id.ok_or(io::ErrorKind::InvalidData)?
         {
             return Err(refused("Target projection mount custody differs"));
@@ -142,8 +161,11 @@ impl TargetProjectionEndpoint {
         self.service.custody().map(|_| ())
     }
     /// Available before FUSE initialization. The caller starts the actual root
-    /// Capnp relay on this stream before waiting for observe_ready(). The target
+    /// Capnp relay on this stream before waiting for `observe_ready()`. The target
     /// worker completes QPE1 on its connected control stream before first RPC.
+    ///
+    /// # Errors
+    /// Returns an error if custody validation, connection, or peer authentication fails.
     pub fn connect_control(&self) -> io::Result<UnixStream> {
         self.check()?;
         let deadline = std::time::Instant::now()
@@ -159,7 +181,7 @@ impl TargetProjectionEndpoint {
                         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
                     ) && std::time::Instant::now() < deadline =>
                 {
-                    std::thread::sleep(std::time::Duration::from_millis(5))
+                    std::thread::sleep(std::time::Duration::from_millis(5));
                 }
                 Err(error) => return Err(error),
             }
@@ -177,6 +199,9 @@ impl TargetProjectionEndpoint {
     }
     /// Observe actual post-drop worker readiness, then verify the kernel mount.
     /// The relay must already be serving: statfs can require an actual source RPC.
+    ///
+    /// # Errors
+    /// Returns an error if worker authentication, readiness, or mount verification fails.
     pub fn observe_ready(&self) -> io::Result<()> {
         self.check()?;
         let mut slot = self
@@ -217,10 +242,16 @@ impl TargetProjectionEndpoint {
     }
     /// Metadata observations come only from the authenticated fully dropped
     /// canonical worker. This token grants no read/write/lookup permission.
+    ///
+    /// # Errors
+    /// Returns an error if the worker is not ready or the held mount cannot be authenticated and measured.
     pub fn observe_held_view(&self) -> io::Result<ObservedTargetObject<'_>> {
         self.observe_object_inner(&self.view, true)
     }
     /// Fixed held-FD measurement, restricted to this admitted FUSE mount.
+    ///
+    /// # Errors
+    /// Returns an error if the descriptor is outside the admitted mount or worker measurement fails.
     pub fn observe_object(&self, file: &File) -> io::Result<ObservedTargetObject<'_>> {
         self.observe_object_inner(file, true)
     }
@@ -261,7 +292,7 @@ impl TargetProjectionEndpoint {
         self.check_observer()?;
         self.check()?;
         if facts.mount_id != self.record.mount_id.ok_or(io::ErrorKind::InvalidData)?
-            || facts.fs_type != 0x65735546
+            || facts.fs_type != 0x6573_5546
         {
             return Err(refused("Target observation facts differ from held mount"));
         }
@@ -305,7 +336,7 @@ impl TargetProjectionEndpoint {
         self.check_lookup_session()?;
         if (facts.dev, facts.ino) != (original.dev()?, original.ino()?)
             || facts.mode & libc::S_IFMT != libc::S_IFDIR
-            || facts.fs_type != 0x65735546
+            || facts.fs_type != 0x6573_5546
             || (facts.uid, facts.gid) != (self.record.uid, self.record.gid)
             || facts.mount_id != mount_id(file)?
             || facts.mount_id == original.mount_id()?
@@ -324,7 +355,7 @@ impl TargetProjectionEndpoint {
             .lock()
             .map_err(|_| io::Error::other("Exposure custody poisoned"))?
             .take()
-            .ok_or(io::ErrorKind::AlreadyExists.into())
+            .ok_or_else(|| io::ErrorKind::AlreadyExists.into())
     }
     fn check_observer(&self) -> io::Result<()> {
         let slot = self
@@ -340,10 +371,14 @@ impl TargetProjectionEndpoint {
         {
             return Err(refused("Target observation worker retired or differs"));
         }
+        drop(slot);
         self.service.custody().map(|_| ())
     }
     /// Bounded raw-component lookup only. This is not a content opener or a
     /// source permission grant; root must separately review the selection.
+    ///
+    /// # Errors
+    /// Returns an error for invalid components, a retired session, or a failed authenticated lookup.
     pub fn lookup_selected(&self, components: &[Vec<u8>]) -> io::Result<LookedUpSelected<'_>> {
         super::selected_lookup::validate_components(components)?;
         if !self.initialized.load(std::sync::atomic::Ordering::Acquire) {
@@ -398,6 +433,9 @@ impl TargetProjectionEndpoint {
     }
     /// Reopen only an opaque lookup from this same endpoint, with a fresh
     /// bounded worker operation and strict readonly OFD. No root path reopen.
+    ///
+    /// # Errors
+    /// Returns an error if the selection has changed, belongs to another endpoint, or cannot be reopened read-only.
     pub fn reopen_selected<'a>(
         &'a self,
         selection: &LookedUpSelected<'_>,
@@ -452,7 +490,7 @@ impl TargetProjectionEndpoint {
         super::selected_read::check_read_held(&result.file, &result.facts)?;
         Ok(result)
     }
-    fn fail_observation(&self, stream: &mut UnixStream) {
+    fn fail_observation(&self, stream: &UnixStream) {
         self.observation_failed
             .store(true, std::sync::atomic::Ordering::Release);
         self.service.cancellation.cancel();
@@ -463,7 +501,7 @@ impl TargetProjectionEndpoint {
         }
     }
     fn check_lookup_session(&self) -> io::Result<()> {
-        let result = self.check().and_then(|_| self.check_observer());
+        let result = self.check().and_then(|()| self.check_observer());
         if result.is_err() {
             self.service.cancellation.cancel();
             if let Ok(mut slot) = self.ready.lock()
@@ -476,6 +514,9 @@ impl TargetProjectionEndpoint {
     }
     /// Arbitrary root filesystem callbacks cannot cross Owner-only FUSE ACL.
     /// Relative lookup/reopen needs its own fixed worker protocol, not fsuid.
+    ///
+    /// # Errors
+    /// Returns an error if authority validation fails; otherwise always returns an unsupported-operation error.
     pub fn with_held_view_observation<T: Send>(
         &self,
         _observation: impl FnOnce(&File) -> io::Result<T> + Send,
@@ -486,6 +527,9 @@ impl TargetProjectionEndpoint {
             "Root FUSE callbacks require a fixed dropped-worker operation",
         ))
     }
+    ///
+    /// # Errors
+    /// Returns an error if the projection is not ready, custody is invalid, or descriptor cloning fails.
     pub fn held_view(&self) -> io::Result<File> {
         self.check()?;
         if !self.initialized.load(std::sync::atomic::Ordering::Acquire) {
@@ -505,7 +549,6 @@ fn authenticate(stream: &mut UnixStream, uid: u32) -> io::Result<ExecutingPeer> 
     bounded(stream)?;
     process_binding::arm(stream)?;
     let mut challenge = [0; 32];
-    use getrandom::rand_core::TryRng as _;
     getrandom::SysRng
         .try_fill_bytes(&mut challenge)
         .map_err(io::Error::other)?;
@@ -525,6 +568,9 @@ pub struct ObservedTargetObject<'a> {
     facts: super::observation::Facts,
 }
 impl ObservedTargetObject<'_> {
+    ///
+    /// # Errors
+    /// Returns an error if authority, custody, or the object's authenticated binding is no longer valid.
     pub fn check(&self) -> io::Result<()> {
         self.endpoint.check()?;
         self.endpoint.check_observer()?;
@@ -540,46 +586,79 @@ impl ObservedTargetObject<'_> {
         }
         Ok(())
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn file(&self) -> io::Result<&File> {
         self.check()?;
         Ok(&self.file)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn dev(&self) -> io::Result<u64> {
         self.check()?;
         Ok(self.facts.dev)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn ino(&self) -> io::Result<u64> {
         self.check()?;
         Ok(self.facts.ino)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn mount_id(&self) -> io::Result<u64> {
         self.check()?;
         Ok(self.facts.mount_id)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn uid(&self) -> io::Result<u32> {
         self.check()?;
         Ok(self.facts.uid)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn gid(&self) -> io::Result<u32> {
         self.check()?;
         Ok(self.facts.gid)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn is_directory(&self) -> io::Result<bool> {
         self.check()?;
         Ok(self.facts.mode & libc::S_IFMT == libc::S_IFDIR)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn is_file(&self) -> io::Result<bool> {
         self.check()?;
         Ok(self.facts.mode & libc::S_IFMT == libc::S_IFREG)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn filesystem_type(&self) -> io::Result<i64> {
         self.check()?;
         Ok(self.facts.fs_type)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn source_view_sha256(&self) -> io::Result<[u8; 32]> {
         self.check()?;
         Ok(self.endpoint.record.source_view_sha256)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn context_sha256(&self) -> io::Result<[u8; 32]> {
         self.check()?;
         Ok(self.endpoint.record.context_sha256)
@@ -595,6 +674,9 @@ pub struct LookedUpSelected<'a> {
     components_sha256: [u8; 32],
 }
 impl LookedUpSelected<'_> {
+    ///
+    /// # Errors
+    /// Returns an error if authority, custody, or the object's authenticated binding is no longer valid.
     pub fn check(&self) -> io::Result<()> {
         self.parent.endpoint.check_lookup_session()?;
         self.parent.check()?;
@@ -612,6 +694,9 @@ impl LookedUpSelected<'_> {
     }
     /// Repeat the same fixed worker lookup before admission. A changed parent
     /// or raw child never silently retargets the previously held object.
+    ///
+    /// # Errors
+    /// Returns an error if the session is invalid or the parent or selected object has been replaced.
     pub fn revalidate(&self) -> io::Result<()> {
         self.check()?;
         let current = self.parent.endpoint.lookup_selected(&self.components)?;
@@ -636,18 +721,30 @@ impl LookedUpSelected<'_> {
         }
         self.check()
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn parent(&self) -> io::Result<&ObservedTargetObject<'_>> {
         self.check()?;
         Ok(&self.parent)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn selected(&self) -> io::Result<&ObservedTargetObject<'_>> {
         self.check()?;
         Ok(&self.selected)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn components(&self) -> io::Result<&[Vec<u8>]> {
         self.check()?;
         Ok(&self.components)
     }
+    ///
+    /// # Errors
+    /// Returns an error if the authenticated object or lookup binding is no longer valid.
     pub fn components_sha256(&self) -> io::Result<[u8; 32]> {
         self.check()?;
         Ok(self.components_sha256)
@@ -666,6 +763,9 @@ pub struct SelectedParentIssue<'a> {
     cancellation: &'a super::super::ServiceCancellation,
 }
 impl TargetProjectionEndpoint {
+    ///
+    /// # Errors
+    /// Returns an error on cancellation, invalid scope or consumer identity, or failed parent/leaf verification.
     pub fn review_selected_parent_issue<'a>(
         &'a self,
         binding: &crate::retained_view::ConsumerLaunchBinding,
@@ -688,7 +788,7 @@ impl TargetProjectionEndpoint {
         if cancellation.is_cancelled() {
             return Err(io::ErrorKind::Interrupted.into());
         }
-        let selected = self.lookup_selected(&[scope.raw_leaf.clone()])?;
+        let selected = self.lookup_selected(std::slice::from_ref(&scope.raw_leaf))?;
         let issue = SelectedParentIssue {
             endpoint: self,
             binding: binding.clone(),
@@ -733,7 +833,7 @@ impl SelectedParentIssue<'_> {
                 self.parent.ino()?,
                 self.parent.mount_id()?,
             ) != (parent.dev()?, parent.ino()?, parent.mount_id()?)
-            || self.parent.filesystem_type()? != 0x65735546
+            || self.parent.filesystem_type()? != 0x6573_5546
             || self.parent.source_view_sha256()? != self.scope.source_view_sha256
             || self.parent.context_sha256()? != self.scope.target_context_sha256
             || (self.parent.uid()?, self.parent.gid()?) != (self.binding.uid, self.binding.gid)

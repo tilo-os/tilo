@@ -78,7 +78,6 @@ pub(super) struct AuthenticatedCopyReceive {
     payload: CopyPayload,
     operation: String,
     setup_binding: String,
-    person: [u8; 32],
     target_uid: u32,
     home: PathBuf,
     home_pin: std::sync::Arc<PinnedDirectory>,
@@ -100,7 +99,6 @@ impl AuthenticatedCopyReceive {
         }
         let operation = declaration.operation.clone();
         let setup_binding = declaration.setup_binding.clone();
-        let person = declaration.person;
         let target_uid = declaration.target_uid;
         if let Some(home) = &payload.home {
             home.validate()?;
@@ -146,7 +144,6 @@ impl AuthenticatedCopyReceive {
             payload,
             operation,
             setup_binding,
-            person,
             target_uid,
             home,
             home_pin,
@@ -159,8 +156,8 @@ impl AuthenticatedCopyReceive {
         Ok(received)
     }
     pub(super) fn check(&self) -> io::Result<()> {
-        if unsafe { libc::getuid() } != self.target_uid
-            || unsafe { libc::geteuid() } != self.target_uid
+        if rustix::process::getuid().as_raw() != self.target_uid
+            || rustix::process::geteuid().as_raw() != self.target_uid
         {
             return Err(refused());
         }
@@ -181,9 +178,6 @@ impl AuthenticatedCopyReceive {
     }
     pub(super) fn setup_binding(&self) -> &str {
         &self.setup_binding
-    }
-    pub(super) fn person(&self) -> [u8; 32] {
-        self.person
     }
     pub(super) fn target_uid(&self) -> u32 {
         self.target_uid
@@ -255,7 +249,7 @@ pub fn run_receiver(arguments: impl Iterator<Item = std::ffi::OsString>) -> io::
     if shell == root || arguments.next().is_some() {
         return Err(refused());
     }
-    if unsafe { libc::getuid() } == 0 || unsafe { libc::geteuid() } == 0 {
+    if rustix::process::getuid().as_raw() == 0 || rustix::process::geteuid().as_raw() == 0 {
         return Err(refused());
     }
     // The handles select transport only; all authority is constructed by the

@@ -295,7 +295,7 @@ mod tests {
             Vec::<u8>::new(),
             Vec::<(String, Vec<u8>)>::new(),
             "fixture".to_owned(),
-            "".to_owned(),
+            String::new(),
             0u64,
             vec![0u8; 32],
             vec![0u8; 32],
@@ -331,7 +331,7 @@ mod tests {
         *data.first_mut().unwrap() ^= 1;
         let bad = HashMap::from([(
             "xa.extra-data".to_owned(),
-            vec![(b"download.bin\0".to_vec(), data.to_vec())].to_variant(),
+            vec![(b"download.bin\0".to_vec(), data.clone())].to_variant(),
         )])
         .to_variant();
         fs::write(&detached, bad.data()).unwrap();

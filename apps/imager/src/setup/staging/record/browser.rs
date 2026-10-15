@@ -60,7 +60,7 @@ impl RecordStore {
             expectation: expected.clone(),
         };
         // SAFETY: observes the helper's effective identity without mutating it.
-        let owner = unsafe { libc::geteuid() };
+        let owner = rustix::process::geteuid().as_raw();
         artifact.read(owner)
     }
 }

@@ -24,8 +24,7 @@ fn invalid() -> io::Error {
     )
 }
 fn uid() -> u32 {
-    // SAFETY: getuid has no pointer arguments or preconditions.
-    unsafe { libc::getuid() }
+    rustix::process::getuid().as_raw()
 }
 
 fn child(parent: &File, name: &std::ffi::OsStr, directory: bool) -> io::Result<File> {
@@ -164,7 +163,7 @@ fn materialize(path: &Path, home: &Path) -> io::Result<tempfile::TempDir> {
     private(&plan_file, false)?;
     let mut bytes = Vec::new();
     plan_file
-        .take(MAX_PLAN_BYTES as u64 + 1)
+        .take((MAX_PLAN_BYTES as u64).saturating_add(1))
         .read_to_end(&mut bytes)?;
     let plan = Plan::decode(&bytes).map_err(|_| invalid())?;
     if plan.profiles.is_empty() {

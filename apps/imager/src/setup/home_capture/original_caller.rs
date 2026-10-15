@@ -151,10 +151,10 @@ pub(in crate::setup) fn fixture_source_owner(home: &std::path::Path) -> Original
     // Controlled fixture only: make the Home's actual owner nonroot on root
     // test runners. These facts do not claim authenticated broker provenance.
     // SAFETY: these calls only read the test process's current credentials.
-    let actual_uid = unsafe { libc::geteuid() };
+    let actual_uid = rustix::process::geteuid().as_raw();
     let uid = actual_uid.max(1);
     // SAFETY: reads the test process's current effective GID.
-    let gid = unsafe { libc::getegid() };
+    let gid = rustix::process::getegid().as_raw();
     if actual_uid == 0 {
         let path = std::ffi::CString::new(home.as_os_str().as_bytes()).unwrap();
         // SAFETY: NUL-terminated fixture-owned path; no user source is touched.
@@ -209,7 +209,10 @@ mod tests {
         let (host, app) = UnixStream::pair().unwrap();
         let executable = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
         // SAFETY: reads this fixture process's current effective credentials.
-        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let (uid, gid) = (
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+        );
         let groups = if uid == 0 {
             vec![1002u32, 1002, 1003]
         } else {
@@ -276,7 +279,7 @@ mod tests {
             app.write_all(&command).unwrap();
         });
         // SAFETY: reads this fixture's actual effective UID, not request facts.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         let mut channel =
             super::super::transport::HostChannel::authenticate(host, std::process::id(), uid)
                 .unwrap();

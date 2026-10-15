@@ -1,6 +1,6 @@
 //! No regular scratch inode may have an additional name outside scratch.
 //! This checks scratch only: valid source-side hardlinks remain supported.
-use super::*;
+use super::{AsRawFd, File, MetadataExt, identity, io, refuse};
 use std::{os::fd::FromRawFd, os::unix::ffi::OsStrExt};
 const ENTRIES_MAX: usize = 65536;
 const DEPTH_MAX: usize = 64;
@@ -42,8 +42,8 @@ fn walk(directory: &File, mount: u64, uid: u32, depth: usize, count: &mut usize)
     if before.uid != uid || before.mode & 0o7777 != 0o700 {
         return Err(refuse("Inventory scratch directory is not caller-private"));
     }
-    let names = std::fs::read_dir(format!("/proc/self/fd/{}", directory.as_raw_fd()))?;
-    for name in names {
+    let entries = std::fs::read_dir(format!("/proc/self/fd/{}", directory.as_raw_fd()))?;
+    for name in entries {
         *count = count
             .checked_add(1)
             .ok_or_else(|| refuse("Inventory scratch count overflow"))?;
@@ -71,7 +71,15 @@ fn walk(directory: &File, mount: u64, uid: u32, depth: usize, count: &mut usize)
             return Err(refuse("Inventory scratch contains a mounted source"));
         }
         if metadata.is_dir() {
-            walk(&entry, mount, uid, depth + 1, count)?;
+            walk(
+                &entry,
+                mount,
+                uid,
+                depth
+                    .checked_add(1)
+                    .ok_or_else(|| refuse("Inventory scratch depth overflow"))?,
+                count,
+            )?;
         } else if !metadata.is_file() || metadata.nlink() != 1 {
             return Err(refuse(
                 "Inventory scratch contains a linked or unsupported inode",

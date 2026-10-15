@@ -1105,6 +1105,11 @@ fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>,
         dispatch_in(&mut doc, group, taffy, child, Modifiers::default(), &event);
     };
     pump_ev(group, cursor_moved(pill.x, pill.y));
+    // A pill opens once the pointer has rested on it for the hover dwell.
+    assert!(
+        group.bar_mut_for_tests().elapse_hover_dwell(),
+        "resting on the pill opened nothing",
+    );
     // The chip cluster slides out on wall time: `advance_reveal` starts the
     // curve on the layout pass that first sees the hover and returns where it
     // started, so `max_rects` stay `Rect::ZERO` until it has run, and

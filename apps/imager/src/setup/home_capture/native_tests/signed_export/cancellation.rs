@@ -199,7 +199,7 @@ fn milestone(
 #[test]
 fn actual_export_cancellation_reaps_namespace_and_releases_epoch() {
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "canonical privileged native-tier1 qualifier required"
     );

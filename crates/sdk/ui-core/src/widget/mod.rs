@@ -3065,7 +3065,9 @@ pub use nav_shell::{
     InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
     SidebarPlacement,
 };
-pub use window_header::{HISTORY_CONTROL_ID, HistoryControl, HistoryOpener, WindowHeader};
+pub use window_header::{
+    HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, WindowHeader,
+};
 mod nav_list;
 pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
 mod document_viewport;
@@ -3125,6 +3127,7 @@ pub mod page_sidebar;
 pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
 pub use dropdown::{Dropdown, DropdownFace, FILTER_MIN_OPTIONS};
+mod hover_intent;
 pub mod tabs;
 pub use tabs::{TabBar, TabDescriptor, TabMark, draw_app_mark};
 pub mod scrollbar;
@@ -3146,7 +3149,9 @@ pub use scroll_region::ScrollRegion;
 pub use scrollbar::BarFade;
 pub mod panic_scope;
 mod tile_host;
-pub use tile_host::{AppKind, TileContent, TileHost};
+pub use tile_host::{
+    AppKind, OpeningCardText, TileContent, TileHost, opening_card_spinner, paint_opening_card,
+};
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{

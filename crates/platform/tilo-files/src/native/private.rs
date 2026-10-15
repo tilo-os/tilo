@@ -242,8 +242,7 @@ pub fn read_ciphertext(path: &Path) -> io::Result<File> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(path)?;
     let metadata = file.metadata()?;
-    // SAFETY: geteuid has no input pointers or preconditions.
-    if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } {
+    if !metadata.is_file() || metadata.uid() != rustix::process::geteuid().as_raw() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "encrypted file is not a user-owned regular file",

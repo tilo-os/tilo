@@ -114,7 +114,7 @@ impl CaptureOutputAdmission {
 }
 fn integer<const N: usize>(frame: &[u8], start: usize) -> io::Result<u64> {
     let bytes: [u8; N] = frame
-        .get(start..start + N)
+        .get(start..start.checked_add(N).ok_or(io::ErrorKind::InvalidData)?)
         .ok_or(io::ErrorKind::InvalidData)?
         .try_into()
         .map_err(io::Error::other)?;
@@ -138,7 +138,7 @@ mod tests {
         std::fs::create_dir(&output)?;
         let source = File::open(source)?;
         let output = File::open(output)?;
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         let (mut receiver, mut broker) = UnixStream::pair()?;
         receiver.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
         receiver.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
@@ -153,7 +153,10 @@ mod tests {
                 left.dev(),
                 left.ino(),
                 right.dev(),
-                right.ino() + u64::from(swapped),
+                right
+                    .ino()
+                    .checked_add(u64::from(swapped))
+                    .ok_or_else(|| io::Error::other("fixture inode overflow"))?,
             ] {
                 frame.extend_from_slice(&fact.to_be_bytes());
             }
@@ -179,7 +182,7 @@ mod tests {
     #[test]
     fn authenticated_output_proof_binds_real_descriptors_and_operation() {
         assert_eq!(
-            unsafe { libc::geteuid() },
+            rustix::process::geteuid().as_raw(),
             0,
             "root broker proof qualification requires the native root test lane"
         );

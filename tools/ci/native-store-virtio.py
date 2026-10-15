@@ -164,14 +164,22 @@ def down(directory, rows):
             mount.rmdir()
 
 
+def observe(directory, rows):
+    require((directory / 'format-started').is_file(), 'actual store attempt was not observed')
+    for row in rows:
+        device(row)  # Includes mounted/root/swap rejection on the actual block device.
+        require(not (directory / row['name']).exists(), 'owned mount endpoint not retired')
+    print(json.dumps({'schema': 1, 'observed_disks': len(rows), 'owned_mounts_retired': True}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('up', 'down'))
+    parser.add_argument('action', choices=('up', 'down', 'observe'))
     parser.add_argument('directory', type=Path)
     parser.add_argument('provenance', type=Path)
     args = parser.parse_args()
     rows = provenance(args.directory, args.provenance)
-    (up if args.action == 'up' else down)(args.directory, rows)
+    {'up': up, 'down': down, 'observe': observe}[args.action](args.directory, rows)
 
 
 if __name__ == '__main__':

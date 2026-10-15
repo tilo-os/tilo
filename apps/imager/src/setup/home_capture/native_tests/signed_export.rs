@@ -54,8 +54,11 @@ impl Drop for Reviewer {
     }
 }
 fn original_user_review() {
-    assert_ne!(unsafe { libc::getuid() }, 0);
-    assert_eq!(unsafe { libc::getuid() }, unsafe { libc::geteuid() });
+    assert_ne!(rustix::process::getuid().as_raw(), 0);
+    assert_eq!(
+        rustix::process::getuid().as_raw(),
+        rustix::process::geteuid().as_raw()
+    );
     let socket = unsafe { UnixStream::from_raw_fd(CHILD_FD) };
     let mut channel = WorkerChannel::authenticate(socket).unwrap();
     channel
@@ -143,11 +146,12 @@ fn reviewer(
     }
     let mut child = command.spawn().unwrap();
     drop(child_socket);
-    let mut channel = HostChannel::authenticate(parent, child.id(), uid).unwrap_or_else(|error| {
+    let authenticated = HostChannel::authenticate(parent, child.id(), uid);
+    if authenticated.is_err() {
         let _ = child.kill();
         let _ = child.wait();
-        panic!("real original-user reviewer authentication failed: {error}");
-    });
+    }
+    let mut channel = authenticated.expect("real original-user reviewer authentication");
     channel.authenticate_as_root().unwrap();
     let grant: Grant =
         serde_json::from_slice(&worker::read_frame(channel.stream(), 32 * 1024).unwrap()).unwrap();
@@ -194,7 +198,7 @@ fn artifact() -> PathBuf {
     assert!(
         pins_facts.is_file() && pins_facts.len() <= 16 * 1024 && pins_facts.mode() & 0o022 == 0
     );
-    assert_eq!(pins_facts.uid(), unsafe { libc::geteuid() });
+    assert_eq!(pins_facts.uid(), rustix::process::geteuid().as_raw());
     let pins: CaptureServicePins =
         serde_json::from_slice(&std::fs::read(pins_path).unwrap()).unwrap();
     let parent = executable.parent().unwrap();
@@ -210,13 +214,13 @@ fn artifact() -> PathBuf {
     assert!(facts.is_file() && facts.mode() & 0o111 != 0 && facts.mode() & 0o022 == 0);
     assert_eq!(
         facts.uid(),
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         "qualifier artifact must be owned by its privileged operator"
     );
     executable
 }
 fn writer(database: &Path) -> Writer {
-    let mut child = Process::new("python3").args(["-u", "-c", r#"
+    let mut child = Process::new("python3").args(["-u", "-c", r"
 import sqlite3,sys,time
 c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA journal_mode=WAL'); c.execute('PRAGMA wal_autocheckpoint=0')
 c.execute('CREATE TABLE value(n INTEGER)'); c.execute('CREATE TABLE mirror(n INTEGER)')
@@ -226,7 +230,7 @@ while True:
  n+=1; c.execute('BEGIN IMMEDIATE'); c.execute('UPDATE value SET n=?',(n,)); c.execute('UPDATE mirror SET n=?',(n,)); c.commit()
  if n==1: print('READY',flush=True)
  time.sleep(.002)
-"#]).arg(database).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+"]).arg(database).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
     let mut ready = String::new();
     std::io::BufRead::read_line(
         &mut std::io::BufReader::new(child.stdout.take().unwrap()),
@@ -324,9 +328,11 @@ fn exported_archive(
             cancel,
         )
         .unwrap();
-    let Response::Export { expected } = response else {
-        panic!("real worker must return authenticated Home expectation");
-    };
+    let expected = match response {
+        Response::Export { expected } => Some(expected),
+        _ => None,
+    }
+    .expect("real worker must return authenticated Home expectation");
     assert!(matches!(
         broker
             .run_command(
@@ -375,7 +381,7 @@ fn actual_signed_export_and_native_import_preserve_active_home() {
         return;
     }
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "canonical privileged native-tier1 qualifier required"
     );

@@ -233,6 +233,10 @@ pub struct InstallOptions {
     /// installed system, which downloads the media codecs extension from the
     /// formats' publishers once it is online. Default `false`.
     pub codecs: bool,
+    /// Private live-session selection; never serialized into a prepared profile.
+    pub online_accounts: Option<std::sync::Arc<crate::account_handoff::InstallAccounts>>,
+    /// Fresh identity of the operation explicitly confirmed on Review.
+    pub account_operation: String,
 }
 
 /// The catalogue id of the downloaded media codecs extension.
@@ -282,6 +286,8 @@ impl Default for InstallOptions {
             fido2: false,
             internal_handoff: String::new(),
             codecs: false,
+            online_accounts: None,
+            account_operation: String::new(),
         }
     }
 }
@@ -347,6 +353,9 @@ fn add_guided_alongside_args(cmd: &mut Command, disk: &str, opts: &InstallOption
 /// stdout / stderr are wired up by [`stream_command`].
 pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command {
     let mut cmd = Command::new(INSTALL_BIN);
+    if opts.online_accounts.is_some() {
+        cmd.arg("--account-operation").arg(&opts.account_operation);
+    }
     cmd.arg("--disk")
         .arg(disk)
         .arg("--user")
@@ -564,9 +573,37 @@ fn wait_exited_unreaped(pid: u32) -> std::io::Result<()> {
 /// (the child exiting before it finishes reading stdin is tolerated), if a
 /// stdout line can't be read, or if waiting on the child fails.
 pub fn stream_command<F: FnMut(String)>(
+    cmd: Command,
+    password: &str,
+    extra_stdin: &[&str],
+    on_line: F,
+) -> std::io::Result<bool> {
+    stream_command_with_accounts(cmd, password, extra_stdin, None, on_line)
+}
+
+fn write_install_input(
+    stdin: Option<std::process::ChildStdin>,
+    password: &str,
+    extra: &[String],
+    accounts: Option<&crate::account_handoff::InstallAccounts>,
+) -> std::io::Result<()> {
+    if let Some(mut stdin) = stdin {
+        writeln!(stdin, "{password}")?;
+        for line in extra {
+            writeln!(stdin, "{line}")?;
+        }
+        if let Some(accounts) = accounts {
+            accounts.write_to(&mut stdin)?;
+        }
+    }
+    Ok(())
+}
+
+fn stream_command_with_accounts<F: FnMut(String)>(
     mut cmd: Command,
     password: &str,
     extra_stdin: &[&str],
+    accounts: Option<std::sync::Arc<crate::account_handoff::InstallAccounts>>,
     mut on_line: F,
 ) -> std::io::Result<bool> {
     cmd.stdin(Stdio::piped())
@@ -575,30 +612,14 @@ pub fn stream_command<F: FnMut(String)>(
         .process_group(0);
     let mut child = cmd.spawn()?;
 
-    // Feed the password, then any extra secret lines (the disk passphrase),
-    // then drop the handle so the child sees EOF.
-    {
-        if let Some(mut stdin) = child.stdin.take() {
-            // A backend that exits (or stops reading stdin) before we finish
-            // writing yields EPIPE here — benign: the command's exit status is
-            // authoritative, so tolerate BrokenPipe and let wait() drive the
-            // result. Any other write error is still propagated.
-            let mut feed = || -> std::io::Result<()> {
-                writeln!(stdin, "{password}")?;
-                for line in extra_stdin {
-                    writeln!(stdin, "{line}")?;
-                }
-                Ok(())
-            };
-            if let Err(e) = feed()
-                && e.kind() != std::io::ErrorKind::BrokenPipe
-            {
-                bounded_command::kill_tree(&mut child);
-                let _ = child.wait();
-                return Err(e);
-            }
-        }
-    }
+    let stdin = child.stdin.take();
+    let password = Zeroizing::new(password.to_owned());
+    let extra_stdin = Zeroizing::new(
+        extra_stdin
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect::<Vec<_>>(),
+    );
 
     // Drain stderr concurrently with stdout. Helpers such as bootc, podman,
     // mkfs and cryptsetup do not share one output convention; a failure can
@@ -612,6 +633,26 @@ pub fn stream_command<F: FnMut(String)>(
     // `reaped` records that the waiter collected the child: until then its
     // pid, and so its process group, cannot be reused.
     let tree = std::sync::Arc::new(std::sync::Mutex::new((child, false)));
+    // The encrypted selection can exceed pipe capacity. Feed concurrently with
+    // draining diagnostics, including while the backend prepares the target.
+    let writer_tree = std::sync::Arc::clone(&tree);
+    let stdin_writer = std::thread::spawn(move || -> std::io::Result<()> {
+        let result = write_install_input(stdin, &password, &extra_stdin, accounts.as_deref());
+        match result {
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+            Err(error) => {
+                let mut tree = writer_tree
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !tree.1 {
+                    bounded_command::kill_tree(&mut tree.0);
+                }
+                drop(tree);
+                Err(error)
+            }
+            Ok(()) => Ok(()),
+        }
+    });
     let stderr_reader = stderr.map(|stderr| {
         let tree = std::sync::Arc::clone(&tree);
         std::thread::spawn(move || {
@@ -672,6 +713,9 @@ pub fn stream_command<F: FnMut(String)>(
         })
         .transpose()?
         .unwrap_or(Ok(Vec::new()))?;
+    stdin_writer
+        .join()
+        .map_err(|_| std::io::Error::other("stdin writer thread panicked"))??;
     stdout_result?;
     let status = status?;
 
@@ -708,7 +752,18 @@ pub fn run_install<F: FnMut(String)>(
     } else {
         vec![opts.pin.as_str()]
     };
-    stream_command(install_command(disk, user, opts), password, &extra, on_line)
+    if opts.online_accounts.is_some()
+        && (uuid::Uuid::parse_str(&opts.account_operation).is_err() || opts.pin.is_empty())
+    {
+        return Err(std::io::Error::other("invalid selected-account operation"));
+    }
+    stream_command_with_accounts(
+        install_command(disk, user, opts),
+        password,
+        &extra,
+        opts.online_accounts.clone(),
+        on_line,
+    )
 }
 
 /// Run the power backend. Returns `Ok(true)` on a clean spawn+exit — though
@@ -727,6 +782,85 @@ pub fn run_power(action: PowerAction) -> std::io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_transport_drains_progress_while_feeding_private_frame() {
+        use account_custody::portable::{self, PortableBinding};
+        use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
+        use sha2::{Digest, Sha256};
+        let source = tempfile::tempdir().unwrap();
+        let account = Account::new(AccountId::new("selected"), "webdav");
+        let mut vault = SecretVault::open_in(source.path());
+        vault.put(&account.id, &Secret::password("s".repeat(256 * 1024)));
+        vault.try_save().unwrap();
+        let mut store = AccountStore::new();
+        store.upsert(account.clone());
+        store.save_in(source.path()).unwrap();
+        let key = tilo_seal::SymmetricKey::generate().unwrap();
+        let operation = uuid::Uuid::new_v4().to_string();
+        let binding = PortableBinding::new(&operation, "disk", "person", 1000).unwrap();
+        let sealed = portable::seal_selected_accounts(
+            source.path(),
+            &[account.id],
+            &key,
+            binding.as_bytes(),
+        )
+        .unwrap();
+        let accounts =
+            std::sync::Arc::new(crate::account_handoff::InstallAccounts::new(&sealed, key));
+        let mut frame = Zeroizing::new(Vec::new());
+        accounts.write_to(&mut *frame).unwrap();
+        let digest =
+            Sha256::digest(&*frame)
+                .iter()
+                .fold(String::with_capacity(64), |mut output, byte| {
+                    use std::fmt::Write as _;
+                    let _ = write!(output, "{byte:02x}");
+                    output
+                });
+        let expected = format!("{digest}  -");
+        let opts = InstallOptions {
+            online_accounts: Some(accounts.clone()),
+            account_operation: operation.clone(),
+            ..InstallOptions::default()
+        };
+        let command = install_command("/dev/fixture", "person", &opts);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--account-operation", operation.as_str()])
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("selected") || arg.contains("ssss"))
+        );
+        // A sequential stdin writer deadlocks when progress fills stdout before
+        // the backend starts reading a selection larger than pipe capacity.
+        let mut command = Command::new("timeout");
+        command.args([
+            "10s",
+            "bash",
+            "-c",
+            r#"
+            IFS= read -r password; IFS= read -r pin
+            [ "$password" = login ] && [ "$pin" = 123456 ] || exit 2
+            for ((i=0; i<2048; i++)); do printf '%128s\n' progress; done
+            sha256sum
+        "#,
+        ]);
+        let mut last = String::new();
+        assert!(
+            stream_command_with_accounts(command, "login", &["123456"], Some(accounts), |line| {
+                last = line;
+            },)
+            .unwrap()
+        );
+        assert_eq!(last, expected);
+    }
 
     #[test]
     #[allow(

@@ -553,6 +553,7 @@ pub(super) fn stream(
 }
 
 struct Copier<'a, P> {
+    selection: Option<&'a std::collections::BTreeSet<PathBuf>>,
     cancelled: &'a AtomicBool,
     progress: P,
     report: CopyReport,
@@ -600,6 +601,12 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
         names.sort();
         for name in names {
             let path = relative.join(&name);
+            if self
+                .selection
+                .is_some_and(|selected| !selected.iter().any(|file| file.starts_with(&path)))
+            {
+                continue;
+            }
             self.notify(&path);
             check_cancel(self.cancelled)?;
             source.validate()?;
@@ -729,6 +736,13 @@ pub fn copy_folder(
     copy_folder_internal(source, destination, cancelled, progress, None)
 }
 
+fn initial_copy_report() -> CopyReport {
+    CopyReport {
+            metadata_limitations: vec!["Copies regular-file contents and access/modification times. Ownership, original permissions, ACLs, extended attributes, alternate streams, creation times, sparse layout and hard-link relationships are not preserved. New files use private user-owned permissions on Unix and use an explicit protected private directory ACL on Windows. Destination namespace protection excludes hostile same-account or administrator processes.".to_string()],
+            ..CopyReport::default()
+        }
+}
+
 pub(super) fn copy_folder_internal(
     source: &Path,
     destination: &Path,
@@ -736,14 +750,32 @@ pub(super) fn copy_folder_internal(
     progress: impl FnMut(CopyProgress),
     journal: Option<MigrationJournal>,
 ) -> Result<CopyReport, String> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(CopyReport {
+            cancelled: true,
+            ..initial_copy_report()
+        });
+    }
+    let source = PinnedDirectory::open_absolute(source)
+        .map_err(|error| format!("cannot open source: {error}"))?;
+    copy_pinned_folder(source, destination, cancelled, progress, journal, None)
+}
+
+/// Copy the exact granted source capability instead of reopening its pathname.
+pub(super) fn copy_pinned_folder<'a>(
+    source: Arc<PinnedDirectory>,
+    destination: &Path,
+    cancelled: &'a AtomicBool,
+    progress: impl FnMut(CopyProgress),
+    journal: Option<MigrationJournal>,
+    selection: Option<&'a std::collections::BTreeSet<PathBuf>>,
+) -> Result<CopyReport, String> {
     let mut copier = Copier {
+        selection,
         journal,
         cancelled,
         progress,
-        report: CopyReport {
-            metadata_limitations: vec!["Copies regular-file contents and access/modification times. Ownership, original permissions, ACLs, extended attributes, alternate streams, creation times, sparse layout and hard-link relationships are not preserved. New files use private user-owned permissions on Unix and use an explicit protected private directory ACL on Windows. Destination namespace protection excludes hostile same-account or administrator processes.".to_string()],
-            ..CopyReport::default()
-        },
+        report: initial_copy_report(),
     };
     if cancelled.load(Ordering::Relaxed) {
         copier.report.cancelled = true;
@@ -758,8 +790,6 @@ pub(super) fn copy_folder_internal(
     let parent = destination
         .parent()
         .ok_or_else(|| "destination has no parent".to_string())?;
-    let source = PinnedDirectory::open_absolute(source)
-        .map_err(|error| format!("cannot open source: {error}"))?;
     let parent = PinnedDirectory::open_absolute(parent)
         .map_err(|error| format!("cannot open destination parent: {error}"))?;
     if parent.contains_identity(&source.identity) {
@@ -803,6 +833,16 @@ pub(super) fn copy_folder_internal(
             }
         }
     }
+    if let Some(selection) = selection {
+        for expected in selection {
+            if !copier.report.verified_files.contains(expected) {
+                copier
+                    .report
+                    .failed
+                    .push((expected.clone(), "reviewed file was not copied".into()));
+            }
+        }
+    }
     copier.report.cancelled = cancelled.load(Ordering::Relaxed);
     if let Some(journal) = &mut copier.journal {
         if !journal.has_failed() {
@@ -817,6 +857,21 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn cancelled_copy_does_not_open_a_source_or_create_output() {
+        let output = tempfile::tempdir().unwrap();
+        let destination = output.path().join("must-not-exist");
+        let report = copy_folder(
+            Path::new("ungranted-relative-source"),
+            &destination,
+            &AtomicBool::new(true),
+            |_| panic!("cancelled copy must not report source access"),
+        )
+        .unwrap();
+        assert!(report.cancelled);
+        assert!(!destination.exists());
+    }
 
     fn fixture() -> (TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
@@ -1477,9 +1532,8 @@ mod tests {
     fn namespace_sticky_parent_does_not_trust_a_foreign_owned_child() {
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::PermissionsExt;
-        // SAFETY: geteuid has no preconditions. This opt-in test only changes
         // ownership of a newly created empty directory in its own fixture.
-        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(tilo_process::effective_uid(), 0);
         let (temp, source, _) = fixture();
         let parent = temp.path().canonicalize().unwrap().join("sticky");
         fs::create_dir(&parent).unwrap();

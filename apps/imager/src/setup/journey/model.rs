@@ -127,7 +127,7 @@ impl Journey {
             transfer: None,
             categories: [true; 3],
             browser_domains: [true; 2],
-            excluded_flatpak_apps: Default::default(),
+            excluded_flatpak_apps: std::collections::BTreeSet::default(),
             details: false,
             history: Vec::new(),
             editing: None,
@@ -257,8 +257,7 @@ impl Journey {
                 return Err("installer-preview-device-invalid");
             }
             Page::Devices if self.destination != Some(Destination::Desktop) => Page::Purpose,
-            Page::Purpose if self.migrate == Some(true) => Page::Belongings,
-            Page::Devices if self.migrate == Some(true) => Page::Belongings,
+            Page::Purpose | Page::Devices if self.migrate == Some(true) => Page::Belongings,
             Page::Belongings if self.categories[2] => Page::Accounts,
             Page::Devices | Page::Purpose | Page::Belongings | Page::Accounts => Page::Storage,
             Page::Storage => Page::Review,
@@ -275,8 +274,7 @@ impl Journey {
                 (ReviewSection::Destination, Page::Destination) => Page::Storage,
                 (ReviewSection::Profile, Page::Profile)
                 | (ReviewSection::Password, Page::Password)
-                | (ReviewSection::Identity, Page::Devices)
-                | (ReviewSection::Devices, Page::Devices)
+                | (ReviewSection::Identity | ReviewSection::Devices, Page::Devices)
                 | (ReviewSection::Purpose, Page::Purpose)
                 | (ReviewSection::Destination, Page::Storage)
                 | (ReviewSection::Belongings, Page::Belongings) => Page::Review,
@@ -429,8 +427,10 @@ impl Journey {
                     (edit.section, self.page),
                     (ReviewSection::Destination, Page::Storage)
                         | (ReviewSection::Profile, Page::Profile)
-                        | (ReviewSection::Identity, Page::Devices)
-                        | (ReviewSection::Devices, Page::Devices)
+                        | (
+                            ReviewSection::Identity | ReviewSection::Devices,
+                            Page::Devices
+                        )
                         | (ReviewSection::Purpose, Page::Purpose)
                         | (ReviewSection::Password, Page::Password)
                         | (ReviewSection::Belongings, Page::Belongings)

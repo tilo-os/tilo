@@ -92,6 +92,7 @@ pub(super) fn paint_app<A: ui::framework::ResourceApp>(
 }
 
 #[test]
+#[cfg(unix)]
 fn destination_review_edit_exposes_cancel_and_restores_choices_through_public_actions() {
     for (viewport, theme) in [((480, 800), Theme::dark()), ((1180, 820), Theme::light())] {
         let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
@@ -206,8 +207,8 @@ fn review_summary_scrolls_without_moving_navigation_at_large_text_sizes() {
         // Pointer input is in logical window coordinates. Anchor it to the
         // visible heading inside the real scroll body, not window padding.
         app.harness().click_at(
-            (heading.x0 + heading.x1) / 2.0,
-            (heading.y0 + heading.y1) / 2.0,
+            f64::midpoint(heading.x0, heading.x1),
+            f64::midpoint(heading.y0, heading.y1),
         );
         for _ in 0..40 {
             app.harness().scroll(0.0, -10.0);
@@ -419,6 +420,7 @@ fn pairing_name_and_approval_code_paint_at_all_host_scales_in_both_themes() {
 }
 
 #[test]
+#[cfg(unix)]
 fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation() {
     let custody = tempfile::tempdir().unwrap();
     let root = custody.path().canonicalize().unwrap();
@@ -608,6 +610,7 @@ fn paint_spotify_choices(app: &mut TestApp<GuidedInstallerShell>, viewport: (u32
 }
 
 #[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn account_motion_fixture() -> TestApp<GuidedInstallerShell> {
     let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
@@ -800,6 +803,7 @@ pub(super) fn body_scroll_geometry(root: &mut dyn Widget) -> Option<(vello::kurb
 }
 
 #[test]
+#[cfg(unix)]
 fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
     let custody = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
@@ -839,7 +843,7 @@ fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
                 let name = control(preview, "installer.name").unwrap().get_rect();
                 let (body, overflowing) = body_scroll_geometry(preview).unwrap();
                 assert!(!overflowing, "short profile should fit: {body:?}");
-                let visible_center = (heading.y0 + name.y1) / 2.0;
+                let visible_center = f64::midpoint(heading.y0, name.y1);
                 assert!(
                     (visible_center - body.center().y).abs() < 40.0 * f64::from(host_scale),
                     "short body stays centered: heading={heading:?}, name={name:?}, body={body:?}"
@@ -955,6 +959,7 @@ fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
 }
 
 #[test]
+#[cfg(unix)]
 fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
     let custody = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
@@ -1101,6 +1106,7 @@ fn account_decision_pages_slide_forward_back_and_block_pointer_until_settled() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[cfg(unix)]
 fn account_field_pages_advance_through_public_continue_and_preserve_keyboard_focus() {
     let mut app = account_motion_fixture();
     account_motion_step(&mut app, "add-account", None);
@@ -1264,6 +1270,7 @@ pub(super) fn paint_native_flatpak_inventory(
 
 #[cfg(target_os = "linux")]
 #[test]
+#[cfg(unix)]
 fn destination_discloses_usb_route_before_personal_setup() {
     let custody = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
@@ -1310,6 +1317,7 @@ fn destination_discloses_usb_route_before_personal_setup() {
 }
 
 #[test]
+#[cfg(unix)]
 fn live_migration_choice_does_not_inspect_sources_before_profile() {
     let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
@@ -1355,6 +1363,7 @@ fn live_migration_choice_does_not_inspect_sources_before_profile() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[cfg(unix)]
 fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
     let fixture = tempfile::tempdir().unwrap();
     let home = fixture.path().join("home");
@@ -1437,6 +1446,7 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
 }
 
 #[test]
+#[cfg(unix)]
 fn profile_explains_optional_picture_and_keeps_name_before_data_access() {
     let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
@@ -1539,6 +1549,7 @@ fn migration_route_consequences_are_present_in_the_semantic_choice() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[cfg(unix)]
 fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation() {
     let custody = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
@@ -1597,6 +1608,7 @@ fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation()
 
 #[cfg(target_os = "linux")]
 #[test]
+#[cfg(unix)]
 fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
     let custody = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
@@ -1647,6 +1659,7 @@ fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
 }
 
 #[test]
+#[cfg(unix)]
 fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview() {
     let custody = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
@@ -1752,6 +1765,7 @@ fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview()
 }
 
 #[test]
+#[cfg(unix)]
 fn password_mismatch_marks_confirmation_and_uses_shared_field_feedback() {
     let custody = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
@@ -1819,6 +1833,7 @@ fn password_mismatch_marks_confirmation_and_uses_shared_field_feedback() {
 }
 
 #[test]
+#[cfg(unix)]
 fn password_policy_feedback_explains_the_actual_requirement_through_public_effects() {
     let custody = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
@@ -1931,6 +1946,7 @@ fn password_policy_feedback_explains_the_actual_requirement_through_public_effec
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn compact_password_submission_reveals_invalid_field_and_correction_without_manual_scroll() {
     // A short window at 200% genuinely clips either correction field, while
@@ -1938,6 +1954,7 @@ fn compact_password_submission_reveals_invalid_field_and_correction_without_manu
     password_submission_focus_cases((480, 520), true);
 }
 
+#[cfg(unix)]
 #[test]
 fn compact_password_submission_keeps_feedback_readable_at_200_percent() {
     // The 800px window need not clip the short-password input. Keep this
@@ -1945,6 +1962,7 @@ fn compact_password_submission_keeps_feedback_readable_at_200_percent() {
     password_submission_focus_cases((480, 800), false);
 }
 
+#[cfg(unix)]
 fn password_submission_focus_cases(viewport: (u32, u32), require_clipped: bool) {
     let custody = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
@@ -2145,6 +2163,7 @@ fn password_submission_focus_cases(viewport: (u32, u32), require_clipped: bool) 
 }
 
 #[test]
+#[cfg(unix)]
 fn personal_fields_enter_advances_and_password_enter_focuses_confirmation() {
     let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
@@ -2273,6 +2292,7 @@ fn account_one_field_enter_advances_without_starting_a_connection() {
 }
 
 #[test]
+#[cfg(unix)]
 fn profile_keyboard_name_updates_retained_avatar_and_preserves_mid_string_caret() {
     let mut app = TestApp::<GuidedInstallerShell>::launched(&["--installer"]).unwrap();
     app.with_widget::<InstallerPreview, _>(|preview| {
@@ -2369,6 +2389,7 @@ fn profile_keyboard_name_updates_retained_avatar_and_preserves_mid_string_caret(
 }
 
 #[test]
+#[cfg(unix)]
 fn personal_form_labels_and_navigation_share_the_real_page_alignment() {
     fn field_label<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
         if root.name() == "Field" && control(root, id).is_some() {
@@ -2429,7 +2450,7 @@ fn personal_form_labels_and_navigation_share_the_real_page_alignment() {
                 assert!(confirmation.y0 >= password.y1);
                 assert!((password.center().x - preview.rect.center().x).abs() < 1.0);
                 assert!(
-                    ((back.x0 + next.x1) / 2.0 - password.center().x).abs() < 1.0,
+                    (f64::midpoint(back.x0, next.x1) - password.center().x).abs() < 1.0,
                     "navigation is centered on the same page axis"
                 );
                 let (scroll, _) = body_scroll_geometry(preview).unwrap();

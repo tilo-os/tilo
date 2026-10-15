@@ -10,8 +10,12 @@
 //! (`HostOperation::ComputeControl`). Every further stream is one environment
 //! session, legacy-windows view or legacy launch
 //! ([`crate::environment_routing`]); those are open to any device the trust
-//! policy admits, and each is admitted by its workspace's membership.
+//! policy admits, and each is admitted by its workspace's membership. A
+//! further stream may also carry one content digest a job binds to the
+//! device asking for it ([`crate::compute_content`]), which is compute
+//! control again: the owner's devices only.
 
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -20,15 +24,20 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointAddr;
 use thiserror::Error;
 use tilo_clock::{unix_now_ms, unix_now_ns};
+use tilo_relay_protocol::environment::{
+    ContentReply, ENVIRONMENT_PROTOCOL_VERSION, WorkerStreamOpen,
+};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
-use crate::compute::ComputeJobSpec;
+use crate::compute::{ComputeContentStore, ComputeJobSpec, MAX_COMPUTE_OUTPUT_BYTES};
+use crate::compute_content::{ContentFetchError, answer_content, fetch_job_content};
 use crate::compute_transport::{
     COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeRouteOutcome, ComputeTransportError,
     MAX_COMPUTE_FRAME_BYTES,
 };
+use crate::environment_host::{EnvironmentStreamError, read_message, write_message};
 use crate::frame::{read_frame, write_frame};
 use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::peer::WorkspaceRegistry;
@@ -566,6 +575,70 @@ pub struct ComputeClient {
     receive: RecvStream,
     connection: Connection,
     endpoint: Endpoint,
+    /// Jobs this client submitted that have not ended, by id: what their
+    /// worker may fetch from it.
+    submitted: SubmittedJobs,
+    /// Serves those inputs while the client lives.
+    serving: Option<AbortOnDrop>,
+}
+
+/// What a submitted job lets its worker fetch from the requester.
+struct SubmittedJob {
+    workspace_id: u64,
+    worker: [u8; 32],
+    inputs: BTreeSet<[u8; 32]>,
+}
+
+type SubmittedJobs = Arc<std::sync::Mutex<HashMap<[u8; 16], SubmittedJob>>>;
+
+/// Answer one relay-opened stream on a requester's connection: an input of
+/// a job this requester submitted, to that job's worker, from `inputs`.
+async fn serve_input(
+    inputs: &Arc<dyn ComputeContentStore>,
+    submitted: &SubmittedJobs,
+    send: &mut SendStream,
+    receive: &mut RecvStream,
+) -> Result<(), EnvironmentStreamError> {
+    let Some(open) = read_message::<_, WorkerStreamOpen>(receive).await? else {
+        return Ok(());
+    };
+    // A requester hosts nothing else on its compute connection.
+    let WorkerStreamOpen::ComputeContent {
+        version,
+        workspace_id,
+        asker,
+        job_id,
+        digest,
+    } = open
+    else {
+        return Ok(());
+    };
+    // The relay already checked the job binds this digest to this worker;
+    // the requester checks again against what it actually submitted.
+    let bound = version == ENVIRONMENT_PROTOCOL_VERSION
+        && submitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&job_id)
+            .is_some_and(|job| {
+                job.workspace_id == workspace_id
+                    && job.worker == asker.device
+                    && job.inputs.contains(&digest)
+            });
+    if !bound {
+        return write_message(
+            send,
+            &ContentReply::Refused {
+                code: "not_authorised".into(),
+            },
+        )
+        .await;
+    }
+    let inputs = Arc::clone(inputs);
+    let found = tokio::task::spawn_blocking(move || inputs.get(digest))
+        .await
+        .unwrap_or_else(|_| Err("input read panicked".into()));
+    answer_content(send, digest, found).await
 }
 
 /// One received compute message and its optional durable delivery token.
@@ -633,7 +706,79 @@ impl ComputeClient {
             receive,
             connection,
             endpoint,
+            submitted: Arc::default(),
+            serving: None,
         })
+    }
+
+    /// Serve the inputs of the jobs this client [`submit`](Self::submit)s
+    /// from `inputs`, this device's workspace content, until the client is
+    /// dropped. Only a submitted, unfinished job's worker gets a digest,
+    /// and only one that job lists: the worker reads exactly what this
+    /// device chose to hand it.
+    pub fn serve_inputs(&mut self, inputs: Arc<dyn ComputeContentStore>) {
+        let connection = self.connection.clone();
+        let submitted = Arc::clone(&self.submitted);
+        self.serving = Some(AbortOnDrop(tokio::spawn(async move {
+            while let Ok((mut send, mut receive)) = connection.accept_bi().await {
+                let inputs = Arc::clone(&inputs);
+                let submitted = Arc::clone(&submitted);
+                tokio::spawn(async move {
+                    if let Err(error) =
+                        serve_input(&inputs, &submitted, &mut send, &mut receive).await
+                    {
+                        tracing::debug!(%error, "compute input stream ended");
+                    }
+                    let _ = send.finish();
+                });
+            }
+        })));
+    }
+
+    /// Fetch the bytes of `digest`, which job `job_id` binds to this
+    /// device: an output of a job it submitted, or an input of a job it
+    /// runs. See [`fetch_job_content`].
+    ///
+    /// # Errors
+    ///
+    /// As [`fetch_job_content`].
+    pub async fn fetch_content(
+        &self,
+        workspace_id: u64,
+        job_id: [u8; 16],
+        digest: [u8; 32],
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, ContentFetchError> {
+        fetch_job_content(&self.connection, workspace_id, job_id, digest, max_bytes).await
+    }
+
+    /// Fetch every output a completed job reported into `into`, this
+    /// device's workspace content, and return how many bytes arrived.
+    ///
+    /// # Errors
+    ///
+    /// The first output that could not be fetched or kept.
+    pub async fn retrieve_outputs(
+        &self,
+        binding: &ComputeJobBinding,
+        outputs: &[[u8; 32]],
+        into: &dyn ComputeContentStore,
+    ) -> Result<u64, ContentFetchError> {
+        let mut received = 0_u64;
+        for digest in outputs {
+            let bytes = self
+                .fetch_content(
+                    binding.workspace_id,
+                    binding.job_id,
+                    *digest,
+                    MAX_COMPUTE_OUTPUT_BYTES,
+                )
+                .await?;
+            into.put(*digest, &bytes)
+                .map_err(ContentFetchError::Store)?;
+            received = received.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        }
+        Ok(received)
     }
 
     #[must_use]
@@ -680,6 +825,15 @@ impl ComputeClient {
                 return Err(ComputeSessionError::Protocol(
                     "invalid nested compute delivery".into(),
                 ));
+            }
+            // A job that ended needs no more inputs from this requester.
+            if let ComputeEnvelope::Result { result } = &*message
+                && result.binding.requester == self.own_device
+            {
+                self.submitted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&result.binding.job_id);
             }
             return Ok(ComputeDelivery {
                 workspace_id: Some(workspace_id),
@@ -735,6 +889,17 @@ impl ComputeClient {
                 "compute request does not belong to this certified client".into(),
             ));
         }
+        self.submitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                spec.job_id,
+                SubmittedJob {
+                    workspace_id: spec.workspace_id,
+                    worker: spec.worker,
+                    inputs: spec.inputs.iter().copied().collect(),
+                },
+            );
         self.send(&ComputeEnvelope::Request { spec: spec.clone() })
             .await
     }

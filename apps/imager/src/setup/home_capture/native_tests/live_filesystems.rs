@@ -163,8 +163,8 @@ fn verify(source: &Path, imported: &Path, data: &Path) {
 }
 
 fn live_story(root: &Path) {
-    assert_eq!(unsafe { libc::getuid() }, 1000);
-    assert_eq!(unsafe { libc::geteuid() }, 1000);
+    assert_eq!(rustix::process::getuid().as_raw(), 1000);
+    assert_eq!(rustix::process::geteuid().as_raw(), 1000);
     let home = root.join("home");
     let media = root.join("media");
     fs::create_dir(&home).unwrap();
@@ -279,7 +279,7 @@ fn qualify(filesystem: &str, selector: &str) {
         return;
     }
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "explicit privileged native qualifier required"
     );

@@ -380,13 +380,17 @@ fn story_accounts_and_storage(app: &mut App, home: &Path) {
         .unwrap();
     assert_eq!(retained, intent);
     wait(app, |v| v["restart"]["checking"] == false);
-    let super::draft::DraftStatus::Ready(saved) = super::draft::DraftStore::for_session()
-        .unwrap()
-        .review()
-        .unwrap()
-    else {
-        panic!("Actual prepared identity was not retained");
-    };
+    let saved = if let super::draft::DraftStatus::Ready(saved) =
+        super::draft::DraftStore::for_session()
+            .unwrap()
+            .review()
+            .unwrap()
+    {
+        Some(saved)
+    } else {
+        None
+    }
+    .expect("Actual prepared identity was not retained");
     assert_eq!(saved.choices().categories, [true, false, true]);
     assert_eq!(saved.choices().device_label, "Ada's computer");
     assert_eq!(saved.kind(), super::draft::IdentityKind::New);

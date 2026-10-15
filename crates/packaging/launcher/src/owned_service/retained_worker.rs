@@ -55,7 +55,7 @@ fn open_entry(root: &File, relative: &Path) -> io::Result<File> {
             return Err(refused());
         };
         let name = CString::new(name.as_bytes()).map_err(io::Error::other)?;
-        let last = index + 1 == components.len();
+        let last = components.len().checked_sub(1) == Some(index);
         let flags = libc::O_RDONLY
             | libc::O_CLOEXEC
             | libc::O_NOFOLLOW
@@ -156,6 +156,11 @@ pub struct RetainedWorkerWitness {
     gid: u32,
 }
 impl RetainedWorkerWitness {
+    /// Verify the live worker's authority, program and namespace custody.
+    ///
+    /// # Errors
+    /// Refuses cancelled, exited or reused workers and changed namespaces or
+    /// programs; propagates authority and process metadata I/O failures.
     pub fn check(&self) -> io::Result<()> {
         self.authority.check()?;
         if self.cancellation.is_cancelled() || exited(&self.init)? {
@@ -163,8 +168,9 @@ impl RetainedWorkerWitness {
         }
         self.program.check()?;
         let namespace = self.namespace.metadata()?;
-        let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.custody.init_pid))?;
-        let start = stat
+        let process_status =
+            std::fs::read_to_string(format!("/proc/{}/stat", self.custody.init_pid))?;
+        let start = process_status
             .rsplit_once(") ")
             .and_then(|(_, f)| f.split_whitespace().nth(19))
             .ok_or(io::ErrorKind::InvalidData)?
@@ -188,14 +194,17 @@ impl RetainedWorkerWitness {
     /// # Errors
     /// Refuses non-root callers, departed/reused tasks or changed held program.
     pub fn check_retirement_custody(&self) -> io::Result<()> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 || exited(&self.init)?
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
+            || exited(&self.init)?
         {
             return Err(refused());
         }
         self.program.check()?;
         let namespace = self.namespace.metadata()?;
-        let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.custody.init_pid))?;
-        let start = stat
+        let process_status =
+            std::fs::read_to_string(format!("/proc/{}/stat", self.custody.init_pid))?;
+        let start = process_status
             .rsplit_once(") ")
             .and_then(|(_, f)| f.split_whitespace().nth(19))
             .ok_or(io::ErrorKind::InvalidData)?
@@ -226,6 +235,10 @@ impl RetainedWorkerWitness {
     }
     /// Clone only the held signed installation ELF for an independently enrolled
     /// daemon receiver. This descriptor alone carries no execution authority.
+    ///
+    /// # Errors
+    /// Returns an error if worker custody is no longer valid or descriptor
+    /// duplication fails.
     pub fn held_program(&self) -> io::Result<File> {
         self.check()?;
         let file = self.program.file.try_clone()?;
@@ -243,7 +256,9 @@ pub(super) fn same_worker_peer(
     gid: u32,
 ) -> io::Result<libc::ucred> {
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let expected_len =
+        libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).map_err(io::Error::other)?;
+    let mut len = expected_len;
     if unsafe {
         libc::getsockopt(
             stream.as_raw_fd(),
@@ -256,7 +271,7 @@ pub(super) fn same_worker_peer(
     {
         return Err(io::Error::last_os_error());
     }
-    if len as usize != std::mem::size_of::<libc::ucred>()
+    if len != expected_len
         || peer.pid <= 1
         || peer.pid.cast_unsigned() != custody.init_pid
         || peer.uid != uid
@@ -269,6 +284,10 @@ pub(super) fn same_worker_peer(
 impl ServiceEndpoint {
     /// A NEW unread stream to the retained worker only. Its independent daemon
     /// receiver must still perform QPE; this method sends no protocol frames.
+    ///
+    /// # Errors
+    /// Returns an error if connection or descriptor duplication fails, the
+    /// signed program changes, or the live peer differs from retained custody.
     pub fn connect_pending_worker(&self) -> io::Result<(UnixStream, RetainedWorkerWitness)> {
         let before = self.custody()?;
         let program = self.retained_program.as_ref().ok_or_else(refused)?.clone();
@@ -291,51 +310,6 @@ impl ServiceEndpoint {
         };
         witness.check()?;
         Ok((stream, witness))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt;
-    #[test]
-    fn held_entry_walk_refuses_symlink_and_writable_parent() {
-        assert_eq!(
-            unsafe { libc::geteuid() },
-            0,
-            "actual protected original worker fixture requires root"
-        );
-        let fixture = tempfile::Builder::new()
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir_in("/run")
-            .unwrap();
-        let directory = fixture.path().join("bin");
-        std::fs::create_dir(&directory).unwrap();
-        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let entry = directory.join("worker");
-        std::fs::write(&entry, b"\x7fELF fixture observation only").unwrap();
-        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let root = File::options()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY)
-            .open(fixture.path())
-            .unwrap();
-        let held = open_entry(&root, Path::new("bin/worker")).unwrap();
-        let identity = snapshot(&held.metadata().unwrap());
-        std::fs::rename(&entry, directory.join("held")).unwrap();
-        std::os::unix::fs::symlink("held", &entry).unwrap();
-        assert!(open_entry(&root, Path::new("bin/worker")).is_err());
-        let held_now = held.metadata().unwrap();
-        assert_eq!(
-            [held_now.dev(), held_now.ino()],
-            [identity[0], identity[1]],
-            "actual held inode survives a substituted name"
-        );
-        std::fs::remove_file(&entry).unwrap();
-        std::fs::rename(directory.join("held"), &entry).unwrap();
-        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(open_entry(&root, Path::new("bin/worker")).is_err());
-        // This walks real descriptors, and never constructs signed admission.
     }
 }
 
@@ -395,5 +369,50 @@ impl ServiceEndpoint {
             endpoint,
             custody: before,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn held_entry_walk_refuses_symlink_and_writable_parent() {
+        assert_eq!(
+            rustix::process::geteuid().as_raw(),
+            0,
+            "actual protected original worker fixture requires root"
+        );
+        let fixture = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in("/run")
+            .unwrap();
+        let directory = fixture.path().join("bin");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let entry = directory.join("worker");
+        std::fs::write(&entry, b"\x7fELF fixture observation only").unwrap();
+        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let root = File::options()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY)
+            .open(fixture.path())
+            .unwrap();
+        let held = open_entry(&root, Path::new("bin/worker")).unwrap();
+        let identity = snapshot(&held.metadata().unwrap());
+        std::fs::rename(&entry, directory.join("held")).unwrap();
+        std::os::unix::fs::symlink("held", &entry).unwrap();
+        assert!(open_entry(&root, Path::new("bin/worker")).is_err());
+        let held_now = held.metadata().unwrap();
+        assert_eq!(
+            [held_now.dev(), held_now.ino()],
+            [identity[0], identity[1]],
+            "actual held inode survives a substituted name"
+        );
+        std::fs::remove_file(&entry).unwrap();
+        std::fs::rename(directory.join("held"), &entry).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(open_entry(&root, Path::new("bin/worker")).is_err());
+        // This walks real descriptors, and never constructs signed admission.
     }
 }

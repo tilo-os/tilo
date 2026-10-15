@@ -80,8 +80,8 @@ impl Archive {
         pairs.extend(
             self.libraries
                 .iter()
-                .enumerate()
-                .map(|(index, (_, file))| (file.as_raw_fd(), TAR_FD + 1 + index as RawFd)),
+                .zip(TAR_FD + 1..)
+                .map(|((_, file), fd)| (file.as_raw_fd(), fd)),
         );
         pairs
     }
@@ -100,12 +100,12 @@ impl Archive {
             TAR_FD.to_string(),
             "/usr/bin/tar".into(),
         ];
-        for (index, (name, _)) in self.libraries.iter().enumerate() {
+        for ((name, _), fd) in self.libraries.iter().zip(TAR_FD + 1..) {
             mounts.extend([
                 "--perms".into(),
                 if original { "0444" } else { "0400" }.into(),
                 "--ro-bind-data".into(),
-                (TAR_FD + 1 + index as RawFd).to_string(),
+                fd.to_string(),
                 format!("{LIB_PATH}/{name}"),
             ]);
         }

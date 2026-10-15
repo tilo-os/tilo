@@ -244,7 +244,7 @@ mod tests {
                 revents: 0,
             };
             // SAFETY: writable single pollfd retained throughout the bounded wait.
-            assert_eq!(unsafe { libc::poll(&mut poll, 1, 1000) }, 1);
+            assert_eq!(unsafe { libc::poll(&raw mut poll, 1, 1000) }, 1);
             assert_ne!(
                 poll.revents & libc::POLLIN,
                 0,

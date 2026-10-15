@@ -9,11 +9,12 @@ use crate::{
     owned_service::{ServiceAuthority, ServiceCancellation},
     run::{RunError, RunOptions},
 };
+use getrandom::rand_core::TryRng as _;
 use runtime_portal::process_binding::{self, ExecutingPeer};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     os::{
         fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd},
         unix::{
@@ -46,6 +47,8 @@ pub struct OriginalHomeAlias {
     source_ino: u64,
 }
 impl OriginalHomeAlias {
+    /// # Errors
+    /// Refuses unreadable metadata, a non-directory source, or a noncanonical Home path.
     pub fn capture(path: &Path, source: &File) -> io::Result<Self> {
         let metadata = source.metadata()?;
         if !metadata.is_dir() {
@@ -59,6 +62,8 @@ impl OriginalHomeAlias {
         value.validate()?;
         Ok(value)
     }
+    /// # Errors
+    /// Refuses missing source identity or a noncanonical, relative or NUL-containing path.
     pub fn validate(&self) -> io::Result<()> {
         if self.source_dev == 0
             || self.source_ino == 0
@@ -67,7 +72,10 @@ impl OriginalHomeAlias {
             || self.path.contains(&0)
             || self.path.len() < 2
             || self.path.last() == Some(&b'/')
-            || self.path[1..]
+            || self
+                .path
+                .get(1..)
+                .ok_or_else(|| refused("original Home alias is empty"))?
                 .split(|byte| *byte == b'/')
                 .any(|part| part.is_empty() || part == b"." || part == b"..")
         {
@@ -84,6 +92,9 @@ impl OriginalHomeAlias {
         Path::new(std::ffi::OsStr::from_bytes(&self.path))
     }
     /// Shape-only native fixture access to the production argument writer.
+    /// # Errors
+    /// Refuses invalid aliases, truncated or conflicting mounts and opaque
+    /// overlay arguments; reports argument-file creation, write or seal errors.
     #[cfg(feature = "native-home-alias-qualification")]
     pub fn qualification_arguments(&self, argv: &[String], writable: bool) -> io::Result<File> {
         self.args(argv, writable)
@@ -110,7 +121,11 @@ impl OriginalHomeAlias {
                 _ => continue,
             };
             let destination = argv
-                .get(index + offset)
+                .get(
+                    index
+                        .checked_add(offset)
+                        .ok_or(io::ErrorKind::InvalidInput)?,
+                )
                 .ok_or_else(|| refused("alias mount argv truncated"))?;
             let destination = Path::new(destination);
             if alias.starts_with(destination) || destination.starts_with(alias) {
@@ -151,22 +166,20 @@ impl OriginalHomeAlias {
             bytes.extend(part);
             bytes.push(0);
         }
-        let raw = unsafe {
-            libc::memfd_create(
-                c"tilo-original-home-alias-args".as_ptr(),
-                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-            )
-        };
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let mut file = unsafe { File::from_raw_fd(raw) };
+        let descriptor = rustix::fs::memfd_create(
+            c"tilo-original-home-alias-args",
+            rustix::fs::MemfdFlags::CLOEXEC | rustix::fs::MemfdFlags::ALLOW_SEALING,
+        )?;
+        let mut file = File::from(descriptor);
         file.write_all(&bytes)?;
-        use std::io::{Seek, SeekFrom};
         file.seek(SeekFrom::Start(0))?;
-        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, SEALS) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        rustix::fs::fcntl_add_seals(
+            &file,
+            rustix::fs::SealFlags::WRITE
+                | rustix::fs::SealFlags::GROW
+                | rustix::fs::SealFlags::SHRINK
+                | rustix::fs::SealFlags::SEAL,
+        )?;
         Ok(file)
     }
 }
@@ -242,13 +255,10 @@ pub(crate) fn qpe_exchange<T>(
         .ok_or(io::ErrorKind::InvalidInput)?;
     let worker = std::thread::spawn(move || {
         let (lock, wake) = &*completion;
-        let mut done = match lock.lock() {
-            Ok(done) => done,
-            Err(_) => {
-                outcome.store(3, Ordering::Release);
-                let _ = exact.shutdown(std::net::Shutdown::Both);
-                return;
-            }
+        let Ok(mut done) = lock.lock() else {
+            outcome.store(3, Ordering::Release);
+            let _ = exact.shutdown(std::net::Shutdown::Both);
+            return;
         };
         while !*done {
             let now = std::time::Instant::now();
@@ -264,19 +274,17 @@ pub(crate) fn qpe_exchange<T>(
                 let _ = exact.shutdown(std::net::Shutdown::Both);
                 return;
             }
-            match wake.wait_timeout(
+            let Ok((next, _)) = wake.wait_timeout(
                 done,
                 deadline
                     .saturating_duration_since(now)
                     .min(Duration::from_millis(25)),
-            ) {
-                Ok((next, _)) => done = next,
-                Err(_) => {
-                    outcome.store(3, Ordering::Release);
-                    let _ = exact.shutdown(std::net::Shutdown::Both);
-                    return;
-                }
-            }
+            ) else {
+                outcome.store(3, Ordering::Release);
+                let _ = exact.shutdown(std::net::Shutdown::Both);
+                return;
+            };
+            done = next;
         }
     });
     let mut worker = QpeWorker {
@@ -526,7 +534,7 @@ impl RetainedLaunchGate {
         endpoint: UnixStream,
         cancellation: &ServiceCancellation,
     ) -> io::Result<Self> {
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         if uid == 0 {
             return Err(refused("retained gate requires nonroot launcher"));
         }
@@ -536,7 +544,6 @@ impl RetainedLaunchGate {
                 gate.set_write_timeout(Some(Duration::from_secs(10)))?;
                 process_binding::arm(gate)?;
                 let mut challenge = [0; 32];
-                use getrandom::rand_core::TryRng as _;
                 getrandom::SysRng
                     .try_fill_bytes(&mut challenge)
                     .map_err(io::Error::other)?;
@@ -620,7 +627,6 @@ impl RootRole {
                 process_binding::complete(stream)?;
                 process_binding::arm(stream)?;
                 let mut challenge = [0; 32];
-                use getrandom::rand_core::TryRng as _;
                 getrandom::SysRng
                     .try_fill_bytes(&mut challenge)
                     .map_err(io::Error::other)?;
@@ -758,7 +764,7 @@ impl RetainedViewAdmission {
                 .bwrap_bin
                 .as_deref()
                 .is_some_and(|path| path != Path::new("/usr/bin/bwrap"))
-            || (unsafe { libc::getuid() } == 0 || unsafe { libc::geteuid() } == 0)
+            || (rustix::process::getuid().as_raw() == 0 || rustix::process::geteuid().as_raw() == 0)
         {
             return Err(RunError::InvalidServiceLaunch(
                 "retained view requires ordinary confined non-root GUI".into(),
@@ -832,17 +838,20 @@ impl RetainedViewAdmission {
     }
     pub(crate) fn descriptor_pairs(&self) -> io::Result<Vec<(RawFd, RawFd)>> {
         self.check()?;
-        let args = self
-            .alias_args
-            .lock()
-            .map_err(|_| refused("alias argument custody poisoned"))?;
-        let args = args
-            .as_ref()
-            .ok_or_else(|| refused("alias arguments not prepared"))?;
+        let arguments_fd = {
+            let arguments = self
+                .alias_args
+                .lock()
+                .map_err(|_| refused("alias argument custody poisoned"))?;
+            arguments
+                .as_ref()
+                .ok_or_else(|| refused("alias arguments not prepared"))?
+                .as_raw_fd()
+        };
         Ok(vec![
             (self.view.as_raw_fd(), VIEW_FD),
             (self.view.as_raw_fd(), ALIAS_VIEW_FD),
-            (args.as_raw_fd(), ALIAS_ARGS_FD),
+            (arguments_fd, ALIAS_ARGS_FD),
         ])
     }
     pub(crate) fn splice(
@@ -858,9 +867,10 @@ impl RetainedViewAdmission {
             .iter()
             .position(|arg| arg == "--")
             .ok_or_else(|| refused("retained view bwrap entrypoint unavailable"))?;
-        let args = self
-            .original_home_alias
-            .args(&argv[..entry], self.binding.writable)?;
+        let arguments = self.original_home_alias.args(
+            argv.get(..entry).ok_or(io::ErrorKind::InvalidInput)?,
+            self.binding.writable,
+        )?;
         let mut held_args = self
             .alias_args
             .lock()
@@ -868,7 +878,8 @@ impl RetainedViewAdmission {
         if held_args.is_some() {
             return Err(refused("alias argv already prepared"));
         }
-        *held_args = Some(args);
+        *held_args = Some(arguments);
+        drop(held_args);
         argv.splice(entry..entry, ["--args".into(), ALIAS_ARGS_FD.to_string()]);
         argv.splice(
             entry..entry,
@@ -961,8 +972,8 @@ fn binding_for(
     ))
     .map_err(io::Error::other)?;
     let pid = std::process::id();
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
-    let start = stat
+    let process_stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let start = process_stat
         .rsplit_once(") ")
         .and_then(|(_, fields)| fields.split_whitespace().nth(19))
         .and_then(|value| value.parse().ok())
@@ -996,8 +1007,8 @@ fn binding_for(
             == Participation::Author,
         launcher_pid: pid,
         launcher_start: start,
-        uid: unsafe { libc::getuid() },
-        gid: unsafe { libc::getgid() },
+        uid: rustix::process::getuid().as_raw(),
+        gid: rustix::process::getgid().as_raw(),
     };
     binding.validate()?;
     Ok(binding)
@@ -1027,7 +1038,7 @@ fn check_view(view: &File, receipt: &ViewReceipt) -> io::Result<()> {
     if !metadata.is_dir()
         || metadata.uid() != receipt.binding.uid
         || metadata.gid() != receipt.binding.gid
-        || stat.f_type != 0x65735546
+        || stat.f_type != 0x6573_5546
         || (metadata.dev(), metadata.ino()) != (receipt.view_dev, receipt.view_ino)
         || mount_id(view)? != receipt.mount_id
     {
@@ -1174,7 +1185,7 @@ fn send_issue_fd(
 }
 
 /// Fixed helper's transport only. Root must bind the returned declaration to
-/// its independently admitted certified Shell/person/source before issue().
+/// its independently admitted certified Shell/person/source before `issue()`.
 /// This type contains no person or source authority and grants no view itself.
 pub struct RootConsumerChannel {
     stream: UnixStream,
@@ -1202,7 +1213,6 @@ impl RootConsumerChannel {
                 stream.set_write_timeout(Some(Duration::from_secs(10)))?;
                 process_binding::arm(stream)?;
                 let mut challenge = [0; 32];
-                use getrandom::rand_core::TryRng as _;
                 getrandom::SysRng
                     .try_fill_bytes(&mut challenge)
                     .map_err(io::Error::other)?;
@@ -1273,7 +1283,7 @@ impl RootConsumerChannel {
     /// Call ONLY after the private root actor has admitted the exact consumer,
     /// current certified Shell/person, signed app, policy and source. The caller
     /// retains its entire joint projection owner until the returned stream's
-    /// actual NamespaceWitness proves the consuming namespace stopped.
+    /// actual `NamespaceWitness` proves the consuming namespace stopped.
     /// # Errors
     /// Refuses missing, stale or incompatible kernel or signed launch evidence.
     pub fn issue(
@@ -1310,7 +1320,7 @@ impl RootConsumerChannel {
             if observation.file()?.as_raw_fd() != grant.view.as_raw_fd()
                 || !observation.is_directory()?
                 || (observation.uid()?, observation.gid()?) != (binding.uid, binding.gid)
-                || observation.filesystem_type()? != 0x65735546
+                || observation.filesystem_type()? != 0x6573_5546
             {
                 return Err(refused("Retained Home observed target differs"));
             }
@@ -1373,7 +1383,7 @@ impl RootConsumerChannel {
     }
 }
 fn own_helper() -> io::Result<()> {
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(refused("retained view issuer is not root"));
     }
     let expected = protected_helper()?.metadata()?;
@@ -1406,7 +1416,7 @@ fn seal_receipt(receipt: &ViewReceipt) -> io::Result<File> {
 }
 
 /// Root actor's already reviewed projection observation. This is not an
-/// admission constructor: only RootConsumerChannel inside the exact protected
+/// admission constructor: only `RootConsumerChannel` inside the exact protected
 /// installed helper can issue bytes, after its private actor's actual review.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RetainedViewMode {
@@ -1448,12 +1458,7 @@ fn normal_publisher(
         expected,
     )
     .map_err(io::Error::other)?;
-    Ok(record
-        .root
-        .publisher_identity
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    Ok(hex::encode(record.root.publisher_identity))
 }
 
 /// Continue the ordinary verified GUI launch with its inseparable root lease
@@ -1465,12 +1470,14 @@ pub fn run_admitted_gui(
     cancellation: ServiceCancellation,
 ) -> Result<std::process::ExitStatus, RunError> {
     let owner = admission.namespace_owner(cancellation)?;
-    crate::run::run_supervised_gui(
+    let result = crate::run::run_supervised_gui(
         &admission.manifest_path,
         &admission.payload_root,
         &admission.opts,
         &owner,
-    )
+    );
+    drop(admission);
+    result
 }
 
 impl ConsumerLaunchBinding {
@@ -1501,12 +1508,7 @@ impl ConsumerLaunchBinding {
         let manifest: crate::manifest::ManifestView =
             toml::from_str(std::str::from_utf8(&record.manifest_bytes).map_err(io::Error::other)?)
                 .map_err(io::Error::other)?;
-        let publisher: String = record
-            .root
-            .publisher_identity
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        let publisher = hex::encode(record.root.publisher_identity);
         if manifest.package_id != self.app_id
             || manifest.kind != "app"
             || manifest.entrypoint.gui_bin().is_none()
@@ -1545,7 +1547,7 @@ impl ConsumerLaunchBinding {
                     self.command
                         .args
                         .iter()
-                        .map(|arg| arg.as_bytes())
+                        .map(String::as_bytes)
                         .collect::<Vec<_>>()
                         .as_slice(),
                 )
@@ -1588,7 +1590,8 @@ mod tests {
         receiver.write_all(&process_binding::MAGIC).unwrap();
         receiver.write_all(&challenge).unwrap();
         let peer =
-            process_binding::receive(&receiver, &challenge, unsafe { libc::geteuid() }).unwrap();
+            process_binding::receive(&receiver, &challenge, rustix::process::geteuid().as_raw())
+                .unwrap();
         receiver.write_all(&[1]).unwrap();
         worker.join().unwrap();
         assert_eq!(peer.pid(), std::process::id());
@@ -1668,13 +1671,14 @@ mod tests {
         let mut progress = IssueProgress::NoView;
         let mut io = Handoff::new(&mut sender, &cancellation, Duration::from_secs(1)).unwrap();
         send_issue_fd(&mut io, 0, held.as_fd(), &mut progress).unwrap();
-        let (tag, received) = runtime_portal::fd_transport::recv_with_fd(receiver.as_fd()).unwrap();
+        let (tag, descriptor) =
+            runtime_portal::fd_transport::recv_with_fd(receiver.as_fd()).unwrap();
         assert_eq!(tag, [0]);
-        let received = File::from(received.unwrap());
+        let descriptor = File::from(descriptor.unwrap());
         assert_eq!(
             (
-                received.metadata().unwrap().dev(),
-                received.metadata().unwrap().ino()
+                descriptor.metadata().unwrap().dev(),
+                descriptor.metadata().unwrap().ino()
             ),
             (
                 held.metadata().unwrap().dev(),
@@ -1683,9 +1687,10 @@ mod tests {
         );
         assert_eq!(progress, IssueProgress::NoView);
         send_issue_fd(&mut io, 1, held.as_fd(), &mut progress).unwrap();
-        let (tag, received) = runtime_portal::fd_transport::recv_with_fd(receiver.as_fd()).unwrap();
+        let (tag, descriptor) =
+            runtime_portal::fd_transport::recv_with_fd(receiver.as_fd()).unwrap();
         assert_eq!(tag, [1]);
-        assert!(received.is_some());
+        assert!(descriptor.is_some());
         assert_eq!(progress, IssueProgress::PossibleView);
     }
     #[test]
@@ -1818,16 +1823,17 @@ mod tests {
             });
         }
         let mut child = ContextFixtureChild(Some(command.spawn().unwrap()));
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let started = std::time::Instant::now();
         loop {
             if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
                 child.0.take(); // try_wait observed and reaped this exact child.
                 assert!(status.success(), "unprivileged context fixture: {status}");
                 return;
             }
-            if std::time::Instant::now() >= deadline {
-                panic!("owned unprivileged context fixture timed out");
-            }
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "owned unprivileged context fixture timed out"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -1835,21 +1841,21 @@ mod tests {
     #[test]
     fn actual_launcher_peer_cannot_replay_a_different_launch_context() {
         let child = std::env::var_os("TILO_RETAINED_CONTEXT_UNPRIVILEGED_TEST").is_some();
-        if unsafe { libc::geteuid() } == 0 {
+        if rustix::process::geteuid().as_raw() == 0 {
             assert!(!child, "fixture failed to drop actual credentials");
             run_context_fixture_as_original_user();
             return;
         }
         if child {
-            assert_eq!(unsafe { libc::getuid() }, 1004);
-            assert_eq!(unsafe { libc::geteuid() }, 1004);
-            assert_eq!(unsafe { libc::getgid() }, 1005);
-            assert_eq!(unsafe { libc::getegid() }, 1005);
+            assert_eq!(rustix::process::getuid().as_raw(), 1004);
+            assert_eq!(rustix::process::geteuid().as_raw(), 1004);
+            assert_eq!(rustix::process::getgid().as_raw(), 1005);
+            assert_eq!(rustix::process::getegid().as_raw(), 1005);
             assert_eq!(unsafe { libc::getgroups(0, std::ptr::null_mut()) }, 0);
         }
         let peer = actual_current_peer();
-        let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
-        let start = stat
+        let process_stat = std::fs::read_to_string("/proc/self/stat").unwrap();
+        let start = process_stat
             .rsplit_once(") ")
             .unwrap()
             .1
@@ -1878,8 +1884,8 @@ mod tests {
             writable: false,
             launcher_pid: std::process::id(),
             launcher_start: start,
-            uid: unsafe { libc::getuid() },
-            gid: unsafe { libc::getgid() },
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
         };
         // Neither wire declaration is admitted. Exercise canonical production
         // replay bytes with a genuine kernel peer, without inventing root rights.
@@ -1923,7 +1929,7 @@ mod original_home_alias_tests {
             .unwrap();
         let mut bytes = Vec::new();
         (&file).read_to_end(&mut bytes).unwrap();
-        let mut expected = b"--dir\0/home\0--bind-fd\058\0".to_vec();
+        let mut expected = b"--dir\0/home\0--bind-fd\x0058\0".to_vec();
         expected.extend(raw);
         expected.push(0);
         assert_eq!(bytes, expected);
@@ -2051,7 +2057,7 @@ fn check_parent_view(view: &File, receipt: &SelectedParentReceipt) -> io::Result
         return Err(io::Error::last_os_error());
     }
     if !metadata.is_dir()
-        || fs.f_type != 0x65735546
+        || fs.f_type != 0x6573_5546
         || (metadata.dev(), metadata.ino()) != (receipt.parent_dev, receipt.parent_ino)
         || mount_id(view)? != receipt.mount_id
     {
@@ -2106,7 +2112,7 @@ fn read_parent_receipt(fd: &OwnedFd) -> io::Result<SelectedParentReceipt> {
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 /// Distinct parent-directory admission minted only from authenticated source
-/// write rights; direct edits remain operations of the canonical FsSession.
+/// write rights; direct edits remain operations of the canonical `FsSession`.
 pub struct SelectedParentAdmission {
     role: RootRole,
     view: File,
@@ -2139,7 +2145,7 @@ impl SelectedParentAdmission {
                 .bwrap_bin
                 .as_deref()
                 .is_some_and(|path| path != Path::new("/usr/bin/bwrap"))
-            || (unsafe { libc::getuid() } == 0 || unsafe { libc::geteuid() } == 0)
+            || (rustix::process::getuid().as_raw() == 0 || rustix::process::geteuid().as_raw() == 0)
         {
             return Err(RunError::InvalidServiceLaunch(
                 "selected parent requires ordinary confined non-root GUI".into(),
@@ -2310,6 +2316,9 @@ impl RootConsumerChannel {
     /// Consume only the exact endpoint-minted live edit issue. The private root
     /// session independently validates its genuine editor/source admission.
     /// Failure retains the exact stream and conservative possible-view state.
+    /// # Errors
+    /// Refuses cancelled or unauthenticated channels, invalid handoff evidence,
+    /// and failed or timed-out socket transfers.
     pub fn issue_selected_parent(
         mut self,
         grant: crate::owned_service::target_projection::SelectedParentIssue<'_>,
@@ -2384,6 +2393,7 @@ impl RootConsumerChannel {
             self.stream.set_write_timeout(None)?;
             Ok(())
         })();
+        drop(grant);
         match result {
             Ok(()) => Ok((self.stream, self.peer)),
             Err(error) => Err(FailedViewIssue {
@@ -2423,12 +2433,14 @@ pub fn run_selected_parent_gui(
     cancellation: ServiceCancellation,
 ) -> Result<std::process::ExitStatus, RunError> {
     let owner = admission.namespace_owner(cancellation)?;
-    crate::run::run_supervised_gui(
+    let result = crate::run::run_supervised_gui(
         &admission.manifest_path,
         &admission.payload_root,
         &admission.opts,
         &owner,
-    )
+    );
+    drop(admission);
+    result
 }
 
 #[cfg(test)]
@@ -2451,6 +2463,9 @@ pub enum OrdinaryLaunchGate {
     SelectedParent(RetainedLaunchGate),
 }
 impl RetainedLaunchGate {
+    /// # Errors
+    /// Refuses cancelled or unauthenticated channels, invalid handoff evidence,
+    /// and failed or timed-out socket transfers.
     pub fn receive_registration(
         mut gate: UnixStream,
         cancellation: &ServiceCancellation,

@@ -523,7 +523,7 @@ impl RootObservedCurrentDevice {
     /// Descriptor setup failures and current-owner review/revalidation failures
     /// also fail; see [`CurrentDeviceReference::review`].
     pub fn review(identity: std::fs::File, expected_owner: u32) -> io::Result<Self> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let system = fs::Directory::open_public_root(Path::new("/var/lib/tilo"))?;
@@ -556,7 +556,7 @@ impl RootObservedCurrentDevice {
     /// Returns an error unless both real and effective UID remain root, or if
     /// [`CurrentDeviceReference::validate`] fails for the held owner custody.
     pub fn validate(&self) -> io::Result<()> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         self.current.validate()

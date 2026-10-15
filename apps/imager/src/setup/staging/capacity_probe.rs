@@ -13,7 +13,7 @@ pub(crate) fn maybe_run(args: &[String]) -> Result<Option<i32>, String> {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: geteuid has no arguments or pointer accesses.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err("capacity review requires canonical elevation".into());
         }
         use std::io::Write;
@@ -144,7 +144,7 @@ mod tests {
             revents: 0,
         };
         // SAFETY: poll observes one initialized owned descriptor.
-        assert_eq!(unsafe { libc::poll(&mut event, 1, 0) }, 1);
+        assert_eq!(unsafe { libc::poll(&raw mut event, 1, 0) }, 1);
         assert_ne!(event.revents & libc::POLLIN, 0);
     }
 

@@ -539,7 +539,9 @@ fn publish_artifact(
 ) -> std::io::Result<()> {
     use super::super::{destination_security, migration::PinnedDirectory, migration_durability};
     use cap_fs_ext::OpenOptionsFollowExt;
-    use cap_primitives::fs::{FollowSymlinks, OpenOptions, OpenOptionsExt};
+    #[cfg(unix)]
+    use cap_primitives::fs::OpenOptionsExt;
+    use cap_primitives::fs::{FollowSymlinks, OpenOptions};
     migration_durability::supported()?;
     let parent = PinnedDirectory::open_absolute(
         path.parent()
@@ -564,8 +566,9 @@ fn publish_artifact(
         .read(true)
         .write(true)
         .create_new(true)
-        .follow(FollowSymlinks::No)
-        .mode(0o600);
+        .follow(FollowSymlinks::No);
+    #[cfg(unix)]
+    options.mode(0o600);
     let mut file = cap_primitives::fs::open(&parent.file, &temporary, &options)?;
     let result = (|| {
         destination_security::check_private_file(&file)?;

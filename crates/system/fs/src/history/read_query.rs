@@ -95,11 +95,7 @@ mod tests {
     };
     use uuid::Uuid;
 
-    #[test]
-    fn durable_metadata_history_uses_exact_bounded_shared_query() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = FileHistoryStore::open(directory.path().join("history.json")).unwrap();
-        let record = FileRecordId::new();
+    fn append_metadata_versions(store: &FileHistoryStore, record: FileRecordId) -> FileVersionId {
         let mut parent = None;
         for index in 0..25 {
             let version = FileVersionV1 {
@@ -122,6 +118,15 @@ mod tests {
             parent = Some(version.id);
             store.append(version).unwrap();
         }
+        parent.unwrap()
+    }
+
+    #[test]
+    fn durable_metadata_history_uses_exact_bounded_shared_query() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = FileHistoryStore::open(directory.path().join("history.json")).unwrap();
+        let record = FileRecordId::new();
+        let latest = append_metadata_versions(&store, record);
         let snapshot = store.snapshot(record).unwrap();
         let scope = Scope {
             workspace_id: Uuid::new_v4(),
@@ -170,7 +175,7 @@ mod tests {
                 scope,
                 None,
                 Query::Page {
-                    cursor: Some(([8; 32], parent.unwrap()))
+                    cursor: Some(([8; 32], latest))
                 }
             ),
             Err(Error::Stale)
@@ -182,7 +187,7 @@ mod tests {
                 None,
                 Query::Version {
                     frontier: scope.frontier,
-                    version_id: parent.unwrap(),
+                    version_id: latest,
                 },
             )
             .unwrap()
@@ -196,7 +201,7 @@ mod tests {
                 None,
                 Query::Preview {
                     frontier: scope.frontier,
-                    version_id: parent.unwrap()
+                    version_id: latest
                 }
             ),
             Err(Error::InvalidRequest)

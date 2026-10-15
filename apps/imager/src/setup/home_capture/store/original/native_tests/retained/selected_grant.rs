@@ -31,7 +31,7 @@ impl SelectedGrant {
         installation: &staging::plan::Plan,
     ) -> io::Result<Self> {
         main.with_original(|| {
-            if unsafe { libc::getuid() } != 1000 || selected.is_empty() {
+            if rustix::process::getuid().as_raw() != 1000 || selected.is_empty() {
                 return Err(denied());
             }
             let document = SourceLeaf::open(&home.join("receiver-document.txt"))?;

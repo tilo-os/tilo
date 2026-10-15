@@ -103,6 +103,15 @@ fn flatpak_probe_smoke(args: &[String]) -> Result<Option<i32>, String> {
     Ok(Some(0))
 }
 
+#[cfg(target_os = "linux")]
+fn read_selected_media(args: &[String]) -> Result<Option<i32>, String> {
+    crate::setup::read_media::maybe_run(args)
+}
+#[cfg(not(target_os = "linux"))]
+fn read_selected_media(_args: &[String]) -> Result<Option<i32>, String> {
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     fn args(rest: &[&str]) -> Vec<String> {
@@ -147,13 +156,4 @@ mod tests {
             );
         }
     }
-}
-
-#[cfg(target_os = "linux")]
-fn read_selected_media(args: &[String]) -> Result<Option<i32>, String> {
-    crate::setup::read_media::maybe_run(args)
-}
-#[cfg(not(target_os = "linux"))]
-fn read_selected_media(_args: &[String]) -> Result<Option<i32>, String> {
-    Ok(None)
 }

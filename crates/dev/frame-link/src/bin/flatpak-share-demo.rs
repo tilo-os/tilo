@@ -3,11 +3,11 @@
 //!
 //! For each frame: synthesise a source RGBA frame (moving text stamp,
 //! bouncing shapes, rotating gradient); feed it through the production
-//! [`shell::network::encoder::VideoEncoder`] in the codec a share would
-//! negotiate on this machine; push the access unit through a
-//! [`frame_link::FrameLink`] shim configured with
-//! `--latency-ms`/`--throughput-kbps`; drain the shim and feed anything
-//! ready into the production [`shell::network::decoder::VideoDecoder`];
+//! [`tilo_callstream::VideoEncoder`] in the codec a share would negotiate on
+//! this machine; push the access unit through a [`frame_link::FrameLink`]
+//! shim configured with `--latency-ms`/`--throughput-kbps`; drain the shim
+//! and feed anything ready into the production
+//! [`tilo_callstream::surface_decoder::VideoDecoder`];
 //! composite source-on-left + decoded-on-right into a 2W×H canvas;
 //! encode the composite via a second encoder and mux it into an MP4 with
 //! the compositor's recording muxer.
@@ -45,9 +45,9 @@ use std::time::{Duration, Instant};
 
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 use frame_link::{FrameLink, LinkConfig, LinkStats};
-use shell::compositor::mp4_recording::{Mp4Recording, recording_encoder};
-use shell::network::decoder::VideoDecoder;
-use shell::network::encoder::VideoEncoder;
+use tilo_callstream::VideoEncoder;
+use tilo_callstream::mp4_recording::{Mp4Recording, recording_encoder};
+use tilo_callstream::surface_decoder::VideoDecoder;
 use tracing::{Level, Subscriber, span};
 use tracing_subscriber::{Layer, layer::Context, prelude::*, registry::LookupSpan};
 
@@ -1079,7 +1079,7 @@ impl Pipeline {
             if let Some(frame) = self.recv_decoder.decode(&nal_blob) {
                 // Post-HDR decoder now returns typed DecodedPixels; the
                 // demo only handles SDR RGBA, so extract those bytes.
-                if let shell::network::decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
+                if let tilo_callstream::surface_decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
                     self.last_decoded = Some(rgba);
                 }
                 self.decoded_frames = self.decoded_frames.saturating_add(1);
@@ -1129,7 +1129,7 @@ impl Pipeline {
             .unwrap_or_else(Instant::now);
         for nal_blob in self.shim.drain_ready(flush_now) {
             if let Some(frame) = self.recv_decoder.decode(&nal_blob) {
-                if let shell::network::decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
+                if let tilo_callstream::surface_decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
                     self.last_decoded = Some(rgba);
                 }
                 self.decoded_frames = self.decoded_frames.saturating_add(1);
@@ -1139,7 +1139,7 @@ impl Pipeline {
 }
 
 fn main() -> Result<(), String> {
-    // Install the tracing subscriber early so every span from the shell
+    // Install the tracing subscriber early so every span from the
     // encoder/decoder/shim is captured.
     let inner = init_tracing();
     let Some(args) = parse_args().inspect_err(|_e| {

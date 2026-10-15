@@ -316,7 +316,11 @@ def stage_engine_runtimes(repo, stage, bundle, roots=None, fetch=None):
             source = fetched / version
         if not (source / 'bundle.toml').is_file():
             raise ValueError(f'the engine {reference} the apps pin is neither on this host nor in the registry')
-        report = run([str(bundle), 'verify', str(source), '--require-signature'], capture=True).stdout
+        report = run([str(bundle), 'verify', str(source), '--require-signature',
+                      '--require-arch', platform.machine()], capture=True).stdout
+        manifest = tomllib.loads((source / 'bundle.toml').read_text())
+        if manifest.get('version') != version:
+            raise ValueError(f'{reference} directory contains a different signed engine version')
         found = re.search(r'publisher: ed25519:([0-9a-f]{64})', report)
         if not found:
             raise ValueError(f'{reference} is not signed by a publisher')

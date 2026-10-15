@@ -39,9 +39,11 @@ pub type ChannelKeys = (runtime_identity::wire::ChannelAccess, u64, Vec<u8>);
 
 /// The channel service that hands apps their routes' content keys.
 pub trait ChannelKeySource: Send + Sync + 'static {
-    /// The access this device has to `channel` in `room`, its generation, and
-    /// the route's content keys when ready and newer than `known_generation`;
-    /// `None` while no channel service runs.
+    /// The access this device has to the channel of `route`'s record in
+    /// `room`, its generation, and the route's content keys when ready and
+    /// newer than `known_generation`; `None` while no channel service runs.
+    /// The route goes to the channel's steward with this device's access
+    /// request, so it can decide Read on the record itself.
     ///
     /// # Errors
     ///
@@ -49,7 +51,7 @@ pub trait ChannelKeySource: Send + Sync + 'static {
     fn access(
         &self,
         room: RoomId,
-        channel: collab_types::ChannelId,
+        route: &collab_types::ChannelRoute,
         known_generation: u64,
     ) -> Option<Result<ChannelKeys, String>>;
 }
@@ -75,7 +77,7 @@ impl ChannelKeySource for () {
     fn access(
         &self,
         _room: RoomId,
-        _channel: collab_types::ChannelId,
+        _route: &collab_types::ChannelRoute,
         _known_generation: u64,
     ) -> Option<Result<ChannelKeys, String>> {
         None
@@ -655,12 +657,15 @@ fn channel_keys(
     if !reads {
         return Response::Denied("identity may not read this workspace".into());
     }
-    let Some(room) = RoomId::parse(route.workspace_id) else {
+    // Only the room's canonical form: the channel is the hash of the route
+    // in it, which a steward checks the route against.
+    let Some(room) =
+        RoomId::parse(route.workspace_id).filter(|room| room.to_string() == route.workspace_id)
+    else {
         return Response::Denied("channel keys requested for an invalid room".into());
     };
-    let channel =
-        collab_types::document_channel_id(route.app_id, route.workspace_id, route.record_id);
-    match channels.access(room, channel, known_generation) {
+    let record = collab_types::ChannelRoute::new(route.app_id, route.record_id);
+    match channels.access(room, &record, known_generation) {
         None => Response::ChannelKeys {
             access: runtime_identity::wire::ChannelAccess::Unavailable,
             generation: 0,
@@ -1604,7 +1609,7 @@ params = []
         fn access(
             &self,
             _room: RoomId,
-            _channel: collab_types::ChannelId,
+            _route: &collab_types::ChannelRoute,
             _known_generation: u64,
         ) -> Option<Result<ChannelKeys, String>> {
             Some(Ok((

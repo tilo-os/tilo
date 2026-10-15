@@ -33,7 +33,7 @@ fn linux_nextcloud_source_review_production_view_preserves_local_only_changes_wa
     let overview = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
     assert!(visible_text(&overview).contains(&t("installer-accounts-nextcloud-linux-summary")));
     accounts
-        .apply(AccountRequest::Source(candidate.id.clone()))
+        .apply(AccountRequest::Source(candidate.id))
         .unwrap();
     let review = accounts.view(Rc::new(|_| {}), Rc::new(|_, _| {}));
     let text = visible_text(&review);

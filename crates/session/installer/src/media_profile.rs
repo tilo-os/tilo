@@ -44,6 +44,7 @@ pub struct MediaProfile {
     pub purpose: String,
     pub device_label: String,
     pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
+    pub windows_preparation: Option<account_custody::hints::media::Expectation>,
     pub hostname: Option<String>,
     pub username: Option<String>,
     pub full_name: Option<String>,
@@ -91,6 +92,8 @@ struct RawMediaProfile {
     #[serde(default, deserialize_with = "present_expectation")]
     prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
     #[serde(default)]
+    windows_preparation: Option<account_custody::hints::media::Expectation>,
+    #[serde(default)]
     hostname: Option<String>,
     #[serde(default)]
     username: Option<String>,
@@ -135,6 +138,9 @@ where
 
 impl RawMediaProfile {
     fn validate(self, zoneinfo_root: &Path) -> Result<MediaProfile, String> {
+        if self.prepared_setup.is_some() && self.windows_preparation.is_some() {
+            return Err("Windows suggestions cannot claim a prepared Linux identity".into());
+        }
         if self.schema != 1 {
             return Err("unsupported installation profile version".into());
         }
@@ -204,6 +210,7 @@ impl RawMediaProfile {
             purpose: self.purpose,
             device_label: self.device_label,
             prepared_setup: self.prepared_setup,
+            windows_preparation: self.windows_preparation,
             hostname,
             username,
             full_name,

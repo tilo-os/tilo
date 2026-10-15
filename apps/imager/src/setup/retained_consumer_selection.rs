@@ -40,7 +40,7 @@ impl ReviewedConsumerSelection {
         Ok(value)
     }
     pub(super) fn check(&self, cancel: &AtomicBool) -> io::Result<()> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(refused());
         }
         self.input.revalidate(cancel)?;

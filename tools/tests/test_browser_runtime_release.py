@@ -112,7 +112,17 @@ class BrowserRuntimeRelease(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'escapes'):
                 release.native_payload(root, 'aarch64')
 
-    def test_workflow_only_admits_validated_manual_mode_and_confines_keys(self):
+    def test_normal_publication_selects_the_engine_of_built_or_reused_browser(self):
+        environment = dict(REQUESTED_PUBLISH='true', SELECTED_APPS='browser')
+        self.assertTrue(release.engine_dependency(environment))
+        self.assertFalse(release.engine_dependency(dict(environment, REQUESTED_PUBLISH='false')))
+        self.assertFalse(release.engine_dependency(dict(environment, ENGINE_RUNTIME_ONLY='true')))
+        self.assertFalse(release.engine_dependency(dict(environment, SIGNAL_PROVIDER_ONLY='true')))
+        self.assertFalse(release.engine_dependency(dict(environment, SELECTED_APPS='notes')))
+        self.assertTrue(release.engine_dependency(dict(environment, SELECTED_APPS='notes', COMPLETE='true')))
+        self.assertFalse(release.engine_dependency(dict(environment, SELECTED_APPS='', COMPLETE='true')))
+
+    def test_workflow_admits_engine_dependencies_after_authorization_and_confines_keys(self):
         workflow = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
         plan = workflow.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:', 1)[0]
         self.assertLess(plan.index('id: engine-mode'), plan.index('id: builder'))
@@ -122,7 +132,12 @@ class BrowserRuntimeRelease(unittest.TestCase):
             block = re.split(r'\n  [a-z][a-z-]+:\n', block, maxsplit=1)[0]
             self.assertIn("needs.plan.outputs.engine_runtime_only != 'true'", block)
         engine = workflow.split('\n  build-engine-runtime:\n', 1)[1].split('\n  publish-engine-runtime:', 1)[0]
-        self.assertIn("if: needs.plan.outputs.engine_runtime_only == 'true'", engine)
+        self.assertIn("if: needs.plan.outputs.engine_runtime_only == 'true' || needs.plan.outputs.engine_runtime_required == 'true'", engine)
+        publishing = workflow.split('\n  publish:\n', 1)[1].split('\n  build-signal-provider:', 1)[0]
+        self.assertIn('needs: [plan, authorize-publish, build, publish-engine-runtime]', publishing)
+        self.assertIn("needs.publish-engine-runtime.result == 'success'", publishing)
+        self.assertIn("needs.plan.outputs.engine_runtime_required != 'true' && needs.publish-engine-runtime.result == 'skipped'", publishing)
+        self.assertIn('tools/apps/browser_runtime_release.py dependencies', plan)
         self.assertIn('needs: [plan, authorize-publish]', engine)
         compile_step, sealing = engine.split('      - name: Seal the verified engine', 1)
         self.assertNotIn('secrets.', compile_step)
@@ -133,7 +148,7 @@ class BrowserRuntimeRelease(unittest.TestCase):
         publisher = (ROOT / 'tools/apps/publish-browser-runtime.sh').read_text()
         self.assertLess(publisher.index('browser_runtime_release.py verify'), publisher.index('jwt=$(curl'))
         self.assertIn('tools/apps/publish-runtime-package.sh', publisher)
-        self.assertIn('GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main', publisher)
+        self.assertIn('( $GITHUB_EVENT_NAME == push || $GITHUB_EVENT_NAME == workflow_dispatch ) && $GITHUB_REF == refs/heads/main', publisher)
 
     def test_snapshot_admission_matches_actual_git_tree_and_rejects_source_changes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -321,7 +336,8 @@ class BrowserRuntimeRelease(unittest.TestCase):
             self.assertEqual(trace.read_text().splitlines(), ['verify', 'inspect'] * 14)
 
     def test_publication_wrong_event_stops_before_tools_credentials_or_network(self):
-        for event, ref in (('push', 'refs/heads/main'), ('workflow_dispatch', 'refs/heads/task')):
+        for event, ref in (('pull_request', 'refs/heads/main'), ('push', 'refs/heads/task'),
+                           ('workflow_dispatch', 'refs/heads/task')):
             result = subprocess.run(['bash', str(ROOT / 'tools/apps/publish-browser-runtime.sh')],
                                     env={'PATH': os.environ['PATH'], 'GITHUB_EVENT_NAME': event,
                                          'GITHUB_REF': ref}, capture_output=True, text=True)

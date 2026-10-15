@@ -271,14 +271,22 @@ fn same_bytes(left: &File, right: &File) -> io::Result<bool> {
     let mut a = [0u8; 8192];
     let mut b = [0u8; 8192];
     while offset < size {
-        let count =
-            usize::try_from((size - offset).min(a.len() as u64)).map_err(io::Error::other)?;
-        left.read_exact_at(&mut a[..count], offset)?;
-        right.read_exact_at(&mut b[..count], offset)?;
-        if a[..count] != b[..count] {
+        let count = usize::try_from(
+            size.checked_sub(offset)
+                .ok_or(io::ErrorKind::InvalidData)?
+                .min(a.len() as u64),
+        )
+        .map_err(io::Error::other)?;
+        let left_chunk = a.get_mut(..count).ok_or(io::ErrorKind::InvalidData)?;
+        let right_chunk = b.get_mut(..count).ok_or(io::ErrorKind::InvalidData)?;
+        left.read_exact_at(left_chunk, offset)?;
+        right.read_exact_at(right_chunk, offset)?;
+        if left_chunk != right_chunk {
             return Ok(false);
         }
-        offset += count as u64;
+        offset = offset
+            .checked_add(u64::try_from(count).map_err(io::Error::other)?)
+            .ok_or(io::ErrorKind::InvalidData)?;
     }
     Ok(true)
 }

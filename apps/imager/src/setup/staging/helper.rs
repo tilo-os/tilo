@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use super::bundle::BundleFacts;
 use super::efi;
 use super::fat::{self, Range};
-use super::handoff::{self, Handoff};
+use super::handoff;
 use super::plan::{Basis, Plan};
 use super::platform::{Disk, NewPartition, Partition, Platform};
 use super::record::{
@@ -308,7 +308,7 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
         }
     }
     if let Some(prepared) = &request.prepared_setup {
-        if !prepared.valid() || request.plan.basis.host_os() != "linux" {
+        if !prepared.valid() || request.plan.basis.host_os() != super::plan::HostOs::Linux {
             return bad("Prepared setup requires bounded private Linux staging custody");
         }
         if let Some(expected) = request.profile.get("prepared_setup") {
@@ -925,7 +925,7 @@ impl Engine<'_> {
         // The unprivileged Windows probe cannot read EFI variables, so its
         // basis carries no boot fields; there the helper's own live reads
         // (`firmware_preconditions`, `original_firmware`) are the authority.
-        let boot_fields_probed = plan.basis.host_os() == "linux";
+        let boot_fields_probed = plan.basis.host_os() == super::plan::HostOs::Linux;
         if cf.uefi != ef.uefi
             || cf.secure_boot != ef.secure_boot
             || (boot_fields_probed
@@ -1924,7 +1924,7 @@ impl Engine<'_> {
     fn handoff_bytes(&mut self, number: u16, len: u64) -> Result<Vec<u8>, Refusal> {
         let (_, esp) = self.require_staged(Which::Esp)?;
         let (_, root) = self.require_staged(Which::Root)?;
-        let mut handoff = Handoff::for_plan(
+        let mut handoff = handoff::for_plan(
             &self.request.operation_id,
             self.plan(),
             &esp.guid,
@@ -1933,7 +1933,11 @@ impl Engine<'_> {
             self.record().original_firmware.boot_order.clone(),
             self.record().profile.clone(),
         );
-        handoff.migration = self.prepared_migration_handoff(MigrationHandoffPurpose::Delivery)?;
+        handoff.migration = self
+            .prepared_migration_handoff(MigrationHandoffPurpose::Delivery)?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(io_refusal)?;
         if let Some(expected) = &self.record().prepared_setup {
             handoff.profile.insert(
                 "prepared_setup".into(),
@@ -2053,7 +2057,7 @@ impl Engine<'_> {
             .ok_or_else(|| {
                 Refusal::new(codes::ESP_PLACEHOLDER, "ESP reservation length overflow")
             })?;
-        let mut handoff = Handoff::for_plan(
+        let mut handoff = handoff::for_plan(
             &self.request.operation_id,
             self.plan(),
             "00000000-0000-4000-8000-000000000001",
@@ -2062,7 +2066,11 @@ impl Engine<'_> {
             self.record().original_firmware.boot_order.clone(),
             self.record().profile.clone(),
         );
-        handoff.migration = self.prepared_migration_handoff(MigrationHandoffPurpose::Preflight)?;
+        handoff.migration = self
+            .prepared_migration_handoff(MigrationHandoffPurpose::Preflight)?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(io_refusal)?;
         if let Some(expected) = &self.record().prepared_setup {
             handoff.profile.insert(
                 "prepared_setup".into(),
@@ -2810,8 +2818,7 @@ pub fn maybe_run_staging_helper(args: &[String]) -> Result<Option<i32>, String> 
         ));
     };
     #[cfg(unix)]
-    // SAFETY: geteuid has no preconditions.
-    if unsafe { libc::geteuid() } != 0 {
+    if tilo_process::effective_uid() != 0 {
         return Err("the staging helper must run as root".into());
     }
     let bytes = read_request(Path::new(request_path))?;

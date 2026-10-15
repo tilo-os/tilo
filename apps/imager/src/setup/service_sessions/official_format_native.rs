@@ -83,8 +83,8 @@ fn stamp(facts: &std::fs::Metadata) -> (u64, u64, u64, i64, i64, i64, i64) {
     )
 }
 pub(in crate::setup) fn guarded_owner() -> u32 {
-    let owner = unsafe { libc::getuid() };
-    assert!(owner == 99 && owner == unsafe { libc::geteuid() });
+    let owner = rustix::process::getuid().as_raw();
+    assert!(owner == 99 && owner == rustix::process::geteuid().as_raw());
     assert!(unsafe { libc::getgid() } == 99 && unsafe { libc::getegid() } == 99);
     assert!(unsafe { libc::getgroups(0, std::ptr::null_mut()) } == 0);
     assert!(

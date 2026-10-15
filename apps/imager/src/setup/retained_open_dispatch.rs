@@ -140,7 +140,7 @@ impl RetainedOpenDispatcher {
                 let Some(observed) = observed else {
                     let reply = RootReply::Refused {
                         schema: 1,
-                        request_id: request.request_id.clone(),
+                        request_id: request.request_id,
                         reason: RootRefusal::Unavailable,
                     };
                     write_frame(&mut self.stream, &encode_reply(&reply)?)?;
@@ -168,7 +168,7 @@ impl RetainedOpenDispatcher {
                         access: request.access,
                         reply: RootReply::Refused {
                             schema: 1,
-                            request_id: request.request_id.clone(),
+                            request_id: request.request_id,
                             reason: RootRefusal::Unavailable,
                         },
                     };
@@ -319,11 +319,11 @@ impl RetainedOpenDispatcher {
         challenge[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
         proof.write_all(&process_binding::MAGIC)?;
         proof.write_all(&challenge)?;
-        let target_uid = match shared
+        let target_uid = shared
             .lock()
             .map_err(|_| refused())?
-            .open_target_uid(&self.cancel)
-        {
+            .open_target_uid(&self.cancel);
+        let target_uid = match target_uid {
             Ok(uid) => uid,
             Err(_) => return Ok(None),
         };

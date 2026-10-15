@@ -286,6 +286,18 @@ mod tests {
         indicator
     }
 
+    fn required_width(renderer: &mut TextRenderer, theme: &Theme) -> f64 {
+        let indicator = wizard_indicator(0.0);
+        let widest = indicator
+            .steps
+            .iter()
+            .map(|label| renderer.measure(label, LABEL_SIZE, None).0)
+            .fold(0.0_f32, f32::max);
+        let gap = f64::from(theme.tokens.spacing.rhythm.related);
+        let column = (f64::from(widest) + gap).max(2.0 * (RADIUS + 3.0) + gap);
+        column * ui::num::f64_of_usize(indicator.steps.len())
+    }
+
     #[test]
     fn enlarged_captions_draw_existing_compact_progress_in_every_theme() {
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
@@ -304,11 +316,11 @@ mod tests {
                 assert_eq!(actual.encoding().path_data, compact.encoding().path_data);
                 assert_eq!(actual.encoding().draw_data, compact.encoding().draw_data);
                 assert!(actual.encoding().n_paths >= 2, "progress remains painted");
-                assert_eq!(indicator.steps.len(), 8);
+                assert_eq!(indicator.steps.len(), 9);
                 assert_eq!(indicator.current, 3);
                 let node = indicator.accessibility().expect("progress semantics");
-                assert_eq!(node.name.as_deref(), Some("Installation setup: Account"));
-                assert_eq!(node.value.as_deref(), Some("step 4 of 8"));
+                assert_eq!(node.name.as_deref(), Some("Installation setup: Disk"));
+                assert_eq!(node.value.as_deref(), Some("step 4 of 9"));
             });
         }
     }
@@ -316,22 +328,23 @@ mod tests {
     #[test]
     fn caption_fit_tracks_measured_type_and_available_columns() {
         let theme = Theme::light();
+        let normal =
+            ui::text_render::with_layout_renderer(1.0, |renderer| required_width(renderer, &theme));
+        let enlarged =
+            ui::text_render::with_layout_renderer(1.5, |renderer| required_width(renderer, &theme));
+        assert!(enlarged > normal, "larger captions require wider columns");
+        // Between the two measured thresholds, all nine captions fit at 1×,
+        // but accessibility-sized type must use compact progress.
+        let width = f64::midpoint(normal, enlarged);
         for scale in [1.0, 1.5, 2.0] {
             ui::text_render::with_layout_renderer(scale, |renderer| {
-                let mut indicator = wizard_indicator(464.0);
+                let mut indicator = wizard_indicator(width);
                 assert_eq!(
                     indicator.needs_compact(renderer, &theme),
                     scale > 1.0,
                     "normal captions fit; enlarged captions need compact progress"
                 );
-                let widest = indicator
-                    .steps
-                    .iter()
-                    .map(|label| renderer.measure(label, LABEL_SIZE, None).0)
-                    .fold(0.0_f32, f32::max);
-                let gap = f64::from(theme.tokens.spacing.rhythm.related);
-                let column = (f64::from(widest) + gap).max(2.0 * (RADIUS + 3.0) + gap);
-                let required = column * ui::num::f64_of_usize(indicator.steps.len());
+                let required = required_width(renderer, &theme);
                 indicator.rect.x1 = required - 1.0;
                 assert!(indicator.needs_compact(renderer, &theme));
                 indicator.rect.x1 = required + 1.0;

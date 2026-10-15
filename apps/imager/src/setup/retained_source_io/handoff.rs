@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn unarmed_actual_socket_cannot_obtain_any_bootstrap() {
         assert_eq!(
-            unsafe { libc::geteuid() },
+            rustix::process::geteuid().as_raw(),
             0,
             "root-only source handoff fixture"
         );

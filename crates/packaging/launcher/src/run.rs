@@ -1002,14 +1002,16 @@ fn start_identity_broker(
     path: &Path,
     store: Option<&Path>,
 ) -> Result<(UnixStream, UnixStream, std::thread::JoinHandle<()>), RunError> {
-    // A launch only reads the identity store. A store record must already be
-    // in the form provisioning leaves it; one that is not fails the launch
-    // and names the step that secures it. An explicit debug record outside
-    // the store loads as written.
-    let identity = if store.is_some_and(|store| path.parent() == Some(store)) {
-        runtime_identity::load_for_launch(path)
+    // A launch only reads the identity store, and only a record's public
+    // fields: the broker answers metadata and refuses every signature, so it
+    // never needs the person's key and never asks the secret provider for it.
+    // A store record must still be in the form provisioning leaves it; one
+    // that is not fails the launch and names the step that secures it. An
+    // explicit debug record outside the store is read as written.
+    let metadata = if store.is_some_and(|store| path.parent() == Some(store)) {
+        runtime_identity::load_metadata_for_launch(path)
     } else {
-        runtime_identity::load_from_path(path.to_path_buf())
+        runtime_identity::load_metadata_from_path(path)
     }
     .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
     let (host, app) =
@@ -1020,7 +1022,7 @@ fn start_identity_broker(
     let thread = std::thread::Builder::new()
         .name("tilo-identity-broker".into())
         .spawn(move || {
-            if let Err(error) = runtime_identity::broker::serve(host, identity) {
+            if let Err(error) = runtime_identity::broker::serve_metadata(host, &metadata) {
                 tracing::debug!(%error, "identity broker connection ended");
             }
         })
@@ -1397,7 +1399,7 @@ mod system_bundle_tree_policy_tests {
 
     #[test]
     fn immutable_system_bundle_accepts_a_root_owned_symlinked_prefix() {
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return;
         }
         // The policy walks every ancestor, so the fixture has to live below
@@ -1760,6 +1762,28 @@ pub(crate) fn verified_launch_installation(
     payload_root: &Path,
     expected: &str,
 ) -> Result<ManifestView, RunError> {
+    // Re-read on every launch, as `tilo-install run` does: a publisher
+    // revoked after install must not keep launching from the shell. An
+    // unreadable list refuses rather than reading as "nothing revoked".
+    use tilo_app_package::TrustFile as _;
+    let revoked = match tilo_app_package::default_revoked_keys_path() {
+        Some(path) => tilo_app_package::RevocationList::load(&path).map_err(|error| {
+            RunError::InvalidServiceLaunch(format!(
+                "the publisher revocation list is unreadable ({error})"
+            ))
+        })?,
+        None => tilo_app_package::RevocationList::default(),
+    };
+    verified_launch_installation_against(installed, manifest_path, payload_root, expected, &revoked)
+}
+
+pub(crate) fn verified_launch_installation_against(
+    installed: &package_store::InstalledPackage,
+    manifest_path: &Path,
+    payload_root: &Path,
+    expected: &str,
+    revoked: &tilo_app_package::RevocationList,
+) -> Result<ManifestView, RunError> {
     let refusal =
         || RunError::InvalidServiceLaunch("original signed package launch changed".into());
     if installed.package_id_hex != expected
@@ -1779,6 +1803,12 @@ pub(crate) fn verified_launch_installation(
         expected,
     )
     .map_err(|_| refusal())?;
+    if let Some(entry) = revoked.find(&record.root.publisher_identity) {
+        return Err(RunError::InvalidServiceLaunch(format!(
+            "the package's publisher key is revoked ({})",
+            entry.reason
+        )));
+    }
     let manifest: ManifestView =
         toml::from_str(std::str::from_utf8(&record.manifest_bytes).map_err(|_| refusal())?)
             .map_err(|_| refusal())?;
@@ -2602,8 +2632,12 @@ fn stage_sandbox_account(
     argv: &mut Vec<String>,
     original_identity: Option<(u32, u32)>,
 ) -> Result<OwnedFd, RunError> {
-    let (uid, gid) =
-        original_identity.unwrap_or_else(|| unsafe { (libc::geteuid(), libc::getegid()) });
+    let (uid, gid) = original_identity.unwrap_or_else(|| {
+        (
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+        )
+    });
     let account = sandbox_account(uid, gid);
     let data = stage_seccomp_blob(account.as_bytes())?;
     // Keep the source above the fixed child slots: earlier dup2 calls must
@@ -2642,7 +2676,10 @@ mod sandbox_account_tests {
         let account = stage_sandbox_account(&mut Vec::new(), None).expect("account");
         let expected = format!(
             "serviceclone3baseline{}",
-            sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+            sandbox_account(
+                rustix::process::geteuid().as_raw(),
+                rustix::process::getegid().as_raw()
+            )
         );
         let source = service.as_raw_fd();
         let mut pairs = vec![(ACCOUNT_CHILD_FD, 17)];
@@ -2681,7 +2718,10 @@ mod sandbox_account_tests {
             .expect("account bytes");
         assert_eq!(
             contents,
-            sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+            sandbox_account(
+                rustix::process::geteuid().as_raw(),
+                rustix::process::getegid().as_raw()
+            )
         );
         assert_eq!(
             argv,
@@ -2785,9 +2825,11 @@ fn spawn_and_wait(
         .or_else(|| {
             observer
                 .and_then(crate::managed::EnrolledProcessObserver::retained_io_projection)
-                .map(|io| io.identity())
+                .map(crate::owned_service::RetainedIoAdmission::identity)
         })
-        .or_else(|| target_projection.map(|target| target.identity()));
+        .or_else(|| {
+            target_projection.map(crate::owned_service::TargetProjectionAdmission::identity)
+        });
     let account_fd = stage_sandbox_account(&mut argv, original_identity)?;
     let host_account_fd = account_fd.as_raw_fd();
 
@@ -3760,8 +3802,9 @@ pub(crate) fn run_with_context(
             .iter()
             .position(|arg| arg == "__sandbox-exec")
             .ok_or_else(|| RunError::InvalidServiceLaunch("Capture shim unavailable".into()))?;
+        let insertion = position.saturating_add(1);
         argv.splice(
-            position + 1..position + 1,
+            insertion..insertion,
             [
                 "--rw-noexec".into(),
                 crate::owned_service::capture::OUTPUT_PATH.into(),
@@ -4180,15 +4223,7 @@ fn spawn_and_capture_bounded(
             None
         };
         if let Some(reason) = reason {
-            let pid = i32::try_from(child.id()).unwrap_or(i32::MAX);
-            // SAFETY: the child created its own process group before exec;
-            // a negative pid addresses only that exact group.
-            let process_group = pid.saturating_neg();
-            let killed = unsafe { libc::kill(process_group, libc::SIGKILL) } == 0;
-            if !killed {
-                let _ = child.kill();
-            }
-            let _ = child.wait();
+            bounded_command::terminate_tree(&mut child, Duration::ZERO);
             break reason;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -4814,8 +4849,7 @@ exec sleep infinity
 /// Current process UID via libc, avoiding a `users`/`nix` dependency.
 /// Falls back to 1000 if the syscall somehow fails.
 fn current_uid() -> u32 {
-    // SAFETY: getuid always succeeds and returns a uid_t.
-    unsafe { libc::getuid() }
+    rustix::process::getuid().as_raw()
 }
 
 #[cfg(test)]
@@ -5134,6 +5168,95 @@ mod identity_resolution_tests {
             assert!(error.to_string().contains("Settings > Users"), "{error}");
             assert_eq!(store_snapshot(&store), before);
             make_read_only(&store, false);
+        }
+    }
+
+    /// Ask the app end of a launch's broker for metadata and to sign, over
+    /// the broker's pinned frames: an operation or status byte, a big-endian
+    /// `u32` length, then the payload.
+    fn ask_broker(app: &mut UnixStream, op: u8, payload: &[u8]) -> (u8, Vec<u8>) {
+        use std::io::{Read, Write};
+
+        app.write_all(&[op]).unwrap();
+        app.write_all(&u32::try_from(payload.len()).unwrap().to_be_bytes())
+            .unwrap();
+        app.write_all(payload).unwrap();
+        let mut head = [0_u8; 5];
+        app.read_exact(&mut head).unwrap();
+        let len = u32::from_be_bytes([head[1], head[2], head[3], head[4]]);
+        let mut reply = vec![0_u8; usize::try_from(len).unwrap()];
+        app.read_exact(&mut reply).unwrap();
+        (head[0], reply)
+    }
+
+    #[test]
+    fn a_launch_never_reads_the_identity_secret() {
+        // Each secured record launches, and hands the app the same public
+        // fields its full load reports, after its secret is deleted from the
+        // provider: a launch that touched the provider would fail.
+        for (name, primary) in [("local", local_record()), ("threshold", threshold_record())] {
+            let root = tempfile::tempdir().unwrap();
+            let store = root.path().join("identity");
+            let path = runtime_identity::import_identity_with_provider(
+                &store,
+                "primary",
+                &primary,
+                &runtime_identity::BrokerFileProvider::new(&store),
+            )
+            .unwrap();
+            runtime_identity::set_active_identity(&store, "primary").unwrap();
+            let full = runtime_identity::load_from_path(path.clone()).unwrap();
+            let expected = serde_json::json!({
+                "display_name": full.display_name(),
+                "avatar_color": full.avatar_color(),
+                "group_public_key": full.group_public_key(),
+                "threshold": full.threshold(),
+                "total_shares": full.total_shares(),
+                "share_index": full.share_index(),
+                "single_device": full.is_single_device(),
+            });
+            drop(full);
+
+            let secrets: Vec<_> = std::fs::read_dir(store.join("secrets"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(secrets.len(), 1, "{name}: one secret file");
+            for secret in &secrets {
+                std::fs::remove_file(secret).unwrap();
+            }
+            assert!(
+                runtime_identity::load_from_path(path.clone()).is_err(),
+                "{name}: the secret is gone from its provider"
+            );
+
+            let opts = RunOptions {
+                identity: IdentitySource::Store(store.clone()),
+                ..RunOptions::default()
+            };
+            let resolved = resolve_identity_host_path(&opts).expect("an active record");
+            let (mut app, control, thread) =
+                start_identity_broker(&resolved, identity_store(&opts.identity).as_deref())
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+
+            let (status, metadata) = ask_broker(&mut app, 1, &[]);
+            assert_eq!(status, 0, "{name}");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&metadata).unwrap(),
+                expected,
+                "{name}: the app's metadata is the record's public fields"
+            );
+            let (status, refusal) = ask_broker(&mut app, 2, b"sign this");
+            assert_eq!(status, 1, "{name}: the broker never signs");
+            assert_eq!(
+                refusal,
+                b"the root signing key is never brokered to an application; \
+                  request signatures through the identity service",
+                "{name}"
+            );
+            drop(app);
+            drop(control);
+            thread.join().unwrap();
         }
     }
 
@@ -5841,7 +5964,7 @@ mod retained_files_tests {
         std::fs::write(&path, br#"{"schema":1,"locations":[]}"#).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let manifest: ManifestView = toml::from_str(
-            "[package]\nid = \"so.tilo.file-explorer\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"files\"\n",
+            "[package]\nkind = \"app\"\nid = \"so.tilo.file-explorer\"\nversion = \"1.0\"\n[entrypoint]\nbin = \"files\"\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n[sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n[sandbox.net]\nmode = \"off\"\n",
         ).unwrap();
         let opts = RunOptions {
             retained_files_host_path: Some(path),

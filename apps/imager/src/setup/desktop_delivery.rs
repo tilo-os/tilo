@@ -210,7 +210,7 @@ pub(crate) fn deliver(
     let caller = super::staging::prepared_setup::caller_uid()?;
     // Desktop delivery is never an elevated transaction or a cross-user import.
     // SAFETY: observes credentials only.
-    if caller != unsafe { libc::geteuid() } {
+    if caller != rustix::process::geteuid().as_raw() {
         return Err(changed("Desktop preparation requires the current account"));
     }
     let home = PinnedDirectory::open_absolute(target_home)?;
@@ -288,7 +288,7 @@ fn publish_payloads(
         &setup_root,
         "prepared-setup.sealed",
         setup.len() as u64,
-        Sha256::digest(&setup).into(),
+        Sha256::digest(setup).into(),
         cancel,
     )?;
     existing(

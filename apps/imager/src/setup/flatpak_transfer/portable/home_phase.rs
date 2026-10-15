@@ -300,35 +300,32 @@ impl ApplicationImport {
     ) -> io::Result<usize> {
         let store = storage(workspace)?;
         let _guard = lock(&store)?;
-        let baseline = match read::<Baseline>(&store, BASELINE)? {
-            Some(baseline) => {
-                self.validate_home_phase(
-                    home_review,
-                    runner,
-                    home,
-                    workspace,
-                    cancel,
-                    &store,
-                    &baseline,
-                )?;
-                baseline
-            }
-            None => {
-                home_review.verify_completed_adoption(cancel)?;
-                let pin = PinnedDirectory::open_absolute(home)?;
-                let baseline = Baseline {
-                    schema: 1,
-                    home: durable::identity(&durable::readable_directory(&pin.file)?)?,
-                    source: home_review.ciphertext_digest(),
-                    selection: self.expectation.clone(),
-                    original_refs: applications::states(runner, home).map_err(io::Error::other)?,
-                    original_config: configuration(home)?.into_iter().collect(),
-                    original_config_bytes: configuration_bytes(home)?,
-                };
-                home_review.verify_original_application_config(&baseline.original_config_bytes)?;
-                publish(&store, BASELINE, &baseline)?;
-                baseline
-            }
+        let baseline = if let Some(baseline) = read::<Baseline>(&store, BASELINE)? {
+            self.validate_home_phase(
+                home_review,
+                runner,
+                home,
+                workspace,
+                cancel,
+                &store,
+                &baseline,
+            )?;
+            baseline
+        } else {
+            home_review.verify_completed_adoption(cancel)?;
+            let pin = PinnedDirectory::open_absolute(home)?;
+            let baseline = Baseline {
+                schema: 1,
+                home: durable::identity(&durable::readable_directory(&pin.file)?)?,
+                source: home_review.ciphertext_digest(),
+                selection: self.expectation.clone(),
+                original_refs: applications::states(runner, home).map_err(io::Error::other)?,
+                original_config: configuration(home)?.into_iter().collect(),
+                original_config_bytes: configuration_bytes(home)?,
+            };
+            home_review.verify_original_application_config(&baseline.original_config_bytes)?;
+            publish(&store, BASELINE, &baseline)?;
+            baseline
         };
         let restored = self.restore(runner, home, cancel)?;
         validate_baseline(&baseline, self, home_review, home, cancel)?;

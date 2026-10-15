@@ -32,30 +32,6 @@ mod paired;
 #[path = "output/paired_apps.rs"]
 mod paired_apps;
 
-pub(in crate::setup) use paired::{Committed, CompletedReceiver};
-
-pub(in crate::setup) fn fixture_password() -> &'static [u8] {
-    PASSWORD
-}
-
-pub(in crate::setup) fn firstuse_child_dispatch() -> bool {
-    paired::child_dispatch()
-}
-
-pub(in crate::setup) fn firstuse_pipeline(receiver: CompletedReceiver) {
-    // Real DAV server remains owned until the target has consumed the normal
-    // prepared first-use route. No fake account grant or source key is supplied.
-    let server = cloud_source_dav::fake::FakeDav::generic();
-    server.put(
-        "Documents/hello.txt",
-        b"actual receiving first-use DAV bytes",
-    );
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("TILO_ORIGINAL_PAIRED_FIRSTUSE", "1");
-    env.set("TILO_ORIGINAL_PAIRED_DAV_URL", server.root_url().as_str());
-    original_pipeline_with_receiver(OriginalSelection::GuidedStory, Some(receiver));
-}
-
 const PASSWORD: &[u8] = b"several isolated synthetic qualification words";
 const COLUMNS: &str =
     "NAME,TYPE,SIZE,START,FSTYPE,UUID,PARTUUID,PTUUID,PTTYPE,LOG-SEC,MAJ:MIN,MOUNTPOINTS";
@@ -80,9 +56,12 @@ fn partition(guid: &str) -> String {
                     .is_some_and(|id| id.eq_ignore_ascii_case(guid))
         })
         .collect();
-    let [selected] = found.as_slice() else {
-        panic!("actual unique direct GPT partition required")
-    };
+    assert_eq!(
+        found.len(),
+        1,
+        "actual unique direct GPT partition required"
+    );
+    let selected = found[0];
     selected.name.clone()
 }
 fn marker(path: &Path, value: &[u8]) {
@@ -243,11 +222,11 @@ pub(in crate::setup) fn original_pipeline_with_receiver(
     }
     let flatpak = !matches!(selection, OriginalSelection::NoApplications);
     assert_eq!(
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         0,
         "isolated privileged qualifier required"
     );
-    assert_eq!(unsafe { libc::geteuid() }, 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
     // No ambient disk selection: coordinator supplies explicitly disposable
     // kernel subjects (three for the mounted route). Production reattests every serialized fact.
     let source_mount = PathBuf::from(
@@ -513,7 +492,7 @@ pub(in crate::setup) fn original_pipeline_with_receiver(
     if applications_only {
         manifest.offline_applications = Some(
             crate::setup::prepared_setup::OfflineApplicationsPlan::new(
-                plan.clone(),
+                plan,
                 manifest.setup_binding.clone(),
                 manifest.identity_public_key,
                 binding.clone(),
@@ -532,7 +511,7 @@ pub(in crate::setup) fn original_pipeline_with_receiver(
             applications: flatpak,
         });
         let mut offline = OfflineHomePlan::new(
-            plan.clone(),
+            plan,
             manifest.setup_binding.clone(),
             manifest.identity_public_key,
             binding.clone(),

@@ -24,6 +24,8 @@ const DEFAULTS: &str = include_str!("../oauth-clients.toml");
 pub struct Scopes {
     pub files: Vec<String>,
     pub mail: Vec<String>,
+    pub calendar: Vec<String>,
+    pub identity: Vec<String>,
     pub music: Vec<String>,
     pub music_streaming: Vec<String>,
 }
@@ -33,6 +35,8 @@ impl Scopes {
         match capability {
             Capability::Files => &self.files,
             Capability::Mail => &self.mail,
+            Capability::Calendar => &self.calendar,
+            Capability::Identity => &self.identity,
             Capability::Music => &self.music,
             Capability::MusicStreaming => &self.music_streaming,
         }
@@ -208,6 +212,19 @@ mod tests {
             assert!(!table.scopes(cloud.oauth_use()).is_empty(), "{cloud:?}");
         }
         assert_eq!(table.scopes(GMAIL), ["https://mail.google.com/"]);
+        assert_eq!(
+            table.scopes(OAuthUse::calendar(OAuthIssuer::Google)),
+            ["https://www.googleapis.com/auth/calendar"]
+        );
+        assert_eq!(
+            table.scopes(OAuthUse::identity(OAuthIssuer::Microsoft)),
+            ["offline_access", "User.Read"]
+        );
+        assert!(
+            table
+                .scopes(OAuthUse::calendar(OAuthIssuer::Microsoft))
+                .is_empty()
+        );
         assert_eq!(
             table.scopes(OUTLOOK),
             [

@@ -41,10 +41,14 @@
 mod clients;
 #[cfg(feature = "custody")]
 mod custodian;
+#[cfg(feature = "hints")]
+pub mod hints;
 #[cfg(feature = "custody")]
 pub mod icloud;
 #[cfg(feature = "custody")]
 pub mod nextcloud;
+#[cfg(feature = "custody")]
+pub mod portable;
 pub mod providers;
 #[cfg(feature = "custody")]
 pub mod service_sessions;

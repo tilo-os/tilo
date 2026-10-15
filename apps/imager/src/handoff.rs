@@ -998,6 +998,7 @@ mod tests {
         let staged = stage_access_handoff(&named, "", "", true).unwrap().unwrap();
         let hostname = staged.path().join("etc/hostname");
         assert_eq!(fs::read_to_string(&hostname).unwrap(), "tilo-board\n");
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(

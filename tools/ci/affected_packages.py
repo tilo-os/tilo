@@ -117,11 +117,17 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_settings_writes.py": "tools/tests/test_settings_writes.py",
     "tools/policy/check_app_content_store.py": "tools/tests/test_app_content_store.py",
     "tools/policy/check_document_engine_boundary.py": "tools/tests/test_document_engine_boundary.py",
+    "tools/policy/check_shell_layers.py": "tools/tests/test_check_shell_layers.py",
 }
 # Control-plane files are validated by tests that read or execute the production
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
+    # Read only by the shell-layers policy check, which run.sh executes.
+    "tools/policy/shell_layers_baseline.toml": (
+        "tools/policy/check_shell_layers.py",
+        "tools/tests/test_check_shell_layers.py",
+    ),
     "os/dev/ci-native-podman-store.sh": (
         "tools/tests/test_ci_native_podman_store.py",
         "os/tests/disk_image_root_podman_store.sh",
@@ -193,6 +199,15 @@ GLOBAL_PREFIXES = (
     ".config/",
     "vendor/",
 )
+# Vendored crates that carry Tilo patches, with the paths their own tests read.
+# The workspace builds them only as path dependencies, so Cargo selection never
+# runs their tests; check.yml's `vendored` job does
+# (tools/ci/test-vendored-crates.sh) when one of these paths or the runner
+# changes, and ci-nightly.yml runs every one.
+VENDORED_TEST_CRATES = {
+    "vendor/automerge": ("vendor/automerge/", "vendor/automerge-test/"),
+}
+VENDORED_TEST_RUNNER = "tools/ci/test-vendored-crates.sh"
 HEAVY_PACKAGES = {
     "browser",
     "ebook",
@@ -663,6 +678,14 @@ def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
     }
 
 
+def vendored_test_crates(changes: list[str], run_all: bool = False) -> list[str]:
+    """The VENDORED_TEST_CRATES whose tests `changes` reach, or all of them."""
+    if run_all or VENDORED_TEST_RUNNER in changes:
+        return sorted(VENDORED_TEST_CRATES)
+    return sorted(crate for crate, inputs in VENDORED_TEST_CRATES.items()
+                  if any(path.startswith(inputs) for path in changes))
+
+
 def make_plan(
     metadata: dict,
     root: Path,
@@ -886,7 +909,12 @@ def make_plan(
               if suite_manifest is not None and not pin_only else [])
     if only is not None:
         suites = [suite for suite in suites if suite in set(only["suites"])]
-    android = sorted(android_apps(packages) & selected)
+    # Vendored crates' own tests follow their files alone, not pushes to main:
+    # explicit full runs and the nightly run all of them.
+    vendored = vendored_test_crates(changes, run_all=force_full) if not pin_only else []
+    if only is not None:
+        vendored = [crate for crate in vendored if crate in set(only.get("vendored", ()))]
+    android =sorted(android_apps(packages) & selected)
     wasm = sorted(browser_crates(packages) & selected)
     examples = example_apps(packages, root)
     web_examples = sorted(
@@ -900,6 +928,9 @@ def make_plan(
         "pins_required": pin_only,
         "pins": pins if pin_only else [],
         "suites": suites,
+        # Vendored crates whose own tests check.yml's `vendored` job runs.
+        "vendored_required": bool(vendored),
+        "vendored": vendored,
         # Selected apps with an Android host example; check.yml's `android`
         # job type-checks them for the Android targets.
         "android_required": bool(android),
@@ -955,6 +986,8 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")
         handle.write(f"suites_required={'true' if plan['suites_required'] else 'false'}\n")
         handle.write(f"suites={' '.join(plan['suites'])}\n")
+        handle.write(f"vendored_required={'true' if plan['vendored_required'] else 'false'}\n")
+        handle.write(f"vendored_crates={' '.join(plan['vendored'])}\n")
         handle.write(f"pins_required={'true' if plan['pins_required'] else 'false'}\n")
         handle.write(f"pins={' '.join(plan['pins'])}\n")
         handle.write(f"android_required={'true' if plan['android_required'] else 'false'}\n")
@@ -985,7 +1018,8 @@ def recheck_scope(root: Path, metadata: dict, tested_base: str, base: str,
                       resolved_inputs=resolve_manifest_inputs(root, tested_base, base, metadata, changes))
     if delta["full"]:
         return None
-    return {"packages": set(delta["reached"]), "suites": set(delta["suites"])}
+    return {"packages": set(delta["reached"]), "suites": set(delta["suites"]),
+            "vendored": set(delta["vendored"])}
 
 
 def main() -> int:

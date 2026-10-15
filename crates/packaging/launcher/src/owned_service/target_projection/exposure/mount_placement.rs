@@ -1,7 +1,33 @@
 //! WIP: shared exact mount syscall core. No source or application grant.
 //! Controller must own this before place and establish actual consumer stop
 //! before retire; public callers cannot construct or discharge it.
-use super::*;
+use super::{
+    AsRawFd, BASE, CString, DirBuilderExt, File, MOVE_EMPTY, OpenOptionsExt, PathBuf, exact_mode,
+    held_inode, identity, io, mount_entry, mount_id, mount_row, mounted_file, namespace,
+    protected_directory, readonly, refused, root,
+};
+
+#[derive(PartialEq, Eq)]
+enum StageDetach {
+    Attached,
+    Detached,
+}
+
+struct Preparation {
+    path: PathBuf,
+    armed: bool,
+}
+impl Drop for Preparation {
+    fn drop(&mut self) {
+        if self.armed {
+            // Before placement this unique root-only path contains only
+            // our empty directory. Never recursively remove a tree.
+            let _ = std::fs::remove_dir(self.path.join("view"));
+            let _ = std::fs::remove_dir(&self.path);
+        }
+    }
+}
+
 pub(crate) struct MountPlacement {
     namespace: File,
     namespace_identity: (u64, u64),
@@ -13,7 +39,7 @@ pub(crate) struct MountPlacement {
     backing: File,
     stage_id: Option<u64>,
     stage_pending: bool,
-    stage_unmounted: bool,
+    stage_detach: StageDetach,
     clone_id: Option<u64>,
     clone_pending: bool,
     view: Option<File>,
@@ -44,20 +70,6 @@ impl MountPlacement {
             return Err(refused("Exposure nonce unavailable"));
         }
         let path = PathBuf::from(BASE).join(hex::encode(nonce));
-        struct Preparation {
-            path: PathBuf,
-            armed: bool,
-        }
-        impl Drop for Preparation {
-            fn drop(&mut self) {
-                if self.armed {
-                    // Before placement this unique root-only path contains only
-                    // our empty directory. Never recursively remove a tree.
-                    let _ = std::fs::remove_dir(self.path.join("view"));
-                    let _ = std::fs::remove_dir(&self.path);
-                }
-            }
-        }
         std::fs::DirBuilder::new().mode(0o711).create(&path)?;
         let mut preparation = Preparation {
             path: path.clone(),
@@ -96,7 +108,7 @@ impl MountPlacement {
             backing,
             stage_id: None,
             stage_pending: false,
-            stage_unmounted: false,
+            stage_detach: StageDetach::Attached,
             clone_id: Some(clone_id),
             clone_pending: false,
             view: Some(view),
@@ -113,7 +125,7 @@ impl MountPlacement {
             // Inserting even an empty carrier under a shared mount propagates.
             // Only the canonical root-managed private consuming namespace is
             // supported; never change a shared host ancestor's propagation.
-            if mount_entry(mount_id(&self.backing)?)?.map(|entry| entry.0) != Some(true) {
+            if mount_entry(mount_id(&self.backing)?)?.is_none_or(|entry| !entry.0) {
                 return Err(refused(
                     "Exposure requires owned private consuming namespace",
                 ));
@@ -194,7 +206,7 @@ impl MountPlacement {
             return Err(refused("Exposure namespace/staging custody differs"));
         }
         let current = protected_directory(self.path.parent().ok_or(io::ErrorKind::InvalidData)?)?;
-        if self.stage_pending && !self.stage_unmounted {
+        if self.stage_pending && self.stage_detach == StageDetach::Attached {
             if Some(mount_id(&current)?) != self.stage_id {
                 return Err(refused("Exposure stage replaced"));
             }
@@ -220,7 +232,9 @@ impl MountPlacement {
     }
     pub(crate) fn file(&self) -> io::Result<&File> {
         self.check()?;
-        self.view.as_ref().ok_or(io::ErrorKind::NotConnected.into())
+        self.view
+            .as_ref()
+            .ok_or_else(|| io::ErrorKind::NotConnected.into())
     }
     pub(crate) fn retire(&mut self) -> io::Result<()> {
         // Recover the exact stage identity if initial post-mount fdinfo failed.
@@ -264,22 +278,20 @@ impl MountPlacement {
             self.clone_pending = false;
         }
         if self.stage_pending {
-            let id = match self.stage_id {
-                Some(id) => id,
-                None => {
-                    let parent =
-                        mounted_file(self.path.parent().ok_or(io::ErrorKind::InvalidData)?)?;
-                    let id = mount_id(&parent)?;
-                    self.stage_id = Some(id);
-                    id
-                }
+            let id = if let Some(id) = self.stage_id {
+                id
+            } else {
+                let parent = mounted_file(self.path.parent().ok_or(io::ErrorKind::InvalidData)?)?;
+                let id = mount_id(&parent)?;
+                self.stage_id = Some(id);
+                id
             };
             // Release every root staging reference before nonlazy unmount.
             self.point = self.backing.try_clone()?;
             self.point_identity = identity(&self.point)?;
             self.parent = self.backing.try_clone()?;
             self.parent_identity = identity(&self.parent)?;
-            if !self.stage_unmounted {
+            if self.stage_detach == StageDetach::Attached {
                 let path = CString::new(
                     self.path
                         .parent()
@@ -291,13 +303,13 @@ impl MountPlacement {
                 if unsafe { libc::umount2(path.as_ptr(), libc::UMOUNT_NOFOLLOW) } != 0 {
                     return Err(io::Error::last_os_error());
                 }
-                self.stage_unmounted = true;
+                self.stage_detach = StageDetach::Detached;
             }
             if mount_row(id)?.is_some() {
                 return Err(refused("Exposure stage stop not observed"));
             }
             self.stage_pending = false;
-            self.stage_unmounted = false;
+            self.stage_detach = StageDetach::Attached;
             self.stage_id = None;
         }
         self.view.take();
@@ -305,7 +317,7 @@ impl MountPlacement {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
-        };
+        }
         std::fs::remove_dir(self.path.parent().ok_or(io::ErrorKind::InvalidData)?)?;
         Ok(())
     }

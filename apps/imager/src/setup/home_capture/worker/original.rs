@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::{fs::File, os::unix::fs::MetadataExt};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OriginalReadClaim {
     schema: u32,
@@ -30,18 +30,103 @@ pub(crate) struct OriginalReadClaim {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mounted: Option<OriginalMountedClaim>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OriginalMountedClaim {
     witness: super::super::MountedWitness,
     table_sha256: [u8; 32],
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OriginalReadClaimWire {
+    schema: u32,
+    #[serde(default)]
+    material: OriginalMaterial,
+    operation: String,
+    setup_binding: String,
+    identity_public_key: [u8; 32],
+    source_plan_sha256: [u8; 32],
+    declaration_sha256: [u8; 32],
+    source: (u64, u64, u32),
+    caller: OriginalCallerFacts,
+    export_operation: String,
+    sealed_reservation: u64,
+    omissions: Vec<crate::setup::migration_review::OriginalOmission>,
+    #[serde(default)]
+    flatpak: Option<crate::setup::flatpak_transfer::offline_original::OriginalFlatpakClaim>,
+    #[serde(default)]
+    applications_operation: Option<String>,
+    #[serde(default)]
+    mounted: Option<OriginalMountedClaim>,
+}
+impl TryFrom<OriginalReadClaimWire> for OriginalReadClaim {
+    type Error = io::Error;
+
+    fn try_from(wire: OriginalReadClaimWire) -> io::Result<Self> {
+        let value = Self {
+            schema: wire.schema,
+            material: wire.material,
+            operation: wire.operation,
+            setup_binding: wire.setup_binding,
+            identity_public_key: wire.identity_public_key,
+            source_plan_sha256: wire.source_plan_sha256,
+            declaration_sha256: wire.declaration_sha256,
+            source: wire.source,
+            caller: wire.caller,
+            export_operation: wire.export_operation,
+            sealed_reservation: wire.sealed_reservation,
+            omissions: wire.omissions,
+            flatpak: wire.flatpak,
+            applications_operation: wire.applications_operation,
+            mounted: wire.mounted,
+        };
+        // Wire facts validate shape only; source admission still requires the
+        // launcher's authenticated proof and the held readonly source.
+        value.validate_shape(&value.operation)?;
+        Ok(value)
+    }
+}
+impl<'de> Deserialize<'de> for OriginalReadClaim {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::try_from(OriginalReadClaimWire::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OriginalMountedClaimWire {
+    witness: super::super::MountedWitness,
+    table_sha256: [u8; 32],
+}
+impl TryFrom<OriginalMountedClaimWire> for OriginalMountedClaim {
+    type Error = io::Error;
+
+    fn try_from(wire: OriginalMountedClaimWire) -> io::Result<Self> {
+        wire.witness.matches_source(wire.witness.primary())?;
+        super::super::operation(wire.witness.operation())?;
+        if wire.table_sha256 == [0; 32] {
+            return Err(failure("Original mounted table digest missing"));
+        }
+        Ok(Self {
+            witness: wire.witness,
+            table_sha256: wire.table_sha256,
+        })
+    }
+}
+impl<'de> Deserialize<'de> for OriginalMountedClaim {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::try_from(OriginalMountedClaimWire::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 impl OriginalMountedClaim {
     pub(in crate::setup::home_capture) fn admitted(
         witness: &super::super::MountedWitness,
         table_sha256: [u8; 32],
     ) -> io::Result<Self> {
-        if unsafe { libc::geteuid() } != 0 || table_sha256 == [0; 32] {
+        if rustix::process::geteuid().as_raw() != 0 || table_sha256 == [0; 32] {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         Ok(Self {
@@ -75,7 +160,7 @@ impl OriginalReadClaim {
         mounted: Option<&OriginalMountedClaim>,
     ) -> io::Result<Self> {
         use sha2::{Digest, Sha256};
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         if plan.source_witness().is_none() {
@@ -145,7 +230,7 @@ impl OriginalReadClaim {
         mounted: Option<&OriginalMountedClaim>,
     ) -> io::Result<Self> {
         use sha2::{Digest, Sha256};
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         plan.validate()?;
@@ -171,11 +256,11 @@ impl OriginalReadClaim {
         }
         let metadata = source.metadata()?;
         let value = Self {
-            schema: if !plan.source().categories.home { 3 } else { 2 },
-            material: if !plan.source().categories.home {
-                OriginalMaterial::SelectedApplications
-            } else {
+            schema: if plan.source().categories.home { 2 } else { 3 },
+            material: if plan.source().categories.home {
                 OriginalMaterial::Home
+            } else {
+                OriginalMaterial::SelectedApplications
             },
             mounted: mounted.cloned(),
             operation: plan.source().operation_id.clone(),
@@ -324,6 +409,7 @@ impl OriginalReadClaim {
             .as_deref()
             .ok_or_else(|| failure("Original application operation unavailable"))
     }
+    #[cfg(feature = "capture-worker")]
     pub(super) fn flatpak(
         &self,
     ) -> Option<&crate::setup::flatpak_transfer::offline_original::OriginalFlatpakClaim> {
@@ -470,12 +556,12 @@ impl OriginalReadClaim {
         self.validate_shape(&self.operation)?;
         launcher::owned_service::verify_original_read_claim(self.binding_sha256()?)?;
         self.validate_source(source)?;
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         if uid == 0
-            || unsafe { libc::geteuid() } != uid
+            || rustix::process::geteuid().as_raw() != uid
             || uid != self.caller.uid()
-            || unsafe { libc::getgid() } != self.caller.primary_gid()
-            || unsafe { libc::getegid() } != self.caller.primary_gid()
+            || rustix::process::getgid().as_raw() != self.caller.primary_gid()
+            || rustix::process::getegid().as_raw() != self.caller.primary_gid()
         {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -585,7 +671,7 @@ mod tests {
                 value
             },
             {
-                let mut value = applications.clone();
+                let mut value = applications;
                 value.setup_binding = "other-setup".into();
                 value
             },
@@ -605,8 +691,7 @@ mod tests {
         );
         let mut downgraded = wire["command"]["authority"].clone();
         downgraded["material"] = serde_json::json!("home");
-        let downgraded: OriginalReadClaim = serde_json::from_value(downgraded).unwrap();
-        assert!(downgraded.binding_sha256().is_err());
+        assert!(serde_json::from_value::<OriginalReadClaim>(downgraded).is_err());
     }
     #[test]
     fn original_request_digest_binds_authenticated_declaration_and_caller() {
@@ -644,8 +729,7 @@ mod tests {
         assert!(serde_json::from_value::<OriginalReadClaim>(missing).is_err());
         let mut invalid = value;
         invalid["declaration_sha256"] = serde_json::json!([0; 32].to_vec());
-        let invalid: OriginalReadClaim = serde_json::from_value(invalid).unwrap();
-        assert!(invalid.binding_sha256().is_err());
+        assert!(serde_json::from_value::<OriginalReadClaim>(invalid).is_err());
     }
     #[test]
     fn writable_original_projection_refuses_before_inventory_and_preserves_source() {
@@ -693,6 +777,73 @@ mod tests {
             }}
         }))
         .unwrap()
+    }
+    #[test]
+    fn original_claim_wire_rejects_invalid_shape_and_preserves_home_defaults() {
+        let request = serde_json::to_value(original_review()).unwrap();
+        let wire = request["command"]["authority"].clone();
+        let claim: OriginalReadClaim = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(claim).unwrap(), wire);
+        for (field, invalid) in [
+            ("schema", serde_json::json!(3)),
+            ("operation", serde_json::json!("not-an-operation")),
+            (
+                "export_operation",
+                serde_json::json!(uuid::Uuid::new_v4().to_string()),
+            ),
+            ("setup_binding", serde_json::json!("")),
+            ("setup_binding", serde_json::json!("binding\n")),
+            ("identity_public_key", serde_json::json!(vec![0u8; 32])),
+            ("source_plan_sha256", serde_json::json!(vec![0u8; 32])),
+            ("declaration_sha256", serde_json::json!(vec![0u8; 32])),
+            ("sealed_reservation", serde_json::json!(0)),
+            (
+                "applications_operation",
+                serde_json::json!(uuid::Uuid::new_v4().to_string()),
+            ),
+        ] {
+            let mut altered = wire.clone();
+            altered[field] = invalid;
+            assert!(
+                serde_json::from_value::<OriginalReadClaim>(altered).is_err(),
+                "{field}"
+            );
+        }
+        let mut wrong_owner = wire;
+        wrong_owner["source"][2] = serde_json::json!(1003);
+        assert!(serde_json::from_value::<OriginalReadClaim>(wrong_owner).is_err());
+    }
+    #[test]
+    fn mounted_claim_wire_rejects_missing_digest_and_invalid_witness() {
+        let wire = serde_json::json!({
+            "witness": {
+                "schema": 1,
+                "primary": {
+                    "schema": 1,
+                    "operation": uuid::Uuid::new_v4().to_string(),
+                    "namespace": crate::setup::migration_store::NativePath::encode(
+                        std::path::Path::new("tilo-imager/home-capture/records")),
+                    "record_sha256": vec![1u8; 32],
+                    "plan_sha256": vec![2u8; 32]
+                },
+                "sha256": vec![3u8; 32]
+            },
+            "table_sha256": vec![4u8; 32]
+        });
+        let claim: OriginalMountedClaim = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(claim).unwrap(), wire);
+        let mut missing_table = wire.clone();
+        missing_table["table_sha256"] = serde_json::json!(vec![0u8; 32]);
+        assert!(serde_json::from_value::<OriginalMountedClaim>(missing_table).is_err());
+        let mut missing_witness_digest = wire.clone();
+        missing_witness_digest["witness"]["sha256"] = serde_json::json!(vec![0u8; 32]);
+        assert!(serde_json::from_value::<OriginalMountedClaim>(missing_witness_digest).is_err());
+        let mut wrong_schema = wire.clone();
+        wrong_schema["witness"]["schema"] = serde_json::json!(2);
+        assert!(serde_json::from_value::<OriginalMountedClaim>(wrong_schema).is_err());
+        let mut wrong_operation = wire;
+        wrong_operation["witness"]["primary"]["operation"] = serde_json::json!("invalid");
+        assert!(serde_json::from_value::<OriginalMountedClaim>(wrong_operation).is_err());
     }
     #[test]
     fn original_export_transform_binds_declared_operation_and_rejects_ordinary_route() {

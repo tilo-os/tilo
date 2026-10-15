@@ -530,6 +530,9 @@ pub struct SlidesApp {
     /// Visible result of a fallible open/save/image operation. Previously those
     /// paths failed silently, leaving users unsure whether a click worked.
     io_toast: Notice,
+    /// "Saved talk.odp", said in passing for a save that changed nothing on
+    /// screen; never a toast, since there is nothing to read or act on.
+    acknowledger: ui::widget::acknowledgement::Acknowledger,
 
     /// Right-click context menu (element / slide actions) — the shared
     /// [`ui::widget::ContextMenu`] primitive, driven standalone. `ctx_hits`
@@ -644,6 +647,7 @@ impl SlidesApp {
             inspector_scroll: Scrollable::new_vertical().always_visible(),
             tooltip_text: None,
             io_toast: Notice::default(),
+            acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
             ctx_menu: ContextMenu::new(),
             ctx_hits: Vec::new(),
             font_input: NumberInput::new(40.0)
@@ -1568,10 +1572,27 @@ impl SlidesApp {
         let deck = self.deck.clone();
         let content = self.content.clone();
         Ok(match path {
-            Some(path) => cx.thread(
-                move |_| save_presentation_to_path(&deck, std::path::Path::new(&path), &content),
-                |app: &mut Self, saved, _| app.finish_save(saved.map(|()| true)),
-            ),
+            Some(path) => {
+                let file = std::path::Path::new(&path)
+                    .file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+                cx.thread(
+                    move |_| {
+                        save_presentation_to_path(&deck, std::path::Path::new(&path), &content)
+                    },
+                    move |app: &mut Self, saved, _| {
+                        // Written straight to `path` with no chooser, so
+                        // nothing on screen changed: say so in passing.
+                        if saved.is_ok() {
+                            app.acknowledger.say(tr_args(
+                                "slides-saved-file",
+                                &[("file", ArgValue::from(file.as_str()))],
+                            ));
+                        }
+                        app.finish_save(saved.map(|()| true))
+                    },
+                )
+            }
             None => {
                 let name = format!("{}.odp", sanitize_filename(&deck.title));
                 cx.thread(
@@ -1589,8 +1610,8 @@ impl SlidesApp {
         })
     }
 
-    /// Show the outcome of saving. Saved and cancelled have nothing to say:
-    /// the person chose the file in the chooser. Only a failure is shown.
+    /// Show a failed save. A save through the chooser has nothing more to
+    /// say: the person just picked the file.
     fn finish_save(&mut self, saved: Result<bool, String>) -> EffectAnswer {
         match saved {
             Ok(_) => Ok(Effected::done()),
@@ -2742,6 +2763,11 @@ impl Widget for SlidesApp {
             self.rect,
             ToastAnchor::BottomCenter,
         );
+        let now = ui::time::now();
+        if let Some(ack) = self.acknowledger.current(now) {
+            let alpha = ack.alpha_at(now, theme.reduce_motion);
+            ack.draw(scene, transform, text_renderer, theme, self.rect, alpha);
+        }
         // Right-click context menu floats above everything else.
         self.ctx_menu
             .draw(scene, transform, text_renderer, theme, presence);
@@ -2763,6 +2789,8 @@ impl Widget for SlidesApp {
             // A live thumbnail reorder pumps frames so the ghost tracks the
             // cursor and the rail auto-scrolls at its edges.
             || self.page_sidebar.is_dragging()
+            // A passing "Saved …" holds, fades and goes on its own.
+            || self.acknowledger.current(ui::time::now()).is_some()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -3052,6 +3080,11 @@ impl Widget for SlidesApp {
                 .with_children(elements),
         ];
         children.extend(self.io_toast.access_node());
+        children.extend(
+            self.acknowledger
+                .current(ui::time::now())
+                .map(|ack| ack.accessibility()),
+        );
         Some(
             AccessNode::new(Role::Document)
                 .with_name(self.deck.title.clone())

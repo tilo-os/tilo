@@ -37,8 +37,11 @@ impl Runner for Fake {
                     .borrow()
                     .iter()
                     .filter_map(|item| item.strip_prefix(kind))
-                    .map(|item| format!("{item}\ttilo-portable-0\tuser\tRestored\n"))
-                    .collect())
+                    .fold(String::new(), |mut output, item| {
+                        output.push_str(item);
+                        output.push_str("\ttilo-portable-0\tuser\tRestored\n");
+                        output
+                    }))
             }
             Some("remotes") if source && args.contains(&"--installation=default".into()) => {
                 Ok("flathub\thttps://repo.example.test/repo/\t\n".into())
@@ -153,11 +156,14 @@ impl OfflineRunner for OmittedRuntime<'_> {
     fn ostree(&self, repo: &Path, arguments: &[String]) -> Result<String, String> {
         let result = self.0.ostree(repo, arguments)?;
         if arguments.contains(&"--collections".into()) {
-            return Ok(result
-                .lines()
-                .filter(|line| !line.contains(RUNTIME))
-                .map(|line| format!("{line}\n"))
-                .collect());
+            return Ok(result.lines().filter(|line| !line.contains(RUNTIME)).fold(
+                String::new(),
+                |mut output, line| {
+                    output.push_str(line);
+                    output.push('\n');
+                    output
+                },
+            ));
         }
         Ok(result)
     }

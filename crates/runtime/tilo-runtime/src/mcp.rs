@@ -1708,39 +1708,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .map(|(peer, _)| peer)
             .collect())
     }
-    /// The instance an `open` of `app_id` started: the first peer not in
-    /// `before`, once it is listed and has published its directory. An app
-    /// is listed before it publishes, and an empty first page reads as "no
-    /// typed actions".
-    async fn opened_peer(&self, app_id: &str, before: &[u64]) -> Option<u64> {
-        let deadline = tokio::time::Instant::now().checked_add(JUST_LAUNCHED_WAIT)?;
-        let peer = loop {
-            let peers = self.peers_of(app_id).await.ok()?;
-            if let Some(peer) = peers.iter().find(|peer| !before.contains(peer)) {
-                break *peer;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                // An app that was already open may have been raised
-                // instead of started again.
-                return peers.last().copied();
-            }
-            tokio::time::sleep(JUST_LAUNCHED_POLL).await;
-        };
-        while tokio::time::Instant::now() < deadline {
-            let first = self
-                .ask(CatalogueQuery {
-                    provider: Some(peer.to_string()),
-                    max_results: 1,
-                    ..CatalogueQuery::default()
-                })
-                .await;
-            if first.is_ok_and(|page| !page.rows.is_empty()) {
-                break;
-            }
-            tokio::time::sleep(JUST_LAUNCHED_POLL).await;
-        }
-        Some(peer)
-    }
     async fn call(&self, name: &str, args: Value) -> Result<Value, String> {
         match name {
             "tilo_list_apps" => self.apps(parse(args)?).await,
@@ -1927,14 +1894,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(_) => take_path(&mut a.arguments)?,
             None => None,
         };
-        let before = match &launching {
-            Some(app_id) => self.peers_of(app_id).await?,
-            None => Vec::new(),
-        };
-        if let Some(peer) = path
-            .as_deref()
-            .and_then(|path| self.open_files.peer(path))
-            .filter(|peer| before.contains(peer))
+        // A file an instance of the app still holds is answered by it.
+        if let (Some(app_id), Some(peer)) = (
+            &launching,
+            path.as_deref().and_then(|path| self.open_files.peer(path)),
+        ) && self.peers_of(app_id).await?.contains(&peer)
         {
             return Ok(self.already_open(peer).await);
         }
@@ -1944,6 +1908,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
         let wait =
             std::time::Duration::from_millis(a.wait_ms.unwrap_or(DEFAULT_WAIT_MS).min(MAX_WAIT_MS));
+        // A launch is answered once the instance it started is up.
+        let wait = launching.as_ref().map_or(wait, |_| wait.max(LAUNCH_WAIT));
         let mut target = RemoteActionTarget {
             provider,
             address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
@@ -2001,20 +1967,29 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
             return Ok(value);
         }
-        let peer = self.opened_peer(&app_id, &before).await;
-        self.answer_open(&mut value, peer, path, wait).await;
+        self.answer_open(&mut value, &app_id, path, wait).await;
         Ok(value)
     }
-    /// Complete an `open`'s answer `value` with the instance `peer` it
+    /// Complete an `open` of `app_id`'s answer `value` with the instance it
     /// started: the file at `path` opened in it, its directory and the
     /// file's first page.
     async fn answer_open(
         &self,
         value: &mut Value,
-        peer: Option<u64>,
+        app_id: &str,
         path: Option<String>,
         wait: std::time::Duration,
     ) {
+        // The instance the host started, as it names it. A host that names
+        // none (one older than this answer, or one that could not tell
+        // which instance it started) leaves the caller to list them rather
+        // than this bridge guessing.
+        let peer = value
+            .pointer(OPENED_PEER)
+            .and_then(Value::as_u64)
+            .inspect(|peer| {
+                self.seen().insert(*peer, Some(app_id.to_owned()));
+            });
         let opened = match (peer, path) {
             (Some(peer), Some(path)) => Some(self.open_path(peer, &path, wait).await),
             (None, Some(_)) => Some(json!({"error":OPENED_NO_PEER})),
@@ -2393,7 +2368,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             if listed || deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
                 return Ok((page, truncated));
             }
-            tokio::time::sleep(JUST_LAUNCHED_POLL).await;
+            tokio::time::sleep(FIRST_DIRECTORY_POLL).await;
         }
     }
     async fn directory(&self, provider: &str) -> Result<Value, String> {
@@ -2666,13 +2641,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         )
     }
 }
-/// How long an `open` waits for its instance to be listed and to publish
-/// its directory, and how often it looks.
-const JUST_LAUNCHED_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-const JUST_LAUNCHED_POLL: std::time::Duration = std::time::Duration::from_millis(200);
+/// How long a workspace `open` waits at least for the host to answer with
+/// the instance it started, which it does once that instance has connected
+/// and published what it offers.
+const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Where a workspace `open`'s answer names the instance it started.
+const OPENED_PEER: &str = "/update/output/value/peer_id";
 /// How long an `open` waits more for the new instance's directory to list a
-/// resource once it has published: two query turns cost more.
+/// resource when it reads empty, as while the app publishes again binding
+/// its document, and how often it looks: two query turns cost more.
 const FIRST_DIRECTORY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+const FIRST_DIRECTORY_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 /// The experimental capability naming this surface's version. Version 2
 /// answers `tilo_query` with compact pages; version 3 names long resource
 /// ids by session handles in them and answers an `open` with the new
@@ -2716,7 +2695,7 @@ const SOME_WORDS_MIN_CHARS: usize = 3;
 /// later turn; beyond this, `tilo_query` browses the rest.
 const DIRECTORY_BYTES: usize = 12 * 1024;
 const DIRECTORY_EXPANSIONS: usize = 6;
-const OPENED_NO_PEER: &str = "the app did not publish its directory in time, so the file is not open; tilo_list_apps shows whether it runs";
+const OPENED_NO_PEER: &str = "the workspace did not say which instance it started, so the file is not open; tilo_list_apps shows whether it runs";
 const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so it started empty; its directory shows what it can do";
 /// How long `tilo_invoke` waits for a terminal update by default, at most,
 /// and how often it looks.

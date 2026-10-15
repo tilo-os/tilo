@@ -65,7 +65,7 @@ impl DurableRevocations {
         {
             Ok(file) => {
                 let metadata = file.metadata()?;
-                if metadata.uid() != unsafe { libc::geteuid() }
+                if metadata.uid() != rustix::process::geteuid().as_raw()
                     || metadata.mode() & 0o022 != 0
                     || metadata.len() > CACHE_LIMIT
                 {

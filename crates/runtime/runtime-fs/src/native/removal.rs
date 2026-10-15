@@ -64,7 +64,7 @@ impl RemovalCustody {
             || host_identity(&guard) != self.guard_identity
             || guard.uid() != 0
             || guard.mode() & 0o7777 != 0o700
-            || held.uid() != unsafe { libc::geteuid() }
+            || held.uid() != rustix::process::geteuid().as_raw()
             || held.mode() & 0o7777 != 0o700
         {
             return Err(FsError::StaleEntry);
@@ -453,7 +453,7 @@ impl FsSession {
         custody.check()?;
         let actual = journal.metadata().map_err(io_error)?;
         if !actual.is_dir()
-            || actual.uid() != unsafe { libc::geteuid() }
+            || actual.uid() != rustix::process::geteuid().as_raw()
             || actual.mode() & 0o7777 != 0o700
         {
             return Err(FsError::Denied);

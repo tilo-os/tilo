@@ -1,9 +1,15 @@
-//! Fixed O_PATH lookup in the authenticated worker. This is neither a content
+//! Fixed `O_PATH` lookup in the authenticated worker. This is neither a content
 //! opener nor a source-write grant. Mandatory normal Landlock remains exact:
-//! O_PATH and stat do not require ReadFile/ReadDir rights under Linux ABI5.
+//! `O_PATH` and stat do not require `ReadFile`/`ReadDir` rights under Linux ABI5.
 use super::observation::{Facts, measure};
-use super::*;
+use super::{
+    AsRawFd, File, FromRawFd, Read, Record, UnixStream, io, mount_id, namespaces, refused,
+    validate_name,
+};
+#[cfg(test)]
+use super::{MetadataExt, OpenOptionsExt, OsString, OsStringExt, Write};
 use crate::{ordinary_namespace::Handoff, owned_service::ServiceCancellation};
+use getrandom::rand_core::TryRng as _;
 use sha2::{Digest, Sha256};
 use std::os::fd::AsFd;
 use std::{ffi::CString, time::Duration};
@@ -29,9 +35,9 @@ pub(super) fn validate_components(components: &[Vec<u8>]) -> io::Result<()> {
 }
 pub(super) fn encoding(components: &[Vec<u8>]) -> io::Result<Vec<u8>> {
     validate_components(components)?;
-    let mut encoded = vec![components.len() as u8];
+    let mut encoded = vec![u8::try_from(components.len()).map_err(io::Error::other)?];
     for component in components {
-        encoded.push(component.len() as u8);
+        encoded.push(u8::try_from(component.len()).map_err(io::Error::other)?);
         encoded.extend(component);
     }
     Ok(encoded)
@@ -64,18 +70,21 @@ fn open_component(parent: &File, component: &[u8], directory: bool) -> io::Resul
     open_relative(parent, component, directory)
 }
 fn open_relative(parent: &File, path: &[u8], directory: bool) -> io::Result<File> {
-    let name = CString::new(path).map_err(io::Error::other)?;
     #[repr(C)]
     struct OpenHow {
         flags: u64,
         mode: u64,
         resolve: u64,
     }
+    let name = CString::new(path).map_err(io::Error::other)?;
     let how = OpenHow {
-        flags: (libc::O_PATH
-            | libc::O_NOFOLLOW
-            | libc::O_CLOEXEC
-            | if directory { libc::O_DIRECTORY } else { 0 }) as u64,
+        flags: u64::try_from(
+            libc::O_PATH
+                | libc::O_NOFOLLOW
+                | libc::O_CLOEXEC
+                | if directory { libc::O_DIRECTORY } else { 0 },
+        )
+        .map_err(io::Error::other)?,
         mode: 0,
         // NO_XDEV | NO_MAGICLINKS | NO_SYMLINKS | BENEATH. No fallback.
         resolve: 0x01 | 0x02 | 0x04 | 0x08,
@@ -92,7 +101,7 @@ fn open_relative(parent: &File, path: &[u8], directory: bool) -> io::Result<File
     if raw < 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(unsafe { File::from_raw_fd(raw as i32) })
+    Ok(unsafe { File::from_raw_fd(i32::try_from(raw).map_err(io::Error::other)?) })
 }
 fn open_parent(view: &File, components: &[Vec<u8>]) -> io::Result<File> {
     validate_components(components)?;
@@ -102,7 +111,8 @@ fn open_parent(view: &File, components: &[Vec<u8>]) -> io::Result<File> {
     // One kernel resolution stays beneath the exact view throughout the walk,
     // including concurrent parent moves. No iterative dirfd anchoring or
     // fallback can bypass BENEATH. Kernel PATH_MAX refusal is an honest result.
-    let path = components[..components.len() - 1].join(&b'/');
+    let (_, parents) = components.split_last().ok_or(io::ErrorKind::InvalidInput)?;
+    let path = parents.join(&b'/');
     open_relative(view, &path, true)
 }
 pub(super) fn same_object(a: &Facts, b: &Facts) -> bool {
@@ -110,7 +120,7 @@ pub(super) fn same_object(a: &Facts, b: &Facts) -> bool {
         == (b.dev, b.ino, b.mount_id, b.mode & libc::S_IFMT, b.fs_type)
 }
 fn on_mount(facts: &Facts, record: &Record) -> bool {
-    Some(facts.mount_id) == record.mount_id && facts.fs_type == 0x65735546
+    Some(facts.mount_id) == record.mount_id && facts.fs_type == 0x6573_5546
 }
 pub(super) fn lookup(
     view: &File,
@@ -159,7 +169,7 @@ fn bracket_selection(
     // that exact held parent. Matching an unrelated hardlink is insufficient.
     let bracket_parent = open_parent(view, components)?;
     let bracket_selected = open_component(&bracket_parent, leaf, false)?;
-    let held_leaf = open_component(&parent, leaf, false)?;
+    let held_leaf = open_component(parent, leaf, false)?;
     if !same_object(&measure(view)?, before)
         || !same_object(&measure(&bracket_parent)?, parent_facts)
         || !same_object(&measure(&bracket_selected)?, selected_facts)
@@ -211,10 +221,13 @@ pub(super) fn serve_request(
             facts
         }
         Err(error) => {
-            let errno = error
-                .raw_os_error()
-                .filter(|value| (1..=4095).contains(value))
-                .unwrap_or(libc::EACCES) as u32;
+            let errno = u32::try_from(
+                error
+                    .raw_os_error()
+                    .filter(|value| (1..=4095).contains(value))
+                    .unwrap_or(libc::EACCES),
+            )
+            .map_err(io::Error::other)?;
             io.write_all(&errno.to_be_bytes())?;
             return Ok(());
         }
@@ -222,8 +235,9 @@ pub(super) fn serve_request(
     io.write_all(&facts.parent_facts.encode())?;
     io.write_all(&facts.selected_facts.encode())?;
     for (index, file) in [&facts.parent, &facts.selected].into_iter().enumerate() {
+        let marker = u8::try_from(index).map_err(io::Error::other)?;
         io.retry(libc::POLLOUT, |socket| {
-            runtime_portal::fd_transport::send_with_fd(socket.as_fd(), &[index as u8], file.as_fd())
+            runtime_portal::fd_transport::send_with_fd(socket.as_fd(), &[marker], file.as_fd())
         })?;
         let mut ack = [0];
         io.read_exact(&mut ack)?;
@@ -244,7 +258,6 @@ pub(super) fn request(
     let encoded = encoding(components)?;
     let digest = components_sha256(components)?;
     let mut nonce = [0; 32];
-    use getrandom::rand_core::TryRng as _;
     getrandom::SysRng
         .try_fill_bytes(&mut nonce)
         .map_err(io::Error::other)?;
@@ -282,7 +295,7 @@ fn receive_response(
     )?;
     if status != 0 {
         return Ok(Response::Refused(io::Error::from_raw_os_error(
-            status as i32,
+            i32::try_from(status).map_err(io::Error::other)?,
         )));
     }
     let mut bytes = [0; super::observation::FACT_BYTES];
@@ -407,8 +420,8 @@ mod tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
-            let mut nonce = [0; 16];
             use getrandom::rand_core::TryRng as _;
+            let mut nonce = [0; 16];
             getrandom::SysRng.try_fill_bytes(&mut nonce).unwrap();
             let path = std::env::temp_dir().join(format!(
                 "tilo-lookup-{}-{}",

@@ -11,7 +11,7 @@ use std::{
     io::{self, Read, Seek, Write},
     os::{
         fd::{AsRawFd, FromRawFd, RawFd},
-        unix::fs::{MetadataExt, OpenOptionsExt},
+        unix::fs::{FileExt, MetadataExt, OpenOptionsExt},
     },
     sync::{Arc, Mutex},
 };
@@ -52,29 +52,55 @@ fn namespaces() -> io::Result<Vec<(u64, u64)>> {
 pub trait RetainedIoAuthority: super::ServiceAuthority {
     /// Only the concrete current certified daemon/source adapter provides this
     /// held sealed root descriptor. Browsing has no verifier or raw fallback.
+    ///
+    /// # Errors
+    /// Returns an error if the held verifier cannot be authenticated or cloned.
     fn native_history_verifier(&self) -> io::Result<Option<File>> {
         Ok(None)
     }
 
     /// Held root-sealed selected edit derivative, never caller supplied bytes.
+    ///
+    /// # Errors
+    /// Returns an error if the held edit permit cannot be authenticated or cloned.
     fn selected_replacement_permit(&self) -> io::Result<Option<File>> {
         Ok(None)
     }
 
+    /// Obtain the independently admitted original source credentials.
+    ///
+    /// # Errors
+    /// Refuses unavailable or no longer authenticated source credentials.
     fn source_credentials(&self) -> io::Result<RetainedIoCredentials>;
+    /// Obtain the canonical retained native owner's identity.
+    ///
+    /// # Errors
+    /// Refuses absent or invalid independently admitted owner custody.
     fn native_owner_sha256(&self) -> io::Result<[u8; 32]> {
         Err(refused(
             "Canonical retained native owner was not independently admitted",
         ))
     }
+    /// Clone the independently admitted root-protected source namespace.
+    ///
+    /// # Errors
+    /// Refuses missing namespace custody and propagates descriptor clone errors.
     fn removal_namespace(&self) -> io::Result<File> {
         Err(refused(
             "Root protected source namespace not independently admitted",
         ))
     }
+    /// Retain namespace custody for recovery after the worker stops.
+    ///
+    /// # Errors
+    /// Returns an error if the adapter cannot retain this native owner.
     fn retain_native_owner(&self, _owner: RetainedNativeOwner) -> io::Result<()> {
         Ok(())
     }
+    /// Confirm that native namespace obligations have been retired.
+    ///
+    /// # Errors
+    /// Refuses unavailable retirement custody or outstanding recovery obligations.
     fn confirm_native_retirement(&self) -> io::Result<()> {
         Err(refused("Native source retirement custody is unavailable"))
     }
@@ -89,6 +115,11 @@ pub struct RetainedIoCredentials {
     groups: Vec<u32>,
 }
 impl RetainedIoCredentials {
+    /// Admit canonical source credentials from a root-only source record.
+    ///
+    /// # Errors
+    /// Refuses non-root callers, root or sentinel identities, and oversized,
+    /// unsorted or duplicate supplementary groups.
     pub fn admitted(uid: u32, gid: u32, groups: &[u32]) -> io::Result<Self> {
         root()?;
         validate_credentials(uid, gid, groups)?;
@@ -105,7 +136,7 @@ fn validate_credentials(uid: u32, gid: u32, groups: &[u32]) -> io::Result<()> {
         || gid == u32::MAX
         || groups.len() > 65536
         || groups.contains(&u32::MAX)
-        || groups.windows(2).any(|p| p[0] >= p[1])
+        || groups.windows(2).any(|p| matches!(p, [a, b] if a >= b))
     {
         return Err(refused("Retained source credentials are not canonical"));
     }
@@ -154,7 +185,7 @@ impl Token {
     }
 }
 /// Holds the exact approved source descriptor and both authority lifetimes until
-/// canonical NamespaceOwner observes quiescence. It is neither Clone nor serde.
+/// canonical `NamespaceOwner` observes quiescence. It is neither `Clone` nor serde.
 pub struct RetainedIoAdmission {
     source: File,
     source_metadata: Option<File>,
@@ -175,6 +206,11 @@ pub struct RetainedIoAdmission {
     removal: Option<removal::Removal>,
 }
 impl RetainedIoAdmission {
+    /// Admit an editable source while retaining its authenticated root authority.
+    ///
+    /// # Errors
+    /// Refuses non-root callers, invalid or read-only sources, inconsistent
+    /// permits or verifier custody, and revoked authority; propagates I/O errors.
     pub fn admit(source: File, authority: Arc<dyn RetainedIoAuthority>) -> io::Result<Self> {
         root()?;
         authority.check()?;
@@ -244,21 +280,7 @@ impl RetainedIoAdmission {
             .as_ref()
             .map(|key| seal_bytes(key))
             .transpose()?;
-        let source_metadata = if facts.directory {
-            let raw = unsafe {
-                libc::openat(
-                    source.as_raw_fd(),
-                    c".".as_ptr(),
-                    libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            if raw < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Some(unsafe { File::from_raw_fd(raw) })
-        } else {
-            None
-        };
+        let source_metadata = source_metadata(&source, facts.directory)?;
         let this = Self {
             source,
             source_metadata,
@@ -280,9 +302,13 @@ impl RetainedIoAdmission {
     }
     /// Admit the exact independently configured signed SDK publisher and pin
     /// its root/ABI plus the canonical shim/bwrap/loader executable closure.
-    /// The root adapter obtains these inputs from TrustedCaptureService; no
+    /// The root adapter obtains these inputs from `TrustedCaptureService`; no
     /// launch option, environment variable or publisher in an untrusted DTO
     /// supplies that policy. The runtime directory is internal metadata custody.
+    ///
+    /// # Errors
+    /// Refuses revoked custody, duplicate runtime admission or an invalid signed
+    /// runtime; propagates runtime directory and executable verification errors.
     pub fn with_native_runtime(
         mut self,
         runtime: &std::path::Path,
@@ -308,6 +334,10 @@ impl RetainedIoAdmission {
     }
     /// Bind exactly the actual sidecar installation already verified against
     /// the host application's embedded service identity, without registry lookup.
+    ///
+    /// # Errors
+    /// Refuses revoked custody, duplicate installation admission or an invalid
+    /// signed worker package; propagates path and installation verification errors.
     pub fn with_installation(
         mut self,
         installed: package_store::InstalledPackage,
@@ -457,6 +487,7 @@ impl RetainedIoAdmission {
             return Err(refused("Worker already prepared"));
         }
         *held = Some(workspace::prepare(path, &self.facts)?);
+        drop(held);
         Ok(())
     }
     pub(crate) fn launch_dirs(&self) -> io::Result<(std::path::PathBuf, std::path::PathBuf)> {
@@ -512,7 +543,7 @@ impl RetainedIoAdmission {
             .position(|v| v == "__sandbox-exec")
             .ok_or_else(|| refused("Retained I/O signed shim missing"))?;
         argv.splice(
-            shim + 1..shim + 1,
+            shim.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?..=shim,
             ["--rw-noexec".into(), SOURCE_PATH.into()],
         );
         if self.removal.is_some() {
@@ -521,7 +552,7 @@ impl RetainedIoAdmission {
                 .position(|v| v == "__sandbox-exec")
                 .ok_or_else(|| refused("Retained I/O signed shim missing"))?;
             argv.splice(
-                shim + 1..shim + 1,
+                shim.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?..=shim,
                 [
                     "--rw-noexec".into(),
                     format!("/proc/self/fd/{REMOVAL_DIRECTORY_FD}"),
@@ -551,7 +582,7 @@ impl RetainedIoAdmission {
             .position(|v| v == "--unshare-all")
             .ok_or_else(|| refused("Retained private namespace missing"))?;
         argv.splice(
-            pos..pos + 1,
+            pos..=pos,
             [
                 "--unshare-pid",
                 "--unshare-net",
@@ -572,7 +603,7 @@ impl RetainedIoAdmission {
             .position(|v| v == "__sandbox-exec")
             .ok_or_else(|| refused("Retained I/O signed shim missing"))?;
         argv.splice(
-            shim + 1..shim + 1,
+            shim.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?..=shim,
             ["--retained-io-fd".into(), TOKEN_FD.to_string()],
         );
         let mut traversal = Vec::new();
@@ -592,6 +623,21 @@ impl RetainedIoAdmission {
         argv.splice(0..0, traversal);
         Ok(())
     }
+}
+fn source_metadata(source: &File, directory: bool) -> io::Result<Option<File>> {
+    if !directory {
+        return Ok(None);
+    }
+    let file = rustix::fs::openat(
+        source,
+        c".",
+        rustix::fs::OFlags::PATH
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
+    Ok(Some(file.into()))
 }
 fn check_token(token: &File) -> io::Result<()> {
     let m = token.metadata()?;
@@ -626,7 +672,7 @@ fn seal_bytes(bytes: &[u8]) -> io::Result<File> {
         return Err(io::Error::last_os_error());
     }
     let mut f = unsafe { File::from_raw_fd(raw) };
-    f.write_all(&bytes)?;
+    f.write_all(bytes)?;
     f.rewind()?;
     if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_ADD_SEALS, SEALS) } < 0 {
         return Err(io::Error::last_os_error());
@@ -671,7 +717,7 @@ pub(crate) fn prepare(keep: &[i32], command: &[String]) -> io::Result<RetainedIo
     } else {
         super::RETAINED_IO_WORKER_ARGUMENT
     };
-    if command.len() != 2 || command[1] != expected {
+    if command.len() != 2 || command.get(1).map(String::as_str) != Some(expected) {
         return Err(refused("Retained worker mode differs from sealed source"));
     }
     for ((name, expected), actual) in NAMESPACES.iter().zip(&facts.namespaces).zip(namespaces()?) {
@@ -706,6 +752,16 @@ pub(crate) fn prepare(keep: &[i32], command: &[String]) -> io::Result<RetainedIo
         facts.native_history_verifier_sha256,
         facts.native_owner_sha256,
     )?;
+    check_selected_replacement(&facts)?;
+    prepare_removal(&facts, source, keep)?;
+    Ok(RetainedIoCredentials {
+        uid: facts.uid,
+        gid: facts.gid,
+        groups: facts.groups,
+    })
+}
+
+fn check_selected_replacement(facts: &Token) -> io::Result<()> {
     match facts.selected_replacement_sha256 {
         Some(expected) => {
             let raw =
@@ -731,6 +787,10 @@ pub(crate) fn prepare(keep: &[i32], command: &[String]) -> io::Result<RetainedIo
             }
         }
     }
+    Ok(())
+}
+
+fn prepare_removal(facts: &Token, source: File, keep: &[i32]) -> io::Result<()> {
     if let Some(removal) = &facts.removal {
         removal::prepare(removal)?;
         let raw = unsafe { libc::fcntl(NATIVE_OWNER_FD, libc::F_DUPFD_CLOEXEC, 128) };
@@ -784,16 +844,13 @@ pub(crate) fn prepare(keep: &[i32], command: &[String]) -> io::Result<RetainedIo
         drop(source);
         crate::landlock_shim::close_ambient_fds(keep)?;
     }
-    Ok(RetainedIoCredentials {
-        uid: facts.uid,
-        gid: facts.gid,
-        groups: facts.groups,
-    })
+    Ok(())
 }
 
 /// Called only after mandatory Landlock has been independently accepted.
 pub(crate) fn drop_after_confinement(facts: RetainedIoCredentials) -> io::Result<()> {
-    super::capture::original::credentials::drop_authenticated(facts.uid, facts.gid, &facts.groups)
+    let RetainedIoCredentials { uid, gid, groups } = facts;
+    super::capture::original::credentials::drop_authenticated(uid, gid, &groups)
 }
 
 /// Authenticate immutable anonymous root custody and exact source locus before
@@ -805,8 +862,8 @@ fn replacement_digest(permit: &File, source: (u64, u64), owner: [u8; 32]) -> io:
         return Err(refused("Selected replacement permit exceeds limit"));
     }
     // Positional reads leave the retained descriptor's offset untouched.
-    use std::os::unix::fs::FileExt;
-    let mut bytes = vec![0; metadata.len() as usize];
+    let length = usize::try_from(metadata.len()).map_err(io::Error::other)?;
+    let mut bytes = vec![0; length];
     permit.read_exact_at(&mut bytes, 0)?;
     let record = SelectedReplacementPermitRecord::decode(&bytes)?;
     if record.source_root != [source.0, source.1] || record.source_owner != owner {
@@ -852,7 +909,7 @@ mod selected_permit_tests {
     #[test]
     fn actual_sealed_permit_digest_refuses_wrong_source_owner_and_nonsealed_file() {
         assert_eq!(
-            unsafe { libc::geteuid() },
+            rustix::process::geteuid().as_raw(),
             0,
             "root-owned sealed descriptor fixture requires root"
         );
@@ -896,8 +953,8 @@ fn read_history_verifier(
         return Err(refused("History verifier exceeds its closed bound"));
     }
     // Positioned reads leave the shared sealed descriptor offset untouched.
-    use std::os::unix::fs::FileExt;
-    let mut bytes = vec![0; file.metadata()?.len() as usize];
+    let length = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
+    let mut bytes = vec![0; length];
     file.read_exact_at(&mut bytes, 0)?;
     runtime_portal::retained_role::NativeHistoryVerifierRecord::decode(&bytes)
 }

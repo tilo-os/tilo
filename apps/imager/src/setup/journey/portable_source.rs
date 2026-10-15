@@ -445,31 +445,28 @@ impl Selection {
                         .validate()
                         .map_err(|_| ReviewFailure::SourceChanged)?;
                 }
-                let original = home
-                    .as_ref()
-                    .is_some_and(|source| source.original_only())
-                    .then_some(true)
-                    .unwrap_or(
-                        !choices.home
-                            && choices.applications
-                            && choices.system_refs.iter().any(|item| {
-                                item.installation
-                                    == super::super::flatpak_transfer::Installation::User
-                            }),
-                    )
-                    .then(|| {
-                        Arc::new(OriginalSource {
-                            grant: grant.clone(),
-                            choices: choices.clone(),
-                            intent: Mutex::new(None),
+                let original = (if home.as_ref().is_some_and(|source| source.original_only()) {
+                    true
+                } else {
+                    !choices.home
+                        && choices.applications
+                        && choices.system_refs.iter().any(|item| {
+                            item.installation == super::super::flatpak_transfer::Installation::User
                         })
-                    });
+                })
+                .then(|| {
+                    Arc::new(OriginalSource {
+                        grant: grant.clone(),
+                        choices: choices.clone(),
+                        intent: Mutex::new(None),
+                    })
+                });
                 Ok(Reviewed {
                     original,
-                    home,
-                    applications,
                     grant,
                     choices,
+                    home,
+                    applications,
                 })
             })();
             let _ = sender.send((result, mounted_context));
@@ -546,7 +543,7 @@ impl Selection {
             Err(error) => {
                 #[cfg(target_os = "linux")]
                 if let ReviewFailure::MountedSource { locations } = &error {
-                    self.mounted = locations.clone();
+                    self.mounted.clone_from(locations);
                     if let (Some(locations), Some(context)) = (locations, mounted_context) {
                         self.mounted_permission = Some(mounted_permission::Controller::new(
                             locations.clone(),
@@ -687,10 +684,9 @@ impl Selection {
     pub fn mounted_locations(&self) -> Vec<String> {
         #[cfg(target_os = "linux")]
         {
-            return self
-                .mounted
+            self.mounted
                 .as_ref()
-                .map_or_else(Vec::new, |locations| locations.display_names());
+                .map_or_else(Vec::new, |locations| locations.display_names())
         }
         #[cfg(not(target_os = "linux"))]
         {

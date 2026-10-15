@@ -1,6 +1,10 @@
 //! Exact root-bootstrap clone placement. No source path or permission constructor.
-use super::*;
+use super::{
+    Arc, AsRawFd, File, FromRawFd, MetadataExt, OpenOptionsExt, OwnedFd, Read,
+    TargetProjectionEndpoint, TargetProjectionMode, io, mount_id, refused, root,
+};
 use crate::ordinary_namespace::NamespaceWitness;
+use getrandom::rand_core::TryRng as _;
 use runtime_portal::process_binding::ExecutingPeer;
 use std::{ffi::CString, os::unix::fs::DirBuilderExt, path::PathBuf};
 
@@ -28,6 +32,7 @@ impl ExposureCustody {
             .holds
             .checked_add(1)
             .ok_or(io::ErrorKind::InvalidData)?;
+        drop(state);
         Ok(ExposureHold(Arc::clone(self)))
     }
     /// Linearizes admission against the first intentional cancellation signal.
@@ -45,10 +50,10 @@ impl ExposureCustody {
 }
 impl Drop for ExposureHold {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.0.0.lock() {
-            if let Some(remaining) = state.holds.checked_sub(1) {
-                state.holds = remaining;
-            }
+        if let Ok(mut state) = self.0.0.lock()
+            && let Some(remaining) = state.holds.checked_sub(1)
+        {
+            state.holds = remaining;
         }
     }
 }
@@ -76,7 +81,8 @@ pub(super) fn clone_view(view: &File) -> io::Result<File> {
     if raw < 0 {
         return Err(io::Error::last_os_error());
     }
-    let clone = unsafe { File::from_raw_fd(raw as i32) };
+    let descriptor = i32::try_from(raw).map_err(io::Error::other)?;
+    let clone = unsafe { File::from_raw_fd(descriptor) };
     let attrs = Attributes {
         set: 0x2 | 0x4 | 0x8,
         clear: 0,
@@ -147,13 +153,16 @@ fn mount_entry(id: u64) -> io::Result<Option<(bool, bool)>> {
         if fields.len() < 10 {
             return Err(refused("Exposure mount row truncated"));
         }
-        let rowid = parse(fields[0])?;
-        parse(fields[1])?;
+        let [mount, parent, _, _, _, options, ..] = fields.as_slice() else {
+            return Err(refused("Exposure mount row truncated"));
+        };
+        let rowid = parse(mount)?;
+        parse(parent)?;
         let split = fields
             .iter()
             .position(|f| *f == b"-")
             .ok_or_else(|| refused("Exposure mount row separator missing"))?;
-        if split < 6 || fields.len() != split + 4 {
+        if split < 6 || split.checked_add(4) != Some(fields.len()) {
             return Err(refused("Exposure mount row malformed"));
         }
         if rowid == id {
@@ -161,7 +170,9 @@ fn mount_entry(id: u64) -> io::Result<Option<(bool, bool)>> {
                 return Err(refused("Exposure mount ID duplicated"));
             }
             found = Some((
-                !fields[6..split]
+                !fields
+                    .get(6..split)
+                    .ok_or_else(|| refused("Exposure mount row malformed"))?
                     .iter()
                     .any(|v| v.starts_with(b"shared:") || v.starts_with(b"master:")),
                 [
@@ -170,7 +181,7 @@ fn mount_entry(id: u64) -> io::Result<Option<(bool, bool)>> {
                     b"noexec".as_slice(),
                 ]
                 .iter()
-                .all(|v| fields[5].split(|b| *b == b',').any(|f| f == *v)),
+                .all(|v| options.split(|b| *b == b',').any(|f| f == *v)),
             ));
         }
     }
@@ -269,6 +280,11 @@ enum Placement {
     Remote(remote_placement::RemotePlacement),
 }
 impl HeldViewExposure {
+    /// Prepare custody for a verified launcher in this mount namespace.
+    ///
+    /// # Errors
+    /// Returns an error if root access, endpoint authority, launcher identity or
+    /// namespace checks fail, or detached clone allocation fails.
     pub fn prepare(
         endpoint: Arc<TargetProjectionEndpoint>,
         peer: Arc<ExecutingPeer>,
@@ -289,7 +305,7 @@ impl HeldViewExposure {
     fn allocate(
         endpoint: Arc<TargetProjectionEndpoint>,
         peer: Option<Arc<ExecutingPeer>>,
-        read_only: bool,
+        requested_readonly: bool,
     ) -> io::Result<Self> {
         root()?;
         endpoint.check()?;
@@ -299,9 +315,9 @@ impl HeldViewExposure {
             .record
             .clone_mount_id
             .ok_or(io::ErrorKind::InvalidData)?;
-        let readonly = read_only || endpoint.record.mode == TargetProjectionMode::SelectedFile;
+        let readonly =
+            requested_readonly || endpoint.record.mode == TargetProjectionMode::SelectedFile;
         let mut nonce = [0; 32];
-        use getrandom::rand_core::TryRng as _;
         getrandom::SysRng
             .try_fill_bytes(&mut nonce)
             .map_err(io::Error::other)?;
@@ -319,6 +335,9 @@ impl HeldViewExposure {
     }
     /// The original source owner stays in its own namespace. The actual managed
     /// consuming helper owns the separate staging namespace and launcher child.
+    /// # Errors
+    /// Returns an error if endpoint or launcher validation fails, the managed
+    /// helper cannot establish private namespace custody, or its lock is poisoned.
     pub fn prepare_remote(
         endpoint: Arc<TargetProjectionEndpoint>,
         peer: Arc<ExecutingPeer>,
@@ -339,6 +358,9 @@ impl HeldViewExposure {
         })
     }
     /// Install in the persistent root owner before any control exchange.
+    /// # Errors
+    /// Returns an error if authority has expired, placement fails, or the measured
+    /// mount identity, topology or security restrictions do not match.
     pub fn place(&mut self) -> io::Result<()> {
         self.endpoint.check()?;
         match &mut self.placement {
@@ -350,14 +372,10 @@ impl HeldViewExposure {
             Placement::Remote(p) => p.file()?,
         };
         let facts = self.endpoint.measure_exposure(view)?;
-        let expected = libc::ST_NODEV as u64
-            | libc::ST_NOSUID as u64
-            | libc::ST_NOEXEC as u64
-            | if self.readonly {
-                libc::ST_RDONLY as u64
-            } else {
-                0
-            };
+        let expected = libc::ST_NODEV
+            | libc::ST_NOSUID
+            | libc::ST_NOEXEC
+            | if self.readonly { libc::ST_RDONLY } else { 0 };
         if facts.fs_flags & expected != expected
             || mount_id(view)? != facts.mount_id
             || held_inode(view)? != facts.ino
@@ -367,12 +385,17 @@ impl HeldViewExposure {
         self.facts = Some(facts);
         self.check()
     }
+    /// Validate live authority and exact placement custody.
+    ///
+    /// # Errors
+    /// Returns an error for expired authority, a retired launcher, absent placement
+    /// facts, changed mount identity or failed kernel observations.
     pub fn check(&self) -> io::Result<()> {
         self.endpoint.check()?;
-        if let Some(peer) = &self.peer {
-            if !peer.current() {
-                return Err(refused("Exposure launcher retired"));
-            }
+        if let Some(peer) = &self.peer
+            && !peer.current()
+        {
+            return Err(refused("Exposure launcher retired"));
         }
         match &self.placement {
             Placement::Local(p) => p.check()?,
@@ -388,6 +411,11 @@ impl HeldViewExposure {
         }
         Ok(())
     }
+    /// Return the held view after validating custody.
+    ///
+    /// # Errors
+    /// Returns an error if live authority or placement validation fails, or the
+    /// held view is no longer connected.
     pub fn file(&self) -> io::Result<&File> {
         self.check()?;
         match &self.placement {
@@ -395,6 +423,11 @@ impl HeldViewExposure {
             Placement::Remote(p) => p.file(),
         }
     }
+    /// Return the validated placed mount identity.
+    ///
+    /// # Errors
+    /// Returns an error if authority or placement validation fails or placement
+    /// facts are unavailable.
     pub fn mount_id(&self) -> io::Result<u64> {
         self.check()?;
         Ok(self
@@ -403,6 +436,11 @@ impl HeldViewExposure {
             .ok_or(io::ErrorKind::NotConnected)?
             .mount_id)
     }
+    /// Check that an observation belongs to this exposure's endpoint and inode.
+    ///
+    /// # Errors
+    /// Returns an error if either object's validation fails, this is a fixture
+    /// exposure, or endpoint and inode identities differ.
     pub fn matches(&self, object: &super::ObservedTargetObject<'_>) -> io::Result<()> {
         self.check()?;
         object.check()?;
@@ -424,11 +462,20 @@ impl HeldViewExposure {
             self.possible_delivery = false;
         }
     }
+    /// Record possible delivery only while the exposure remains valid.
+    ///
+    /// # Errors
+    /// Returns an error if live authority or placement validation fails.
     pub fn mark_possible_delivery(&mut self) -> io::Result<()> {
         self.check()?;
         self.possible_delivery = true;
         Ok(())
     }
+    /// Retain an independently verified consuming namespace witness.
+    ///
+    /// # Errors
+    /// Returns an error for fixture custody, an invalid launcher witness, duplicate
+    /// adoption, pidfd duplication failure or failed remote witness exchange.
     pub fn adopt_consumer(&mut self, witness: &NamespaceWitness) -> io::Result<()> {
         let peer = self
             .peer
@@ -445,6 +492,12 @@ impl HeldViewExposure {
         }
         Ok(())
     }
+    /// Retire the mount only after any possible consumer has stopped.
+    ///
+    /// # Errors
+    /// Returns `WouldBlock` when consumer stop is unknown or not observed. Also
+    /// returns errors for failed kernel observations, changed placement custody,
+    /// or unmount and staging cleanup failures.
     pub fn retire(&mut self) -> io::Result<()> {
         if self.possible_delivery {
             let fd = self.consumer.as_ref().ok_or(io::ErrorKind::WouldBlock)?;
@@ -711,7 +764,6 @@ impl ExposurePreparation {
             self::readonly(&clone)?;
         }
         let mut nonce = [0; 32];
-        use getrandom::rand_core::TryRng as _;
         getrandom::SysRng
             .try_fill_bytes(&mut nonce)
             .map_err(io::Error::other)?;

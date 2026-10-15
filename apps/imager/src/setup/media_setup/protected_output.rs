@@ -107,7 +107,7 @@ pub(crate) fn validate_pending_caller(
     layout: &crate::write::OfflineLayout,
     caller: u32,
 ) -> io::Result<()> {
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(denied(
             "Protected pending area requires authenticated root writer",
         ));
@@ -120,7 +120,7 @@ fn create(
     layout: &crate::write::OfflineLayout,
     caller: u32,
 ) -> io::Result<()> {
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(denied(
             "Protected pending area requires authenticated root writer",
         ));
@@ -134,7 +134,7 @@ fn create_directory(
     layout: &crate::write::OfflineLayout,
     caller: u32,
 ) -> io::Result<()> {
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(denied("Protected pending area requires root"));
     }
     let operation = operation(layout, caller)?;
@@ -250,7 +250,7 @@ pub(in crate::setup) fn review(
     layout: &crate::write::OfflineLayout,
     caller: u32,
 ) -> io::Result<File> {
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(denied("Protected pending area review requires root"));
     }
     grant.validate()?;
@@ -263,7 +263,7 @@ fn review_directory(
     layout: &crate::write::OfflineLayout,
     caller: u32,
 ) -> io::Result<File> {
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(denied("Protected pending area review requires root"));
     }
     let operation = operation(layout, caller)?;
@@ -517,7 +517,7 @@ mod tests {
             .tempdir()
             .unwrap();
         let pin = PinnedDirectory::open_absolute(temp.path()).unwrap();
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         let layout = combined_layout(if uid == 0 { 99 } else { uid });
         if uid != 0 {
             let error = create_directory(&pin, &layout, uid).unwrap_err();

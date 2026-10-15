@@ -87,8 +87,8 @@ impl Receiver {
             return Ok(None);
         };
         if slot != "87"
-            || unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+            || rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || unsafe { libc::getppid() } != 1
         {
             return Err(denied());
@@ -383,7 +383,7 @@ impl Receiver {
         }
         let authority = RetainedSourceAuthority::review_installed(
             Arc::clone(&installed),
-            &*identity_public_key,
+            identity_public_key,
             &AtomicBool::new(false),
         )?;
         let projection = authority.projection(&AtomicBool::new(false))?;

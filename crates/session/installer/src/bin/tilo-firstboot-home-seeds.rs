@@ -600,8 +600,7 @@ mod linux {
     }
 
     fn seed(home_path: &Path, skeleton: &Path, owner: &Owner, proofs_path: &Path) -> Result<()> {
-        // SAFETY: geteuid has no preconditions.
-        if unsafe { libc::geteuid() } != 0 {
+        if !rustix::process::geteuid().is_root() {
             return invalid("firstboot seed creation requires root");
         }
         let parent_path = proofs_path.parent().ok_or("invalid proof directory")?;
@@ -672,8 +671,284 @@ mod linux {
         verify_home_binding(&home_parent, home_name, &home)
     }
 
+    #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+    #[serde(deny_unknown_fields)]
+    struct AccountTarget {
+        operation: String,
+        target: String,
+        user: String,
+        uid: u32,
+    }
+
+    impl AccountTarget {
+        fn binding(&self) -> Result<account_custody::portable::PortableBinding> {
+            uuid::Uuid::parse_str(&self.operation)?;
+            if self.uid != 1000
+                || self.target.len() != 64
+                || !self.target.bytes().all(|b| b.is_ascii_hexdigit())
+                || self.user.is_empty()
+                || self.user.len() > 32
+                || !self
+                    .user
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+            {
+                return invalid("invalid installed account target");
+            }
+            Ok(account_custody::portable::PortableBinding::new(
+                &self.operation,
+                &self.target,
+                &self.user,
+                self.uid,
+            )?)
+        }
+    }
+
+    fn root_directory(path: &Path) -> Result<File> {
+        if !path.is_absolute() {
+            return invalid("expected absolute transport path");
+        }
+        let mut directory = open_directory(Path::new("/"))?;
+        for part in path.components() {
+            match part {
+                Component::RootDir => {}
+                Component::Normal(name) => {
+                    directory = open_at(&directory, name, DIRECTORY)?;
+                    trusted(&directory.metadata()?)?;
+                }
+                _ => return invalid("unsafe transport path"),
+            }
+        }
+        Ok(directory)
+    }
+
+    fn private_file(directory: &File, name: &str, limit: u64) -> Result<File> {
+        let file = open_at(
+            directory,
+            OsStr::new(name),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )?;
+        let info = file.metadata()?;
+        if !info.is_file()
+            || info.uid() != 0
+            || info.mode() & 0o077 != 0
+            || info.nlink() != 1
+            || info.len() > limit
+        {
+            return invalid("unsafe account transport file");
+        }
+        Ok(file)
+    }
+
+    fn account_stage(target: &AccountTarget, destination: &Path) -> Result<()> {
+        target.binding()?;
+        if destination.file_name() != Some(OsStr::new("online-accounts")) {
+            return invalid("invalid account staging directory");
+        }
+        let parent = root_directory(destination.parent().ok_or("missing staging parent")?)?;
+        let name = OsStr::new("online-accounts");
+        // Parse before publishing anything. The frame, including its key, is
+        // always zeroized when buffered in the privileged transport process.
+        let accounts =
+            installer::account_handoff::InstallAccounts::read_from(&mut io::stdin().lock())?;
+        let mut frame = zeroize::Zeroizing::new(Vec::new());
+        accounts.write_to(&mut *frame)?;
+        mkdir(&parent, name, 0o700)?;
+        let directory = open_at(&parent, name, DIRECTORY)?;
+        let result = (|| {
+            let owner = Owner { uid: 0, gid: 0 };
+            publish_bytes(
+                &directory,
+                OsStr::new("binding.json"),
+                &serde_json::to_vec(target)?,
+                0o600,
+                &owner,
+            )?;
+            publish_bytes(&directory, OsStr::new("transport"), &frame, 0o600, &owner)?;
+            directory.sync_all()?;
+            parent.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            // This directory was created exclusively by this invocation.
+            fs::remove_dir_all(destination)?;
+            parent.sync_all()?;
+        }
+        result
+    }
+
+    fn account_identity(user: &str) -> Result<(PathBuf, Owner)> {
+        let name = CString::new(user)?;
+        // SAFETY: this single-threaded helper copies the NSS entry immediately.
+        let account = unsafe { libc::getpwnam(name.as_ptr()) };
+        if account.is_null() {
+            return invalid("account consumer does not exist");
+        }
+        // SAFETY: getpwnam succeeded; its strings and scalar fields are initialized.
+        let (home, owner) = unsafe {
+            (
+                PathBuf::from(OsStr::from_bytes(
+                    CStr::from_ptr((*account).pw_dir).to_bytes(),
+                )),
+                Owner {
+                    uid: (*account).pw_uid,
+                    gid: (*account).pw_gid,
+                },
+            )
+        };
+        if owner.uid != 1000
+            || (home != Path::new(&format!("/var/home/{user}"))
+                && home != Path::new(&format!("/home/{user}")))
+        {
+            return invalid("installed account identity mismatch");
+        }
+        let canonical = fs::canonicalize(&home)?;
+        if canonical != Path::new(&format!("/var/home/{user}"))
+            || fs::symlink_metadata(&home)?.file_type().is_symlink()
+            || fs::metadata(&canonical)?.uid() != owner.uid
+        {
+            return invalid("redirected installed account home");
+        }
+        Ok((canonical, owner))
+    }
+
+    fn account_consume(target: &AccountTarget) -> Result<()> {
+        let (home, owner) = account_identity(&target.user)?;
+        if rustix::process::getuid().as_raw() != owner.uid
+            || rustix::process::geteuid().as_raw() != owner.uid
+        {
+            return invalid("account import requires the real destination user");
+        }
+        let accounts =
+            installer::account_handoff::InstallAccounts::read_from(&mut io::stdin().lock())?;
+        accounts.import_for_user(&home.join(".config/tilo"), &target.binding()?)
+    }
+
+    fn account_adopt(user: &str) -> Result<()> {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        let directory = root_directory(Path::new("/etc/tilo/online-accounts"))?;
+        if directory.metadata()?.mode() & 0o077 != 0 {
+            return invalid("account transport directory is not private");
+        }
+        let target: AccountTarget =
+            serde_json::from_reader(private_file(&directory, "binding.json", 4096)?)?;
+        target.binding()?;
+        if target.user != user {
+            return invalid("account transport targets another user");
+        }
+        let (home, owner) = account_identity(user)?;
+        if metadata_at(&directory, OsStr::new("adopted"))?.is_some() {
+            let mut receipt = private_file(&directory, "adopted", 4096)?;
+            if bounded_read(&mut receipt)? != serde_json::to_vec(&target)? {
+                return invalid("account adoption receipt mismatch");
+            }
+        } else {
+            let transport = private_file(&directory, "transport", (8 << 20) + 1024)?;
+            let mut command = Command::new(std::env::current_exe()?);
+            command
+                .args([
+                    "--accounts-consume",
+                    &target.operation,
+                    &target.target,
+                    &target.user,
+                    "1000",
+                ])
+                .env_clear()
+                .env("HOME", &home)
+                .env("XDG_CONFIG_HOME", home.join(".config"))
+                .stdin(Stdio::from(transport))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            // SAFETY: the child performs only async-signal-safe credential syscalls
+            // before exec. setuid changes real, effective and saved identity.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::setgroups(0, std::ptr::null()) != 0
+                        || libc::setgid(owner.gid) != 0
+                        || libc::setuid(owner.uid) != 0
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            if !command.status()?.success() {
+                return invalid("installed account import failed; transport preserved");
+            }
+            publish_bytes(
+                &directory,
+                OsStr::new("adopted"),
+                &serde_json::to_vec(&target)?,
+                0o600,
+                &Owner { uid: 0, gid: 0 },
+            )?;
+        }
+        // Receipt publication precedes key removal, so a crash is retryable.
+        let name = CString::new("transport")?;
+        // SAFETY: directory and NUL-terminated relative name are valid.
+        if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } != 0
+            && io::Error::last_os_error().kind() != io::ErrorKind::NotFound
+        {
+            return Err(io::Error::last_os_error().into());
+        }
+        directory.sync_all()?;
+        Ok(())
+    }
+
+    fn accounts_dispatch(arguments: &[OsString]) -> Result<()> {
+        let args: Vec<_> = arguments
+            .iter()
+            .map(|v| v.to_str().ok_or("non-UTF8 account argument"))
+            .collect::<std::result::Result<_, _>>()?;
+        if let ["--accounts-fingerprint", size, major, wwn, serial] = args.as_slice() {
+            println!(
+                "{}",
+                installer::account_handoff::target_fingerprint(size.parse()?, major, wwn, serial)
+            );
+            return Ok(());
+        }
+        if let ["--accounts-consume", operation, target, user, uid] = args.as_slice() {
+            return account_consume(&AccountTarget {
+                operation: (*operation).into(),
+                target: (*target).into(),
+                user: (*user).into(),
+                uid: uid.parse()?,
+            });
+        }
+        if !rustix::process::geteuid().is_root() || !rustix::process::getuid().is_root() {
+            return invalid("account transport requires root");
+        }
+        match args.as_slice() {
+            [
+                "--accounts-stage",
+                operation,
+                target,
+                user,
+                uid,
+                destination,
+            ] => account_stage(
+                &AccountTarget {
+                    operation: (*operation).into(),
+                    target: (*target).into(),
+                    user: (*user).into(),
+                    uid: uid.parse()?,
+                },
+                Path::new(destination),
+            ),
+            ["--accounts-adopt", user] => account_adopt(user),
+            _ => invalid("invalid account transport arguments"),
+        }
+    }
+
     fn main_result() -> Result<()> {
         let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+        if arguments
+            .first()
+            .is_some_and(|v| v.as_bytes().starts_with(b"--accounts-"))
+        {
+            return accounts_dispatch(&arguments);
+        }
         if arguments == [OsStr::new("--capabilities")] {
             println!("{{\"schema\":1,\"seed_protocol\":1}}");
             return Ok(());

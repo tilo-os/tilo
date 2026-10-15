@@ -153,6 +153,12 @@ impl PreparedMedia {
             original_password: Zeroizing::new(password.to_vec()),
             browser_frozen: true,
             delivery_started: std::sync::atomic::AtomicBool::new(false),
+            recovery: Mutex::new(
+                self.recovery
+                    .lock()
+                    .map_err(|_| io::Error::other("Recovery custody unavailable"))?
+                    .clone(),
+            ),
             transfer_generation: Mutex::new(None),
         });
         Ok(prepared)

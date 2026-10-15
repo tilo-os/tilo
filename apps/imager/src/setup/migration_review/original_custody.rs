@@ -8,18 +8,50 @@ enum Kind {
     Preparation,
     SourceControl,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::setup) struct OriginalOmission {
     kind: Kind,
     relative: NativePath,
     facts: (u64, u64, u32, u32, u32),
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::setup) struct OriginalPreparation {
     namespace: NativePath,
     omission: OriginalOmission,
+}
+impl<'de> Deserialize<'de> for OriginalOmission {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            kind: Kind,
+            relative: NativePath,
+            facts: (u64, u64, u32, u32, u32),
+        }
+        let fields = Fields::deserialize(deserializer)?;
+        Ok(Self {
+            kind: fields.kind,
+            relative: fields.relative,
+            facts: fields.facts,
+        })
+    }
+}
+impl<'de> Deserialize<'de> for OriginalPreparation {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            namespace: NativePath,
+            omission: OriginalOmission,
+        }
+        let fields = Fields::deserialize(deserializer)?;
+        Ok(Self {
+            namespace: fields.namespace,
+            omission: fields.omission,
+        })
+    }
 }
 pub(super) struct OriginalCustody {
     pin: Arc<PinnedDirectory>,
@@ -52,7 +84,7 @@ impl OriginalPreparation {
                 &held.pin.file,
             )?,
         };
-        value.validate_original(home, unsafe { libc::getuid() })?;
+        value.validate_original(home, rustix::process::getuid().as_raw())?;
         Ok(Some(value))
     }
     pub(in crate::setup) fn validate_original(
@@ -98,7 +130,7 @@ impl OriginalOmission {
         records: &Path,
         held: &File,
     ) -> io::Result<Option<Self>> {
-        if unsafe { libc::geteuid() } != 0
+        if rustix::process::geteuid().as_raw() != 0
             || !records.ends_with("var/lib/tilo-imager/home-capture/records")
         {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -170,7 +202,7 @@ impl OriginalOmission {
     /// remain exact on the same authenticated, held, readonly source volume.
     pub(in crate::setup) fn read_projection(values: &[Self], home: &File) -> io::Result<Vec<Self>> {
         use std::os::fd::AsRawFd;
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         Self::validate_shapes(values)?;
@@ -292,7 +324,10 @@ impl SourceInventory {
             .check()?;
         Ok(inventory)
     }
-    #[cfg(any(feature = "capture-worker", test))]
+    #[cfg(any(
+        feature = "capture-worker",
+        all(test, feature = "native-capture-qualification")
+    ))]
     pub(in crate::setup) fn capture_original_home_with_scratch(
         root: &Arc<PinnedDirectory>,
         values: &[OriginalOmission],
@@ -408,7 +443,7 @@ mod tests {
         fs::write(home.join("document"), b"user-document").unwrap();
         let preparation = OriginalPreparation::review(&home).unwrap().unwrap();
         let proof = preparation
-            .validate_original(&home, unsafe { libc::getuid() })
+            .validate_original(&home, rustix::process::getuid().as_raw())
             .unwrap();
         environment.set("HOME", root.join("unrelated-receiver"));
         environment.set("XDG_STATE_HOME", root.join("unrelated-state"));
@@ -480,7 +515,7 @@ mod tests {
         fs::set_permissions(&namespace, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(
             preparation
-                .validate_original(&home, unsafe { libc::getuid() })
+                .validate_original(&home, rustix::process::getuid().as_raw())
                 .is_err()
         );
         assert!(inventory.validate(&pin).is_err());
@@ -500,7 +535,7 @@ mod tests {
         let proof = OriginalPreparation::review(&home)
             .unwrap()
             .unwrap()
-            .validate_original(&home, unsafe { libc::getuid() })
+            .validate_original(&home, rustix::process::getuid().as_raw())
             .unwrap();
         assert!(OriginalOmission::validate_shapes(&[proof.clone(), proof.clone()]).is_err());
         let mut forged = serde_json::to_value(&proof).unwrap();
@@ -511,9 +546,11 @@ mod tests {
         let mut forged = proof;
         forged.facts.0 += 1;
         assert!(
-            OriginalOmission::validate_set(&[forged], &File::open(home).unwrap(), unsafe {
-                libc::getuid()
-            })
+            OriginalOmission::validate_set(
+                &[forged],
+                &File::open(home).unwrap(),
+                rustix::process::getuid().as_raw(),
+            )
             .is_err()
         );
     }

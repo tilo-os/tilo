@@ -683,7 +683,7 @@ fn prepared_setup_authenticates_separate_selected_session_before_any_adoption() 
     );
     assert!(!target.exists());
     review.import_service_sessions(&target, PASSWORD).unwrap();
-    let selected = account_custody::Custodian::for_root(Some(target.clone()))
+    let selected = account_custody::Custodian::for_root(Some(target))
         .service_session(
             &AccountId::from(declaration.sessions[0].id.clone()),
             identity.public_key(),
@@ -797,7 +797,7 @@ fn offline_home_fixture(root: &Path) -> (Manifest, PathBuf, PathBuf, AccountId) 
         1024 * 1024,
     )
     .unwrap();
-    manifest.offline_home = Some(declaration.clone());
+    manifest.offline_home = Some(declaration);
     let staging = root.join("staging");
     private(&staging);
     identity
@@ -828,7 +828,7 @@ fn assert_pending_native_consumers_refuse(root: &Path, ciphertext: &Path, origin
         &public_receipt,
         serde_json::to_vec(&serde_json::json!({
             "schema":1, "sealed_bytes":original.len(),
-            "ciphertext_sha256":hex::encode(Sha256::digest(&original)),
+            "ciphertext_sha256":hex::encode(Sha256::digest(original)),
         }))
         .unwrap(),
     )
@@ -879,13 +879,13 @@ fn assert_pending_native_consumers_refuse(root: &Path, ciphertext: &Path, origin
     assert!(!refused_accounts.exists());
 }
 fn assert_offline_declaration_cannot_split(manifest: &Manifest, staging: &Path) {
-    let mut missing_caller = serde_json::to_value(&manifest).unwrap();
+    let mut missing_caller = serde_json::to_value(manifest).unwrap();
     missing_caller["offline_home"]
         .as_object_mut()
         .unwrap()
         .remove("caller");
     assert!(serde_json::from_value::<Manifest>(missing_caller).is_err());
-    let mut wrong_caller = serde_json::to_value(&manifest).unwrap();
+    let mut wrong_caller = serde_json::to_value(manifest).unwrap();
     wrong_caller["offline_home"]["caller"]["uid"] = serde_json::json!(u32::MAX);
     assert!(
         serde_json::from_value::<Manifest>(wrong_caller)
@@ -965,7 +965,7 @@ fn offline_home_crypto_reopen_preserves_exact_selection_and_refuses_split_declar
     );
     drop(review);
     assert_offline_declaration_cannot_split(&manifest, &staging);
-    let mut changed = original.clone();
+    let mut changed = original;
     let last = changed.last_mut().unwrap();
     *last ^= 1;
     fs::write(&ciphertext, &changed).unwrap();

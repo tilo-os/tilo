@@ -15,7 +15,7 @@ cd "$(dirname "$0")/../.."
 tool_started=$SECONDS
 cargo build --locked --quiet -p tilo-app-cli --bin tilo-app
 printf 'TILO_BUILD_TIMING phase=web-build-tool elapsed_seconds=%s\n' "$((SECONDS - tool_started))"
-tilo_app=$PWD/target/debug/tilo-app
+tilo_app=${CARGO_TARGET_DIR:-$PWD/target}/debug/tilo-app
 pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/browser/tilo-browser-runtime/Cargo.toml)
 if [[ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen $pinned" ]]; then
   cargo install --locked wasm-bindgen-cli --version "$pinned"
@@ -46,7 +46,7 @@ moq_started=$SECONDS
 printf 'TILO_BUILD_TIMING phase=web-moq-shared elapsed_seconds=%s\n' "$((SECONDS - moq_started))"
 printf 'TILO_WEB_MOQ_BUILDS=1 examples=%s\n' "${#apps[@]}"
 
-out=$PWD/target/web-examples
+out=${CARGO_TARGET_DIR:-$PWD/target}/web-examples
 mkdir -p "$out"
 for app in "${apps[@]}"; do
   echo "== examples/apps/$app"

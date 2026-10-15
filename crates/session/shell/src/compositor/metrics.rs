@@ -88,6 +88,12 @@ pub struct FrameSample {
     /// running when it arrives, so what a tick cost the session itself is
     /// `cpu_us` less this. `None` where `cpu_us` is.
     pub testctl_cpu_us: Option<u32>,
+    /// On a painted tick that animated, who asked for the motion: chrome
+    /// sources by name, content widgets by path, `transition` for a
+    /// compositor transition's frame run, `resting-frame` for the one frame
+    /// owed after motion ended; `+`-joined, empty when nothing animated. A
+    /// desktop that keeps animating while idle is attributed here.
+    pub paint_animations: &'static str,
 }
 
 /// [`FrameSample::paint_reasons`] bits: why the compositor decided a tick had
@@ -187,28 +193,49 @@ impl DemandOnset {
 /// app ids come from clients, so past [`MAX_CLIENT_LABELS`] distinct labels
 /// every new one reads as [`OTHER_CLIENTS`] instead of leaking more.
 pub fn intern_clients(label: &str) -> &'static str {
-    use std::collections::HashSet;
-    use std::sync::{Mutex, OnceLock};
-    static LABELS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    if label.is_empty() {
-        return "";
-    }
-    let mut labels = LABELS
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(known) = labels.get(label).copied() {
-        return known;
-    }
-    if labels.len() >= MAX_CLIENT_LABELS {
-        return OTHER_CLIENTS;
-    }
-    let leaked: &'static str = Box::leak(label.to_owned().into_boxed_str());
-    labels.insert(leaked);
-    leaked
+    static LABELS: InternedLabels = InternedLabels::new();
+    LABELS.intern(label)
 }
 
-/// Cap on distinct [`intern_clients`] labels.
+/// Interned labels for [`FrameSample::paint_animations`], bounded the same
+/// way as [`intern_clients`] and counted apart from it.
+pub fn intern_animations(label: &str) -> &'static str {
+    static LABELS: InternedLabels = InternedLabels::new();
+    LABELS.intern(label)
+}
+
+/// A bounded set of leaked trace labels, so a row can carry a `&'static str`.
+struct InternedLabels(
+    std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<&'static str>>>,
+);
+
+impl InternedLabels {
+    const fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+
+    fn intern(&self, label: &str) -> &'static str {
+        if label.is_empty() {
+            return "";
+        }
+        let mut labels = self
+            .0
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(known) = labels.get(label).copied() {
+            return known;
+        }
+        if labels.len() >= MAX_CLIENT_LABELS {
+            return OTHER_CLIENTS;
+        }
+        let leaked: &'static str = Box::leak(label.to_owned().into_boxed_str());
+        labels.insert(leaked);
+        leaked
+    }
+}
+
+/// Cap on distinct labels of each interned trace column.
 pub const MAX_CLIENT_LABELS: usize = 256;
 /// The label past [`MAX_CLIENT_LABELS`].
 pub const OTHER_CLIENTS: &str = "(other)";
@@ -267,7 +294,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -298,6 +325,7 @@ impl FrameSample {
             self.testctl_cpu_us
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
+            self.paint_animations,
         )
     }
 }
@@ -306,7 +334,7 @@ impl FrameSample {
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
 input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us,\
-paint_reasons,paint_clients,testctl_cpu_us";
+paint_reasons,paint_clients,testctl_cpu_us,paint_animations";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -797,6 +825,14 @@ impl FrameRecorder {
         if self.enabled {
             self.cur.paint_reasons = reasons;
             self.cur.paint_clients = clients;
+        }
+    }
+
+    /// Who asked for this painted tick's motion; see
+    /// [`FrameSample::paint_animations`].
+    pub fn mark_paint_animations(&mut self, owners: &'static str) {
+        if self.enabled {
+            self.cur.paint_animations = owners;
         }
     }
 
@@ -1546,6 +1582,7 @@ mod tests {
             paint_reasons: paint_reason::APPS | paint_reason::REVISION,
             paint_clients: "so.tilo.file-explorer",
             testctl_cpu_us: Some(17),
+            paint_animations: "notification+content/DesktopSurface/TileHost",
         }
         .write_csv_row(&mut buf)
         .expect("write csv row into a Vec");

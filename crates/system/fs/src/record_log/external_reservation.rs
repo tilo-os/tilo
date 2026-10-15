@@ -53,6 +53,70 @@ pub(crate) struct ExternalReservationInput {
     pub archive_plan: [u8; 32],
     pub previous: Option<PreviousCanonicalIds>,
 }
+fn decode_reservation(
+    bytes: &[u8],
+    input: &ExternalReservationInput,
+) -> Result<ExternalCanonicalIds, RecordLogError> {
+    if bytes.len() > MAX_BYTES {
+        return Err(RecordLogError::Corrupt);
+    }
+    let stored: Reservation = postcard::from_bytes(bytes).map_err(|_| RecordLogError::Corrupt)?;
+    if stored.schema != 1
+        || stored.workspace != input.workspace
+        || stored.person != input.person
+        || stored.source_owner != input.source_owner
+        || stored.operation != input.operation
+        || stored.intent != input.intent
+        || stored.archive_plan != input.archive_plan
+        || stored.previous != input.previous
+        || postcard::to_allocvec(&stored).map_err(|_| RecordLogError::Corrupt)? != bytes
+        || input.previous.as_ref().is_some_and(|p| {
+            stored.ids.parent != p.parent
+                || stored.ids.victim != p.selected
+                || stored.ids.victim_initial != p.version
+        })
+        || (input.previous.is_none() && stored.ids.source == stored.ids.victim)
+        || [
+            stored.ids.parent.0,
+            stored.ids.source.0,
+            stored.ids.victim.0,
+            stored.ids.source_initial.0,
+            stored.ids.source_proposed.0,
+            stored.ids.victim_initial.0,
+            stored.ids.victim_proposed.0,
+        ]
+        .iter()
+        .any(Uuid::is_nil)
+    {
+        return Err(RecordLogError::Corrupt);
+    }
+    let record_ids = [
+        stored.ids.parent.0,
+        stored.ids.source.0,
+        stored.ids.victim.0,
+    ];
+    let versions = [
+        stored.ids.source_initial.0,
+        stored.ids.source_proposed.0,
+        stored.ids.victim_initial.0,
+        stored.ids.victim_proposed.0,
+    ];
+    if record_ids
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        != 3
+        || versions
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != 4
+    {
+        return Err(RecordLogError::Corrupt);
+    }
+    Ok(stored.ids)
+}
+
 impl RecordLog {
     pub(crate) fn reserve_external_operation(
         &self,
@@ -82,111 +146,48 @@ impl RecordLog {
         let ids = {
             let mut table = write.open_table(RESERVATIONS)?;
             let existing = table.get(key.as_slice())?.map(|v| v.value().to_vec());
-            match existing {
-                Some(bytes) => {
-                    if bytes.len() > MAX_BYTES {
-                        return Err(RecordLogError::Corrupt);
-                    }
-                    let stored: Reservation =
-                        postcard::from_bytes(&bytes).map_err(|_| RecordLogError::Corrupt)?;
-                    if stored.schema != 1
-                        || stored.workspace != input.workspace
-                        || stored.person != input.person
-                        || stored.source_owner != input.source_owner
-                        || stored.operation != input.operation
-                        || stored.intent != input.intent
-                        || stored.archive_plan != input.archive_plan
-                        || stored.previous != input.previous
-                        || postcard::to_allocvec(&stored).map_err(|_| RecordLogError::Corrupt)?
-                            != bytes
-                        || input.previous.as_ref().is_some_and(|p| {
-                            stored.ids.parent != p.parent
-                                || stored.ids.victim != p.selected
-                                || stored.ids.victim_initial != p.version
-                        })
-                        || (input.previous.is_none() && stored.ids.source == stored.ids.victim)
-                        || [
-                            stored.ids.parent.0,
-                            stored.ids.source.0,
-                            stored.ids.victim.0,
-                            stored.ids.source_initial.0,
-                            stored.ids.source_proposed.0,
-                            stored.ids.victim_initial.0,
-                            stored.ids.victim_proposed.0,
-                        ]
-                        .iter()
-                        .any(Uuid::is_nil)
-                    {
-                        return Err(RecordLogError::Corrupt);
-                    }
-                    let record_ids = [
-                        stored.ids.parent.0,
-                        stored.ids.source.0,
-                        stored.ids.victim.0,
-                    ];
-                    let versions = [
-                        stored.ids.source_initial.0,
-                        stored.ids.source_proposed.0,
-                        stored.ids.victim_initial.0,
-                        stored.ids.victim_proposed.0,
-                    ];
-                    if record_ids
-                        .into_iter()
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .len()
-                        != 3
-                        || versions
-                            .into_iter()
-                            .collect::<std::collections::BTreeSet<_>>()
-                            .len()
-                            != 4
-                    {
-                        return Err(RecordLogError::Corrupt);
-                    }
-                    stored.ids
+            if let Some(bytes) = existing {
+                decode_reservation(&bytes, input)?
+            } else {
+                if table.len()? >= MAX_RESERVATIONS {
+                    return Err(RecordLogError::Corrupt);
                 }
-                None => {
-                    if table.len()? >= MAX_RESERVATIONS {
-                        return Err(RecordLogError::Corrupt);
-                    }
-                    let ids = ExternalCanonicalIds {
-                        parent: input
-                            .previous
-                            .as_ref()
-                            .map_or_else(FileRecordId::new, |p| p.parent),
-                        source: FileRecordId::new(),
-                        source_initial: FileVersionId::new(),
-                        source_proposed: FileVersionId::new(),
-                        victim: input
-                            .previous
-                            .as_ref()
-                            .map_or_else(FileRecordId::new, |p| p.selected),
-                        victim_initial: input
-                            .previous
-                            .as_ref()
-                            .map_or_else(FileVersionId::new, |p| p.version),
-                        victim_proposed: FileVersionId::new(),
-                        observed_at_ms: crate::clock::unix_now_ms(),
-                    };
-                    let record = Reservation {
-                        schema: 1,
-                        workspace: input.workspace,
-                        person: input.person,
-                        source_owner: input.source_owner,
-                        operation: input.operation,
-                        intent: input.intent,
-                        archive_plan: input.archive_plan,
-                        ids: ids.clone(),
-                        previous: input.previous.clone(),
-                    };
-                    let bytes =
-                        postcard::to_allocvec(&record).map_err(|_| RecordLogError::Corrupt)?;
-                    if bytes.len() > MAX_BYTES {
-                        return Err(RecordLogError::Corrupt);
-                    }
-                    table.insert(key.as_slice(), bytes.as_slice())?;
-                    ids
+                let ids = ExternalCanonicalIds {
+                    parent: input
+                        .previous
+                        .as_ref()
+                        .map_or_else(FileRecordId::new, |p| p.parent),
+                    source: FileRecordId::new(),
+                    source_initial: FileVersionId::new(),
+                    source_proposed: FileVersionId::new(),
+                    victim: input
+                        .previous
+                        .as_ref()
+                        .map_or_else(FileRecordId::new, |p| p.selected),
+                    victim_initial: input
+                        .previous
+                        .as_ref()
+                        .map_or_else(FileVersionId::new, |p| p.version),
+                    victim_proposed: FileVersionId::new(),
+                    observed_at_ms: crate::clock::unix_now_ms(),
+                };
+                let record = Reservation {
+                    schema: 1,
+                    workspace: input.workspace,
+                    person: input.person,
+                    source_owner: input.source_owner,
+                    operation: input.operation,
+                    intent: input.intent,
+                    archive_plan: input.archive_plan,
+                    ids: ids.clone(),
+                    previous: input.previous.clone(),
+                };
+                let bytes = postcard::to_allocvec(&record).map_err(|_| RecordLogError::Corrupt)?;
+                if bytes.len() > MAX_BYTES {
+                    return Err(RecordLogError::Corrupt);
                 }
+                table.insert(key.as_slice(), bytes.as_slice())?;
+                ids
             }
         };
         write.commit()?;

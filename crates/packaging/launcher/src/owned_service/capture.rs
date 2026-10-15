@@ -113,7 +113,7 @@ impl CaptureAdmission {
         if !crate::sandbox::CANONICAL_LOADER_PATHS.contains(&interpreter.as_str()) {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        let loader = executable::pin(runtime, &bundle, &format!("lib{}", interpreter))?;
+        let loader = executable::pin(runtime, &bundle, &format!("lib{interpreter}"))?;
         runtime_directory.check()?;
         let facts = source.metadata()?;
         if !facts.is_dir() {
@@ -148,7 +148,7 @@ impl CaptureAdmission {
     }
     /// Root-service-only original-source reader admission. The trusted broker
     /// supplies facts from its protected SAME-source record after setup/source
-    /// reattestation; serialized application RunOptions cannot select credentials.
+    /// reattestation; serialized application `RunOptions` cannot select credentials.
     /// Credentials remain root here and change only inside the completed namespace.
     /// # Errors
     /// Refuses non-root callers, writable/mismatched source, invalid credential
@@ -355,8 +355,9 @@ impl CaptureAdmission {
                 .iter()
                 .position(|arg| arg == "__sandbox-exec")
                 .ok_or_else(|| io::Error::other("Capture shim unavailable"))?;
+            let insertion = position.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
             argv.splice(
-                position + 1..position + 1,
+                insertion..insertion,
                 ["--rw-noexec".into(), INVENTORY_SCRATCH_PATH.into()],
             );
         }
@@ -401,6 +402,9 @@ impl CaptureAdmission {
         self.output_proof = Some(proof);
         Ok(self)
     }
+    /// Attach root-authenticated original output custody.
+    /// # Errors
+    /// Refuses missing original-source admission, mismatched custody or inaccessible output.
     pub fn with_original_output(mut self, proof: OriginalOutputAdmission) -> io::Result<Self> {
         self.check()?;
         let digest = self.original_read_claim_digest().ok_or_else(|| {
@@ -418,6 +422,8 @@ impl CaptureAdmission {
         Ok(self)
     }
     /// Attach a distinct installed transaction; never impersonate USB custody.
+    /// # Errors
+    /// Refuses existing output, missing original-source admission or mismatched custody.
     pub fn with_installed_copy_output(
         mut self,
         proof: InstalledCopyOutputAdmission,
@@ -550,7 +556,7 @@ impl CaptureAdmission {
 
     /// This independently admitted native runtime is not an installed OS
     /// runtime. Only this nonserializable token supplies its trust; ordinary
-    /// RunOptions continue to require the host's runtime publisher policy.
+    /// `RunOptions` continue to require the host's runtime publisher policy.
     pub(crate) fn resolve_runtime(
         &self,
         manifest: &crate::manifest::ManifestView,
@@ -692,8 +698,8 @@ fn snapshot(value: &std::fs::Metadata) -> (u64, u64, u64, i64, i64, i64, i64) {
 pub(super) fn check_credentials(original_uid: u32) -> io::Result<()> {
     // Querying with -1 leaves the process filesystem credential unchanged.
     let filesystem_uid = unsafe { libc::setfsuid(u32::MAX) };
-    if unsafe { libc::getuid() } != original_uid
-        || unsafe { libc::geteuid() } != original_uid
+    if rustix::process::getuid().as_raw() != original_uid
+        || rustix::process::geteuid().as_raw() != original_uid
         || u32::try_from(filesystem_uid).ok() != Some(original_uid)
     {
         return Err(io::ErrorKind::PermissionDenied.into());
@@ -801,7 +807,7 @@ pub(crate) fn splice_shim_data(argv: &mut Vec<String>) -> io::Result<()> {
     // bwrap consumes this held FD itself. A late /proc/self/fd source is invalid
     // once bwrap has mounted the private PID namespace's proc filesystem.
     argv.splice(
-        position..position + 3,
+        position..position.checked_add(3).ok_or(io::ErrorKind::InvalidInput)?,
         [
             "--perms".into(),
             "0500".into(),
@@ -831,20 +837,15 @@ mod tests {
     use super::*;
     use std::{io::Read, os::unix::process::CommandExt};
 
-    #[test]
-    fn signed_portable_shim_admission_rejects_wrong_publisher_and_mutated_bytes() {
-        use std::{
-            io::{Seek, SeekFrom},
-            os::unix::fs::PermissionsExt,
-        };
-        let root = tempfile::tempdir().unwrap();
-        let launcher = root.path().join("tilo-launcher");
+    fn signed_capture_runtime(root: &Path) -> (PathBuf, runtime_bundle::Identity) {
+        use std::os::unix::fs::PermissionsExt;
+        let launcher = root.join("tilo-launcher");
         std::fs::write(&launcher, b"fixture signed executable bytes").unwrap();
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
         let identity = runtime_bundle::Identity::generate();
-        let identity_path = root.path().join("identity.json");
+        let identity_path = root.join("identity.json");
         std::fs::write(&identity_path, identity.to_json_bytes()).unwrap();
-        let runtime = root.path().join("runtime");
+        let runtime = root.join("runtime");
         let dependency_output = std::process::Command::new("ldd")
             .args(["/usr/bin/bwrap", "/usr/bin/tar"])
             .output()
@@ -875,24 +876,19 @@ mod tests {
             },
         )
         .unwrap();
-        let selected = root.path().join("selected");
-        std::fs::create_dir(&selected).unwrap();
-        let uid = unsafe { libc::geteuid() };
-        let mut admission = CaptureAdmission::verify(
-            &runtime,
-            &identity.public_key_hex(),
-            File::open(&selected).unwrap(),
-            uid,
-        )
-        .unwrap();
-        let mut archive = archive::Archive::admit(&admission).unwrap();
+        (runtime, identity)
+    }
+
+    fn assert_archive_custody(admission: &CaptureAdmission, runtime: &Path) {
+        use std::io::{Seek, SeekFrom};
+        let mut archive = archive::Archive::admit(admission).unwrap();
         assert!(!archive.libraries.is_empty());
         let original_tar = std::fs::read(runtime.join("bin/tar")).unwrap();
         let mut signed_tar = Vec::new();
         archive.tar.read_to_end(&mut signed_tar).unwrap();
         assert_eq!(signed_tar, original_tar);
         std::fs::write(runtime.join("bin/tar"), b"substituted archive helper").unwrap();
-        assert!(archive::Archive::admit(&admission).is_err());
+        assert!(archive::Archive::admit(admission).is_err());
         archive.tar.seek(SeekFrom::Start(0)).unwrap();
         let mut held_tar = Vec::new();
         archive.tar.read_to_end(&mut held_tar).unwrap();
@@ -903,7 +899,7 @@ mod tests {
         std::fs::write(runtime.join("bin/tar"), &original_tar).unwrap();
         let missing = runtime.join("bin/tar-missing");
         std::fs::rename(runtime.join("bin/tar"), &missing).unwrap();
-        assert!(archive::Archive::admit(&admission).is_err());
+        assert!(archive::Archive::admit(admission).is_err());
         std::fs::rename(missing, runtime.join("bin/tar")).unwrap();
         let (name, library) = archive.libraries.first().unwrap();
         let original_library = std::fs::read(runtime.join("lib").join(name)).unwrap();
@@ -912,12 +908,30 @@ mod tests {
             b"substituted archive dependency",
         )
         .unwrap();
-        assert!(archive::Archive::admit(&admission).is_err());
+        assert!(archive::Archive::admit(admission).is_err());
         assert_eq!(
             library.metadata().unwrap().len(),
             original_library.len() as u64
         );
         std::fs::write(runtime.join("lib").join(name), original_library).unwrap();
+    }
+
+    #[test]
+    fn signed_portable_shim_admission_rejects_wrong_publisher_and_mutated_bytes() {
+        use std::io::{Seek, SeekFrom};
+        let root = tempfile::tempdir().unwrap();
+        let (runtime, identity) = signed_capture_runtime(root.path());
+        let selected = root.path().join("selected");
+        std::fs::create_dir(&selected).unwrap();
+        let uid = rustix::process::geteuid().as_raw();
+        let mut admission = CaptureAdmission::verify(
+            &runtime,
+            &identity.public_key_hex(),
+            File::open(&selected).unwrap(),
+            uid,
+        )
+        .unwrap();
+        assert_archive_custody(&admission, &runtime);
         let alien = runtime_bundle::Identity::generate();
         // A portable native host authenticates its own runtime. It must not
         // borrow or alter policy for ordinary installed GUI/CLI/services.
@@ -1006,10 +1020,10 @@ mod tests {
 
     #[test]
     fn original_filesystem_credentials_are_required_without_changing_them() {
-        let original = unsafe { libc::geteuid() };
+        let original = rustix::process::geteuid().as_raw();
         check_credentials(original).unwrap();
         assert!(check_credentials(original.wrapping_add(1)).is_err());
-        assert_eq!(unsafe { libc::geteuid() }, original);
+        assert_eq!(rustix::process::geteuid().as_raw(), original);
         check_credentials(original).unwrap();
     }
 

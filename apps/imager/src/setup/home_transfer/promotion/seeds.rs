@@ -48,7 +48,7 @@ fn filesystem(home: &File) -> io::Result<u64> {
 }
 fn read(home: &Arc<PinnedDirectory>) -> io::Result<Option<(Proof, String)>> {
     // SAFETY: geteuid only reads this process's credentials.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     read_at(&Path::new(PROOFS).join(format!("{uid}.json")), home)
 }
 fn read_at(path: &Path, home: &Arc<PinnedDirectory>) -> io::Result<Option<(Proof, String)>> {

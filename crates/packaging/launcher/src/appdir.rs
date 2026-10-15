@@ -198,7 +198,7 @@ pub fn prepare_private_host_app_dir(
     };
     let root = open(data_home)?;
     let original = root.metadata()?;
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     if original.uid() != uid || original.mode() & 0o077 != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
@@ -558,9 +558,10 @@ mod private_service_tests {
         let dir = prepare_private_host_app_dir(working.path(), None, package).unwrap();
         assert_eq!(dir, host_app_dir(working.path(), PERSONAL_ROOM, package));
         assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
-        assert_eq!(std::fs::metadata(&dir).unwrap().uid(), unsafe {
-            libc::geteuid()
-        });
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().uid(),
+            rustix::process::geteuid().as_raw()
+        );
         std::fs::write(dir.join("provider-state"), b"private state").unwrap();
         assert_eq!(
             prepare_host_app_dir(working.path(), None, package).unwrap(),

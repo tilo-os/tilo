@@ -54,9 +54,10 @@ thread_local! {
 }
 
 /// Schedule a frame for every desktop: an application posted or withdrew a
-/// notification. Runs inside application code, so it reaches the mounts
-/// only through the event loop.
-fn wake_desktops() {
+/// notification, or the Activity pane's code arrived. Runs inside
+/// application code or a future, so it reaches the mounts only through the
+/// event loop.
+pub(crate) fn wake_desktops() {
     let ids = DESKTOPS.with_borrow(Clone::clone);
     LOOP.with_borrow(|proxy| {
         if let Some(proxy) = proxy {
@@ -65,6 +66,29 @@ fn wake_desktops() {
             }
         }
     });
+}
+
+/// Code fetched on first use arrived (search, spelling, hyphenation): lay
+/// out and draw every mount again, so that what it changes shows. Runs from
+/// the loader's promise, outside any mount; a mount that is busy anyway
+/// gets a frame through the event loop.
+pub(crate) fn refresh_mounts() {
+    let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
+    for id in ids {
+        let refreshed = with_mount(id, |m| {
+            m.frame.relayout();
+            m.pending = true;
+            m.window.request_redraw();
+            Ok(())
+        });
+        if refreshed.is_err() {
+            LOOP.with_borrow(|proxy| {
+                if let Some(proxy) = proxy {
+                    let _ = proxy.send_event(id);
+                }
+            });
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -247,6 +271,9 @@ struct Mount {
     semantic_targets: Vec<SemanticPresentationTarget>,
     status: Function,
     images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
+    /// The image requests the page is decoding, by loader and URL. Dropping
+    /// one (the mount closing) settles its request as failed.
+    image_tickets: RefCell<HashMap<(usize, String), ui::image_store::ImageCompletionTicket>>,
     error: Option<String>,
     /// The last composed scene exceeded `scene_within_limits` (reported once).
     oversized_scene: bool,
@@ -258,6 +285,15 @@ struct Mount {
     focus_presence: RefCell<Option<serde_json::Value>>,
     /// The last `livePlace` the page was told.
     live_place: RefCell<Option<serde_json::Value>>,
+    /// Calls into this mount that can change what its semantics tree
+    /// shows without a frame saying so: every call but a redraw, a wheel
+    /// and the idle scheduler ([`with_mount_quietly`]).
+    entries: u64,
+    /// [`Self::entries`] when the last semantics tree was built.
+    tree_entries: std::cell::Cell<u64>,
+    /// The root rect of the last semantics tree built, which a status
+    /// whose tree was left unbuilt still reports.
+    tree_root_rect: std::cell::Cell<[f64; 4]>,
 }
 
 struct Desktop {
@@ -434,6 +470,19 @@ fn admit_runtime() -> Result<(), JsValue> {
         .map_err(|_| error("the runtime is busy (an owned mount callback)"))
 }
 fn with_mount<R>(
+    id: u64,
+    run: impl FnOnce(&mut Mount) -> Result<R, JsValue>,
+) -> Result<R, JsValue> {
+    with_mount_quietly(id, |m| {
+        m.entries = m.entries.wrapping_add(1);
+        run(m)
+    })
+}
+
+/// [`with_mount`] for a call that changes nothing its next frame does not
+/// account for: a redraw, a wheel, the idle scheduler. Every other call
+/// counts, so a status after it builds the semantics tree.
+fn with_mount_quietly<R>(
     id: u64,
     run: impl FnOnce(&mut Mount) -> Result<R, JsValue>,
 ) -> Result<R, JsValue> {
@@ -670,7 +719,8 @@ impl ApplicationHandler<u64> for Runner {
             self.replay_deferred(event_loop);
             return;
         }
-        let result = with_mount(id, |m| {
+        // Owner model work shows in the frame it asks for, which judges it.
+        let result = with_mount_quietly(id, |m| {
             m.service_owner_models();
             if let Some(failure) = m.gpu.as_ref().and_then(Gpu::failure) {
                 m.error = Some(failure);
@@ -706,7 +756,13 @@ impl ApplicationHandler<u64> for Runner {
         let Some(id) = id else {
             return;
         };
-        let result = with_mount(id, |m| {
+        // A redraw is the frame itself, and a wheel's effect is that frame's
+        // to judge (`Mount::draw`); every other event counts.
+        let quiet = matches!(
+            event,
+            WindowEvent::RedrawRequested | WindowEvent::MouseWheel { .. }
+        );
+        let handle = |m: &mut Mount| {
             match event {
                 WindowEvent::RedrawRequested => {
                     if let Err(e) = m.draw() {
@@ -754,7 +810,12 @@ impl ApplicationHandler<u64> for Runner {
                 }
             }
             Ok(())
-        });
+        };
+        let result = if quiet {
+            with_mount_quietly(id, handle)
+        } else {
+            with_mount(id, handle)
+        };
         if let Err(error) = result {
             web_sys::console::warn_1(&error);
         }
@@ -772,7 +833,7 @@ impl ApplicationHandler<u64> for Runner {
             |at: ui::time::Instant| deadline = Some(deadline.map_or(at, |old| old.min(at)));
         let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
         for id in ids {
-            let _ = with_mount(id, |m| {
+            let _ = with_mount_quietly(id, |m| {
                 let feedback_due = m.desktop.as_ref().and_then(|desktop| {
                     desktop
                         .shared
@@ -1289,12 +1350,16 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         semantic_targets: Vec::new(),
         status: status.clone(),
         images,
+        image_tickets: RefCell::default(),
         error: None,
         oversized_scene: false,
         peer: config.peer,
         replica_changed,
         focus_presence: RefCell::new(None),
         live_place: RefCell::new(None),
+        entries: 0,
+        tree_entries: std::cell::Cell::new(0),
+        tree_root_rect: std::cell::Cell::new([0.0; 4]),
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
     emit(&status, &serde_json::json!({"phase":"gpu-pending","id":id}));
@@ -1390,13 +1455,21 @@ async fn take_prepared_gpu() -> Option<Result<(ui::gpu::RenderContext, vello::Re
 /// hold that thread for the whole compile (seconds each under a software
 /// rasteriser), and a page waiting on the GPU process (one tearing down its
 /// previous WebGPU context, a frame, a screenshot) waits with it.
+///
+/// Only the pipelines a default full frame dispatches are awaited (13 of
+/// 24): the rest (sparse fine, the indirect path and large path-tag scan
+/// stages, the GPU draw prefix, clip reduce) start compiling once the first
+/// frame is out (`start_deferred_pipelines_async` in `render`). A frame that
+/// needs one sooner creates it there and then, so nothing is ever drawn
+/// without its pipeline.
 async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
-    vello::Renderer::new_async(
+    vello::Renderer::new_async_deferring(
         device,
         vello::RendererOptions {
             antialiasing_support: vello::AaSupport::area_only(),
             ..Default::default()
         },
+        vello::PipelineDeferral::Unused,
     )
     .await
     .map_err(|e| e.to_string())
@@ -1785,6 +1858,11 @@ impl Mount {
         if polled {
             self.note_measured();
         }
+        // A frame that only re-applied positions, with no host change and
+        // no call since the last tree that the frame cannot see, moved
+        // laid-out content and nothing else: its tree's structure and focus
+        // are the last one's.
+        let moved_only = polled && !stats.rebuilt && !stats.measured && !host_changed;
         if host_changed && !polled {
             let stage = self.metric_start();
             self.frame
@@ -1856,6 +1934,10 @@ impl Mount {
                 .create_view(&wgpu::TextureViewDescriptor::default()),
         );
         handle.queue.submit([encoder.finish()]);
+        // The first frame is out: the pipelines it did not need compile now.
+        shared
+            .renderer
+            .start_deferred_pipelines_async(&handle.device);
         drop(shared_guard);
         output.present();
         self.presented_capture_protected = self.frame.capture_protected();
@@ -1868,7 +1950,7 @@ impl Mount {
         }
         let stage = self.metric_start();
         self.presentation.set(true);
-        self.publish(0);
+        self.publish_frame(0, moved_only);
         self.presentation.set(false);
         self.metric_end("publish", stage);
         Ok(())
@@ -1927,22 +2009,54 @@ impl Mount {
     }
 
     fn publish(&self, id: u64) {
-        let ime = self.frame.ime_window().map(|i| {
+        self.publish_frame(id, false);
+    }
+
+    /// Publish the status of a presented frame. `moved_only` says the frame
+    /// only moved laid-out content ([`Self::draw`]); then, while the gate
+    /// would defer a content-only change anyway, the tree is not built at
+    /// all, and the gate's deadline delivers it as it then is.
+    fn publish_frame(&self, id: u64, moved_only: bool) {
+        let ime_window = self.frame.ime_window();
+        let ime = ime_window.as_ref().map(|i| {
             serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})
         });
-        let stage = self.metric_start();
-        let semantics = self.frame.inspection();
-        self.metric_end("inspection", stage);
-        // The semantics tree is the bulk of every status; the host keeps the
-        // last tree it received, so an unchanged tree is left out and
-        // content-only changes while typing are throttled.
-        let stage = self.metric_start();
-        let decision = self.semantics.borrow_mut().decide(
-            &semantics,
-            self.frame.ime_window().as_ref(),
-            ui::time::now(),
-        );
-        self.metric_end("semantics_decide", stage);
+        let unbuilt = if !moved_only || self.error.is_some() {
+            false
+        } else if self.entries != self.tree_entries.get() {
+            // What kept a moved frame's tree from waiting, for attribution.
+            self.metric_end("tree_built:mount_call", self.metric_start());
+            false
+        } else if self
+            .semantics
+            .borrow_mut()
+            .defer_unbuilt(ime_window.as_ref(), ui::time::now())
+        {
+            true
+        } else {
+            self.metric_end("tree_built:gate", self.metric_start());
+            false
+        };
+        let (decision, root_rect) = if unbuilt {
+            (None, self.tree_root_rect.get())
+        } else {
+            let stage = self.metric_start();
+            let semantics = self.frame.inspection();
+            self.metric_end("inspection", stage);
+            self.tree_entries.set(self.entries);
+            self.tree_root_rect.set(semantics.root.rect);
+            // The semantics tree is the bulk of every status; the host keeps
+            // the last tree it received, so an unchanged tree is left out and
+            // content-only changes while typing are throttled.
+            let stage = self.metric_start();
+            let decision = self.semantics.borrow_mut().decide(
+                &semantics,
+                ime_window.as_ref(),
+                ui::time::now(),
+            );
+            self.metric_end("semantics_decide", stage);
+            (Some(decision), semantics.root.rect)
+        };
         let applied = self.viewport.applied();
         let value = serde_json::json!({
             "phase": if self.error.is_some() { "failed" } else { "presented" },
@@ -1967,7 +2081,7 @@ impl Mount {
             "logicalSize": applied.logical_size(),
             "dpr": applied.dpr,
             "surfaceSize": self.gpu.as_ref().map(|g| [g.surface.config.width, g.surface.config.height]),
-            "rootRect": semantics.root.rect,
+            "rootRect": root_rect,
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
@@ -1998,7 +2112,7 @@ impl Mount {
             *self.live_place.borrow_mut() = place;
         }
         let mut text = value.to_string();
-        if let crate::semantics_status::SemanticsDecision::Deliver { .. } = decision {
+        if let Some(crate::semantics_status::SemanticsDecision::Deliver { .. }) = decision {
             // Splice the already serialized tree into the status object
             // instead of parsing it back into a value and serializing twice.
             let gate = self.semantics.borrow();
@@ -2126,7 +2240,9 @@ pub fn component_publications(id: u64) -> Result<String, JsValue> {
 /// Refuses closed mounts or unencodable requests.
 #[wasm_bindgen]
 pub fn component_catalogue_requests(id: u64) -> Result<String, JsValue> {
-    with_mount(id, |m| {
+    // The page asks every frame; taking the requests changes nothing the
+    // tree shows (an answer arrives through a call of its own).
+    with_mount_quietly(id, |m| {
         let requests = m.media.take_catalogue_requests(&mut m.frame);
         serde_json::to_string(&requests).map_err(error)
     })
@@ -2314,7 +2430,8 @@ pub fn request_semantics(id: u64) -> Result<(), JsValue> {
 /// Rejects a closed mount or a failure to serialize the snapshot.
 #[wasm_bindgen]
 pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
-    with_mount(id, |m| {
+    // A read: it changes nothing a semantics tree shows.
+    with_mount_quietly(id, |m| {
         m.desktop
             .as_ref()
             .map(|d| {
@@ -2335,7 +2452,8 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn desktop_record_windows(id: u64) -> Result<Option<String>, JsValue> {
-    with_mount(id, |m| {
+    // A read: it changes nothing a semantics tree shows.
+    with_mount_quietly(id, |m| {
         m.desktop
             .as_ref()
             .map(|d| {
@@ -2688,7 +2806,8 @@ pub fn desktop_set_peer_windows(id: u64, windows: &str) -> Result<(), JsValue> {
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn desktop_navigation_revision(id: u64) -> Result<f64, JsValue> {
-    with_mount(id, |m| {
+    // A read: it changes nothing a semantics tree shows.
+    with_mount_quietly(id, |m| {
         #[allow(
             clippy::cast_precision_loss,
             reason = "a revision counter stays far below 2^53 and is only compared for change"
@@ -2994,7 +3113,9 @@ pub fn remote_presence_gone(id: u64, publisher: &str) -> Result<(), JsValue> {
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn pending_writes(id: u64) -> Result<JsValue, JsValue> {
-    with_mount(id, |m| {
+    // The page persists after every presented status; storing what is
+    // written changes nothing the tree shows.
+    with_mount_quietly(id, |m| {
         m.flush_records();
         crate::storage::drain(&m.store)
     })
@@ -3075,7 +3196,8 @@ pub fn clipboard_event(
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn font_demands(id: u64) -> Result<String, JsValue> {
-    with_mount(id, |m| {
+    // Takes what the last shaping asked to fetch; the tree is the same.
+    with_mount_quietly(id, |m| {
         serde_json::to_string(&m.frame.take_browser_font_demands()).map_err(error)
     })
 }
@@ -3116,31 +3238,41 @@ pub fn font_failed(id: u64) -> Result<(), JsValue> {
     })
 }
 
-/// Image URLs the application asked for, as `[{loader, url}]`.
+/// Image URLs the application asked for, as `[{loader, url, maxDimension}]`.
+/// The page fetches and decodes each with the browser's own image decoders,
+/// no larger than `maxDimension` on either side, and hands the pixels back
+/// through [`complete_asset`].
 ///
 /// # Errors
 ///
 /// Rejects a closed mount.
 #[wasm_bindgen]
 pub fn asset_requests(id: u64) -> Result<String, JsValue> {
-    with_mount(id, |m| {
-        let requests = m
-            .images
-            .borrow_mut()
-            .iter_mut()
-            .enumerate()
-            .flat_map(|(loader, images)| {
-                images
-                    .take_requests()
-                    .into_iter()
-                    .map(move |url| serde_json::json!({"loader":loader,"url":url}))
-            })
-            .collect::<Vec<_>>();
+    // The page asks after every presented status; taking the image requests
+    // changes nothing the tree shows (a loaded image wakes its own frame).
+    with_mount_quietly(id, |m| {
+        let mut tickets = m.image_tickets.borrow_mut();
+        let mut requests = Vec::new();
+        for (loader, images) in m.images.borrow_mut().iter_mut().enumerate() {
+            for url in images.take_requests() {
+                let Some(ticket) = images.reserve(&url) else {
+                    continue;
+                };
+                requests.push(serde_json::json!({
+                    "loader": loader,
+                    "url": url,
+                    "maxDimension": ticket.max_dimension(),
+                }));
+                tickets.insert((loader, url), ticket);
+            }
+        }
         serde_json::to_string(&requests).map_err(error)
     })
 }
 
-/// Deliver fetched image bytes (or `None` for a failed fetch).
+/// Deliver a requested image the page decoded: `width` × `height` pixels of
+/// unpremultiplied 8-bit RGBA, or `None` when it could not be fetched or
+/// decoded. Resolves whether the image was accepted.
 ///
 /// # Errors
 ///
@@ -3154,15 +3286,31 @@ pub fn complete_asset(
     id: u64,
     loader: usize,
     url: &str,
-    bytes: Option<Vec<u8>>,
+    width: u32,
+    height: u32,
+    rgba: Option<Vec<u8>>,
 ) -> Result<bool, JsValue> {
     with_mount(id, |m| {
+        let Some(ticket) = m
+            .image_tickets
+            .borrow_mut()
+            .remove(&(loader, url.to_owned()))
+        else {
+            return Ok(false);
+        };
         let complete = m
             .images
             .borrow_mut()
             .get_mut(loader)
             .ok_or_else(|| error("unknown image loader"))?
-            .complete(url, bytes.as_deref());
+            .complete_decoded(
+                &ticket,
+                rgba.map(|rgba| ui::image_store::DecodedImage {
+                    rgba,
+                    width,
+                    height,
+                }),
+            );
         // A decoded image changes what widgets measure and draw.
         m.frame.relayout();
         m.pending = true;

@@ -1,5 +1,5 @@
-//! Owned bounded socket IO leaves the LocalSet free to drive real capabilities.
-use super::*;
+//! Owned bounded socket IO leaves the `LocalSet` free to drive real capabilities.
+use super::{AtomicBool, Duration, Instant, Ordering, UnixStream, bounded, io};
 pub(super) async fn exchange<T: Send + 'static>(
     mut stream: UnixStream,
     cancel: &AtomicBool,
@@ -29,6 +29,10 @@ pub(super) async fn exchange<T: Send + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        sync::Arc,
+    };
     #[test]
     fn stalled_partial_frame_leaves_actual_rpc_runtime_progressing_and_returns_owned_socket() {
         let runtime = tokio::runtime::Builder::new_current_thread()

@@ -21,6 +21,7 @@ impl Paths {
     pub(in crate::setup) fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    #[cfg(test)]
     pub(in crate::setup) fn iter(&self) -> impl Iterator<Item = io::Result<PathBuf>> + '_ {
         self.0
             .iter()

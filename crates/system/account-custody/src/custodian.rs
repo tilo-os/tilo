@@ -17,6 +17,7 @@ use crate::clients::ClientTable;
 use crate::icloud::{ICloudAuth, ICloudAuthError, ICloudSessionState, UnavailableICloud};
 use crate::providers::{
     ICLOUD_DRIVE_TYPE, NEXTCLOUD_TYPE, OAuthCloud, OAuthIssuer, OAuthUse, WEBDAV_TYPE,
+    valid_mailbox,
 };
 
 /// The protected grant wire protocol implemented by this loaded custodian.
@@ -543,6 +544,7 @@ pub struct Custodian {
     endpoints: BTreeMap<OAuthIssuer, Provider>,
     storage: BTreeMap<&'static str, serde_json::Value>,
     gmail_profile_endpoint: String,
+    microsoft_profile_endpoint: String,
 }
 
 impl Custodian {
@@ -561,6 +563,7 @@ impl Custodian {
             endpoints: BTreeMap::new(),
             storage: BTreeMap::new(),
             gmail_profile_endpoint: "https://gmail.googleapis.com/gmail/v1/users/me/profile".into(),
+            microsoft_profile_endpoint: "https://graph.microsoft.com/v1.0/me?$select=mail".into(),
         }
     }
 
@@ -875,16 +878,106 @@ impl Custodian {
     /// # Errors
     /// Unconfigured capability or a loopback failure.
     pub fn begin_google_sign_in(&self, mail: bool) -> Result<Authorization, CustodyError> {
-        let (mut provider, registration) = self.oauth_config(OAuthCloud::GoogleDrive)?;
-        if mail {
-            let (gmail, _) = self.use_config(OAuthUse::mail(OAuthIssuer::Google))?;
-            for scope in gmail.scopes {
+        let capabilities = if mail {
+            &[crate::Capability::Files, crate::Capability::Mail][..]
+        } else {
+            &[crate::Capability::Files][..]
+        };
+        self.begin_sign_in_for_capabilities(OAuthIssuer::Google, capabilities, None)
+    }
+
+    /// Start sign-in for exactly the selected capabilities, without implicitly
+    /// adding files. Google can combine files, mail and `CalDAV` in one consent.
+    /// Every selected use must be configured under the same registration and
+    /// endpoints. Microsoft Exchange mail must sign in separately from Graph
+    /// identity/files: those resources require different audience tokens.
+    ///
+    /// # Errors
+    /// Empty selection, incompatible configurations, unsupported capabilities,
+    /// mixed Microsoft resources, or a loopback failure.
+    pub fn begin_sign_in_for_capabilities(
+        &self,
+        issuer: OAuthIssuer,
+        capabilities: &[crate::Capability],
+        login_hint: Option<&str>,
+    ) -> Result<Authorization, CustodyError> {
+        let Some((&first, rest)) = capabilities.split_first() else {
+            return Err(CustodyError::SignIn(
+                "Select at least one capability".into(),
+            ));
+        };
+        if issuer == OAuthIssuer::Microsoft
+            && capabilities.contains(&crate::Capability::Mail)
+            && capabilities
+                .iter()
+                .any(|use_| *use_ != crate::Capability::Mail)
+        {
+            return Err(CustodyError::SignIn(
+                "Microsoft mail and Graph require separate sign-ins".into(),
+            ));
+        }
+        let (mut provider, registration) = self.use_config(OAuthUse::new(issuer, first))?;
+        for &capability in rest {
+            let (mut additional, client) = self.use_config(OAuthUse::new(issuer, capability))?;
+            let scopes = std::mem::take(&mut additional.scopes);
+            let mut canonical = provider.clone();
+            canonical.scopes.clear();
+            if additional != canonical || client != registration {
+                return Err(CustodyError::SignIn(
+                    "Selected capabilities have incompatible OAuth configurations".into(),
+                ));
+            }
+            for scope in scopes {
                 if !provider.scopes.contains(&scope) {
                     provider.scopes.push(scope);
                 }
             }
         }
-        Authorization::begin(&provider, &registration, None).map_err(CustodyError::from)
+        Authorization::begin(&provider, &registration, login_hint).map_err(CustodyError::from)
+    }
+
+    /// Replace the Microsoft Graph identity endpoint for a local fixture.
+    #[must_use]
+    pub fn with_microsoft_profile_endpoint(mut self, endpoint: String) -> Self {
+        self.microsoft_profile_endpoint = endpoint;
+        self
+    }
+
+    /// Obtain Microsoft's confirmed mailbox address using a **Graph identity**
+    /// token, obtained with `OAuthUse::identity(Microsoft)` (or files with
+    /// `User.Read`), not an Exchange mail token. Sign in for mail separately
+    /// with this address as the login hint, then validate that mail connection
+    /// before publishing it. A UPN is not necessarily a mailbox; do not guess.
+    ///
+    /// # Errors
+    /// Graph permission denied, unavailable service, or no mailbox address.
+    pub fn microsoft_mail_identity(&self, tokens: &TokenSet) -> Result<String, CustodyError> {
+        let http = tilo_net::http::blocking_client()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| CustodyError::Offline)?;
+        let response = http
+            .get(&self.microsoft_profile_endpoint)
+            .bearer_auth(&tokens.access_token)
+            .send()
+            .map_err(|_| CustodyError::Offline)?;
+        if !response.status().is_success() {
+            return Err(CustodyError::SignIn(format!(
+                "Microsoft mailbox identity could not be read (HTTP {})",
+                response.status().as_u16()
+            )));
+        }
+        let profile: serde_json::Value = response
+            .json()
+            .map_err(|_| CustodyError::SignIn("Microsoft returned an invalid profile".into()))?;
+        let email = profile
+            .get("mail")
+            .and_then(serde_json::Value::as_str)
+            .filter(|email| valid_mailbox(email))
+            .ok_or_else(|| CustodyError::SignIn("Microsoft returned no mailbox address".into()))?;
+        Ok(email.to_string())
     }
 
     /// Replace the Gmail profile API origin for a local provider fixture.
@@ -932,7 +1025,7 @@ impl Custodian {
         let email = profile
             .get("emailAddress")
             .and_then(serde_json::Value::as_str)
-            .filter(|email| email.contains('@') && !email.contains(char::is_whitespace))
+            .filter(|email| valid_mailbox(email))
             .ok_or_else(|| CustodyError::SignIn("Gmail returned no mailbox address".into()))?;
         Ok(email.to_string())
     }

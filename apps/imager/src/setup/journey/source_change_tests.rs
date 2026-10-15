@@ -57,9 +57,25 @@ fn open_preparation(app: &mut App, home: &Path) {
     });
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    wait(app, |v| v["page"] == "purpose");
+    app.effect(&InstallerPreviewEffect::ChoosePreview {
+        choice: "computer".into(),
+    })
+    .unwrap();
+    app.effect(&InstallerPreviewEffect::ContinuePreview)
+        .unwrap();
     wait(app, |v| {
-        v["page"] == "belongings" && v["belongings_checking"] == false
+        v["page"] == "belongings"
+            && v["belongings_checking"] == false
+            && v["restart"]["checking"] == false
     });
+    let belongings = state(app);
+    assert_eq!(
+        belongings["belongings"]["home"],
+        home.to_str().unwrap(),
+        "{belongings}"
+    );
+    assert_eq!(belongings["categories"][0], true, "{belongings}");
     let services = ui::host::HostServices::null().with_files(std::sync::Arc::new(
         RecognizedHomePicker(home.to_path_buf()),
     ));
@@ -70,6 +86,7 @@ fn open_preparation(app: &mut App, home: &Path) {
         v["page"] == "accounts"
             && v["account_checkpoint"]["accounts"] == 0
             && v["account_checkpoint"]["saving"] == false
+            && v["portable_preparation"]["prepared"] == true
     });
 }
 /// Answers the actual unscoped host chooser used by the installer, rather
@@ -130,7 +147,15 @@ fn recover_source(app: &mut App) {
 }
 #[test]
 fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_and_accounts() {
+    if !prepared_media::native_retained::enter_owned_journey(
+        "setup::journey::source_change_tests::changed_document_has_published_recovery_and_fresh_review_preserves_identity_and_accounts",
+    ) {
+        return;
+    }
     use std::os::unix::fs::PermissionsExt;
+    // Exercise the live-source contract on the actor's private tmpfs. Ext4/XFS
+    // intentionally defer Home inventory until original-system offline boot,
+    // so they cannot exercise a changed live inventory or its byte summary.
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().canonicalize().unwrap();
     let home = root.join("home");
@@ -140,11 +165,15 @@ fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_a
     let document = home.join("document");
     std::fs::write(&document, b"before").unwrap();
     std::fs::write(home.join(".var/app/story.app/data"), b"hidden app data").unwrap();
+    // Live inventories spill only into acknowledged, native block-backed
+    // preparation custody. NBD is not admitted as native inventory storage;
+    // grant a fresh actor-owned directory on the builder's native filesystem.
+    let custody = tempfile::tempdir_in("/var/tmp").unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     let _platform = main_story_tests::source_fixture(&root);
     env.set("HOME", &home);
     env.set("XDG_CONFIG_HOME", home.join(".config"));
-    env.set("XDG_STATE_HOME", home.join(".local/state"));
+    env.set("XDG_STATE_HOME", custody.path().join("state"));
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
     let mut app = App::launched(&["--installer"]).unwrap();
     open_preparation(&mut app, &home);
@@ -153,17 +182,36 @@ fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_a
     app.with_widget::<InstallerPreview, _>(|view| view.accounts = accounts)
         .unwrap();
     wait(&mut app, |v| {
-        v["account_checkpoint"]["accounts"] == 2 && v["account_checkpoint"]["saving"] == false
+        v["account_checkpoint"]["accounts"] == 2
+            && v["account_checkpoint"]["saving"] == false
+            && v["restart"]["checking"] == false
     });
+    // Saving account credentials must not revoke the independently reviewed
+    // Home inventory or its acknowledged preparation storage.
+    app.with_widget::<InstallerPreview, _>(|view| {
+        view.portable_source
+            .reviewed_handle()
+            .unwrap()
+            .validate()
+            .unwrap();
+    })
+    .unwrap();
     let original_key = state(&mut app)["prepared_identity"]["public_key"].clone();
     let original_bytes = state(&mut app)["portable_preparation"]["bytes"]
         .as_u64()
         .unwrap();
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
+    // Another-device media has no local disk-allocation decision. The live
+    // route proceeds straight to Review, where source custody is consumed.
     wait(&mut app, |v| {
-        v["page"] == "storage" && v["restart"]["checking"] == false
+        v["page"] == "review" && v["restart"]["checking"] == false
     });
+    app.with_widget::<InstallerPreview, _>(|view| {
+        assert!(!view.has_storage_decision());
+        assert!(!view.journey.history.contains(&Page::Storage));
+    })
+    .unwrap();
     std::fs::write(&document, b"changed while preparing").unwrap();
     recover_source(&mut app);
     let renewed = state(&mut app);
@@ -182,7 +230,7 @@ fn changed_document_has_published_recovery_and_fresh_review_preserves_identity_a
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
     wait(&mut app, |v| {
-        v["page"] == "storage" && v["restart"]["checking"] == false
+        v["page"] == "review" && v["restart"]["checking"] == false
     });
     let bundle = app
         .with_widget::<InstallerPreview, _>(|view| view.media_bundle.as_ref().unwrap().clone())
@@ -291,7 +339,7 @@ fn verify_switched_recovery(app: &mut App, home: &Path, public_key: &str, ids: &
     app.effect(&InstallerPreviewEffect::ContinuePreview)
         .unwrap();
     wait(app, |v| {
-        v["page"] == "storage" && v["restart"]["checking"] == false
+        v["page"] == "review" && v["restart"]["checking"] == false
     });
     app.effect(&InstallerPreviewEffect::PrepareUsb).unwrap();
     let artifact = loop {

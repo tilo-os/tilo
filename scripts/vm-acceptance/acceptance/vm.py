@@ -95,9 +95,10 @@ class TiloVm:
             f.write(f"$ {shlex.join(cmd)}  # exit={code} {elapsed:.2f}s\n")
             for chunk in (out, err):
                 if chunk:
-                    # A failure explains itself at the end (a build's error after
-                    # its progress lines), so a long output keeps its head and tail.
-                    if len(chunk) > 8000:
+                    # Successful build progress keeps its head and tail. Failed
+                    # builds need the entire stream: a long exception command
+                    # can push the underlying error out of both retained ends.
+                    if code == 0 and len(chunk) > 8000:
                         chunk = chunk[:2000] + "\n[…]\n" + chunk[-6000:]
                     f.write(chunk.rstrip() + "\n")
 

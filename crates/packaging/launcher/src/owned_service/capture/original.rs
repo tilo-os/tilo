@@ -27,7 +27,7 @@ const NS: [&str; 5] = ["mnt", "pid", "net", "ipc", "user"];
 fn refused(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum Stage {
     ReceiveBootstrap,
     VerifyNamespaceAndHome,
@@ -145,6 +145,7 @@ impl FilterLaunch {
     }
     pub(crate) fn splice_argv(&self, argv: &mut Vec<String>) -> io::Result<()> {
         root()?;
+        self.roots.check()?;
         let expected = ["--add-seccomp-fd", "40", "--add-seccomp-fd", "41"];
         if argv.len() < expected.len() || argv.iter().take(4).map(String::as_str).ne(expected) {
             return Err(refused("Canonical original baseline prefix differs"));
@@ -168,7 +169,7 @@ impl FilterLaunch {
             pairs
                 .iter_mut()
                 .find(|(_, fd)| *fd == target)
-                .expect("validated unique descriptor")
+                .ok_or_else(|| refused("Canonical original baseline descriptor missing"))?
                 .0 = source;
         }
         Ok(())
@@ -328,6 +329,7 @@ impl Bootstrap {
             return Err(refused("Worker workspace was already prepared"));
         }
         *held = Some(workspace::prepare(root, &self.facts)?);
+        drop(held);
         Ok(())
     }
     pub(super) fn sandbox_account_identity(&self) -> (u32, u32) {
@@ -355,7 +357,7 @@ impl Bootstrap {
         // Mount/PID/network/IPC isolation remains mandatory. Only the signed
         // shim receives SETUID/SETGID, which it clears before executing worker.
         argv.splice(
-            pos..pos + 1,
+            pos..=pos,
             [
                 "--unshare-pid",
                 "--unshare-net",
@@ -377,8 +379,11 @@ impl Bootstrap {
                 .iter()
                 .position(|arg| arg == "CAP_SETGID")
                 .ok_or_else(|| refused("Original credential capabilities are absent"))?;
+            let insertion = capability
+                .checked_add(1)
+                .ok_or(io::ErrorKind::InvalidInput)?;
             argv.splice(
-                capability + 1..capability + 1,
+                insertion..insertion,
                 ["--cap-add".into(), "CAP_SYS_ADMIN".into()],
             );
         }
@@ -386,8 +391,9 @@ impl Bootstrap {
             .iter()
             .position(|a| a == "__sandbox-exec")
             .ok_or_else(|| refused("Signed sandbox shim is absent"))?;
+        let insertion = pos.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
         argv.splice(
-            pos + 1..pos + 1,
+            insertion..insertion,
             ["--original-source-fd".into(), BOOTSTRAP_FD.to_string()],
         );
         // These are empty, root-owned directories in bwrap's fresh filesystem,
@@ -552,7 +558,10 @@ mod tests {
     use super::*;
     #[test]
     fn original_source_shim_refuses_ambient_namespace_before_credential_change() {
-        let before = (unsafe { libc::getuid() }, unsafe { libc::getgid() });
+        let before = (
+            rustix::process::getuid().as_raw(),
+            rustix::process::getgid().as_raw(),
+        );
         let facts = Facts {
             schema: 2,
             read_claim_digest: [7; 32],
@@ -568,7 +577,10 @@ mod tests {
         assert!(validate_namespace(&facts).is_err());
         assert_eq!(
             before,
-            (unsafe { libc::getuid() }, unsafe { libc::getgid() })
+            (
+                rustix::process::getuid().as_raw(),
+                rustix::process::getgid().as_raw()
+            )
         );
     }
     #[test]
@@ -612,6 +624,8 @@ fn publish_claim(digest: [u8; 32]) -> io::Result<()> {
 }
 /// Compare an original request with the digest inherited from the signed shim.
 /// A serialized claim, environment variable or ordinary file cannot authorize it.
+/// # Errors
+/// Refuses missing, unsealed or mismatched authenticated original-source claims.
 pub fn verify_original_read_claim(expected: [u8; 32]) -> io::Result<()> {
     if expected == [0; 32] {
         return Err(refused("Original read claim is empty"));

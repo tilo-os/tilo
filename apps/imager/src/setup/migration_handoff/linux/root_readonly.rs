@@ -204,7 +204,7 @@ impl RootReadOnlyMount {
         facts: &Facts,
     ) -> io::Result<(PathBuf, Arc<MountedVolume>)> {
         // This is selected explicitly only by root authenticated source roles.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let device = facts.matching_volume(volume)?;

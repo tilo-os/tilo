@@ -33,8 +33,12 @@ default = ["custody"]
 # with the HTTPS client and the storage providers it resolves new accounts
 # against. Without it the crate is the client registrations and provider
 # descriptors only, for builds that must stay free of the TLS/HTTP stack.
+hints = ["dep:tilo-seal", "dep:serde_json", "dep:url", "dep:zeroize", "dep:sha2"]
 custody = [
+    "hints",
     "dep:browser-continuity",
+    "dep:tilo-seal",
+    "dep:rustix",
     "tilo-oauth/client",
     "dep:tilo-net",
     "dep:reqwest",
@@ -55,13 +59,15 @@ custody = [
 [dependencies]
 browser-continuity = { path = "../../browser/browser-continuity", optional = true }
 accounts = { path = "../accounts" }
+tilo-seal = { path = "../tilo-seal", optional = true }
+rustix = { workspace = true, features = ["process"], optional = true }
 tilo-oauth = { path = "../tilo-oauth", default-features = false }
 serde.workspace = true
 tracing.workspace = true
 # The committed public client registrations (`oauth-clients.toml`).
 toml.workspace = true
 tilo-net = { path = "../../platform/tilo-net", optional = true, features = ["blocking"] }
-reqwest = { workspace = true, optional = true, features = ["blocking"] }
+reqwest = { workspace = true, optional = true, features = ["blocking", "json"] }
 serde_json = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }

@@ -95,7 +95,16 @@ impl SelectedOriginCustody {
         let origin_cancel = AtomicBool::new(false);
         let lease = self.lease.lock().map_err(|_| refused())?;
         self.selection.check(&lease, &origin_cancel)?;
-        if !self.native_origin.uses_input(&self.input) {
+        if !self.native_origin.uses_input(&self.input)
+            || self.selected_identity != self.selection.selected_identity
+            || self.parent_identity != self.selection.parent_identity
+            || !self
+                .native_origin
+                .components()
+                .iter()
+                .map(|name| name.as_os_str().as_encoded_bytes())
+                .eq(self.components.iter().map(Vec::as_slice))
+        {
             return Err(refused());
         }
         self.native_origin.check_named()?;
@@ -203,18 +212,6 @@ impl RetainedOpenSelection {
     /// Installed source operation comes only from the SAME retained input.
     pub(super) fn operation_id(&self) -> &str {
         &self.input.binding().operation_id
-    }
-    /// Read-only next-consumer preparation must recheck the original lease.
-    /// Parent custody is identity evidence; it never grants edit/create rights.
-    pub(super) fn selected(
-        &self,
-        lease: &RetainedConsumerLease,
-        cancel: &AtomicBool,
-    ) -> io::Result<File> {
-        self.check(lease, cancel)?;
-        let file = self.objects.selected.try_clone()?;
-        self.check(lease, cancel)?;
-        Ok(file)
     }
 }
 

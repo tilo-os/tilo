@@ -1,6 +1,9 @@
 //! Actual source Read custody and independently certified Reader proof. The
 //! adopted handle has no dependency on the completed editor's proof or source.
-use super::*;
+use super::{
+    AsRawFd, AtomicBool, ExternalSourceAdmission, File, Instant, MetadataExt, Read, Seek,
+    UnixStream, Write, io, nonce, process_binding, refused,
+};
 use super::{lane_controller::AcknowledgedRegistry, pending_source::within};
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp::Side, twoparty::VatNetwork};
 use fs_protocol::{
@@ -10,6 +13,7 @@ use fs_protocol::{
         FileHistoryReadResponseV1, FileHistoryReadScopeV1 as Scope,
     },
 };
+use futures_util::future::LocalBoxFuture;
 use runtime_fs::{
     directory_backend::HistoryReadObservation, directory_client::HistoryReadSubjectClient,
 };
@@ -65,124 +69,122 @@ fn expectation(mut file: File) -> io::Result<NativeHistoryReadHandoff> {
     NativeHistoryReadHandoff::decode(&bytes)
 }
 impl ReadSource {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "authenticate exact independent Files context, held worker and Read-only bootstrap before exposing any history"
-    )]
-    async fn receive(
+    fn receive<'a>(
         admission: Rc<RefCell<ExternalSourceAdmission>>,
         descriptors: ReadDescriptors,
-        request_id: &str,
-        cancel: &AtomicBool,
+        request_id: &'a str,
+        cancel: &'a AtomicBool,
         deadline: Instant,
-    ) -> io::Result<Self> {
-        admission
-            .try_borrow_mut()
-            .map_err(|_| refused())?
-            .refresh_async(cancel, deadline)
-            .await?;
-        let expected = expectation(descriptors.sealed)?;
-        {
-            let a = admission.try_borrow().map_err(|_| refused())?;
-            if !a.purpose.history_reader()
-                || expected.read_request_id != request_id
-                || expected.enrollment_context_digest != a.context.digest()?
-                || expected.source_owner != a.context.verifier.source_owner
+    ) -> LocalBoxFuture<'a, io::Result<Self>> {
+        Box::pin(async move {
+            ExternalSourceAdmission::refresh_shared(&admission, cancel, deadline).await?;
+            let expected = expectation(descriptors.sealed)?;
             {
+                let a = admission.try_borrow().map_err(|_| refused())?;
+                if !a.purpose.history_reader()
+                    || expected.read_request_id != request_id
+                    || expected.enrollment_context_digest != a.context.digest()?
+                    || expected.source_owner != a.context.verifier.source_owner
+                {
+                    return Err(refused());
+                }
+            }
+            let program = descriptors.program;
+            let meta = program.metadata()?;
+            if !meta.is_file() || [meta.dev(), meta.ino()] != expected.worker_program {
                 return Err(refused());
             }
-        }
-        let program = descriptors.program;
-        let meta = program.metadata()?;
-        if !meta.is_file() || [meta.dev(), meta.ino()] != expected.worker_program {
-            return Err(refused());
-        }
-        let stream = UnixStream::from(std::os::fd::OwnedFd::from(descriptors.stream));
-        let expectation = expected.clone();
-        let (stream, result) = super::owned_io::exchange(stream, cancel, deadline, move |stream| {
-            let expected = expectation;
+            let stream = UnixStream::from(std::os::fd::OwnedFd::from(descriptors.stream));
+            let expectation = expected.clone();
+            let (stream, result) =
+                super::owned_io::exchange(stream, cancel, deadline, move |stream| {
+                    let expected = expectation;
 
-            stream.set_nonblocking(false)?;
-            stream.write_all(b"RHR1")?;
-            stream.write_all(&expected.ticket)?;
-            stream.write_all(&expected.challenge)?;
-            process_binding::arm(stream)?;
-            let challenge = nonce();
-            stream.write_all(&process_binding::MAGIC)?;
-            stream.write_all(&challenge)?;
-            let peer = process_binding::receive(stream, &challenge, expected.worker_uid)?;
-            if !peer.current()
-                || peer.pid() != expected.worker_pid
-                || peer.gid() != expected.worker_gid
-                || peer.start_time()? != expected.worker_start
+                    stream.set_nonblocking(false)?;
+                    stream.write_all(b"RHR1")?;
+                    stream.write_all(&expected.ticket)?;
+                    stream.write_all(&expected.challenge)?;
+                    process_binding::arm(stream)?;
+                    let challenge = nonce();
+                    stream.write_all(&process_binding::MAGIC)?;
+                    stream.write_all(&challenge)?;
+                    let peer = process_binding::receive(stream, &challenge, expected.worker_uid)?;
+                    if !peer.current()
+                        || peer.pid() != expected.worker_pid
+                        || peer.gid() != expected.worker_gid
+                        || peer.start_time()? != expected.worker_start
+                    {
+                        return Err(refused());
+                    }
+                    stream.write_all(&[1])?;
+                    Ok(peer)
+                })
+                .await?;
+            let peer = result?;
+
+            stream.set_nonblocking(true)?;
+            let stream = tokio::net::UnixStream::from_std(stream)?;
+            let (reader, writer) = stream.into_split();
+            let network = VatNetwork::new(
+                reader.compat(),
+                writer.compat_write(),
+                Side::Client,
+                capnp::message::ReaderOptions::default(),
+            );
+            let mut rpc = RpcSystem::new(Box::new(network), None);
+            let raw: runtime_fs::fs_capnp::history_read_subject::Client =
+                rpc.bootstrap(Side::Server);
+            let subject = HistoryReadSubjectClient::from_authenticated_source_capability(raw);
+            let driver = tokio::task::spawn_local(rpc);
+            let observation = match within(cancel, deadline, async {
+                subject.check_scope().await.map_err(io::Error::other)?;
+                subject.check().await.map_err(io::Error::other)?;
+                let observation = subject.observe().await.map_err(io::Error::other)?;
+                subject.check().await.map_err(io::Error::other)?;
+                Ok(observation)
+            })
+            .await
             {
-                return Err(refused());
-            }
-            stream.write_all(&[1])?;
-            Ok(peer)
-        })
-        .await?;
-        let peer = result?;
-
-        stream.set_nonblocking(true)?;
-        let stream = tokio::net::UnixStream::from_std(stream)?;
-        let (reader, writer) = stream.into_split();
-        let network = VatNetwork::new(
-            reader.compat(),
-            writer.compat_write(),
-            Side::Client,
-            Default::default(),
-        );
-        let mut rpc = RpcSystem::new(Box::new(network), None);
-        let raw: runtime_fs::fs_capnp::history_read_subject::Client = rpc.bootstrap(Side::Server);
-        let subject = HistoryReadSubjectClient::from_authenticated_source_capability(raw);
-        let driver = tokio::task::spawn_local(rpc);
-        let observation = match within(cancel, deadline, async {
-            subject.check_scope().await.map_err(io::Error::other)?;
-            subject.check().await.map_err(io::Error::other)?;
-            let observation = subject.observe().await.map_err(io::Error::other)?;
-            subject.check().await.map_err(io::Error::other)?;
-            Ok(observation)
-        })
-        .await
-        {
-            Ok(value) => value,
-            Err(error) => {
+                Ok(value) => value,
+                Err(error) => {
+                    driver.abort();
+                    let _ = driver.await;
+                    return Err(error);
+                }
+            };
+            if observation.source_owner != expected.source_owner {
                 driver.abort();
                 let _ = driver.await;
+                return Err(refused());
+            }
+            let mut source = Self {
+                admission,
+                subject,
+                peer,
+                program,
+                expected,
+                observation,
+                driver: Some(driver),
+            };
+            if let Err(error) = source.check(cancel, deadline).await {
+                source.stop_and_wait().await?;
                 return Err(error);
             }
-        };
-        if observation.source_owner != expected.source_owner {
-            driver.abort();
-            let _ = driver.await;
-            return Err(refused());
-        }
-        let mut source = Self {
-            admission,
-            subject,
-            peer,
-            program,
-            expected,
-            observation,
-            driver: Some(driver),
-        };
-        if let Err(error) = source.check(cancel, deadline).await {
-            source.stop_and_wait().await?;
-            return Err(error);
-        }
-        Ok(source)
+            Ok(source)
+        })
     }
-    async fn stop_and_wait(&mut self) -> io::Result<()> {
-        if let Some(driver) = self.driver.take() {
-            driver.abort();
-            match driver.await {
-                Ok(_) => {}
-                Err(error) if error.is_cancelled() => {}
-                Err(error) => return Err(io::Error::other(error)),
+    fn stop_and_wait(&mut self) -> LocalBoxFuture<'_, io::Result<()>> {
+        Box::pin(async move {
+            if let Some(driver) = self.driver.take() {
+                driver.abort();
+                match driver.await {
+                    Ok(_) => {}
+                    Err(error) if error.is_cancelled() => {}
+                    Err(error) => return Err(io::Error::other(error)),
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
     fn current(&self) -> io::Result<()> {
         let a = self.admission.try_borrow().map_err(|_| refused())?;
@@ -209,23 +211,25 @@ impl ReadSource {
         }
         Ok(())
     }
-    async fn check(&self, cancel: &AtomicBool, deadline: Instant) -> io::Result<()> {
-        self.admission
-            .try_borrow_mut()
-            .map_err(|_| refused())?
-            .refresh_async(cancel, deadline)
+    fn check<'a>(
+        &'a self,
+        cancel: &'a AtomicBool,
+        deadline: Instant,
+    ) -> LocalBoxFuture<'a, io::Result<()>> {
+        Box::pin(async move {
+            ExternalSourceAdmission::refresh_shared(&self.admission, cancel, deadline).await?;
+            self.current()?;
+            within(cancel, deadline, async {
+                self.subject.check_scope().await.map_err(io::Error::other)?;
+                self.subject.check().await.map_err(io::Error::other)?;
+                if self.subject.observe().await.map_err(io::Error::other)? != self.observation {
+                    return Err(refused());
+                }
+                Ok(())
+            })
             .await?;
-        self.current()?;
-        within(cancel, deadline, async {
-            self.subject.check_scope().await.map_err(io::Error::other)?;
-            self.subject.check().await.map_err(io::Error::other)?;
-            if self.subject.observe().await.map_err(io::Error::other)? != self.observation {
-                return Err(refused());
-            }
-            Ok(())
+            self.current()
         })
-        .await?;
-        self.current()
     }
 }
 pub(super) struct ExternalHistoryReadHandle {
@@ -234,75 +238,77 @@ pub(super) struct ExternalHistoryReadHandle {
     lifetime: uuid::Uuid,
 }
 impl ExternalHistoryReadHandle {
-    pub(super) async fn retire(mut self) -> io::Result<()> {
-        self.source.stop_and_wait().await
+    pub(super) fn retire(mut self) -> LocalBoxFuture<'static, io::Result<()>> {
+        Box::pin(async move { self.source.stop_and_wait().await })
     }
-    pub(super) async fn adopt(
+    pub(super) fn adopt<'a>(
         admission: Rc<RefCell<ExternalSourceAdmission>>,
         descriptors: ReadDescriptors,
-        request_id: &str,
-        registry: &AcknowledgedRegistry,
-        cancel: &AtomicBool,
+        request_id: &'a str,
+        registry: &'a AcknowledgedRegistry,
+        cancel: &'a AtomicBool,
         deadline: Instant,
-    ) -> io::Result<(Self, String)> {
-        let mut source =
-            ReadSource::receive(admission, descriptors, request_id, cancel, deadline).await?;
-        let matched: io::Result<(String, ReadLineage)> = async {
-            let candidates: Vec<_> = registry
-                .try_borrow()
-                .map_err(|_| refused())?
-                .completed
-                .iter()
-                .filter(|(id, _)| {
-                    source
-                        .expected
-                        .completed_request_id
-                        .as_ref()
-                        .is_none_or(|expected| expected == *id)
-                })
-                .map(|(id, owner)| (id.clone(), Rc::clone(owner)))
-                .collect();
-            let mut matched = None;
-            for (id, owner) in candidates {
-                if let Ok(lineage) = owner.read_lineage(cancel, deadline).await {
-                    let a = source.admission.try_borrow().map_err(|_| refused())?;
-                    if lineage.observation == source.observation
-                        && lineage.person == a.context.verifier.person
-                        && lineage.room == a.context.verifier.personal_room
-                    {
-                        if matched.is_some() {
-                            return Err(refused());
+    ) -> LocalBoxFuture<'a, io::Result<(Self, String)>> {
+        Box::pin(async move {
+            let mut source =
+                ReadSource::receive(admission, descriptors, request_id, cancel, deadline).await?;
+            let matched: io::Result<(String, ReadLineage)> = async {
+                let candidates: Vec<_> = registry
+                    .try_borrow()
+                    .map_err(|_| refused())?
+                    .completed
+                    .iter()
+                    .filter(|(id, _)| {
+                        source
+                            .expected
+                            .completed_request_id
+                            .as_ref()
+                            .is_none_or(|expected| expected == *id)
+                    })
+                    .map(|(id, owner)| (id.clone(), Rc::clone(owner)))
+                    .collect();
+                let mut matched = None;
+                for (id, owner) in candidates {
+                    if let Ok(lineage) = owner.read_lineage(cancel, deadline).await {
+                        let a = source.admission.try_borrow().map_err(|_| refused())?;
+                        if lineage.observation == source.observation
+                            && lineage.person == a.context.verifier.person
+                            && lineage.room == a.context.verifier.personal_room
+                        {
+                            if matched.is_some() {
+                                return Err(refused());
+                            }
+                            matched = Some((id, lineage));
                         }
-                        matched = Some((id, lineage));
                     }
                 }
+                matched.ok_or_else(refused)
             }
-            matched.ok_or_else(refused)
-        }
-        .await;
-        let (id, lineage) = match matched {
-            Ok(value) => value,
-            Err(error) => {
-                source.stop_and_wait().await?;
+            .await;
+            let (id, lineage) = match matched {
+                Ok(value) => value,
+                Err(error) => {
+                    source.stop_and_wait().await?;
+                    return Err(error);
+                }
+            };
+            let mut handle = Self {
+                source,
+                lineage,
+                lifetime: uuid::Uuid::new_v4(),
+            };
+            let result: io::Result<()> = async {
+                handle.source.check(cancel, deadline).await?;
+                handle.snapshot()?;
+                Ok(())
+            }
+            .await;
+            if let Err(error) = result {
+                handle.source.stop_and_wait().await?;
                 return Err(error);
             }
-        };
-        let mut handle = Self {
-            source,
-            lineage,
-            lifetime: uuid::Uuid::new_v4(),
-        };
-        let result: io::Result<()> = async {
-            handle.source.check(cancel, deadline).await?;
-            handle.snapshot()?;
-            Ok(())
-        }
-        .await;
-        if let Err(error) = result {
-            handle.source.stop_and_wait().await?;
-            return Err(error);
-        }
-        Ok((handle, id))
+            Ok((handle, id))
+        })
     }
     fn snapshot(
         &self,
@@ -320,6 +326,7 @@ impl ExternalHistoryReadHandle {
             .external_record(self.lineage.binding.record_id)
             .map_err(io::Error::other)?
             .ok_or_else(refused)?;
+        drop(namespace);
         if projection.binding != self.lineage.binding
             || projection.binding.tombstoned
             || projection.version != Some(self.lineage.version)
@@ -346,6 +353,7 @@ impl ExternalHistoryReadHandle {
             return Err(refused());
         }
         let snapshot = history.snapshot(key.record_id).ok_or_else(refused)?;
+        drop(history);
         if signed
             .versions
             .iter()
@@ -360,12 +368,16 @@ impl ExternalHistoryReadHandle {
             return Err(refused());
         }
         let current_revision = signed.content_revision;
+        drop(repository);
         if current_revision.is_some_and(|revision| {
             revision.record_id != key.record_id
                 || !snapshot.versions.iter().any(|version| {
-                    version.id == revision.version_id
-                        && version.content_hash == revision.content_hash
-                        && version.metadata_hash == revision.metadata_hash
+                    (version.id, version.content_hash, version.metadata_hash)
+                        == (
+                            revision.version_id,
+                            revision.content_hash,
+                            revision.metadata_hash,
+                        )
                 })
         }) {
             return Err(refused());
@@ -399,55 +411,57 @@ impl ExternalHistoryReadHandle {
         self.source.current()?;
         Ok((snapshot, scope, current_revision))
     }
-    pub(super) async fn query(
-        &self,
-        query: &str,
-        cancel: &AtomicBool,
+    pub(super) fn query<'a>(
+        &'a self,
+        query: &'a str,
+        cancel: &'a AtomicBool,
         deadline: Instant,
-    ) -> io::Result<Vec<u8>> {
-        use runtime_fs::external_history::read_control::{
-            HISTORY_PROJECTION_QUERY, RECORD_ID_QUERY,
-        };
-        self.source.check(cancel, deadline).await?;
-        let (snapshot, scope, current) = self.snapshot()?;
-        let bytes = if query == RECORD_ID_QUERY {
-            scope.record_id.0.as_bytes().to_vec()
-        } else if query == HISTORY_PROJECTION_QUERY {
-            serde_json::to_vec(&snapshot.projection()).map_err(io::Error::other)?
-        } else {
-            let query = Query::parse_xattr(query).map_err(|_| refused())?;
-            let result = if let Query::Preview {
-                frontier,
-                version_id,
-                ..
-            } = &query
-            {
-                match snapshot.read_query(
-                    scope,
-                    current,
-                    Query::Version {
-                        frontier: *frontier,
-                        version_id: *version_id,
-                    },
-                ) {
-                    Ok(_) => Err(Error::NoContent),
-                    Err(error) => Err(error),
-                }
-            } else {
-                snapshot.read_query(scope, current, query)
+    ) -> LocalBoxFuture<'a, io::Result<Vec<u8>>> {
+        Box::pin(async move {
+            use runtime_fs::external_history::read_control::{
+                HISTORY_PROJECTION_QUERY, RECORD_ID_QUERY,
             };
-            serde_json::to_vec(&FileHistoryReadResponseV1 {
-                schema_version: 1,
-                result,
-            })
-            .map_err(io::Error::other)?
-        };
-        if (query == HISTORY_PROJECTION_QUERY && bytes.len() > 16 * 1024)
-            || bytes.len() > fs_protocol::files::MAX_HISTORY_READ_BYTES
-        {
-            return Err(refused());
-        }
-        self.source.check(cancel, deadline).await?;
-        Ok(bytes)
+            self.source.check(cancel, deadline).await?;
+            let (snapshot, scope, current) = self.snapshot()?;
+            let bytes = if query == RECORD_ID_QUERY {
+                scope.record_id.0.as_bytes().to_vec()
+            } else if query == HISTORY_PROJECTION_QUERY {
+                serde_json::to_vec(&snapshot.projection()).map_err(io::Error::other)?
+            } else {
+                let query = Query::parse_xattr(query).map_err(|_| refused())?;
+                let result = if let Query::Preview {
+                    frontier,
+                    version_id,
+                    ..
+                } = &query
+                {
+                    match snapshot.read_query(
+                        scope,
+                        current,
+                        Query::Version {
+                            frontier: *frontier,
+                            version_id: *version_id,
+                        },
+                    ) {
+                        Ok(_) => Err(Error::NoContent),
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    snapshot.read_query(scope, current, query)
+                };
+                serde_json::to_vec(&FileHistoryReadResponseV1 {
+                    schema_version: 1,
+                    result,
+                })
+                .map_err(io::Error::other)?
+            };
+            if (query == HISTORY_PROJECTION_QUERY && bytes.len() > 16 * 1024)
+                || bytes.len() > fs_protocol::files::MAX_HISTORY_READ_BYTES
+            {
+                return Err(refused());
+            }
+            self.source.check(cancel, deadline).await?;
+            Ok(bytes)
+        })
     }
 }

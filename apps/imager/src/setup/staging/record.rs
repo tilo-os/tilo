@@ -452,14 +452,16 @@ impl Record {
         if let Some(expected) = &self.prepared_setup
             && (!expected.valid()
                 || expected.sealed_bytes > super::prepared_setup::SLOT_BYTES
-                || self.plan.basis.host_os() != "linux")
+                || self.plan.basis.host_os() != super::plan::HostOs::Linux)
         {
             return Err("invalid prepared setup custody in staging record".into());
         }
         #[cfg(target_os = "linux")]
         if let Some(browser) = &self.prepared_browser {
             browser.validate().map_err(|error| error.to_string())?;
-            if self.prepared_setup.is_none() || self.plan.basis.host_os() != "linux" {
+            if self.prepared_setup.is_none()
+                || self.plan.basis.host_os() != super::plan::HostOs::Linux
+            {
                 return Err("Browser custody requires prepared Linux identity".into());
             }
         }
@@ -596,7 +598,7 @@ impl RecordStore {
         };
         #[cfg(unix)]
         // SAFETY: reads credentials only, never changes source ownership.
-        let owner = unsafe { libc::geteuid() };
+        let owner = rustix::process::geteuid().as_raw();
         #[cfg(not(unix))]
         let owner = 0;
         artifact.read(owner).map_err(|error| error.to_string())
@@ -743,8 +745,7 @@ mod secure {
         let io = |e: std::io::Error| format!("{}: {e}", dir.display());
         std::fs::create_dir_all(dir).map_err(io)?;
         let meta = std::fs::symlink_metadata(dir).map_err(io)?;
-        // SAFETY: geteuid has no preconditions.
-        let euid = unsafe { libc::geteuid() };
+        let euid = tilo_process::effective_uid();
         if !meta.is_dir() || meta.uid() != euid {
             return Err(format!(
                 "{} is not a directory owned by this helper",
@@ -1187,8 +1188,7 @@ mod tests {
                 tmp.path().join("op-user.json"),
             )
             .unwrap();
-            // SAFETY: geteuid has no preconditions.
-            if unsafe { libc::geteuid() } == 0 {
+            if tilo_process::effective_uid() == 0 {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o777))
                     .unwrap();

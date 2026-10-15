@@ -28,7 +28,7 @@ under `web/`. It is reference material only; nothing is ported verbatim.
 | Accessibility | The toolkit's semantic routes projected into an accessible DOM tree; DOM actions invoked the real widget actions. |
 | Clipboard | Text only, and only inside trusted clipboard events. |
 | Fonts | The product fonts from `crates/sdk/ui-core/assets/fonts/manifest.toml`, copied into the bundle with a `fonts.json` (name, bytes, sha256, `browser_startup`). `font-loader.mjs` fetched same-origin, verified hashes, loaded startup fonts before first frame and optional ones on demand. |
-| Images and assets | Host-driven `ImageStore`; a `loadAsset` callback or same-origin fetch; qdoc blobs hash-checked. |
+| Images and assets | Host-driven `ImageStore`; a `loadAsset` callback or same-origin fetch; qdoc blobs hash-checked. The page decodes images with the browser's own decoders (`createImageBitmap`) and hands the module RGBA pixels, so app images need no decoder in the module. Pages a native peer paints still decode their images in the module (`webview::paint`), and the text renderer keeps a PNG decoder for bitmap emoji. |
 | Storage | IndexedDB with strict-durability transactions storing bytes and Automerge actor together, in a dedicated worker. An exclusive Web Lock per profile/device serialised tabs. A write counted as saved only after commit. Failed closes retained custody until `retryPendingRecovery()`. |
 | Identity | Browser-held keys (a Cloud owner root and a device key per Cloud machine) persisted in IndexedDB under Web Locks (`cloud-identity-custody.mjs`). Enrollment went through an injected `CloudEnrollmentAdapter` (`inspect`/`apply` against the Cloud Store); `signCloudMachineMesh` signed machine-link grants inside WASM. |
 | Peer transport | "One browser state owner with authenticated HTTPS delivery; no relay fallback": a long-poll HTTPS carrier (`tilo-delivery-protocol`) authenticated with the peer key. Live presence used a separate channel; media used MoQ over WebTransport. `iroh` was linked for wasm but not used as the state carrier. |
@@ -469,7 +469,11 @@ other server.
 
 In the desktop this is **Pair a new device** (`identity-actions.mjs`). It
 copies a link that opens the current workspace with a `pair` link secret
-naming the person (`web-routing.md` §6.2). The new device asks for a
+naming the person (`web-routing.md` §6.2), and says "Link copied" in
+passing. When the clipboard refuses, a banner holds the link with **Copy
+link**, whose click may be allowed where the search choice was not; refused
+again, the page shows the link selected in a read-only field to copy by
+hand. Once copied, the banner is withdrawn. The new device asks for a
 certificate and shows its pairing code. The person's device then offers a
 banner that names the code, and choosing the banner approves the device.
 In a governed room the certificate alone admits no device. So where the
@@ -507,11 +511,12 @@ leaves the browser; the page also calls `navigator.storage.persist()`. It is
 a real identity from the start: it joins and owns
 workspaces like any other, and a host that prunes it lets the same person
 join again. Keeping it only adds wraps to its envelope, through the
-desktop's host actions (`identity-actions.mjs`: desktop search, and a banner
-when the person first posts or creates something, sets their name, or when
-`navigator.storage.persisted()` is false):
+desktop's host actions (`identity-actions.mjs`: desktop search, and one
+banner per browser session, never on arrival: after `ASK_AFTER_ACTIONS`
+separate actions or once the person sets their name, at a pause in their
+input):
 
-- **Keep this identity**: one passkey whose user handle is the root public
+- **Keep your name and work**: one passkey whose user handle is the root public
   key and whose PRF input is fixed (SHA-256 of `tilo-seal/v1/user-root-prf`).
 - **Save a recovery key**: to the password manager (`PasswordCredential`)
   where the browser has one, else as a file.
@@ -1276,7 +1281,12 @@ host running the portable toolkit can present:
   persisted Automerge log) and detached histories of the records its windows
   show. It retains author/time attribution and device-private seen frontiers;
   opening the pane does not mutate the live documents. Navigation publishes
-  `inSurface` when the shared pane draws the view.
+  `inSurface` when the shared pane draws the view. The surface reaches the
+  pane only through `open_activity`, which `HistorySource::activity_pane`
+  names; the desktop bundle (`tilo-web-desktop/src/activity.rs`) splits the
+  pane into its own module, fetched the first time someone opens Activity,
+  so the start module does not carry it. The request stays open while the
+  module loads; a failed load dismisses it.
 - Browser application notices use `AppNotifier` and the shared banner stack
   and centre. Expired and dismissed banners enter real retained history;
   the browser saves that bounded history through its profile's durable store.

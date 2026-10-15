@@ -30,7 +30,6 @@ pub(in crate::setup) use installed_copy_scratch::{
     InstalledCopyScratch, InstalledCopyScratchFacts,
 };
 pub(in crate::setup) mod offline_output;
-pub(in crate::setup) use offline_output::{NativeMediumOutput, OfflineOutputTransaction};
 mod offline_read;
 mod original_copy_read;
 mod original_reader;
@@ -57,9 +56,9 @@ pub(in crate::setup) use transport::validate_read_only_block_device;
 #[cfg(all(test, feature = "native-capture-qualification"))]
 mod native_tests;
 mod store;
-pub(in crate::setup) use store::original::{
-    CompletedOriginalGeometry, SourceReadContext, retire_original_source,
-};
+#[cfg(test)]
+pub(in crate::setup) use store::original::retire_original_source;
+pub(in crate::setup) use store::original::{CompletedOriginalGeometry, SourceReadContext};
 pub use store::retained::RetainedCallerDeclaration;
 pub(in crate::setup) use store::retained::{
     RetainedSourceAuthority, RetainedSourceProjection, RootRetainedPermit,
@@ -124,7 +123,7 @@ pub(crate) fn connect_rpc(
 /// Original scope consent; the privileged helper re-attests every field. Raw
 /// paths are private native input, never a replicated UI or public action result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "GrantWire")]
 pub(crate) struct Grant {
     schema: u32,
     pub(crate) operation: String,
@@ -138,13 +137,61 @@ pub(crate) struct Grant {
     preparation_namespace: Option<NativePath>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrantWire {
+    schema: u32,
+    operation: String,
+    caller: u32,
+    home: NativePath,
+    inode: u64,
+    owner: u32,
+    filesystem: [u8; 16],
+    subvolume: [u8; 16],
+    custody: Option<super::migration_review::CaptureCustody>,
+    preparation_namespace: Option<NativePath>,
+}
+
+impl TryFrom<GrantWire> for Grant {
+    type Error = io::Error;
+    fn try_from(wire: GrantWire) -> io::Result<Self> {
+        let value = Self {
+            schema: wire.schema,
+            operation: wire.operation,
+            caller: wire.caller,
+            home: wire.home,
+            inode: wire.inode,
+            owner: wire.owner,
+            filesystem: wire.filesystem,
+            subvolume: wire.subvolume,
+            custody: wire.custody,
+            preparation_namespace: wire.preparation_namespace,
+        };
+        operation(&value.operation)?;
+        if value.schema != 1
+            || value.caller != value.owner
+            || value.inode == 0
+            || value.custody.is_some() != value.preparation_namespace.is_some()
+            || !value.home.decode().map_err(io::Error::other)?.is_absolute()
+        {
+            return Err(failure("invalid capture grant shape"));
+        }
+        if let Some(namespace) = &value.preparation_namespace {
+            if !namespace.decode().map_err(io::Error::other)?.is_absolute() {
+                return Err(failure("invalid preparation namespace"));
+            }
+        }
+        Ok(value)
+    }
+}
+
 impl Grant {
     pub(crate) fn review(home: &Path, operation_id: &str) -> io::Result<Self> {
         operation(operation_id)?;
         let pin = PinnedDirectory::open_absolute(home)?;
         let metadata = pin.file.metadata()?;
         // SAFETY: getuid reads process credentials without changing them.
-        let caller = unsafe { libc::getuid() };
+        let caller = rustix::process::getuid().as_raw();
         if metadata.uid() != caller {
             return Err(failure("capture home must belong to its original user"));
         }
@@ -266,7 +313,7 @@ pub(crate) struct Broker {
 impl Broker {
     pub(crate) fn reopen(grant: Grant, caller: u32, cancel: &AtomicBool) -> io::Result<Self> {
         // SAFETY: only the declared elevated helper may own capture custody.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let store = Store::system(&grant.operation)?;
@@ -283,7 +330,7 @@ impl Broker {
     /// resolution of a no-longer-present live source.
     pub(crate) fn release_existing(grant: &Grant, caller: u32) -> io::Result<Status> {
         // SAFETY: observes process credentials; does not confer authority.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let store = Store::system(&grant.operation)?;
@@ -309,7 +356,7 @@ impl Broker {
     /// the same filesystem; no hidden directory is created in the user's Home.
     pub(crate) fn capture(grant: Grant, caller: u32, cancel: &AtomicBool) -> io::Result<Self> {
         // SAFETY: reads the helper's effective identity.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let store = Store::system(&grant.operation)?;
@@ -322,7 +369,7 @@ impl Broker {
         cancel: &AtomicBool,
         store: Store,
     ) -> io::Result<Self> {
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let resolved = grant.resolve(caller)?;

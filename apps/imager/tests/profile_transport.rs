@@ -1,8 +1,9 @@
 //! Production Imager codec → live extractor → installer validator → backend binding.
+#![cfg(target_os = "linux")]
 #[path = "../../../crates/session/installer/src/layouts.rs"]
-mod layouts;
+pub mod layouts;
 #[path = "../../../crates/session/installer/src/media_profile.rs"]
-mod media_profile;
+pub mod media_profile;
 
 use imager::{model, profile};
 use sha2::{Digest, Sha256};
@@ -12,7 +13,7 @@ use std::{fs, process::Command};
 fn prepared_profile_survives_live_transport_and_rejects_mutations() {
     let root = tempfile::tempdir().unwrap();
     let media = root.path().join("media.img");
-    fs::write(&media, vec![0xa5; 131072]).unwrap();
+    fs::write(&media, vec![0xa5; 131_072]).unwrap();
     let sealed = b"TILOMIG1opaque ciphertext transport fixture never authenticated by this test";
     let mut draft = model::InstallProfile {
         purpose: "server".into(),
@@ -27,9 +28,7 @@ fn prepared_profile_survives_live_transport_and_rejects_mutations() {
     draft.user.username = "targetowner".into();
     draft.user.full_name = "Target Owner".into();
     draft.encryption_passphrase = "secret-must-stay-local".into();
-    let authenticated_profile =
-        imager::setup::prepared_setup::PublicInstallProfile::from_draft(&draft).unwrap();
-    let restored = authenticated_profile.to_draft().unwrap();
+    let (restored, legacy) = public_profiles(&draft).unwrap();
     assert_eq!(restored.purpose, draft.purpose);
     assert_eq!(restored.device_label, draft.device_label);
     assert!(
@@ -37,13 +36,8 @@ fn prepared_profile_survives_live_transport_and_rejects_mutations() {
         "no self-referential ciphertext binding inside its own package"
     );
     assert!(restored.encryption_passphrase.is_empty());
-    let mut legacy = serde_json::to_value(&authenticated_profile).unwrap();
-    legacy.as_object_mut().unwrap().remove("purpose");
-    legacy.as_object_mut().unwrap().remove("device_label");
-    let legacy: imager::setup::prepared_setup::PublicInstallProfile =
-        serde_json::from_value(legacy).unwrap();
-    assert_eq!(legacy.to_draft().unwrap().purpose, "computer");
-    profile::write_profile_block(&media, 131072, &draft).unwrap();
+    assert_eq!(legacy.purpose, "computer");
+    profile::write_profile_block(&media, 131_072, &draft).unwrap();
     let output = root.path().join("live");
     let os = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../os/usr/libexec");
     assert!(
@@ -79,8 +73,7 @@ fn prepared_profile_survives_live_transport_and_rejects_mutations() {
         .unwrap();
     }
     let preflight = || {
-        Command::new("python3")
-            .arg(os.join("tilo-installer-prepared-setup-extract.py"))
+        Command::new(env!("CARGO_BIN_EXE_tilo-installer-prepared-setup-extract"))
             .args(["preflight-profile", "--source-dir"])
             .arg(&output)
             .output()
@@ -110,6 +103,20 @@ fn prepared_profile_survives_live_transport_and_rejects_mutations() {
     }
     let original = fs::read(&media).unwrap();
     draft.prepared_setup.as_mut().unwrap().sealed_bytes = 0;
-    assert!(profile::write_profile_block(&media, 131072, &draft).is_err());
+    assert!(profile::write_profile_block(&media, 131_072, &draft).is_err());
     assert_eq!(fs::read(&media).unwrap(), original);
+}
+
+fn public_profiles(
+    draft: &model::InstallProfile,
+) -> Result<(model::InstallProfile, model::InstallProfile), Box<dyn std::error::Error>> {
+    let authenticated = imager::setup::prepared_setup::PublicInstallProfile::from_draft(draft)?;
+    let restored = authenticated.to_draft()?;
+    let mut legacy = serde_json::to_value(&authenticated)?;
+    let object = legacy.as_object_mut().ok_or("profile must be an object")?;
+    object.remove("purpose");
+    object.remove("device_label");
+    let legacy: imager::setup::prepared_setup::PublicInstallProfile =
+        serde_json::from_value(legacy)?;
+    Ok((restored, legacy.to_draft()?))
 }

@@ -30,16 +30,18 @@ impl InventoryScratch {
         reserve_bytes: u64,
         verify: impl Fn(&File) -> io::Result<()>,
     ) -> io::Result<Self> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 || caller.0 == 0 {
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
+            || caller.0 == 0
+        {
             return Err(refused(
                 "Inventory storage requires the admitted original caller",
             ));
         }
         parent.validate_destination()?;
-        if !name.starts_with("inventory-")
-            || !uuid::Uuid::parse_str(&name[10..])
-                .is_ok_and(|id| !id.is_nil() && id.to_string() == name[10..])
-        {
+        if !name.strip_prefix("inventory-").is_some_and(|suffix| {
+            uuid::Uuid::parse_str(suffix).is_ok_and(|id| !id.is_nil() && id.to_string() == suffix)
+        }) {
             return Err(refused("Inventory attempt name is not canonical"));
         }
         if reserve_bytes == 0 {

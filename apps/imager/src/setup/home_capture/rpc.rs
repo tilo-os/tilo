@@ -10,10 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
     io,
-    os::{
-        fd::AsRawFd,
-        unix::{fs::MetadataExt, net::UnixStream},
-    },
+    os::{fd::AsRawFd, unix::net::UnixStream},
     path::Path,
     sync::{
         Arc,
@@ -262,7 +259,7 @@ impl RootSession {
             },
         )
     }
-    pub(crate) fn connect_retained(
+    pub(in crate::setup) fn connect_retained(
         selection: &super::super::home_capture_helper::RetainedRequest,
         directory: &Path,
         caller: u32,
@@ -720,14 +717,18 @@ fn read_reply(
                         Action::RegisterRetainedCaller,
                         Reply::RetainedCallerRegistered { declaration },
                     ) if declaration.operation() == call.operation => {}
-                    (Action::RegisterRetainedCaller, Reply::Failed | Reply::Released) => {}
+                    (
+                        Action::RegisterRetainedCaller
+                        | Action::RegisterOriginal
+                        | Action::RegisterOriginalMounted { .. },
+                        Reply::Failed | Reply::Released,
+                    ) => {}
                     (Action::RegisterRetainedCaller, _)
                     | (_, Reply::RetainedCallerRegistered { .. }) => {
                         return Err(failure("Retained registration response binding differs"));
                     }
                     (Action::RegisterOriginal, Reply::OriginalRegistered { witness, .. })
                         if witness.operation == call.operation => {}
-                    (Action::RegisterOriginal, Reply::Failed | Reply::Released) => {}
                     (
                         Action::RegisterOriginalMounted { generation, .. },
                         Reply::MountedOriginalRegistered {
@@ -736,7 +737,6 @@ fn read_reply(
                             ..
                         },
                     ) if generation == returned && witness.operation() == call.operation => {}
-                    (Action::RegisterOriginalMounted { .. }, Reply::Failed | Reply::Released) => {}
                     (Action::RegisterOriginalMounted { .. }, _)
                     | (_, Reply::MountedOriginalRegistered { .. }) => {
                         return Err(failure("Mounted registration response generation differs"));

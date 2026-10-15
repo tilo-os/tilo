@@ -15,7 +15,7 @@ pub(super) struct ManagedConsumerNamespace {
 impl ManagedConsumerNamespace {
     pub(super) fn isolate() -> io::Result<Self> {
         launcher::retained_view::RootConsumerChannel::verify_current_helper()?;
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let origin = File::open("/proc/thread-self/ns/mnt")?;

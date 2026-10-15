@@ -330,13 +330,14 @@ pub(crate) struct RepositoryLease<'a> {
     records: std::sync::MutexGuard<'a, Records>,
 }
 
+#[derive(Clone, Copy)]
 enum ExternalObservation<'a> {
     None(std::marker::PhantomData<&'a ()>),
     #[cfg(all(feature = "filesystem", target_os = "linux"))]
     Completed(&'a crate::external_history::coordinator::ObservedExternalReplacement),
 }
 impl ExternalObservation<'_> {
-    fn check(&self, entry: &RecordTransactionJournalEntry) -> Result<(), RecordRepositoryError> {
+    fn check(self, entry: &RecordTransactionJournalEntry) -> Result<(), RecordRepositoryError> {
         match self {
             #[cfg(all(feature = "filesystem", target_os = "linux"))]
             Self::Completed(observed) => observed.check_entry(entry).map_err(|_| {
@@ -347,7 +348,7 @@ impl ExternalObservation<'_> {
             )),
         }
     }
-    fn supplied(&self) -> bool {
+    fn supplied(self) -> bool {
         !matches!(self, Self::None(_))
     }
 }
@@ -2854,7 +2855,7 @@ mod tests {
         let temp1 = FileRecordId::new();
         let temp2 = FileRecordId::new();
         let initial = FileVersionId::new();
-        let auth = MultiRecordAuthorizer {
+        let auth = AllowActorOn {
             actor: fixture.actor,
             records: [document, temp1, temp2].into_iter().collect(),
         };

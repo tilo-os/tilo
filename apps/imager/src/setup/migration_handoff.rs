@@ -30,8 +30,8 @@ mod store;
 pub(in crate::setup) use linux::{
     AccessMode, InstalledScratchFacts, InstalledScratchIdentity, ParticipantNamespace,
     ResolvedSource, RetainedSource, capture, capture_mounted_entry, mount_authenticated_read_only,
-    mount_read_only, mounted_record_namespace, original_record_namespace, resolve,
-    resolve_flatpak_source, retain_access, retain_scoped_source,
+    mount_read_only, mounted_record_namespace, original_record_namespace, resolve_flatpak_source,
+    retain_access, retain_scoped_source,
 };
 #[cfg(target_os = "linux")]
 pub(in crate::setup) use mounted_entry::{EntryBinding, EntryKind};
@@ -41,6 +41,8 @@ pub(in crate::setup) use original_inventory::{INVENTORY_BOUND, OriginalInventory
 mod tests;
 #[cfg(all(test, target_os = "linux"))]
 pub(in crate::setup) use linux::capture_fixture;
+#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
+pub(in crate::setup) use linux::resolve;
 
 pub(in crate::setup) const SCHEMA: u32 = 1;
 pub(in crate::setup) const MAX_BYTES: usize = 64 * 1024;
@@ -324,7 +326,7 @@ impl Plan {
     pub fn validate_for_install(&self, plan: &staging::plan::Plan) -> io::Result<()> {
         self.validate()?;
         let source = &self.home.volume;
-        if plan.basis.host_os() != "linux"
+        if plan.basis.host_os() != staging_handoff_model::HostOs::Linux
             || !plan.basis.disk.guid.eq_ignore_ascii_case(&source.disk_guid)
             || plan.basis.disk.size_bytes != source.disk_bytes
             || plan.basis.disk.sector_bytes != source.sector_bytes

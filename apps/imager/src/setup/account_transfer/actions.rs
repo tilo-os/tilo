@@ -212,37 +212,36 @@ impl AccountActions {
     pub fn connection_available(&self, provider: ConnectionProvider) -> bool {
         let live = Custodian::live();
         let custodian = self.custodian.as_ref().unwrap_or(&live);
-        match provider.cloud() {
-            Some(cloud) => custodian.is_configured(cloud.oauth_use()),
-            None => {
-                let playback = provider == ConnectionProvider::SpotifyStreaming;
-                custodian
-                    .use_config(account_custody::OAuthUse::new(
-                        account_custody::OAuthIssuer::Spotify,
+        if let Some(cloud) = provider.cloud() {
+            custodian.is_configured(cloud.oauth_use())
+        } else {
+            let playback = provider == ConnectionProvider::SpotifyStreaming;
+            custodian
+                .use_config(account_custody::OAuthUse::new(
+                    account_custody::OAuthIssuer::Spotify,
+                    if playback {
+                        account_custody::Capability::MusicStreaming
+                    } else {
+                        account_custody::Capability::Music
+                    },
+                ))
+                .is_ok_and(|(configured, _)| {
+                    [
+                        "user-read-private",
                         if playback {
-                            account_custody::Capability::MusicStreaming
+                            "streaming"
                         } else {
-                            account_custody::Capability::Music
+                            "user-library-read"
                         },
-                    ))
-                    .is_ok_and(|(configured, _)| {
-                        [
-                            "user-read-private",
-                            if playback {
-                                "streaming"
-                            } else {
-                                "user-library-read"
-                            },
-                        ]
-                        .iter()
-                        .all(|scope| {
-                            configured
-                                .scopes
-                                .iter()
-                                .any(|value| value.as_str() == *scope)
-                        })
+                    ]
+                    .iter()
+                    .all(|scope| {
+                        configured
+                            .scopes
+                            .iter()
+                            .any(|value| value.as_str() == *scope)
                     })
-            }
+                })
         }
     }
 
@@ -898,8 +897,7 @@ fn require_private_owner(metadata: &std::fs::Metadata) -> Result<(), ActionError
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        // SAFETY: geteuid takes no pointers and only observes this process.
-        let owner = unsafe { libc::geteuid() };
+        let owner = rustix::process::geteuid().as_raw();
         if metadata.uid() != owner || metadata.mode() & 0o7022 != 0 {
             return Err(ActionError::TargetNotPrivate);
         }

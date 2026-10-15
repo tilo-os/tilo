@@ -574,12 +574,29 @@ impl ReadyDraft {
     }
     /// Retain generation custody through worker delivery and receiver acceptance.
     pub(super) fn acquire_current(&self) -> io::Result<advisory_lock::FileLock> {
+        let guard = self.acquire_preparation_current()?;
+        #[cfg(target_os = "linux")]
+        if self
+            .pending
+            .store
+            .read()?
+            .ok_or_else(invalid)?
+            .account_checkpoint
+            != self.account_checkpoint
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Prepared accounts changed; review the current checkpoint again",
+            ));
+        }
+        Ok(guard)
+    }
+    /// Fence storage bound to identity preparation, not the independently saved
+    /// account selection. Replacing or retiring preparation still revokes it.
+    pub(super) fn acquire_preparation_current(&self) -> io::Result<advisory_lock::FileLock> {
         let guard = self.pending.store.lock()?;
         let current = self.pending.store.read()?.ok_or_else(invalid)?;
-        let matches = current.preparation.as_ref() == Some(&self.pending.pointer);
-        #[cfg(target_os = "linux")]
-        let matches = matches && current.account_checkpoint == self.account_checkpoint;
-        if !matches {
+        if current.preparation.as_ref() != Some(&self.pending.pointer) {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "Prepared setup changed; review the current preparation again",

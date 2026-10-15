@@ -154,8 +154,7 @@ impl Connector {
             Path::new("Nextcloud/nextcloud.cfg"),
         )
         .map_err(|_| ConnectionError::CredentialUnavailable)?;
-        // SAFETY: geteuid has no pointers or caller preconditions.
-        if metadata.uid() != unsafe { libc::geteuid() } {
+        if metadata.uid() != rustix::process::geteuid().as_raw() {
             return Err(ConnectionError::CredentialUnavailable);
         }
         let found = accounts(&before)

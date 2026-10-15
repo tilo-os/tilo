@@ -25,7 +25,7 @@ pub(super) struct Facts {
 }
 struct Custody {
     source: File,
-    guard: File,
+    guard: advisory_lock::FileLock,
     leaf: File,
     journal: File,
     facts: Facts,
@@ -44,6 +44,10 @@ pub struct RetainedNativeOwner {
 impl RetainedNativeOwner {
     /// Observe only namespace metadata after the worker has actually stopped.
     /// This does not read file contents or confer a restore/delete capability.
+    ///
+    /// # Errors
+    /// Refuses non-root callers, changed or unprotected namespaces, and entries
+    /// still requiring recovery; propagates namespace metadata I/O failures.
     pub fn confirm_retirement(&self) -> io::Result<()> {
         root()?;
         check_namespace(
@@ -101,8 +105,9 @@ fn open(parent: &File, name: &std::ffi::CStr) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(raw) })
 }
 fn empty(file: &File) -> io::Result<bool> {
-    let fresh = open(file, c".")?;
     use std::os::fd::IntoRawFd;
+
+    let fresh = open(file, c".")?;
     let raw = fresh.into_raw_fd();
     let stream = unsafe { libc::fdopendir(raw) };
     if stream.is_null() {
@@ -171,12 +176,11 @@ impl Removal {
         let storage = tilo_files::native::atomic::StorageDirectory::from_file(source.try_clone()?)?;
         storage.validate_namespace_control()?;
         storage.validate_privacy(tilo_files::native::atomic::Privacy::OwnerOnly)?;
-        let suffix = token
-            .native_owner_sha256
-            .ok_or_else(|| refused("Stable native owner is absent"))?
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let suffix = hex::encode(
+            token
+                .native_owner_sha256
+                .ok_or_else(|| refused("Stable native owner is absent"))?,
+        );
         let name = format!("retained-native-{suffix}");
         let raw = CString::new(name.as_bytes()).map_err(io::Error::other)?;
         if unsafe { libc::mkdirat(source.as_raw_fd(), raw.as_ptr(), 0o700) } != 0
@@ -184,10 +188,8 @@ impl Removal {
         {
             return Err(io::Error::last_os_error());
         }
-        let guard = open(&source, &raw)?;
-        if unsafe { libc::flock(guard.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let guard = advisory_lock::FileLock::try_exclusive(open(&source, &raw)?)
+            .map_err(io::Error::from)?;
         let m = guard.metadata()?;
         if m.uid() != 0 || m.mode() & 0o7777 != 0o700 {
             return Err(refused(

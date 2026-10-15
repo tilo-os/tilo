@@ -79,9 +79,12 @@ fn partition(plan: &Plan) -> String {
                     .is_some_and(|id| id.eq_ignore_ascii_case(&plan.home.volume.partition_guid))
         })
         .collect();
-    let [part] = parts.as_slice() else {
-        panic!("unique actual direct GPT partition required")
-    };
+    assert_eq!(
+        parts.len(),
+        1,
+        "unique actual direct GPT partition required"
+    );
+    let part = parts[0];
     part.name.clone()
 }
 const SOURCE_CHILD: &str =
@@ -123,8 +126,8 @@ fn original_composite_capture_child() {
     }
     use std::io::{Read, Write};
     use std::os::fd::FromRawFd;
-    assert_eq!(unsafe { libc::getuid() }, 1000);
-    assert_eq!(unsafe { libc::geteuid() }, 1000);
+    assert_eq!(rustix::process::getuid().as_raw(), 1000);
+    assert_eq!(rustix::process::geteuid().as_raw(), 1000);
     let main = crate::setup::qualification_registration::AdmittedMain::from_receiver().unwrap();
     let mut stream = unsafe { UnixStream::from_raw_fd(87) };
     runtime_portal::process_binding::complete(&mut stream).unwrap();
@@ -257,11 +260,11 @@ fn source_peer(
 #[test]
 fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
     assert_eq!(
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         0,
         "privileged isolated native qualification required"
     );
-    assert_eq!(unsafe { libc::geteuid() }, 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
     let mut receiver = installed_receiver::Receiver::from_inherited().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
@@ -736,8 +739,8 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(unsafe { libc::geteuid() }, 0);
-    assert_eq!(unsafe { libc::getegid() }, 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
+    assert_eq!(rustix::process::getegid().as_raw(), 0);
     assert!(
         migration_handoff::retain_access(&plan, migration_handoff::AccessMode::ReadWrite).is_err(),
         "ordinary root retained access still cannot assume original UID/group authority"

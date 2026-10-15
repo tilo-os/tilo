@@ -138,6 +138,12 @@ pub(crate) fn command_button(
     Button::new(id, label).on_effect(move || sink.borrow_mut().push(command.clone()))
 }
 
+/// A writer has finished reporting, possibly without a terminal progress packet.
+/// Its custody remains live until the owned helper is observed stopped.
+struct PendingWriterResult {
+    progress: Option<Progress>,
+}
+
 pub struct ImagerApp {
     // ---- collaborative records (cached each `sync`) ----
     source: Option<Source>,
@@ -146,6 +152,7 @@ pub struct ImagerApp {
     /// Host-session Wi-Fi passphrase. Never enters the collaborative document.
     wifi_psk: String,
     ssh_public_key: String,
+    windows_preparation: Option<crate::windows_media::WindowsMedia>,
     // ---- local machine/window state ----
     targets: Vec<TargetDrive>,
     /// Tilo releases offered on the Source step are a bounded local catalogue;
@@ -179,7 +186,7 @@ pub struct ImagerApp {
     step: Step,
     // ---- transient job / portal plumbing (not in the doc) ----
     job_control: Option<JobControl>,
-    pending_writer_result: Option<Option<Progress>>,
+    pending_writer_result: Option<PendingWriterResult>,
     close_requested: bool,
     close_intent: bool,
     write_mark: Option<(u64, ui::time::Instant)>,
@@ -240,7 +247,7 @@ impl ImagerApp {
     pub fn new() -> Self {
         Self {
             source: None,
-            recent: Default::default(),
+            recent: Vec::default(),
             targets: Vec::new(),
             releases: Vec::new(),
             selected: None,
@@ -248,6 +255,7 @@ impl ImagerApp {
             profile: InstallProfile::default(),
             wifi_psk: String::new(),
             ssh_public_key: String::new(),
+            windows_preparation: None,
             progress: Progress::default(),
             #[cfg(target_os = "linux")]
             prepared_delivery: crate::setup::journey::prepared_media::Delivery::default(),
@@ -2082,6 +2090,14 @@ impl ImagerApp {
         self.dirty = true;
         Ok(())
     }
+    pub(crate) fn with_windows_preparation(
+        mut self,
+        preparation: Option<crate::windows_media::WindowsMedia>,
+    ) -> Self {
+        self.windows_preparation = preparation;
+        self
+    }
+
     pub(crate) fn write_request(
         &self,
         source: Source,
@@ -2104,6 +2120,7 @@ impl ImagerApp {
             action: self.action,
             profile: request_profile,
             handoff_stage,
+            windows_preparation: self.windows_preparation.clone(),
             #[cfg(target_os = "linux")]
             offline_layout: None,
             provision_migration_data: {
@@ -2383,7 +2400,7 @@ impl ImagerApp {
             .is_some_and(JobControl::observed_stopped)
             && let Some(last) = self.pending_writer_result.take()
         {
-            self.finish_write(last);
+            self.finish_write(last.progress);
         }
 
         if self
@@ -2455,7 +2472,7 @@ impl ImagerApp {
             .as_ref()
             .is_some_and(|control| !control.observed_stopped())
         {
-            self.pending_writer_result = Some(last);
+            self.pending_writer_result = Some(PendingWriterResult { progress: last });
             self.dirty = true;
             return;
         }
@@ -2668,7 +2685,7 @@ impl ImagerApp {
                         .store(true, std::sync::atomic::Ordering::Release);
                     let activity = SourceCheckActivity(self.write_preflight.clone());
                     self.dirty = true;
-                    return Ok(cx.thread(
+                    Ok(cx.thread(
                         move |progress| {
                             let _activity = activity;
                             progress.report("installer-original-complete-progress", None, None);
@@ -2715,7 +2732,7 @@ impl ImagerApp {
                             })?;
                             Ok(Effected::value(app.status_value()))
                         },
-                    ));
+                    ))
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
@@ -2740,27 +2757,25 @@ impl ImagerApp {
                     let expected_target = target.clone();
                     let retained = artifact.clone();
                     let expected_original = original.clone();
-                    let image_review =
-                        match crate::setup::original_admission::ReviewedOriginalImage::review(
+                    let image_review = if let Ok(review) =
+                        crate::setup::original_admission::ReviewedOriginalImage::review(
                             &source,
                             &self.releases,
                         ) {
-                            Ok(review) => review,
-                            Err(_) => {
-                                let reason = crate::setup::strings::t(
-                                    "installer-original-image-unavailable",
-                                );
-                                self.fail(&reason);
-                                return Err(reason);
-                            }
-                        };
+                        review
+                    } else {
+                        let reason =
+                            crate::setup::strings::t("installer-original-image-unavailable");
+                        self.fail(&reason);
+                        return Err(reason);
+                    };
                     self.write_preflight
                         .store(true, std::sync::atomic::Ordering::Release);
                     let activity = SourceCheckActivity(self.write_preflight.clone());
                     self.status_is_error = false;
                     self.set_status("");
                     self.dirty = true;
-                    return Ok(cx.thread(
+                    Ok(cx.thread(
                         move |progress| {
                             let _activity = activity;
                             progress.report("installer-original-permission-progress", None, None);
@@ -2780,15 +2795,13 @@ impl ImagerApp {
                             app.write_preflight
                                 .store(false, std::sync::atomic::Ordering::Release);
                             app.dirty = true;
-                            let prepared = match result {
-                                Ok(prepared) => prepared,
-                                Err(_) => {
-                                    let reason = crate::setup::strings::t(
-                                        "installer-original-prepare-failed",
-                                    );
-                                    app.fail(&reason);
-                                    return Err(reason);
-                                }
+                            let prepared = if let Ok(prepared) = result {
+                                prepared
+                            } else {
+                                let reason =
+                                    crate::setup::strings::t("installer-original-prepare-failed");
+                                app.fail(&reason);
+                                return Err(reason);
                             };
                             if app.source.as_ref() != Some(&expected_source)
                                 || !app.target().is_some_and(|actual| {
@@ -2814,7 +2827,7 @@ impl ImagerApp {
                             app.offline_media_review = Some(prepared.review);
                             Ok(Effected::value(app.status_value()))
                         },
-                    ));
+                    ))
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
@@ -4428,7 +4441,7 @@ mod tests {
     ) {
         use crate::setup::{prepared_identity::PreparedIdentity, prepared_setup};
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let identity = PreparedIdentity::create(
             &root.join("identity"),
             "Ada",

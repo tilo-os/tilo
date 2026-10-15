@@ -103,7 +103,7 @@ impl OfflineReadAdmission {
         cancel: &AtomicBool,
     ) -> io::Result<Self> {
         // SAFETY: reads current effective credentials only; never changes groups.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(refused(
                 "Original offline read admission requires the boot root controller",
             ));
@@ -628,7 +628,7 @@ impl launcher::owned_service::ServiceAuthority for OriginalReadCustody {
         &self,
     ) -> io::Result<Option<launcher::owned_service::OriginalMountedBinding>> {
         self.check()?;
-        Ok(self.mounted_binding.clone())
+        Ok(self.mounted_binding)
     }
     fn check(&self) -> io::Result<()> {
         self.read.revalidate(&AtomicBool::new(false))

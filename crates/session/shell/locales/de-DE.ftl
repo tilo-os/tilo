@@ -1357,6 +1357,13 @@ search-action-identity-connect = Vorhandene Identität hinzufügen
 search-action-identity-connect-subtitle = Identitätszugangsdaten importieren und in diesem Arbeitsbereich verwenden
 search-action-identity-select = Identität in diesem Arbeitsbereich verwenden
 search-action-identity-select-subtitle = Eine der Identitäten wählen, die bereits mit diesem Gerät verbunden sind
+search-action-identity-device-pair-resource = Geräte in der Nähe koppeln
+search-action-identity-device-pair-discover = Gerät in der Nähe zum Koppeln suchen
+search-action-identity-device-pair-discover-subtitle = In diesem Netzwerk nach einem neuen Gerät oder Heimserver suchen, das beitreten möchte
+search-action-identity-device-pair-approve = Gerät in der Nähe bestätigen
+search-action-identity-device-pair-approve-subtitle = Das gefundene Gerät beitreten lassen, sobald beide Bildschirme denselben Code zeigen
+search-action-identity-device-pair-reject = Gerät in der Nähe ablehnen
+search-action-identity-device-pair-reject-subtitle = Ein gefundenes Gerät vergessen und seine Bestätigung abbrechen
 search-action-identity-device-revoke = Gerät einer Identität widerrufen
 search-action-identity-device-revoke-subtitle = Einem verlorenen, ausgemusterten oder kompromittierten Gerät dauerhaft nicht mehr vertrauen
 search-action-capture-screenshot-send = Letztes Bildschirmfoto senden
@@ -1436,6 +1443,9 @@ search-action-permission-roles-subtitle = Wiederverwendbare Arbeitsbereichsrolle
 # Suche: was eine Shell-Aktion getan hat
 search-action-tab-close-failed = Dieser Tab kann nicht geschlossen werden
 search-action-tab-split-failed = Dieser Tab kann nicht geteilt werden
+search-action-device-list-copied = Geräteliste kopiert
+search-action-enrollment-copied = Geräte-Einrichtungscode kopiert · läuft in { $minutes } Min. ab
+search-action-home-server-copied = Heimserver-Einrichtungscode kopiert · läuft in { $minutes } Min. ab
 search-action-device-revoked = Gerät widerrufen
 search-action-device-revoked-body = Der Widerruf wurde mit dem Stammschlüssel signiert und in der Geräteliste dieser Identität vermerkt.
 
@@ -1914,6 +1924,11 @@ overview-items-shared = { $count ->
 
 # Fenster und Dokumente, die die Shell anzeigt
 shell-window-restoring = Dieses Fenster wird wiederhergestellt …
+shell-window-opening = Wird geöffnet …
+shell-window-opening-slow = { $app } wird geöffnet … dauert länger als üblich
+shell-window-installing-slow = { $app } wird installiert … dauert länger als üblich
+shell-window-installing-of = { $app } wird installiert … { $received } von { $total }
+shell-window-installing-received = { $app } wird installiert … { $received }
 peer-window-not-installed = Auf diesem Gerät nicht installiert.
 peer-window-install = { $app } installieren
 peer-window-installing = { $app } wird installiert …
@@ -2501,7 +2516,8 @@ activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen
 activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
 activity-morning-description = Ausgewählte Morgenquellen · Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
-activity-morning-unavailable = Quelle in diesem Arbeitsbereich nicht verfügbar · keine aktuellen Nachweise
+activity-morning-unavailable = Diese Quelle ist hier nicht verfügbar
+activity-morning-source-unnamed = Gewählte Quelle
 activity-morning-source = { $source } · letzte aufgezeichnete Aktivität: { $time } · externe Aktualität unbekannt
 activity-morning-open = Morgenquelle öffnen
 
@@ -2635,6 +2651,9 @@ search-kw-identity-select = identität, konto, konto wechseln
 search-kw-identity-devices-copy = geräte, liste kopieren, geräteliste
 search-kw-identity-device-enroll = gerät hinzufügen, gerät koppeln, neues gerät, gerät verbinden
 search-kw-identity-home-peer-enroll = heimserver, server koppeln, nas
+search-kw-identity-device-pair-discover = gerät koppeln, gerät in der nähe, gerät suchen, gerät hinzufügen, heimserver
+search-kw-identity-device-pair-approve = gerät bestätigen, gerät koppeln, bestätigungscode
+search-kw-identity-device-pair-reject = gerät ablehnen, koppeln abbrechen, gerät verweigern
 search-kw-identity-device-revoke = gerät entfernen, gerät widerrufen, gerät vergessen
 search-kw-quick-settings-open = schnelleinstellungen, kontrollzentrum, systemmenü, schalter
 search-kw-quick-settings-clipboard = zwischenablage, kopierverlauf, einfügeverlauf, kopiert

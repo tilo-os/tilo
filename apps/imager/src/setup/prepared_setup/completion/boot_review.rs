@@ -147,8 +147,8 @@ impl<'a> CompletedBootReview<'a> {
         manifest.offline_home = None;
         manifest.offline_applications = None;
         manifest.completed_applications_only = selected.schema == 2;
-        manifest.completed_home = selected.home.clone();
-        manifest.portable_flatpak = selected.applications.clone();
+        manifest.completed_home.clone_from(&selected.home);
+        manifest.portable_flatpak.clone_from(&selected.applications);
         if setup.manifest() != &manifest {
             return Err(changed("Completed setup changed prepared choices"));
         }
@@ -254,6 +254,9 @@ impl<'a> CompletedBootReview<'a> {
         cancel: &AtomicBool,
         callback: impl FnOnce(&Arc<PinnedDirectory>, &Selection) -> io::Result<T>,
     ) -> io::Result<T> {
+        if self.selected.home.is_some() {
+            return self.with_home(cancel, |directory, _| callback(directory, &self.selected));
+        }
         self.validate(cancel)?;
         let result = self.medium.with_root(|root, binding| {
             let (selection, payload, _, _lease) =

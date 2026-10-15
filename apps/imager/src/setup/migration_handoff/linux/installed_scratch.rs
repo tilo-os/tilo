@@ -35,7 +35,7 @@ pub(in crate::setup) struct InstalledScratchIdentity {
     source: Arc<OriginalCopyReadAdmission>,
 }
 fn root() -> io::Result<()> {
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     Ok(())

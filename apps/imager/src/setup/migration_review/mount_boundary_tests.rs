@@ -155,7 +155,7 @@ impl Drop for Binding {
 fn actual_same_filesystem_directory_and_file_binds_refuse_home_review() {
     // SAFETY: geteuid only observes the test process's current credentials.
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "canonical privileged native qualification required"
     );

@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::os::fd::AsFd;
 use std::{
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::{
@@ -111,7 +111,8 @@ fn tagged_receive(stream: &mut UnixStream, tag: u8) -> io::Result<OwnedFd> {
 }
 fn same_root_socket(socket: &UnixStream, root: &ExecutingPeer) -> io::Result<()> {
     let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let mut length =
+        libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).map_err(io::Error::other)?;
     if unsafe {
         libc::getsockopt(
             socket.as_raw_fd(),
@@ -140,9 +141,9 @@ fn target_environment(peer: &ExecutingPeer) -> io::Result<Vec<(String, String)>>
     }
     let mut bytes = Vec::new();
     File::open(format!("/proc/{}/environ", peer.pid()))?
-        .take(262145)
+        .take(262_145)
         .read_to_end(&mut bytes)?;
-    if bytes.len() > 262144 || !peer.current() {
+    if bytes.len() > 262_144 || !peer.current() {
         return Err(denied());
     }
     let allowed = [
@@ -247,21 +248,69 @@ pub struct OwnedOrdinaryChild {
     cancel: ServiceCancellation,
     executable: File,
 }
+// Only async-signal-safe credential/descriptor syscalls run after fork.
+fn prepare_launcher_credentials(
+    cmd: &mut Command,
+    wait: UnixStream,
+    groups: Vec<u32>,
+    uid: u32,
+    gid: u32,
+) {
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::syscall(
+                libc::SYS_close_range,
+                3u32,
+                u32::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            ) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let fd = wait.as_raw_fd();
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags < 0
+                || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
+                || libc::prctl(libc::PR_SET_KEEPCAPS, 0, 0, 0, 0) != 0
+                || libc::prctl(
+                    libc::PR_CAP_AMBIENT,
+                    libc::PR_CAP_AMBIENT_CLEAR_ALL,
+                    0,
+                    0,
+                    0,
+                ) != 0
+                || libc::setgroups(groups.len(), groups.as_ptr()) != 0
+                || libc::setresgid(gid, gid, gid) != 0
+                || libc::setresuid(uid, uid, uid) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+fn child_cancellation(cancel: ServiceCancellation) -> ServiceCancellation {
+    let child = cancel.child();
+    drop(cancel);
+    child
+}
 impl OwnedOrdinaryChild {
+    /// # Errors
+    /// Refuses invalid credentials, command, namespace or cancellation, and returns spawn or descriptor errors.
     pub fn spawn(
         command: &ConsumerCommand,
         target: &ExecutingPeer,
         cancel: ServiceCancellation,
     ) -> io::Result<Self> {
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || !target.current()
             || target.uid() == 0
             || cancel.is_cancelled()
         {
             return Err(denied());
         }
-        let cancel = cancel.child();
+        let cancel = child_cancellation(cancel);
         let digest = digest(command)?;
         let groups = target.supplementary_groups()?.to_vec();
         let uid = target.uid();
@@ -289,39 +338,7 @@ impl OwnedOrdinaryChild {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Only async-signal-safe credential/descriptor syscalls after fork.
-        unsafe {
-            cmd.pre_exec(move || {
-                if libc::syscall(
-                    libc::SYS_close_range,
-                    3u32,
-                    u32::MAX,
-                    libc::CLOSE_RANGE_CLOEXEC,
-                ) != 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                let fd = wait.as_raw_fd();
-                let flags = libc::fcntl(fd, libc::F_GETFD);
-                if flags < 0
-                    || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
-                    || libc::prctl(libc::PR_SET_KEEPCAPS, 0, 0, 0, 0) != 0
-                    || libc::prctl(
-                        libc::PR_CAP_AMBIENT,
-                        libc::PR_CAP_AMBIENT_CLEAR_ALL,
-                        0,
-                        0,
-                        0,
-                    ) != 0
-                    || libc::setgroups(groups.len(), groups.as_ptr()) != 0
-                    || libc::setresgid(gid, gid, gid) != 0
-                    || libc::setresuid(uid, uid, uid) != 0
-                {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        prepare_launcher_credentials(&mut cmd, wait, groups, uid, gid);
         let mut child = cmd.spawn()?;
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0u32) };
         if fd < 0 {
@@ -333,7 +350,7 @@ impl OwnedOrdinaryChild {
             }
             return Err(error);
         }
-        let pidfd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+        let pidfd = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd).map_err(io::Error::other)?) };
         let child_namespace = match namespace(child.id()) {
             Ok(ns) => ns,
             Err(error) => {
@@ -371,6 +388,8 @@ impl OwnedOrdinaryChild {
         })
     }
     /// Start the actual root owner. A panic/observation error cannot mint stop.
+    /// # Errors
+    /// Returns descriptor duplication or worker creation errors.
     pub fn start_supervision(self) -> io::Result<OrdinaryChildSupervisor> {
         let launcher_pid = self.child.id();
         let launcher_pidfd = self.pidfd.try_clone()?;
@@ -383,13 +402,16 @@ impl OwnedOrdinaryChild {
         let worker = std::thread::Builder::new()
             .name("root-ordinary-launcher-owner".into())
             .spawn(move || {
-                let mut locked = owned.lock().unwrap_or_else(|e| e.into_inner());
+                let mut locked = owned
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let Some(child) = locked.as_mut() else { return };
                 let _ = child.serve();
                 // Even protocol failure requires actual root kill/wait and kernel stop.
                 let _ = child.child.kill();
                 if child.child.wait().is_ok() && stopped(&child.pidfd).unwrap_or(false) {
                     locked.take();
+                    drop(locked);
                     observed.store(true, Ordering::Release);
                 }
             })?;
@@ -404,6 +426,8 @@ impl OwnedOrdinaryChild {
         })
     }
     /// Existing authenticated bootstrap only. ACKs mean transport, not authority.
+    /// # Errors
+    /// Refuses stale custody or mismatched namespaces and returns transport errors.
     pub fn handoff(&mut self, stream: &mut UnixStream) -> io::Result<()> {
         if self.cancel.is_cancelled()
             || stopped(&self.pidfd)?
@@ -440,6 +464,8 @@ impl OwnedOrdinaryChild {
     }
     /// Run on the existing root owner worker. Reap evidence is an actual wait
     /// result. Caller still retains source and inner-namespace retirement duties.
+    /// # Errors
+    /// Returns protocol, transport, or child observation errors.
     pub fn serve(&mut self) -> io::Result<()> {
         self.control
             .set_read_timeout(Some(Duration::from_millis(50)))?;
@@ -516,6 +542,8 @@ pub struct PreparedOrdinaryChild {
     reaped: Option<ExitStatus>,
 }
 impl PreparedOrdinaryChild {
+    /// # Errors
+    /// Refuses mismatched command or root custody and returns descriptor or transport errors.
     pub fn receive(
         stream: &mut UnixStream,
         root: &ExecutingPeer,
@@ -595,6 +623,8 @@ impl PreparedOrdinaryChild {
     pub fn id(&self) -> u32 {
         self.pid
     }
+    /// # Errors
+    /// Refuses a gate that has already been taken.
     pub fn gate(&mut self) -> io::Result<UnixStream> {
         self.gate.take().ok_or_else(denied)
     }
@@ -604,6 +634,8 @@ impl PreparedOrdinaryChild {
     pub fn take_stderr(&mut self) -> Option<File> {
         self.stderr.take()
     }
+    /// # Errors
+    /// Refuses stale root custody or a peer outside the held launcher namespace.
     pub fn check_peer(&self, peer: &ExecutingPeer) -> io::Result<()> {
         self.check_root()?;
         peer.matches_transferred_pidfd(std::os::fd::AsFd::as_fd(&self.pidfd))?;
@@ -616,17 +648,16 @@ impl PreparedOrdinaryChild {
         if stopped(&self.root_pidfd)? {
             return Err(denied());
         }
-        if let Some(parent) = &self.parent_pidfd {
-            if stopped(parent)? {
-                return Err(denied());
-            }
+        if let Some(parent) = &self.parent_pidfd
+            && stopped(parent)?
+        {
+            return Err(denied());
         }
-        if let Some(helper) = &self.delegated_helper {
-            if !same(helper, &protected_consuming_helper()?)?
-                || !same(helper, &File::open(format!("/proc/{}/exe", self.root_pid))?)?
-            {
-                return Err(denied());
-            }
+        if let Some(helper) = &self.delegated_helper
+            && (!same(helper, &protected_consuming_helper()?)?
+                || !same(helper, &File::open(format!("/proc/{}/exe", self.root_pid))?)?)
+        {
+            return Err(denied());
         }
         Ok(())
     }
@@ -657,6 +688,8 @@ impl PreparedOrdinaryChild {
             _ => Err(denied()),
         }
     }
+    /// # Errors
+    /// Returns custody validation, transport or child signaling errors.
     pub fn kill(&mut self) -> io::Result<()> {
         if self.reaped.is_some() {
             return Ok(());
@@ -664,6 +697,8 @@ impl PreparedOrdinaryChild {
         let _ = self.request(b'K')?;
         Ok(())
     }
+    /// # Errors
+    /// Returns custody validation, transport or child observation errors.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         if let Some(status) = self.reaped {
             return Ok(status);
@@ -725,7 +760,10 @@ impl OrdinaryChildSupervisor {
         // Recover actual custody after an owner panic or failed observation;
         // never replace this with a thread-completion or cancellation claim.
         while !self.observed_stopped() {
-            let mut locked = self.custody.lock().unwrap_or_else(|e| e.into_inner());
+            let mut locked = self
+                .custody
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(child) = locked.as_mut() {
                 let _ = child.child.kill();
                 if child.child.wait().is_ok() && stopped(&child.pidfd).unwrap_or(false) {
@@ -763,7 +801,9 @@ mod tests {
             .expect("controlled child");
         let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0u32) };
         assert!(raw >= 0, "actual pidfd required");
-        let pidfd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
+        let pidfd = unsafe {
+            OwnedFd::from_raw_fd(i32::try_from(raw).expect("pidfd fits a file descriptor"))
+        };
         let observed = pidfd.try_clone().unwrap();
         let (control, remote) = UnixStream::pair().unwrap();
         let (gate, _wait) = UnixStream::pair().unwrap();
@@ -848,7 +888,7 @@ mod tests {
             owner
                 .custody
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_none()
         );
     }
@@ -947,8 +987,8 @@ fn review_bootstrap(
     peer: &ExecutingPeer,
     endpoint: &UnixStream,
 ) -> io::Result<BootstrapTransfer> {
-    if unsafe { libc::getuid() } != 0
-        || unsafe { libc::geteuid() } != 0
+    if rustix::process::getuid().as_raw() != 0
+        || rustix::process::geteuid().as_raw() != 0
         || peer.uid() != 0
         || peer.pid() != child.id()
         || !peer.current()
@@ -970,9 +1010,9 @@ fn review_bootstrap(
     };
     namespaces.validate()?;
     Ok(BootstrapTransfer {
+        namespaces,
         helper,
         start,
-        namespaces,
     })
 }
 impl BootstrapTransfer {
@@ -1074,6 +1114,8 @@ impl DelegatedConsumingBootstrap {
     /// Complete shared framing first. A closed refusal or failure on the
     /// separately authenticated child endpoint is an operation outcome; malformed
     /// or truncated shared framing remains a bootstrap transport error.
+    /// # Errors
+    /// Refuses stale parent custody, malformed framing or an expired deadline; inner errors report child authentication failure.
     pub fn receive_selected(
         stream: &mut UnixStream,
         parent: &ExecutingPeer,
@@ -1139,6 +1181,7 @@ impl DelegatedConsumingBootstrap {
         endpoint.write_all(&challenge)?;
         let peer = runtime_portal::process_binding::receive(&endpoint, &challenge, 0)?;
         peer.matches_transferred_pidfd(std::os::fd::AsFd::as_fd(&pidfd))?;
+        drop(pidfd);
         same_root_socket(&endpoint, &peer)?;
         if peer.pid() != pid
             || peer.start_time()? != u64::from_be_bytes(start)
@@ -1253,13 +1296,13 @@ impl ManagedConsumingBootstrap {
     /// # Errors
     /// Refuses root/program/child/QPE/namespace evidence or cancelled custody.
     pub fn spawn(cancel: ServiceCancellation) -> io::Result<Self> {
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || cancel.is_cancelled()
         {
             return Err(denied());
         }
-        let cancel = cancel.child();
+        let cancel = child_cancellation(cancel);
         let helper = protected_consuming_helper()?;
         if !same(&helper, &File::open("/proc/self/exe")?)? {
             return Err(denied());
@@ -1399,12 +1442,9 @@ impl ManagedConsumingBootstrap {
             let endpoint = self.shell_endpoint.as_ref().ok_or_else(denied)?;
             review_bootstrap(&mut self.child, &self.peer, endpoint)
         })();
-        let transfer = match prepared {
-            Ok(transfer) => transfer,
-            Err(_) => {
-                refuse_consuming_bootstrap(stream, deadline)?;
-                return Ok(DelegationOutcome::Refused);
-            }
+        let Ok(transfer) = prepared else {
+            refuse_consuming_bootstrap(stream, deadline)?;
+            return Ok(DelegationOutcome::Refused);
         };
         let fence = SocketDeadline::start(stream, ServiceCancellation::default(), deadline)?;
         transfer.send(
@@ -1506,7 +1546,7 @@ impl ConsumingBootstrapEntry {
     /// # Errors
     /// Refuses wrong mode, root, parent, installed image or mount namespace.
     pub fn authenticate(mut control: UnixStream) -> io::Result<Self> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(denied());
         }
         consuming_mode(std::process::id())?;
@@ -1757,7 +1797,6 @@ impl ManagedConsumingBootstrap {
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(format!("/proc/{}/mountinfo", self.peer.pid()))?;
         bounded_mountinfo(file.try_clone()?)?;
-        use std::io::{Seek, SeekFrom};
         file.seek(SeekFrom::Start(0))?;
         self.check_current()?;
         Ok(file)
@@ -1858,12 +1897,12 @@ fn bounded_mountinfo(file: File) -> io::Result<Vec<u8>> {
 #[cfg(test)]
 mod exposure_adapter_tests {
     use super::*;
+    use std::io::{Seek, SeekFrom};
     #[test]
     fn actual_mountinfo_acquisition_preserves_raw_bytes_and_refuses_oversize() {
         let mut file = tempfile::tempfile().unwrap();
         file.write_all(b"1 0 0:1 / /raw-\xff rw - tmpfs tmpfs rw\n")
             .unwrap();
-        use std::io::{Seek, SeekFrom};
         file.seek(SeekFrom::Start(0)).unwrap();
         assert_eq!(
             bounded_mountinfo(file).unwrap(),

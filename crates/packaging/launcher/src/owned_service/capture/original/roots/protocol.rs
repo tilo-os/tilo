@@ -1,6 +1,11 @@
 //! Closed source identity table: metadata alone never supplies mount authority.
-use super::*;
+use super::{
+    Deserialize, Facts, File, FromRawFd, LIMIT, MAX_BYTES, OsStrExt, Path, Projection, RawFd,
+    SEALS, Seek, Serialize, Write, identity, io, open_target, placement_shape, readonly, refused,
+    root,
+};
 use sha2::{Digest, Sha256};
+use std::os::unix::fs::FileExt;
 const FD: RawFd = 51;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -8,7 +13,7 @@ pub struct OriginalMountedIdentity {
     pub placement: Vec<u8>,
     pub identity: (u64, u64, u32, u32, u32),
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OriginalMountedBinding {
     pub read_claim_digest: [u8; 32],
     pub table_sha256: [u8; 32],
@@ -173,7 +178,6 @@ pub fn verify_original_mounted_roots(
     }
     let token = unsafe { File::from_raw_fd(raw) };
     super::super::check_token(&token)?;
-    use std::os::unix::fs::FileExt;
     let len = usize::try_from(token.metadata()?.len()).map_err(io::Error::other)?;
     let mut bytes = vec![0; len];
     token.read_exact_at(&mut bytes, 0)?;

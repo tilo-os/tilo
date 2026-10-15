@@ -34,10 +34,10 @@ impl OfflineRunner for Observed {
     }
 }
 fn authorize() -> io::Result<()> {
-    if unsafe { libc::getuid() } != 1000
-        || unsafe { libc::geteuid() } != 1000
-        || unsafe { libc::getgid() } != 1001
-        || unsafe { libc::getegid() } != 1001
+    if rustix::process::getuid().as_raw() != 1000
+        || rustix::process::geteuid().as_raw() != 1000
+        || rustix::process::getgid().as_raw() != 1001
+        || rustix::process::getegid().as_raw() != 1001
         || unsafe { libc::getpid() } != 1
         || unsafe { libc::getgroups(0, std::ptr::null_mut()) } != 0
         || std::env::current_exe()? != Path::new(HELPER)

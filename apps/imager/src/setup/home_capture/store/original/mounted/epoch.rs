@@ -53,6 +53,7 @@ impl MountedReadEpoch {
         state.verify(cancel)
     }
 
+    #[cfg(all(test, feature = "native-capture-qualification"))]
     pub(super) fn reopen(
         primary: &SourceReadContext,
         witness: &MountedWitness,
@@ -155,7 +156,7 @@ impl MountedReadEpoch {
         &self,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<[u8; 32]> {
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         self.with_sources(cancel, |sources| {
@@ -233,9 +234,9 @@ impl MountedReadEpoch {
                 .iter()
                 .map(|source| {
                     Ok(OriginalMountedSource {
-                        placement: source.placement.clone(),
-                        kind: source.kind,
-                        file: source.file.try_clone()?,
+                        placement: source.placement().to_owned(),
+                        kind: source.kind(),
+                        file: source.file().try_clone()?,
                     })
                 })
                 .collect::<io::Result<Vec<_>>>()?

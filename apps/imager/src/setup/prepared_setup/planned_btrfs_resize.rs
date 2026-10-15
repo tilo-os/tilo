@@ -271,7 +271,7 @@ mod tests {
             .unwrap();
         assert_eq!(original.bytes().unwrap(), bytes);
         assert_eq!(physical.home.volume.last_lba, resize.new_last_lba);
-        let mut unchanged_home = physical.home.clone();
+        let mut unchanged_home = physical.home;
         unchanged_home.volume = original.home.volume.clone();
         assert_eq!(unchanged_home, original.home);
         assert!(
@@ -286,7 +286,7 @@ mod tests {
                 .effective_original_copy_plan(&shared, &original)
                 .is_err()
         );
-        let mut wrong = resize.clone();
+        let mut wrong = resize;
         wrong.reviewed_plan.target_extent.first_lba += 1;
         wrong.reviewed_plan_sha256 =
             Sha256::digest(bounded_review(&wrong.reviewed_plan).unwrap()).into();

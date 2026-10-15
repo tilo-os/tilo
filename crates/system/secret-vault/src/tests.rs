@@ -236,6 +236,32 @@ fn local_keys_are_owner_only_and_non_private_keys_are_kept() {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
+    // Phase `local_custody_is_named_for_what_it_is`.
+    // The local key is the raw key in a file beside the vault: whoever can
+    // read the directory can open the vault. Its label must not promise the
+    // protection the keyring gives.
+    {
+        let root = tempfile::tempdir().unwrap();
+        let key = FORMAT
+            .load_or_create_key(root.path(), Custody::LocalFile)
+            .unwrap();
+        let sealed = FORMAT.seal(&key, b"every password").unwrap();
+        let from_file = key_from_bytes(&persisted_key(root.path())).unwrap();
+        assert_eq!(
+            FORMAT.open(&from_file, &sealed).unwrap().as_slice(),
+            b"every password",
+            "the key file alone opens the vault"
+        );
+        let label = Custody::LocalFile.label().to_lowercase();
+        assert!(label.contains("file"), "{label:?} must name the key file");
+        assert_ne!(Custody::LocalFile.label(), Custody::System.label());
+        for overclaim in ["encrypt", "protect", "secure", "sealed"] {
+            assert!(
+                !label.contains(overclaim),
+                "{label:?} claims {overclaim:?} for a key stored in the clear"
+            );
+        }
+    }
 }
 
 #[cfg(windows)]

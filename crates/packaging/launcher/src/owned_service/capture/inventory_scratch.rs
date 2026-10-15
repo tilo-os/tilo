@@ -105,7 +105,9 @@ impl Scratch {
             return Err(io::Error::last_os_error());
         }
         let flags = unsafe { flags.assume_init() };
-        if !disk_filesystem(filesystem.f_type as u64) || flags.f_flag & libc::ST_RDONLY != 0 {
+        if !disk_filesystem(u64::try_from(filesystem.f_type).map_err(io::Error::other)?)
+            || flags.f_flag & libc::ST_RDONLY != 0
+        {
             return Err(refuse(
                 "Inventory scratch is not a supported writable local filesystem",
             ));
@@ -164,7 +166,7 @@ fn refuse(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
 fn disk_filesystem(kind: u64) -> bool {
-    matches!(kind, 0xef53 | 0x58465342 | 0x9123683e)
+    matches!(kind, 0xef53 | 0x5846_5342 | 0x9123_683e)
 }
 fn filesystem(directory: &File) -> io::Result<libc::statfs> {
     let mut value = std::mem::MaybeUninit::uninit();
@@ -195,6 +197,24 @@ pub(super) fn identity(directory: &File) -> io::Result<(u64, u64, u64)> {
     }
     let facts = directory.metadata()?;
     Ok((facts.dev(), value.stx_ino, value.stx_mnt_id))
+}
+
+// Shared retained source exclusion.
+// It does not mint source read/write permission or disclose either ancestor.
+pub(in crate::owned_service) fn refuse_retained_overlap(
+    source: &File,
+    input: &File,
+) -> io::Result<()> {
+    let source_coordinate = coordinate::of(source)?;
+    let input_coordinate = coordinate::of(input)?;
+    let source_meta = source.metadata()?;
+    let input_meta = input.metadata()?;
+    if source_coordinate.overlaps(&input_coordinate)
+        || (source_meta.dev(), source_meta.ino()) == (input_meta.dev(), input_meta.ino())
+    {
+        return Err(refuse("Retained source overlaps another launch projection"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -316,31 +336,13 @@ mod tests {
 
     #[test]
     fn ram_network_overlay_and_unknown_filesystems_are_refused() {
-        for kind in [0x01021994, 0x858458f6, 0x794c7630, 0x6969, 0, u64::MAX] {
+        for kind in [0x0102_1994, 0x8584_58f6, 0x794c_7630, 0x6969, 0, u64::MAX] {
             assert!(!disk_filesystem(kind));
         }
-        for kind in [0xef53, 0x58465342, 0x9123683e] {
+        for kind in [0xef53, 0x5846_5342, 0x9123_683e] {
             assert!(disk_filesystem(kind));
         }
         assert!(super::super::archive_reserved_fd(INVENTORY_SCRATCH_FD));
         assert!(!super::super::archive_reserved_fd(INVENTORY_SCRATCH_FD + 1));
     }
-}
-
-// Shared retained source exclusion.
-// It does not mint source read/write permission or disclose either ancestor.
-pub(in crate::owned_service) fn refuse_retained_overlap(
-    source: &File,
-    input: &File,
-) -> io::Result<()> {
-    let source_coordinate = coordinate::of(source)?;
-    let input_coordinate = coordinate::of(input)?;
-    let source_meta = source.metadata()?;
-    let input_meta = input.metadata()?;
-    if source_coordinate.overlaps(&input_coordinate)
-        || (source_meta.dev(), source_meta.ino()) == (input_meta.dev(), input_meta.ino())
-    {
-        return Err(refuse("Retained source overlaps another launch projection"));
-    }
-    Ok(())
 }

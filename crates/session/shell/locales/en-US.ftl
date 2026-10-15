@@ -1362,6 +1362,13 @@ search-action-identity-connect = Add an existing identity
 search-action-identity-connect-subtitle = Import identity credentials and use them in this workspace
 search-action-identity-select = Use identity in this workspace
 search-action-identity-select-subtitle = Select one of the identities already connected to this device
+search-action-identity-device-pair-resource = Nearby device pairing
+search-action-identity-device-pair-discover = Find a nearby device to pair
+search-action-identity-device-pair-discover-subtitle = Look on this network for a new device or home server waiting to join
+search-action-identity-device-pair-approve = Approve a nearby device
+search-action-identity-device-pair-approve-subtitle = Let the device found nearby join once both screens show the same code
+search-action-identity-device-pair-reject = Reject a nearby device
+search-action-identity-device-pair-reject-subtitle = Forget a device found nearby and stop approving it
 search-action-identity-device-revoke = Revoke an identity device
 search-action-identity-device-revoke-subtitle = Permanently stop trusting a lost, retired, or compromised device
 search-action-capture-screenshot-send = Send the last screenshot
@@ -1441,6 +1448,9 @@ search-action-permission-roles-subtitle = Manage reusable least-privilege worksp
 # Search: what a shell action did
 search-action-tab-close-failed = Can't close this tab
 search-action-tab-split-failed = Can't split this tab
+search-action-device-list-copied = Device list copied
+search-action-enrollment-copied = Device setup code copied · expires in { $minutes } min
+search-action-home-server-copied = Home-server setup code copied · expires in { $minutes } min
 search-action-device-revoked = Device revoked
 search-action-device-revoked-body = The revocation was root-signed and recorded in this identity's device list.
 
@@ -1919,6 +1929,11 @@ overview-items-shared = { $count ->
 
 # Windows and documents the shell hosts
 shell-window-restoring = Restoring this window…
+shell-window-opening = Opening…
+shell-window-opening-slow = Opening { $app }… taking longer than usual
+shell-window-installing-slow = Installing { $app }… taking longer than usual
+shell-window-installing-of = Installing { $app }… { $received } of { $total }
+shell-window-installing-received = Installing { $app }… { $received }
 peer-window-not-installed = Not installed on this device.
 peer-window-install = Install { $app }
 peer-window-installing = Installing { $app }…
@@ -2500,7 +2515,8 @@ activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
 activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
 activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
-activity-morning-unavailable = Source unavailable in this workspace · no current evidence
+activity-morning-unavailable = This source isn't available here
+activity-morning-source-unnamed = Chosen source
 activity-morning-source = { $source } · last recorded workspace activity: { $time } · external freshness unknown
 activity-morning-open = Open morning source
 
@@ -2735,6 +2751,9 @@ search-kw-identity-select = identity, account, switch account, use account
 search-kw-identity-devices-copy = devices, copy list, device list
 search-kw-identity-device-enroll = add device, pair device, new device, link device, enroll
 search-kw-identity-home-peer-enroll = home server, nas, pair server, home peer
+search-kw-identity-device-pair-discover = pair device, nearby device, find device, add device, home server
+search-kw-identity-device-pair-approve = approve device, pair device, verification code
+search-kw-identity-device-pair-reject = reject device, cancel pairing, deny device
 search-kw-identity-device-revoke = remove device, revoke device, forget device, unlink
 search-kw-quick-settings-open = quick settings, control center, control centre, system menu, toggles, panel
 search-kw-quick-settings-clipboard = clipboard, copy history, paste history, clipboard manager, copied

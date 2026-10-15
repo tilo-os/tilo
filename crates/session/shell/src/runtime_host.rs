@@ -71,14 +71,13 @@ impl Session {
         stage: &mut dyn FnMut(&str),
         admission_owner: Option<u32>,
     ) -> io::Result<Self> {
-        if let Some(owner_uid) = admission_owner {
-            // SAFETY: geteuid has no arguments or memory preconditions.
-            if owner_uid == 0 || unsafe { libc::geteuid() } != owner_uid {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "native admission must run as the existing non-root device owner",
-                ));
-            }
+        if let Some(owner_uid) = admission_owner
+            && (owner_uid == 0 || rustix::process::geteuid().as_raw() != owner_uid)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "native admission must run as the existing non-root device owner",
+            ));
         }
         stage("locking the profile");
         let lock = tilo_runtime::profile::lock(root)?;

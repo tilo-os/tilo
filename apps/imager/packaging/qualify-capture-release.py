@@ -284,7 +284,7 @@ def admit_cohort(path, host, full):
                 'apps/imager/capture-service.json', 'apps/imager/desktop-catalog.json',
                 'apps/imager/release-catalog.json',
                 'apps/imager/src/setup/home_capture/native_tests/signed_export.rs',
-                'apps/imager/packaging/qualify-capture-release.py', 'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py'}
+                'apps/imager/packaging/qualify-capture-release.py', 'tools/ci/native-stores.sh', 'tools/ci/native-store-autoclear.py', 'tools/ci/native-store-virtio.py'}
     if full:
         required.update(FIXTURE_FILES)
         required.update(PACKAGE_FILES)
@@ -391,21 +391,32 @@ for name,row in expected.items():
  assert p.is_file() and not p.is_symlink() and m.st_uid==0 and not m.st_mode&0o022
  with p.open('rb') as file:assert hashlib.file_digest(file,'sha256').hexdigest()==row['sha256']
 unexpected=False;code=1
-os.environ['TILO_NATIVE_STORE_AUTOCLEAR']='1'
-os.environ['TILO_NATIVE_STORE_ASSOCIATIONS']=str(evidence)
+provenance=pathlib.Path(os.environ['TILO_NATIVE_STORE_VIRTIO_PROVENANCE'])
+assert provenance.is_absolute() and provenance.name=='provenance.json'
+store_root=provenance.parent
+store_view=root/'stores'
+store_view.mkdir(mode=0o711)
+store_aliases=[]
 stores_created=False
 try:
- values={}
+ setup=checked(['bash',str(candidate/'native-stores.sh'),'up',str(store_root)],120)
+ stores_created=True
+ values=dict(line.split('=',1) for line in setup.decode().splitlines())
+ assert values=={'TILO_FS_NATIVE_STORES':str(store_root/'a')+':'+str(store_root/'b'),
+                 'TILO_FS_NATIVE_STORE':str(store_root/'a'),'TILO_REQUIRE_FANOTIFY':'1'}
+ # The provenance directory stays 0700. Expose only its mounted volumes at
+ # traversable aliases so the genuine unprivileged reviewer can reach home.
+ for name in ('a','b'):
+  alias=store_view/name;alias.mkdir(mode=0o755)
+  checked(['mount','--bind',str(store_root/name),str(alias)],10)
+  store_aliases.append(alias)
+ values={'TILO_FS_NATIVE_STORES':str(store_view/'a')+':'+str(store_view/'b'),
+         'TILO_FS_NATIVE_STORE':str(store_view/'a'),'TILO_REQUIRE_FANOTIFY':'1'}
  if case==qualifier.TARGET_CASE:
   qualifier.prepare_source(candidate)
   initial=root/'initial-pidns';initial.touch(mode=0o400)
   checked(['mount','--bind','/qualification-initial-pidns',str(initial)],10)
   checked(['mount','-o','remount,bind,ro',str(initial)],10)
- else:
-  setup=checked(['bash',str(candidate/'native-stores.sh'),'up',str(root/'stores')],120)
-  stores_created=True
-  values=dict(line.split('=',1) for line in setup.decode().splitlines())
-  assert values=={'TILO_FS_NATIVE_STORES':'/owned/stores/a:/owned/stores/b','TILO_FS_NATIVE_STORE':'/owned/stores/a','TILO_REQUIRE_FANOTIFY':'1'}
 
  for dirname in ['home','config','data','state','cache','runtime']:(root/dirname).mkdir(mode=0o700)
  env=dict(PATH='/usr/bin:/usr/sbin',LANG='C',LC_ALL='C',HOME=str(root/'home'),
@@ -414,7 +425,8 @@ try:
           XDG_RUNTIME_DIR=str(root/'runtime'),**values,
           TILO_CAPTURE_NATIVE_HOST=str(candidate/'host/bin/tilo-imager'),
           TILO_CAPTURE_NATIVE_PINS=str(candidate/'capture-service.json'),
-          TILO_CAPTURE_QUALIFIED_CANDIDATE=str(candidate))
+          TILO_CAPTURE_QUALIFIED_CANDIDATE=str(candidate),
+          TILO_NATIVE_STORE_VIRTIO_PROVENANCE=str(provenance))
  os.environ.clear();os.environ.update(env)
  if case==qualifier.TARGET_CASE:
   # Producing service facts executes the fixed receiving coordinator, including
@@ -453,9 +465,11 @@ finally:
    except ChildProcessError:break
   assert time.monotonic()<deadline
   time.sleep(.01)
+ for alias in reversed(store_aliases):
+  checked(['umount',str(alias)],10);alias.rmdir()
  if stores_created:
-  checked(['bash',str(candidate/'native-stores.sh'),'down',str(root/'stores')],120)
-  assert not any((root/'stores'/name).exists() for name in ['a','b','a.img','b.img'])
+  checked(['bash',str(candidate/'native-stores.sh'),'down',str(store_root)],120)
+  assert not any((store_root/name).exists() for name in ['a','b','a.img','b.img'])
  assert not children.read_text().strip()
 
 if code or unexpected:raise SystemExit(code or 1)
@@ -547,6 +561,15 @@ def stage_sources(stage, sources):
 
 def run_native(args, cohort, output):
     require(os.geteuid() != 0, 'qualification image admission must use rootless Podman')
+    cases = (*SOURCE_CASES, *((TARGET_CASE,) if not args.source_backend_only else ()))
+    if args.case is not None:
+        require(args.case in cases, 'selected case is outside qualification scope')
+        cases = (args.case,)
+    require(len(args.native_store_provenance) == len(cases)
+            and len(set(args.native_store_provenance)) == len(cases)
+            and all(path.is_absolute() and path.name == 'provenance.json'
+                    for path in args.native_store_provenance),
+            'each actual case requires a distinct fresh owned virtio store pair; loops cannot qualify')
     engine = ['podman']
     code, raw = execute(engine + ['image', 'inspect', args.image, '--format', '{{.ID}} {{.Architecture}}'],
                         output / 'image.log', 30)
@@ -555,7 +578,6 @@ def run_native(args, cohort, output):
             and image[0].removeprefix('sha256:') == args.image.removeprefix('sha256:')
             and image[1] == {'x86_64': 'amd64', 'aarch64': 'arm64'}[args.arch],
             'qualification immutable image differs')
-    cases = (*SOURCE_CASES, *((TARGET_CASE,) if not args.source_backend_only else ()))
     records = []
     with tempfile.TemporaryDirectory(prefix='tilo-capture-qualification-') as scratch:
         stage = Path(scratch)
@@ -569,7 +591,7 @@ def run_native(args, cohort, output):
         shutil.copyfile(args.pins, stage / 'capture-service.json')
         shutil.copyfile(cohort['roles']['imager_tests']['path'], stage / 'imager-tests')
         (stage / 'imager-tests').chmod(0o755)
-        for filename in ('native-stores.sh', 'native-store-autoclear.py'):
+        for filename in ('native-stores.sh', 'native-store-autoclear.py', 'native-store-virtio.py'):
             shutil.copyfile(ROOT / 'tools/ci' / filename, stage / filename)
         driver = stage / 'apps/imager/packaging/qualify-capture-release.py'
         driver.parent.mkdir(parents=True)
@@ -598,7 +620,8 @@ def run_native(args, cohort, output):
             launched = False
             command = ['python3', str(ROOT / 'apps/imager/packaging/capture-native-image.py'),
                        '--image', args.image, '--stage', str(stage),
-                       '--evidence', str(evidence.absolute()), '--case', case]
+                       '--evidence', str(evidence.absolute()), '--case', case,
+                       '--native-store-provenance', str(args.native_store_provenance[index])]
             if case == TARGET_CASE:
                 asset_mounts(assets)  # Admit the fixed public mount coordinates.
             try:
@@ -624,12 +647,12 @@ def run_native(args, cohort, output):
                     record['observations'] = target_completion(native)
                 records.append(record)
             finally:
-                if launched and case in SOURCE_CASES:
+                if launched:
                     observed, raw = execute(command + ['--mode', 'observe'],
-                        output / f'{index}-loop-observer.log', 180)
+                        output / f'{index}-virtio-observer.log', 180)
                     require(observed == 0 and json.loads(raw, object_pairs_hook=unique) == {
-                        'schema': 1, 'observed_backings': 2, 'owned_associations_retired': True},
-                        'qualification owned loop association retirement unproved')
+                        'schema': 1, 'observed_disks': 2, 'owned_mounts_retired': True},
+                        'qualification owned virtio mount retirement unproved')
     return records
 
 
@@ -643,6 +666,10 @@ def main():
     parser.add_argument('--image', default=os.environ.get('TILO_CAPTURE_QUALIFIER_IMAGE'))
     parser.add_argument('--output', type=Path)
     parser.add_argument('--source-backend-only', action='store_true')
+    parser.add_argument('--case', choices=(*SOURCE_CASES, TARGET_CASE),
+                        help='run one actual case; a partial run never authorizes publication')
+    parser.add_argument('--native-store-provenance', type=Path, action='append', default=[],
+                        help='one fresh root-owned real virtio store pair per case, in execution order')
     parser.add_argument('--source-assets', type=Path, default=os.environ.get('TILO_CAPTURE_SOURCE_ASSETS'),
                         help='frozen official public distribution manifest; required for full migration')
     args = parser.parse_args()
@@ -674,12 +701,13 @@ def main():
     require(original == {'cohort': facts(args.cohort), 'host': facts(args.host), 'pins': facts(args.pins)},
             'qualification candidate changed during native execution')
     admit_cohort(args.cohort, args.host, not args.source_backend_only)
-    receipt = {'schema': 1, 'scope': 'source-backend' if args.source_backend_only else 'full-migration',
+    receipt = {'schema': 1, 'scope': 'single-case' if args.case else ('source-backend' if args.source_backend_only else 'full-migration'),
+               'store_backend': 'owned-real-virtio',
                'image': args.image, 'arch': args.arch, 'candidate': original,
                'qualifier_sha256': facts(__file__)['sha256'], 'cases': records,
                'owned_resources_retired': True,
                'signing_purpose': os.environ.get('TILO_CAPTURE_SIGNING_PURPOSE', 'operator-provided'),
-               'publication_qualified': not args.source_backend_only
+               'publication_qualified': args.case is None and not args.source_backend_only
                    and os.environ.get('TILO_CAPTURE_SIGNING_PURPOSE') not in
                        ('developer-qualification', 'developer-isolated')}
     (output / 'receipt.json').write_text(json.dumps(receipt, sort_keys=True, indent=2) + '\n')

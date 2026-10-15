@@ -19,7 +19,7 @@ pub(crate) const ARG: &str = "--tilo-home-capture-host";
 /// The caller supplies its canonical, authenticated native helper executable.
 /// This is not an app-provided executable or serialized launch specification.
 pub(super) fn spawn(executable: &Path, original_uid: u32) -> io::Result<(Child, HostChannel)> {
-    if unsafe { libc::geteuid() } != 0 || original_uid == 0 {
+    if rustix::process::geteuid().as_raw() != 0 || original_uid == 0 {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let credentials = credentials(original_uid)?;

@@ -5,9 +5,11 @@
 //! revalidates every field before dropping any local content blobs.
 
 use serde::{Deserialize, Serialize};
-use std::os::unix::net::UnixStream;
-use std::path::Path;
-use wire_frame::{FrameError, Framing};
+#[cfg(unix)]
+use std::{os::unix::net::UnixStream, path::Path};
+#[cfg(unix)]
+use wire_frame::FrameError;
+use wire_frame::Framing;
 
 pub const DEFAULT_STORAGE_SOCKET: &str = "/run/tilo/fs-storage.sock";
 
@@ -113,10 +115,12 @@ pub enum StorageResponse {
     },
 }
 
+#[cfg(unix)]
 pub struct StorageClient {
     stream: UnixStream,
 }
 
+#[cfg(unix)]
 impl StorageClient {
     /// # Errors
     ///
@@ -199,7 +203,7 @@ impl StorageClient {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::{Read, Write};

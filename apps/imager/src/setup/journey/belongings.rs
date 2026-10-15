@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 #[derive(Default)]
 pub(super) struct Belongings {
+    pub windows: Option<super::super::windows_inventory::Inventory>,
     pub home: Option<PathBuf>,
     pub roots: Option<account_transfer::SourceRoots>,
     pub accounts: account_transfer::Inventory,
@@ -22,6 +23,20 @@ pub(super) struct Belongings {
 }
 
 impl Belongings {
+    /// Windows inventory accepts only individually selected exact roots. This
+    /// does not invoke host Home, Linux account, browser or Flatpak discovery.
+    pub fn from_windows_roots(
+        selected: &[super::super::windows_inventory::SelectedRoot],
+    ) -> Result<Self, String> {
+        let windows = super::super::windows_inventory::Inventory::discover(selected)?;
+        let accounts = account_transfer::discover_windows_sources(&windows);
+        Ok(Self {
+            windows: Some(windows),
+            accounts,
+            ..Self::default()
+        })
+    }
+
     pub fn discover() -> Self {
         let Ok(home) = home_transfer::current_home() else {
             return Self {
@@ -36,15 +51,14 @@ impl Belongings {
     }
 
     fn from_home_and_config(home: PathBuf, config: std::io::Result<PathBuf>) -> Self {
-        match config {
-            Ok(config) => Self::from_roots(account_transfer::SourceRoots { home, config }),
-            Err(_) => {
-                let mut accounts = account_transfer::discover_home_profiles(&home);
-                accounts
-                    .unreadable_sources
-                    .extend(unresolved_config().unreadable_sources);
-                Self::from_inventory(home, None, accounts)
-            }
+        if let Ok(config) = config {
+            Self::from_roots(account_transfer::SourceRoots { home, config })
+        } else {
+            let mut accounts = account_transfer::discover_home_profiles(&home);
+            accounts
+                .unreadable_sources
+                .extend(unresolved_config().unreadable_sources);
+            Self::from_inventory(home, None, accounts)
         }
     }
 
@@ -69,6 +83,7 @@ impl Belongings {
         #[cfg(target_os = "linux")]
         let sessions = super::service_sessions::Selection::discover(&home, &accounts.candidates);
         Self {
+            windows: None,
             #[cfg(target_os = "linux")]
             sessions_unavailable: sessions
                 .as_ref()
@@ -119,6 +134,9 @@ impl Belongings {
         #[cfg(not(target_os = "linux"))]
         let sessions = serde_json::Value::Null;
         serde_json::json!({
+            "windows": self.windows,
+            "windows_budget": self.windows.as_ref().map(|inventory| inventory.budget()),
+            "windows_recovery": self.windows.as_ref().map(super::super::migration_recovery::RecoveryBudget::windows),
             "website_sessions":sessions,
             "home": self.home,
             "home_unavailable": self.home_unavailable,

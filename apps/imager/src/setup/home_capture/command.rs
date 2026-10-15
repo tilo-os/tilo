@@ -222,11 +222,11 @@ impl Broker {
                 .and_then(|worker| worker.namespace)
                 .is_some()
             {
-                if let Some(value) = latest
+                let value = latest
                     .lock()
                     .map_err(|_| failure("capture progress poisoned"))?
-                    .take()
-                {
+                    .take();
+                if let Some(value) = value {
                     progress(value)?;
                 }
             }
@@ -359,8 +359,10 @@ impl Drop for Process {
             && self
                 .custody
                 .get_mut()
-                .map(|custody| custody.require_stopped())
-                .unwrap_or_else(|_| Err(io::ErrorKind::Other.into()))
+                .map_or_else(
+                    |_| Err(io::ErrorKind::Other.into()),
+                    |custody| custody.require_stopped(),
+                )
                 .is_err()
         {
             // Quarantine the allocator lease on unproved termination. There is

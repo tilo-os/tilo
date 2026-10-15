@@ -11,7 +11,7 @@ fn choices() -> PublicChoices {
         migrate: Some(true),
         categories: [true, false, true],
         browser_domains: [true, false],
-        excluded_flatpak_apps: Default::default(),
+        excluded_flatpak_apps: std::collections::BTreeSet::default(),
         device_label: "My laptop".into(),
         purpose: install_profile_model::default_purpose(),
     }
@@ -348,7 +348,12 @@ fn queued_public_choice_update_is_bound_to_its_original_retained_preparation() {
         .unwrap(),
     );
     store.acknowledge(&first, &old, None).unwrap();
+    let DraftStatus::Ready(inventory_preparation) = store.review().unwrap() else {
+        panic!("missing inventory preparation")
+    };
+    drop(inventory_preparation.acquire_preparation_current().unwrap());
     store.retire().unwrap();
+    assert!(inventory_preparation.acquire_preparation_current().is_err());
     let newest_choices = PublicChoices {
         device_label: "Current device".into(),
         purpose: install_profile_model::default_purpose(),
@@ -365,6 +370,7 @@ fn queued_public_choice_update_is_bound_to_its_original_retained_preparation() {
         .unwrap(),
     );
     store.acknowledge(&second, &current, None).unwrap();
+    assert!(inventory_preparation.acquire_preparation_current().is_err());
     let before = fs::read(store.root.join(INDEX)).unwrap();
     let stale = PublicChoices {
         device_label: "Old queued choice".into(),
@@ -417,7 +423,14 @@ fn committed_account_exclusion_reopens_same_identity_without_declined_checkpoint
         )
         .unwrap();
         assert_eq!(receipt.accounts, 2);
+        let DraftStatus::Ready(inventory_preparation) = store.review().unwrap() else {
+            panic!("missing inventory preparation")
+        };
         store.record_account_checkpoint(&receipt, None).unwrap();
+        // Home inventory storage belongs to the preparation, while restoring
+        // accounts must still reject a changed checkpoint generation.
+        assert!(inventory_preparation.acquire_current().is_err());
+        drop(inventory_preparation.acquire_preparation_current().unwrap());
         let DraftStatus::Ready(before) = store.review().unwrap() else {
             panic!("missing preparation")
         };

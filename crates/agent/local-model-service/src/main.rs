@@ -786,7 +786,7 @@ fn same_user(stream: &UnixStream) -> bool {
     result == 0
         && usize::try_from(length).ok() == Some(std::mem::size_of::<libc::ucred>())
         // SAFETY: getsockopt succeeded and wrote the complete ucred buffer.
-        && unsafe { credentials.assume_init().uid } == unsafe { libc::geteuid() }
+        && unsafe { credentials.assume_init().uid } == rustix::process::geteuid().as_raw()
 }
 
 fn cli_for_rpc(action: RpcAction) -> Cli {
@@ -903,7 +903,7 @@ fn validate_developer_mode(cli: &Cli) -> Result<(), String> {
     let confined = service_fd().is_some()
         || std::env::var_os("TILO_APP_DIR").is_some()
         || unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) } != 0;
-    validate_developer_inputs(cli, unsafe { libc::geteuid() }, confined)
+    validate_developer_inputs(cli, rustix::process::geteuid().as_raw(), confined)
 }
 
 fn validate_developer_inputs(cli: &Cli, uid: u32, confined: bool) -> Result<(), String> {
@@ -941,7 +941,7 @@ fn paths(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     // The model manager is deliberately a per-user service: Settings never
     // needs root or a writable image path to provision a model. Keep override
     // rejection when someone mistakenly elevates the normal user binary.
-    let elevated = unsafe { libc::geteuid() == 0 };
+    let elevated = rustix::process::geteuid().as_raw() == 0;
     if elevated && (cli.root.is_some() || cli.catalog.is_some() || cli.keys.is_some()) {
         return Err("path overrides are forbidden for the privileged model manager".into());
     }
@@ -1389,7 +1389,7 @@ fn enqueue_worker(
         .arg(executable);
     // The transient worker retains the selected developer store only outside
     // elevated mode. Packaged Settings never supplies these overrides.
-    if unsafe { libc::geteuid() != 0 } {
+    if rustix::process::geteuid().as_raw() != 0 {
         command
             .arg("--root")
             .arg(root)
@@ -1430,7 +1430,7 @@ fn enqueue_start_worker(
         .arg(&unit)
         .arg("--")
         .arg(executable);
-    if unsafe { libc::geteuid() != 0 } {
+    if rustix::process::geteuid().as_raw() != 0 {
         command
             .arg("--root")
             .arg(root)

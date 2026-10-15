@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The explicit main-only release-apps job supplies this run's engine artifacts.
+# The authorized main release supplies this run's engine dependency artifacts.
 set -euo pipefail
-[[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main ]]
+[[ ( $GITHUB_EVENT_NAME == push || $GITHUB_EVENT_NAME == workflow_dispatch ) && $GITHUB_REF == refs/heads/main ]]
 [[ $GITHUB_SHA =~ ^[0-9a-f]{40}$ && $(git rev-parse HEAD) == "$GITHUB_SHA" ]]
 : "${MAIN_AUDIENCE:?}" "${TAPP_PUBLISHER_IDENTITY:?}" "${ENGINE_ARCHITECTURES:?}"
 host_arch=$(uname -m)

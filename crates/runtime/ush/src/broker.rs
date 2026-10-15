@@ -1314,17 +1314,6 @@ fn exit_fd(child: &Child) -> Option<OwnedFd> {
 /// it exits. Only kernels older than Linux 5.3 take this path.
 const EXIT_POLL_WITHOUT_PIDFD: Duration = Duration::from_millis(50);
 
-fn stop_child(child: &mut Child) {
-    if let Some(group) = i32::try_from(child.id()).ok().and_then(i32::checked_neg) {
-        // The command is its process-group leader, so this also terminates any
-        // verifier/helper descendants which inherited its stdout or stderr.
-        // SAFETY: a negative pid targets exactly that process group.
-        let _ = unsafe { libc::kill(group, libc::SIGKILL) };
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
 fn start_host_command(
     command: &HostCommand,
     state: &Arc<Mutex<BrokerState>>,
@@ -1484,7 +1473,7 @@ fn serve_host_command(
         }
     };
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-        stop_child(&mut child);
+        bounded_command::terminate_tree(&mut child, Duration::ZERO);
         return false;
     };
     let pipes = [
@@ -1494,12 +1483,12 @@ fn serve_host_command(
     let (code, forwarded) = match pump_host_command(command, &mut child, pipes, writer, shared) {
         Pumped::Exited { code, forwarded } => (code, forwarded),
         Pumped::Disconnected => {
-            stop_child(&mut child);
+            bounded_command::terminate_tree(&mut child, Duration::ZERO);
             log_disconnected(state, command);
             return false;
         }
         Pumped::TimedOut => {
-            stop_child(&mut child);
+            bounded_command::terminate_tree(&mut child, Duration::ZERO);
             let response = past_time_limit(command, state);
             return complete_host_command(writer, response, mutation_guard);
         }

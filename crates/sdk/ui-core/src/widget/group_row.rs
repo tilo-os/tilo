@@ -1889,6 +1889,13 @@ impl GroupRow {
     /// How far the row is panned. On a partitioned strip, the leading
     /// lane's pan — the one the wheel disc rides along with; see
     /// [`Self::output_pan`] for any other display.
+    /// The farthest a direct pan can pull the strip past either end: the
+    /// rubber band's reach. Anything drawn beside the strip's ends and moved
+    /// with it (the docked wheel) has to cover this much more.
+    pub fn overpull_reach(&self) -> f64 {
+        self.leading_pan().viewport.width().max(1.0) * STRIP_OVERSCROLL_REACH_FRAC
+    }
+
     pub fn scroll_x(&self) -> f64 {
         self.leading_pan().scroll_x
     }
@@ -2137,6 +2144,16 @@ impl GroupRow {
         settling
     }
 
+    /// Keep the strip where a person's pan left it when its geometry later
+    /// changes, as [`Self::pan_to`] does, instead of re-framing it onto the
+    /// nearest window edge, until focus next pans a window into view. A
+    /// wheel spin stops wherever its notches took the strip, often with
+    /// windows cut at both edges; a window's width changing by a pixel
+    /// moved it by up to a window.
+    pub fn hold_strip_pan(&mut self) {
+        self.pan_of_lane_mut(self.focus_lane).absolute = true;
+    }
+
     /// A group focused the same frame it was spliced in hasn't been
     /// through a layout pass yet, so its rect is degenerate and any pan
     /// on it is a no-op.
@@ -2274,6 +2291,13 @@ impl GroupRow {
 
     fn snap_in_flight(&self) -> bool {
         self.pans().iter().any(|pan| pan.snap_in_flight())
+    }
+
+    /// A direct pan is under the fingers, or settling after them.
+    pub fn direct_pan_in_progress(&self) -> bool {
+        self.pans()
+            .iter()
+            .any(|pan| pan.strip_pan_origin.is_some() || pan.snap_in_flight())
     }
 
     #[cfg(any(test, debug_assertions, feature = "test-support"))]

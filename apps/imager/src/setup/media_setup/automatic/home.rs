@@ -353,7 +353,7 @@ pub(in crate::setup) fn with_existing_home<T>(
     cancel: &AtomicBool,
     read: impl FnOnce(&MediaFilesystemGrant) -> io::Result<T>,
 ) -> io::Result<T> {
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(changed("Protected pending retrieval requires root helper"));
     }
     check_cancel(cancel)?;

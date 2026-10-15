@@ -120,6 +120,51 @@ class StagedSourceClosure(unittest.TestCase):
 
 
 class NativeQualificationBoundary(unittest.TestCase):
+    def test_loop_or_reused_store_contract_cannot_start_native_qualification(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        provenance = Path('/var/tmp/native-store-private-0123456789abcdef/provenance.json')
+        for paths in ([], [provenance], [provenance, provenance],
+                      [Path('relative/provenance.json'), Path('/other/provenance.json')]):
+            args = SimpleNamespace(source_backend_only=True, case=None,
+                                   native_store_provenance=paths)
+            with self.subTest(paths=paths), patch.object(qualifier.os, 'geteuid', return_value=1000), \
+                    patch.object(qualifier, 'execute') as execute:
+                with self.assertRaisesRegex(ValueError, 'loops cannot qualify'):
+                    qualifier.run_native(args, {}, Path('/unused'))
+                execute.assert_not_called()
+
+    def test_pivot_admission_refuses_missing_loop_and_outside_fixture_paths(self):
+        image = qualifier.fixed_module(Path(__file__).with_name('capture-native-image.py'),
+                                       'actual_native_image_boundary')
+        for path in (None, Path('/dev/loop0'), Path('relative/provenance.json'),
+                     Path('/usr/provenance.json')):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'loops cannot qualify'):
+                image.admit_native_stores(Path('/unused'), path)
+
+    def test_pivot_requires_actual_device_validation_before_mounting(self):
+        from unittest.mock import Mock, patch
+        image = qualifier.fixed_module(Path(__file__).with_name('capture-native-image.py'),
+                                       'actual_native_device_boundary')
+        helper = Mock()
+        rows = [{'name': 'a'}, {'name': 'b'}]
+        helper.provenance.return_value = rows
+        helper.device.side_effect = ValueError('expected exactly one serial-matching virtio disk')
+        path = Path('/var/tmp/native-store-private-0123456789abcdef/provenance.json')
+        with patch.object(image.importlib.util, 'module_from_spec', return_value=helper), \
+                patch.object(image.importlib.util, 'spec_from_file_location') as spec:
+            spec.return_value.loader.exec_module = Mock()
+            with self.assertRaisesRegex(ValueError, 'serial-matching virtio'):
+                image.admit_native_stores(Path('/staged'), path)
+        helper.provenance.assert_called_once_with(path.parent, path)
+        helper.device.assert_called_once_with(rows[0])
+
+    def test_native_runner_preserves_explicit_virtio_contract_without_loop_fallback(self):
+        compile(qualifier.CONTAINER_RUNNER, '<actual native runner>', 'exec')
+        self.assertNotIn('TILO_NATIVE_STORE_AUTOCLEAR', qualifier.CONTAINER_RUNNER)
+        self.assertIn('TILO_NATIVE_STORE_VIRTIO_PROVENANCE=str(provenance)',
+                      qualifier.CONTAINER_RUNNER)
+
     def receiving_observation(self):
         return {'schema': 1, 'status': 'completed', 'shared_files_readwrite': True,
                 'writer_shared_file_edit': True, 'apps_data_and_launch': True,

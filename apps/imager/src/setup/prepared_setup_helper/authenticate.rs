@@ -38,15 +38,11 @@ struct Receipt<'a> {
     completed_home: &'a Option<crate::setup::portable_home_media::Expectation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     completed_setup: Option<&'a Expectation>,
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     completed_applications_only: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     completed_applications: Option<&'a crate::setup::flatpak_transfer::portable::Expectation>,
 }
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
 fn bounded(path: &Path, maximum: u64) -> io::Result<Vec<u8>> {
     let parent = PinnedDirectory::open_absolute(path.parent().ok_or_else(failed)?)?;
     parent.validate_destination()?;

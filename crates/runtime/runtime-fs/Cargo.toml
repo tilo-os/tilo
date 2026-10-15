@@ -28,7 +28,7 @@ tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 blake3.workspace = true
 cap-std = "3.4.6"
-rustix = { workspace = true, features = ["fs"] }
+rustix = { workspace = true, features = ["fs", "process"] }
 uuid.workspace = true
 runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
 capnp.workspace = true

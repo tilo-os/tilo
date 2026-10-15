@@ -137,7 +137,8 @@ image, because the image decides which bytes are acceptable:
    everything instead), and then runs `systemd-sysext refresh`. A file changed in `/var` does not survive the next
    activation; a changed artifact or manifest is not merged.
 
-`/usr/libexec/tilo-extension` is the only consumer. It takes exactly one
+`/usr/libexec/tilo-extension` (built from `crates/system/extension-helper`)
+is the only consumer. It takes exactly one
 argument, `<verb>:<id>` (`install`, `remove`, `refresh`, `status`), `activate`,
 or `refresh:all`, and accepts only ids that have a catalogue entry.
 

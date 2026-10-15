@@ -1,7 +1,10 @@
 //! Metadata-only projection of canonical records retained outside the FUSE tree.
 //! These entries are discovery data, never native access or replay authority.
 
-use super::*;
+use super::{
+    FileBindingV1, FileNameV1, FileNodeKind, FileRecordId, HashSet, Namespace, ObjId, ObjType,
+    ROOT, ReadDoc, ScalarValue, Transactable, Value,
+};
 use fs_protocol::{FileMutationOperation, FileVersionId, FileVersionV1};
 use serde::{Deserialize, Serialize};
 
@@ -78,10 +81,10 @@ impl<'a> ExternalProjectionBatch<'a> {
         if bindings.len() != 3 || versions.len() > bindings.len() {
             return Err(ExternalProjectionError::Invalid);
         }
-        let mut seen = HashSet::new();
+        let mut unique_records = HashSet::new();
         let mut changes = Vec::with_capacity(bindings.len());
         for binding in bindings {
-            if !seen.insert(binding.record_id) {
+            if !unique_records.insert(binding.record_id) {
                 return Err(ExternalProjectionError::Invalid);
             }
             let matching: Vec<_> = versions
@@ -105,7 +108,7 @@ impl<'a> ExternalProjectionBatch<'a> {
         }
         if versions
             .iter()
-            .any(|version| !seen.contains(&version.record_id))
+            .any(|version| !unique_records.contains(&version.record_id))
         {
             return Err(ExternalProjectionError::Invalid);
         }
@@ -277,7 +280,7 @@ impl Namespace {
         let count = existing_map
             .as_ref()
             .map_or(0, |map| candidate.doc.keys(map).count());
-        let mut new_records = 0;
+        let mut new_records = 0usize;
         let mut updates = Vec::new();
         for change in &batch.changes {
             let current = candidate.external_record(change.next.binding.record_id)?;
@@ -285,7 +288,11 @@ impl Namespace {
                 continue;
             }
             match (&change.expected, &current) {
-                (None, None) => new_records += 1,
+                (None, None) => {
+                    new_records = new_records
+                        .checked_add(1)
+                        .ok_or(ExternalProjectionError::Limit)?;
+                }
                 (Some(expected), Some(current))
                     if current.binding.parent == Some(expected.parent)
                         && current.binding.name == expected.name
@@ -305,7 +312,11 @@ impl Namespace {
             batch.check_admission()?;
             return Ok(None);
         }
-        if count + new_records > MAX_EXTERNAL_RECORDS {
+        if count
+            .checked_add(new_records)
+            .ok_or(ExternalProjectionError::Limit)?
+            > MAX_EXTERNAL_RECORDS
+        {
             return Err(ExternalProjectionError::Limit);
         }
         let map = match existing_map {

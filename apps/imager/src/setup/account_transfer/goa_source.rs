@@ -261,7 +261,10 @@ fn source_stamp(
     let facts =
         crate::setup::nofollow::metadata_nofollow(&root.file, Path::new("goa-1.0/accounts.conf"))
             .map_err(|_| ConnectionError::CredentialUnavailable)?;
-    if !facts.is_file() || facts.uid() != unsafe { libc::geteuid() } || facts.mode() & 0o022 != 0 {
+    if !facts.is_file()
+        || facts.uid() != rustix::process::geteuid().as_raw()
+        || facts.mode() & 0o022 != 0
+    {
         return Err(ConnectionError::CredentialUnavailable);
     }
     Ok((
@@ -313,7 +316,7 @@ impl Connector {
             .file
             .metadata()
             .map_err(|_| ConnectionError::CredentialUnavailable)?;
-        if directory.uid() != unsafe { libc::geteuid() } || directory.mode() & 0o022 != 0 {
+        if directory.uid() != rustix::process::geteuid().as_raw() || directory.mode() & 0o022 != 0 {
             return Err(ConnectionError::CredentialUnavailable);
         }
         self.check_goa_destination(&source)?;
@@ -360,7 +363,7 @@ impl Connector {
         self.recheck_goa(roots, selected, &before)?;
         validate_source(&source, &stamp)?;
         let mut account = Account::new(id, definition.cloud().type_id());
-        account.display_name = definition.label.clone();
+        account.display_name.clone_from(&definition.label);
         account.config = serde_json::json!({"provider":definition.cloud().type_id(),"source_goa_identity":definition.identity.clone(),accounts::cloud_types::MOUNT_CONFIG_KEY:mount});
         self.persist_import(
             account,

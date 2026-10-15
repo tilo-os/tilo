@@ -367,7 +367,7 @@ impl WorkerChannel {
         let facts = file.metadata()?;
         if quota == 0
             || !facts.is_dir()
-            || facts.uid() != unsafe { libc::geteuid() }
+            || facts.uid() != rustix::process::geteuid().as_raw()
             || facts.mode() & 0o7777 != 0o700
         {
             return Err(io::ErrorKind::PermissionDenied.into());

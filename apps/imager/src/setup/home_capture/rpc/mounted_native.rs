@@ -1,6 +1,6 @@
 //! Actual admitted original-user grants and finite RPC into protected Store.
 use super::*;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::{
     io::{Read, Write},
     os::{
@@ -26,7 +26,10 @@ impl Owned {
             if std::time::Instant::now() >= deadline {
                 self.0.kill().unwrap();
                 self.0.wait().unwrap();
-                panic!("Actual original-user RPC fixture exceeded owned watchdog");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "Actual original-user RPC fixture exceeded owned watchdog"
+                );
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -118,8 +121,8 @@ fn original_user_rpc_fixture_child() {
     let Ok(fd) = std::env::var(CHILD) else {
         return;
     };
-    assert_eq!(unsafe { libc::geteuid() }, 1000);
-    assert_eq!(unsafe { libc::getegid() }, 1001);
+    assert_eq!(rustix::process::geteuid().as_raw(), 1000);
+    assert_eq!(rustix::process::getegid().as_raw(), 1001);
     let mut parent = unsafe { UnixStream::from_raw_fd(fd.parse().unwrap()) };
     let home = PathBuf::from(std::env::var_os("TILO_MOUNTED_RPC_HOME").unwrap());
     let request_dir = PathBuf::from(std::env::var_os("TILO_MOUNTED_RPC_REQUEST").unwrap());
@@ -280,41 +283,46 @@ fn original_user_rpc_fixture_child() {
 }
 #[test]
 fn actual_original_user_grants_cross_authenticated_rpc_and_register_protected_roots() {
-    run_original_user_case(false, false, false, false, 0);
+    run_original_user_case(false, false, false, Acknowledgement::Normal, 0);
 }
 #[test]
 fn actual_original_user_cancel_retires_rpc_without_mounted_record_or_receipt() {
-    run_original_user_case(true, false, false, false, 0);
+    run_original_user_case(true, false, false, Acknowledgement::Normal, 0);
 }
 #[test]
 fn actual_foreign_rpc_ack_holds_primary_and_participant_leases_until_final_write() {
-    run_original_user_case(false, true, false, false, 0);
+    run_original_user_case(false, true, false, Acknowledgement::Normal, 0);
 }
 #[test]
 fn actual_foreign_rpc_failed_ack_retires_all_leases_without_sender_success() {
-    run_original_user_case(false, true, true, false, 0);
+    run_original_user_case(false, true, true, Acknowledgement::Normal, 0);
 }
 #[test]
 fn actual_foreign_rpc_cancelled_channel_retires_all_ack_custody() {
-    run_original_user_case(false, true, false, true, 0);
+    run_original_user_case(false, true, false, Acknowledgement::Cancelled, 0);
 }
 #[test]
 fn actual_foreign_rpc_queued_aggregate_corruption_never_admits_ack() {
-    run_original_user_case(false, true, false, false, 1);
+    run_original_user_case(false, true, false, Acknowledgement::Normal, 1);
 }
 #[test]
 fn actual_foreign_rpc_active_aggregate_replacement_never_admits_ack() {
-    run_original_user_case(false, true, false, false, 2);
+    run_original_user_case(false, true, false, Acknowledgement::Normal, 2);
+}
+enum Acknowledgement {
+    Normal,
+    Cancelled,
 }
 fn run_original_user_case(
     cancelled: bool,
     foreign: bool,
     failed_ack: bool,
-    cancelled_ack: bool,
+    acknowledgement: Acknowledgement,
     tamper: u8,
 ) {
+    let cancelled_ack = matches!(acknowledgement, Acknowledgement::Cancelled);
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "isolated native root qualification required"
     );
@@ -510,10 +518,11 @@ fn run_original_user_case(
         ));
     }
     assert!(incoming.output.is_none());
-    let Action::RegisterOriginalMounted { generation, .. } = &incoming.call.action else {
-        panic!("Exact mounted action required");
-    };
-    let generation = *generation;
+    let generation = match &incoming.call.action {
+        Action::RegisterOriginalMounted { generation, .. } => Some(*generation),
+        _ => None,
+    }
+    .expect("Exact mounted action required");
     let aggregate_path = target
         .join("records")
         .join(format!("{operation}.mounted-roots.json"));
@@ -673,7 +682,7 @@ pub(in crate::setup::home_capture) fn register_for_paired(
     super::super::OriginalCallerFacts,
 ) {
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "Native root fixture required"
     );
@@ -761,13 +770,14 @@ pub(in crate::setup::home_capture) fn register_for_paired(
         .unwrap()
         .unwrap();
     assert!(incoming.output.is_none());
-    let Action::RegisterOriginalMounted {
-        generation,
-        entries,
-    } = &incoming.call.action
-    else {
-        panic!("Actual mounted registration action required");
-    };
+    let (generation, entries) = match &incoming.call.action {
+        Action::RegisterOriginalMounted {
+            generation,
+            entries,
+        } => Some((generation, entries)),
+        _ => None,
+    }
+    .expect("Actual mounted registration action required");
     assert!(
         entries
             .iter()

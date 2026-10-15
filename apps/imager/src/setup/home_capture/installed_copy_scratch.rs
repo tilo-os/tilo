@@ -253,7 +253,7 @@ impl InstalledCopyScratch {
             stage: (stage.dev(), stage.ino()),
             output: self.output_identity,
             inventory: (inventory.dev(), inventory.ino()),
-            filesystem: self.physical.facts(cancel)?,
+            filesystem: self.filesystem(cancel)?,
         };
         self.check(cancel)?;
         Ok(facts)

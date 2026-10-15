@@ -345,7 +345,7 @@ mod tests {
         std::os::unix::fs::symlink(&state, &linked).unwrap();
         std::fs::write(home.join("document"), b"original").unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("XDG_STATE_HOME", linked.clone());
+        environment.set("XDG_STATE_HOME", linked);
         let mut selection = super::Selection::default();
         selection.start(home.clone(), home.clone(), [true, false, false], Vec::new());
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();

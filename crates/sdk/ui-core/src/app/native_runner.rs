@@ -2528,6 +2528,7 @@ impl AppHandler {
         };
         let mut handled = false;
         let mut focus_target = None;
+        app.mark_semantic_tree_stale();
         app.track_pointer_buttons(&event);
         app.refresh_controls_before_input(&event);
         let resources_before = app.resource_input_mark(&event);
@@ -4958,8 +4959,9 @@ impl App {
             }
         }
         // The app and its state are dropped (and saved) before the process
-        // reports how its window ended.
+        // reports how its window ended, and so are the settings it changed.
         drop(handler);
+        crate::storage::flush_settings_writes();
         if let Some(reason) = take_abnormal_stop() {
             report_window_lost_and_exit(&reason);
         }

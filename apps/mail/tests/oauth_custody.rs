@@ -240,6 +240,178 @@ fn a_revoked_grant_asks_mail_to_sign_in_again() {
     assert!(oauth::access_token(&custodian, email, OAuthProvider::Google, false).is_err());
 }
 
+/// A selected Microsoft mailbox keeps its canonical identity and sealed grant
+/// across installation; Mail consumes the shared account, not a local preset.
+#[test]
+fn selected_microsoft_account_loads_and_refreshes_after_portable_import() {
+    use account_custody::portable::{import_sealed_accounts, seal_selected_accounts};
+    use accounts::{Account, AccountStore};
+
+    let source = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let server = FakeAuthorizationServer::start();
+    let profile = test_http::Responder::start(vec![
+        test_http::Reply::status(200)
+            .header("Content-Type", "application/json")
+            .body(
+                r#"{"mail":"ada@hosted.example","userPrincipalName":"different@tenant.example"}"#,
+            ),
+    ]);
+    let source_custodian = custodian(source.path(), OAuthIssuer::Microsoft, &server)
+        .with_microsoft_profile_endpoint(format!("{}/me", profile.url()));
+    let tokens = account_custody::TokenSet {
+        access_token: "installed-microsoft-access".into(),
+        refresh_token: "installed-microsoft-refresh".into(),
+        obtained_at: 1,
+        ..Default::default()
+    };
+    server.accept_refresh_token("installed-microsoft-refresh");
+    let email = source_custodian.microsoft_mail_identity(&tokens).unwrap();
+    assert_eq!(email, "ada@hosted.example");
+    let request = profile.next_request();
+    assert_eq!(
+        request.header("Authorization"),
+        Some("Bearer installed-microsoft-access")
+    );
+    let config = OAuthIssuer::Microsoft.mail_config(&email).unwrap();
+    let id = AccountId::from("installed-microsoft-mailbox");
+    assert_ne!(id.as_str(), email);
+    let mut selected = Account::new(id.clone(), mail::account::TYPE_ID);
+    selected.display_name = "Work mailbox".into();
+    selected.set_config(&config);
+    let mut store = AccountStore::new();
+    store.upsert(selected.clone());
+    let omitted_id = AccountId::from("unselected-mailbox");
+    let mut omitted = Account::new(omitted_id.clone(), mail::account::TYPE_ID);
+    omitted.set_config(
+        &OAuthIssuer::Microsoft
+            .mail_config("other@hosted.example")
+            .unwrap(),
+    );
+    store.upsert(omitted);
+    store.save_in(source.path()).unwrap();
+    source_custodian.seal_oauth(&id, &tokens).unwrap();
+    source_custodian.seal_oauth(&omitted_id, &tokens).unwrap();
+
+    let key = tilo_seal::SymmetricKey::generate().unwrap();
+    let binding = b"selected-mailbox-installation-target";
+    let artifact =
+        seal_selected_accounts(source.path(), std::slice::from_ref(&id), &key, binding).unwrap();
+    assert_eq!(
+        import_sealed_accounts(target.path(), &artifact, &key, binding).unwrap(),
+        std::slice::from_ref(&id)
+    );
+    let adopted = AccountStore::load_in(target.path());
+    assert_eq!(adopted.all(), &[selected]);
+    let vault = SecretVault::open_in(target.path());
+    assert!(vault.get(&id).is_some());
+    assert!(vault.get(&omitted_id).is_none());
+    assert_ne!(
+        std::fs::read(accounts::vault_dir_in(source.path()).join("vault.key")).unwrap(),
+        std::fs::read(accounts::vault_dir_in(target.path()).join("vault.key")).unwrap(),
+        "the target seals credentials with its own custody key"
+    );
+
+    assert_imported_microsoft_mail(source.path(), target.path(), &id, &config, &server);
+}
+
+fn assert_imported_microsoft_mail(
+    source: &Path,
+    target: &Path,
+    id: &AccountId,
+    config: &mail::model::AccountConfig,
+    server: &FakeAuthorizationServer,
+) {
+    let loaded = mail::account::AccountStore::load_in(target);
+    assert_eq!(loaded.accounts.len(), 1);
+    let account = loaded.accounts.get(loaded.active).unwrap();
+    assert_eq!(account.id, id.as_str());
+    assert_eq!(&account.config, config);
+    assert_eq!(account.config.email, "ada@hosted.example");
+    assert_eq!(account.config.username, "ada@hosted.example");
+    assert_eq!(account.config.imap_host, "outlook.office365.com");
+    assert_eq!(account.config.imap_port, 993);
+    assert_eq!(account.config.smtp_host, "smtp.office365.com");
+    assert_eq!(account.config.smtp_port, 587);
+    assert!(account.config.imap_tls && account.config.smtp_tls);
+    assert_eq!(account.config.auth, mail::model::AuthMethod::OAuth);
+    assert!(!account.config.import_pending);
+    assert!(account.config.password.is_empty());
+    let provider = OAuthProvider::for_account(&account.config.email, &account.config.imap_host)
+        .expect("hosted Microsoft mail is recognized by its IMAP endpoint");
+    assert_eq!(provider, OAuthProvider::Microsoft);
+    let metadata = std::fs::read(accounts::store_path_in(target)).unwrap();
+    server.issue_access_token("installed-microsoft-refreshed");
+    let target_custodian = custodian(target, OAuthIssuer::Microsoft, server);
+    assert_eq!(
+        oauth::access_token(&target_custodian, &account.id, provider, true).unwrap(),
+        "installed-microsoft-refreshed"
+    );
+    assert_eq!(server.refreshes(), 1);
+    let refresh = server
+        .requests()
+        .into_iter()
+        .find(|request| request.target == "/token")
+        .unwrap();
+    assert_eq!(
+        form(&refresh.body_text(), "grant_type").as_deref(),
+        Some("refresh_token")
+    );
+    assert_eq!(
+        form(&refresh.body_text(), "refresh_token").as_deref(),
+        Some("installed-microsoft-refresh")
+    );
+    assert_eq!(
+        form(&refresh.body_text(), "client_id"),
+        Some(url_encoded(&registration(OAuthIssuer::Microsoft).client_id))
+    );
+    assert_eq!(form(&refresh.body_text(), "client_secret"), None);
+    assert_eq!(
+        sealed_grant(target, id.as_str())
+            .get("tokens")
+            .unwrap()
+            .get("access_token")
+            .unwrap(),
+        "installed-microsoft-refreshed"
+    );
+    assert_eq!(
+        sealed_grant(source, id.as_str())
+            .get("tokens")
+            .unwrap()
+            .get("access_token")
+            .unwrap(),
+        "installed-microsoft-access"
+    );
+    assert_eq!(
+        std::fs::read(accounts::store_path_in(target)).unwrap(),
+        metadata
+    );
+    for root in [source, target] {
+        let public = std::fs::read_to_string(accounts::store_path_in(root)).unwrap();
+        for secret in [
+            "installed-microsoft-access",
+            "installed-microsoft-refresh",
+            "installed-microsoft-refreshed",
+        ] {
+            assert!(
+                !public.contains(secret),
+                "credentials must not reach public account metadata"
+            );
+        }
+        let public: serde_json::Value = serde_json::from_str(&public).unwrap();
+        let config = public
+            .get("accounts")
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .get("config")
+            .unwrap();
+        for field in ["password", "token", "access_token", "refresh_token"] {
+            assert!(config.get(field).is_none());
+        }
+    }
+}
+
 fn url_encoded(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {

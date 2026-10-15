@@ -47,10 +47,8 @@ fn owned(path: &Path, uid: u32, gid: u32, mode: u32) {
     assert_eq!(unsafe { libc::chown(named.as_ptr(), uid, gid) }, 0);
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
-#[test]
-fn signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs() {
-    const CHILD: &str = "TILO_MOUNTED_READER_CHILD";
-    if std::env::var_os(CHILD).is_none() {
+fn run_mounted_child(child_env: &str) -> bool {
+    if std::env::var_os(child_env).is_none() {
         let witness = tempfile::tempdir().unwrap();
         std::fs::set_permissions(witness.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let marker = witness.path().join("complete");
@@ -58,19 +56,22 @@ fn signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs
             .args(["--mount", "--propagation", "private"])
             .arg(std::env::current_exe().unwrap())
             .args(["--exact", SELECTOR, "--nocapture"])
-            .env(CHILD, &marker)
+            .env(child_env, &marker)
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let started = Instant::now();
         loop {
             if let Some(status) = child.try_wait().unwrap() {
                 assert!(status.success());
                 break;
             }
-            if Instant::now() >= deadline {
+            if started.elapsed() >= Duration::from_secs(60) {
                 child.kill().unwrap();
                 child.wait().unwrap();
-                panic!("Owned signed mounted-reader timed out");
+                assert!(
+                    started.elapsed() < Duration::from_secs(60),
+                    "Owned signed mounted-reader timed out"
+                );
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -78,10 +79,50 @@ fn signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs
             std::fs::read(marker).unwrap(),
             b"signed mounted projection and actual retirement complete"
         );
+        return true;
+    }
+    false
+}
+
+fn mounted_inputs(
+    directory: &Path,
+    file: &Path,
+    writable: &Path,
+) -> Vec<launcher::owned_service::OriginalMountedInput> {
+    let pathfd = |path: &Path| {
+        File::options()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)
+            .unwrap()
+    };
+    vec![
+        launcher::owned_service::OriginalMountedInput::from_reviewed(
+            "mounted-directory".into(),
+            pathfd(directory),
+        )
+        .unwrap(),
+        launcher::owned_service::OriginalMountedInput::from_reviewed(
+            "mounted-file".into(),
+            pathfd(file),
+        )
+        .unwrap(),
+        launcher::owned_service::OriginalMountedInput::from_reviewed(
+            PathBuf::from(std::ffi::OsStr::from_bytes(b"raw-\xff")),
+            pathfd(writable),
+        )
+        .unwrap(),
+    ]
+}
+
+#[test]
+fn signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs() {
+    const CHILD: &str = "TILO_MOUNTED_READER_CHILD";
+    if run_mounted_child(CHILD) {
         return;
     }
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "isolated native root prerequisite required"
     );
@@ -108,30 +149,7 @@ fn signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs
     std::fs::write(&writable, b"owner mounted bytes").unwrap();
     owned(&writable, 1000, 1001, 0o600);
     let bind = ReadonlyBind::new(&directory);
-    let pathfd = |path: &Path| {
-        File::options()
-            .read(true)
-            .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)
-            .unwrap()
-    };
-    let inputs = vec![
-        launcher::owned_service::OriginalMountedInput::from_reviewed(
-            "mounted-directory".into(),
-            pathfd(&directory),
-        )
-        .unwrap(),
-        launcher::owned_service::OriginalMountedInput::from_reviewed(
-            "mounted-file".into(),
-            pathfd(&file),
-        )
-        .unwrap(),
-        launcher::owned_service::OriginalMountedInput::from_reviewed(
-            PathBuf::from(std::ffi::OsStr::from_bytes(b"raw-\xff")),
-            pathfd(&writable),
-        )
-        .unwrap(),
-    ];
+    let inputs = mounted_inputs(&directory, &file, &writable);
     let admission = CaptureAdmission::verify_original_source(
         &runtime,
         &publisher,
@@ -189,7 +207,7 @@ fn signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs
         std::fs::read(source.join(std::ffi::OsStr::from_bytes(b"raw-\xff"))).unwrap(),
         b"underlying raw remains"
     );
-    assert_eq!(unsafe { libc::geteuid() }, 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
     drop(bind);
     assert_eq!(unsafe { libc::umount2(source_path.as_ptr(), 0) }, 0);
     std::fs::write(

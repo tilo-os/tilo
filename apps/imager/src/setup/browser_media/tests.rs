@@ -72,9 +72,7 @@ fn real_browser_delivery_reuses_verified_ciphertext_and_refuses_changed_media() 
         .deliver_browser(&mut archive, &expected, &cancel)
         .unwrap();
     assert_eq!(fs::read(&published).unwrap(), first);
-    let receipt = destination
-        .path()
-        .join(format!("{}.receipt.json", operation));
+    let receipt = destination.path().join(format!("{operation}.receipt.json"));
     assert_eq!(
         serde_json::from_slice::<Expectation>(&fs::read(receipt).unwrap()).unwrap(),
         expected

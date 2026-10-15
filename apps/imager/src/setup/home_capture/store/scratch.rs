@@ -2,6 +2,8 @@
 //! Matching the admitted Btrfs UUID does not exclude a RAM-backed loop device.
 mod backing;
 mod recovery;
+#[cfg(test)]
+mod tests;
 use super::*;
 pub(in crate::setup) use backing::BackingWitness;
 use std::{
@@ -12,8 +14,7 @@ use std::{
     },
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(in crate::setup::home_capture) struct ScratchReceipt {
     parent: PathBuf,
     parent_device: u64,
@@ -22,6 +23,58 @@ pub(in crate::setup::home_capture) struct ScratchReceipt {
     device: u64,
     inode: u64,
     caller: u32,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScratchReceiptWire {
+    parent: PathBuf,
+    parent_device: u64,
+    parent_inode: u64,
+    name: String,
+    device: u64,
+    inode: u64,
+    caller: u32,
+}
+impl TryFrom<ScratchReceiptWire> for ScratchReceipt {
+    type Error = io::Error;
+
+    fn try_from(wire: ScratchReceiptWire) -> io::Result<Self> {
+        let suffix = wire
+            .name
+            .strip_prefix("inventory-")
+            .ok_or(io::ErrorKind::InvalidData)?;
+        if uuid::Uuid::parse_str(suffix)
+            .ok()
+            .map(|id| id.to_string())
+            .as_deref()
+            != Some(suffix)
+            || !wire.parent.is_absolute()
+            || wire.parent.components().any(|component| {
+                !matches!(
+                    component,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                )
+            })
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(Self {
+            parent: wire.parent,
+            parent_device: wire.parent_device,
+            parent_inode: wire.parent_inode,
+            name: wire.name,
+            device: wire.device,
+            inode: wire.inode,
+            caller: wire.caller,
+        })
+    }
+}
+impl<'de> Deserialize<'de> for ScratchReceipt {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        ScratchReceiptWire::deserialize(deserializer)?
+            .try_into()
+            .map_err(serde::de::Error::custom)
+    }
 }
 impl ScratchReceipt {
     pub(in crate::setup::home_capture) fn cleanup(&self) -> io::Result<()> {
@@ -34,7 +87,7 @@ impl ScratchReceipt {
             .map(|id| id.to_string())
             .as_deref()
             != Some(suffix)
-            || unsafe { libc::geteuid() } != 0
+            || rustix::process::geteuid().as_raw() != 0
             || !self.parent.is_absolute()
         {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -91,7 +144,7 @@ impl Store {
         &self,
         record: &Record,
     ) -> io::Result<ScratchLease> {
-        if unsafe { libc::geteuid() } != 0 || record.grant.operation != self.operation {
+        if rustix::process::geteuid().as_raw() != 0 || record.grant.operation != self.operation {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let allocation_lease = self.inventory_allocation_lease()?;

@@ -121,7 +121,7 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
             scope: AttestorScope::All,
         }];
 
-        let v = verify_with_trust(&packed.meta, &[], &trusted, &RevocationList::empty());
+        let v = verify_with_trust(&packed.meta, &[], &trusted, &RevocationList::default());
         match v {
             Verification::AttestedBy { attestor, .. } => {
                 assert_eq!(attestor, "tilo-curated/2026.07");
@@ -149,7 +149,7 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
         );
 
         // Registry is empty — the attestor isn't trusted.
-        let v = verify_with_trust(&packed.meta, &[], &[], &RevocationList::empty());
+        let v = verify_with_trust(&packed.meta, &[], &[], &RevocationList::default());
         match v {
             Verification::UntrustedPublisher { .. } => {}
             other => panic!("expected UntrustedPublisher, got {other:?}"),
@@ -244,7 +244,7 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
             scope: AttestorScope::Prefix(vec!["com.example.".into()]),
         }];
 
-        let v = verify_with_trust(&packed.meta, &[], &trusted, &RevocationList::empty());
+        let v = verify_with_trust(&packed.meta, &[], &trusted, &RevocationList::default());
         assert!(
             matches!(v, Verification::UntrustedPublisher { .. }),
             "got {v:?}"
@@ -278,7 +278,7 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
             scope: AttestorScope::All,
         }];
 
-        let v = verify_with_trust(&packed.meta, &[], &trusted, &RevocationList::empty());
+        let v = verify_with_trust(&packed.meta, &[], &trusted, &RevocationList::default());
         assert!(
             matches!(v, Verification::UntrustedPublisher { .. }),
             "got {v:?}"
@@ -325,7 +325,7 @@ fn attestation_verdicts_resolve_trust_revocation_and_scope() {
             pubkey_hex: second_attestor_pub_hex,
             scope: AttestorScope::All,
         }];
-        let v = verify_with_trust(&packed.meta, &[], &trusted, &RevocationList::empty());
+        let v = verify_with_trust(&packed.meta, &[], &trusted, &RevocationList::default());
         match v {
             Verification::AttestedBy { attestor, .. } => assert_eq!(attestor, "attestor-b/1"),
             other => panic!("expected AttestedBy(attestor-b/1), got {other:?}"),

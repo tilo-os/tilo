@@ -6,10 +6,10 @@ fn fixture(root: &Path, operation: &str) -> (Store, Record) {
     let grant = Grant {
         schema: 1,
         operation: operation.into(),
-        caller: unsafe { libc::geteuid() },
+        caller: rustix::process::geteuid().as_raw(),
         home: NativePath::encode(root),
         inode: std::fs::metadata(root).unwrap().ino(),
-        owner: unsafe { libc::geteuid() },
+        owner: rustix::process::geteuid().as_raw(),
         filesystem: [1; 16],
         subvolume: [2; 16],
         custody: None,
@@ -195,9 +195,9 @@ fn original_output_prepared_retry_rebinds_fresh_claim_and_refuses_dirty_or_launc
         .unwrap();
     let operation = uuid::Uuid::new_v4().to_string();
     let parent = PinnedDirectory::open_absolute(root.path()).unwrap();
-    let owner = unsafe { libc::geteuid() };
+    let owner = rustix::process::geteuid().as_raw();
     let uid = if owner == 0 { 99 } else { owner };
-    let gid = unsafe { libc::getegid() };
+    let gid = rustix::process::getegid().as_raw();
     let binding = || StageBinding {
         declaration: [1; 32],
         filesystem: [2; 16],
@@ -286,13 +286,13 @@ fn original_output_namespace_checkpoint_refuses_unlaunched_foreign_and_duplicate
         .unwrap();
     let operation = uuid::Uuid::new_v4().to_string();
     let parent = PinnedDirectory::open_absolute(root.path()).unwrap();
-    let owner = unsafe { libc::geteuid() };
+    let owner = rustix::process::geteuid().as_raw();
     let uid = if owner == 0 { 99 } else { owner };
     let binding = || StageBinding {
         declaration: [1; 32],
         filesystem: [2; 16],
         uid,
-        gid: unsafe { libc::getegid() },
+        gid: rustix::process::getegid().as_raw(),
     };
     let store = Store::open(parent.clone(), &operation).unwrap();
     let (attempt, output) = store
@@ -402,7 +402,7 @@ fn uncommitted_original_review_preserves_prepared_state_and_refuses_started_or_c
     .unwrap();
     let root = PinnedDirectory::open_absolute(temp.path()).unwrap();
     let private = root.create_child(OsStr::new(".tilo-installer")).unwrap();
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         assert_eq!(
             review_uncommitted_original_selection(&private, &declaration)
                 .unwrap_err()
@@ -507,7 +507,7 @@ fn uncommitted_original_review_preserves_prepared_state_and_refuses_started_or_c
     std::fs::write(stage_path.join("partial"), b"not empty").unwrap();
     assert!(review_uncommitted_original_selection(&private, &declaration).is_err());
     std::fs::remove_file(stage_path.join("partial")).unwrap();
-    let store = Store::open(parent.clone(), &operation).unwrap();
+    let store = Store::open(parent, &operation).unwrap();
     store
         .mark_original_output_launching(&attempt, &stage)
         .unwrap();
@@ -538,12 +538,12 @@ fn original_applications_output_prepared_retry_is_exact_and_cannot_adopt_home_in
         .tempdir()
         .unwrap();
     let parent = PinnedDirectory::open_absolute(root.path()).unwrap();
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     let binding = || StageBinding {
         declaration: [41; 32],
         filesystem: [42; 16],
         uid: if uid == 0 { 99 } else { uid },
-        gid: unsafe { libc::getegid() },
+        gid: rustix::process::getegid().as_raw(),
     };
     let operation = uuid::Uuid::new_v4().to_string();
     let store = Store::open(parent.clone(), &operation).unwrap();

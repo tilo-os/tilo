@@ -2778,7 +2778,10 @@ impl TileHost {
         rect: Rect,
     ) {
         let (edge_width, edge_color) = if self.focused {
-            (FOCUS_EDGE_STROKE_WIDTH, theme.tokens.colors.border_focus)
+            (
+                FOCUS_EDGE_STROKE_WIDTH,
+                theme.tokens.colors.window_edge_focused(),
+            )
         } else {
             (EDGE_STROKE_WIDTH, theme.window_edge())
         };
@@ -3019,6 +3022,49 @@ fn draw_opening_card(
     name: &str,
     spinner: &mut Spinner,
 ) {
+    paint_opening_card(
+        scene,
+        transform,
+        tr,
+        theme,
+        presence,
+        rect,
+        OpeningCardText { name, status: "" },
+        Some(spinner),
+    );
+}
+
+/// The moving indicator [`paint_opening_card`] draws, at the tile's size.
+#[must_use]
+pub fn opening_card_spinner() -> Spinner {
+    Spinner::with_size(OPENING_SPINNER_PX_F32)
+}
+
+/// What the opening card says: the app's name, and a line under the
+/// indicator when the wait has something worth saying — an install under
+/// way, or a start taking longer than it should. An empty `status` draws
+/// exactly the card the tile shows for an arriving window, so handing over
+/// from one to the other changes nothing on screen.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OpeningCardText<'a> {
+    pub name: &'a str,
+    pub status: &'a str,
+}
+
+/// The opening card, for a place held before any window exists. Draws
+/// `spinner` in the indicator's place, or leaves that place to the caller
+/// (a measured wait shows a bar there instead). Returns the place.
+pub fn paint_opening_card(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    rect: Rect,
+    text: OpeningCardText<'_>,
+    spinner: Option<&mut Spinner>,
+) -> Rect {
+    let OpeningCardText { name, status } = text;
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
@@ -3047,13 +3093,33 @@ fn draw_opening_card(
         );
     }
     let top = y + f64::from(style.size) + OPENING_SPINNER_GAP;
-    spinner.set_rect(Rect::new(
+    let indicator = Rect::new(
         cx - OPENING_SPINNER_PX / 2.0,
         top,
         cx + OPENING_SPINNER_PX / 2.0,
         top + OPENING_SPINNER_PX,
-    ));
-    Widget::draw(spinner, scene, transform, tr, theme, presence);
+    );
+    if let Some(spinner) = spinner {
+        spinner.set_rect(indicator);
+        Widget::draw(spinner, scene, transform, tr, theme, presence);
+    }
+    if !status.is_empty() {
+        let style = theme.text(TextRole::Body);
+        let (tw, _) = tr.measure_style(status, None, &style);
+        tr.draw_style(
+            scene,
+            status,
+            theme.on_content().ink_dim,
+            translated(
+                transform,
+                cx - f64::from(tw) / 2.0,
+                indicator.y1 + OPENING_SPINNER_GAP,
+            ),
+            None,
+            &style,
+        );
+    }
+    indicator
 }
 
 /// One function so the two callers (`Stub`, `Notice`) can't drift apart —
@@ -3254,7 +3320,12 @@ mod tests {
 
             for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
                 let name = theme.name.clone();
-                let focus = theme.tokens.colors.border_focus;
+                let focus = theme.tokens.colors.window_edge_focused();
+                assert_ne!(
+                    focus.to_rgba8().to_u32(),
+                    theme.tokens.colors.intent.you.to_rgba8().to_u32(),
+                    "{name}: window focus is neutral, not your colour"
+                );
                 let (fr, fg, fb) = {
                     let rgba = focus.to_rgba8();
                     (rgba.r, rgba.g, rgba.b)

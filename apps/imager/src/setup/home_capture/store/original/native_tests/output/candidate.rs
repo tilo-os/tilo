@@ -74,7 +74,7 @@ fn digest(file: &File) -> String {
         before,
         "candidate artifact changed during hashing"
     );
-    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(hash.finalize())
 }
 fn proof(bytes: &[u8]) -> ConsumerCapability {
     assert!(bytes.len() <= PROOF_BOUND);
@@ -85,8 +85,8 @@ fn proof(bytes: &[u8]) -> ConsumerCapability {
     result
 }
 pub(super) fn qualify() {
-    assert_eq!(unsafe { libc::getuid() }, 0);
-    assert_eq!(unsafe { libc::geteuid() }, 0);
+    assert_eq!(rustix::process::getuid().as_raw(), 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
     assert!(
         matches!(fs::symlink_metadata(RECEIPT),Err(e) if e.kind()==std::io::ErrorKind::NotFound),
         "candidate must start without a fabricated or previous qualification receipt"

@@ -61,7 +61,7 @@ fn production_labels(synthetic: &Path) -> Vec<(PathBuf, String)> {
 fn actual_firstboot_seeds_are_retained_only_while_unchanged() {
     // SAFETY: geteuid only reads current credentials.
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "privileged native qualifier required"
     );

@@ -253,12 +253,11 @@ fn discover_candidate(
             _ => return Err(invalid("Unsupported browser source")),
         };
         for (label, names, provider) in profiles {
-            let profile = match walk(&directory, &names) {
-                Ok(profile) => profile,
-                Err(_) => {
-                    *unavailable = true;
-                    continue;
-                }
+            let profile = if let Ok(profile) = walk(&directory, &names) {
+                profile
+            } else {
+                *unavailable = true;
+                continue;
             };
             let native_slack = candidate.provider == AccountProvider::Slack;
             let stores = (|| -> io::Result<(bool, bool)> {
@@ -271,12 +270,11 @@ fn discover_candidate(
                     && discord_origin_store(&profile)?;
                 Ok((present, origin))
             })();
-            let (present, origin_present) = match stores {
-                Ok(stores) => stores,
-                Err(_) => {
-                    *unavailable = true;
-                    continue;
-                }
+            let (present, origin_present) = if let Ok(stores) = stores {
+                stores
+            } else {
+                *unavailable = true;
+                continue;
             };
             if !present && !origin_present {
                 continue;

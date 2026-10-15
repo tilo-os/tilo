@@ -1365,9 +1365,8 @@ impl Accounts {
         match &self.step {
             Step::Overview => t("installer-accounts-intro"),
             Step::ReviewSaved => t("installer-accounts-review-saved-intro"),
-            Step::Providers => String::new(),
+            Step::Providers | Step::SpotifyPurpose(None) => String::new(),
             Step::SpotifyPurpose(Some(_)) => t("installer-accounts-spotify-source-reconnect"),
-            Step::SpotifyPurpose(None) => String::new(),
             Step::ICloud(flow) => flow.intro(),
             Step::ConfirmRemoval(_) => t("installer-accounts-remove-intro"),
             Step::NextcloudMethod(_) => t("installer-accounts-nextcloud-method-intro"),

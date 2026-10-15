@@ -96,6 +96,26 @@ impl std::fmt::Display for ShimParseError {
 impl std::error::Error for ShimParseError {}
 
 impl ShimArgs {
+    fn parse_bootstrap_fd(&mut self, arg: &str, value: &str) -> Result<(), ShimParseError> {
+        let expected = match arg {
+            "--target-projection-fd" => crate::owned_service::target_projection::TOKEN_FD,
+            "--retained-io-fd" => crate::owned_service::retained_io::TOKEN_FD,
+            _ => crate::owned_service::capture::original::BOOTSTRAP_FD,
+        };
+        if value != expected.to_string()
+            || self.original_source_fd.is_some()
+            || self.retained_io_fd.is_some()
+            || self.target_projection_fd.is_some()
+        {
+            return Err(ShimParseError::DanglingValue(arg.into()));
+        }
+        match arg {
+            "--target-projection-fd" => self.target_projection_fd = Some(expected),
+            "--retained-io-fd" => self.retained_io_fd = Some(expected),
+            _ => self.original_source_fd = Some(expected),
+        }
+        Ok(())
+    }
     /// Parse the slice AFTER the `__sandbox-exec` token.
     ///
     /// Grammar:
@@ -127,48 +147,11 @@ impl ShimArgs {
                         .extend_from_slice(args.get(rest_start..).unwrap_or(&[]));
                     break;
                 }
-                "--target-projection-fd" => {
+                "--target-projection-fd" | "--retained-io-fd" | "--original-source-fd" => {
                     let value = args
                         .get(i.saturating_add(1))
                         .ok_or_else(|| ShimParseError::DanglingValue(arg.clone()))?;
-                    if value != &crate::owned_service::target_projection::TOKEN_FD.to_string()
-                        || parsed.original_source_fd.is_some()
-                        || parsed.retained_io_fd.is_some()
-                        || parsed.target_projection_fd.is_some()
-                    {
-                        return Err(ShimParseError::DanglingValue(arg.clone()));
-                    }
-                    parsed.target_projection_fd =
-                        Some(crate::owned_service::target_projection::TOKEN_FD);
-                    i = i.saturating_add(1);
-                }
-                "--retained-io-fd" => {
-                    let value = args
-                        .get(i.saturating_add(1))
-                        .ok_or_else(|| ShimParseError::DanglingValue(arg.clone()))?;
-                    if value != &crate::owned_service::retained_io::TOKEN_FD.to_string()
-                        || parsed.original_source_fd.is_some()
-                        || parsed.retained_io_fd.is_some()
-                        || parsed.target_projection_fd.is_some()
-                    {
-                        return Err(ShimParseError::DanglingValue(arg.clone()));
-                    }
-                    parsed.retained_io_fd = Some(crate::owned_service::retained_io::TOKEN_FD);
-                    i = i.saturating_add(1);
-                }
-                "--original-source-fd" => {
-                    let value = args
-                        .get(i.saturating_add(1))
-                        .ok_or_else(|| ShimParseError::DanglingValue(arg.clone()))?;
-                    if value != &crate::owned_service::capture::original::BOOTSTRAP_FD.to_string()
-                        || parsed.original_source_fd.is_some()
-                        || parsed.retained_io_fd.is_some()
-                        || parsed.target_projection_fd.is_some()
-                    {
-                        return Err(ShimParseError::DanglingValue(arg.clone()));
-                    }
-                    parsed.original_source_fd =
-                        Some(crate::owned_service::capture::original::BOOTSTRAP_FD);
+                    parsed.parse_bootstrap_fd(arg, value)?;
                     i = i.saturating_add(1);
                 }
                 "--net-restricted" => parsed.net_restricted = true,
@@ -232,6 +215,7 @@ impl ShimArgs {
 /// accidentally gave this namespace a route still can't open a socket
 /// to anywhere but the gate.
 pub fn ruleset_spec(args: &ShimArgs) -> RulesetSpec {
+    use landlock::{Access, AccessFs};
     let gate_port = args.net_gate_port.filter(|_| args.net_gate.is_some());
     let net = match gate_port {
         Some(port) => NetRestriction::ConnectOnly(port),
@@ -239,7 +223,6 @@ pub fn ruleset_spec(args: &ShimArgs) -> RulesetSpec {
         None => NetRestriction::Unrestricted,
     };
     let mut spec = RulesetSpec::application(access_plan(&args.ro, &args.rw, TARGET_ABI), net);
-    use landlock::{Access, AccessFs};
     spec.rules
         .extend(args.ro_noexec.iter().map(|path| crate::landlock::FsRule {
             path: path.clone(),
@@ -412,6 +395,56 @@ fn spawn_relay(gate: &std::path::Path, port: u16) {
     }
 }
 
+fn prepare_target_projection(
+    parsed: &mut ShimArgs,
+) -> std::io::Result<Option<crate::owned_service::target_projection::MountedTargetBootstrap>> {
+    if parsed.target_projection_fd.is_none() {
+        return Ok(None);
+    }
+    if !parsed.net_restricted
+        || parsed.net_gate.is_some()
+        || parsed.no_landlock
+        || parsed.landlock_best_effort
+        || !parsed.keep_fds.is_empty()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "target projection confinement differs",
+        ));
+    }
+    let target = crate::owned_service::target_projection::RootTargetBootstrap::prepare().and_then(
+        crate::owned_service::target_projection::RootTargetBootstrap::mount_and_publish,
+    )?;
+    parsed.keep_fds.extend([
+        crate::owned_service::target_projection::TOKEN_FD,
+        crate::owned_service::target_projection::FUSE_FD,
+        crate::owned_service::target_projection::READY_FD,
+    ]);
+    Ok(Some(target))
+}
+
+fn confine_application(
+    parsed: &ShimArgs,
+    target: Option<&mut crate::owned_service::target_projection::MountedTargetBootstrap>,
+) -> LandlockOutcome {
+    if let Some(target) = target {
+        match target.confine(&ruleset_spec(parsed), |path, error| {
+            eprintln!(
+                "tilo-sandbox-exec: skipping rule for {} (open failed: {error})",
+                path.display()
+            );
+        }) {
+            Ok(status) => outcome_from_status(&status.ruleset),
+            Err(error) => {
+                eprintln!("tilo-sandbox-exec: target held read confinement failed: {error}");
+                LandlockOutcome::Errored
+            }
+        }
+    } else {
+        apply(parsed)
+    }
+}
+
 fn prepare_original_source(parsed: &mut ShimArgs) -> std::io::Result<()> {
     if parsed.original_source_fd.is_none() {
         return Ok(());
@@ -459,39 +492,17 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         std::process::exit(126);
     }
 
-    let mut target_credentials = if parsed.target_projection_fd.is_some() {
-        if !parsed.net_restricted
-            || parsed.net_gate.is_some()
-            || parsed.no_landlock
-            || parsed.landlock_best_effort
-            || !parsed.keep_fds.is_empty()
-        {
-            eprintln!("tilo-sandbox-exec: target projection confinement differs");
+    let mut target_credentials = match prepare_target_projection(&mut parsed) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!(
+                "tilo-sandbox-exec: target projection bootstrap refused: kind={:?} errno={:?}",
+                error.kind(),
+                error.raw_os_error()
+            );
             std::process::exit(126);
         }
-        match crate::owned_service::target_projection::RootTargetBootstrap::prepare()
-            .and_then(|root| root.mount_and_publish())
-        {
-            Ok(target) => Some(target),
-            Err(error) => {
-                eprintln!(
-                    "tilo-sandbox-exec: target projection bootstrap refused: kind={:?} errno={:?}",
-                    error.kind(),
-                    error.raw_os_error()
-                );
-                std::process::exit(126);
-            }
-        }
-    } else {
-        None
     };
-    if target_credentials.is_some() {
-        parsed.keep_fds.extend([
-            crate::owned_service::target_projection::TOKEN_FD,
-            crate::owned_service::target_projection::FUSE_FD,
-            crate::owned_service::target_projection::READY_FD,
-        ]);
-    }
     let retained_credentials = if parsed.retained_io_fd.is_some() {
         if !parsed.net_restricted
             || parsed.net_gate.is_some()
@@ -519,22 +530,7 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         spawn_relay(gate, port);
     }
 
-    let outcome = if let Some(target) = target_credentials.as_mut() {
-        match target.confine(&ruleset_spec(&parsed), |path, error| {
-            eprintln!(
-                "tilo-sandbox-exec: skipping rule for {} (open failed: {error})",
-                path.display()
-            );
-        }) {
-            Ok(status) => outcome_from_status(&status.ruleset),
-            Err(error) => {
-                eprintln!("tilo-sandbox-exec: target held read confinement failed: {error}");
-                LandlockOutcome::Errored
-            }
-        }
-    } else {
-        apply(&parsed)
-    };
+    let outcome = confine_application(&parsed, target_credentials.as_mut());
     eprintln!(
         "tilo-sandbox-exec: {} ({} ro, {} rw, net_restricted={}, gate_port={:?})",
         outcome.describe(),
@@ -566,21 +562,21 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         std::process::exit(126);
     }
 
-    if let Some(facts) = retained_credentials {
-        if let Err(error) = crate::owned_service::retained_io::drop_after_confinement(facts) {
-            eprintln!("tilo-sandbox-exec: retained I/O credential transition refused: {error}");
-            std::process::exit(126);
-        }
+    if let Some(facts) = retained_credentials
+        && let Err(error) = crate::owned_service::retained_io::drop_after_confinement(facts)
+    {
+        eprintln!("tilo-sandbox-exec: retained I/O credential transition refused: {error}");
+        std::process::exit(126);
     }
-    if let Some(target) = target_credentials {
-        if let Err(error) = target.drop_after_confinement() {
-            eprintln!(
-                "tilo-sandbox-exec: target credential transition refused: kind={:?} errno={:?}",
-                error.kind(),
-                error.raw_os_error()
-            );
-            std::process::exit(126);
-        }
+    if let Some(target) = target_credentials
+        && let Err(error) = target.drop_after_confinement()
+    {
+        eprintln!(
+            "tilo-sandbox-exec: target credential transition refused: kind={:?} errno={:?}",
+            error.kind(),
+            error.raw_os_error()
+        );
+        std::process::exit(126);
     }
     exec_real_command(&parsed.command, entered.as_deref())
 }
@@ -1099,13 +1095,13 @@ mod readonly_data_noexec_tests {
         let runtime = spec
             .rules
             .iter()
-            .find(|rule| rule.path == PathBuf::from("/usr"))
+            .find(|rule| rule.path == std::path::Path::new("/usr"))
             .unwrap();
         assert!(runtime.access.contains(AccessFs::Execute));
         let data = spec
             .rules
             .iter()
-            .find(|rule| rule.path == PathBuf::from("/run/tilo/retained-home"))
+            .find(|rule| rule.path == std::path::Path::new("/run/tilo/retained-home"))
             .unwrap();
         assert_eq!(
             data.access,
@@ -1120,7 +1116,7 @@ mod readonly_data_noexec_tests {
         let selected = spec
             .rules
             .iter()
-            .find(|rule| rule.path == PathBuf::from("/run/tilo/selected-open/leaf"))
+            .find(|rule| rule.path == std::path::Path::new("/run/tilo/selected-open/leaf"))
             .unwrap();
         assert!(!selected.access.contains(AccessFs::Execute));
         assert!(selected.access.contains(AccessFs::WriteFile));

@@ -15,7 +15,7 @@ impl TransferredHomeRoots {
         inputs: Vec<(NativePath, EntryKind, File)>,
         cancel: &AtomicBool,
     ) -> io::Result<Self> {
-        if unsafe { libc::geteuid() } != 0
+        if rustix::process::geteuid().as_raw() != 0
             || inputs.is_empty()
             || inputs.len() != locations.candidates.len()
         {

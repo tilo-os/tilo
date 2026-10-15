@@ -73,7 +73,8 @@ impl InstallerPreview {
                 .facts
                 .as_ref()
                 .is_some_and(|facts| facts.offers_full_os())
-            && self.storage.plan.as_ref().is_some_and(|plan| plan.is_ok())
+            && self.storage.admit().is_ok()
+            && self.recovery.evidence().is_ok()
     }
 
     pub(super) fn reviewed_belongings(
@@ -85,6 +86,9 @@ impl InstallerPreview {
         ),
         &'static str,
     > {
+        self.recovery
+            .evidence()
+            .map_err(|_| "installer-recovery-copy-required")?;
         let wants_migration = self.journey.migrate == Some(true)
             && (self.journey.categories[0] || self.selected_applications());
         let migration = if wants_migration {
@@ -261,6 +265,14 @@ impl InstallerPreview {
             .pending
             .take()
             .ok_or("installer-preview-storage-unavailable")?;
+        prepared
+            .bind_recovery(
+                self.recovery
+                    .evidence()
+                    .map_err(|_| "installer-recovery-copy-required")?,
+                &snapshot.plan,
+            )
+            .map_err(|_| "installer-recovery-write-guard")?;
         snapshot.profile.prepared_setup = Some(prepared.expectation().clone());
         let child =
             crate::setup::view::SetupApp::from_guided_review(crate::setup::view::ReviewedFullOs {

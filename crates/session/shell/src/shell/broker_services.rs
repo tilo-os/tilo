@@ -23,8 +23,8 @@ pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
 use tilo_action_broker::services::{
     ContinuationServices, HostServices, LaunchContent, LaunchPlace, LaunchScope,
-    LaunchableApplication, LauncherServices, LegacyWorkspaceProjection, NativeDocumentRead,
-    NativeDocumentReadContext, NativeDocumentReads, ShortcutLibraryRequest,
+    LaunchableApplication, Launched, LauncherServices, LegacyWorkspaceProjection,
+    NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, ShortcutLibraryRequest,
     ShortcutLibraryServices, WorkspaceAuthority, WorkspaceControlServices,
     WorkspaceGovernanceRequest, WorkspaceGovernanceServices,
 };
@@ -268,7 +268,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
                 if network.governed_elsewhere(room) {
-                    return Err("workspace membership requires the governing owner".into());
+                    return grant_authorship_at_host(network, &owner, room, &request).await;
                 }
             }
             let receipt = if matches!(
@@ -293,6 +293,68 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             Ok(receipt)
         })
     }
+}
+
+/// How long the app authorship a host committed may take to reach this
+/// device's admitted room. With the host's own answer (at most
+/// `relay_rooms::ADMIN_TIMEOUT`) it stays inside the 30 s a launch waits.
+const HOST_AUTHORSHIP_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// In a room a host of this person governs (a home relay), opening an app
+/// there for the first time asks that host to let the app author the room's
+/// records: the host is the one party that may commit it. Every other
+/// membership change in a room governed elsewhere stays refused here.
+/// Answers with this device's committed view once it carries the authorship.
+async fn grant_authorship_at_host(
+    network: &super::network::ShellNetwork,
+    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+    room: super::state::RoomId,
+    request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
+) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+    const REFUSED: &str = "workspace membership requires the governing owner";
+    let tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
+        caller,
+        command:
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                app,
+            },
+        ..
+    } = &request.operation
+    else {
+        return Err(REFUSED.into());
+    };
+    network
+        .grant_app_authorship_at_host(room, caller, app)
+        .await
+        .ok_or(REFUSED)??;
+    // The host's answer is not this device's commit barrier: wait until the
+    // authorship it published is in this device's actual admitted room.
+    tokio::time::timeout(HOST_AUTHORSHIP_ADMISSION_TIMEOUT, async {
+        loop {
+            network.check_native_custody(owner, room)?;
+            let receipt = owner.with_current(room, |view| {
+                let now = std::time::SystemTime::now();
+                let member = view.peer().permissions(caller.device_public_key, now)?;
+                if !member
+                    .policy
+                    .app_authors(app, &tilo_action_policy::Context::at_time(now))
+                {
+                    return Ok(None);
+                }
+                Ok(Some(tilo_peer_state::owner_commit::OwnerCommitReceipt {
+                    binding: request.binding()?,
+                    generation: view.generation(),
+                    aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
+                }))
+            })?;
+            if let Some(receipt) = receipt {
+                return Ok(receipt);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .map_err(|_| "the host committed the app authorship but it did not reach this device in time")?
 }
 
 /// Have the governor of `room` record an effect receipt this device's broker
@@ -975,14 +1037,15 @@ impl LauncherServices for NativeLauncher {
         workspace: &tilo_desktop_model::Workspace,
         content: LaunchContent<'_>,
         place: &LaunchPlace,
-    ) -> Result<(), String> {
+    ) -> Result<Launched, String> {
         if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
-            return launch_host_application(desktop_id, workspace, content);
+            return launch_host_application(desktop_id, workspace, content)
+                .map(|()| Launched::Unconfirmed);
         }
         if content.hash.is_empty()
             && let Some(opened) = self.open_through_governor(app, workspace, place)
         {
-            return opened;
+            return opened.map(|()| Launched::Unconfirmed);
         }
         let mut workspace = workspace.clone();
         if let Some(person) = content.author {
@@ -990,9 +1053,14 @@ impl LauncherServices for NativeLauncher {
         }
         let document = stage_launch_content(app, content, &mut workspace, &SessionContentStore)?;
         self.place(app, &workspace, place);
-        super::launcher::launch_document_in_workspace(app, &workspace, document.as_deref())
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        // The process it starts keeps the attempt's token in its launch
+        // record, and presents it when its connection is authenticated.
+        super::launch_readiness::identified(|| {
+            super::launcher::launch_document_in_workspace(app, &workspace, document.as_deref())
+                .map(drop)
+                .map_err(|e| e.to_string())
+        })
+        .map(|ticket| Launched::Started { ticket })
     }
     fn authenticated_launch(
         &self,
@@ -1809,6 +1877,12 @@ pub fn native_services(
         resource_views,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
         local_person,
+        device_pairing: membership.as_ref().map(|tree| {
+            Arc::new(super::device_pairing::BrokerDoor {
+                tree: tree.downgrade(),
+                pairing: super::device_pairing::Pairing::session(),
+            }) as Arc<dyn tilo_action_broker::services::DevicePairingServices>
+        }),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),

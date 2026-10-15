@@ -111,7 +111,7 @@ impl Record {
 
 fn root() -> io::Result<Arc<PinnedDirectory>> {
     // SAFETY: geteuid only observes the current native helper's credentials.
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err(changed(
             "Completed installer generation requires root custody",
         ));

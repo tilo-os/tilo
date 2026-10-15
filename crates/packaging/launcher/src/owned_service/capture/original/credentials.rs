@@ -94,10 +94,10 @@ fn capabilities() -> io::Result<[Data; 2]> {
 fn groups() -> io::Result<Vec<u32>> {
     // SAFETY: zero count queries the length without accessing the null pointer.
     let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
-    if count < 0 || count as usize > super::GROUPS_LIMIT {
+    if usize::try_from(count).map_or(true, |length| length > super::GROUPS_LIMIT) {
         return Err(refused("Filesystem group shape differs"));
     }
-    let mut value = vec![0; count as usize];
+    let mut value = vec![0; usize::try_from(count).map_err(io::Error::other)?];
     // SAFETY: the queried count equals the allocated gid_t output buffer length.
     if unsafe { libc::getgroups(count, value.as_mut_ptr()) } != count {
         return Err(io::Error::last_os_error());
@@ -109,8 +109,8 @@ fn filesystem_ids() -> (u32, u32) {
     // the CURRENT IDs. setfsuid/setfsgid return previous IDs, not success codes.
     unsafe {
         (
-            libc::setfsuid(u32::MAX) as u32,
-            libc::setfsgid(u32::MAX) as u32,
+            libc::setfsuid(u32::MAX).cast_unsigned(),
+            libc::setfsgid(u32::MAX).cast_unsigned(),
         )
     }
 }
@@ -183,8 +183,8 @@ impl ProjectionFilesystemAccess {
     }
     pub(super) fn validate(&self) -> io::Result<()> {
         // SAFETY: credential getters have no pointer arguments.
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || filesystem_ids() != (self.uid, self.gid)
             || capabilities()? != self.capabilities
         {
@@ -202,7 +202,7 @@ impl ProjectionFilesystemAccess {
 }
 
 /// The signed shim is already inside the exact confined readonly namespace.
-/// O_PATH placement/ancestry traversal uses the original caller's DAC rights,
+/// `O_PATH` placement/ancestry traversal uses the original caller's DAC rights,
 /// while held-FD mount syscalls briefly restore the prior root filesystem IDs.
 /// Only the existing transient mount capabilities remain; no source contents
 /// or ambient paths are read.

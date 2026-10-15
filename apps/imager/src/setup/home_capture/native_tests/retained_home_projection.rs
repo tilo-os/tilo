@@ -215,7 +215,7 @@ fn observe_canonical_worker_debug(root: &Path) {
             .open(&path)?;
         let before = file.metadata()?;
         if !before.is_file()
-            || before.uid() != unsafe { libc::geteuid() }
+            || before.uid() != rustix::process::geteuid().as_raw()
             || before.nlink() != 1
             || before.mode() & 0o077 != 0
             || before.len() > 1024 * 1024
@@ -879,9 +879,9 @@ fn target_stdio_child() {
         return;
     }
     let mut stream = unsafe { UnixStream::from_raw_fd(73) };
-    assert_eq!(unsafe { libc::getuid() }, TARGET_UID);
-    assert_eq!(unsafe { libc::geteuid() }, TARGET_UID);
-    assert_eq!(unsafe { libc::getgid() }, TARGET_GID);
+    assert_eq!(rustix::process::getuid().as_raw(), TARGET_UID);
+    assert_eq!(rustix::process::geteuid().as_raw(), TARGET_UID);
+    assert_eq!(rustix::process::getgid().as_raw(), TARGET_GID);
     assert_eq!(
         unsafe { libc::getgroups(0, std::ptr::null_mut()) },
         0,
@@ -1114,11 +1114,11 @@ fn signed_home_projection_native_readonly_alias_denies_execution_and_mutation() 
 }
 fn full_home_fixture(alias_mode: bool, writable: bool) {
     assert_eq!(
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         0,
         "disposable root native qualification required"
     );
-    assert_eq!(unsafe { libc::geteuid() }, 0);
+    assert_eq!(rustix::process::geteuid().as_raw(), 0);
     let root = tempfile::Builder::new()
         .prefix("tilo-native-projection-")
         .permissions(std::fs::Permissions::from_mode(0o700))
@@ -1224,7 +1224,7 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
                     eprintln!("RETAINED_SOURCE_ENDPOINT_RETIREMENT_UNCONFIRMED");
                 }
                 observe_canonical_worker_debug(source.working.path());
-                panic!("actual source endpoint: {e}");
+                break Err::<_, io::Error>(e).expect("actual source endpoint");
             }
         }
     };
@@ -1565,7 +1565,7 @@ fn qualify_alias_iteration(
         if writable { "1" } else { "0" }.into(),
     ]);
     for (key, value) in launcher::appdir::sandbox_env() {
-        argv.extend(["--setenv".into(), key.into(), value.into()]);
+        argv.extend(["--setenv".into(), key, value]);
     }
     // These are the exact production baseline/clone3 programs, not a weaker
     // test-specific filter. Bwrap consumes them only after mount setup.
@@ -1647,10 +1647,10 @@ fn qualify_alias_iteration(
             {
                 return Err(io::Error::last_os_error());
             }
-            if libc::getuid() != TARGET_UID
-                || libc::geteuid() != TARGET_UID
-                || libc::getgid() != TARGET_GID
-                || libc::getegid() != TARGET_GID
+            if rustix::process::getuid().as_raw() != TARGET_UID
+                || rustix::process::geteuid().as_raw() != TARGET_UID
+                || rustix::process::getgid().as_raw() != TARGET_GID
+                || rustix::process::getegid().as_raw() != TARGET_GID
                 || libc::getgroups(0, std::ptr::null_mut()) != 0
             {
                 return Err(io::ErrorKind::PermissionDenied.into());
@@ -1765,10 +1765,10 @@ fn native_alias_stdio_child() {
     // Canonical bwrap preserves the ordinary invoking UID/GID. Its --dev
     // devpts preparation uses an intermediate namespace UID/GID 0, then
     // maps the final ordinary IDs to that intermediate identity.
-    assert_eq!(unsafe { libc::getuid() }, TARGET_UID);
-    assert_eq!(unsafe { libc::geteuid() }, TARGET_UID);
-    assert_eq!(unsafe { libc::getgid() }, TARGET_GID);
-    assert_eq!(unsafe { libc::getegid() }, TARGET_GID);
+    assert_eq!(rustix::process::getuid().as_raw(), TARGET_UID);
+    assert_eq!(rustix::process::geteuid().as_raw(), TARGET_UID);
+    assert_eq!(rustix::process::getgid().as_raw(), TARGET_GID);
+    assert_eq!(rustix::process::getegid().as_raw(), TARGET_GID);
     assert_eq!(unsafe { libc::getgroups(0, std::ptr::null_mut()) }, 0);
     let uid_map = std::fs::read_to_string("/proc/self/uid_map").unwrap();
     let mapping: Vec<u32> = uid_map

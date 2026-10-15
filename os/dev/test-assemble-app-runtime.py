@@ -302,7 +302,7 @@ class EngineRuntimeShips(unittest.TestCase):
 
     def bundle(self, root, version):
         (root / version).mkdir(parents=True)
-        (root / version / 'bundle.toml').write_text('')
+        (root / version / 'bundle.toml').write_text(f'version = "{version}"\n')
         (root / version / 'lib').mkdir()
         (root / version / 'lib/tilo-chromium-host').write_text(version)
 
@@ -327,6 +327,17 @@ class EngineRuntimeShips(unittest.TestCase):
             self.assertEqual(shipped, [version], 'only the pinned build, never the old ones')
             self.assertEqual((stage / 'tree/usr/share/tilo/browser-runtime-publisher.hex').read_text(),
                              self.PUBLISHER + '\n')
+
+    def test_a_differently_versioned_signed_bundle_is_not_relabelled_by_its_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stage, tool = self.fixture(directory)
+            host = Path(directory) / 'host'
+            version = self.pinned()[0].split('/', 1)[1]
+            self.bundle(host, version)
+            (host / version / 'bundle.toml').write_text('version = "older-engine"\n')
+            with self.assertRaisesRegex(ValueError, 'different signed engine version'):
+                ASSEMBLER.stage_engine_runtimes(SOURCE.parents[2], stage, tool, roots=[host])
+            self.assertEqual(list((stage / 'tree/usr/lib/tilo-runtime').iterdir()), [])
 
     def test_a_missing_engine_is_fetched_and_a_missing_one_everywhere_refuses_the_cohort(self):
         with tempfile.TemporaryDirectory() as directory:

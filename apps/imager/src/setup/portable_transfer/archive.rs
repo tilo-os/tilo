@@ -49,7 +49,7 @@ pub(super) fn logical_bytes(records: &Records) -> io::Result<u64> {
         };
         total = total
             .checked_add(size)
-            .filter(|value| *value <= i64::MAX as u64)
+            .filter(|value| i64::try_from(*value).is_ok())
             .ok_or_else(|| changed("Logical archive size exceeds native bounds"))?;
     }
     Ok(total)
@@ -503,7 +503,7 @@ fn verify_mutable_application_file(record: &Record, root: &Arc<PinnedDirectory>)
     let file = cap_primitives::fs::open(&directory.file, Path::new(&name), &options)?;
     let actual = file.metadata()?;
     // SAFETY: geteuid has no preconditions and only reads current credentials.
-    if actual.mode() & 0o777 != record.mode || actual.uid() != unsafe { libc::geteuid() } {
+    if actual.mode() & 0o777 != record.mode || actual.uid() != rustix::process::geteuid().as_raw() {
         return Err(changed("Mutable application metadata changed authority"));
     }
     verify_xattrs(&file, &record.xattrs)?;

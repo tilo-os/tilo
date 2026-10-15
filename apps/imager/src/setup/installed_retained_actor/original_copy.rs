@@ -153,17 +153,6 @@ impl ReviewedInstalledOriginalCopy {
         self.read.revalidate(cancel)?;
         Ok(self.read.clone())
     }
-    pub(in crate::setup) fn with_original_reader<T>(
-        self: &Arc<Self>,
-        cancel: &AtomicBool,
-        run: impl FnOnce(
-            launcher::owned_service::CaptureAdmission,
-            crate::setup::home_capture::OriginalReaderRequest,
-            [u8; 32],
-        ) -> io::Result<T>,
-    ) -> io::Result<T> {
-        self.read.with_original_reader(cancel, run)
-    }
     pub(in crate::setup) fn target_peer(
         &self,
         cancel: &AtomicBool,

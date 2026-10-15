@@ -24,13 +24,13 @@ struct Record {
     revocations: Vec<RevocationEntry>,
 }
 fn root() -> io::Result<()> {
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+    if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
         return Err(invalid());
     }
     Ok(())
 }
 fn hex(key: &[u8; 32]) -> String {
-    key.iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(key)
 }
 fn validate(r: &Record) -> io::Result<RevocationList> {
     if r.schema != 1

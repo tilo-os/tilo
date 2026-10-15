@@ -114,11 +114,9 @@ Before pushing:
    leave selection to normal CI. The current direct selector also rejects a local default;
    older worktrees require the stable launcher rather than their historical relative command.
    Unexpected full-workspace selection is a bug to understand before pushing.
-4. Push a task branch and use a PR. Do not probe `main` with a direct push. `.githooks/pre-push`
-   refuses a branch that conflicts with the current main or leaves `crates/workspace-hack` stale,
-   the two rejections CI otherwise reports a minute after the push. After pushing, let
-   the Codex CI hook report completion; inspect a failure once with
-   `fgj actions run view <run> --log-failed` and rerun only the failed job when it is transient.
+4. Run `t` for the checks your change affects ([docs/t.md](docs/t.md)), rebase on `main`
+   and push straight to `main`. CI on `main` informs and never reverts; if `t main` shows a
+   failure you caused, fix it forward. See "Routine delivery workflow" in `DEVELOPMENT.md`.
 
 Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `quickuser` /
 `tilo`.

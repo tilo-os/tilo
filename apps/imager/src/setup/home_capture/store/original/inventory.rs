@@ -20,7 +20,7 @@ impl InventoryCustody {
             (Some(binding), Some(proof))
                 if proof.owner == 0
                     && proof.inode != 0
-                    && proof.mode & 0o077 == 0
+                    && proof.mode.trailing_zeros() >= 6
                     && binding.len == proof.len
                     && binding.sha256 == proof.sha256 =>
             {

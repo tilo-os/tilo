@@ -32,7 +32,8 @@ checksum-verified registry releases in the lock, each with one small patch
 so an idle endpoint wakes for nothing: no re-STUN tick and no home relay
 while the relay map is empty, no 15 s wall-clock poll on Linux (a timerfd the
 kernel cancels on resume or a clock step replaces it), and no gossip cache
-sweep once a topic's caches are empty. Network changes still arrive through
+sweep once a topic's caches are empty or membership shuffle without an active
+neighbor. A returning neighbor rearms the shuffle once. Network changes still arrive through
 netlink at once, and `netwatch` has the kernel drop the address-lifetime refreshes
 a router sends every few seconds (a BPF filter on its netlink socket) instead of
 waking the process to ignore them. Its monitor also re-reads the interfaces
@@ -536,6 +537,15 @@ pipeline. On GL nothing is deferred (one context lock, see "one init thread
 on GL"). `Renderer::new` is unchanged except that the parallel initial build
 starts the longest shaders first. `deferred_pipelines()` reports what is
 pending and what a render had to build itself.
+
+`Renderer::new_async_deferring(device, options, deferral)` is the same for
+`new_async`, which the browser uses: it awaits only the pipelines `deferral`
+does not defer. `start_deferred_pipelines_async` then starts every deferred
+pipeline through `create_compute_pipeline_async` without waiting. Renders poll
+those compiles before encoding and install the finished ones. A render can't
+wait for a promise, so a deferred pipeline it dispatches whose compile is not
+in yet is created synchronously, and the GPU process compiles it before the
+dispatch. This works on every target; native windows keep the threads.
 
 ## zlink-macros
 

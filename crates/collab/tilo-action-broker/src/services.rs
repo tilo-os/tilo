@@ -458,6 +458,24 @@ impl ObservedApplicationLaunch {
 pub struct AuthenticatedApplicationLaunch {
     pub creation: Option<ApplicationCreationEvidence>,
     pub continuation_instance: Option<u64>,
+    /// The ticket [`LauncherServices::launch_content`] answered for the
+    /// launch that started this process ([`Launched::Started`]), read from
+    /// the host's own launch record. Correlation only, never authority.
+    pub launch_ticket: Option<u64>,
+}
+
+/// What [`LauncherServices::launch_content`] started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Launched {
+    /// A new instance, whose collaboration connection presents `ticket`
+    /// when it is authenticated
+    /// ([`AuthenticatedApplicationLaunch::launch_ticket`]): the launch can
+    /// name the instance it started without guessing.
+    Started { ticket: u64 },
+    /// Something the host cannot tie to a connection: an app another device
+    /// opens (a governed room), a host application, a launcher keeping no
+    /// tickets.
+    Unconfirmed,
 }
 
 /// Content-free progress of the existing executing-process custody handshake.
@@ -536,6 +554,9 @@ pub trait LauncherServices: Send + Sync {
     /// calling application's own scope. An empty hash is a plain launch. A
     /// host that cannot stage content refuses one.
     ///
+    /// Answers what it started: a ticket the started instance presents when
+    /// it connects, where the host keeps one.
+    ///
     /// # Errors
     ///
     /// Returns a message when the launch fails or content staging is unsupported.
@@ -545,9 +566,10 @@ pub trait LauncherServices: Send + Sync {
         workspace: &Workspace,
         content: LaunchContent<'_>,
         place: &LaunchPlace,
-    ) -> Result<(), String> {
+    ) -> Result<Launched, String> {
         if content.hash.is_empty() {
             self.launch(app, workspace, None, place)
+                .map(|()| Launched::Unconfirmed)
         } else {
             Err("opening launch content is unsupported on this host".into())
         }
@@ -570,6 +592,7 @@ pub trait LauncherServices: Send + Sync {
         Ok(Some(AuthenticatedApplicationLaunch {
             creation: self.application_creation_evidence(pid, app, room)?,
             continuation_instance: None,
+            launch_ticket: None,
         }))
     }
 
@@ -734,6 +757,47 @@ pub trait KeyboardShortcutServices: Send + Sync {
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
     ) -> Result<(tilo_actions::ActionOutput, bool), Box<tilo_actions::ActionFailure>>;
+}
+
+/// One pairing step the broker admitted: action `address` (on
+/// [`tilo_actions::remote::device_pairing::RESOURCE`]) for `actor` in
+/// `room`, with `argument` in its slot form.
+pub struct DevicePairingRequest<'a> {
+    pub room: &'a str,
+    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
+    pub address: &'a tilo_actions::ActionAddress,
+    pub argument: Option<&'a str>,
+}
+
+/// How a pairing step ended.
+pub type DevicePairingOutcome =
+    Result<tilo_actions::ActionOutput, Box<tilo_actions::ActionFailure>>;
+
+/// Pairing a nearby device with the person's identity, run by the host:
+/// LAN discovery, and the approval an administrator authenticates through
+/// the host's polkit helper. The broker answers it under
+/// [`tilo_actions::remote::device_pairing::PROVIDER`], only to a caller on
+/// this machine confined to a room, and checks each step against the
+/// caller's policy under [`Self::app_id`] before the host decides whether
+/// the actor may pair at all.
+pub trait DevicePairingServices: Send + Sync {
+    /// The application whose controls pair devices. It reaches the steps as
+    /// the person using it, as it does its own actions.
+    fn app_id(&self) -> &str;
+    /// Every step, described.
+    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
+    /// Start one admitted step. Its outcome arrives on the returned answer:
+    /// at once, or once the LAN window or the administrator's
+    /// authentication ends, completed from another thread.
+    ///
+    /// # Errors
+    ///
+    /// Why the step may not start: the actor does not administer the
+    /// room's identity, the arguments are malformed, or another step runs.
+    fn start(
+        &self,
+        request: &DevicePairingRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<DevicePairingOutcome>, String>;
 }
 
 pub trait ContinuationServices: Send + Sync {
@@ -1278,6 +1342,9 @@ pub struct HostServices {
     /// The device's keyboard shortcuts on the action door. Without it
     /// they are not offered.
     pub keyboard_shortcuts: Option<Arc<dyn KeyboardShortcutServices>>,
+    /// Pairing a nearby device, run by the host. Without it no door offers
+    /// it.
+    pub device_pairing: Option<Arc<dyn DevicePairingServices>>,
     pub continuations: Option<Arc<dyn ContinuationServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,

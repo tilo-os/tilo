@@ -141,11 +141,10 @@ impl Runner for InventoryCli {
             Some("list") if args[2] == "--app" => {
                 Ok("org.example.Chat/x86_64/stable\tflathub\twork\tChat\n".into())
             }
-            Some("list") if args[1] == "--user" => Ok(String::new()),
+            Some("list" | "remotes") if args[1] == "--user" => Ok(String::new()),
             Some("list") => {
                 Ok("org.example.Platform/x86_64/stable\tflathub\twork\tPlatform\n".into())
             }
-            Some("remotes") if args[1] == "--user" => Ok(String::new()),
             Some("remotes") => Ok("flathub\thttps://example.org/repo/\t\n".into()),
             Some("info") if args.contains(&"--show-runtime".into()) => {
                 Ok("org.example.Platform/x86_64/stable".into())

@@ -185,23 +185,22 @@ impl OfflineOutputTransaction {
         let service = TrustedCaptureService::native()?;
         let runtime = service.root.clone();
         let publisher = service.publisher.clone();
-        let proof = OriginalOutputAdmission::admit(self.clone())?;
-        self.with_inventory_reader(&runtime, &publisher, |admission, request, digest| {
-            if digest != self.binding.read_claim_digest {
-                return Err(refused("Original command read binding differs"));
-            }
-            let request = match expected {
-                Some((expected, applications)) => {
-                    request.into_validate_selected(expected, applications, password)?
+        self.clone()
+            .with_writer(&runtime, &publisher, |admission, request, digest| {
+                if digest != self.binding.read_claim_digest {
+                    return Err(refused("Original command read binding differs"));
                 }
-                None => request.into_export(password)?,
-            };
-            let run =
-                self.launch_request(admission.with_original_output(proof)?, request, service)?;
-            // Retain actual cleanup tokens before the read API performs its
-            // final permission recheck, including cancellation after child exit.
-            runs.push(run);
-            Ok(())
-        })
+                let request = match expected {
+                    Some((expected, applications)) => {
+                        request.into_validate_selected(expected, applications, password)?
+                    }
+                    None => request.into_export(password)?,
+                };
+                let run = self.launch_request(admission, request, service)?;
+                // Retain actual cleanup tokens before the read API performs its
+                // final permission recheck, including cancellation after child exit.
+                runs.push(run);
+                Ok(())
+            })
     }
 }

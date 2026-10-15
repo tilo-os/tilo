@@ -20,7 +20,7 @@ use runtime_fs::{
 pub(in crate::setup) use source_origin::{SourceHistoryReadOrigin, SourceSelectedOrigin};
 use std::{
     io,
-    os::{fd::AsRawFd, unix::net::UnixStream},
+    os::unix::net::UnixStream,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -34,37 +34,6 @@ fn refused() -> io::Error {
         "Retained source relay refused",
     )
 }
-pub(super) fn target_peer(
-    stream: &UnixStream,
-    input: &InstalledRetainedLaunchInput,
-) -> io::Result<()> {
-    if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
-        return Err(refused());
-    }
-    let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    if unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut peer).cast(),
-            &raw mut len,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    if len as usize != std::mem::size_of::<libc::ucred>()
-        || peer.pid <= 0
-        || peer.uid != input.binding().target_uid
-        || peer.pid as u32 != input.binding().target_pid
-    {
-        return Err(refused());
-    }
-    Ok(())
-}
-
 // Constructor private: neither RPC labels nor caller-selected callbacks can
 // replace installed custody. The lock serializes proof challenges and source
 // calls; the connected server admits only eight pending backend callbacks.
@@ -85,13 +54,8 @@ impl RetainedProjectionConsumer {
     }
 }
 enum Consumer {
-    CertifiedShell,
     SelectedEditor(Arc<RootSelectedEditor>),
     Projection(RetainedProjectionConsumer),
-}
-enum Selection {
-    CertifiedShell(UnixStream),
-    Projection(Arc<TargetProjectionEndpoint>),
 }
 #[derive(Clone)]
 enum Source {
@@ -233,14 +197,13 @@ impl Custody {
     }
     fn current(&self) -> io::Result<()> {
         if self.revoked.load(Ordering::Acquire)
-            || unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+            || rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
         {
             return Err(refused());
         }
         self.input.revalidate(&self.cancel)?;
         match &self.consumer {
-            Consumer::CertifiedShell => {}
             Consumer::SelectedEditor(editor) => editor.check()?,
             Consumer::Projection(consumer) => consumer.current()?,
         }
@@ -251,7 +214,7 @@ impl Custody {
     /// Native scope and observed callback retirement remain enforced remotely;
     /// any transport error is unknown and never acknowledged or replayed as IO.
     fn cleanup(&self, request: ControllerCleanup) -> io::Result<()> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(refused());
         }
         let source = self.source.lock().map_err(|_| refused())?;
@@ -458,19 +421,6 @@ impl RetainedSourceRelay {
         });
         SourceSelectedOrigin::pin(root, components)
     }
-    pub(in crate::setup) fn serve(
-        target: UnixStream,
-        source: SelectedFileConnection,
-        input: Arc<InstalledRetainedLaunchInput>,
-        cancel: Arc<AtomicBool>,
-    ) -> io::Result<Self> {
-        Self::build(
-            Source::Selected(source),
-            input,
-            cancel,
-            Selection::CertifiedShell(target),
-        )
-    }
     /// The endpoint is minted only by the canonical launcher owner for its
     /// fixed root projection child. Caller streams or child PID labels cannot
     /// substitute for it. The caller retains that owner through relay retirement.
@@ -480,12 +430,7 @@ impl RetainedSourceRelay {
         cancel: Arc<AtomicBool>,
         endpoint: Arc<TargetProjectionEndpoint>,
     ) -> io::Result<Self> {
-        Self::build(
-            Source::Selected(source),
-            input,
-            cancel,
-            Selection::Projection(endpoint),
-        )
+        Self::build(Source::Selected(source), input, cancel, endpoint)
     }
     pub(in crate::setup) fn serve_home_projection(
         source: DirectoryConnection,
@@ -493,12 +438,7 @@ impl RetainedSourceRelay {
         cancel: Arc<AtomicBool>,
         endpoint: Arc<TargetProjectionEndpoint>,
     ) -> io::Result<Self> {
-        Self::build(
-            Source::Home(source),
-            input,
-            cancel,
-            Selection::Projection(endpoint),
-        )
+        Self::build(Source::Home(source), input, cancel, endpoint)
     }
     pub(in crate::setup) fn serve_home_projection_with_history(
         source: DirectoryConnection,
@@ -521,15 +461,9 @@ impl RetainedSourceRelay {
         source: Source,
         input: Arc<InstalledRetainedLaunchInput>,
         cancel: Arc<AtomicBool>,
-        selection: Selection,
+        endpoint: Arc<TargetProjectionEndpoint>,
     ) -> io::Result<Self> {
-        let (shell_stream, consumer) = match selection {
-            Selection::CertifiedShell(stream) => (Some(stream), Consumer::CertifiedShell),
-            Selection::Projection(endpoint) => (
-                None,
-                Consumer::Projection(RetainedProjectionConsumer { endpoint }),
-            ),
-        };
+        let consumer = Consumer::Projection(RetainedProjectionConsumer { endpoint });
         let custody = Arc::new(Custody {
             input,
             cancel,
@@ -547,12 +481,8 @@ impl RetainedSourceRelay {
         let result: io::Result<()> = (|| {
             let custody = relay.custody.as_ref().ok_or_else(refused)?;
             custody.current()?;
-            let target = match (&custody.consumer, shell_stream) {
-                (Consumer::CertifiedShell, Some(stream)) => {
-                    target_peer(&stream, &custody.input)?;
-                    stream
-                }
-                (Consumer::Projection(consumer), None) => consumer.connect()?,
+            let target = match &custody.consumer {
+                Consumer::Projection(consumer) => consumer.connect()?,
                 _ => return Err(refused()),
             };
             custody.call(|source| {
@@ -609,7 +539,7 @@ impl RetainedSourceRelay {
         self.stop()
     }
     fn stop(&mut self) -> io::Result<()> {
-        let Some(custody) = self.custody.as_ref().cloned() else {
+        let Some(custody) = self.custody.clone() else {
             return Ok(());
         };
         // Break the read-subject custody cycle before closing the original
@@ -1190,7 +1120,7 @@ impl RetainedSelectedEditRelay {
         if let Some(result) = &self.retirement {
             return result
                 .as_ref()
-                .map(|()| ())
+                .copied()
                 .map_err(|error| io::Error::other(error.clone()));
         }
         if let Some(filtered) = &self.filtered {
@@ -1225,12 +1155,7 @@ impl RetainedSelectedEditRelay {
         self.endpoint.take();
         self.admission.take();
         self.owner.take();
-        self.retirement = Some(
-            server_result
-                .as_ref()
-                .map(|()| ())
-                .map_err(ToString::to_string),
-        );
+        self.retirement = Some(server_result.as_ref().copied().map_err(ToString::to_string));
         server_result
     }
 }

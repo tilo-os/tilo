@@ -381,8 +381,8 @@ impl Store {
         &self,
         operation: &str,
     ) -> io::Result<Arc<PinnedDirectory>> {
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || self.records_path.as_deref()
                 != Some(Path::new("/var/lib/tilo-imager/home-capture/records"))
         {

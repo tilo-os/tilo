@@ -173,7 +173,7 @@ pub fn stream(
         && before.len() == SLOT;
     let mut remaining = sealed;
     let mut digest = Sha256::new();
-    let mut buffer = [0; 65536];
+    let mut buffer = vec![0; 65536].into_boxed_slice();
     while remaining > 0 {
         let limit = usize::try_from(remaining.min(65536)).map_err(|_| invalid())?;
         let n = (&*fd).read(buffer.get_mut(..limit).ok_or_else(invalid)?)?;
@@ -185,7 +185,7 @@ pub fn stream(
         if let Some(dest) = out.as_mut() {
             dest.write_all(bytes)?;
         }
-        remaining -= n as u64;
+        remaining = remaining.checked_sub(n as u64).ok_or_else(invalid)?;
     }
     if fixed {
         let mut tail = before.len().checked_sub(sealed).ok_or_else(invalid)?;
@@ -201,7 +201,7 @@ pub fn stream(
             {
                 return Err(invalid());
             }
-            tail -= n as u64;
+            tail = tail.checked_sub(n as u64).ok_or_else(invalid)?;
         }
     }
     if (&*fd).read(buffer.get_mut(..1).ok_or_else(invalid)?)? != 0
@@ -233,22 +233,32 @@ fn stream_completed(
             .get("sealed_bytes")
             .and_then(Value::as_u64)
             .ok_or_else(invalid)?;
-        let mut total = 0;
+        let mut total = 0u64;
         let mut digest = Sha256::new();
         let mut prefix: Vec<u8> = Vec::new();
-        let mut buffer = [0; 65536];
+        let mut buffer = vec![0; 65536].into_boxed_slice();
         loop {
-            let limit = usize::try_from((size - total + 1).min(65536)).map_err(|_| invalid())?;
+            let limit = usize::try_from(
+                size.checked_sub(total)
+                    .and_then(|n| n.checked_add(1))
+                    .ok_or_else(invalid)?
+                    .min(65536),
+            )
+            .map_err(|_| invalid())?;
             let n = pipe.read(buffer.get_mut(..limit).ok_or_else(invalid)?)?;
             if n == 0 {
                 break;
             }
-            total += n as u64;
+            total = total.checked_add(n as u64).ok_or_else(invalid)?;
             if total > size {
                 return Err(invalid());
             }
             let bytes = buffer.get(..n).ok_or_else(invalid)?;
-            prefix.extend(bytes.iter().take(8 - prefix.len()));
+            prefix.extend(
+                bytes
+                    .iter()
+                    .take(8usize.checked_sub(prefix.len()).ok_or_else(invalid)?),
+            );
             digest.update(bytes);
             if let Some(dest) = out.as_mut() {
                 dest.write_all(bytes)?;
@@ -297,11 +307,19 @@ pub fn required(expected: &Value, kind: &str) -> Result<u128> {
         .and_then(|v| v.get("metadata_bytes"))
         .and_then(Value::as_u64)
         .ok_or_else(invalid)?;
-    Ok(u128::from(n("sealed_bytes")?)
-        + u128::from(n("plaintext_bytes")?) * if kind == "applications" { 2 } else { 1 }
-        + u128::from(meta)
-        + u128::from(n("entries")?) * 8192
-        + 16 * 1024 * 1024)
+    let entries_bytes = u128::from(n("entries")?)
+        .checked_mul(8192)
+        .ok_or_else(invalid)?;
+    u128::from(n("sealed_bytes")?)
+        .checked_add(
+            u128::from(n("plaintext_bytes")?)
+                .checked_mul(if kind == "applications" { 2 } else { 1 })
+                .ok_or_else(invalid)?,
+        )
+        .and_then(|total| total.checked_add(u128::from(meta)))
+        .and_then(|total| total.checked_add(entries_bytes))
+        .and_then(|total| total.checked_add(16 * 1024 * 1024))
+        .ok_or_else(invalid)
 }
 pub fn retain(source: &str, target: &str, kind: &str) -> Result<()> {
     let Some(value) = staged(source, kind)? else {
@@ -420,7 +438,7 @@ fn unused_browser(root: &File) -> Result<()> {
     if !m.is_file() || m.len() != SLOT {
         return Err(invalid());
     }
-    let mut buf = [0; 65536];
+    let mut buf = vec![0; 65536].into_boxed_slice();
     loop {
         let n = (&fd).read(&mut buf)?;
         if n == 0 {
@@ -435,14 +453,7 @@ fn unused_browser(root: &File) -> Result<()> {
     }
     Ok(())
 }
-pub fn stage(
-    roots: &[String],
-    output: &str,
-    prepared: &Value,
-    devices: &[String],
-    kind: &str,
-) -> Result<()> {
-    let (selection, locator, _) = names(kind)?;
+fn unique_roots(roots: &[String]) -> Result<Vec<&String>> {
     let mut identities = std::collections::BTreeSet::new();
     let mut unique = Vec::new();
     for root in roots {
@@ -451,8 +462,17 @@ pub fn stage(
             unique.push(root);
         }
     }
+    Ok(unique)
+}
+fn selections(
+    roots: &[&String],
+    prepared: &Value,
+    devices: &[String],
+    kind: &str,
+    selection: &str,
+) -> Result<Vec<(Value, Value)>> {
     let mut selections = Vec::new();
-    for root in &unique {
+    for root in roots {
         let fd = fs::directory(root)?;
         if !fs::exists(&fd, fs::DIRECTORY)? {
             continue;
@@ -492,6 +512,18 @@ pub fn stage(
         validate::expectation(expected, kind)?;
         selections.push((media::binding(root, devices)?, expected.clone()));
     }
+    Ok(selections)
+}
+pub fn stage(
+    roots: &[String],
+    output: &str,
+    prepared: &Value,
+    devices: &[String],
+    kind: &str,
+) -> Result<()> {
+    let (selection, locator, _) = names(kind)?;
+    let unique = unique_roots(roots)?;
+    let selections = selections(&unique, prepared, devices, kind, selection)?;
     if selections.is_empty() {
         return Ok(());
     }

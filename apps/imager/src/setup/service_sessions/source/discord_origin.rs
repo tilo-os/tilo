@@ -36,8 +36,8 @@ impl DiscordOriginGrant {
         let profile = crate::setup::migration_durability::readable_directory(&profile)
             .map_err(unavailable)?;
         let facts = profile.metadata().map_err(unavailable)?;
-        let owner = unsafe { libc::getuid() };
-        if !facts.is_dir() || facts.uid() != owner || unsafe { libc::geteuid() } != owner {
+        let owner = rustix::process::getuid().as_raw();
+        if !facts.is_dir() || facts.uid() != owner || rustix::process::geteuid().as_raw() != owner {
             return Err(SourceError::Unavailable);
         }
         storage(&profile)?;
@@ -49,8 +49,8 @@ impl DiscordOriginGrant {
     fn validate(&self) -> Result<(), SourceError> {
         let facts = self.profile.metadata().map_err(unavailable)?;
         if (facts.uid(), facts.dev(), facts.ino()) != self.identity
-            || unsafe { libc::getuid() } != self.identity.0
-            || unsafe { libc::geteuid() } != self.identity.0
+            || rustix::process::getuid().as_raw() != self.identity.0
+            || rustix::process::geteuid().as_raw() != self.identity.0
         {
             return Err(SourceError::Changed);
         }

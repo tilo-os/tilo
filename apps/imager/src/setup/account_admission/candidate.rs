@@ -128,8 +128,8 @@ pub(super) fn admits(
     let raw = protected(Path::new(MARKER), 16384)?;
     let value: Admission = serde_json::from_slice(&raw).map_err(|_| refused())?;
     value.check_selection(required, sdk, person)?;
-    if unsafe { libc::getuid() } != 1000
-        || unsafe { libc::geteuid() } != 1000
+    if rustix::process::getuid().as_raw() != 1000
+        || rustix::process::geteuid().as_raw() != 1000
         || value.mount_namespace != std::fs::metadata("/proc/self/ns/mnt")?.ino()
         || value.pid_namespace != std::fs::metadata("/proc/self/ns/pid")?.ino()
     {

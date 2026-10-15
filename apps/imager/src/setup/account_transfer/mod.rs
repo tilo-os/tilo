@@ -17,6 +17,10 @@ mod portable;
 mod rclone_oauth;
 pub(crate) mod spotify_identity;
 mod tilo_sources;
+mod windows_source;
+pub use windows_source::{
+    WindowsProfile, discover_windows_sources, native_windows_profiles, private_windows_hints,
+};
 
 pub use actions::{
     AccountActions, AccountJob, AccountJobState, ActionError, ConnectionProvider, ConsentLink,

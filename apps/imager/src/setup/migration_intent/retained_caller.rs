@@ -72,8 +72,8 @@ impl MigrationIntent {
                         _ => return Err(error("Retained original groups were not acknowledged")),
                     }
                 }
-                if released && declaration.is_some() {
-                    return Ok(declaration.unwrap());
+                if released && let Some(declaration) = declaration {
+                    return Ok(declaration);
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }

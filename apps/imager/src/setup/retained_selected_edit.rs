@@ -78,8 +78,8 @@ impl RootSelectedEditor {
         result
     }
     fn check_current(&self) -> io::Result<()> {
-        if unsafe { libc::getuid() } != 0
-            || unsafe { libc::geteuid() } != 0
+        if rustix::process::getuid().as_raw() != 0
+            || rustix::process::geteuid().as_raw() != 0
             || self.failed.load(Ordering::Acquire)
             || self.cancel.load(Ordering::Acquire)
         {
@@ -361,7 +361,7 @@ impl RootSelectedEditAdmission {
     /// signal is not retirement; callers retain this owner until pidfd readiness.
     pub(super) fn cancel_consumer(&self) -> io::Result<()> {
         use std::os::fd::AsRawFd;
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(refused());
         }
         let consumer = self

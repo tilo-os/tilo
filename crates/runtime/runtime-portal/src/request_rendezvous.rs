@@ -22,8 +22,7 @@ fn refused() -> io::Error {
 }
 
 fn current_uid() -> u32 {
-    // SAFETY: getuid takes no arguments and returns the process's real UID.
-    unsafe { libc::getuid() }
+    rustix::process::getuid().as_raw()
 }
 
 /// Each caller supplies its existing held directory ancestry, preserving its

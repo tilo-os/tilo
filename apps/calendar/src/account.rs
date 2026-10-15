@@ -50,6 +50,9 @@ pub struct CalDavConfig {
     /// plaintext store (hence `serde(skip)`) — it lives only in the vault.
     #[serde(skip)]
     pub password: String,
+    /// Canonical account ID whose Google calendar grant Custodian refreshes.
+    #[serde(skip)]
+    pub oauth_account_id: Option<String>,
 }
 
 /// One remote calendar collection within an account (a `CalDAV` `calendar-home-set`
@@ -153,13 +156,35 @@ impl CalendarAccount {
     /// Rebuild a calendar account from a shared [`StoredAccount`], reading the
     /// password back from `vault`.
     fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
-        let payload = stored.config_as::<StoredConfig>()?;
+        let payload: StoredConfig = stored
+            .config
+            .get("calendar")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .or_else(|| stored.config_as::<StoredConfig>())?;
         let mut config = payload.config;
         if config.display_name.is_empty() {
             config.display_name.clone_from(&stored.display_name);
         }
         if let Some(secret) = vault.get(&stored.id) {
-            config.password = secret.password;
+            #[cfg(feature = "live")]
+            {
+                config.password = account_custody::password_credential(&secret).to_string();
+            }
+            #[cfg(not(feature = "live"))]
+            {
+                if secret.token.is_none() {
+                    config.password = secret.password;
+                }
+            }
+        }
+        if stored
+            .config
+            .get("calendar_provider")
+            .and_then(serde_json::Value::as_str)
+            == Some("google")
+        {
+            config.oauth_account_id = Some(stored.id.to_string());
+            config.password.clear();
         }
         Some(Self {
             id: stored.id.to_string(),
@@ -251,23 +276,14 @@ impl AccountStore {
         let accounts = shared
             .list(&ty)
             .into_iter()
-            .chain(
-                shared
-                    .list(&AccountTypeId::from("nextcloud"))
-                    .into_iter()
-                    .filter(|stored| {
-                        stored
-                            .config
-                            .get("use_calendar")
-                            .and_then(serde_json::Value::as_bool)
-                            == Some(true)
-                            && stored
-                                .config
-                                .get("calendars")
-                                .and_then(serde_json::Value::as_array)
-                                .is_some_and(|calendars| !calendars.is_empty())
-                    }),
-            )
+            .chain(shared.all().iter().filter(|stored| {
+                stored
+                    .config
+                    .get("use_calendar")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                    && stored.type_id.as_str() != TYPE_ID
+            }))
             .filter(|stored| stored.enabled)
             .filter_map(|stored| CalendarAccount::from_stored(stored, vault))
             .collect();
@@ -292,10 +308,9 @@ impl AccountStore {
         let mut vault_changed = false;
         for acct in &self.accounts {
             let id = AccountId::from(acct.id.clone());
-            if let Some(source) = shared
-                .get(&id)
-                .filter(|source| source.type_id.as_str() == "nextcloud")
-            {
+            if let Some(source) = shared.get(&id).filter(|source| {
+                source.type_id.as_str() != TYPE_ID || acct.config.oauth_account_id.is_some()
+            }) {
                 // Keep the canonical service account and its credential. Calendar
                 // is a projection of it, not a second account with a copied key.
                 let mut stored = source.clone();
@@ -303,8 +318,13 @@ impl AccountStore {
                     .config
                     .as_object_mut()
                     .ok_or_else(|| std::io::Error::other("Nextcloud settings are not an object"))?;
-                config.insert("calendars".into(), serde_json::to_value(&acct.calendars)?);
-                config.insert("collapsed".into(), acct.collapsed.into());
+                if let Some(calendar) = config.get_mut("calendar") {
+                    calendar["calendars"] = serde_json::to_value(&acct.calendars)?;
+                    calendar["collapsed"] = acct.collapsed.into();
+                } else {
+                    config.insert("calendars".into(), serde_json::to_value(&acct.calendars)?);
+                    config.insert("collapsed".into(), acct.collapsed.into());
+                }
                 shared.upsert(stored);
                 continue;
             }
@@ -340,6 +360,7 @@ impl AccountStore {
                         server_url: "https://caldav.fastmail.com/dav/calendars".into(),
                         username: "work@fastmail.example".into(),
                         password: String::new(),
+                        oauth_account_id: None,
                     },
                     calendars: vec![
                         RemoteCalendar {
@@ -366,6 +387,7 @@ impl AccountStore {
                         server_url: "https://caldav.icloud.com".into(),
                         username: "me@icloud.example".into(),
                         password: String::new(),
+                        oauth_account_id: None,
                     },
                     calendars: vec![
                         RemoteCalendar {

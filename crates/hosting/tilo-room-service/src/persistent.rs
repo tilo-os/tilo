@@ -5,7 +5,7 @@
 
 use crate::config::{Config, PersistentConfig};
 use crate::guests::GuestLedger;
-use crate::limits::{IpHasher, JoinLimits, Seats};
+use crate::limits::{IpHasher, JoinLimits, JoinRates, Seats};
 use crate::room::read_started;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -56,8 +56,11 @@ pub struct SpectateRequest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpectateAnswer {
-    /// The device certificate in the form the browser runtime takes.
-    pub certificate: serde_json::Value,
+    /// The device certificate in the form the browser runtime takes, as JSON
+    /// text the page passes on unparsed: its nanosecond timestamps are
+    /// larger than a JavaScript number holds exactly, and the signature
+    /// covers them, so a parsed and re-serialized copy no longer verifies.
+    pub certificate: String,
     pub origin: String,
     pub room: String,
 }
@@ -74,7 +77,7 @@ pub enum JoinRefusal {
 /// What the child answered one waiting request.
 enum Answer {
     Invitation(String),
-    Certificate(serde_json::Value),
+    Certificate(String),
 }
 
 type Waiters = HashMap<String, oneshot::Sender<std::result::Result<Answer, String>>>;
@@ -116,7 +119,13 @@ impl Shared {
             .persistent
             .as_ref()
             .context("not a persistent room")?;
-        Self::with_key(dir, key, config.max_guests, persistent.max_spectators)
+        Self::with_key(
+            dir,
+            key,
+            config.max_guests,
+            persistent.max_spectators,
+            (persistent.guest_joins, persistent.spectator_joins),
+        )
     }
 
     fn with_key(
@@ -124,6 +133,7 @@ impl Shared {
         key: [u8; 32],
         max_guests: usize,
         max_spectators: usize,
+        (guest_joins, spectator_joins): (JoinRates, JoinRates),
     ) -> Result<Self> {
         std::fs::create_dir_all(dir.join("avatars"))
             .with_context(|| format!("create {}", dir.display()))?;
@@ -131,8 +141,8 @@ impl Shared {
         Ok(Self {
             dir,
             hasher: IpHasher::new(key),
-            joins: std::sync::Mutex::new(JoinLimits::guests()),
-            spectates: std::sync::Mutex::new(JoinLimits::spectators()),
+            joins: std::sync::Mutex::new(JoinLimits::new(guest_joins)),
+            spectates: std::sync::Mutex::new(JoinLimits::new(spectator_joins)),
             guests: std::sync::Mutex::new(guests),
             seats: std::sync::Mutex::new(Seats::new(max_guests)),
             watching: std::sync::Mutex::new(Seats::new(max_spectators)),
@@ -142,8 +152,14 @@ impl Shared {
     #[cfg(test)]
     pub(crate) fn for_test(dir: &Path, max_guests: usize, max_spectators: usize) -> Arc<Self> {
         Arc::new(
-            Self::with_key(dir.to_path_buf(), [7; 32], max_guests, max_spectators)
-                .unwrap_or_else(|error| panic!("{error:#}")),
+            Self::with_key(
+                dir.to_path_buf(),
+                [7; 32],
+                max_guests,
+                max_spectators,
+                (JoinRates::GUESTS, JoinRates::SPECTATORS),
+            )
+            .unwrap_or_else(|error| panic!("{error:#}")),
         )
     }
 
@@ -465,7 +481,7 @@ impl Persistent {
                     certificate,
                 }) => self.settle(
                     &format!("spectate:{device_public_key}"),
-                    serde_json::to_value(&certificate)
+                    serde_json::to_string(&certificate)
                         .map(Answer::Certificate)
                         .map_err(|error| error.to_string()),
                 ),
@@ -1114,10 +1130,13 @@ mod tests {
         let answer = watching.await.unwrap().unwrap();
         assert_eq!(answer.room, "room-uuid");
         assert_eq!(answer.origin, "https://rooms.example");
+        // The certificate stays JSON text, so its timestamps reach the page
+        // exactly and the signature still verifies there.
         assert_eq!(
-            answer.certificate,
-            serde_json::to_value(&certificate).unwrap()
+            serde_json::from_str::<tilo_user_identity::DeviceCert>(&answer.certificate).unwrap(),
+            certificate
         );
+        assert!(answer.certificate.contains("1791962530023125779"));
     }
 
     #[tokio::test]
@@ -1149,8 +1168,10 @@ mod tests {
             device_public_key: [4; 32],
             device_label: "Watching visitor".into(),
             capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: Some(2),
+            // A real clock reading: beyond 2^53, so a JavaScript number
+            // would round it.
+            issued_at_ns: 1_791_962_530_023_125_779,
+            expires_at_ns: Some(1_791_966_130_023_125_779),
             signature: [3; 64],
         }
     }

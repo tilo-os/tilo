@@ -527,24 +527,59 @@ mod live {
 
     const CALENDAR_CONTENT_TYPE: &str = "text/calendar; charset=utf-8";
 
-    /// In a page, servers that do not allow the page's origin are reached
-    /// through the host's fetch proxy when it offers one.
-    fn client() -> Result<DavClient, DavError> {
+    /// Reuses the transport, never an OAuth bearer: every request resolves
+    /// current canonical custody, including fallback REPORTs and token probes.
+    pub(crate) struct CalDavClient {
+        dav: DavClient,
+        custodian: account_custody::Custodian,
+    }
+
+    impl CalDavClient {
+        pub(crate) fn new(custodian: account_custody::Custodian) -> Result<Self, DavError> {
+            Ok(Self {
+                dav: transport()?,
+                custodian,
+            })
+        }
+    }
+
+    fn client() -> Result<CalDavClient, DavError> {
+        CalDavClient::new(account_custody::Custodian::live())
+    }
+
+    /// Cross-origin browser requests use the host's fetch proxy when available.
+    fn transport() -> Result<DavClient, DavError> {
         DavClient::with_fetch_proxy(
             &tilo_dav::net::Options {
                 user_agent: Some("Tilo-Calendar/0.1"),
                 timeout: Duration::from_secs(20),
+                redirects: tilo_dav::net::Redirects::Refuse,
                 ..tilo_dav::net::Options::default()
             },
             tilo_net::proxy::ProxyUse::CrossOrigin,
         )
     }
 
-    fn authenticated(client: &DavClient, config: &CalDavConfig) -> DavClient {
-        client.with_credentials(Credentials::new(
-            config.username.clone(),
-            config.password.clone(),
-        ))
+    async fn authenticated(
+        client: &CalDavClient,
+        config: &CalDavConfig,
+        target: &str,
+    ) -> Result<DavClient, String> {
+        let base =
+            url::Url::parse(&config.server_url).map_err(|_| "invalid calendar server URL")?;
+        crate::setup::same_origin_url(&base, target)?;
+        let credentials = if let Some(id) = &config.oauth_account_id {
+            let id = accounts::AccountId::from(id.clone());
+            let config = config.clone();
+            let custodian = client.custodian.clone();
+            ui::rt::app()
+                .spawn_blocking(move || crate::setup::credentials(&custodian, &id, &config, true))
+                .await
+                .map_err(|_| "calendar credential task failed")??
+        } else {
+            Credentials::new(config.username.clone(), config.password.clone())
+        };
+        Ok(client.dav.with_credentials(credentials))
     }
 
     fn dav_error_message(error: &DavError) -> String {
@@ -565,51 +600,63 @@ mod live {
             Err(e) => return (SyncResult::default(), SyncOutcome::Failed(e.to_string())),
         };
 
-        let checkpoint_map: HashMap<&str, &str> = checkpoints
-            .iter()
-            .map(|(calendar, token)| (calendar.as_str(), token.as_str()))
-            .collect();
-        let mut merged = SyncResult::default();
-        let mut count = 0usize;
-        for (config, calendars) in accounts {
-            for cal in calendars.iter().filter(|c| c.visible) {
-                match pull_calendar_live(
-                    &client,
-                    config,
-                    cal,
-                    today,
-                    checkpoint_map.get(cal.id.as_str()).copied(),
-                )
-                .await
-                {
-                    Ok(mut res) => {
-                        let palette = cal.palette();
-                        for e in &mut res.events {
-                            e.color = palette;
-                            e.calendar_id = Some(cal.id.clone());
+        client.sync_all(accounts, today, checkpoints).await
+    }
+
+    impl CalDavClient {
+        pub(crate) async fn sync_all(
+            &self,
+            accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
+            today: NaiveDate,
+            checkpoints: &[(String, String)],
+        ) -> (SyncResult, SyncOutcome) {
+            let client = self;
+            let checkpoint_map: HashMap<&str, &str> = checkpoints
+                .iter()
+                .map(|(calendar, token)| (calendar.as_str(), token.as_str()))
+                .collect();
+            let mut merged = SyncResult::default();
+            let mut count = 0usize;
+            for (config, calendars) in accounts {
+                for cal in calendars.iter().filter(|c| c.visible) {
+                    match pull_calendar_live(
+                        client,
+                        config,
+                        cal,
+                        today,
+                        checkpoint_map.get(cal.id.as_str()).copied(),
+                    )
+                    .await
+                    {
+                        Ok(mut res) => {
+                            let palette = cal.palette();
+                            for e in &mut res.events {
+                                e.color = palette;
+                                e.calendar_id = Some(cal.id.clone());
+                            }
+                            merged.events.append(&mut res.events);
+                            merged.tasks.append(&mut res.tasks);
+                            merged.resources.append(&mut res.resources);
+                            merged.deletions.append(&mut res.deletions);
+                            merged.checkpoints.append(&mut res.checkpoints);
+                            count += 1;
                         }
-                        merged.events.append(&mut res.events);
-                        merged.tasks.append(&mut res.tasks);
-                        merged.resources.append(&mut res.resources);
-                        merged.deletions.append(&mut res.deletions);
-                        merged.checkpoints.append(&mut res.checkpoints);
-                        count += 1;
+                        Err(e) => return (merged, SyncOutcome::Failed(e)),
                     }
-                    Err(e) => return (merged, SyncOutcome::Failed(e)),
                 }
             }
+            if count == 0 {
+                return (merged, SyncOutcome::Offline);
+            }
+            let events = merged.events.len();
+            (
+                merged,
+                SyncOutcome::Synced {
+                    calendars: count,
+                    events,
+                },
+            )
         }
-        if count == 0 {
-            return (merged, SyncOutcome::Offline);
-        }
-        let events = merged.events.len();
-        (
-            merged,
-            SyncOutcome::Synced {
-                calendars: count,
-                events,
-            },
-        )
     }
 
     /// Pull one collection: an RFC 6578 `sync-collection` REPORT from the
@@ -617,17 +664,17 @@ mod live {
     /// the server refuses the token or the report. Each resource's
     /// `calendar-data` is handed to [`ics::parse`].
     async fn pull_calendar_live(
-        client: &DavClient,
+        client: &CalDavClient,
         config: &CalDavConfig,
         cal: &RemoteCalendar,
         _today: NaiveDate,
         checkpoint: Option<&str>,
     ) -> Result<SyncResult, String> {
-        let client = authenticated(client, config);
         let url = collection_url(config, cal);
         let mut full = checkpoint.is_none();
         let body = super::sync_collection_body(checkpoint.unwrap_or_default());
-        let mut response = client
+        let mut response = authenticated(client, config, &url)
+            .await?
             .report(url.as_str(), Depth::One, body)
             .await
             .map_err(|error| dav_error_message(&error))?;
@@ -642,7 +689,8 @@ mod live {
             // distinguish an old resource from a deletion. Response
             // byte/resource caps bound it.
             let query = tilo_dav::body::calendar_query_body(&super::REPORT_PROPS, None);
-            response = client
+            response = authenticated(client, config, &url)
+                .await?
                 .report(url.as_str(), Depth::One, query)
                 .await
                 .map_err(|error| dav_error_message(&error))?;
@@ -691,7 +739,7 @@ mod live {
         let next_token = if parsed.token.is_some() {
             parsed.token
         } else if full {
-            discover_sync_token(&client, &url).await?
+            discover_sync_token(&authenticated(client, config, &url).await?, &url).await?
         } else {
             None
         };
@@ -747,101 +795,129 @@ mod live {
         let Ok(client) = client() else {
             return super::MutationResult::default();
         };
-        let mut result = super::MutationResult::default();
-        for job in jobs {
-            if job.calendar.read_only {
-                result
-                    .failures
-                    .push((job.event.id, "Calendar is read-only".into()));
-                continue;
-            }
-            let mut request = super::build_put_request(&job.config, &job.calendar, &job.event);
-            if let Some(href) = &job.href {
-                request.url = absolute_resource_url(&job.config, href);
-                // An existing binding is never overwritten unconditionally.
-                // Exact ETags detect edits; `*` is the safe fallback for old
-                // servers/documents where the binding predates ETag storage.
-                request.if_match = Some(job.etag.clone().unwrap_or_else(|| "*".into()));
-                request.if_none_match = false;
-            }
-            let precondition = match &request.if_match {
-                Some(etag) => Precondition::IfMatch(etag),
-                None if request.if_none_match => Precondition::IfNoneMatchAny,
-                None => Precondition::None,
-            };
-            let sent = authenticated(&client, &job.config)
-                .put(
-                    request.url.as_str(),
-                    std::mem::take(&mut request.body).into_bytes(),
-                    Some(CALENDAR_CONTENT_TYPE),
-                    precondition,
-                )
-                .await;
-            match sent {
-                Ok(response) if response.status().is_success() => {
-                    result.confirmed.push(job.event.id);
-                    result.revisions.push(super::RemoteRevision {
-                        id: job.event.id,
-                        calendar_id: job.calendar.id.clone(),
-                        href: request.url,
-                        etag: response.etag(),
-                    });
+        client.push(jobs).await
+    }
+
+    impl CalDavClient {
+        pub(crate) async fn push(&self, jobs: &[super::UploadJob]) -> super::MutationResult {
+            let client = self;
+            let mut result = super::MutationResult::default();
+            for job in jobs {
+                if job.calendar.read_only {
+                    result
+                        .failures
+                        .push((job.event.id, "Calendar is read-only".into()));
+                    continue;
                 }
-                Ok(response) if response.status() == StatusCode::PRECONDITION_FAILED => {
-                    result.conflicts.push((job.event.id, request.url));
+                let mut request = super::build_put_request(&job.config, &job.calendar, &job.event);
+                if let Some(href) = &job.href {
+                    request.url = absolute_resource_url(&job.config, href);
+                    // An existing binding is never overwritten unconditionally.
+                    // Exact ETags detect edits; `*` is the safe fallback for old
+                    // servers/documents where the binding predates ETag storage.
+                    request.if_match = Some(job.etag.clone().unwrap_or_else(|| "*".into()));
+                    request.if_none_match = false;
                 }
-                Ok(response) => result.failures.push((
-                    job.event.id,
-                    format!("server returned {}", response.status()),
-                )),
-                Err(error) => result.failures.push((job.event.id, error.to_string())),
+                let precondition = match &request.if_match {
+                    Some(etag) => Precondition::IfMatch(etag),
+                    None if request.if_none_match => Precondition::IfNoneMatchAny,
+                    None => Precondition::None,
+                };
+                let authenticated = match authenticated(client, &job.config, &request.url).await {
+                    Ok(client) => client,
+                    Err(error) => {
+                        result.failures.push((job.event.id, error));
+                        continue;
+                    }
+                };
+                let sent = authenticated
+                    .put(
+                        request.url.as_str(),
+                        std::mem::take(&mut request.body).into_bytes(),
+                        Some(CALENDAR_CONTENT_TYPE),
+                        precondition,
+                    )
+                    .await;
+                match sent {
+                    Ok(response) if response.status().is_success() => {
+                        result.confirmed.push(job.event.id);
+                        result.revisions.push(super::RemoteRevision {
+                            id: job.event.id,
+                            calendar_id: job.calendar.id.clone(),
+                            href: request.url,
+                            etag: response.etag(),
+                        });
+                    }
+                    Ok(response) if response.status() == StatusCode::PRECONDITION_FAILED => {
+                        result.conflicts.push((job.event.id, request.url));
+                    }
+                    Ok(response) => result.failures.push((
+                        job.event.id,
+                        format!("server returned {}", response.status()),
+                    )),
+                    Err(error) => result.failures.push((job.event.id, error.to_string())),
+                }
             }
+            result
         }
-        result
     }
 
     pub async fn remove_jobs_live(jobs: &[super::RemoveJob]) -> super::MutationResult {
         let Ok(client) = client() else {
             return super::MutationResult::default();
         };
-        let mut result = super::MutationResult::default();
-        for job in jobs {
-            if job.calendar.read_only {
-                result
-                    .failures
-                    .push((job.id, "Calendar is read-only".into()));
-                continue;
-            }
-            let url = job.href.as_ref().map_or_else(
-                || super::build_delete_request(&job.config, &job.calendar, job.id).url,
-                |href| absolute_resource_url(&job.config, href),
-            );
-            // Even when an older server omitted the revision, keep deletion
-            // conditional on the resource still existing. Known revisions use
-            // their exact ETag and therefore detect concurrent modification.
-            let sent = authenticated(&client, &job.config)
-                .delete(
-                    url.as_str(),
-                    Precondition::IfMatch(job.etag.as_deref().unwrap_or("*")),
-                )
-                .await;
-            match sent {
-                Ok(response)
-                    if response.status().is_success()
-                        || response.status() == StatusCode::NOT_FOUND =>
-                {
-                    result.confirmed.push(job.id);
+        client.remove(jobs).await
+    }
+
+    impl CalDavClient {
+        pub(crate) async fn remove(&self, jobs: &[super::RemoveJob]) -> super::MutationResult {
+            let client = self;
+            let mut result = super::MutationResult::default();
+            for job in jobs {
+                if job.calendar.read_only {
+                    result
+                        .failures
+                        .push((job.id, "Calendar is read-only".into()));
+                    continue;
                 }
-                Ok(response) if response.status() == StatusCode::PRECONDITION_FAILED => {
-                    result.conflicts.push((job.id, url));
+                let url = job.href.as_ref().map_or_else(
+                    || super::build_delete_request(&job.config, &job.calendar, job.id).url,
+                    |href| absolute_resource_url(&job.config, href),
+                );
+                // Even when an older server omitted the revision, keep deletion
+                // conditional on the resource still existing. Known revisions use
+                // their exact ETag and therefore detect concurrent modification.
+                let authenticated = match authenticated(client, &job.config, &url).await {
+                    Ok(client) => client,
+                    Err(error) => {
+                        result.failures.push((job.id, error));
+                        continue;
+                    }
+                };
+                let sent = authenticated
+                    .delete(
+                        url.as_str(),
+                        Precondition::IfMatch(job.etag.as_deref().unwrap_or("*")),
+                    )
+                    .await;
+                match sent {
+                    Ok(response)
+                        if response.status().is_success()
+                            || response.status() == StatusCode::NOT_FOUND =>
+                    {
+                        result.confirmed.push(job.id);
+                    }
+                    Ok(response) if response.status() == StatusCode::PRECONDITION_FAILED => {
+                        result.conflicts.push((job.id, url));
+                    }
+                    Ok(response) => result
+                        .failures
+                        .push((job.id, format!("server returned {}", response.status()))),
+                    Err(error) => result.failures.push((job.id, error.to_string())),
                 }
-                Ok(response) => result
-                    .failures
-                    .push((job.id, format!("server returned {}", response.status()))),
-                Err(error) => result.failures.push((job.id, error.to_string())),
             }
+            result
         }
-        result
     }
 
     fn absolute_resource_url(config: &CalDavConfig, href: &str) -> String {
@@ -862,12 +938,14 @@ mod live {
 
         use super::*;
 
+        include!("caldav_adoption_tests.rs");
+
         fn run<T>(future: impl Future<Output = T>) -> T {
             ui::rt::block_on(future).expect("a test thread may block")
         }
 
         fn pull_calendar_live(
-            client: &DavClient,
+            client: &CalDavClient,
             config: &CalDavConfig,
             cal: &RemoteCalendar,
             today: NaiveDate,
@@ -892,6 +970,7 @@ mod live {
                 server_url,
                 username: "user".into(),
                 password: "secret".into(),
+                oauth_account_id: None,
             }
         }
 

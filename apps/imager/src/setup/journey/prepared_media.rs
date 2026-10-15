@@ -29,43 +29,6 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-enum PendingDestination<'a> {
-    Filesystem(&'a MediaFilesystemGrant, &'a std::fs::File),
-    Inbox(&'a super::super::media_setup::inbox::ProtectedInboxGrant<'a>),
-}
-impl PendingDestination<'_> {
-    fn validate(
-        &self,
-        medium: &crate::media_layout::MediaPartitionBinding,
-        setup: &crate::model::PreparedSetupExpectation,
-    ) -> io::Result<()> {
-        match self {
-            Self::Filesystem(grant, raw) => grant.validate_offline_media(raw, medium),
-            Self::Inbox(grant) => grant.validate_pending(medium, setup),
-        }
-    }
-    fn media(&self) -> io::Result<super::super::portable_home_media::MediaGrant> {
-        match self {
-            Self::Filesystem(grant, _) => grant.portable_home_grant(),
-            Self::Inbox(grant) => grant.portable_home_grant(),
-        }
-    }
-    fn deliver_setup(
-        &self,
-        setup: &mut PreparedSetupDelivery,
-        cancel: &AtomicBool,
-    ) -> io::Result<DeliveryReceipt> {
-        match self {
-            Self::Filesystem(grant, _) => {
-                setup.deliver_or_verify_reporting(grant, cancel, &mut |_| Ok(()))
-            }
-            Self::Inbox(grant) => {
-                setup.deliver_protected_inbox_reporting(grant, cancel, &mut |_| Ok(()))
-            }
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum ReturnReason {
     ReviewedHomeChanged,
@@ -352,7 +315,7 @@ impl Delivery {
     }
     pub(crate) fn original_boot_drive(&self) -> Option<String> {
         self.awaiting_original_boot()
-            .then(|| self.target.as_ref())
+            .then_some(self.target.as_ref())
             .flatten()
             .map(|target| {
                 if target.model.trim().is_empty() {
@@ -390,45 +353,6 @@ impl Delivery {
     }
     pub fn start(&mut self, root: std::path::PathBuf) -> Result<(), &'static str> {
         self.start_delivery(Some(root))
-    }
-    /// Backend-only continuation; no live UX exposes this until native
-    /// offline admission and resealing are implemented and qualified.
-    pub(in crate::setup) fn start_awaiting_offline_export(
-        &mut self,
-        grant: MediaFilesystemGrant,
-        raw_media: std::fs::File,
-    ) -> Result<(), &'static str> {
-        if self.busy() {
-            return Err("installer-media-delivery-busy");
-        }
-        if let Some(reason) = self.review_reason() {
-            return Err(reason.error_key());
-        }
-        let artifact = self
-            .artifact
-            .clone()
-            .ok_or("installer-media-delivery-failed")?;
-        if !artifact.requires_original_export() {
-            return Err("installer-media-delivery-failed");
-        }
-        self.task = None;
-        self.shown_phase = None;
-        self.receipt = None;
-        self.awaiting_setup_receipt = None;
-        self.home_receipt = None;
-        let cancel = Arc::new(AtomicBool::new(false));
-        let worker_cancel = cancel.clone();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        self.worker = Some(receiver);
-        self.cancel = Some(cancel);
-        self.state = "delivering";
-        self.joined = Some(std::thread::spawn(move || {
-            let result = artifact
-                .deliver_awaiting_offline_export(&grant, &raw_media, &worker_cancel)
-                .map(Delivered::AwaitingOfflineExport);
-            let _ = sender.send(result);
-        }));
-        Ok(())
     }
     pub(crate) fn requires_offline_export(&self) -> bool {
         self.artifact
@@ -1004,6 +928,8 @@ mod fresh;
 pub(crate) mod offline;
 #[cfg(target_os = "linux")]
 mod original_copy;
+#[cfg(test)]
+mod recovery_tests;
 
 struct PreparedBrowser {
     source: super::browser::SelectedSources,
@@ -1038,6 +964,12 @@ pub(crate) struct PreparedMedia {
     original_password: Zeroizing<Vec<u8>>,
     browser_frozen: bool,
     delivery_started: std::sync::atomic::AtomicBool,
+    recovery: Mutex<
+        Vec<(
+            Arc<super::super::migration_recovery::Evidence>,
+            super::super::staging::plan::Plan,
+        )>,
+    >,
     transfer_generation: Mutex<Option<Arc<Self>>>,
 }
 struct HomePreparation {
@@ -1493,6 +1425,7 @@ impl PreparedMedia {
             original_password: Zeroizing::new(password.as_bytes().to_vec()),
             browser_frozen: false,
             delivery_started: std::sync::atomic::AtomicBool::new(false),
+            recovery: Mutex::new(Vec::new()),
             transfer_generation: Mutex::new(None),
             home_preview: Arc::new(Mutex::new(home_preview)),
             home: home.map(|source| {
@@ -1532,24 +1465,9 @@ impl PreparedMedia {
                 .ok_or_else(|| io::Error::other("Prepared media capacity overflows"))
         })
     }
-    pub(in crate::setup) fn deliver_awaiting_offline_export(
-        &self,
-        grant: &MediaFilesystemGrant,
-        raw_media: &std::fs::File,
-        cancel: &AtomicBool,
-    ) -> io::Result<AwaitingOfflineExport> {
-        self.deliver_awaiting_destination(PendingDestination::Filesystem(grant, raw_media), cancel)
-    }
     fn deliver_awaiting_offline_inbox(
         &self,
         grant: &super::super::media_setup::inbox::ProtectedInboxGrant<'_>,
-        cancel: &AtomicBool,
-    ) -> io::Result<AwaitingOfflineExport> {
-        self.deliver_awaiting_destination(PendingDestination::Inbox(grant), cancel)
-    }
-    fn deliver_awaiting_destination(
-        &self,
-        destination: PendingDestination<'_>,
         cancel: &AtomicBool,
     ) -> io::Result<AwaitingOfflineExport> {
         let declaration = self
@@ -1575,8 +1493,8 @@ impl PreparedMedia {
             ));
         }
         self.delivery_started.store(true, Ordering::Release);
-        destination.validate(declaration.media(), &self.expectation)?;
-        let media = destination.media()?;
+        grant.validate_pending(declaration.media(), &self.expectation)?;
+        let media = grant.portable_home_grant()?;
         let app_bytes = self.applications.as_ref().map_or(Ok(0), |apps| {
             apps.source
                 .validate_pending_offline_scope(declaration.source())?;
@@ -1637,7 +1555,7 @@ impl PreparedMedia {
                 .delivery
                 .lock()
                 .map_err(|_| io::Error::other("Prepared setup custody unavailable"))?;
-            destination.deliver_setup(&mut delivery, cancel)?
+            delivery.deliver_protected_inbox_reporting(grant, cancel, &mut |_| Ok(()))?
         };
         if let Some(apps) = &self.applications {
             media.publish_applications_selection(&setup, &apps.expectation, cancel)?;
@@ -1645,11 +1563,8 @@ impl PreparedMedia {
         if let Some(browser) = &self.browser {
             media.publish_browser_selection(&setup, &browser.expectation, cancel)?;
         }
-        destination.validate(declaration.media(), &self.expectation)?;
-        Ok(AwaitingOfflineExport {
-            setup,
-            declaration: declaration.clone(),
-        })
+        grant.validate_pending(declaration.media(), &self.expectation)?;
+        Ok(AwaitingOfflineExport { setup, declaration })
     }
     /// Export exactly the reviewed ciphertext through a held private parent.
     /// This publishes no installation authority; consumers authenticate it again.
@@ -1711,7 +1626,72 @@ impl PreparedMedia {
             && self.retained.as_ref() == migration
     }
 
+    pub(crate) fn bind_recovery(
+        &self,
+        evidence: Vec<Arc<super::super::migration_recovery::Evidence>>,
+        plan: &super::super::staging::plan::Plan,
+    ) -> io::Result<()> {
+        if self.delivery_started.load(Ordering::Acquire) {
+            return Err(io::Error::other(
+                "Recovery review is frozen after delivery begins",
+            ));
+        }
+        for item in &evidence {
+            item.validate_plan(plan)?;
+        }
+        *self
+            .recovery
+            .lock()
+            .map_err(|_| io::Error::other("Recovery custody unavailable"))? = evidence
+            .into_iter()
+            .map(|item| (item, plan.clone()))
+            .collect();
+        Ok(())
+    }
+    pub(crate) fn validate_recovery_for_stage(
+        &self,
+        actual_plan: &super::super::staging::plan::Plan,
+        cancel: &AtomicBool,
+    ) -> io::Result<()> {
+        for (_, reviewed_plan) in self
+            .recovery
+            .lock()
+            .map_err(|_| io::Error::other("Recovery custody unavailable"))?
+            .iter()
+        {
+            if reviewed_plan != actual_plan {
+                return Err(io::Error::other(
+                    "Installation write ranges changed after recovery review",
+                ));
+            }
+        }
+        self.validate_recovery(cancel)
+    }
+    fn review_recovery(&self) -> io::Result<()> {
+        for (evidence, plan) in self
+            .recovery
+            .lock()
+            .map_err(|_| io::Error::other("Recovery custody unavailable"))?
+            .iter()
+        {
+            evidence.validate_plan(plan)?;
+        }
+        Ok(())
+    }
+    fn validate_recovery(&self, cancel: &AtomicBool) -> io::Result<()> {
+        for (evidence, plan) in self
+            .recovery
+            .lock()
+            .map_err(|_| io::Error::other("Recovery custody unavailable"))?
+            .iter()
+        {
+            evidence.validate_plan(plan)?;
+            evidence.validate(cancel).map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
     pub fn validate_for_write(&self, cancel: &AtomicBool) -> io::Result<()> {
+        self.validate_recovery(cancel)?;
         if let Some(identity) = &self.current_identity {
             identity.validate()?;
         }
@@ -2068,6 +2048,10 @@ impl PreparedMedia {
     pub(in crate::setup) fn staging_artifact(
         &self,
     ) -> io::Result<super::super::staging::prepared_setup::PreparedArtifact> {
+        // UI-side artifact projection checks range custody only. Independent
+        // byte rereads run on the download worker before creating the actual
+        // stage request, and on media writers at final write admission.
+        self.review_recovery()?;
         if self.requires_original_export() {
             return Err(io::Error::other(
                 "Pending offline export is not an installable artifact",
@@ -2551,7 +2535,7 @@ mod tests {
         assert_eq!(identity.public_key(), key);
         controller
             .start_with_selections(
-                identity.clone(),
+                identity,
                 None,
                 empty_selections(),
                 Zeroizing::new(password.into()),
@@ -2977,7 +2961,7 @@ mod tests {
         let published = reviewed.publish_enrolled_system(&target, password);
         // SAFETY: geteuid has no preconditions. Both authority branches assert
         // the production result; neither skips the positive private import.
-        if unsafe { libc::geteuid() } == 0 {
+        if rustix::process::geteuid().as_raw() == 0 {
             published.unwrap();
             assert_eq!(
                 std::fs::read(target.join("device/cert.bin")).unwrap(),

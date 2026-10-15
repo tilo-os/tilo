@@ -109,7 +109,7 @@ fn admitted<T>(
     phase: FailurePhase,
     result: io::Result<T>,
 ) -> io::Result<T> {
-    result.map_err(|error| {
+    result.inspect_err(|error| {
         let class = match error.kind() {
             io::ErrorKind::PermissionDenied => FailureClass::PermissionDenied,
             io::ErrorKind::NotFound => FailureClass::NotFound,
@@ -127,7 +127,6 @@ fn admitted<T>(
                 class,
             },
         );
-        error
     })
 }
 
@@ -208,8 +207,8 @@ pub(crate) fn maybe_run_host(args: &[String]) -> Result<Option<i32>, String> {
 }
 
 fn run() -> io::Result<()> {
-    let uid = unsafe { libc::getuid() };
-    if uid == 0 || unsafe { libc::geteuid() } != uid {
+    let uid = rustix::process::getuid().as_raw();
+    if uid == 0 || rustix::process::geteuid().as_raw() != uid {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     // This inherited socket is owned once. Authentication precedes all rights.
@@ -461,15 +460,13 @@ fn run() -> io::Result<()> {
             result
                 .as_ref()
                 .err()
-                .map(launcher_failure_phase)
-                .unwrap_or(FailurePhase::LauncherStartup),
+                .map_or(FailurePhase::LauncherStartup, launcher_failure_phase),
             job.ok_or_else(|| {
                 io::Error::from(
                     result
                         .as_ref()
                         .err()
-                        .map(launcher_error_kind)
-                        .unwrap_or(io::ErrorKind::InvalidData),
+                        .map_or(io::ErrorKind::InvalidData, launcher_error_kind),
                 )
             }),
         )?
@@ -498,11 +495,11 @@ fn run() -> io::Result<()> {
     };
     channel.shutdown(std::net::Shutdown::Both)?;
     drop(channel);
-    if let Some(monitor) = monitors
+    let monitor = monitors
         .lock()
         .map_err(|_| failure("capture monitor poisoned"))?
-        .take()
-    {
+        .take();
+    if let Some(monitor) = monitor {
         monitor
             .join()
             .map_err(|_| failure("capture monitor thread panicked"))?;

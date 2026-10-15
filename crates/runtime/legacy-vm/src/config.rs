@@ -119,8 +119,10 @@ pub struct VmConfig {
 impl VmConfig {
     #[must_use]
     pub fn new(guest: GuestOs, base_image: PathBuf, paths: Paths) -> Self {
-        // SAFETY: getuid/getgid have no failure mode.
-        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        let (uid, gid) = (
+            rustix::process::getuid().as_raw(),
+            rustix::process::getgid().as_raw(),
+        );
         Self {
             guest,
             domain_name: format!("tilo-legacy-{}", guest.as_str()),

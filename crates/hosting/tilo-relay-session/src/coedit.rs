@@ -288,6 +288,14 @@ impl RelayCoeditSession {
         self.workspace_id
     }
 
+    /// The device key of the relay this session is with, as its handshake
+    /// authenticated it: the device a remote action for the relay itself is
+    /// addressed to.
+    #[must_use]
+    pub const fn relay_device_public_key(&self) -> [u8; 32] {
+        self.client.relay_peer.device_public_key
+    }
+
     /// Publish and retain a complete checkpoint for `channel`.
     ///
     /// # Errors

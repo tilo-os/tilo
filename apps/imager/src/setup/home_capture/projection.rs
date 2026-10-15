@@ -29,7 +29,7 @@ pub(super) struct Projection {
 
 /// Protected alias identity; no caller-authored path grants mount authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "AliasWire")]
 pub(super) struct Alias {
     path: PathBuf,
     dev: u64,
@@ -40,19 +40,83 @@ pub(super) struct Alias {
     scratch: Option<u64>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AliasWire {
+    path: PathBuf,
+    dev: u64,
+    ino: u64,
+    source: u64,
+    output: Option<u64>,
+    #[serde(default)]
+    scratch: Option<u64>,
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_aliases_outside_protected_namespace() {
+        let valid = serde_json::json!({
+            "path": "/tmp/tilo-capture-projection-test",
+            "dev": 1, "ino": 2, "source": 3, "output": null, "scratch": null
+        });
+        let alias: Alias = serde_json::from_value(valid.clone()).unwrap();
+        assert_eq!(serde_json::to_value(alias).unwrap(), valid);
+        for path in [
+            "/etc/tilo-capture-projection-test",
+            "/tmp/unrelated",
+            "/tmp/tilo-capture-projection-../x",
+        ] {
+            let mut wire = valid.clone();
+            wire["path"] = serde_json::json!(path);
+            assert!(serde_json::from_value::<Alias>(wire).is_err());
+        }
+    }
+}
+
+impl TryFrom<AliasWire> for Alias {
+    type Error = io::Error;
+    fn try_from(wire: AliasWire) -> io::Result<Self> {
+        let value = Self {
+            path: wire.path,
+            dev: wire.dev,
+            ino: wire.ino,
+            source: wire.source,
+            output: wire.output,
+            scratch: wire.scratch,
+        };
+        let name = value
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| failure("invalid capture alias name"))?;
+        if value.path.parent() != Some(Path::new("/tmp"))
+            || !name.starts_with("tilo-capture-projection-")
+            || name.len() > 128
+            || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || value.ino == 0
+            || value.source == 0
+            || value.output == Some(0)
+            || value.scratch == Some(0)
+        {
+            return Err(failure("invalid capture alias shape"));
+        }
+        Ok(value)
+    }
+}
+
 pub(super) struct Directory {
     temporary: Option<tempfile::TempDir>,
     pub(super) alias: Alias,
 }
 impl Directory {
-    pub(super) fn new(output: bool) -> io::Result<Self> {
-        Self::create(output, false)
-    }
     pub(super) fn with_inventory_scratch(output: bool) -> io::Result<Self> {
-        Self::create(output, true)
+        Self::new(output, true)
     }
-    fn create(output: bool, scratch: bool) -> io::Result<Self> {
-        if unsafe { libc::geteuid() } != 0 {
+    fn new(output: bool, scratch: bool) -> io::Result<Self> {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         let temporary = tempfile::Builder::new()
@@ -113,7 +177,7 @@ impl Alias {
             || !name.starts_with("tilo-capture-projection-")
             || name.len() > 128
             || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            || unsafe { libc::geteuid() } != 0
+            || rustix::process::geteuid().as_raw() != 0
         {
             return Err(failure(
                 "capture alias is not a protected native projection",
@@ -169,7 +233,7 @@ pub(super) fn project(
     output: Option<&File>,
     directory: &Directory,
 ) -> io::Result<Projection> {
-    project_with_inventory_scratch(host, source, output, None, directory)
+    project_inner(host, source, output, None, directory)
 }
 
 pub(super) fn project_with_inventory_scratch(
@@ -179,7 +243,20 @@ pub(super) fn project_with_inventory_scratch(
     scratch: Option<&File>,
     directory: &Directory,
 ) -> io::Result<Projection> {
-    if unsafe { libc::geteuid() } != 0 || !source.metadata()?.is_dir() {
+    if scratch.is_none() {
+        return project(host, source, output, directory);
+    }
+    project_inner(host, source, output, scratch, directory)
+}
+
+fn project_inner(
+    host: Incarnation,
+    source: &File,
+    output: Option<&File>,
+    scratch: Option<&File>,
+    directory: &Directory,
+) -> io::Result<Projection> {
+    if rustix::process::geteuid().as_raw() != 0 || !source.metadata()?.is_dir() {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let namespace = host.mount_namespace()?;
@@ -337,9 +414,7 @@ unsafe fn child(slot: &Slot<'_>, namespace: RawFd, socket: RawFd, parent: libc::
             // Clone and restrict its detached tree before joining the host:
             // open_tree refuses a source from a different mounted namespace.
             let tree = detached(slot);
-            if tree < 0 {
-                *libc::__errno_location()
-            } else if libc::setns(namespace, libc::CLONE_NEWNS) < 0 {
+            if tree < 0 || libc::setns(namespace, libc::CLONE_NEWNS) < 0 {
                 *libc::__errno_location()
             } else {
                 // Reopen this root-owned immutable parent inside the target
@@ -535,7 +610,8 @@ mod tests {
 
     #[test]
     fn projection_refuses_an_ordinary_live_host_namespace() {
-        let process = Incarnation::capture(std::process::id(), unsafe { libc::getuid() }).unwrap();
+        let process =
+            Incarnation::capture(std::process::id(), rustix::process::getuid().as_raw()).unwrap();
         assert!(process.mount_namespace().is_err());
     }
 }

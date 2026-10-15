@@ -357,6 +357,7 @@ mod tests {
         FakePlatform::new(basis.disk, None)
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn flatpak_metadata_transport_overflow_refuses_before_any_disk_or_firmware_mutation() {
         let mut platform = linux_platform();

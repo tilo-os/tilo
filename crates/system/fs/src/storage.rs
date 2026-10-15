@@ -138,6 +138,7 @@ impl StorageAuthority {
     /// Install only the concrete certified personal daemon factory. An absent
     /// context stays an explicit unavailable response on the existing socket.
     #[cfg(target_os = "linux")]
+    #[must_use]
     pub fn with_external_history(
         mut self,
         factory: Option<Arc<crate::external_history::ExternalHistoryFactory>>,

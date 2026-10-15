@@ -153,8 +153,10 @@ impl TrustedCaptureService {
             manifest_path.clone(),
         );
         installed.id = PACKAGE.into();
-        installed.version = manifest.package.version.clone();
-        installed.publisher_key_hex = pins.service_publisher.clone();
+        installed.version = manifest.package.version;
+        installed
+            .publisher_key_hex
+            .clone_from(&pins.service_publisher);
         installed.runtime = format!("tilo-runtime/{}", pins.runtime_version);
         let report =
             package_store::integrity::verify(&installed, &payload).map_err(io::Error::other)?;
@@ -223,7 +225,7 @@ fn sidecar_for_executable(executable: &Path) -> io::Result<PathBuf> {
     Ok(prefix.join("share/tilo-imager/capture"))
 }
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    hex::encode(bytes)
 }
 
 #[cfg(test)]

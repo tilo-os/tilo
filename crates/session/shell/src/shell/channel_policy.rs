@@ -7,10 +7,14 @@
 //! - every person the room's roster lists with a role that can read
 //!   (owner, editor, commenter or viewer) is allowed; a restriction below
 //!   read, an expired grant or a removal takes the person out;
-//! - a channel is one record's: a Read Deny on a record the room's grants
-//!   name (`room › app › resource`) takes its person, or service member, out
-//!   of that record's channel and no other
-//!   ([`collab_types::named_record_of_channel`]);
+//! - a channel is one record's: a Read Deny on the record, or on its app or
+//!   any pattern covering it, takes its person, or service member, out of
+//!   that record's channel and no other. The steward names the record from a
+//!   grant naming it ([`collab_types::named_record_of_channel`]) or from the
+//!   route a device proved with its request ([`collab_types::ChannelRoute`]);
+//!   a channel whose record it cannot name is withheld from whoever a Deny
+//!   over a pattern of records could keep out of it
+//!   ([`collab_types::pattern_read_witnesses`]);
 //! - each allowed person reads through every certified device of theirs:
 //!   the devices the room's governor admitted (root-signed certificate,
 //!   unexpired, not revoked), plus, for this machine's own identity, the
@@ -23,7 +27,7 @@
 
 use std::collections::BTreeSet;
 
-use collab_types::{ChannelId, Ed25519PublicKey};
+use collab_types::{ChannelId, ChannelRoute, Ed25519PublicKey};
 
 use super::channel_encryption::ChannelDirectory;
 use super::state::{RoomAuthority, RoomId, WorkspaceTree, WorkspaceTreeHandle};
@@ -150,10 +154,11 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
         &self,
         room: RoomId,
         channel: ChannelId,
+        route: Option<&ChannelRoute>,
         now: u64,
     ) -> BTreeSet<Ed25519PublicKey> {
         let own = (self.own_devices)(room);
-        allowed_devices(&self.tree.read(), room, channel, now, &own)
+        allowed_devices(&self.tree.read(), (room, channel, route), now, &own)
     }
 
     fn policy_epoch(&self) -> Option<u64> {
@@ -205,19 +210,27 @@ pub fn next_policy_change(
     capabilities.into_iter().chain(certificates).min()
 }
 
+/// A channel of a room, and the route of its record when the steward knows
+/// it.
+pub type ChannelOf<'r> = (RoomId, ChannelId, Option<&'r ChannelRoute>);
+
 /// Every device that may read `channel`, one of `room`'s channels, at `now`
 /// (Unix seconds).
 ///
-/// Who reads the room reads every channel of it, except a record's channel
-/// whose record the room's grants name: there each reader must also be
-/// allowed to read that record, decided by the same
-/// `Workspace::answer_at` at the record's
+/// Who reads the room reads a channel when also allowed to read its record,
+/// decided by the same `Workspace::answer_at` at the record's
 /// [`collab_types::document_node`] that hands this machine's own apps the
-/// record's keys. A record no grant names is read as the room is.
+/// record's keys. The record is the one a grant names
+/// ([`collab_types::named_record_of_channel`]) or `route`, once it proves to
+/// be the channel's: then a Deny on the record, its app or any pattern over
+/// it withholds the channel. A channel whose record is neither is any record
+/// nothing names, so a reader must be allowed to read every record a Deny
+/// over a pattern stands for ([`collab_types::pattern_read_witnesses`]): a
+/// person denied one app's records reads no unnamed channel until a device
+/// names its record, and every other reader is unaffected.
 pub fn allowed_devices(
     tree: &WorkspaceTree,
-    room: RoomId,
-    channel: ChannelId,
+    (room, channel, route): ChannelOf<'_>,
     now: u64,
     own_devices: &[(tilo_user_identity::DeviceCert, bool)],
 ) -> BTreeSet<Ed25519PublicKey> {
@@ -247,21 +260,16 @@ pub fn allowed_devices(
             }),
     );
     let room_node = workspace.node();
-    let record = collab_types::named_record_of_channel(
-        &workspace.policy.grants,
-        &workspace.policy.room,
-        channel,
-    )
-    .map(|(app, record)| collab_types::document_node(&workspace.policy.room, app, record));
+    let records = channel_records(workspace, channel, route);
     let read = tilo_action_policy::ActionKind::Read;
     let allow = tilo_action_policy::Answer::Allow;
     let readers: BTreeSet<String> = people
         .into_iter()
         .filter(|person| {
             workspace.answer_at(person, &room_node, read, now) == allow
-                && record
-                    .as_ref()
-                    .is_none_or(|node| workspace.answer_at(person, node, read, now) == allow)
+                && records
+                    .iter()
+                    .all(|node| workspace.answer_at(person, node, read, now) == allow)
         })
         .collect();
     let now_ns = now.saturating_mul(1_000_000_000);
@@ -290,12 +298,12 @@ pub fn allowed_devices(
         }
     }
     for member in super::service_members::service_members(workspace, now) {
-        let reads_record = record.as_ref().is_none_or(|node| {
-            let subject = tilo_action_policy::Subject::agent(
-                super::service_members::service_principal(&member.device),
-            );
-            workspace
-                .subject_authority(subject)
+        let subject = tilo_action_policy::Subject::agent(
+            super::service_members::service_principal(&member.device),
+        );
+        let authority = workspace.subject_authority(subject);
+        let reads_record = records.iter().all(|node| {
+            authority
                 .decide(node, read, &tilo_desktop_model::context_at(now))
                 .answer
                 == allow
@@ -305,6 +313,31 @@ pub fn allowed_devices(
         }
     }
     allowed
+}
+
+/// The record nodes a reader of `channel` must be allowed to read: its
+/// record's, when a grant names it or `route` proves to be its route, and
+/// otherwise one for each Deny over a pattern of records, standing for every
+/// record it covers that nothing names.
+fn channel_records(
+    workspace: &tilo_desktop_model::Workspace,
+    channel: ChannelId,
+    route: Option<&ChannelRoute>,
+) -> Vec<tilo_action_policy::TreePath> {
+    let room = &workspace.policy.room;
+    let named = collab_types::named_record_of_channel(&workspace.policy.grants, room, channel)
+        .or_else(|| {
+            route
+                .filter(|route| route.proves(room, channel))
+                .map(|route| (route.app.as_str(), route.record.as_str()))
+        });
+    if let Some((app, record)) = named {
+        return vec![collab_types::document_node(room, app, record)];
+    }
+    collab_types::pattern_read_witnesses(&workspace.policy.grants, room)
+        .iter()
+        .map(|(app, record)| collab_types::document_node(room, app, record))
+        .collect()
 }
 
 #[cfg(test)]
@@ -455,11 +488,12 @@ mod tests {
             (cert(&owner, 11, false), true),
         ];
         assert_eq!(
-            allowed_devices(&tree, room, ChannelId::new(), 1_000, &own),
+            allowed_devices(&tree, (room, ChannelId::new(), None), 1_000, &own),
             BTreeSet::from([device_key(10), device_key(20), device_key(21)])
         );
         assert!(
-            allowed_devices(&tree, room, ChannelId::new(), 100, &own).contains(&device_key(30))
+            allowed_devices(&tree, (room, ChannelId::new(), None), 100, &own)
+                .contains(&device_key(30))
         );
 
         // Bob is removed from the room: his devices go with him.
@@ -470,10 +504,12 @@ mod tests {
             .unwrap()
             .dismiss(&person(&bob));
         assert_eq!(
-            allowed_devices(&tree, room, ChannelId::new(), 1_000, &own),
+            allowed_devices(&tree, (room, ChannelId::new(), None), 1_000, &own),
             BTreeSet::from([device_key(10)])
         );
-        assert!(allowed_devices(&tree, RoomId::new(), ChannelId::new(), 1_000, &own).is_empty());
+        assert!(
+            allowed_devices(&tree, (RoomId::new(), ChannelId::new(), None), 1_000, &own).is_empty()
+        );
     }
 
     /// A Read Deny on one record keeps the denied person's devices, and a
@@ -537,12 +573,15 @@ mod tests {
         let notes = collab_types::document_channel_id(app, &room_id, "notes");
         let unwritten = collab_types::document_channel_id("so.tilo.notes", &room_id, "draft");
         assert_eq!(
-            allowed_devices(&tree, room, payroll, 1_000, &own),
+            allowed_devices(&tree, (room, payroll, None), 1_000, &own),
             BTreeSet::from([device_key(10), device_key(30)])
         );
         let everyone = BTreeSet::from([device_key(10), device_key(20), device_key(30), service]);
         for channel in [notes, unwritten] {
-            assert_eq!(allowed_devices(&tree, room, channel, 1_000, &own), everyone);
+            assert_eq!(
+                allowed_devices(&tree, (room, channel, None), 1_000, &own),
+                everyone
+            );
         }
 
         // Lifting the Deny lets Bob read the record again.
@@ -553,9 +592,126 @@ mod tests {
             .find(|candidate| candidate.id == workspace)
             .unwrap();
         assert!(entry.revoke_grant(&tilo_action_policy::GrantId::new("bob-payroll")));
-        let lifted = allowed_devices(&tree, room, payroll, 1_000, &own);
+        let lifted = allowed_devices(&tree, (room, payroll, None), 1_000, &own);
         assert!(lifted.contains(&device_key(20)));
         assert!(!lifted.contains(&service));
+    }
+
+    /// "Finance: Deny Read; Finance › summary: Allow Read" for Bob, and
+    /// "Finance: Deny Read" for a service member: a channel whose route proves
+    /// a finance record is withheld from both, the summary's is not, another
+    /// app's is not, and a channel whose record is unknown is withheld from
+    /// them (it may be finance's) but from no other reader. A route that is
+    /// not the channel's names nothing.
+    #[test]
+    fn a_read_deny_over_an_app_withholds_every_routed_channel_of_it() {
+        let owner = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let bob = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let carol = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let mut tree = WorkspaceTree::default();
+        let workspace = tree.append_empty_workspace("Shared");
+        let room = tree.room_of(workspace).unwrap();
+        let service = device_key(50);
+        let entry = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|candidate| candidate.id == workspace)
+            .unwrap();
+        entry.set_owner(person(&owner));
+        entry.admit(person(&bob), Role::Editor);
+        entry.admit(person(&carol), Role::Viewer);
+        let room_id = entry.policy.room.clone();
+        entry.grant(crate::shell::service_members::service_membership(
+            &room_id,
+            &service,
+            "indexing",
+            KindSet::READ,
+            None,
+            Subject::person(person(&owner)),
+        ));
+        let finance = tilo_action_policy::TreePath::room(&room_id).app("finance");
+        let read = |id: &str, subject: Subject, node, answer| {
+            Grant::new(
+                id,
+                subject,
+                node,
+                KindSet::READ,
+                answer,
+                Subject::person(person(&owner)),
+            )
+        };
+        entry.grant(read(
+            "bob-finance",
+            Subject::person(person(&bob)),
+            finance.clone(),
+            Answer::Deny,
+        ));
+        entry.grant(read(
+            "bob-summary",
+            Subject::person(person(&bob)),
+            collab_types::document_node(&room_id, "finance", "summary"),
+            Answer::Allow,
+        ));
+        entry.grant(read(
+            "service-finance",
+            Subject::agent(crate::shell::service_members::service_principal(&service)),
+            finance,
+            Answer::Deny,
+        ));
+        admit(&mut tree, room, cert(&bob, 20, false), Vec::new());
+        admit(&mut tree, room, cert(&carol, 30, false), Vec::new());
+        let own = vec![(cert(&owner, 10, false), false)];
+        let everyone = BTreeSet::from([device_key(10), device_key(20), device_key(30), service]);
+        let without_bob_and_service = BTreeSet::from([device_key(10), device_key(30)]);
+        let routed = |tree: &WorkspaceTree, app: &str, record: &str| {
+            let route = ChannelRoute::new(app, record);
+            let channel = route.channel(&room_id);
+            allowed_devices(tree, (room, channel, Some(&route)), 1_000, &own)
+        };
+
+        for record in ["payroll", "q3", "never-written"] {
+            assert_eq!(
+                routed(&tree, "finance", record),
+                without_bob_and_service,
+                "{record}"
+            );
+        }
+        let mut summary = without_bob_and_service.clone();
+        summary.insert(device_key(20));
+        assert_eq!(routed(&tree, "finance", "summary"), summary);
+        assert_eq!(routed(&tree, "so.tilo.notes", "draft"), everyone);
+
+        // A channel nobody named: it may be finance's.
+        let unknown = ChannelRoute::new("so.tilo.notes", "plan").channel(&room_id);
+        assert_eq!(
+            allowed_devices(&tree, (room, unknown, None), 1_000, &own),
+            without_bob_and_service
+        );
+        // A route that is not the channel's is no route at all.
+        let forged = ChannelRoute::new("so.tilo.notes", "other");
+        assert_eq!(
+            allowed_devices(&tree, (room, unknown, Some(&forged)), 1_000, &own),
+            without_bob_and_service
+        );
+
+        // Lifting Bob's Deny gives him every channel back; the service
+        // member stays out of finance's and of channels nobody named.
+        let entry = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|candidate| candidate.id == workspace)
+            .unwrap();
+        assert!(entry.revoke_grant(&tilo_action_policy::GrantId::new("bob-finance")));
+        let mut with_bob = without_bob_and_service;
+        with_bob.insert(device_key(20));
+        assert_eq!(routed(&tree, "finance", "payroll"), with_bob);
+        assert_eq!(
+            allowed_devices(&tree, (room, unknown, None), 1_000, &own),
+            with_bob
+        );
+        assert_eq!(routed(&tree, "so.tilo.notes", "draft"), everyone);
     }
 
     /// Stewards re-check at the first instant the readers change
@@ -602,21 +758,26 @@ mod tests {
 
         assert_eq!(next_policy_change(&tree, room, 100, &own), Some(300));
         assert!(
-            allowed_devices(&tree, room, ChannelId::new(), 299, &own).contains(&device_key(40))
+            allowed_devices(&tree, (room, ChannelId::new(), None), 299, &own)
+                .contains(&device_key(40))
         );
         assert!(
-            !allowed_devices(&tree, room, ChannelId::new(), 300, &own).contains(&device_key(40))
+            !allowed_devices(&tree, (room, ChannelId::new(), None), 300, &own)
+                .contains(&device_key(40))
         );
         assert_eq!(next_policy_change(&tree, room, 300, &own), Some(500));
         assert!(
-            allowed_devices(&tree, room, ChannelId::new(), 499, &own).contains(&device_key(30))
+            allowed_devices(&tree, (room, ChannelId::new(), None), 499, &own)
+                .contains(&device_key(30))
         );
         assert!(
-            !allowed_devices(&tree, room, ChannelId::new(), 500, &own).contains(&device_key(30))
+            !allowed_devices(&tree, (room, ChannelId::new(), None), 500, &own)
+                .contains(&device_key(30))
         );
         assert_eq!(next_policy_change(&tree, room, 500, &own), Some(800));
         assert!(
-            !allowed_devices(&tree, room, ChannelId::new(), 800, &own).contains(&device_key(11))
+            !allowed_devices(&tree, (room, ChannelId::new(), None), 800, &own)
+                .contains(&device_key(11))
         );
         assert_eq!(next_policy_change(&tree, room, 800, &own), None);
         assert_eq!(next_policy_change(&tree, RoomId::new(), 100, &own), None);

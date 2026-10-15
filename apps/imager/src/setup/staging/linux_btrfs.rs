@@ -82,7 +82,7 @@ fn show(output: &str) -> IoResult<(String, u64)> {
 impl Held {
     pub(super) fn discover(platform: &LinuxPlatform) -> IoResult<Option<Self>> {
         // SAFETY: geteuid has no arguments or memory effects.
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Ok(None);
         }
         let candidate = ["/sysroot", "/"]
@@ -365,7 +365,8 @@ impl Held {
         bytes: u64,
     ) -> IoResult<()> {
         let facts = self.facts(platform)?;
-        if guid != self.guid || bytes < facts.filesystem_bytes || bytes % self.sector != 0 {
+        if guid != self.guid || bytes < facts.filesystem_bytes || !bytes.is_multiple_of(self.sector)
+        {
             return Err("Btrfs GPT resize outside filesystem bounds".into());
         }
         let before = platform.system_disk()?;

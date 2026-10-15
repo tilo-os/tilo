@@ -63,12 +63,11 @@ impl Selection {
                 discovered.validate_home()?;
                 let observed = source.presence(service);
                 discovered.validate_home()?;
-                let presence = match observed {
-                    Ok(presence) => presence,
-                    Err(_) => {
-                        unavailable = true;
-                        continue;
-                    }
+                let presence = if let Ok(presence) = observed {
+                    presence
+                } else {
+                    unavailable = true;
+                    continue;
                 };
                 if presence == Presence::Unavailable {
                     continue;
@@ -418,12 +417,19 @@ mod tests {
         connection
     }
     fn inventory(home: &Path, names: &[&str]) -> account_transfer::Inventory {
+        use std::fmt::Write as _;
         let root = home.join(".mozilla/firefox");
         let index = names
             .iter()
             .enumerate()
-            .map(|(i, name)| format!("[Profile{i}]\nName={name}\nIsRelative=1\nPath={name}\n"))
-            .collect::<String>();
+            .fold(String::new(), |mut index, (i, name)| {
+                writeln!(
+                    index,
+                    "[Profile{i}]\nName={name}\nIsRelative=1\nPath={name}"
+                )
+                .unwrap();
+                index
+            });
         std::fs::write(root.join("profiles.ini"), index).unwrap();
         account_transfer::discover(&SourceRoots {
             home: home.to_owned(),
@@ -831,7 +837,7 @@ mod tests {
                 .iter()
                 .all(|(_, _, presence)| *presence == Presence::Readable)
         );
-        let mut reversed = inventory.candidates.clone();
+        let mut reversed = inventory.candidates;
         reversed.reverse();
         assert_eq!(
             Selection::discover(home.path(), &reversed)

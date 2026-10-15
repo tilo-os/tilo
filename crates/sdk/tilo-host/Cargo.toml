@@ -32,9 +32,6 @@ portal = ["native", "dep:ashpd"]
 # runs on the workspace's tokio backend; the server lives on its own thread
 # with a private runtime.
 mpris = ["native", "dep:zbus", "dep:tilo-media"]
-# Kept for compatibility: `tilo-notify` selects each target's notifications
-# without a feature.
-notifications = ["native"]
 
 [dependencies]
 # The authenticated host updates the app process's portable network hints.

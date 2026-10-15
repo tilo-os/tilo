@@ -208,7 +208,7 @@ impl RetainedSourceWorker {
         name: &OsStr,
         cancel: Arc<AtomicBool>,
     ) -> io::Result<(Self, UnixStream)> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(refused());
         }
         input.revalidate(&cancel)?;
@@ -247,7 +247,7 @@ impl RetainedSourceWorker {
         cancel: Arc<AtomicBool>,
         replacement: Option<Arc<super::retained_selected_edit::RootSelectedReplacementSeed>>,
     ) -> io::Result<(Self, UnixStream)> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(refused());
         }
         input.revalidate(&cancel)?;
@@ -347,40 +347,37 @@ impl RetainedSourceWorker {
             stopped: false,
             source_view,
         };
-        match receive.recv_timeout(Duration::from_secs(12)) {
-            Ok(endpoint) => {
-                owner.endpoint = Some(endpoint);
-                let deadline = std::time::Instant::now() + Duration::from_secs(10);
-                loop {
-                    match owner
-                        .endpoint
-                        .as_ref()
-                        .ok_or(io::ErrorKind::NotConnected)?
-                        .connect()
+        if let Ok(endpoint) = receive.recv_timeout(Duration::from_secs(12)) {
+            owner.endpoint = Some(endpoint);
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                match owner
+                    .endpoint
+                    .as_ref()
+                    .ok_or(io::ErrorKind::NotConnected)?
+                    .connect()
+                {
+                    Ok(stream) => return Ok((owner, stream)),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                        ) && std::time::Instant::now() < deadline =>
                     {
-                        Ok(stream) => return Ok((owner, stream)),
-                        Err(error)
-                            if matches!(
-                                error.kind(),
-                                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-                            ) && std::time::Instant::now() < deadline =>
-                        {
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
-                        Err(error) => {
-                            owner.retire()?;
-                            return Err(error);
-                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => {
+                        owner.retire()?;
+                        return Err(error);
                     }
                 }
             }
-            Err(_) => {
-                let cleanup = owner.retire();
-                drop(receive);
-                Err(cleanup.err().unwrap_or_else(|| {
-                    io::Error::other("Retained source did not establish its private endpoint")
-                }))
-            }
+        } else {
+            let cleanup = owner.retire();
+            drop(receive);
+            Err(cleanup.err().unwrap_or_else(|| {
+                io::Error::other("Retained source did not establish its private endpoint")
+            }))
         }
     }
     /// Derived from the exact root-selected file identity and certified context.
@@ -455,10 +452,11 @@ impl RetainedSourceWorker {
 }
 impl Drop for RetainedSourceWorker {
     fn drop(&mut self) {
-        if self.authority.is_some() {
+        // Missing authority is not evidence that a launched worker stopped.
+        if !self.stopped || self.authority.is_some() {
             let _ = self.retire();
         }
-        if self.authority.is_some() {
+        if !self.stopped || self.authority.is_some() {
             // No observed exit or unresolved captures means no source release.
             // Root controller retains this owner on an error; if it unwinds,
             // keep exact custody until process teardown instead of erasing it.

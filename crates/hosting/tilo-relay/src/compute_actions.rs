@@ -35,6 +35,7 @@ use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType, RiskLevel,
 };
+use tilo_user_identity::DeviceCert;
 
 use crate::app_serving::AppServingPlane;
 use crate::host_authority::HostOperation;
@@ -443,12 +444,40 @@ impl AppServingPlane for ComputePlane {
         caller: &Caller,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
+        self.serve_as(workspace_id, caller, None, message)
+    }
+
+    fn serve_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        self.serve_as(workspace_id, caller, Some(certificate), message)
+    }
+}
+
+impl ComputePlane {
+    /// Answer `message` from `caller`, handing the rest the device
+    /// certificate the transport verified, when it named one.
+    fn serve_as(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
         let host = self.compute.in_workspace(workspace_id);
         if self.places(caller, &message) {
             return tilo_actions::remote::serve(&host, caller, message);
         }
+        let rest = |rest: &Arc<dyn AppServingPlane>, message| match certificate {
+            Some(certificate) => rest.serve_certified(workspace_id, caller, certificate, message),
+            None => rest.serve(workspace_id, caller, message),
+        };
         if !whole_catalogue(&message) || !self.compute.permits(caller) {
-            return self.rest.as_ref()?.serve(workspace_id, caller, message);
+            return rest(self.rest.as_ref()?, message);
         }
         // The whole catalogue: the rest's, naming this provider beside its
         // own, or this provider's alone when nothing else answers.
@@ -457,10 +486,7 @@ impl AppServingPlane for ComputePlane {
             .as_ref()
             .filter(|rest| rest.answers(caller, &message))
         {
-            Some(rest) => Some(
-                rest.serve(workspace_id, caller, message)?
-                    .map(name_compute_beside),
-            ),
+            Some(plane) => Some(rest(plane, message)?.map(name_compute_beside)),
             None => tilo_actions::remote::serve(&host, caller, message),
         }
     }

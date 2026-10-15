@@ -61,6 +61,35 @@ export function prepareGpu(){
   if(!navigator.gpu||webgpuRefusal()||isWebKit(navigator))return;
   void ready().then(()=>runtime.prepare_gpu()).catch(()=>{});
 }
+/** Decode an image's bytes with the browser's own decoders into unpremultiplied
+ * RGBA, scaled down to fit `maxDimension` on either side: the page's module
+ * carries no image decoders of its own. */
+async function decodeImage(bytes,maxDimension){
+  const source=await createImageBitmap(new Blob([bytes]),{premultiplyAlpha:'none'});
+  try{
+    const scale=Math.min(1,maxDimension/Math.max(source.width,source.height));
+    const width=Math.max(1,Math.round(source.width*scale)),height=Math.max(1,Math.round(source.height*scale));
+    const canvas=new OffscreenCanvas(width,height);
+    const context=canvas.getContext('2d',{willReadFrequently:true});
+    context.imageSmoothingQuality='high';
+    context.drawImage(source,0,0,width,height);
+    return {width,height,rgba:new Uint8Array(context.getImageData(0,0,width,height).data.buffer)};
+  }finally{source.close();}
+}
+/** Fetch and compile the module of application `app` beside the runtime's
+ * own, so the app the page is about to show does not wait for the start
+ * module before its code even starts to download. A bundle that splits its
+ * apps (the desktop bundle) names each app's module in `apps.json`; any
+ * other bundle, an unknown app or a failed fetch leaves it to the app's
+ * first open, as without this. */
+export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js')}={}){
+  void (async()=>{
+    const listing=await fetch(new URL('apps.json',import.meta.url));
+    if(!listing.ok)return;
+    const module=(await listing.json()).applications?.find(entry=>entry.id===app)?.module;
+    if(typeof module==='string')(await load()).prefetch(module);
+  })().catch(()=>{});
+}
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
@@ -201,22 +230,23 @@ export async function mountDesktop(target,options={}) {
   }
   const assets=createAssetRecovery({active,report,
     retry:()=>false,
-    complete:(request,bytes)=>runtime.complete_asset(id,request.loader,request.url,bytes),
-    load:async request=>{
-      if(options.loadAsset)return options.loadAsset(request.url,listeners.signal);
-      const url=new URL(request.url,location.href);
-      if(!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
-      // A cross-origin image goes through the host's fetch proxy when it offers
-      // one (tilo-net's wire protocol v1), else directly where the site allows
-      // it; the page's cookies never go to another origin.
-      const proxy=url.origin===location.origin?undefined:globalThis.__tiloFetchProxy;
-      const response=typeof proxy==='string'
-        ?await fetch(`${new URL(proxy,location.href).href}?url=${encodeURIComponent(url.href)}`,{signal:listeners.signal,credentials:'same-origin',headers:{'x-tilo-proxy':'1'}})
-        :await fetch(url,{signal:listeners.signal,credentials:url.origin===location.origin?'same-origin':'omit'});
-      if(!response.ok)throw Error(`asset HTTP ${response.status}`);
-      return new Uint8Array(await response.arrayBuffer());
-    }
+    complete:(request,image)=>runtime.complete_asset(id,request.loader,request.url,image?.width??0,image?.height??0,image?.rgba),
+    load:async request=>decodeImage(await fetchAsset(request),request.maxDimension),
   });
+  async function fetchAsset(request){
+    if(options.loadAsset)return options.loadAsset(request.url,listeners.signal);
+    const url=new URL(request.url,location.href);
+    if(!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
+    // A cross-origin image goes through the host's fetch proxy when it offers
+    // one (tilo-net's wire protocol v1), else directly where the site allows
+    // it; the page's cookies never go to another origin.
+    const proxy=url.origin===location.origin?undefined:globalThis.__tiloFetchProxy;
+    const response=typeof proxy==='string'
+      ?await fetch(`${new URL(proxy,location.href).href}?url=${encodeURIComponent(url.href)}`,{signal:listeners.signal,credentials:'same-origin',headers:{'x-tilo-proxy':'1'}})
+      :await fetch(url,{signal:listeners.signal,credentials:url.origin===location.origin?'same-origin':'omit'});
+    if(!response.ok)throw Error(`asset HTTP ${response.status}`);
+    return new Uint8Array(await response.arrayBuffer());
+  }
   async function loadAssets(){
     if(!active())return;
     await Promise.allSettled(JSON.parse(runtime.asset_requests(id)).map(request=>assets.request(request)));
@@ -401,14 +431,15 @@ export async function mountDesktop(target,options={}) {
     on(accessibility,'focusin',event=>{if(!accessibility.contains(event.relatedTarget))requestSemantics();});
 
     on(canvas,'pointerdown',()=>report({lastInput:'pointer'}));
-    // Every wheel over the surface is the runtime's: sideways swipes step the
+    // Every wheel over the surface is the runtime's: sideways swipes pan the
     // strip or scroll an app, Ctrl+wheel is pinch zoom. None may scroll,
     // zoom or navigate the page's history.
     // A mouse wheel's notches reach the runtime as the lines a native wheel
     // sends; this runs before the runtime's own canvas listener.
+    const wheelNotch={x:0,y:0};
     on(surface,'wheel',event=>{
       if(event.target!==canvas)return;
-      const lines=wheelNotchesAsLines(event,config.mac);
+      const lines=wheelNotchesAsLines(event,config.mac,wheelNotch);
       if(!lines)return;
       event.preventDefault();event.stopImmediatePropagation();
       canvas.dispatchEvent(new WheelEvent('wheel',lines));

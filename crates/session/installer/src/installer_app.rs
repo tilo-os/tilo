@@ -392,6 +392,7 @@ const STATUS_LOG_HEIGHT: f32 = 200.0;
 pub enum Step {
     Keyboard,
     Network,
+    Accounts,
     Disk,
     Account,
     Options,
@@ -404,8 +405,8 @@ pub enum Step {
 
 /// Captions for the step-progress breadcrumb, index-aligned with
 /// [`step_index`].
-pub const STEP_LABELS: [&str; 8] = [
-    "Keyboard", "Network", "Disk", "Account", "Options", "Media", "Review", "Install",
+pub const STEP_LABELS: [&str; 9] = [
+    "Keyboard", "Network", "Accounts", "Disk", "Account", "Options", "Media", "Review", "Install",
 ];
 
 /// Position of `step` in the breadcrumb (0-based). Keyboard is first so the
@@ -414,12 +415,13 @@ pub fn step_index(step: Step) -> usize {
     match step {
         Step::Keyboard => 0,
         Step::Network => 1,
-        Step::Disk => 2,
-        Step::Account => 3,
-        Step::Options => 4,
-        Step::Media => 5,
-        Step::Review => 6,
-        Step::Install => 7,
+        Step::Accounts => 2,
+        Step::Disk => 3,
+        Step::Account => 4,
+        Step::Options => 5,
+        Step::Media => 6,
+        Step::Review => 7,
+        Step::Install => 8,
     }
 }
 
@@ -439,7 +441,8 @@ pub enum InstallState {
 pub fn next_step(step: Step) -> Option<Step> {
     match step {
         Step::Keyboard => Some(Step::Network),
-        Step::Network => Some(Step::Disk),
+        Step::Network => Some(Step::Accounts),
+        Step::Accounts => Some(Step::Disk),
         Step::Disk => Some(Step::Account),
         Step::Account => Some(Step::Options),
         Step::Options => Some(Step::Media),
@@ -453,7 +456,8 @@ pub fn next_step(step: Step) -> Option<Step> {
 pub fn prev_step(step: Step) -> Option<Step> {
     match step {
         Step::Network => Some(Step::Keyboard),
-        Step::Disk => Some(Step::Network),
+        Step::Accounts => Some(Step::Network),
+        Step::Disk => Some(Step::Accounts),
         Step::Account => Some(Step::Disk),
         Step::Options => Some(Step::Account),
         Step::Media => Some(Step::Options),
@@ -508,7 +512,12 @@ pub fn validate_step(
         // A layout is always selected (seeded to the default), the media
         // formats are optional, and Review/Install have nothing left to
         // validate, so these steps never block forward progress.
-        Step::Network | Step::Keyboard | Step::Media | Step::Review | Step::Install => Ok(()),
+        Step::Network
+        | Step::Accounts
+        | Step::Keyboard
+        | Step::Media
+        | Step::Review
+        | Step::Install => Ok(()),
     }
 }
 
@@ -924,6 +933,11 @@ pub type ProxySlot = Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>;
 )]
 pub struct InstallerApp {
     network: InstallerNetwork,
+    // Online identities, commands and credentials never enter the document or profile.
+    accounts_form: crate::online_accounts::view::AccountsForm,
+    accounts_controller: Option<crate::online_accounts::AccountsController>,
+    accounts_initialized: bool,
+    windows_hints: crate::online_accounts::hints::WindowsReview,
     disks: Vec<Disk>,
     selected_disk: Option<usize>,
     /// Explicit choice when a disk has multiple safe unallocated extents.
@@ -1098,7 +1112,7 @@ impl InstallerApp {
     /// Imager's setup choices. Nothing is confirmed; Review still shows every
     /// choice and requires the typed confirmation.
     fn apply_internal_handoff(&mut self, handoff: crate::internal_handoff::Handoff) {
-        let profile = handoff.media_profile();
+        let profile = crate::internal_handoff::media_profile(&handoff);
         self.internal_handoff = Some(handoff);
         if !self.bind_internal_handoff() {
             self.internal_handoff = None;
@@ -1151,7 +1165,7 @@ impl InstallerApp {
         self.internal_handoff
             .as_ref()
             .filter(|_| self.disks.iter().any(Disk::hosts_staged_installer))
-            .map(crate::internal_handoff::Handoff::host)
+            .map(|handoff| handoff.host_os)
     }
 
     fn selected_disk_hosts_installer(&self) -> bool {
@@ -1195,6 +1209,10 @@ impl InstallerApp {
             password_confirmation: Arc::new(Mutex::new(String::new())),
             disk_password: Arc::new(Mutex::new(String::new())),
             wifi_password: Arc::new(Mutex::new(String::new())),
+            accounts_form: crate::online_accounts::view::AccountsForm::new(),
+            accounts_controller: None,
+            accounts_initialized: false,
+            windows_hints: crate::online_accounts::hints::WindowsReview::default(),
             hostname: ui::LocalState::new(DEFAULT_HOSTNAME.to_string()),
             locale: ui::LocalState::new("en_US.UTF-8".to_string()),
             timezone: ui::LocalState::new(DEFAULT_TIMEZONE.to_string()),
@@ -1248,6 +1266,8 @@ impl InstallerApp {
         self.purpose.clone_from(&profile.purpose);
         self.device_label.clone_from(&profile.device_label);
         self.prepared_setup.clone_from(&profile.prepared_setup);
+        self.windows_hints
+            .set_profile(profile.windows_preparation.clone(), &self.accounts_form);
         let status = profile.repair_summary();
         let keyboard_display = profile.keyboard_display_name().map(str::to_string);
         let completion = ProfileCompletion {
@@ -1364,7 +1384,10 @@ impl InstallerApp {
         app.hostname.set(DEFAULT_HOSTNAME.to_string());
         app.timezone.set(DEFAULT_TIMEZONE.to_string());
         app.keymap.set(DEFAULT_KEYMAP_NAME.to_string());
-        if !matches!(step, Step::Network | Step::Keyboard | Step::Disk) {
+        if !matches!(
+            step,
+            Step::Network | Step::Accounts | Step::Keyboard | Step::Disk
+        ) {
             app.selected_disk = Some(0);
         }
         app.selected_fs = 0;
@@ -1391,6 +1414,7 @@ impl InstallerApp {
             purpose: install_profile_model::default_purpose(),
             device_label: String::new(),
             prepared_setup: None,
+            windows_preparation: None,
             hostname: Some("studio".into()),
             username: Some("quinten".into()),
             full_name: Some("Quinten Example".into()),
@@ -1724,6 +1748,8 @@ impl InstallerApp {
                 String::new()
             },
             codecs: self.codecs,
+            online_accounts: None,
+            account_operation: String::new(),
         }
     }
 
@@ -1792,6 +1818,148 @@ impl InstallerApp {
                 return Err("Choose a valid time zone from the list".into());
             }
         }
+        Ok(())
+    }
+
+    /// Create custody only on entry, below the owned 0700 runtime directory.
+    /// `live` validates the directory and refuses both real and effective root
+    /// before creating its private session child or launching any OAuth flow.
+    fn enter_accounts(&mut self) {
+        if self.step != Step::Accounts || self.accounts_initialized {
+            return;
+        }
+        self.accounts_initialized = true;
+        self.accounts_controller = std::env::var_os("XDG_RUNTIME_DIR").and_then(|root| {
+            crate::online_accounts::AccountsController::live(std::path::Path::new(&root)).ok()
+        });
+        if self.accounts_controller.is_none() {
+            self.accounts_form
+                .set_status(crate::online_accounts::view::AccountsStatus::Failed);
+        }
+    }
+
+    fn leave_accounts(&mut self) {
+        use crate::online_accounts::view::{AccountsCommand, AccountsStatus};
+        if self.step != Step::Accounts {
+            return;
+        }
+        // Discard pending starts before cancelling the actor; its generation is
+        // invalidated even when a successful result has not yet been polled.
+        self.accounts_form.drain_commands();
+        self.windows_hints.cancel(&self.accounts_form);
+        if let Some(controller) = self.accounts_controller.as_mut() {
+            let _ = controller.command(AccountsCommand::Cancel);
+        }
+        self.accounts_form.set_status(AccountsStatus::Ready);
+        let _ = self.accounts_form.select_source(None);
+    }
+
+    fn sync_accounts(&mut self) {
+        use crate::online_accounts::view::{AccountsCommand, AccountsStatus};
+        if self.step != Step::Accounts {
+            return;
+        }
+        self.enter_accounts();
+        self.windows_hints.sync(&self.accounts_form);
+        for command in self.accounts_form.drain_commands() {
+            let skip = matches!(command, AccountsCommand::SkipOffline);
+            let escape = matches!(
+                command,
+                AccountsCommand::Cancel | AccountsCommand::SkipOffline
+            );
+            let status = match self.accounts_controller.as_mut() {
+                Some(controller) => {
+                    if controller.command(command).is_ok() {
+                        controller.status()
+                    } else {
+                        AccountsStatus::Failed
+                    }
+                }
+                None if escape => AccountsStatus::Ready,
+                None => AccountsStatus::Failed,
+            };
+            self.accounts_form.set_status(status);
+            self.dirty_structure = true;
+            if skip {
+                self.go_next();
+                return;
+            }
+        }
+        if let Some(controller) = self.accounts_controller.as_mut() {
+            let status = controller.poll();
+            if status != self.accounts_form.status() {
+                self.accounts_form.set_status(status);
+                self.dirty_structure = true;
+            }
+            if status == AccountsStatus::ReviewCalendars {
+                self.accounts_form.set_calendars(controller.calendars());
+            }
+        }
+        self.dirty_structure |= self.accounts_form.take_structure_changed();
+    }
+
+    /// Seal this session's explicitly selected accounts for an authenticated
+    /// install operation. The caller must persist the ciphertext in the target
+    /// user's handoff and arrange adoption at login, never in a public profile.
+    /// This password-based API remains available for portable-media callers;
+    /// live installation uses a fresh private transport key instead.
+    ///
+    /// # Errors
+    /// Returns a fixed error if custody cannot seal the selected accounts.
+    pub fn stage_online_accounts(
+        &mut self,
+        password: &[u8],
+        binding: &account_custody::portable::PortableBinding,
+    ) -> Result<
+        Option<account_custody::portable::PasswordSealedAccounts>,
+        crate::online_accounts::AccountsError,
+    > {
+        let Some(controller) = self.accounts_controller.as_mut() else {
+            return Ok(None);
+        };
+        let selected = controller.selected().to_vec();
+        if selected.is_empty() {
+            return Ok(None);
+        }
+        controller
+            .stage_selected(&selected, password, binding)
+            .map(Some)
+    }
+
+    fn prepare_live_accounts(
+        &mut self,
+        opts: &mut InstallOptions,
+        user: &str,
+    ) -> Result<(), crate::online_accounts::AccountsError> {
+        use crate::online_accounts::AccountsError;
+        let Some(controller) = self.accounts_controller.as_mut() else {
+            return Ok(());
+        };
+        let selected = controller.selected().to_vec();
+        if selected.is_empty() {
+            return Ok(());
+        }
+        // These are the current reviewed options, not a caller-supplied profile.
+        // The backend revalidates each disk field before computing this binding.
+        if opts.disk_size_bytes == 0 || opts.disk_major_minor.is_empty() {
+            return Err(AccountsError::InvalidRequest);
+        }
+        let operation = uuid::Uuid::new_v4().to_string();
+        let target = crate::account_handoff::target_fingerprint(
+            opts.disk_size_bytes,
+            &opts.disk_major_minor,
+            &opts.disk_wwn,
+            &opts.disk_serial,
+        );
+        let binding =
+            account_custody::portable::PortableBinding::new(&operation, &target, user, 1000)
+                .map_err(|_| AccountsError::InvalidRequest)?;
+        let key = tilo_seal::SymmetricKey::generate().map_err(|_| AccountsError::Storage)?;
+        let sealed = controller.stage_selected_with_key(&selected, &key, &binding)?;
+        opts.online_accounts = Some(Arc::new(crate::account_handoff::InstallAccounts::new(
+            &sealed, key,
+        )));
+        opts.account_operation = operation;
         Ok(())
     }
 
@@ -1893,15 +2061,21 @@ impl InstallerApp {
                             completion.timezone = FieldCompletion::Complete;
                             completion.filesystem = FieldCompletion::Complete;
                         }
-                        Step::Network | Step::Disk | Step::Media | Step::Review | Step::Install => {
-                        }
+                        Step::Network
+                        | Step::Accounts
+                        | Step::Disk
+                        | Step::Media
+                        | Step::Review
+                        | Step::Install => {}
                     }
                 }
                 if let Some(n) = self.next_setup_step() {
                     // Never auto-advance into Install via Next; the Begin
                     // button (begin flag) is the only entry into install.
                     if n != Step::Install {
+                        self.leave_accounts();
                         self.step = n;
+                        self.enter_accounts();
                         self.reset_viewport();
                         self.status.clear();
                         self.dirty_structure = true;
@@ -1983,7 +2157,9 @@ impl InstallerApp {
         // FIDO2) and Network remain available for deliberate changes.
         let destination = prev_step(self.step);
         if let Some(p) = destination {
+            self.leave_accounts();
             self.step = p;
+            self.enter_accounts();
             self.reset_viewport();
             self.status.clear();
             self.dirty_structure = true;
@@ -2052,7 +2228,11 @@ impl InstallerApp {
             self.set_status("Choose a disk secret different from the account password");
             return;
         }
-        let opts = self.install_options();
+        let mut opts = self.install_options();
+        if self.prepare_live_accounts(&mut opts, &user).is_err() {
+            self.set_status("Could not prepare your connected accounts; retry before installing");
+            return;
+        }
 
         // The worker owns the only remaining password buffer. Remove both UI
         // fields before launch so a failed install cannot leave account
@@ -2236,6 +2416,10 @@ impl InstallerApp {
         let mut actions: Vec<Box<dyn Widget>> = Vec::new();
         match self.step {
             Step::Network => self.compose_network_step(theme, &mut children, &mut actions),
+            Step::Accounts => {
+                children.push(self.accounts_form.view());
+                actions.push(self.nav_row(Step::Accounts, self.next_control(), "Next", false));
+            }
             Step::Disk => self.compose_disk_step(theme, &mut children, &mut actions),
             Step::Account => self.compose_account_step(theme, &mut children, &mut actions),
             Step::Keyboard => self.compose_keyboard_step(theme, &mut children, &mut actions),
@@ -3868,6 +4052,7 @@ impl Widget for InstallerApp {
     /// view state is noticed and the composed controls sync.
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         self.run_presses();
+        self.sync_accounts();
         self.notice_confirmation_edit();
         if self.network.ensure_initial_scan(self.event_proxy()) {
             self.dirty_structure = true;
@@ -3989,9 +4174,18 @@ impl Widget for InstallerApp {
                     self.run_press(Press::new(op::SESSION, "next", Value::Null));
                     *ctx.handled = true;
                 }
-                Step::Install => {}
+                // Enter in a private account field must not skip sign-in.
+                Step::Accounts | Step::Install => {}
             }
         }
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.step == Step::Accounts
+            && (self.windows_hints.is_pending()
+                || self.accounts_controller.as_ref().is_some_and(|controller| {
+                    controller.status() == crate::online_accounts::view::AccountsStatus::SigningIn
+                }))
     }
 
     fn on_external_event(
@@ -4048,7 +4242,7 @@ impl Widget for InstallerApp {
         doc: &mut ui::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped().filter(|r| r.type_id == op::OPERATION_TYPE) else {
+        let Some(request) = op.unscoped().filter(|r| op::HANDLERS.contains(&r.type_id)) else {
             return ui::host_operation::start_in_children(self, op, doc, path);
         };
         // The operation changes wizard state only; the document is untouched.
@@ -4294,6 +4488,51 @@ mod tests {
         node_map
     }
 
+    fn invoke_provider(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str) {
+        let payload = serde_json::to_vec(id).unwrap();
+        let completed = ui::host_operation::ResourceOperation::local(
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::View,
+            "tilo.ui.control.invoke",
+            &payload,
+        )
+        .start(app, &mut ui::widget::Edits::lend(doc), &automerge::ROOT)
+        .unwrap()
+        .and_then(ui::host_operation::ResourceOperationStart::completed);
+        assert!(
+            completed.is_some(),
+            "provider control must execute its view action"
+        );
+        app.sync(doc, &automerge::ROOT);
+        assert_eq!(doc.length(automerge::ROOT), 0);
+    }
+
+    #[test]
+    fn accounts_provider_buttons_rebuild_server_field() {
+        let mut app = InstallerApp::with_disks(Vec::new());
+        let mut doc = AutoCommit::new();
+        app.step = Step::Accounts;
+        // Exercise the form without starting live credential custody.
+        app.accounts_initialized = true;
+        app.dirty_structure = true;
+        app.sync(&doc, &automerge::ROOT);
+        let _ = build(&mut app);
+        assert!(!has_test_id(&app, "installer.online.server"));
+        app.take_structure_dirty();
+
+        invoke_provider(&mut app, &mut doc, "installer-online-nextcloud");
+        assert!(app.dirty_structure, "provider change must request layout");
+        app.take_structure_dirty();
+        let _ = build(&mut app);
+        assert!(has_test_id(&app, "installer.online.server"));
+
+        invoke_provider(&mut app, &mut doc, "installer-online-google");
+        assert!(app.dirty_structure, "provider change must request layout");
+        app.take_structure_dirty();
+        let _ = build(&mut app);
+        assert!(!has_test_id(&app, "installer.online.server"));
+    }
+
     #[test]
     fn welcome_and_account_explain_choices_in_person_first_order() {
         let mut app = InstallerApp::with_disks(Vec::new());
@@ -4392,24 +4631,74 @@ mod tests {
 
     #[test]
     fn step_navigation_walks_forward_back_and_indexes_labels() {
-        assert_eq!(STEP_LABELS.len(), 8);
+        assert_eq!(STEP_LABELS.len(), 9);
         // (step, next, prev, index): forward stops at Install, back stops at
         // Keyboard (and Install has no way back), indices match the labels.
         let cases = [
             (Step::Keyboard, Some(Step::Network), None, 0),
-            (Step::Network, Some(Step::Disk), Some(Step::Keyboard), 1),
-            (Step::Disk, Some(Step::Account), Some(Step::Network), 2),
-            (Step::Account, Some(Step::Options), Some(Step::Disk), 3),
-            (Step::Options, Some(Step::Media), Some(Step::Account), 4),
-            (Step::Media, Some(Step::Review), Some(Step::Options), 5),
-            (Step::Review, Some(Step::Install), Some(Step::Media), 6),
-            (Step::Install, None, None, 7),
+            (Step::Network, Some(Step::Accounts), Some(Step::Keyboard), 1),
+            (Step::Accounts, Some(Step::Disk), Some(Step::Network), 2),
+            (Step::Disk, Some(Step::Account), Some(Step::Accounts), 3),
+            (Step::Account, Some(Step::Options), Some(Step::Disk), 4),
+            (Step::Options, Some(Step::Media), Some(Step::Account), 5),
+            (Step::Media, Some(Step::Review), Some(Step::Options), 6),
+            (Step::Review, Some(Step::Install), Some(Step::Media), 7),
+            (Step::Install, None, None, 8),
         ];
         for (step, next, prev, index) in cases {
             assert_eq!(next_step(step), next, "next_step case {step:?}");
             assert_eq!(prev_step(step), prev, "prev_step case {step:?}");
             assert_eq!(step_index(step), index, "step_index case {step:?}");
         }
+    }
+
+    #[test]
+    fn online_accounts_skip_uses_semantic_door_without_sharing_form_fields() {
+        let mut app = InstallerApp::with_disks(sample());
+        // No live browser or runtime directory is involved in this test.
+        app.accounts_initialized = true;
+        app.step = Step::Network;
+        let doc = AutoCommit::new();
+        next(&mut app, &doc);
+        assert_eq!(app.step, Step::Accounts);
+        app.accounts_form.email.set("private@example.org".into());
+        app.accounts_form
+            .server
+            .set("https://private.example.org".into());
+        let public = app.console_state().to_string();
+        assert!(!public.contains("private@example.org"));
+        assert!(!public.contains("private.example.org"));
+        run(
+            &mut app,
+            &doc,
+            "installer.accounts",
+            "skip-offline",
+            Value::Null,
+        );
+        assert_eq!(app.step, Step::Disk);
+        assert!(app.accounts_form.drain_commands().is_empty());
+        assert!(app.accounts_form.email.with(String::is_empty));
+        assert!(app.accounts_form.server.with(String::is_empty));
+        assert_eq!(doc.length(automerge::ROOT), 0);
+    }
+
+    #[test]
+    fn leaving_online_accounts_discards_unstarted_authorization() {
+        use crate::online_accounts::view::AccountsCommand;
+        let mut app = InstallerApp::with_disks(sample());
+        app.accounts_initialized = true;
+        app.step = Step::Accounts;
+        app.accounts_form.submit(false).unwrap();
+        app.go_back();
+        assert_eq!(app.step, Step::Network);
+        assert!(app.accounts_form.drain_commands().is_empty());
+        // Escape controls must remain usable even without live custody.
+        app.step = Step::Accounts;
+        app.accounts_form.cancel();
+        assert!(matches!(
+            app.accounts_form.drain_commands().as_slice(),
+            [AccountsCommand::Cancel]
+        ));
     }
 
     #[test]
@@ -4899,6 +5188,7 @@ mod tests {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 prepared_setup: None,
+                windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("quinten".into()),
                 full_name: None,
@@ -5767,6 +6057,9 @@ mod tests {
             assert_eq!(app.step, Step::Disk);
 
             activate(&mut app, &mut doc, "Back");
+            assert_eq!(app.step, Step::Accounts);
+
+            activate(&mut app, &mut doc, "Back");
             assert_eq!(app.step, Step::Network);
 
             activate(&mut app, &mut doc, "Back");
@@ -6066,6 +6359,7 @@ mod tests {
         {
             for step in [
                 Step::Network,
+                Step::Accounts,
                 Step::Disk,
                 Step::Account,
                 Step::Keyboard,
@@ -6174,6 +6468,7 @@ mod tests {
                 for step in [
                     Step::Keyboard,
                     Step::Network,
+                    Step::Accounts,
                     Step::Disk,
                     Step::Account,
                     Step::Options,
@@ -6564,6 +6859,7 @@ mod tests {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 prepared_setup: None,
+                windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("quinten".into()),
                 full_name: Some("Quinten Example".into()),
@@ -6607,6 +6903,8 @@ mod tests {
             app.go_back();
             assert_eq!(app.step, Step::Disk);
             app.go_back();
+            assert_eq!(app.step, Step::Accounts);
+            app.go_back();
             assert_eq!(app.step, Step::Network);
         }
         // Phase `partial_media_profile_routes_to_only_the_repair_screens`.
@@ -6616,6 +6914,7 @@ mod tests {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 prepared_setup: None,
+                windows_preparation: None,
                 hostname: None,
                 username: Some("quinten".into()),
                 full_name: Some("Quinten Example".into()),
@@ -6649,6 +6948,7 @@ mod tests {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 prepared_setup: None,
+                windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("quinten".into()),
                 full_name: Some("Quinten Example".into()),
@@ -6681,6 +6981,7 @@ mod tests {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 prepared_setup: None,
+                windows_preparation: None,
                 hostname: Some("studio".into()),
                 username: Some("quinten".into()),
                 full_name: Some("Quinten Example".into()),

@@ -43,11 +43,11 @@ impl ChromiumLinux {
         brand: ChromiumBrand,
     ) -> Result<Self, SourceError> {
         let facts = grant.profile.metadata().map_err(super::unavailable)?;
-        let owner = unsafe { libc::getuid() };
+        let owner = rustix::process::getuid().as_raw();
         if grant.provider != browser_continuity::Provider::Chromium
             || owner == 0
             || facts.uid() != owner
-            || unsafe { libc::geteuid() } != owner
+            || rustix::process::geteuid().as_raw() != owner
         {
             return Err(SourceError::Unavailable);
         }
@@ -90,8 +90,8 @@ impl ChromiumDecryptor for ChromiumLinux {
         let facts = self.profile.metadata().map_err(super::unavailable)?;
         if (facts.uid(), facts.dev(), facts.ino()) != self.identity
             || facts.mode() & 0o022 != 0
-            || unsafe { libc::getuid() } != self.identity.0
-            || unsafe { libc::geteuid() } != self.identity.0
+            || rustix::process::getuid().as_raw() != self.identity.0
+            || rustix::process::geteuid().as_raw() != self.identity.0
         {
             return Err(SourceError::Unavailable);
         }

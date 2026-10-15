@@ -91,7 +91,7 @@ fn peer(groups: [libc::gid_t; 3]) -> (Peer, HostChannel) {
 #[test]
 fn actual_same_gpt_source_record_reopens_ext4_xfs_peer_facts_and_refuses_tampering() {
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "privileged isolated qualifier required"
     );
@@ -305,7 +305,7 @@ pub(in crate::setup) mod output;
 #[test]
 fn actual_large_original_inventory_registers_and_reopens_protected_source_custody() {
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "privileged isolated qualifier required"
     );
@@ -488,7 +488,7 @@ fn actual_large_original_inventory_registers_and_reopens_protected_source_custod
     );
     // Same named inode with changed bytes must not reuse the authenticated
     // record witness when the source is mounted readonly again.
-    let mut changed = bytes.clone();
+    let mut changed = bytes;
     changed[20] ^= 1;
     std::fs::write(&inventory_path, &changed).unwrap();
     {

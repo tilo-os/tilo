@@ -9,7 +9,6 @@
     )
 )]
 
-use std::io::Read;
 use std::os::fd::{FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -311,7 +310,14 @@ fn main() -> ExitCode {
     if retained_endpoint.is_some() && !matches!(&cli.cmd, Cmd::Run { .. }) {
         return ExitCode::from(126);
     }
-    match cli.cmd {
+    dispatch_command(cli.cmd, retained_endpoint)
+}
+
+fn dispatch_command(
+    command: Cmd,
+    retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchGate>,
+) -> ExitCode {
+    match command {
         Cmd::Run {
             manifest,
             expected_package_hash,
@@ -467,13 +473,7 @@ fn run_gui_command(
     args: RunCliArgs,
     retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchGate>,
 ) -> ExitCode {
-    if args.minimal_libs {
-        eprintln!(
-            "tilo-launcher: --minimal-libs is deprecated. \
-             Prefer a manifest `runtime = \"tilo-runtime/<v>\"` declaration \
-             plus `tilo-install runtime install --version <v> --from-host`."
-        );
-    }
+    warn_deprecated_minimal_libs(args.minimal_libs);
     let opts = RunOptions {
         expected_package_hash: args.expected_package_hash,
         no_services: args.no_services,
@@ -578,6 +578,23 @@ fn run_gui_command(
             run_manifest(&manifest, &args.payload_root, &opts)
         }
     });
+    report_launch_result(result, opts.app_id.as_deref())
+}
+
+fn warn_deprecated_minimal_libs(minimal_libs: bool) {
+    if minimal_libs {
+        eprintln!(
+            "tilo-launcher: --minimal-libs is deprecated. \
+             Prefer a manifest `runtime = \"tilo-runtime/<v>\"` declaration \
+             plus `tilo-install runtime install --version <v> --from-host`."
+        );
+    }
+}
+
+fn report_launch_result(
+    result: Result<std::process::ExitStatus, launcher::run::RunError>,
+    app_id: Option<&str>,
+) -> ExitCode {
     match result {
         Ok(status) => {
             // How the app ended, said where its output goes: a signal leaves
@@ -585,7 +602,7 @@ fn run_gui_command(
             if !status.success() {
                 eprintln!(
                     "tilo-launcher: {} ended: {status}",
-                    opts.app_id.as_deref().unwrap_or("the app")
+                    app_id.unwrap_or("the app")
                 );
             }
             if let Some(code) = status.code() {

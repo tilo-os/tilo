@@ -29,8 +29,8 @@ fn refused() -> io::Error {
 }
 
 pub(crate) fn run(home: bool) -> io::Result<()> {
-    let uid = unsafe { libc::getuid() };
-    if uid == 0 || unsafe { libc::geteuid() } != uid {
+    let uid = rustix::process::getuid().as_raw();
+    if uid == 0 || rustix::process::geteuid().as_raw() != uid {
         return Err(refused());
     }
     let app = Path::new(launcher::appdir::SANDBOX_APP_DIR);

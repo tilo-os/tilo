@@ -93,7 +93,7 @@ fn parse_status(buffer: &[u64], header: &Header) -> io::Result<DmState> {
     for index in 0..count {
         let offset = start.checked_add(relative).ok_or_else(refused)?;
         let spec_end = offset.checked_add(SPEC_BYTES).ok_or_else(refused)?;
-        if relative % 8 != 0 || spec_end > end {
+        if !relative.is_multiple_of(8) || spec_end > end {
             return Err(refused());
         }
         let spec = &bytes[offset..spec_end];
@@ -111,7 +111,7 @@ fn parse_status(buffer: &[u64], header: &Header) -> io::Result<DmState> {
             || sector_start != expected_sector
             || length == 0
             || next < relative.checked_add(SPEC_BYTES + 1).ok_or_else(refused)?
-            || next % 8 != 0
+            || !next.is_multiple_of(8)
             || next_offset > limit
             || next_offset > bytes.len()
         {

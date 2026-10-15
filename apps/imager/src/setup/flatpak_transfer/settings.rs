@@ -385,7 +385,7 @@ mod tests {
             let pin = crate::setup::migration::PinnedDirectory::open_absolute(&root).unwrap();
             let owner = pin.file.metadata().unwrap();
             // SAFETY: geteuid only observes this fixture child's credentials.
-            assert_eq!(owner.uid(), unsafe { libc::geteuid() });
+            assert_eq!(owner.uid(), rustix::process::geteuid().as_raw());
             assert_eq!(owner.mode() & 0o777, 0o700);
             assert!(
                 std::fs::symlink_metadata(root.join("overrides"))

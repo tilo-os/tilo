@@ -10,8 +10,8 @@ use std::{
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
         unix::{
-            ffi::OsStringExt,
-            fs::{MetadataExt, OpenOptionsExt},
+            ffi::{OsStrExt, OsStringExt},
+            fs::{FileExt, MetadataExt, OpenOptionsExt},
             net::UnixStream,
         },
     },
@@ -57,13 +57,16 @@ fn root() -> io::Result<()> {
     }
     Ok(())
 }
-/// Obtained from the live certified Shell ExecutingPeer, never NSS or source GID.
+/// Obtained from the live certified Shell `ExecutingPeer`, never NSS or source GID.
 /// Root-only, nonserializable and no supplementary-source-group field.
 pub struct TargetProjectionCredentials {
     uid: u32,
     gid: u32,
 }
 impl TargetProjectionCredentials {
+    /// # Errors
+    /// Fails unless the caller has real root custody and the IDs identify a
+    /// non-root target user without sentinel user or group IDs.
     pub fn admitted(uid: u32, gid: u32) -> io::Result<Self> {
         root()?;
         validate_ids(uid, gid)?;
@@ -82,19 +85,30 @@ pub trait TargetProjectionAuthority: super::ServiceAuthority {
     /// Default deny. Only the setup-private adapter retaining the genuine root
     /// edit admission AND constructed filtered source supplies this live object.
     /// Mode or descriptive scope fields alone never establish source rights.
+    ///
+    /// # Errors
+    /// Implementations fail if the live edit admission cannot be revalidated.
     fn selected_parent_edit(&self) -> io::Result<Option<&dyn SelectedParentEditAuthority>> {
         Ok(None)
     }
+    /// # Errors
+    /// Fails if the certified target identity cannot be admitted under root custody.
     fn target_credentials(&self) -> io::Result<TargetProjectionCredentials>;
     fn context_sha256(&self) -> [u8; 32];
     fn source_view_sha256(&self) -> [u8; 32];
     /// Actual selected held-file presentation component, preserving POSIX bytes.
+    ///
+    /// # Errors
+    /// Fails if the held selection no longer supplies a valid presentation component.
     fn presentation_name(&self) -> io::Result<OsString>;
 }
 /// Nonserializable root policy bridge, implemented only by the setup-private
-/// adapter around RootSelectedEditAdmission and its constructed source filter.
-/// check() replays current original source and fresh target authorization.
+/// adapter around `RootSelectedEditAdmission` and its constructed source filter.
+/// `check()` replays current original source and fresh target authorization.
 pub trait SelectedParentEditAuthority: super::ServiceAuthority {
+    /// # Errors
+    /// Fails if the original selection or current target authorization cannot be
+    /// revalidated to produce the sealed edit scope.
     fn scope_facts(&self) -> io::Result<SelectedParentScopeFacts>;
 }
 /// Descriptive binding only, with no FD, source credentials, backend methods,
@@ -232,7 +246,7 @@ impl FuseIdentity {
         {
             return Err(refused("Target FUSE descriptor is not /dev/fuse"));
         }
-        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        let flags = descriptor_flags(file);
         if flags < 0 || flags & libc::O_ACCMODE != libc::O_RDWR {
             return Err(refused("Target FUSE descriptor mode differs"));
         }
@@ -245,6 +259,10 @@ impl FuseIdentity {
             gid: m.gid(),
         })
     }
+}
+fn descriptor_flags(file: &File) -> i32 {
+    // SAFETY: F_GETFL reads descriptor flags without pointer arguments.
+    unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -324,7 +342,6 @@ fn receive_record(file: &File) -> io::Result<Record> {
     let m = file.metadata()?;
     let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
     let name = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
-    use std::os::unix::ffi::OsStrExt;
     if !m.is_file()
         || m.uid() != 0
         || m.nlink() != 0
@@ -339,8 +356,7 @@ fn receive_record(file: &File) -> io::Result<Record> {
     {
         return Err(refused("Target bootstrap lacks sealed root custody"));
     }
-    let mut bytes = vec![0; m.len() as usize];
-    use std::os::unix::fs::FileExt;
+    let mut bytes = vec![0; usize::try_from(m.len()).map_err(io::Error::other)?];
     file.read_exact_at(&mut bytes, 0)?;
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
@@ -398,6 +414,9 @@ pub struct TargetProjectionAdmission {
     exposure: Arc<exposure::ExposureCustody>,
 }
 impl TargetProjectionAdmission {
+    /// # Errors
+    /// Fails if root custody, live authority, offline policy, target identity,
+    /// FUSE access, or sealed bootstrap preparation cannot be established.
     pub fn admit(authority: Arc<dyn TargetProjectionAuthority>) -> io::Result<Self> {
         root()?;
         authority.check()?;
@@ -486,6 +505,9 @@ impl TargetProjectionAdmission {
         }
         self.authority.check()
     }
+    /// # Errors
+    /// Fails if admission has changed, a runtime is already present, or the
+    /// runtime directory and its signed publisher cannot be verified.
     pub fn with_native_runtime(
         mut self,
         runtime: &std::path::Path,
@@ -505,6 +527,9 @@ impl TargetProjectionAdmission {
         self.check()?;
         Ok(self)
     }
+    /// # Errors
+    /// Fails if admission has changed, the package is not the projection worker,
+    /// or the installation cannot be bound to the admitted signed runtime.
     pub fn with_installation(
         mut self,
         installed: package_store::InstalledPackage,
@@ -543,6 +568,7 @@ impl TargetProjectionAdmission {
             return Err(refused("Target workspace already prepared"));
         }
         *slot = Some(workspace::prepare(path, &self.record)?);
+        drop(slot);
         Ok(())
     }
     pub(crate) fn launch_dirs(&self) -> io::Result<(std::path::PathBuf, std::path::PathBuf)> {
@@ -576,6 +602,7 @@ impl TargetProjectionAdmission {
             filter,
             record,
         });
+        drop(slot);
         Ok(())
     }
     fn launch_record(&self) -> io::Result<Record> {
@@ -602,11 +629,11 @@ impl TargetProjectionAdmission {
     pub(crate) fn pairs(&self) -> io::Result<Vec<(RawFd, RawFd)>> {
         let mut pairs = self.native()?.descriptor_pairs();
         pairs.retain(|(_, fd)| *fd != super::capture::SOURCE_FD);
-        let state = self
+        let guard = self
             .launch
             .lock()
             .map_err(|_| refused("Target filter custody poisoned"))?;
-        let state = state
+        let state = guard
             .as_ref()
             .ok_or_else(|| refused("Target baseline missing"))?;
         pairs.extend([
@@ -614,15 +641,16 @@ impl TargetProjectionAdmission {
             (self.fuse.as_raw_fd(), FUSE_FD),
             (self.ready.as_raw_fd(), READY_FD),
         ]);
+        drop(guard);
         Ok(pairs)
     }
     pub(crate) fn replace_baseline(&self, pairs: &mut [(RawFd, RawFd)]) -> io::Result<()> {
         self.check()?;
-        let state = self
+        let guard = self
             .launch
             .lock()
             .map_err(|_| refused("Target filter custody poisoned"))?;
-        let state = state
+        let state = guard
             .as_ref()
             .ok_or_else(|| refused("Target baseline missing"))?;
         let target = crate::services::BASELINE_SECCOMP_CHILD_FD;
@@ -634,6 +662,7 @@ impl TargetProjectionAdmission {
             .find(|(_, fd)| *fd == target)
             .ok_or(io::ErrorKind::InvalidData)?
             .0 = state.filter.descriptor();
+        drop(guard);
         Ok(())
     }
     pub(crate) fn splice_credentials(&self, argv: &mut Vec<String>) -> io::Result<()> {
@@ -657,7 +686,7 @@ impl TargetProjectionAdmission {
             .position(|v| v == "--unshare-all")
             .ok_or_else(|| refused("Target canonical namespace plan missing"))?;
         argv.splice(
-            pos..pos + 1,
+            pos..=pos,
             [
                 "--unshare-pid",
                 "--unshare-net",
@@ -679,8 +708,9 @@ impl TargetProjectionAdmission {
             .iter()
             .position(|v| v == "__sandbox-exec")
             .ok_or_else(|| refused("Target signed shim missing"))?;
+        let after_shim = shim.checked_add(1).ok_or(io::ErrorKind::InvalidData)?;
         argv.splice(
-            shim + 1..shim + 1,
+            after_shim..after_shim,
             ["--target-projection-fd".into(), TOKEN_FD.to_string()],
         );
         let mut traversal = Vec::new();

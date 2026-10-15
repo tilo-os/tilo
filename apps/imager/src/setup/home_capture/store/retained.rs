@@ -2,10 +2,12 @@
 //! only root-owned immutable source records and an owned RW lease confer authority.
 use super::super::OriginalCallerFacts;
 use super::*;
+#[cfg(all(test, feature = "native-capture-qualification"))]
+use crate::setup::prepared_setup::PreparedSetupReview;
 use crate::setup::{
     home_capture::transport::{HostChannel, RetainedHomeInput},
     migration_handoff::{HomePolicy, Plan, RetainedSource},
-    prepared_setup::{AuthenticatedInstalledRetained, Manifest, PreparedSetupReview},
+    prepared_setup::{AuthenticatedInstalledRetained, Manifest},
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -166,7 +168,7 @@ impl Store {
         setup: &str,
         person: &[u8; 32],
     ) -> io::Result<RetainedCallerDeclaration> {
-        if unsafe { libc::geteuid() } != 0 || self.operation != plan.operation_id {
+        if rustix::process::geteuid().as_raw() != 0 || self.operation != plan.operation_id {
             return Err(failure(
                 "Retained registration requires root operation custody",
             ));
@@ -309,7 +311,7 @@ pub(in crate::setup) struct RootRetainedPermit {
 }
 impl RootRetainedPermit {
     pub(in crate::setup) fn validate_plan(&self, plan: &Plan) -> io::Result<()> {
-        if unsafe { libc::geteuid() } != 0 || self.plan != *plan {
+        if rustix::process::geteuid().as_raw() != 0 || self.plan != *plan {
             return Err(failure(
                 "Root retained permit differs from exact admitted Plan",
             ));
@@ -429,6 +431,7 @@ impl RetainedSourceAuthority {
         UNKNOWN_SOURCE_RETIREMENT.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    #[cfg(all(test, feature = "native-capture-qualification"))]
     pub(in crate::setup) fn review(
         setup: &PreparedSetupReview,
         active_person: &[u8; 32],
@@ -464,7 +467,7 @@ impl RetainedSourceAuthority {
         active_person: &[u8; 32],
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         crate::setup::migration::check_cancel(cancel)?;
@@ -663,7 +666,7 @@ impl RetainedSourceProjection {
         active_person: &[u8; 32],
         cancel: &AtomicBool,
     ) -> io::Result<Arc<RetainedSourceAuthority>> {
-        if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
+        if rustix::process::getuid().as_raw() != 0 || rustix::process::geteuid().as_raw() != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         crate::setup::migration::check_cancel(cancel)?;
@@ -683,7 +686,7 @@ impl RetainedSourceProjection {
             .map_err(|_| failure("Retained epoch custody poisoned"))?
             || installed.manifest() != previous.manifest()
             || installed.manifest() != &epoch.manifest
-            || active_person != &epoch.declaration.identity_public_key
+            || active_person != self.identity_public_key()
         {
             return Err(failure("Fresh editor installed source binding differs"));
         }

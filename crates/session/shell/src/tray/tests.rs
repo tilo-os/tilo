@@ -21,12 +21,12 @@ use tokio::net::UnixStream;
 use zbus::connection::Builder;
 use zbus::zvariant::{Array, Dict, OwnedObjectPath, OwnedValue, StructureBuilder, Value};
 
-use super::{Tray, WATCHER_BUS_NAME, WATCHER_PATH, watcher};
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::chrome_state::SearchScope;
 use crate::shell::search::SearchRegistry;
 use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
 use crate::shell::search::providers::tray_items::{self, TrayItemsProvider};
+use tilo_tray_host::{Tray, TrayRequest, WATCHER_BUS_NAME, WATCHER_PATH, watcher};
 
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 
@@ -232,7 +232,7 @@ fn a_registered_item_is_reported_published_as_actions_and_reachable() {
     reason = "the transcript runs on its own runtime's block_on and is never sent"
 )]
 async fn transcript() {
-    let tray = Tray::new();
+    let tray = Tray::new(super::icon_rasteriser());
     let calls: Calls = Arc::default();
     let (shell_socket, app_socket) = UnixStream::pair().expect("socket pair");
     let shell_side = Builder::unix_stream(shell_socket)
@@ -385,7 +385,7 @@ async fn transcript() {
     })
     .await;
 
-    tray.request(key, super::TrayRequest::Activate { x: 3, y: 4 })
+    tray.request(key, TrayRequest::Activate { x: 3, y: 4 })
         .expect("activate sent");
     eventually("activate to reach the app", || {
         calls
@@ -395,8 +395,7 @@ async fn transcript() {
     })
     .await;
     assert!(
-        tray.request(key, super::TrayRequest::Menu { id: 5 })
-            .is_err(),
+        tray.request(key, TrayRequest::Menu { id: 5 }).is_err(),
         "a disabled entry cannot be chosen"
     );
 }
