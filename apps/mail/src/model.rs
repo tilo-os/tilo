@@ -775,6 +775,20 @@ impl Mailbox {
 mod tests {
     use super::*;
 
+    #[test]
+    fn account_credentials_are_never_serialized_or_debugged() {
+        let config = AccountConfig {
+            password: "private-mail-password".into(),
+            ..Default::default()
+        };
+        assert!(
+            !serde_json::to_string(&config)
+                .unwrap()
+                .contains("private-mail-password")
+        );
+        assert!(!format!("{config:?}").contains("private-mail-password"));
+    }
+
     fn msg(subject: &str, ts: i64, folder: Folder) -> Message {
         Message {
             id: Uuid::new_v4(),

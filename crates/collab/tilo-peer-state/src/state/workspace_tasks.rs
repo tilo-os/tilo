@@ -276,7 +276,8 @@ impl StatePeer {
                 WorkspaceTaskCommand::AppliedAck { task_id, .. }
                 | WorkspaceTaskCommand::Finish { task_id, .. }
                 | WorkspaceTaskCommand::ExecutionPhase { task_id, .. }
-                | WorkspaceTaskCommand::PublicProgress { task_id, .. } => Some(task_id),
+                | WorkspaceTaskCommand::PublicProgress { task_id, .. }
+                | WorkspaceTaskCommand::Presentation { task_id, .. } => Some(task_id),
                 _ => None,
             };
             let state = crate::workspace_task::snapshot(room)?;

@@ -41,6 +41,17 @@ export interface RuntimeStatus {
   [diagnostic: string]: unknown;
 }
 export interface MountOptions {
+  /** Host-issued session for tilo-model-http; never a provider API key.
+   * Bound only to this mount. No compute node or certified peer is required.
+   * The service authenticates the session and authorizes the selected profile.
+   */
+  models?: {
+    /** Absolute HTTPS URL ending in /model/rpc. */
+    endpoint: string;
+    sessionToken: string;
+    profileId: string;
+    modelId: string;
+  };
   onNavigation?: (controller: DesktopNavigationV1) => void;
   app?: Application;
   actionsV1?: CertifiedActionsV1;

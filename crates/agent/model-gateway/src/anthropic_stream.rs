@@ -14,7 +14,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::{ProviderFailure, StreamCall, stream_failure};
+use super::{ProviderFailure, StreamCall, stream_failure};
 
 /// What one event changed.
 #[derive(Debug, Default, PartialEq, Eq)]

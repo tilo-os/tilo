@@ -98,6 +98,7 @@ pub struct HostContext {
     control_domain: crate::ControlDomain,
     closing: Rc<Cell<bool>>,
     services: crate::host::HostServices,
+    models: crate::models::Models,
     retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
     content: Option<tilo_content::ContentStore>,
     open_file: Option<OpenFile>,
@@ -583,6 +584,7 @@ impl HostContext {
             control_domain: crate::control_custody::ControlDomain::new(),
             closing: Rc::new(Cell::new(false)),
             services: crate::host::current(),
+            models: crate::models::Models::default(),
             retirement: None,
             content: None,
             open_file: None,
@@ -765,6 +767,20 @@ impl HostContext {
     /// host's own. Other apps' secrets are out of reach.
     pub fn secrets(&self) -> crate::secrets::SecretStore {
         self.services.secrets.store(&self.app_id)
+    }
+    /// Bind the model capability authorized by this host's authenticated session.
+    /// Nothing is discovered from process globals or another component.
+    pub fn provide_models(&mut self, models: crate::models::Models) {
+        // Framework views receive host capabilities through RecordEnv's typed
+        // loans, not through HostContext's presentation-service accessors.
+        self.lent
+            .retain(|service| !service.is::<crate::models::Models>());
+        self.lend(models.clone());
+        self.models = models;
+    }
+    /// Asynchronous model access, unavailable unless the host explicitly supplied it.
+    pub fn models(&self) -> crate::models::Models {
+        self.models.clone()
     }
     /// This app's private file areas (data, config, cache, state): the
     /// per-user directories natively, the origin-private file system in a
@@ -2493,6 +2509,66 @@ mod bound_lifetime_tests {
 mod portable_tests {
     use super::*;
     use crate::application_test_support as probe;
+
+    #[test]
+    fn models_are_explicitly_bound_to_each_host_context() {
+        struct Backend;
+        impl crate::models::ModelBackend for Backend {
+            fn complete<'a>(
+                &'a self,
+                _: &'a crate::models::ModelRequest,
+            ) -> crate::models::CompletionFuture<'a> {
+                Box::pin(async {
+                    Err(crate::models::ModelError {
+                        kind: crate::models::ErrorKind::PermissionDenied,
+                        message: "fixture session".into(),
+                    })
+                })
+            }
+        }
+        let cache = crate::portable_storage::PortableStorage::new("models", probe::DEVICE).unwrap();
+        let records = crate::record::RecordOwners::portable(cache.clone())
+            .open(probe::APP, probe::ROOM)
+            .unwrap();
+        let views = Rc::new(InstanceViewStore::portable(cache, probe::ROOM).unwrap());
+        let definition = probe::definition(probe::probe_factory);
+        let prepare = |instance_id| {
+            HostContext::prepare(
+                &definition,
+                HostContextInputs {
+                    records: records.clone(),
+                    views: views.clone(),
+                    device_id: probe::DEVICE.into(),
+                    instance_id,
+                    permissions: probe::permissions(),
+                    author: probe::author(),
+                    action_context: probe::provenance(),
+                },
+                &LaunchTarget::New,
+            )
+            .unwrap()
+        };
+        let mut first = prepare(41);
+        assert!(!first.models().is_available());
+        first.provide_models(crate::models::Models::new(Rc::new(Backend)));
+        first.provide_models(crate::models::Models::new(Rc::new(Backend)));
+        let mut second = prepare(42);
+        let loans = first.take_lent();
+        assert_eq!(loans.len(), 1, "replacing a capability replaces its loan");
+        let loaned = loans
+            .into_iter()
+            .next()
+            .unwrap()
+            .downcast::<crate::models::Models>()
+            .unwrap();
+        assert!(loaned.is_available());
+        assert!(second.take_lent().is_empty());
+        assert!(first.models().is_available());
+        assert!(!second.models().is_available());
+        let retained = first.models();
+        drop(first);
+        assert!(retained.is_available());
+    }
     #[test]
     fn portable_host_checks_namespaces_authority_and_persists_real_component() {
         let cache =

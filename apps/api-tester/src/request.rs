@@ -317,6 +317,7 @@ fn auth_input(sink: &Sink, which: AuthField, value: &str, secret: bool, name: &s
 fn auth_fields(auth: &Auth, sink: &Sink) -> Element {
     let column = Column::new().with_no_padding().with_intrinsic_height();
     match auth {
+        Auth::SecretRef { .. } => Box::new(column.push(body("Stored authentication"))),
         Auth::None => Box::new(column.push(body("This request does not use authentication."))),
         Auth::Bearer { token } => Box::new(column.push(Box::new(Field::new(
             "Token",

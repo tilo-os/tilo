@@ -17,7 +17,18 @@ use thiserror::Error;
 #[cfg(unix)]
 use zeroize::Zeroizing;
 
+pub mod caller;
+#[cfg(unix)]
+pub mod http_service;
 pub mod openai;
+#[cfg(unix)]
+pub mod service;
+/// Direct provider access for trusted host CLIs only, never sandbox RPC callers.
+#[cfg(unix)]
+pub use service::host_backend;
+#[cfg(unix)]
+pub mod session_directory;
+pub mod transport;
 
 pub const SERVICE_NAME: &str = "model-gateway";
 // Launcher and runtime-portal uppercase the service name without replacing '-'.
@@ -106,6 +117,19 @@ pub struct FaceImage {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Request {
+    /// Negotiate reusable, per-operation cancellation before starting work.
+    /// Older gateways reject this verb; clients must not start paid work then.
+    CancellationSupported,
+    /// Native connection-local operation identity. Not an authentication claim.
+    Cancellable {
+        id: u64,
+        request: Box<Request>,
+    },
+    /// Cancel only the matching operation on this authenticated connection.
+    /// The acknowledgement is a synchronization barrier, even after completion.
+    Cancel {
+        id: u64,
+    },
     /// Read-only Agent check of the exact selection's local Plan prerequisites.
     /// A positive `configured` response does not establish provider reachability,
     /// accepted credentials, or live local-model availability. Older RPC3
@@ -114,6 +138,16 @@ pub enum Request {
         profile_id: String,
         model_id: String,
         protocol: agent_provider_config::ProviderProtocol,
+    },
+    /// Provider-neutral completion. Credentials and endpoints are resolved
+    /// exclusively by the trusted gateway.
+    Complete {
+        profile_id: String,
+        model_id: String,
+        request: agent_provider_config::protocol::ModelRequest,
+        timeout_ms: u64,
+        #[serde(default)]
+        stream: bool,
     },
     Plan {
         profile_id: String,
@@ -189,6 +223,19 @@ pub enum Request {
     SecretStatus {
         profile_id: String,
     },
+    /// Detailed status, including unbound keys that require explicit migration.
+    CredentialStatus {
+        profile_id: String,
+    },
+    /// Confirm the original endpoint independently of editable profile details.
+    MigrateApiKey {
+        profile_id: String,
+        original_endpoint: String,
+    },
+    /// Delete only the selected legacy entry, never a bound replacement.
+    RemoveLegacyApiKey {
+        profile_id: String,
+    },
     SetApiKey {
         profile_id: String,
         api_key: String,
@@ -260,7 +307,7 @@ pub struct Frame<T> {
     pub value: T,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Response {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,6 +330,49 @@ pub enum ClientError {
     Protocol(String),
     #[error("model gateway refused request: {0}")]
     Rejected(String),
+}
+
+impl ClientError {
+    /// A safe, actionable diagnostic for neutral streaming consumers.
+    pub fn model_error(&self) -> agent_provider_config::protocol::ModelError {
+        use agent_provider_config::protocol::{ErrorKind, ModelError};
+        let message = self.to_string();
+        let kind = match self {
+            Self::Unavailable => ErrorKind::Unavailable,
+            Self::Protocol(_) => ErrorKind::InvalidResponse,
+            Self::Rejected(detail) => {
+                if detail.contains("credits") {
+                    ErrorKind::CreditsExhausted
+                } else if detail.contains("context limit") {
+                    ErrorKind::ContextLimit
+                } else if detail.contains("authentication") || detail.contains("API key") {
+                    ErrorKind::Authentication
+                } else if detail.contains("permission denied") {
+                    ErrorKind::PermissionDenied
+                } else if detail.contains("rate limit") {
+                    ErrorKind::RateLimited
+                } else if detail.contains("timed out") {
+                    ErrorKind::TimedOut
+                } else if detail.contains("cancelled") {
+                    ErrorKind::Cancelled
+                } else if detail.contains("truncated")
+                    || detail.contains("without a final response")
+                {
+                    ErrorKind::Truncated
+                } else if detail.contains("network")
+                    || detail.contains("transport failed")
+                    || detail.contains("stream interrupted")
+                {
+                    ErrorKind::Transport
+                } else if detail.contains("malformed") || detail.contains("unreadable") {
+                    ErrorKind::InvalidResponse
+                } else {
+                    ErrorKind::Provider
+                }
+            }
+        };
+        ModelError { kind, message }
+    }
 }
 
 /// Whether this process has the launcher-issued service descriptor. This does
@@ -388,6 +478,131 @@ pub fn plan(
         .ok_or_else(|| ClientError::Protocol("gateway returned no provider response".into()))
 }
 
+/// Complete a provider-neutral conversation through the launcher capability.
+///
+/// # Errors
+/// Returns an error if the gateway is unavailable, refuses the request, or
+/// cannot validate the provider response.
+pub fn complete(
+    profile_id: &str,
+    model_id: &str,
+    model_request: agent_provider_config::protocol::ModelRequest,
+    timeout: Duration,
+) -> Result<agent_provider_config::protocol::ModelResponse, ClientError> {
+    let response = request(Request::Complete {
+        profile_id: profile_id.into(),
+        model_id: model_id.into(),
+        request: model_request,
+        timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        stream: false,
+    })?;
+    serde_json::from_str(
+        response
+            .output
+            .as_deref()
+            .ok_or_else(|| ClientError::Protocol("gateway returned no completion".into()))?,
+    )
+    .map_err(|_| ClientError::Protocol("invalid gateway completion".into()))
+}
+
+/// Complete a neutral turn, delivering presentation-only deltas followed by
+/// its authoritative response. Deltas never authorize tool execution.
+///
+/// # Errors
+/// As [`complete`]. Malformed event payloads are rejected after draining the
+/// response so the shared capability channel remains synchronized.
+pub fn complete_streaming(
+    profile_id: &str,
+    model_id: &str,
+    model_request: agent_provider_config::protocol::ModelRequest,
+    timeout: Duration,
+    on_event: &mut dyn FnMut(&agent_provider_config::protocol::StreamEvent),
+) -> Result<agent_provider_config::protocol::ModelResponse, ClientError> {
+    use agent_provider_config::protocol as neutral;
+    #[derive(Deserialize)]
+    struct ToolDelta {
+        index: u32,
+        id: Option<String>,
+        name: Option<String>,
+        delta: String,
+    }
+    let request = Request::Complete {
+        profile_id: profile_id.into(),
+        model_id: model_id.into(),
+        request: model_request,
+        timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        stream: true,
+    };
+    let mut invalid = false;
+    let mut callback = |kind: &str, payload: &str| {
+        if kind == EVENT_TOOL_CALL {
+            return;
+        }
+        let event = match kind {
+            EVENT_TOOL_CALL_DELTA => {
+                let Ok(delta) = serde_json::from_str::<ToolDelta>(payload) else {
+                    invalid = true;
+                    return;
+                };
+                neutral::StreamEvent::ToolCallDelta {
+                    index: delta.index,
+                    id: delta.id,
+                    name: delta.name,
+                    arguments: delta.delta,
+                }
+            }
+            "text_delta" | "reasoning_delta" => {
+                let Ok(text) = serde_json::from_str::<String>(payload) else {
+                    invalid = true;
+                    return;
+                };
+                if kind == "reasoning_delta" {
+                    neutral::StreamEvent::ReasoningDelta { text }
+                } else {
+                    neutral::StreamEvent::TextDelta { text }
+                }
+            }
+            _ => {
+                invalid = true;
+                return;
+            }
+        };
+        on_event(&event);
+    };
+    let output = streaming_request(request, true, &mut callback);
+    let result = output.and_then(|output| {
+        if invalid {
+            return Err(ClientError::Protocol("invalid gateway stream event".into()));
+        }
+        serde_json::from_str::<neutral::ModelResponse>(&output)
+            .map_err(|_| ClientError::Protocol("invalid gateway completion".into()))
+    });
+    let response = match result {
+        Ok(response) => response,
+        Err(error) => {
+            // Already delivered deltas remain presentation state. Never emit a
+            // fabricated successful response or authorize their tool calls.
+            on_event(&neutral::StreamEvent::Failed {
+                error: error.model_error(),
+            });
+            return Err(error);
+        }
+    };
+    on_event(&neutral::StreamEvent::Finished {
+        response: response.clone(),
+    });
+    Ok(response)
+}
+
+#[cfg(not(unix))]
+fn streaming_request(
+    _request: Request,
+    _deltas: bool,
+    _on_event: &mut dyn FnMut(&str, &str),
+) -> Result<String, ClientError> {
+    Err(ClientError::Unavailable)
+}
+
 /// Streaming Plan: `on_event` sees each completed tool call as the provider
 /// streams it; the return value is the final assembled provider body, in the
 /// same shape [`plan`] returns. Every frame of the request is read before
@@ -436,20 +651,33 @@ fn stream_plan(
     on_event: &mut dyn FnMut(&str, &str),
 ) -> Result<String, ClientError> {
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    streaming_request(
+        Request::Plan {
+            profile_id: profile_id.into(),
+            model_id: model_id.into(),
+            body,
+            timeout_ms,
+            stream: true,
+            deltas,
+            trace,
+        },
+        deltas,
+        on_event,
+    )
+}
+
+#[cfg(unix)]
+fn streaming_request(
+    request: Request,
+    deltas: bool,
+    on_event: &mut dyn FnMut(&str, &str),
+) -> Result<String, ClientError> {
     let mut stream = service_stream()?;
     write_frame(
         &mut stream,
         &Frame {
             version: RPC_VERSION,
-            value: Request::Plan {
-                profile_id: profile_id.to_string(),
-                model_id: model_id.to_string(),
-                body,
-                timeout_ms,
-                stream: true,
-                deltas,
-                trace,
-            },
+            value: request,
         },
     )?;
     // A bounded number of intermediate frames: one per completed tool call,
@@ -467,7 +695,7 @@ fn stream_plan(
         }
         match response.event {
             Some(event) => {
-                let count = if deltas && event == EVENT_TOOL_CALL_DELTA {
+                let count = if deltas && (event == EVENT_TOOL_CALL_DELTA || event == "text_delta") {
                     delta_frames = delta_frames.saturating_add(1);
                     delta_frames > MAX_DELTA_EVENTS
                 } else {
@@ -618,6 +846,50 @@ pub fn cluster_faces(
     response
         .output
         .ok_or_else(|| ClientError::Protocol("gateway returned no face clusters".into()))
+}
+
+/// Non-secret diagnosis of provider credential custody.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialStatus {
+    Missing,
+    Configured,
+    MigrationRequired,
+}
+
+/// Query detailed status without treating an unbound key as absent.
+///
+/// # Errors
+/// Returns gateway, custody or binding failures.
+pub fn credential_status(profile_id: &str) -> Result<CredentialStatus, ClientError> {
+    let response = request(Request::CredentialStatus {
+        profile_id: profile_id.into(),
+    })?;
+    serde_json::from_str(response.output.as_deref().unwrap_or(""))
+        .map_err(|_| ClientError::Protocol("gateway returned invalid credential status".into()))
+}
+
+/// Adopt an unbound key only after confirming its original endpoint.
+///
+/// # Errors
+/// Returns gateway, custody or original-origin mismatch failures.
+pub fn migrate_api_key(profile_id: &str, original_endpoint: &str) -> Result<(), ClientError> {
+    request(Request::MigrateApiKey {
+        profile_id: profile_id.into(),
+        original_endpoint: original_endpoint.into(),
+    })?;
+    Ok(())
+}
+
+/// Delete just the user-selected unbound key, even after editing the endpoint.
+///
+/// # Errors
+/// Returns gateway or custody failures.
+pub fn remove_legacy_api_key(profile_id: &str) -> Result<(), ClientError> {
+    request(Request::RemoveLegacyApiKey {
+        profile_id: profile_id.into(),
+    })?;
+    Ok(())
 }
 
 /// Find the subject of one bounded picture with the installed on-device

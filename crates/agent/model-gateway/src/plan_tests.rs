@@ -1,12 +1,12 @@
 //! Real Plan dispatch tests. Each subprocess owns disposable configuration and
 //! a fabricated vault key; the HTTP peer counts fully received requests.
 use super::*;
+use crate::{EVENT_TOOL_CALL_DELTA, MAX_DELTA_EVENTS};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tilo_model_gateway::{EVENT_TOOL_CALL_DELTA, MAX_DELTA_EVENTS};
 
 const OUTPUT: &str = r#"{"choices":[{"message":{"content":"nothing-fits"}}]}"#;
 const ANTHROPIC_OUTPUT: &str = r#"{"content":[{"type":"text","text":"nothing-fits"}]}"#;
@@ -82,6 +82,41 @@ fn read_request(stream: &mut TcpStream) -> String {
     headers
 }
 
+fn prepare_plan_credentials(case: &str, profile: &ProviderProfile) {
+    if case != "unavailable-storage" {
+        // The subprocess has a disposable, explicit test root, not a live
+        // Secret Service session. Opt into local test custody deliberately.
+        let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
+        let (reference, authorization) = credential_binding(profile).unwrap();
+        ServiceCredentials::open_in(&root)
+            .store(
+                &reference,
+                &authorization,
+                if case == "invalid-key" {
+                    "fabricated\ninvalid-key"
+                } else {
+                    "fabricated-test-key"
+                },
+            )
+            .unwrap();
+        if case == "missing-key" {
+            // An absent key is meaningful only after custody was established.
+            // Removing the disposable entry leaves a valid empty sealed vault.
+            assert!(
+                ServiceCredentials::open_in(&root)
+                    .remove(&reference, &authorization)
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            ServiceCredentials::open()
+                .status(&reference, &authorization)
+                .unwrap(),
+            case != "missing-key"
+        );
+    }
+}
+
 fn child_profile(case: &str) -> ProviderProfile {
     let mut profile = ProviderProfile::local_vllm();
     profile.id = "test-provider".into();
@@ -144,32 +179,26 @@ fn child_profile(case: &str) -> ProviderProfile {
 fn child_plan(case: &str) {
     let profile = child_profile(case);
     ProviderConfig {
-        profiles: vec![profile],
+        profiles: vec![profile.clone()],
         default_profile: None,
     }
     .save()
     .unwrap();
     if !matches!(
         case,
-        "missing-key" | "local-unauthenticated" | "local-nonloopback" | "local-dns-name"
+        "local-unauthenticated" | "local-nonloopback" | "local-dns-name"
     ) {
-        let mut vault = SecretVault::open();
-        vault.put(
-            &vault_id("test-provider").unwrap(),
-            &Secret::password(if case == "invalid-key" {
-                "fabricated\ninvalid-key"
-            } else {
-                "fabricated-test-key"
-            }),
-        );
-        vault.save();
-        assert!(
-            SecretVault::open()
-                .get(&vault_id("test-provider").unwrap())
-                .is_some()
-        );
+        prepare_plan_credentials(case, &profile);
     }
     if case == "local-unauthenticated" {
+        // Establish disposable custody before querying an empty vault.
+        let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
+        let (reference, authorization) = credential_binding(&profile).unwrap();
+        let store = ServiceCredentials::open_in(&root);
+        store
+            .store(&reference, &authorization, "temporary-test-key")
+            .unwrap();
+        store.remove(&reference, &authorization).unwrap();
         assert!(
             selection_configured(
                 "test-provider",
@@ -178,11 +207,7 @@ fn child_plan(case: &str) {
             )
             .is_ok()
         );
-        assert!(
-            SecretVault::open()
-                .get(&vault_id("test-provider").unwrap())
-                .is_none()
-        );
+        assert!(!secret_status("test-provider").unwrap());
     }
     let body = match case {
         "limits-cap" => serde_json::json!({"max_completion_tokens":4096}),
@@ -430,8 +455,9 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
         requests
     });
     let began = Instant::now();
+    let selected = format!("service::plan_tests::{test}");
     let child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", &format!("plan_tests::{test}"), "--nocapture"])
+        .args(["--exact", &selected, "--nocapture"])
         // No ambient credentials, proxy settings, settings path, or secret-tool.
         .env_clear()
         .env("PATH", &temp.0)
@@ -581,7 +607,7 @@ fn plan_dispatch_asks_again_only_when_the_provider_provably_did_not_take_it() {
     assert_eq!(observed.requests.len(), 1);
     assert!(!observed.response.ok);
     let error = observed.response.error.unwrap();
-    assert!(error.contains("insufficient_quota"), "{error}");
+    assert!(error.contains("provider credits are exhausted"), "{error}");
     assert!(error.contains("request was not retried"), "{error}");
 }
 
@@ -721,13 +747,14 @@ fn only_a_refused_connection_a_rate_limit_or_an_overload_is_unprocessed() {
     let mut profile = ProviderProfile::local_vllm();
     profile.endpoint = format!("http://127.0.0.1:{closed}/v1");
     let http = provider_client().unwrap();
-    let failure = tilo_rt::block_on(send_provider(
+    let failure = tilo_rt::block_on(rig_adapter::legacy(
         &http,
         &profile,
-        &provider_url(&profile),
         None,
-        &serde_json::json!({"model": "test-model"}),
+        serde_json::json!({"model": "test-model"}),
         Duration::from_secs(5),
+        None,
+        true,
     ))
     .unwrap()
     .err()
@@ -818,7 +845,11 @@ fn plan_dispatch_preserves_success_and_protocol_credentials() {
             return;
         };
         assert_eq!(observed.requests.len(), 1);
-        assert!(observed.response.ok);
+        assert!(
+            observed.response.ok,
+            "{case}: {:?}",
+            observed.response.error
+        );
         assert!(observed.response.error.is_none());
         let request = &observed.requests[0];
         if case == "anthropic" {
@@ -847,6 +878,10 @@ fn plan_dispatch_validation_failures_send_nothing() {
         ("disabled", "provider is not enabled"),
         ("missing-model", "model is not configured for this provider"),
         ("missing-key", "API key is not configured"),
+        (
+            "unavailable-storage",
+            "provider credential storage is unavailable; restore vault access and retry",
+        ),
         ("invalid-key", "provider transport failed"),
         (
             "unauthorized",
@@ -967,10 +1002,11 @@ fn plan_dispatch_reports_bounded_provider_error_identifiers_only() {
     let error = observed.response.error.unwrap();
     assert!(error.contains("provider returned HTTP 400"), "{error}");
     assert!(
-        error.contains("type=invalid_request_error code=unsupported_parameter param=max_tokens"),
+        error.contains("check model and provider settings"),
         "{error}"
     );
     assert!(!error.contains("test instruction"), "{error}");
+    assert!(!error.contains("param=max_tokens"), "{error}");
     assert!(!error.contains("fabricated-test-key"), "{error}");
 }
 
@@ -1002,8 +1038,8 @@ fn plan_dispatch_streams_argument_deltas_only_when_asked() {
         kinds,
         [
             EVENT_TOOL_CALL_DELTA,
-            EVENT_TOOL_CALL,
             EVENT_TOOL_CALL_DELTA,
+            EVENT_TOOL_CALL,
             EVENT_TOOL_CALL
         ]
     );
@@ -1011,16 +1047,29 @@ fn plan_dispatch_streams_argument_deltas_only_when_asked() {
         events[0].1,
         serde_json::json!({"index": 0, "id": "call_a", "name": "list_operations", "delta": r#"{"search":"x"}"#})
     );
-    assert_eq!(events[2].1["index"], 1);
-    assert_eq!(events[2].1["name"], "plan");
-    assert_eq!(events[2].1["delta"], "{}");
+    assert_eq!(
+        events[1].1,
+        serde_json::json!({"index":1,"id":"call_b","name":"plan","delta":"{}"})
+    );
+    assert_eq!(
+        events[2].1,
+        serde_json::json!({"id":"call_a","name":"list_operations","arguments":r#"{"search":"x"}"#})
+    );
+    assert_eq!(
+        events[3].1,
+        serde_json::json!({"id":"call_b","name":"plan","arguments":"{}"})
+    );
     // The final body is unchanged by deltas.
     let assembled: serde_json::Value =
         serde_json::from_str(observed.response.output.as_deref().unwrap()).unwrap();
-    assert_eq!(
-        assembled["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
-        r#"{"search":"x"}"#
-    );
+    let calls = assembled["choices"][0]["message"]["tool_calls"]
+        .as_array()
+        .unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["id"], "call_a");
+    assert_eq!(calls[0]["function"]["arguments"], r#"{"search":"x"}"#);
+    assert_eq!(calls[1]["id"], "call_b");
+    assert_eq!(calls[1]["function"]["arguments"], "{}");
 }
 
 /// SSE text for a list of `chat.completion.chunk` values.
@@ -1131,7 +1180,7 @@ fn streamed_reasoning_is_preserved_for_history_without_visible_delta_frames() {
             .iter()
             .all(|(_, value)| !value.to_string().contains("provider thought"))
     );
-    let replay = tilo_model_gateway::openai::read_turn(&completion).unwrap();
+    let replay = crate::openai::read_turn(&completion).unwrap();
     assert_eq!(replay.message["reasoning_content"], "provider thought");
     assert_eq!(replay.calls[0].name, "list_operations");
     assert!(replay.text.is_none());
@@ -1377,20 +1426,24 @@ fn plan_dispatch_streams_anthropic_tool_calls_then_the_message_body() {
             EVENT_TOOL_CALL_DELTA,
             EVENT_TOOL_CALL_DELTA,
             EVENT_TOOL_CALL,
-            EVENT_TOOL_CALL_DELTA,
             EVENT_TOOL_CALL
-        ]
+        ],
+        "{events:?}"
     );
     assert_eq!(
         events[2].1,
         serde_json::json!({"id": "toolu_a", "name": "list_operations", "arguments": "{\"search\": \"x\"}"})
     );
-    // A call streamed without input carries the block's own empty input.
+    // Deltas precede completion, but no completed call authorizes work until
+    // Rig has validated the whole turn's authoritative finish.
     assert_eq!(
-        events[3].1,
+        events[1].1,
         serde_json::json!({"index": 1, "id": "toolu_b", "name": "plan", "delta": "{}"})
     );
-    assert_eq!(events[4].1["arguments"], "{}");
+    assert_eq!(
+        events[3].1,
+        serde_json::json!({"id": "toolu_b", "name": "plan", "arguments": "{}"})
+    );
     // The final frame is the Messages body a non-streamed Plan returns.
     let assembled: serde_json::Value =
         serde_json::from_str(observed.response.output.as_deref().unwrap()).unwrap();

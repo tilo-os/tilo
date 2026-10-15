@@ -36,6 +36,7 @@ pub mod clipboard;
 pub mod env;
 pub mod host;
 pub mod location;
+pub mod models;
 pub mod mpris;
 /// User notifications: `tilo_notify` under the toolkit's module path.
 pub mod notify {

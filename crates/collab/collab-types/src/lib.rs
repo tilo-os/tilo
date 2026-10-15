@@ -75,6 +75,7 @@ pub mod signer;
 pub mod space;
 pub mod surface;
 pub mod task_budget;
+pub mod task_presentation;
 pub mod units;
 pub mod validator;
 

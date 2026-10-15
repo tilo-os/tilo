@@ -7,7 +7,7 @@
 //! shared [`accounts`] crate: a single JSON document under
 //! `$XDG_CONFIG_HOME/tilo/accounts/` holding every account of every type, with
 //! credentials kept out of it entirely and sealed in the encrypted
-//! [`accounts::SecretVault`].
+//! [`accounts::AccountCredentials`].
 //!
 //! This module is the mail-side adapter over that store. It keeps the
 //! ergonomic in-memory shapes the rest of the app works with — [`Account`]
@@ -21,7 +21,8 @@ use std::path::Path;
 
 use accounts::person::PersonAccounts;
 use accounts::{
-    Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId, SecretVault,
+    Account as StoredAccount, AccountCredentials, AccountId, AccountStore as SharedStore,
+    AccountTypeId,
 };
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{Id, Invoke};
@@ -88,7 +89,7 @@ impl Account {
     /// Rebuild a mail account from a shared [`StoredAccount`], reading the
     /// password back from `vault`. `None` when the stored config does not
     /// deserialise (a store written by a newer type version).
-    fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
+    fn from_stored(stored: &StoredAccount, vault: &AccountCredentials) -> Option<Self> {
         let payload = stored.config_as::<StoredConfig>()?;
         let mut config = payload.config;
         config.import_pending |= stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
@@ -135,21 +136,53 @@ impl AccountStore {
         }
     }
 
-    /// Load under an explicit config root — the seam tests use, so they never
-    /// touch the real user config directory.
-    pub fn load_in(config_root: &Path) -> Self {
-        Self::from_shared(
-            &SharedStore::load_in(config_root),
-            &SecretVault::open_in(config_root),
-        )
+    /// Compatibility loader; reports a sanitized error if custody cannot be opened.
+    pub fn load() -> Self {
+        Self::try_load().unwrap_or_else(|_| {
+            tracing::error!("mail account credentials could not be opened");
+            Self::default()
+        })
     }
 
-    /// The mail accounts `shared` holds, each password from `vault`.
-    pub fn from_store(shared: &SharedStore, vault: &SecretVault) -> Self {
+    /// Load accounts, returning credential custody failures to the caller.
+    ///
+    /// # Errors
+    /// Returns an error if the config root or protected credential storage is unavailable.
+    pub fn try_load() -> Result<Self, String> {
+        let root = accounts::config_root().ok_or("no config dir for mail accounts")?;
+        let credentials = AccountCredentials::open()?;
+        Ok(Self::from_shared(
+            &SharedStore::load_in(&root),
+            &credentials,
+        ))
+    }
+
+    /// Compatibility loader under an explicit recovery/test config root.
+    pub fn load_in(config_root: &Path) -> Self {
+        Self::try_load_in(config_root).unwrap_or_else(|_| {
+            tracing::error!("mail account credentials could not be opened");
+            Self::default()
+        })
+    }
+
+    /// Load accounts under an explicit root, returning custody failures.
+    ///
+    /// # Errors
+    /// Returns an error if the existing credential vault cannot be opened safely.
+    pub fn try_load_in(config_root: &Path) -> Result<Self, String> {
+        let credentials = AccountCredentials::open_in(config_root)?;
+        Ok(Self::from_shared(
+            &SharedStore::load_in(config_root),
+            &credentials,
+        ))
+    }
+
+    /// Project the shared accounts using the trusted account-owner credentials.
+    pub fn from_store(shared: &SharedStore, vault: &AccountCredentials) -> Self {
         Self::from_shared(shared, vault)
     }
 
-    fn from_shared(shared: &SharedStore, vault: &SecretVault) -> Self {
+    fn from_shared(shared: &SharedStore, vault: &AccountCredentials) -> Self {
         let ty = AccountTypeId::from(TYPE_ID);
         let accounts: Vec<Account> = shared
             .list(&ty)
@@ -165,6 +198,24 @@ impl AccountStore {
         Self { accounts, active }
     }
 
+    /// Persist to the default Tilo config root
+    /// (`$XDG_CONFIG_HOME/tilo/accounts/`). The in-app account add/edit/remove
+    /// flow calls this so accounts survive a restart. An unavailable config
+    /// root is an error, not a successful save.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if writing the shared account store or the secret vault
+    /// fails (see [`AccountStore::persist_in`]).
+    pub fn persist(&self) -> std::io::Result<()> {
+        let root = accounts::config_root()
+            .ok_or_else(|| std::io::Error::other("no config dir for mail accounts"))?;
+        self.persist_with_vault(
+            &root,
+            AccountCredentials::open().map_err(std::io::Error::other)?,
+        )
+    }
+
     /// Write these accounts into the shared store + vault under an explicit
     /// config root, preserving accounts of other types already there. This is
     /// the full write path: it upserts the current accounts, **reconciles
@@ -176,9 +227,19 @@ impl AccountStore {
     /// Returns `Err` if the shared account store or the secret vault cannot
     /// be written under `config_root`.
     pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
+        self.persist_with_vault(
+            config_root,
+            AccountCredentials::open_in(config_root).map_err(std::io::Error::other)?,
+        )
+    }
+
+    fn persist_with_vault(
+        &self,
+        config_root: &Path,
+        mut vault: AccountCredentials,
+    ) -> std::io::Result<()> {
         let ty = AccountTypeId::from(TYPE_ID);
         let mut shared = SharedStore::load_in(config_root);
-        let mut vault = SecretVault::open_in(config_root);
 
         // Reconcile deletions: any email account in the shared store that Mail
         // no longer holds was removed by the user — drop it and its secret.
@@ -266,7 +327,7 @@ impl AccountStore {
         config_root: &Path,
         removed: &[AccountId],
     ) -> std::io::Result<()> {
-        let mut vault = SecretVault::open_in(config_root);
+        let mut vault = AccountCredentials::open_in(config_root).map_err(std::io::Error::other)?;
         for id in removed {
             vault.remove(id);
         }
@@ -358,6 +419,7 @@ impl AccountStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use accounts::SecretVault;
 
     fn cfg(email: &str, name: &str) -> AccountConfig {
         AccountConfig {
@@ -368,6 +430,36 @@ mod tests {
             smtp_host: "smtp.example".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn legacy_account_credentials_load_and_damaged_custody_is_reported() {
+        let root = temp_root();
+        let id = AccountId::from("legacy@example.test");
+        let mut shared = SharedStore::new();
+        let mut account = Account::new(cfg("legacy@example.test", "Legacy"));
+        account.id = id.to_string();
+        shared.upsert(account.to_stored());
+        shared.save_in(&root).unwrap();
+        let mut vault = SecretVault::open_in(&root);
+        vault.put(&id, &accounts::Secret::password("legacy-fixture-password"));
+        vault.try_save().unwrap();
+
+        let loaded = AccountStore::try_load_in(&root).unwrap();
+        assert_eq!(
+            loaded.accounts[0].config.password,
+            "legacy-fixture-password"
+        );
+        let metadata = std::fs::read(accounts::store_path_in(&root)).unwrap();
+        let vault_path = accounts::vault_dir_in(&root).join("vault.enc");
+        std::fs::write(&vault_path, b"damaged").unwrap();
+        assert!(AccountStore::try_load_in(&root).is_err());
+        assert_eq!(std::fs::read(&vault_path).unwrap(), b"damaged");
+        assert_eq!(
+            std::fs::read(accounts::store_path_in(&root)).unwrap(),
+            metadata
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn temp_root() -> std::path::PathBuf {
@@ -574,7 +666,10 @@ mod tests {
             .apply(PersonAccounts::saving(&account.to_stored()))
             .unwrap();
         let person = replica.state().unwrap();
-        let shown = AccountStore::from_store(&person.store(), &SecretVault::open_in(&root));
+        let shown = AccountStore::from_store(
+            &person.store(),
+            &AccountCredentials::open_in(&root).unwrap(),
+        );
         assert_eq!(shown.accounts, vec![account]);
         assert!(
             !format!("{person:?}").contains("kept-on-the-device"),

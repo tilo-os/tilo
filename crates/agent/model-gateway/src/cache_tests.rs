@@ -196,6 +196,63 @@ fn caller_breakpoints_count_against_the_limit_and_are_never_duplicated() {
     );
 }
 
+#[test]
+fn gateway_caches_the_neutral_catalogue_without_changing_catalogue_or_task_text() {
+    let content = json!([
+        {"type": "text", "text": "Operations published right now: …\n"},
+        {"type": "text", "text": "Memory: keep this.\nThe request: post hello"}
+    ]);
+    for first_turn in [true, false] {
+        let mut request = loop_turn();
+        request["messages"][0]["content"] = content.clone();
+        if first_turn {
+            request["messages"].as_array_mut().unwrap().truncate(1);
+        }
+        let body = sent(&anthropic(), request.clone());
+        assert_eq!(markers(&body), MAX_CACHE_BREAKPOINTS);
+        assert_eq!(body["system"][0]["cache_control"]["type"], EPHEMERAL);
+        assert_eq!(body["tools"][1]["cache_control"]["type"], EPHEMERAL);
+        let user = &body["messages"][0]["content"];
+        assert_eq!(user.as_array().unwrap().len(), 2);
+        assert_eq!(user[0]["cache_control"]["type"], EPHEMERAL);
+        for index in 0..2 {
+            assert_eq!(user[index]["type"], content[index]["type"]);
+            assert_eq!(user[index]["text"], content[index]["text"]);
+        }
+        if first_turn {
+            assert_eq!(user[1]["cache_control"]["type"], EPHEMERAL);
+        } else {
+            assert!(user[1].get("cache_control").is_none());
+            assert_eq!(
+                body["messages"][2]["content"][1]["cache_control"]["type"],
+                EPHEMERAL
+            );
+        }
+        assert_eq!(sent(&anthropic(), body.clone()), body);
+
+        // Automatic caching owns the tail, but still caches the catalogue.
+        request["cache_control"] = json!({"type": EPHEMERAL});
+        let automatic = sent(&anthropic(), request.clone());
+        assert_eq!(markers(&automatic), MAX_CACHE_BREAKPOINTS);
+        assert_eq!(
+            automatic["messages"][0]["content"][0]["cache_control"]["type"],
+            EPHEMERAL
+        );
+        assert_eq!(automatic["messages"][0]["content"][1], content[1]);
+        if !first_turn {
+            assert_eq!(automatic["messages"][2], request["messages"][2]);
+        }
+
+        request["cache_control"] = json!({"type": EPHEMERAL, "ttl": "1h"});
+        assert_eq!(sent(&anthropic(), request.clone()), request);
+        let mut profile = anthropic();
+        profile.omit_params = vec!["cache_control".into()];
+        let omitted = sent(&profile, request);
+        assert_eq!(markers(&omitted), 0);
+        assert_eq!(omitted["messages"][0]["content"], content);
+    }
+}
+
 /// The agent's first user turn on Anthropic: the catalogue in a text block of
 /// its own, closed by the agent's breakpoint so it is cached across tasks,
 /// then the memory and the request.
