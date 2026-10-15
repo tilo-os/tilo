@@ -466,6 +466,268 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
         .await;
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct FrameworkReadAction;
+impl tilo_actions::Action for FrameworkReadAction {
+    fn apply(&self, _: &mut automerge::AutoCommit) -> Result<(), tilo_actions::ActionError> {
+        Ok(())
+    }
+}
+struct FrameworkProjection;
+#[cfg(test)]
+impl tilo_resource::Resource for FrameworkProjection {
+    const KIND: &'static str = "test.framework-projection";
+    const LABEL: &'static str = "Public document";
+    const READABLE: bool = true;
+    type State = ();
+    type Action = FrameworkReadAction;
+    fn read(_: &tilo_resource::Doc) -> Result<(), tilo_resource::ModelError> {
+        Ok(())
+    }
+    fn children(_: &()) -> Vec<tilo_actions::Resource> {
+        vec![
+            tilo_actions::Resource::new("public-child", "text", "Public child"),
+            tilo_actions::Resource::new("private-child", "account", "Secret account").with_action(
+                tilo_actions::ActionSpec::operation(
+                    "render",
+                    "Private view",
+                    OperationKind::View,
+                    "test.private-view",
+                    &FrameworkReadAction,
+                )
+                .unwrap(),
+            ),
+        ]
+    }
+    fn document_child(_: &(), id: &str) -> bool {
+        id == "public-child"
+    }
+    fn read_content(
+        _: &(),
+        _: &tilo_resource::Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        if item.is_some_and(|id| id != "public-child") {
+            return Err("not part of the document".into());
+        }
+        Ok(serde_json::json!({"text": "Public content"}))
+    }
+}
+struct FrameworkProjectionApp;
+impl app_framework::framework::ResourceApp for FrameworkProjectionApp {
+    type Resource = FrameworkProjection;
+    const ID: &'static str = "so.tilo.test-framework-projection";
+    const TITLE: &'static str = "Public document";
+    fn view(_: &mut app_framework::framework::ViewCx<FrameworkProjection>) -> ui::widget::Element {
+        Box::new(ui::widget::Text::new("Public document"))
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn framework_projection_keeps_private_child_metadata_off_signed_wire_and_bridge() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let fixture = Fixture::new().await;
+            let mut app =
+                app_framework::framework::testing::TestApp::<FrameworkProjectionApp>::new()
+                    .unwrap();
+            app.settle();
+            let resources = app.harness().resources();
+            let descriptors = tilo_actions::door::survey(&resources);
+            let mut published = Vec::new();
+            // Export the real framework's governing actions, not a hand-written
+            // assertion about what a readable parent ought to publish.
+            for id in ["test.framework-projection", "public-child", "private-child"] {
+                let descriptor = descriptors
+                    .iter()
+                    .find(|d| d.address.resource == id && d.contract.reads_document())
+                    .or_else(|| {
+                        descriptors
+                            .iter()
+                            .find(|d| d.address.resource == id && d.address.action == "render")
+                    })
+                    .expect("framework governing action");
+                let descriptor = runtime_collab::ExportedAction::from(descriptor);
+                let visibility = runtime_collab::RowVisibility {
+                    action: descriptor.action.clone(),
+                    contract: descriptor.contract.clone(),
+                    governing_kind: Some(descriptor.operation_kind),
+                };
+                let row = runtime_collab::ActionDirectoryRow {
+                    parent_resource: if id == "test.framework-projection" {
+                        String::new()
+                    } else {
+                        "test.framework-projection".into()
+                    },
+                    resource: descriptor.resource.clone(),
+                    resource_kind: descriptor.resource_kind.clone(),
+                    resource_label: descriptor.resource_label.clone(),
+                    presentation: None,
+                    action: Some(descriptor.action.clone()),
+                    descriptor: Some(descriptor),
+                    has_children: false,
+                    visibility: Some(visibility),
+                };
+                published.push(runtime_collab::ActionDirectoryRow {
+                    action: None,
+                    descriptor: None,
+                    ..row.clone()
+                });
+                published.push(row);
+            }
+            fixture
+                .publisher
+                .publish(&fixture.route.app_id, published)
+                .await;
+            let reader = Connection::join(
+                &fixture.state,
+                &fixture.directories,
+                &fixture.route,
+                &fixture.viewer,
+                &fixture.owner.id(),
+            )
+            .await;
+            let wire = reader.query(fixture.peer, "").await;
+            assert_eq!(
+                wire.rows.len(),
+                4,
+                "public root and child, with their read actions"
+            );
+            assert!(wire.rows.iter().any(|r| r.resource == "public-child"));
+            assert!(!format!("{:?}", wire.rows).contains("Secret"));
+            assert!(!wire.rows.iter().any(|r| r.resource == "private-child"));
+            let bridge = bridge_query(
+                &fixture.state,
+                &fixture.directories,
+                &fixture.route,
+                &fixture.viewer,
+                fixture.peer,
+                "",
+            )
+            .await;
+            assert_eq!(bridge.rows.len(), 4);
+            assert!(!serde_json::to_string(&bridge).unwrap().contains("Secret"));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn document_read_views_are_disclosed_without_exposing_the_publishers_private_view() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let fixture = Fixture::new().await;
+            let mut published = rows();
+            // Like a framework resource's `read`: a View that reads the
+            // document, not the publishing person's private UI state.
+            let mut document_reads = published[2..4].to_vec();
+            for row in &mut document_reads {
+                row.resource = "document:readable".into();
+                let visibility = row.visibility.as_mut().unwrap();
+                visibility.governing_kind = Some(OperationKind::View);
+                visibility
+                    .contract
+                    .tags
+                    .push(tilo_actions::DOCUMENT_READ_TAG.into());
+                if let Some(descriptor) = &mut row.descriptor {
+                    descriptor.resource = row.resource.clone();
+                    descriptor.operation_kind = OperationKind::View;
+                    descriptor.contract = visibility.contract.clone();
+                }
+            }
+            // A legacy resource-only row must not turn public merely by
+            // claiming the document-read tag without a known governing kind.
+            let mut unknown = document_reads[1].clone();
+            unknown.resource = "document:unknown-kind".into();
+            unknown.resource_label = "Secret unknown-kind document".into();
+            unknown.visibility.as_mut().unwrap().governing_kind = None;
+            published.push(unknown.clone());
+            unknown.parent_resource = unknown.resource.clone();
+            unknown.resource = "document:unknown-kind/child".into();
+            unknown.resource_label = "Secret unknown-kind child".into();
+            unknown.has_children = false;
+            published.push(unknown);
+            // Private view metadata stays private at both the root and child
+            // levels, even beside a public document-read view.
+            let mut private_child = published[1].clone();
+            private_child.parent_resource = "account:secret".into();
+            private_child.resource = "account:secret/child".into();
+            private_child.resource_label = "Secret private child".into();
+            private_child.has_children = false;
+            published.push(private_child);
+            published.extend(document_reads);
+            let expected_resources = [
+                "document:public",
+                "document:public",
+                "navigation:public",
+                "navigation:public",
+                "document:readable",
+                "document:readable",
+            ];
+            fixture
+                .publisher
+                .publish(&fixture.route.app_id, published)
+                .await;
+            let reader = Connection::join(
+                &fixture.state,
+                &fixture.directories,
+                &fixture.route,
+                &fixture.viewer,
+                &fixture.owner.id(),
+            )
+            .await;
+            for authenticated_publisher in [true, false] {
+                if !authenticated_publisher {
+                    // No publisher certificate must not turn the room owner
+                    // or a caller-supplied participant label into its identity.
+                    fixture
+                        .directories
+                        .directories
+                        .borrow_mut()
+                        .get_mut(&fixture.peer)
+                        .unwrap()
+                        .publishing_person = None;
+                }
+                let page = reader.query(fixture.peer, "").await;
+                assert_eq!(
+                    page.rows
+                        .iter()
+                        .map(|row| row.resource.as_str())
+                        .collect::<Vec<_>>(),
+                    expected_resources,
+                    "wire must omit unknown-kind document rows and private root/child metadata"
+                );
+                assert!(!format!("{:?}", page.rows).contains("Secret"));
+                assert_disclosure(&page.rows, false, "");
+                assert_eq!(
+                    page.rows
+                        .iter()
+                        .filter(|row| row.resource == "document:readable")
+                        .count(),
+                    2
+                );
+                let page = bridge_query(
+                    &fixture.state,
+                    &fixture.directories,
+                    &fixture.route,
+                    &fixture.viewer,
+                    fixture.peer,
+                    "",
+                )
+                .await;
+                assert_eq!(
+                    page.rows
+                        .iter()
+                        .map(|row| row.resource.id.as_str())
+                        .collect::<Vec<_>>(),
+                    expected_resources,
+                    "bridge must omit unknown-kind document rows and private root/child metadata"
+                );
+                assert!(!serde_json::to_string(&page).unwrap().contains("Secret"));
+            }
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn private_directory_continuations_hide_source_metadata_and_bind_the_querying_person() {
     tokio::task::LocalSet::new()
