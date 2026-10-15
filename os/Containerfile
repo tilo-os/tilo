@@ -1312,6 +1312,7 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-system-extension-activate \
     os/usr/libexec/tilo-system-extension-dispatch \
     os/usr/libexec/tilo-boot-health \
+    os/usr/libexec/tilo-esp-mount \
     os/usr/libexec/tilo-repair \
     os/usr/libexec/tilo-recovery \
     os/usr/libexec/tilo-update-policy-set \
@@ -1319,6 +1320,7 @@ COPY --chmod=0755 \
     /usr/libexec/
 COPY --chmod=0755 os/dev/uki-cmdline.py /usr/libexec/tilo-uki-cmdline
 COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-boot-mode-generator /usr/lib/systemd/system-generators/tilo-boot-mode-generator
+COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-esp-generator /usr/lib/systemd/system-generators/tilo-esp-generator
 COPY \
     os/usr/lib/systemd/system/tilo-boot-entries.service \
     os/usr/lib/systemd/system/tilo-boot-entries.timer \
