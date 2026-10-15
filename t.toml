@@ -1089,3 +1089,164 @@ run = "TILO_NATIVE_TIER1_DIR=$TMPDIR/native-tier1 tools/native-tier1.sh --nocapt
 env = { TILO_FS_FUSE_REQUIRED = "0", TILO_REQUIRE_FUSE = "0" }
 cost = "heavy"
 default = false
+
+# ---------------------------------------------------------------------------
+# Publishing (docs/publishing-on-t.md). Each image is a chain of checks:
+#
+#   image-<name>[-context]  build, no secrets: runs anywhere, also for a working tree
+#   sign-<name>             signs the built digest with the release key in KMS; only
+#                           signing credentials, on stable and release tags, on release nodes
+#   publish-<name>          main: pushes a development tag with the development push token
+#   release-<name>          stable: pushes the signed release with the release push token
+#
+# The server runs publish-* on every new head of main and release-* on every new head of
+# stable by itself (`on`), as trusted runs; nobody runs them from a working tree. Building and
+# signing never share a check: the build runs arbitrary code, the signing check refuses any
+# digest but the build's. Secrets (REGISTRY_USER, REGISTRY_TOKEN, COSIGN_KEY_REF,
+# TILO_SIGNING_AWS_ACCESS_KEY_ID, TILO_SIGNING_AWS_SECRET_ACCESS_KEY) live in the t server's
+# config, limited to the references and nodes that may use them. Check names have no `/` yet
+# because the deployed server refuses it.
+
+# The room service (room-service-image.yml): deployed by digest from release-room-service's
+# receipt.
+[[check]]
+name = "image-room-service-context"
+run = "bash tools/ci/publish/room-service-context.sh /target/publish/room-service/context"
+inputs = ["tools/ci/publish/**", "Cargo.lock", "crates/hosting/tilo-room-service/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-protocol/**", "crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-compute/**", "crates/browser/tilo-web-desktop/**", "apps/chat/**", "apps/discord/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
+outputs = ["/target/publish/room-service/context/**"]
+# The release bundle records the commit it was built from (git rev-parse, git status).
+git = true
+requires = ["arch=x86_64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "image-room-service"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/oci-build.sh /target/publish/room-service/context /target/publish/room-service/context/Containerfile /target/publish/room-service"
+inputs = ["tools/ci/publish/**"]
+needs = ["image-room-service-context"]
+outputs = ["/target/publish/room-service/image.oci.tar", "/target/publish/room-service/digest"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "sign-room-service"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/room-service /target/publish/room-service"
+inputs = ["tools/ci/publish/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-room-service"]
+outputs = ["/target/publish/room-service/payload.json", "/target/publish/room-service/signature"]
+secrets = ["COSIGN_KEY_REF", "TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY"]
+on = ["stable"]
+
+[[check]]
+name = "publish-room-service"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/room-service /target/publish/room-service 'dev-{commit}'"
+inputs = ["tools/ci/publish/**"]
+needs = ["image-room-service"]
+outputs = ["/target/publish/room-service/receipt.json"]
+secrets = ["REGISTRY_USER", "REGISTRY_TOKEN"]
+on = ["main"]
+
+[[check]]
+name = "release-room-service"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/room-service /target/publish/room-service 'sha-{commit}'"
+inputs = ["tools/ci/publish/**", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-room-service", "sign-room-service"]
+outputs = ["/target/publish/room-service/receipt.json"]
+secrets = ["REGISTRY_USER", "REGISTRY_TOKEN"]
+on = ["stable"]
+
+# The web entry (web-entry.yml): the Tilo app on the web, deployed by digest.
+[[check]]
+name = "image-web-entry-context"
+run = "bash tools/ci/publish/web-entry-context.sh /target/publish/web-entry/context"
+inputs = ["tools/ci/publish/**", "Cargo.lock", "crates/browser/**", "apps/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
+outputs = ["/target/publish/web-entry/context/**"]
+# The release bundle records the commit it was built from (git rev-parse, git status).
+git = true
+requires = ["arch=x86_64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "image-web-entry"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/oci-build.sh /target/publish/web-entry/context /target/publish/web-entry/context/Containerfile /target/publish/web-entry"
+inputs = ["tools/ci/publish/**"]
+needs = ["image-web-entry-context"]
+outputs = ["/target/publish/web-entry/image.oci.tar", "/target/publish/web-entry/digest"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "sign-web-entry"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/web-entry /target/publish/web-entry"
+inputs = ["tools/ci/publish/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-web-entry"]
+outputs = ["/target/publish/web-entry/payload.json", "/target/publish/web-entry/signature"]
+secrets = ["COSIGN_KEY_REF", "TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY"]
+on = ["stable"]
+
+[[check]]
+name = "publish-web-entry"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/web-entry /target/publish/web-entry 'dev-{commit}'"
+inputs = ["tools/ci/publish/**"]
+needs = ["image-web-entry"]
+outputs = ["/target/publish/web-entry/receipt.json"]
+secrets = ["REGISTRY_USER", "REGISTRY_TOKEN"]
+on = ["main"]
+
+[[check]]
+name = "release-web-entry"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/web-entry /target/publish/web-entry 'sha-{commit}'"
+inputs = ["tools/ci/publish/**", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-web-entry", "sign-web-entry"]
+outputs = ["/target/publish/web-entry/receipt.json"]
+secrets = ["REGISTRY_USER", "REGISTRY_TOKEN"]
+on = ["stable"]
+
+# The fast CI images (build-ci-fast-images.yml), x86_64 only. CI tooling, not a product:
+# published from main, pinned by digest in tools/ci/images.toml by hand.
+[[check]]
+name = "image-ci-fast"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "mkdir -p $TMPDIR/empty && bash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.ci-fast /target/publish/ci-fast"
+inputs = ["tools/ci/publish/**", "os/Containerfile.ci-fast"]
+outputs = ["/target/publish/ci-fast/image.oci.tar", "/target/publish/ci-fast/digest"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+default = false
+
+# ci-control adds the Docker client to the ci-fast image just built, not to the pinned one.
+[[check]]
+name = "image-ci-control"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "mkdir -p $TMPDIR/empty && bash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.ci-control /target/publish/ci-control --build-arg CI_FAST_IMAGE=oci-archive:/target/publish/ci-fast/image.oci.tar"
+inputs = ["tools/ci/publish/**", "os/Containerfile.ci-control"]
+needs = ["image-ci-fast"]
+outputs = ["/target/publish/ci-control/image.oci.tar", "/target/publish/ci-control/digest"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "publish-ci-fast"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = """
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/ci-fast /target/publish/ci-fast 'sha-{commit}'
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/ci-control /target/publish/ci-control 'sha-{commit}'
+"""
+inputs = ["tools/ci/publish/**"]
+needs = ["image-ci-fast", "image-ci-control"]
+outputs = ["/target/publish/ci-fast/receipt.json", "/target/publish/ci-control/receipt.json"]
+secrets = ["REGISTRY_USER", "REGISTRY_TOKEN"]
+on = ["main"]

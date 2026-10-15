@@ -9,8 +9,38 @@ esac
 # Cosign's AWS KMS provider does not infer the SDK region from every supported
 # awskms URI form. Derive it from the already trusted key ARN so workflows do
 # not need a second, independently configurable region secret.
+# On t (docs/publishing.md) there is no OIDC: the signing check gets fixed credentials of an
+# IAM user that may only ask KMS to sign with the release keys (TILO_SIGNING_AWS_*), as
+# secrets limited to stable, release tags and release nodes. The keys never leave KMS; a leaked
+# credential is revoked, not a lost root of trust.
 case ${COSIGN_KEY_REF:-} in
   awskms://*)
+    if [ -n "${TILO_SIGNING_AWS_ACCESS_KEY_ID:-}" ]; then
+      : "${TILO_SIGNING_AWS_SECRET_ACCESS_KEY:?TILO_SIGNING_AWS_SECRET_ACCESS_KEY is required}"
+      tilo_kms_arn=${COSIGN_KEY_REF#awskms://}
+      while [ "${tilo_kms_arn#/}" != "$tilo_kms_arn" ]; do
+        tilo_kms_arn=${tilo_kms_arn#/}
+      done
+      case $tilo_kms_arn in
+        arn:aws:kms:*:*:*)
+          tilo_kms_region=${tilo_kms_arn#arn:aws:kms:}
+          tilo_kms_region=${tilo_kms_region%%:*}
+          ;;
+        *) echo 'COSIGN_KEY_REF contains no valid AWS KMS ARN' >&2; exit 1 ;;
+      esac
+      case $tilo_kms_region in
+        ''|*[!a-z0-9-]*) echo 'COSIGN_KEY_REF contains an invalid AWS KMS region' >&2; exit 1 ;;
+      esac
+      unset AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE \
+        AWS_SHARED_CREDENTIALS_FILE AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE
+      AWS_ACCESS_KEY_ID=$TILO_SIGNING_AWS_ACCESS_KEY_ID
+      AWS_SECRET_ACCESS_KEY=$TILO_SIGNING_AWS_SECRET_ACCESS_KEY
+      AWS_REGION=$tilo_kms_region
+      AWS_DEFAULT_REGION=$tilo_kms_region
+      export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION AWS_DEFAULT_REGION
+      unset tilo_kms_arn tilo_kms_region
+      return 0 2>/dev/null || exit 0
+    fi
     : "${AWS_SIGNING_ROLE_ARN:?AWS signing role ARN is required}"
     : "${ACTIONS_ID_TOKEN_REQUEST_URL:?Forgejo OIDC request URL is required}"
     : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?Forgejo OIDC request token is required}"
