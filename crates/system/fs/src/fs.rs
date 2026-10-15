@@ -2164,6 +2164,21 @@ impl QuickFS {
 
     #[must_use]
     pub fn with_availability(mut self, registry: Arc<Mutex<AvailabilityRegistry>>) -> Self {
+        // The cache budget gives up what a host acknowledged holding first.
+        let receipts = Arc::downgrade(&registry);
+        self.hydrator
+            .store
+            .files()
+            .set_held_elsewhere(Arc::new(move || {
+                receipts
+                    .upgrade()
+                    .map_or_else(Default::default, |registry| {
+                        registry
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .held_elsewhere()
+                    })
+            }));
         self.availability = Some(registry);
         self
     }
