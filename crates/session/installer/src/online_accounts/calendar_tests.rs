@@ -63,6 +63,7 @@ fn review_does_not_save_before_explicit_selection() {
     assert!(controller.poll() == AccountsStatus::ReviewCalendars);
     assert_eq!(controller.calendars().len(), 1);
     assert!(controller.selected().is_empty());
+    assert!(controller.connected().is_empty());
     assert!(AccountStore::load_in(&controller.root).is_empty());
     let id = controller.calendars()[0].0.clone();
     controller
@@ -76,6 +77,10 @@ fn review_does_not_save_before_explicit_selection() {
     assert_eq!(account.config["use_files"], true);
     assert_eq!(account.config["calendar"]["calendars"][0]["id"], id);
     assert!(controller.calendars().is_empty());
+    let connected = controller.connected();
+    assert_eq!(connected.len(), 1);
+    assert_eq!(connected[0].provider, Provider::Nextcloud);
+    assert!(connected[0].files && connected[0].calendar && !connected[0].mail);
     let vault = SecretVault::open_in(&controller.root);
     assert_eq!(vault.get(&account.id).unwrap().password, "app-password");
 }
@@ -118,6 +123,7 @@ fn selected_collections_and_credentials_survive_bound_adoption() {
             .unwrap(),
         selected
     );
+    assert!(connected_accounts(destination.path(), &selected) == controller.connected());
     let store = AccountStore::load_in(destination.path());
     let account = store.get(&selected[0]).unwrap();
     assert_eq!(account.config["calendar"]["calendars"][0]["id"], id);

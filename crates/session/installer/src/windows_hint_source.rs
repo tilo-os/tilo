@@ -81,6 +81,7 @@ mod tests {
                 provider: account_custody::hints::Provider::Microsoft,
                 email: "private@example.org".into(),
                 server: String::new(),
+                sources: account_custody::hints::HintSources::default(),
             }],
             b"verified copies",
         )

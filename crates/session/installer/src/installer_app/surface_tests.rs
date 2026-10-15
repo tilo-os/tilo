@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::operation::{self as op, Operation};
 
+mod capacity_tests;
 mod method_intent_tests;
 
 /// A recording install backend: disks from a fixture, an install that
@@ -121,6 +122,86 @@ fn input_value(widget: &dyn Widget, id: &str) -> Option<String> {
         .find_map(|child| input_value(child, id))
 }
 
+fn local_labels(widget: &dyn Widget) -> Vec<String> {
+    let mut labels = Vec::new();
+    if let Some(node) = widget.accessibility() {
+        labels.extend(node.name);
+    }
+    for child in widget.children() {
+        labels.extend(local_labels(child));
+    }
+    labels
+}
+
+#[test]
+fn oauth_selected_services_reach_production_form_without_public_identity() {
+    use crate::online_accounts::view::AccountsStatus;
+    let (_directory, server, urls, controller, profile) =
+        crate::online_accounts::tests::mail_fixture();
+    let (mut app, mut doc) = app(&FakeBackend::new());
+    app.step = Step::Accounts;
+    app.accounts_initialized = true;
+    app.accounts_controller = Some(controller);
+    app.accounts_form.files.set(true);
+    app.accounts_form.mail.set(true);
+    app.accounts_form.submit(false).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        app.sync_accounts();
+        if app.accounts_form.status() == AccountsStatus::Added {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        assert!(app.accounts_form.status() != AccountsStatus::Failed);
+        std::thread::yield_now();
+    }
+    profile.join().unwrap();
+    let _ = urls
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    let labels = local_labels(app.accounts_form.view().as_ref());
+    for label in [
+        "personal@example.org",
+        "Connected for Files",
+        "Connected for Mail",
+    ] {
+        assert!(labels.iter().any(|value| value == label), "missing {label}");
+    }
+    assert!(!labels.iter().any(|value| value == "Connected for Calendar"));
+    assert_eq!(server.verifiers().len(), 1);
+    let connected = app.accounts_controller.as_ref().unwrap().connected();
+    assert_eq!(connected.len(), 1);
+    assert!(connected[0].files && connected[0].mail && !connected[0].calendar);
+    crate::online_accounts::tests::assert_adopted_projection(
+        app.accounts_controller.as_mut().unwrap(),
+    );
+    assert_eq!(server.verifiers().len(), 1);
+    for request in [
+        json!({"op": "state_dump"}),
+        json!({"op": "actions_enumerate"}),
+    ] {
+        assert!(
+            !console(&mut app, &mut doc, &request)
+                .to_string()
+                .contains("personal@example.org")
+        );
+    }
+    // Asking for a newly selected service starts fresh authorization; saved
+    // rows do not turn a new request into an implicit reuse of an older grant.
+    app.accounts_form.files.set(false);
+    app.accounts_form.mail.set(false);
+    app.accounts_form.calendar.set(true);
+    app.accounts_form.submit(false).unwrap();
+    app.sync_accounts();
+    let fresh = urls
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    assert!(fresh.contains("calendar"));
+    app.accounts_form.cancel();
+    app.sync_accounts();
+    assert!(app.accounts_controller.as_ref().unwrap().connected() == connected);
+}
+
 fn finish_private_unlock(app: &mut InstallerApp) {
     let deadline = std::time::Instant::now()
         .checked_add(std::time::Duration::from_secs(15))
@@ -145,6 +226,7 @@ fn prepared_media_unlock_is_private_review_and_skip_preserves_medium() {
         provider: Provider::Nextcloud,
         email: "local-only@example.org".into(),
         server: "https://private-cloud.example.org".into(),
+        sources: account_custody::hints::HintSources::default(),
     };
     let prepared = Prepared::seal(
         b"prepared-password",
@@ -188,6 +270,11 @@ fn prepared_media_unlock_is_private_review_and_skip_preserves_medium() {
     assert!(!app.accounts_form.mail.with(|v| *v));
     assert!(!app.accounts_form.calendar.with(|v| *v));
     let local_view = app.accounts_form.view();
+    assert!(
+        !local_labels(local_view.as_ref())
+            .iter()
+            .any(|label| label.starts_with("Connected for "))
+    );
     assert_eq!(
         input_value(local_view.as_ref(), "installer.online.email"),
         Some(hint.email.clone())
@@ -260,6 +347,10 @@ fn calendar_review_confirmation_uses_selected_private_collections() {
     let controller = app.accounts_controller.as_ref().unwrap();
     assert!(controller.status() == crate::online_accounts::view::AccountsStatus::Added);
     assert_eq!(controller.selected().len(), 1);
+    let labels = local_labels(app.accounts_form.view().as_ref());
+    assert!(labels.iter().any(|label| label == "Connected for Files"));
+    assert!(labels.iter().any(|label| label == "Connected for Calendar"));
+    assert!(!labels.iter().any(|label| label == "Connected for Mail"));
     let root = std::fs::read_dir(directory.path())
         .unwrap()
         .next()
@@ -546,6 +637,7 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         *app.password.lock().unwrap() = SECRET.to_owned();
         let stale = serde_json::to_vec(&Operation::BeginInstall {
             target: "/dev/sda".into(),
+            allocation: None,
         })
         .unwrap();
         let refused = app.start_operation(

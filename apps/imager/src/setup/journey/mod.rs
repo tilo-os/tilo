@@ -106,6 +106,16 @@ pub enum InstallerPreviewEffect {
         source: String,
         role: String,
     },
+    /// Open the exact granted source folder in the platform file manager.
+    #[effect(returns, view)]
+    OpenWindowsSource { source_id: String },
+    /// Show or hide actual inventoried paths for one source category.
+    #[effect(returns, view)]
+    ShowWindowsCategory {
+        source_id: String,
+        category: String,
+        expanded: bool,
+    },
     /// Decide whether an inventoried root is copied, retained, or excluded.
     #[effect(returns)]
     ReviewWindowsRoot {
@@ -1049,6 +1059,8 @@ impl InstallerPreview {
             "find-windows-roots"
                 | "choose-windows-root"
                 | "select-windows-root"
+                | "open-windows-source"
+                | "show-windows-category"
                 | "review-windows-root"
                 | "review-windows-category"
                 | "set-windows-exclusion-reason"
@@ -1065,6 +1077,8 @@ impl InstallerPreview {
                     | "find-windows-roots"
                     | "choose-windows-root"
                     | "select-windows-root"
+                    | "open-windows-source"
+                    | "show-windows-category"
                     | "review-windows-root"
                     | "review-windows-category"
                     | "set-windows-exclusion-reason"
@@ -5398,6 +5412,7 @@ impl InstallerPreview {
             "prepared_installation": self.guided_host_available(),
         });
         status["windows_preparation"] = self.windows.projection();
+        status["windows_review"] = self.windows_review_projection();
         status["accounts"] = self.accounts.projection();
         status["account_jobs"] = serde_json::json!(self.account_actions.status());
         status["account_answer"] = self.account_answer.clone();

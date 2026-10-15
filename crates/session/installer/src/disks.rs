@@ -48,7 +48,7 @@ pub struct PartitionExtent {
 
 /// A non-destructive plan that appends Tilo's three partitions inside one exact
 /// unallocated GPT extent. It never represents space reclaimed by resizing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GuidedAlongsidePlan {
     pub free_start_bytes: u64,
     pub free_size_bytes: u64,
@@ -60,7 +60,38 @@ pub struct GuidedAlongsidePlan {
     pub root_size_bytes: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl GuidedAlongsidePlan {
+    /// Restrict the existing append-only plan to an explicitly chosen allocation.
+    /// The free extent in the returned plan is the exact write authorization,
+    /// not all the unused space that happened to be available at discovery.
+    pub fn with_capacity_bytes(&self, bytes: u64) -> Option<Self> {
+        let overhead = MIN_ALONGSIDE_ESP_BYTES.checked_add(1 << 30)?;
+        let minimum = overhead.checked_add(MIN_ALONGSIDE_BYTES)?;
+        let available_end = self.free_start_bytes.checked_add(self.free_size_bytes)?;
+        let end = self.free_start_bytes.checked_add(bytes)?;
+        if bytes < minimum
+            || bytes > self.free_size_bytes
+            || !bytes.is_multiple_of(PARTITION_ALIGNMENT_BYTES)
+            || !self
+                .free_start_bytes
+                .is_multiple_of(PARTITION_ALIGNMENT_BYTES)
+            || self.efi_start_bytes != self.free_start_bytes
+            || self.efi_size_bytes != MIN_ALONGSIDE_ESP_BYTES
+            || self.boot_start_bytes != self.efi_start_bytes.checked_add(self.efi_size_bytes)?
+            || self.boot_size_bytes != 1 << 30
+            || self.root_start_bytes != self.free_start_bytes.checked_add(overhead)?
+            || end > available_end
+        {
+            return None;
+        }
+        let mut plan = self.clone();
+        plan.free_size_bytes = bytes;
+        plan.root_size_bytes = end.checked_sub(plan.root_start_bytes)?;
+        Some(plan)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DiskPartition {
     pub name: String,
     /// Byte offset from the start of the parent disk.
@@ -111,7 +142,7 @@ impl DiskPartition {
 }
 
 /// One installable target disk.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Disk {
     /// Full device path, e.g. `/dev/sda`.
     pub name: String,
@@ -300,6 +331,16 @@ impl Disk {
         let Some(extents) = self.occupied_extents() else {
             return Vec::new();
         };
+        let mut previous_end = 0;
+        for extent in &extents {
+            let Some(end) = extent.start_bytes.checked_add(extent.size_bytes) else {
+                return Vec::new();
+            };
+            if extent.start_bytes < previous_end || end > self.size_bytes {
+                return Vec::new();
+            }
+            previous_end = end;
+        }
         let disk_end = align_down(
             self.size_bytes.saturating_sub(PARTITION_ALIGNMENT_BYTES),
             PARTITION_ALIGNMENT_BYTES,
@@ -311,7 +352,9 @@ impl Disk {
             start_bytes: disk_end,
             size_bytes: 0,
         })) {
-            let start = align_up(cursor, PARTITION_ALIGNMENT_BYTES);
+            let Some(start) = align_up(cursor, PARTITION_ALIGNMENT_BYTES) else {
+                return Vec::new();
+            };
             let end = align_down(
                 occupied.start_bytes.min(disk_end),
                 PARTITION_ALIGNMENT_BYTES,
@@ -344,7 +387,10 @@ impl Disk {
                     });
                 }
             }
-            cursor = cursor.max(occupied.start_bytes.saturating_add(occupied.size_bytes));
+            let Some(end) = occupied.start_bytes.checked_add(occupied.size_bytes) else {
+                return Vec::new();
+            };
+            cursor = cursor.max(end);
         }
         candidates
     }
@@ -562,12 +608,11 @@ fn exactly_one_owned<T>(mut candidates: impl Iterator<Item = T>) -> Option<T> {
     candidates.next().is_none().then_some(candidate)
 }
 
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "the fixed one-MiB alignment is nonzero; saturation handles addition overflow"
-)]
-fn align_up(value: u64, alignment: u64) -> u64 {
-    value.saturating_add(alignment - 1) / alignment * alignment
+fn align_up(value: u64, alignment: u64) -> Option<u64> {
+    value
+        .checked_add(alignment.checked_sub(1)?)?
+        .checked_div(alignment)?
+        .checked_mul(alignment)
 }
 
 #[allow(

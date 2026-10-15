@@ -83,6 +83,11 @@ pub enum Operation {
     SelectFreeRegion {
         index: usize,
     },
+    SetAlongsideSize {
+        gib: i64,
+        disk: Box<crate::disks::Disk>,
+        extent: crate::disks::GuidedAlongsidePlan,
+    },
     SetIdentity {
         #[serde(default)]
         username: Option<String>,
@@ -123,6 +128,9 @@ pub enum Operation {
     /// target has since changed is refused rather than redirected.
     BeginInstall {
         target: String,
+        /// The exact append-only geometry displayed when this action was published.
+        #[serde(default)]
+        allocation: Option<crate::disks::GuidedAlongsidePlan>,
     },
     CopyRecoveryKey,
     ConfirmRecoverySaved {
@@ -151,6 +159,7 @@ impl Operation {
             Self::RefreshDisks => "refresh-disks",
             Self::SelectDisk { .. } => "select-disk",
             Self::SelectFreeRegion { .. } => "select-region",
+            Self::SetAlongsideSize { .. } => "set-size",
             Self::SetIdentity { .. } => "set-identity",
             Self::SetPassphrase { .. } => "set-passphrase",
             Self::SetDiskPassphrase { .. } => "set-disk-passphrase",
@@ -210,6 +219,7 @@ mod tests {
                 },
                 Operation::BeginInstall {
                     target: "/dev/vdb".into(),
+                    allocation: None,
                 },
             ] {
                 let bytes = serde_json::to_vec(&operation).unwrap();
