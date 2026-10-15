@@ -163,8 +163,7 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertIn("EXPECTED_ARCH: ${{ github.event_name == 'push' && 'x86_64' || runner.arch }}", job)
         self.assertIn('run: bash tools/ci/assert-native-runner.sh "$EXPECTED_ARCH"', job)
         self.assertIn('CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings', job)
-        self.assertIn('cargo check --locked $PACKAGES --target wasm32-unknown-unknown', job)
-        self.assertIn('run: bash tools/ci/check-wasm.sh', job)
+        self.assertIn('bash tools/ci/check-wasm.sh $PACKAGES', job)
         self.assertIn('bash tools/ci/build-web-examples.sh $WEB_EXAMPLES', job)
         self.assertIn("timeout-minutes: 90", job)
         # Native x86/ARM matrices and their warning flags remain independent.
@@ -491,8 +490,10 @@ class CheckAggregateTests(unittest.TestCase):
             self.assertIn("bash tools/ci/install-android-ndk.sh", android)
             for target in ("aarch64-linux-android", "x86_64-linux-android"):
                 self.assertIn(target, android)
-            self.assertIn("--features android --target \"$target\"", android)
-            self.assertIn("-- -D warnings", android)
+            self.assertIn("bash tools/ci/clippy-android.sh $PACKAGES", android)
+            script = (ROOT / "tools/ci/clippy-android.sh").read_text()
+            self.assertIn("--features android --target \"$target\"", script)
+            self.assertIn("-- -D warnings", script)
             # Vendored crates' own suites, through the runner the nightly uses.
             self.assertIn("VENDORED_REQUIRED: ${{ needs.select.outputs.vendored_required }}", checks)
             self.assertIn("vendored_required: ${{ steps.plan.outputs.vendored_required }}", select_job)
@@ -510,9 +511,8 @@ class CheckAggregateTests(unittest.TestCase):
             self.assertIn("needs.select.outputs.wasm_required == 'true' }}\n", wasm)
             self.assertIn("image: ${{ needs.builder.outputs.image }}", wasm)
             self.assertIn("rustup target add wasm32-unknown-unknown", wasm)
-            self.assertIn("--target wasm32-unknown-unknown", wasm)
             self.assertIn("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings", wasm)
-            self.assertIn("run: bash tools/ci/check-wasm.sh", wasm)
+            self.assertIn("bash tools/ci/check-wasm.sh $PACKAGES", wasm)
             # Affected tapps against their size budgets, on both architectures,
             # packaged as Release / apps packages them.
             self.assertIn("TAPPS_REQUIRED: ${{ needs.select.outputs.tapp_required }}", checks)
@@ -546,7 +546,8 @@ class CheckAggregateTests(unittest.TestCase):
             script = (ROOT / "tools/ci/check-wasm.sh").read_text()
             for package, _ in hack.ROOTS:
                 self.assertIn(f"-p {package}", script)
-            self.assertIn('--target "$target"', script)
+            self.assertIn('clippy --locked --target "$target"', script)
+            self.assertIn("-- -D warnings", script)
             self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
             self.assertIn('test "$BUILDER_RESULT" = success', checks)
             security = section(self.workflow, "security", 2)
