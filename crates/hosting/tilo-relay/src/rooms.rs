@@ -853,6 +853,28 @@ impl Rooms {
         Ok(self.room(room).await?.lock().await.summary())
     }
 
+    /// The spectators watching `room` now: those holding a seat, not every
+    /// page that asked for one.
+    ///
+    /// # Errors
+    ///
+    /// The room is not governed here.
+    pub async fn seated_spectators(&self, room: &str) -> Result<usize, CollaborationError> {
+        let workspace_id = self.room(room).await?.lock().await.workspace_id();
+        let workspace = self
+            .inner
+            .host
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned();
+        Ok(match workspace {
+            Some(workspace) => crate::room_access::seated_spectators(&*workspace.lock().await),
+            None => 0,
+        })
+    }
+
     /// Every person governance records in `room` other than its owner, by
     /// person (hex root), with the room's governance generation.
     ///

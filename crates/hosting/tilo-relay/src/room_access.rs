@@ -463,12 +463,20 @@ pub(crate) fn seated(runtime: &WorkspaceRuntime, peer: &AuthenticatedPeer) -> bo
         return true;
     };
     runtime.state_sessions.contains_key(&peer.device_public_key)
-        || runtime
+        || seated_spectators(runtime) < spectators.seats
+}
+
+/// The spectators holding a seat in `runtime`'s room: their live
+/// subscriptions. A page refused for want of a seat holds none, so it is
+/// not counted as watching.
+pub(crate) fn seated_spectators(runtime: &WorkspaceRuntime) -> usize {
+    runtime.spectators.map_or(0, |spectators| {
+        runtime
             .state_sessions
             .values()
             .filter(|session| session.peer.user_public_key == spectators.root)
             .count()
-            < spectators.seats
+    })
 }
 
 /// The room facts [`decide`] reads.

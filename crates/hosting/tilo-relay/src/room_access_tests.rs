@@ -539,6 +539,8 @@ fn a_spectator_subscribes_only_while_a_seat_is_free_and_keeps_its_own() {
         Decision::Deny(DenyReason::SpectatorsFull)
     );
     assert!(!seated(&runtime, &watching(92)));
+    // Watching counts the seated two, not the member or the refused page.
+    assert_eq!(seated_spectators(&runtime), 2);
     for seated_device in [90, 91] {
         assert_eq!(
             decide(&runtime, seated_device, RoomOperation::Subscribe),
