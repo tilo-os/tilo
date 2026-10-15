@@ -1,6 +1,6 @@
 //! Peer-relay federation: `PeerRelayHello` and anti-entropy `SyncRequest`.
 
-use super::*;
+use super::{AuthenticatedPeer, Envelope, PeerError, RoomOperation, SessionCtx, StateSource};
 
 /// Handle `PeerRelayHello`: record the dialer as a federated peer
 /// relay for every workspace we both host.

@@ -2,7 +2,16 @@
 //! ([`Envelope`]) and [`handle_private`] for the v2 private lane
 //! ([`EnvelopeV2`]). Each arm hands one envelope to its concern's handler.
 
-use super::*;
+use super::{
+    Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
+    ReplayHandle, ReplayTicket, SessionCtx, Subscription, enable_actions, enable_broker_client,
+    handle_commit, handle_compaction, handle_delta, handle_live, handle_live_join,
+    handle_live_leave, handle_peer_relay_hello, handle_presence, handle_remote_action,
+    handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice, register_broker,
+    route_private, route_record_content, route_signed_directed,
+};
+#[cfg(test)]
+use super::{ReplayWrite, finish_replay_write, mpsc};
 
 /// Handle one successfully-decoded inbound envelope: dispatch to
 /// [`handle_envelope`], then write any replay backlog to the wire —

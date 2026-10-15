@@ -1,7 +1,7 @@
 //! `CompactVolunteer` and `Compacted`: members volunteering to compact sealed
 //! routes and the coverage statements the host acts on.
 
-use super::*;
+use super::{AuthenticatedPeer, Envelope, SessionCtx, room_access};
 
 /// A member volunteering to compact sealed routes, or its coverage
 /// statement for one: the host removes the entries the statement names. A

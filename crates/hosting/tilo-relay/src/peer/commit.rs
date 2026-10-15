@@ -1,7 +1,10 @@
 //! `Commit`: a delta whose author waits for its host order, with the
 //! per-member change budget and the commit ledger.
 
-use super::*;
+use super::{
+    AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace, authorized_state_source,
+    enqueue_state_inner, resume_record, unix_now_ns, unpublished,
+};
 
 /// Spends `peer`'s budget for one change, unless the relay's own user sent
 /// it: the host device and the bots a host-held root delegated must never

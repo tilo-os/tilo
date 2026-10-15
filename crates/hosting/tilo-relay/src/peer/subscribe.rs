@@ -1,7 +1,13 @@
 //! `Subscribe`, `SubscribeFrom` and `Unsubscribe`: admission, resume logs,
 //! replay capture and live-subscriber registration.
 
-use super::*;
+use super::{
+    Arc, AuthenticatedPeer, Decision, Envelope, Lag, MAX_AUTOBOUND_WORKSPACES, PeerError,
+    ReplayCatchup, ReplayHandle, ReplayTicket, ResumeLog, RoomOperation, SessionCtx,
+    SharedWorkspace, StateDelivery, StateSession, StateSource, Step, StoreError, Subscriber,
+    WorkspaceAutobind, WorkspaceRegistry, current_session, mpsc, room_access,
+    session_peer_authorized, unix_now_ns,
+};
 
 /// How a subscriber's replay capture finished.
 enum SubscribeReplayCompletion {
@@ -128,9 +134,12 @@ pub(super) async fn handle_subscribe(
         workspace: ws,
         expected,
         store,
-    } = match admit_subscription(peer, session, subscribed, workspace_id).await? {
-        SubscribeAdmission::Admitted(admitted) => admitted,
-        SubscribeAdmission::Refused(reply) => return Ok(Some(reply)),
+    } = {
+        let admission = admit_subscription(peer, session, subscribed, workspace_id).await?;
+        match admission {
+            SubscribeAdmission::Admitted(admitted) => admitted,
+            SubscribeAdmission::Refused(refusal) => return Ok(Some(refusal)),
+        }
     };
     let work = store.root().join(crate::store::replay::WORK_DIR);
     let skip = open_resume(session, peer, workspace_id, store, resume).await?;
@@ -427,6 +436,7 @@ pub(crate) async fn get_or_autobind_workspace(
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 mod autobind_tests {
+    use super::super::{AsyncMutex, HashMap, autobind_has_capacity};
     use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
