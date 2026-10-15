@@ -40,6 +40,7 @@ mod native_checkout;
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
 mod native_media;
+mod native_task_confirmation;
 mod native_task_execution;
 mod native_task_launch;
 #[cfg(test)]
@@ -6114,9 +6115,22 @@ impl CapnpBrokerState {
         } else if !witnessed && !confirmation_satisfied(&policy, own) {
             return Err(ActionHostError::ConfirmationRequired);
         }
-        let unavailable = || ActionHostError::Unavailable {
-            reason: "the confirmation registry is unavailable".into(),
-        };
+        self.mint_confirmation_grant(peer_id, offered, argument, actor)
+            .map(Some)
+            .map_err(|reason| ActionHostError::Unavailable { reason })
+    }
+
+    /// Mint the one-use grant carrying a confirmation already decided to
+    /// the dispatch of `actor`'s invocation of `offered` on `peer_id` with
+    /// `argument`, and nothing else.
+    pub(crate) fn mint_confirmation_grant(
+        &self,
+        peer_id: u64,
+        offered: &PublishedAction,
+        argument: Option<&str>,
+        actor: &BrokerActor,
+    ) -> Result<String, String> {
+        let unavailable = || "the confirmation registry is unavailable".to_owned();
         let token = uuid::Uuid::new_v4().to_string();
         let now = std::time::Instant::now();
         let expires = now
@@ -6136,7 +6150,7 @@ impl CapnpBrokerState {
             },
         );
         drop(grants);
-        Ok(Some(token))
+        Ok(token)
     }
 
     /// Record that the person `actor` acts for confirmed `actor`'s invocation
@@ -6595,10 +6609,13 @@ impl CapnpBrokerState {
         run_id: u64,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
-        provenance: Option<&(
-            durable_local_invocation::LocalCaller,
-            tilo_actions::InvocationId,
-        )>,
+        (provenance, confirmed): (
+            Option<&(
+                durable_local_invocation::LocalCaller,
+                tilo_actions::InvocationId,
+            )>,
+            bool,
+        ),
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
             peer_id: target_peer,
@@ -6619,7 +6636,13 @@ impl CapnpBrokerState {
             .filter(|surface| surface.route.cluster_id == run.cluster_id)
             .and_then(|surface| surface.action_projection(resource, action))
             .ok_or("the task action is no longer published in this workspace")?;
-        self.admit_task_action(run, lease, target, provenance, (surface, descriptor))
+        self.admit_task_action(
+            run,
+            lease,
+            target,
+            (provenance, confirmed),
+            (surface, descriptor),
+        )
     }
 
     fn admit_task_action(
@@ -6627,10 +6650,13 @@ impl CapnpBrokerState {
         run: PendingTaskRun,
         lease: &str,
         target: runtime_collab::TaskAction<'_>,
-        provenance: Option<&(
-            durable_local_invocation::LocalCaller,
-            tilo_actions::InvocationId,
-        )>,
+        (provenance, confirmed): (
+            Option<&(
+                durable_local_invocation::LocalCaller,
+                tilo_actions::InvocationId,
+            )>,
+            bool,
+        ),
         offered: (PublishedSurface, PublishedAction),
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
@@ -6647,14 +6673,6 @@ impl CapnpBrokerState {
         {
             return Err("task action publisher changed workspace or retired".into());
         }
-        let requirement = crate::services::NativeTaskActionRequirement {
-            binding: run.native.clone(),
-            app: surface.app_id.clone(),
-            resource_kind: descriptor.resource_kind.clone(),
-            resource: resource.into(),
-            action: descriptor.action.clone(),
-            need: descriptor.contract.need(),
-        };
         // Task transport carries a JSON argument map directly; the contract
         // evaluator also accepts the action door's prefixed map encoding.
         let contract_argument = argument.and_then(|text| {
@@ -6662,17 +6680,29 @@ impl CapnpBrokerState {
                 .ok()
                 .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
         });
-        let confirmation_required = descriptor
-            .contract
-            .confirmation_for_argument(contract_argument.as_deref().or(argument));
-        if !matches!(
-            confirmation_required,
+        let consequential = !matches!(
+            descriptor
+                .contract
+                .confirmation_for_argument(contract_argument.as_deref().or(argument)),
             tilo_actions::ConfirmationPolicy::None
-        ) {
+        );
+        // A native run pauses for its person where an action asks first
+        // (`native_task_confirmation`); an older run has nobody to ask.
+        if consequential && run.native.is_none() {
             return Err(
                 "task action requires an interactive confirmation and cannot run unattended".into(),
             );
         }
+        let requirement = crate::services::NativeTaskActionRequirement {
+            binding: run.native.clone(),
+            app: surface.app_id.clone(),
+            resource_kind: descriptor.resource_kind.clone(),
+            resource: resource.into(),
+            action: descriptor.action.clone(),
+            need: descriptor.contract.need(),
+            consequential,
+            confirmed,
+        };
         if let Some(binding) = &run.native {
             let (caller, invocation) =
                 provenance.ok_or("native task action requires authenticated original caller")?;
@@ -6689,6 +6719,7 @@ impl CapnpBrokerState {
                         caller,
                         *invocation,
                         (surface.clone(), descriptor.clone()),
+                        confirmed || consequential,
                     )
                 })
         } else {
@@ -10401,7 +10432,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         request.get_run_id(),
                         &lease,
                         target,
-                        None,
+                        (None, false),
                     )
                     .map_err(capnp::Error::failed)?;
                 let update = state.invocation_status(job.id).ok_or_else(|| {
