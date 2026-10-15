@@ -10,7 +10,7 @@
 #                                     it does not exist, 3 if the registry failed
 #   resolve-rpm-snapshot.sh --tag     print set-<fingerprint> only
 #
-# Needs: python3, cosign, skopeo, jq. Registry read access for the tag.
+# Needs: python3, cosign, jq; skopeo if installed. Registry read access for the tag.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -44,14 +44,26 @@ if [ "$mode" = tag ]; then
   exit 0
 fi
 
-# Without skopeo the lookup fails with "not found", which must not read as
-# "not published".
-command -v skopeo >/dev/null \
-  || { printf 'resolve-rpm-snapshot: skopeo is required\n' >&2; exit 3; }
+# The manifest digest and the manifest of an image reference: skopeo where it is installed,
+# else an anonymous reader (os/dev/registry-manifest.py) whose errors read the same.
+manifest_digest() {
+  if command -v skopeo >/dev/null; then
+    skopeo inspect --format '{{.Digest}}' "docker://$1"
+  else
+    python3 "$repo/os/dev/registry-manifest.py" digest "$1"
+  fi
+}
+manifest_raw() {
+  if command -v skopeo >/dev/null; then
+    skopeo inspect --raw "docker://$1"
+  else
+    python3 "$repo/os/dev/registry-manifest.py" raw "$1"
+  fi
+}
 
 # Exit 1: the tag does not exist. Exit 3: the registry could not be asked, which
 # says nothing about the tag; a caller must not treat it as "not published".
-if ! digest="$(skopeo inspect --format '{{.Digest}}' "docker://$tagged" 2>"$TMPDIR_RESOLVE/err")"; then
+if ! digest="$(manifest_digest "$tagged" 2>"$TMPDIR_RESOLVE/err")"; then
   if grep -qE 'manifest unknown|name unknown|not found' "$TMPDIR_RESOLVE/err"; then
     printf 'resolve-rpm-snapshot: no published snapshot for %s\n' "$tagged" >&2
     exit 1
@@ -113,7 +125,7 @@ printf '%s' "$provenance" | jq -e --arg digest "$digest" \
     exit 1
   }
 
-platforms="$(skopeo inspect --raw "docker://$ref" | jq -c \
+platforms="$(manifest_raw "$ref" | jq -c \
   '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')"
 [ "$platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] \
   || {

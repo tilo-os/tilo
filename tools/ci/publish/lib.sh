@@ -56,6 +56,25 @@ use_buildah() {
 }
 b() { buildah --root "$buildah_root" --runroot "$buildah_runroot" "$@"; }
 
+# Copy the repository into DEST without what IGNOREFILE (a .dockerignore without `!` lines)
+# leaves out. BuildKit applies such a file to every use of the context; buildah only to COPY,
+# not to a RUN's bind mount of it, so builds that bind the context get a filtered copy.
+stage_context() {
+  local ignorefile=$1 dest=$2 pattern excludes=()
+  grep -q '^!' "$ignorefile" && die "$ignorefile has exceptions, which stage_context does not apply"
+  while IFS= read -r pattern; do
+    pattern=${pattern%/}
+    case $pattern in
+      '' | '#'*) ;;
+      '**/'*) excludes+=(--no-anchored "--exclude=${pattern#'**/'}") ;;
+      *) excludes+=(--anchored "--exclude=./$pattern") ;;
+    esac
+  done < "$ignorefile"
+  rm -rf "$dest"
+  mkdir -p "$dest"
+  tar -C "$repo_root" "${excludes[@]}" -cf - . | tar -C "$dest" -xf -
+}
+
 # The pinned Cosign (os/external-assets/github-assets.tsv), checksum-verified, on PATH.
 use_cosign() {
   command -v cosign >/dev/null && return

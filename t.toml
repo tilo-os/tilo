@@ -1753,6 +1753,8 @@ inputs = ["tools/ci/publish/**", "crates/packaging/registry-server/container/**"
 outputs = ["/target/publish/registry-server/image.oci.tar", "/target/publish/registry-server/digest"]
 requires = ["arch=x86_64"]
 cost = "heavy"
+cpus = 8
+memory = "12G"
 default = false
 
 [[check]]
@@ -1962,3 +1964,192 @@ outputs = ["/target/publish/desktop/payload.json"]
 pointers = { desktop-payload = "/target/publish/desktop/payload.json" }
 secrets = ["REGISTRY_TOKEN"]
 on = ["stable"]
+
+# The published frozen RPM snapshot for this tree's package set, verified, for the image builds
+# that install from it (relay, env-runtime). It fails until the snapshot for a changed package
+# set is published.
+[[check]]
+name = "rpm-snapshot"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+run = "bash tools/ci/publish/rpm-snapshot-ref.sh /target/publish/rpm-snapshot"
+inputs = ["tools/ci/publish/**", "os/dev/registry-manifest.py", "os/dev/install-cached-cosign.sh", "os/Containerfile", "os/base-snapshot.env", "os/Containerfile.rpms", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/resolve-rpm-snapshot.sh", "os/dev/ensure-base-mirror.sh", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/derive-rpm-package-set.py", "keys/cosign.pub", "os/dev/promote-native-index.py", "os/dev/configure-cosign-kms.sh", "os/dev/require-cosign-authority.sh", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
+outputs = ["/target/publish/rpm-snapshot/rpms-ref"]
+default = false
+
+# The env-runtime (os/Containerfile.env-runtime, tools/ci/publish/env-runtime.sh): each
+# architecture's tree is built natively from the frozen RPM snapshot, sealed into an
+# `env-runtime` tapp and published as env-runtime:set-<fingerprint> from stable, once per
+# fingerprint. Sealing with the publisher identity is a signing step of its own. The preview
+# checks seal with a throwaway key and build the image from that, so a change is checked whole
+# before it lands. Until stable publishes a new definition, OS images ship no runtime and
+# environments fetch one on first use.
+[[check]]
+name = "image-env-runtime-tree-x86_64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/env-runtime.sh tree x86_64 /target/publish/rpm-snapshot /target/publish/env-runtime/trees"
+inputs = ["tools/ci/publish/**", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
+needs = ["rpm-snapshot"]
+outputs = ["/target/publish/env-runtime/trees/env-runtime-tree-x86_64.tar", "/target/publish/env-runtime/trees/env-runtime-rpms-x86_64.txt"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "image-env-runtime-tree-aarch64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/env-runtime.sh tree aarch64 /target/publish/rpm-snapshot /target/publish/env-runtime/trees"
+inputs = ["tools/ci/publish/**", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
+needs = ["rpm-snapshot"]
+outputs = ["/target/publish/env-runtime/trees/env-runtime-tree-aarch64.tar", "/target/publish/env-runtime/trees/env-runtime-rpms-aarch64.txt"]
+requires = ["arch=aarch64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "env-runtime-packer"
+run = "bash tools/ci/publish/env-runtime.sh packer /target/publish/env-runtime/packer"
+inputs = ["tools/ci/publish/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/publish/env-runtime/packer/tilo-app-package"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "env-runtime-preview"
+run = "bash tools/ci/publish/env-runtime.sh seal /target/publish/env-runtime/trees /target/publish/env-runtime/packer /target/publish/env-runtime/preview"
+inputs = ["tools/ci/publish/**", "os/dev/resolve-env-runtime.sh", "os/Containerfile.env-runtime"]
+needs = ["image-env-runtime-tree-x86_64", "image-env-runtime-tree-aarch64", "env-runtime-packer"]
+outputs = ["/target/publish/env-runtime/preview/**"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "image-env-runtime-preview"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/env-runtime.sh image /target/publish/env-runtime/preview /target/publish/env-runtime/preview-image"
+inputs = ["tools/ci/publish/**", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
+needs = ["env-runtime-preview"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "seal-env-runtime"
+run = "bash tools/ci/publish/env-runtime.sh seal /target/publish/env-runtime/trees /target/publish/env-runtime/packer /target/publish/env-runtime/sealed"
+inputs = ["tools/ci/publish/**", "os/dev/resolve-env-runtime.sh", "os/Containerfile.env-runtime"]
+needs = ["image-env-runtime-tree-x86_64", "image-env-runtime-tree-aarch64", "env-runtime-packer"]
+outputs = ["/target/publish/env-runtime/sealed/**"]
+secrets = ["TAPP_PUBLISHER_IDENTITY"]
+requires = ["arch=x86_64"]
+on = ["stable"]
+
+[[check]]
+name = "image-env-runtime"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/env-runtime.sh image /target/publish/env-runtime/sealed /target/publish/env-runtime/image"
+inputs = ["tools/ci/publish/**", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
+needs = ["seal-env-runtime"]
+outputs = ["/target/publish/env-runtime/image/image.oci.tar", "/target/publish/env-runtime/image/digest"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "sign-env-runtime"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/env-runtime /target/publish/env-runtime/image"
+inputs = ["tools/ci/publish/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-env-runtime"]
+outputs = ["/target/publish/env-runtime/image/payload.json", "/target/publish/env-runtime/image/signature", "/target/publish/env-runtime/image/bundle.json"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+on = ["stable"]
+
+[[check]]
+name = "release-env-runtime"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/env-runtime.sh release /target/publish/env-runtime/image"
+inputs = ["tools/ci/publish/**", "os/dev/resolve-env-runtime.sh", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-env-runtime", "sign-env-runtime"]
+outputs = ["/target/publish/env-runtime/image/receipt.json"]
+id_token = ["registry.tilo.so"]
+on = ["stable"]
+
+# The kernel buildroot (os/Containerfile.kernel-buildroot, tools/ci/publish/kernel-buildroot.sh):
+# the only build that resolves kernel build dependencies and the Fedora kernel SRPM from Fedora.
+# Each architecture is built natively and audited; stable signs (with a transparency log entry,
+# since build-kernel.yml verifies requiring one) and publishes both and sets the
+# `kernel-buildroot` pointer. `kernel-buildroot.sh pin` commits stable's pins to
+# os/kernel-buildroot-snapshot.env from a check that pushes, once build-buildroots.yml no longer
+# proposes them.
+[[check]]
+name = "image-kernel-buildroot-x86_64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/kernel-buildroot.sh build x86_64 /target/publish/kernel-buildroot/x86_64"
+inputs = ["tools/ci/publish/**", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env"]
+outputs = ["/target/publish/kernel-buildroot/x86_64/image.oci.tar", "/target/publish/kernel-buildroot/x86_64/digest"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "image-kernel-buildroot-aarch64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/kernel-buildroot.sh build aarch64 /target/publish/kernel-buildroot/aarch64"
+inputs = ["tools/ci/publish/**", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env"]
+outputs = ["/target/publish/kernel-buildroot/aarch64/image.oci.tar", "/target/publish/kernel-buildroot/aarch64/digest"]
+requires = ["arch=aarch64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "sign-kernel-buildroot"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = """
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/x86_64
+bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-kernel-buildroot /target/publish/kernel-buildroot/aarch64
+"""
+inputs = ["tools/ci/publish/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-kernel-buildroot-x86_64", "image-kernel-buildroot-aarch64"]
+outputs = ["/target/publish/kernel-buildroot/*/payload.json", "/target/publish/kernel-buildroot/*/signature", "/target/publish/kernel-buildroot/*/bundle.json"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+on = ["stable"]
+
+[[check]]
+name = "release-kernel-buildroot"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/kernel-buildroot.sh release /target/publish/kernel-buildroot/x86_64 /target/publish/kernel-buildroot/aarch64"
+inputs = ["tools/ci/publish/**", "os/Containerfile.kernel-buildroot", "os/base-snapshot.env", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-kernel-buildroot-x86_64", "image-kernel-buildroot-aarch64", "sign-kernel-buildroot"]
+outputs = ["/target/publish/kernel-buildroot/*/receipt.json", "/target/publish/kernel-buildroot/pins.env"]
+pointers = { kernel-buildroot = "/target/publish/kernel-buildroot/pins.env" }
+id_token = ["registry.tilo.so"]
+on = ["stable"]
+
+# The CI builder (os/Containerfile.builder, tools/ci/publish/ci-builder.sh): the image t's checks
+# and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture.
+[[check]]
+name = "image-ci-builder-x86_64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/ci-builder.sh build x86_64 /target/publish/ci-builder/x86_64"
+inputs = ["tools/ci/publish/**", "os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh"]
+outputs = ["/target/publish/ci-builder/x86_64/image.oci.tar", "/target/publish/ci-builder/x86_64/digest"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+timeout_secs = 14400
+cpus = 16
+memory = "32G"
+default = false
+
+[[check]]
+name = "image-ci-builder-aarch64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/ci-builder.sh build aarch64 /target/publish/ci-builder/aarch64"
+inputs = ["tools/ci/publish/**", "os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh"]
+outputs = ["/target/publish/ci-builder/aarch64/image.oci.tar", "/target/publish/ci-builder/aarch64/digest"]
+requires = ["arch=aarch64"]
+cost = "heavy"
+timeout_secs = 14400
+cpus = 16
+memory = "32G"
+default = false
