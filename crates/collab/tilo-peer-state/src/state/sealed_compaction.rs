@@ -211,9 +211,12 @@ impl StatePeer {
         if !document.encryption_required {
             return Err("the record is not encrypted: write it in the clear".into());
         }
-        let plaintext = DocumentMutation::Incremental(changes)
-            .encode()
-            .map_err(err)?;
+        let mutation = DocumentMutation::Incremental(changes);
+        // Readers without the key decide a sealed write by the claims of
+        // its changes, as a member's page names them.
+        let claims =
+            collab_types::mutation_claims(&mutation, collab_types::record_unit).map_err(err)?;
+        let plaintext = mutation.encode().map_err(err)?;
         let (metadata, ciphertext) = seal(&plaintext)?;
         if metadata.retention() != Some(ContentRetention::Delta)
             || metadata.channel != collab_types::document_channel_id(app, &self.core.room, record)
@@ -239,6 +242,7 @@ impl StatePeer {
             seq,
             metadata,
         )
+        .with_claims(claims)
         .with_surface(self.app_surfaces.0.as_ref().and_then(|of| of(app)));
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let mut candidate = self.clone();
