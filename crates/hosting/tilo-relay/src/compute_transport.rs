@@ -25,7 +25,9 @@ use crate::mesh::{
     ComputeAccelerator, DeviceKey, DeviceRole, PowerAvailability, ServerAdvertisement,
     ServiceCapabilities,
 };
-use crate::placement::{ComputeRequirements, NoEligibleWorker, Placement, place_compute_job};
+use crate::placement::{
+    ComputeRequirements, NoEligibleWorker, Placement, PlacementRank, place_compute_job,
+};
 use crate::store::{StoreError, WorkspaceStore};
 
 pub const COMPUTE_TRANSPORT_SCHEMA_VERSION: u16 = 1;
@@ -58,6 +60,15 @@ pub const WORKER_NOT_ADMITTED: &str = "worker_not_admitted";
 /// The placement reason when moving a job's inputs to every eligible
 /// worker would take longer than running the job where it was asked.
 pub const INPUTS_HEAVIER_THAN_GAIN: &str = "inputs_heavier_than_gain";
+/// The placement reason when a worker kept from jobs by what it was
+/// expected to receive is tried again, in case it holds the inputs now.
+pub const REPROBING_HELD_INPUTS: &str = "reprobing_held_inputs";
+/// How long placement keeps jobs from a worker on what it last learned the
+/// worker holds before it may try that worker again (see `Reprobe`).
+pub const REPROBE_AFTER_MS: u64 = 10 * 60_000;
+/// A re-probe that finds nothing held doubles both the wait and the
+/// forgone gain the next one needs, at most this many times over.
+pub const MAX_REPROBE_BACKOFF: u32 = 6;
 /// Most input digests the relay remembers a worker holding, or not, for one
 /// requester; the one learned first is forgotten first.
 pub const MAX_KNOWN_HOLDINGS: usize = 4_096;
@@ -368,6 +379,75 @@ struct Holdings {
     /// mille: what is expected of an input not learned yet. A replica that
     /// keeps a workspace's originals holds the next photograph too.
     held_per_mille: u64,
+    /// When to try the worker again although this says its inputs move.
+    reprobe: Reprobe,
+}
+
+/// When to try a worker again that placement keeps jobs from because of
+/// what it was seen to fetch.
+///
+/// What a worker holds is learned only from jobs placed on it, so a worker
+/// seen fetching everything over a slow link would otherwise never be tried
+/// again, even once it holds the inputs (its filesystem replica finished
+/// syncing). Each job kept local instead is credited with what it would
+/// have saved had the worker held its inputs. Once [`REPROBE_AFTER_MS`]
+/// has passed and that forgone gain covers the worst case of trying (the
+/// estimate is right and every byte moves), the next such job is placed on
+/// the worker; the job itself shows what it holds, as any other does.
+///
+/// A re-probe that finds nothing held doubles the wait and the credit the
+/// next one needs, up to [`MAX_REPROBE_BACKOFF`] times, so a worker that
+/// still holds nothing goes back to staying local, and the time re-probes
+/// waste never exceeds the time staying local already forwent. A job that
+/// finds anything held resets it. Driven only by placement calls and
+/// settled jobs: no timer, and a fixed size per (requester, worker) pair.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Reprobe {
+    /// When placement first kept a job from the worker since the pair last
+    /// learned from a job or was re-probed.
+    since_ms: Option<u64>,
+    /// What the jobs kept local since then would have saved, in ms, had the
+    /// worker held their inputs.
+    forgone_ms: u64,
+    /// Re-probes since a job last found inputs held, at most
+    /// [`MAX_REPROBE_BACKOFF`].
+    fruitless: u32,
+}
+
+impl Reprobe {
+    fn backoff(self) -> u64 {
+        1_u64
+            .checked_shl(self.fruitless.min(MAX_REPROBE_BACKOFF))
+            .unwrap_or(u64::MAX)
+    }
+
+    /// A job was kept from the worker at `now_ms`, which would have saved
+    /// `gain_ms` had the worker held its inputs and costs `cost_ms` more
+    /// than the local run if it does not. Returns whether to try it now.
+    fn kept_local(&mut self, now_ms: u64, gain_ms: u64, cost_ms: u64) -> bool {
+        let since = *self.since_ms.get_or_insert(now_ms);
+        self.forgone_ms = self.forgone_ms.saturating_add(gain_ms);
+        let backoff = self.backoff();
+        now_ms.saturating_sub(since) >= REPROBE_AFTER_MS.saturating_mul(backoff)
+            && self.forgone_ms >= cost_ms.saturating_mul(backoff)
+    }
+
+    /// The worker is tried again at `now_ms`; it counts as fruitless until
+    /// a job finds inputs held.
+    fn probed(&mut self, now_ms: u64) {
+        self.since_ms = Some(now_ms);
+        self.forgone_ms = 0;
+        self.fruitless = self.fruitless.saturating_add(1).min(MAX_REPROBE_BACKOFF);
+    }
+
+    /// A job on the worker completed; it found inputs held or not.
+    fn learned(&mut self, held_any: bool) {
+        self.since_ms = None;
+        self.forgone_ms = 0;
+        if held_any {
+            self.fruitless = 0;
+        }
+    }
 }
 
 impl Holdings {
@@ -427,6 +507,34 @@ struct FollowedJob {
     forwarded: BTreeSet<[u8; 32]>,
 }
 
+/// An eligible worker whose inputs would move slower than the local run.
+struct Refused {
+    worker: DeviceKey,
+    rank: PlacementRank,
+    /// The bytes that would move to it.
+    moving: u64,
+    transfer_ms: u64,
+    bytes_per_second: u64,
+}
+
+impl Refused {
+    fn estimate(
+        &self,
+        weight: &InputWeight,
+        considered: Vec<crate::placement::PlacementCandidate>,
+    ) -> InputsHeavierThanGain {
+        InputsHeavierThanGain {
+            worker: self.worker,
+            input_bytes: self.moving,
+            held_bytes: weight.input_bytes.saturating_sub(self.moving),
+            bytes_per_second: self.bytes_per_second,
+            transfer_ms: self.transfer_ms,
+            local_wall_ms: weight.local_wall_ms,
+            considered,
+        }
+    }
+}
+
 /// Placement weighed against moving the inputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WeighedPlacement {
@@ -435,6 +543,30 @@ pub enum WeighedPlacement {
     /// Run it where it was asked: moving the inputs to every eligible
     /// worker takes longer than the run there took.
     Local(InputsHeavierThanGain),
+    /// Run it on this worker although the estimate says its inputs move
+    /// slower than the run where it was asked: the worker was kept from
+    /// such jobs long enough to try it again (see `Reprobe`).
+    Reprobe(ReprobePlacement),
+}
+
+/// A worker tried again in case it holds a job's inputs now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReprobePlacement {
+    /// The worker tried, as placement ranked it.
+    pub placement: Placement,
+    /// The estimate that would have kept the job local.
+    pub estimate: InputsHeavierThanGain,
+}
+
+impl std::fmt::Display for ReprobePlacement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{REPROBING_HELD_INPUTS}: {}; jobs kept here since it was last tried would have \
+             gained enough to try it again, in case it holds the inputs now (estimate: {})",
+            self.placement, self.estimate,
+        )
+    }
 }
 
 /// Why a job is better run by its requester: the estimate for the
@@ -629,14 +761,20 @@ impl ComputeTransportState {
         let moving = u128::from(input_bytes)
             .saturating_mul(1_000)
             .div_ceil(u128::from(rate.max(1)));
-        let round_trip = match self.latency_ms(worker) {
-            UNMEASURED_LATENCY_MS => 0,
-            measured => u128::from(measured),
-        };
         Some((
-            u64::try_from(moving.saturating_add(round_trip)).unwrap_or(u64::MAX),
+            u64::try_from(moving.saturating_add(u128::from(self.round_trip_ms(worker))))
+                .unwrap_or(u64::MAX),
             rate,
         ))
+    }
+
+    /// What reaching `worker` costs a job that moves nothing: its measured
+    /// round trip, or nothing while unmeasured.
+    fn round_trip_ms(&self, worker: &DeviceKey) -> u64 {
+        match self.latency_ms(worker) {
+            UNMEASURED_LATENCY_MS => 0,
+            measured => u64::from(measured),
+        }
     }
 
     /// The bytes of `weight`'s inputs that would move from `requester` to
@@ -657,11 +795,17 @@ impl ComputeTransportState {
     /// not measured yet is not held back: offloading to it is how it gets
     /// measured. Without a `weight` this is [`Self::place`].
     ///
+    /// What a worker holds is learned only from jobs placed on it, so a
+    /// worker kept from jobs this way is tried again once that has forgone
+    /// enough, for long enough: [`WeighedPlacement::Reprobe`], after
+    /// [`REPROBE_AFTER_MS`] at the earliest. That is why placing takes
+    /// `&mut self`; `now_ms` is the clock it is judged by.
+    ///
     /// # Errors
     ///
     /// As [`Self::place`].
     pub fn place_weighed(
-        &self,
+        &mut self,
         needs: &ComputeRequirements<'_>,
         weight: Option<&InputWeight>,
         now_ms: u64,
@@ -670,39 +814,86 @@ impl ComputeTransportState {
         let Some(weight) = weight else {
             return Ok(WeighedPlacement::Worker(placement));
         };
-        let mut best_refused = None;
-        let mut chosen = None;
+        let mut refused = Vec::new();
         for candidate in &placement.considered {
             let Ok(rank) = candidate.verdict else {
                 continue;
             };
             let moving = self.moving_bytes(&needs.requester, &candidate.device, weight);
             match self.transfer_estimate(&needs.requester, &candidate.device, moving) {
-                Some((transfer_ms, rate)) if transfer_ms >= weight.local_wall_ms => {
-                    best_refused.get_or_insert((candidate.device, moving, transfer_ms, rate));
+                Some((transfer_ms, bytes_per_second)) if transfer_ms >= weight.local_wall_ms => {
+                    refused.push(Refused {
+                        worker: candidate.device,
+                        rank,
+                        moving,
+                        transfer_ms,
+                        bytes_per_second,
+                    });
                 }
                 _ => {
-                    chosen = Some((candidate.device, rank));
-                    break;
+                    placement.worker = candidate.device;
+                    placement.rank = rank;
+                    return Ok(WeighedPlacement::Worker(placement));
                 }
             }
         }
-        if let Some((worker, rank)) = chosen {
-            placement.worker = worker;
-            placement.rank = rank;
-            return Ok(WeighedPlacement::Worker(placement));
+        if let Some(tried) =
+            self.reprobe_due(needs.requester, weight.local_wall_ms, &refused, now_ms)
+        {
+            let estimate = tried.estimate(weight, placement.considered.clone());
+            placement.worker = tried.worker;
+            placement.rank = tried.rank;
+            return Ok(WeighedPlacement::Reprobe(ReprobePlacement {
+                placement,
+                estimate,
+            }));
         }
-        let (worker, input_bytes, transfer_ms, bytes_per_second) =
-            best_refused.unwrap_or((placement.worker, weight.input_bytes, u64::MAX, 0));
-        Ok(WeighedPlacement::Local(InputsHeavierThanGain {
-            worker,
-            input_bytes,
-            held_bytes: weight.input_bytes.saturating_sub(input_bytes),
-            bytes_per_second,
-            transfer_ms,
-            local_wall_ms: weight.local_wall_ms,
-            considered: placement.considered,
+        Ok(WeighedPlacement::Local(match refused.first() {
+            Some(best) => best.estimate(weight, placement.considered),
+            None => InputsHeavierThanGain {
+                worker: placement.worker,
+                input_bytes: weight.input_bytes,
+                held_bytes: 0,
+                bytes_per_second: 0,
+                transfer_ms: u64::MAX,
+                local_wall_ms: weight.local_wall_ms,
+                considered: placement.considered,
+            },
         }))
+    }
+
+    /// Credit each worker `refused` (best first) with what the job kept from
+    /// it would have saved had it held the inputs, and return the first one
+    /// due a re-probe ([`Reprobe`]), now marked as tried.
+    ///
+    /// A worker is refused only over a measured rate, so this keeps state
+    /// only for pairs the relay has carried content between.
+    fn reprobe_due<'refused>(
+        &mut self,
+        requester: DeviceKey,
+        local_wall_ms: u64,
+        refused: &'refused [Refused],
+        now_ms: u64,
+    ) -> Option<&'refused Refused> {
+        for candidate in refused {
+            // Holding everything leaves only the round trip; a worker that
+            // would not beat the local run even then has nothing to gain.
+            let gain_ms = local_wall_ms.saturating_sub(self.round_trip_ms(&candidate.worker));
+            if gain_ms == 0 {
+                continue;
+            }
+            let cost_ms = candidate.transfer_ms.saturating_sub(local_wall_ms);
+            let reprobe = &mut self
+                .holdings
+                .entry((requester, candidate.worker))
+                .or_default()
+                .reprobe;
+            if reprobe.kept_local(now_ms, gain_ms, cost_ms) {
+                reprobe.probed(now_ms);
+                return Some(candidate);
+            }
+        }
+        None
     }
 
     /// The live job `scope` names, followed from now on; `None` when the
@@ -766,6 +957,7 @@ impl ComputeTransportState {
         for digest in &job.forwarded {
             holdings.learn(*digest, false);
         }
+        holdings.reprobe.learned(!held.is_empty());
         let held = u64::try_from(held.len()).unwrap_or(u64::MAX);
         let total = u64::try_from(total).unwrap_or(u64::MAX);
         holdings.held_per_mille = held.saturating_mul(1_000).checked_div(total).unwrap_or(0);
@@ -1554,7 +1746,7 @@ mod tests {
 
     /// Weighing the batch against the requester's own 507 ms run.
     fn weigh(
-        state: &ComputeTransportState,
+        state: &mut ComputeTransportState,
         photos: &[([u8; 32], u64)],
         listed: bool,
     ) -> WeighedPlacement {
@@ -1595,7 +1787,7 @@ mod tests {
         // Nothing known: every byte is weighed, as before.
         let (held_run, photos) = batch(20, 10);
         for listed in [false, true] {
-            let WeighedPlacement::Local(kept) = weigh(&state, &photos, listed) else {
+            let WeighedPlacement::Local(kept) = weigh(&mut state, &photos, listed) else {
                 panic!("129 MB at 1 MB/s is slower than 507 ms");
             };
             assert_eq!((kept.input_bytes, kept.held_bytes), (129 * MB, 0), "{kept}");
@@ -1620,7 +1812,7 @@ mod tests {
         );
         assert!(state.followed.is_empty(), "a settled job is not followed");
         for listed in [true, false] {
-            let WeighedPlacement::Worker(placement) = weigh(&state, &photos, listed) else {
+            let WeighedPlacement::Worker(placement) = weigh(&mut state, &photos, listed) else {
                 panic!("nothing moves to a worker holding every input");
             };
             assert_eq!(placement.worker, [2; 32]);
@@ -1647,7 +1839,7 @@ mod tests {
         // all of its last job's inputs is expected to hold these too.
         let (_, new_photos) = batch(21, 30);
         assert!(matches!(
-            weigh(&state, &new_photos, true),
+            weigh(&mut state, &new_photos, true),
             WeighedPlacement::Worker(placement) if placement.worker == [2; 32]
         ));
 
@@ -1672,7 +1864,7 @@ mod tests {
             },
         );
         for (batch_photos, listed) in [(&photos, true), (&photos, false), (&new_photos, true)] {
-            let WeighedPlacement::Local(kept) = weigh(&state, batch_photos, listed) else {
+            let WeighedPlacement::Local(kept) = weigh(&mut state, batch_photos, listed) else {
                 panic!("a worker seen fetching its inputs is weighed as receiving them");
             };
             assert_eq!((kept.input_bytes, kept.held_bytes), (129 * MB, 0), "{kept}");
@@ -1697,7 +1889,7 @@ mod tests {
                 outputs: vec![[7; 32]],
             },
         );
-        let WeighedPlacement::Local(kept) = weigh(&state, &photos, true) else {
+        let WeighedPlacement::Local(kept) = weigh(&mut state, &photos, true) else {
             panic!("64.5 MB at 1 MB/s is still slower than 507 ms");
         };
         assert_eq!(
@@ -1724,7 +1916,7 @@ mod tests {
             },
         );
         assert!(matches!(
-            weigh(&state, &other_photos, true),
+            weigh(&mut state, &other_photos, true),
             WeighedPlacement::Local(kept) if kept.input_bytes == 64_500_000
         ));
 
@@ -1734,6 +1926,312 @@ mod tests {
         let (disconnect, _disconnected) = mpsc::channel(1);
         state.attach([2; 32], sender, disconnect, None);
         assert!(state.holdings.is_empty());
+    }
+
+    /// The thumbnail model of the offloadable-action measurements: one
+    /// batch of twelve new 10.75 MB camera originals a minute, which the
+    /// phone runs in 507 ms, against a home server 30 ms away whose last job
+    /// fetched every input. `holds_from` is the minute its replica has
+    /// synced the photographs, if ever.
+    struct ThumbnailDay {
+        state: ComputeTransportState,
+        store: WorkspaceStore,
+        _root: tempfile::TempDir,
+        holds_from: Option<u64>,
+    }
+
+    /// Where each batch ran, and what the re-probes among them cost.
+    #[derive(Debug, Default)]
+    struct Decisions {
+        local: u64,
+        worker: u64,
+        /// The minutes a re-probe placed a batch on the worker.
+        reprobes: Vec<u64>,
+        /// What re-probes that found nothing held cost beyond the local
+        /// run, by the estimate that had kept the batch local.
+        wasted_ms: u64,
+        /// What the batches kept local would have saved on a worker
+        /// holding their inputs.
+        forgone_ms: u64,
+    }
+
+    const LOCAL_WALL_MS: u64 = 507;
+    /// What a batch gains on a worker holding its inputs: the run less the
+    /// 30 ms round trip.
+    const GAIN_MS: u64 = 477;
+
+    /// `offset_ms` into minute `minute` of the simulated day.
+    fn at(minute: u64, offset_ms: u64) -> u64 {
+        minute.saturating_mul(60_000).saturating_add(offset_ms)
+    }
+
+    impl ThumbnailDay {
+        /// The worker reached at `bytes_per_second` after a job that
+        /// fetched all twelve photographs.
+        fn new(bytes_per_second: u64, holds_from: Option<u64>) -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let (mut state, store) = admitted(root.path());
+            state.observe_latency([2; 32], Duration::from_millis(30));
+            state.observe_transfer(
+                ([1; 32], [2; 32]),
+                10_750_000,
+                Duration::from_micros(
+                    10_750_000_000_000_u64
+                        .checked_div(bytes_per_second)
+                        .unwrap(),
+                ),
+            );
+            let mut day = Self {
+                state,
+                store,
+                _root: root,
+                holds_from,
+            };
+            day.run(0, false);
+            day
+        }
+
+        fn photos(minute: u64) -> Vec<([u8; 32], u64)> {
+            (1_u8..=12)
+                .map(|index| {
+                    let mut digest = [index; 32];
+                    digest[..8].copy_from_slice(&minute.to_le_bytes());
+                    (digest, 10_750_000)
+                })
+                .collect()
+        }
+
+        /// Run minute `minute`'s batch on the worker, which holds the
+        /// photographs or fetches every one.
+        fn run(&mut self, minute: u64, held: bool) {
+            let now = at(minute, 200);
+            let mut job = spec();
+            job.job_id[..8].copy_from_slice(&minute.to_le_bytes());
+            job.inputs = Self::photos(minute)
+                .iter()
+                .map(|(digest, _)| *digest)
+                .collect();
+            job.issued_at_ms = now;
+            job.expires_at_ms = now.saturating_add(10_000);
+            self.advertise(now);
+            self.state
+                .accept_request([1; 32], 7, now, &self.store, &job)
+                .unwrap();
+            for digest in &job.inputs {
+                self.state.observe_proof(scope(&job), *digest, now);
+                if !held {
+                    self.state.observe_forwarded(scope(&job), *digest, now);
+                }
+            }
+            finish(
+                &mut self.state,
+                &self.store,
+                &job,
+                ComputeJobPhase::Completed {
+                    outputs: vec![[7; 32]],
+                },
+            );
+        }
+
+        fn advertise(&mut self, now: u64) {
+            let mut fresh = advertisement(false);
+            fresh.issued_at_ms = now;
+            fresh.expires_at_ms = now.saturating_add(MAX_COMPUTE_ADVERTISEMENT_LIFETIME_MS);
+            self.state.advertise([2; 32], 7, now, fresh).unwrap();
+        }
+
+        /// Place minute `minute`'s batch, and run it where it was placed.
+        fn place(&mut self, minute: u64) -> WeighedPlacement {
+            let now = at(minute, 100);
+            self.advertise(now);
+            let photos = Self::photos(minute);
+            let weight = InputWeight {
+                input_bytes: photos.iter().map(|(_, bytes)| bytes).sum(),
+                local_wall_ms: LOCAL_WALL_MS,
+                inputs: photos,
+            };
+            let placed = self
+                .state
+                .place_weighed(&spec().requirements(), Some(&weight), now)
+                .unwrap();
+            if !matches!(placed, WeighedPlacement::Local(_)) {
+                self.run(minute, self.holds_from.is_some_and(|from| minute >= from));
+            }
+            placed
+        }
+
+        /// Place a batch every minute through `minutes`.
+        fn decide(&mut self, minutes: std::ops::RangeInclusive<u64>) -> Decisions {
+            let mut decisions = Decisions::default();
+            for minute in minutes {
+                let held = self.holds_from.is_some_and(|from| minute >= from);
+                match self.place(minute) {
+                    WeighedPlacement::Local(kept) => {
+                        decisions.local = decisions.local.saturating_add(1);
+                        decisions.forgone_ms = decisions.forgone_ms.saturating_add(GAIN_MS);
+                        assert_eq!(kept.worker, [2; 32]);
+                    }
+                    WeighedPlacement::Worker(placement) => {
+                        decisions.worker = decisions.worker.saturating_add(1);
+                        assert_eq!(placement.worker, [2; 32]);
+                    }
+                    WeighedPlacement::Reprobe(reprobe) => {
+                        decisions.reprobes.push(minute);
+                        assert_eq!(reprobe.placement.worker, [2; 32]);
+                        assert!(reprobe.to_string().starts_with(REPROBING_HELD_INPUTS));
+                        if !held {
+                            decisions.wasted_ms = decisions.wasted_ms.saturating_add(
+                                reprobe.estimate.transfer_ms.saturating_sub(LOCAL_WALL_MS),
+                            );
+                        }
+                    }
+                }
+            }
+            decisions
+        }
+    }
+
+    const PHONE_UPLINK: u64 = 1_000_000;
+    /// The loopback rate the 12-image batch moved at.
+    const LOOPBACK: u64 = 37_985_865;
+
+    /// A worker whose last job fetched every input over a slow link is
+    /// kept from the next batches, and tried again once the window has
+    /// passed and the batches kept local forwent what a fetched run would
+    /// cost. Until that try settles none other is made; the try finding
+    /// the photographs held restores placement on the worker.
+    #[test]
+    fn a_worker_kept_local_on_a_stale_fetch_is_tried_again() {
+        for (rate, synced) in [(LOOPBACK, 45), (PHONE_UPLINK, 45)] {
+            let mut day = ThumbnailDay::new(rate, Some(synced));
+            // Within the window the batch stays, however much it forwent.
+            let early = day.decide(1..=9);
+            assert_eq!((early.local, early.worker), (9, 0), "{early:?}");
+            assert!(early.reprobes.is_empty(), "{early:?}");
+
+            let late = day.decide(10..=300);
+            let first = late.reprobes[0];
+            if rate == LOOPBACK {
+                // 2.9 s of fetching is covered by seven batches; the window,
+                // from the first batch kept, is what waits. The tries before
+                // the replica synced still fetch, so each next one waits
+                // twice as long; the third finds the photographs held.
+                assert_eq!(late.reprobes, [11, 32, 73], "{late:?}");
+                assert_eq!(late.wasted_ms, 5_840, "{late:?}");
+            } else {
+                // 128.5 s of fetching at 1 MB/s needs 270 batches' 477 ms.
+                assert_eq!(late.reprobes, [270], "{late:?}");
+            }
+            assert!(at(first, 0) >= REPROBE_AFTER_MS, "{late:?}");
+            let restored = *late.reprobes.last().unwrap();
+            assert!(restored >= synced);
+            // Every batch after the try that found them held runs there.
+            assert_eq!(late.worker, 300_u64.saturating_sub(restored), "{late:?}");
+            assert_eq!(
+                late.local,
+                291_u64
+                    .saturating_sub(u64::try_from(late.reprobes.len()).unwrap())
+                    .saturating_sub(late.worker),
+                "{late:?}"
+            );
+            eprintln!(
+                "{} B/s, synced at minute {synced}: re-probed at minutes {:?}, then {} of the \
+                 remaining batches on the worker; {} ms wasted on fruitless tries",
+                rate, late.reprobes, late.worker, late.wasted_ms
+            );
+        }
+
+        // A try placed and not yet settled does not repeat: the next batch
+        // stays local, and the one after.
+        let mut day = ThumbnailDay::new(LOOPBACK, None);
+        day.decide(1..=10);
+        let photos = ThumbnailDay::photos(11);
+        let weight = InputWeight {
+            input_bytes: photos.iter().map(|(_, bytes)| bytes).sum(),
+            local_wall_ms: LOCAL_WALL_MS,
+            inputs: photos,
+        };
+        let now = at(11, 100);
+        day.advertise(now);
+        let placed = |day: &mut ThumbnailDay, at| {
+            day.state
+                .place_weighed(&spec().requirements(), Some(&weight), at)
+                .unwrap()
+        };
+        assert!(matches!(
+            placed(&mut day, now),
+            WeighedPlacement::Reprobe(_)
+        ));
+        for later in [now.saturating_add(1), now.saturating_add(30_000)] {
+            assert!(matches!(
+                placed(&mut day, later),
+                WeighedPlacement::Local(_)
+            ));
+        }
+
+        // Only a pair the relay carried content between is kept: placing
+        // for a requester it never measured adds nothing.
+        let mut stranger = spec();
+        stranger.requester = [8; 32];
+        assert!(matches!(
+            day.state
+                .place_weighed(&stranger.requirements(), Some(&weight), now)
+                .unwrap(),
+            WeighedPlacement::Worker(_)
+        ));
+        assert_eq!(day.state.holdings.len(), 1);
+    }
+
+    /// A worker that still holds nothing goes back to staying local: each
+    /// fruitless try doubles the wait and the forgone gain the next needs,
+    /// so a week of batches tries it a handful of times, and the time those
+    /// tries cost stays a small share of what staying local forwent.
+    #[test]
+    fn a_worker_that_still_holds_nothing_is_tried_ever_less_often() {
+        const WEEK: u64 = 7 * 24 * 60;
+        /// The longest wait between tries, in minutes.
+        const CAP: u64 = (REPROBE_AFTER_MS / 60_000) << MAX_REPROBE_BACKOFF;
+        for rate in [LOOPBACK, PHONE_UPLINK] {
+            let mut day = ThumbnailDay::new(rate, None);
+            let week = day.decide(1..=WEEK);
+            assert_eq!(week.worker, 0, "{week:?}");
+            let tries = u64::try_from(week.reprobes.len()).unwrap();
+            assert_eq!(week.local.saturating_add(tries), WEEK);
+            let gaps = std::iter::once(week.reprobes[0])
+                .chain(
+                    week.reprobes
+                        .windows(2)
+                        .map(|pair| pair[1].saturating_sub(pair[0])),
+                )
+                .collect::<Vec<_>>();
+            // Each gap about doubles until the backoff is capped.
+            for pair in gaps.windows(2) {
+                let doubled = pair[0].saturating_mul(19).min(CAP.saturating_mul(10));
+                assert!(pair[1].saturating_mul(10) >= doubled, "{gaps:?}");
+            }
+            if rate == LOOPBACK {
+                // The window waits (each counted from the first batch kept
+                // after a try), until capped at 640 minutes.
+                assert_eq!(&gaps[..8], [11, 21, 41, 81, 161, 321, 641, 641], "{gaps:?}");
+                assert_eq!(tries, 20, "{gaps:?}");
+                assert_eq!(week.wasted_ms, 58_400, "{week:?}");
+            } else {
+                // The forgone gain waits: 270 batches of 477 ms cover one
+                // 128.5 s fetched run, then twice that, and so on.
+                assert_eq!(gaps, [270, 539, 1_078, 2_156, 4_312], "{gaps:?}");
+                assert_eq!(week.wasted_ms, 642_615, "{week:?}");
+            }
+            // What the tries cost is bounded by what staying local forwent.
+            assert!(
+                week.wasted_ms.saturating_mul(5) < week.forgone_ms,
+                "{week:?}"
+            );
+            eprintln!(
+                "{rate} B/s, never held: {} of {WEEK} batches local, re-probed at minutes {:?}; \
+                 {} ms wasted against {} ms forgone",
+                week.local, week.reprobes, week.wasted_ms, week.forgone_ms
+            );
+        }
     }
 
     /// What a worker was seen to hold is bounded per requester: the input

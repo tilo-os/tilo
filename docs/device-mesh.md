@@ -172,6 +172,26 @@ however slow the uplink. None of this is the worker's word or grants anything: e
 still proves possession or fetches, and a hint gone wrong (an evicted copy)
 costs one fetched run, which unlearns it.
 
+The opposite hint goes stale too: a worker seen fetching everything over a
+slow link would otherwise never be tried again, even once its replica holds
+the photos. Each job kept local on that estimate is credited with what it
+would have saved had the worker held its inputs (the local run less the round
+trip). Once `REPROBE_AFTER_MS` (10 minutes) has passed and that credit covers
+the worst case of trying (every byte moves), the next such job is placed on
+the worker anyway: `compute.place` answers it with `"reprobe": true`, the
+`reprobing_held_inputs` reason and the estimate it overrode. The job shows
+what the worker holds like any other. One that finds nothing held doubles the
+wait and the credit the next try needs, at most `MAX_REPROBE_BACKOFF` (6)
+times; one that finds anything held resets it. So a try costs at most what
+staying local already forwent, and a worker that still holds nothing is tried
+ever less often. On the thumbnail model (12 new 10.75 MB photos a minute, a
+507 ms local run, 30 ms away): at the 38 MB/s loopback rate a worker whose
+replica synced 45 minutes in is tried at minutes 11, 32 and 73 and takes
+every batch from then on; over the phone's 1 MB/s uplink the first try waits
+for 270 kept batches. A worker that never holds them is tried 20 times in a
+week at 38 MB/s (58 s of fetching against 80 minutes forgone) and 5 times
+over 1 MB/s (643 s against the same 80 minutes), ever further apart.
+
 ### Offloadable actions
 
 An action whose contract declares `offload` (`tilo_actions::Offload`: a signed
