@@ -6,7 +6,7 @@ use super::{
     HashMap, Invariant, LiveFanout, LiveFrame, PublicationFrames, PublicationScope,
     ReplayPendingTarget, ReplayPendingWork, SelectedPublication, SessionLives, SharedWorkspace,
     StateCommit, StateSource, Step, WorkLimit, captured_live_current, commit_and_materialize,
-    live_budget, mpsc, state_commit_for, step_commit_replay, trace_native_publication,
+    live_budget, mpsc, state_commit_for, step_commit_replay, test_point, trace_native_publication,
     union_session_lives, union_sessions,
 };
 
@@ -234,13 +234,8 @@ impl ProjectedCheckpointCommit {
         state: &mut crate::persistence::State,
         batch: &mut CheckpointBatch,
     ) -> Result<ProjectedCheckpointStep, crate::store::StoreError> {
-        #[cfg(test)]
-        if self.publication_index == 1 {
-            crate::store::test_barrier::check(
-                state.store.root(),
-                "checkpoint-prefix-after-first-original",
-            )?;
-        }
+        test_point!(if self.publication_index == 1
+            => check(state.store.root(), "checkpoint-prefix-after-first-original")?);
         if self.publication != Some(crate::store::shell_selection::Publication::Original) {
             return Err(crate::persistence::error(
                 "all-original checkpoint projection activated a selected basis",

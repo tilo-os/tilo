@@ -9,7 +9,8 @@ use super::{
     PreparedRecipients, PublicationFrames, PublicationScope, ReplayCatchup, ReplayPendingTarget,
     ReplayPendingWork, SelectedPublication, SessionLease, SharedWorkspace, StateCommit,
     StateSource, Step, StoreError, WorkLimit, captured_live_current, live_budget,
-    retention_publication_kind, steward_audience, steward_only_delta, trace_native_publication,
+    retention_publication_kind, steward_audience, steward_only_delta, test_point,
+    trace_native_publication,
 };
 
 pub(super) async fn enqueue_state(
@@ -693,8 +694,7 @@ impl StateTurn {
                 crate::coedit::RetentionKind::Delta => (channel, Some(seq)),
             });
         if let Some((channel, seq)) = retention {
-            #[cfg(test)]
-            crate::store::test_barrier::pause(state.store.root(), "state-persist");
+            test_point!(pause(state.store.root(), "state-persist"));
             let build = retain_or_commit_stage(state, &channel, seq, raw, self.fresh.take())?
                 .with_continuity(continuity.clone());
             state.retention_scratch = Some(build.scratch().to_owned());
@@ -1028,8 +1028,13 @@ impl StatePublisher {
         .await?;
         while let Some(envelope) = frames.next().await? {
             let budget = live_budget(&envelope);
-            #[cfg(test)]
-            let budget = self.injected_budget_fault(&envelope, budget).await;
+            test_point!(
+                if matches!(envelope, super::LiveEnvelope::Original(_))
+                    => check(room self.workspace, "live-delivery-budget")
+                    else budget = Err(crate::persistence::error(
+                        "injected live delivery budget failure",
+                    ))
+            );
             // Every hydration/worker wait precedes a fresh current-source,
             // recipient membership and exact subscriber-channel fence.
             let mut runtime = crate::workspace_io::fresh_membership(&self.workspace).await?;
@@ -1069,31 +1074,9 @@ impl StatePublisher {
                 &mut commit.pending,
                 delivered,
             )?;
-            #[cfg(test)]
-            crate::store::test_barrier::signal(runtime.store.root(), "live-publication-complete");
+            test_point!(signal(runtime.store.root(), "live-publication-complete"));
         }
         Ok(())
-    }
-
-    /// The `live-delivery-budget` test point: fail an original frame's
-    /// budget on demand.
-    #[cfg(test)]
-    async fn injected_budget_fault(
-        &self,
-        envelope: &super::LiveEnvelope,
-        budget: super::LiveBudget,
-    ) -> super::LiveBudget {
-        if !matches!(envelope, super::LiveEnvelope::Original(_)) {
-            return budget;
-        }
-        let mut budget = budget;
-        let root = self.workspace.lock().await.store.root().to_path_buf();
-        if crate::store::test_barrier::check(&root, "live-delivery-budget").is_err() {
-            budget = Err(crate::persistence::error(
-                "injected live delivery budget failure",
-            ));
-        }
-        budget
     }
 
     /// Fence the sessions a failed publication may have left without the

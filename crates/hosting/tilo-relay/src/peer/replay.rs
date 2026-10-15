@@ -6,7 +6,7 @@ use super::{
     Arc, AsyncWriteExt, AuthenticatedPeer, Envelope, EnvelopeV2, Invariant, PeerError,
     PrivateOutbound, ReplayAdvance, ReplayHandle, ReplayTicket, RoomOperation, SessionCtx,
     SharedWorkspace, StateSource, Step, StoreError, WrittenBatch, current_session, encode_charged,
-    mpsc, room_access, trace_native_publication, unix_now_ns, write_private_delivery,
+    mpsc, room_access, test_point, trace_native_publication, unix_now_ns, write_private_delivery,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -213,15 +213,8 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
         let readying = crate::timing::start();
         authorize_state_frame(&reply, peer, session).await?;
         if let Some((catchup, workspace, source, ticket)) = &completed_replay {
-            #[cfg(test)]
-            {
-                let root = workspace.lock().await.store.root().to_path_buf();
-                let workers = crate::persistence::handle(workspace).await.workers();
-                crate::persistence::blocking(workers, move || {
-                    crate::store::test_barrier::pause(&root, "replay-before-ready");
-                })
-                .await?;
-            }
+            test_point!(pause(room workspace, "replay-before-ready")
+                on crate::persistence::handle(workspace).await.workers());
             authorize_replay_boundary(workspace, source, &ticket.authority, catchup).await?;
             if !ticket.authority.bound_active() {
                 return Err(PeerError::Protocol(

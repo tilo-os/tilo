@@ -53,8 +53,6 @@ use delivery::write_state_delivery;
 use delivery::{
     STATE_RUN, SessionCoding, delivery_room, encode_charged, write_presence, write_state_deliveries,
 };
-#[cfg(test)]
-use fanout::LiveBudget;
 use fanout::{LiveFanout, LiveFrame, PublicationFrames, PublicationScope, live_budget};
 use replay::{
     ReplayCatchup, ReplayWrite, ResumeLog, authorize_state_frame, authorize_state_recipient,
@@ -76,7 +74,7 @@ use state::{
 pub(crate) use state::{Lag, StateDelivery, StateSession, StateSource};
 #[cfg(feature = "test-support")]
 pub use test_hooks::CheckpointPrefixPromotionFaultState;
-use test_hooks::checkpoint_prefix_post_first_promotion_fault;
+use test_hooks::{checkpoint_prefix_post_first_promotion_fault, test_point};
 #[cfg(test)]
 use test_hooks::{observe_reader_backlog, stop_tracking_reader_backlog, track_reader_backlog};
 
