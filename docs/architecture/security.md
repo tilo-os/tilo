@@ -208,7 +208,13 @@ screen readers use (`crates/session/shell/src/shell/network/relay_rooms.rs`).
 It still asks the ALPN only for what the actions do not carry: the host
 operations above, the invitations issued before it holds a room it is
 sharing or joining, and a member's own topology namespace claim and effect
-receipt. Removing or banning a member and ending a call are not served as
+receipt. A member may also have the host create the empty record of an app
+it opens there first (the `tilo.member` action `application-record.prepare`,
+`rooms/member_records.rs`): only for an app the room already lets author
+(the host person's grant above) and a record the member may change. The
+host signs an empty, canonical genesis and nothing the member supplies; the
+app's first state reaches the record as the member's own signed change,
+admitted like any other. Removing or banning a member and ending a call are not served as
 actions until the person's own confirmation can be asked for; they stay on
 the ALPN and the `/rooms` pages.
 
@@ -450,6 +456,10 @@ a peer in its own right. Under its own device key it originates:
   governor (`crates/hosting/tilo-relay/src/rooms*`): it admits members,
   assigns roles and starts calls, and signs those commits itself. Members
   verify them against the room's pinned authority like any governance change.
+- **The empty genesis of an app's record**, when an admitted member opens an
+  app the room lets author and the record is missing
+  (`rooms/member_records.rs`). It is always the same empty document; the
+  app's content is the member's own signed change on top of it.
 - **Its retained `IdentityHello` certificate frame**, so a replay carries the
   host certificate before the host-signed state it leads to (`compaction`).
 - **Folded snapshots of unsealed document channels.** Compaction verifies each
@@ -468,7 +478,7 @@ continuity checkpoint or complete on its own, and which devices a governance
 step is addressed to (the `ShellPayloads` adapter its embedder injects,
 `crates/hosting/tilo-relay-shell`), plus the retained-proof
 inputs of native shell replay (that crate's `selection`, which the store
-steps through the `tilo-relay-store` seam). It also refuses a
+steps through the `tilo-relay-store` seam, verified by its `retained_proof`). It also refuses a
 document change its app's published surface does not allow, or that
 the room's governor did not grant its author (`surfaces`), fetching each
 app's `surface.toml` by content hash from the registry (`apps.tilo.so` unless

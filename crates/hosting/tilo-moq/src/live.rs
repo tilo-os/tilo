@@ -855,10 +855,6 @@ impl Inner {
     }
 
     /// A subscriber asked for a track this namespace does not yet carry.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the guard must stay held across the dependent state updates below"
-    )]
     fn on_request(&self, slot: &Arc<Slot>, request: moq_net::track::Request) {
         let name = request.name().to_owned();
         let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);

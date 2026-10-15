@@ -126,9 +126,9 @@ pub fn workspace_view_descriptors(
 mod workspace_string {
     use serde::{Deserialize, Deserializer, Serializer};
     use tilo_desktop_model::WorkspaceId;
-    #[expect(
+    #[allow(
         clippy::trivially_copy_pass_by_ref,
-        reason = "serde `with` modules receive the field by reference"
+        reason = "serde `with` modules receive the field by reference; the lint's size limit, and so whether it fires, depends on the target"
     )]
     pub fn serialize<S: Serializer>(id: &WorkspaceId, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&id.0.to_string())

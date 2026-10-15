@@ -1,4 +1,16 @@
 use super::*;
+use std::sync::atomic::Ordering;
+
+use taffy::prelude::Size;
+use ui::a11y::{Action as AccessAction, Politeness};
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::widget::DateIndexIntent;
+use vello::Scene;
+use vello::kurbo::Affine;
+
+use super::jobs::thumbnail_request;
+use crate::timeline_projection::{TimelineGeometry, TimelinePhoto};
 
 /// Present `doc`'s library to `app` as the framework does after a change,
 /// then sync it.
@@ -2670,5 +2682,97 @@ fn share_copies_the_open_photographs_link() {
     assert_eq!(
         app.surface_mut::<PhotosApp>().notice.as_deref(),
         Some(tr("photos-share-copied").as_str())
+    );
+}
+
+/// Making thumbnails is published as an offloadable transform of the
+/// thumbnails package, and its local run makes exactly what that package's
+/// entrypoint makes on another device: content named twice is one input,
+/// and an input that is not an image fails the whole batch.
+#[test]
+fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint() {
+    let spec = <PhotosEffect as ui::tilo_resource::Effect>::specs()
+        .into_iter()
+        .find(|spec| spec.id == "make-thumbnails")
+        .expect("the library makes thumbnails");
+    let offload = spec
+        .contract
+        .offload
+        .clone()
+        .expect("making thumbnails declares its offload");
+    assert_eq!(offload.app, thumbnail::batch::PACKAGE);
+    assert_eq!(offload.entrypoint, thumbnail::batch::ENTRYPOINT);
+    assert!(
+        spec.contract.validate_declaration().is_empty(),
+        "{:?}",
+        spec.contract.validate_declaration()
+    );
+    assert!(spec.params()[0].is_content_list());
+
+    let store = tilo_content::ContentStore::memory();
+    let photographs: Vec<Vec<u8>> = [(3, 2), (40, 17)]
+        .into_iter()
+        .map(|(width, height)| {
+            let rgba = (0..width * height * 4)
+                .map(|index| u8::try_from(index % 251).expect("a byte"))
+                .collect();
+            pixels::encode_png(&pixels::Rgba::new(width, height, rgba).expect("an image"))
+                .expect("a PNG")
+        })
+        .collect();
+    let hashes: Vec<String> = photographs
+        .iter()
+        .map(|bytes| store.put(bytes).expect("stage a photograph"))
+        .collect();
+    let mut app = PhotosApp::with_content(store.clone());
+    let doc = crate::test_doc::new_doc();
+    let library = crate::test_doc::library(&doc);
+    let output = app
+        .answer_effect(
+            PhotosEffect::MakeThumbnails {
+                photos: vec![
+                    hashes[0].clone(),
+                    tilo_actions::content_resource(&hashes[1]).expect("an address"),
+                    hashes[0].clone(),
+                ],
+            },
+            tilo_actions::InvocationId::new(),
+            &library,
+        )
+        .expect("thumbnails are made")
+        .expect("the batch answers at once");
+    let expected = thumbnail::batch::thumbnail_batch(&photographs).expect("the package's batch");
+    let made: Vec<Vec<u8>> = output
+        .resources
+        .iter()
+        .map(|resource| {
+            store
+                .read(tilo_actions::content_hash(resource).expect("content"))
+                .expect("a stored thumbnail")
+        })
+        .collect();
+    assert_eq!(made, expected, "byte for byte the entrypoint's thumbnails");
+
+    let broken = store.put(b"not a photograph").expect("stage bytes");
+    assert_eq!(
+        app.answer_effect(
+            PhotosEffect::MakeThumbnails {
+                photos: vec![hashes[0].clone(), broken],
+            },
+            tilo_actions::InvocationId::new(),
+            &library,
+        ),
+        Err(thumbnail::batch::BatchError::Undecodable { index: 1 }.to_string())
+    );
+    assert!(
+        app.answer_effect(
+            PhotosEffect::MakeThumbnails {
+                photos: vec!["/home/someone/photo.png".into()],
+            },
+            tilo_actions::InvocationId::new(),
+            &library,
+        )
+        .is_err(),
+        "a path is never content"
     );
 }

@@ -3,12 +3,15 @@ export async function mountChat(tab) {
   return await tab.evaluate(`(async () => { try {
     const host = await import('/host.mjs');
     window.runtime = await host.loadRuntime();
-    const {profileStore} = await import('/peer.mjs');
+    const {profileStore, profileDevice} = await import('/peer.mjs');
     const {idbStorage} = await import('/device-custody.mjs');
     const storage = idbStorage();
-    for (const [root, bytes, device] of [[fixture.root, fixture.accounts, 'fixture-reader'],
-      [fixture.decoy, fixture.decoyAccounts, 'unadmitted-fixture']]) {
+    for (const [root, bytes] of [[fixture.root, fixture.accounts],
+      [fixture.decoy, fixture.decoyAccounts]]) {
       const profile = 'tilo-identity:' + root + '@' + new URL(fixture.origin).host;
+      // Seed the namespace the entry page actually discovers, including when
+      // a profile has moved after its host was set up again.
+      const device = profileDevice(profile);
       const opened = await host.openProfileStorage(profile, device);
       await opened.lease.commit([{key: runtime.browser_accounts_key(root), bytes: new Uint8Array(bytes), revision: '0'}]);
       if (root === fixture.root) {
@@ -21,7 +24,7 @@ export async function mountChat(tab) {
       await opened.release();
     }
     const {readBrowserAccounts, currentBrowserAccount} = await import('/browser-accounts.mjs');
-    window.readAccounts = () => readBrowserAccounts({origin: fixture.origin, runtime});
+    window.readAccounts = () => readBrowserAccounts({origin: fixture.origin, runtime, currentDevice: profileDevice});
     const accounts = await readAccounts();
     if (accounts.length !== 2) throw Error('two actual Settings account choices required');
     window.selected = accounts.find(account => account.userPublicKey === fixture.root);

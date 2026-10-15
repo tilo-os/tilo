@@ -1,12 +1,9 @@
 //! Shared native/browser neighbour wire and certified state admission.
-pub mod colorimetry;
-pub mod contribution_attestation;
 pub mod governance;
-pub mod hdr_metadata;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
 pub use tilo_workspace_join as join;
-pub mod protocol;
-pub use protocol::{NeighbourMsg, PresenceSlot};
+// The wire message admission speaks; owned by `neighbour-wire`.
+use neighbour_wire::NeighbourMsg;
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]
@@ -33,28 +30,19 @@ pub use state::{
 };
 pub mod coverage;
 mod governed_routes;
-pub mod transport;
 pub use collab_types::DocumentMutation;
 
 pub mod outbox;
-
-#[cfg(test)]
-mod enrollment_tests;
-
-pub mod enrollment;
 
 pub mod durability;
 
 pub mod topology;
 
-pub mod desktop_command;
 pub mod document_import;
-pub mod owner_commit;
+pub mod legacy_policy;
 pub mod workspace_checkpoint;
 pub mod workspace_membership;
 pub mod workspace_task;
-
-pub mod retained_proof;
 
 mod admission;
 pub mod resources;

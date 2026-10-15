@@ -1248,15 +1248,26 @@ pub(crate) fn directory_witness(
 pub(crate) struct BoundResourceCache(RefCell<Vec<CachedBoundResources>>);
 
 /// One bound owner's admission generation and record frontier, read on each
-/// side of an input dispatch. Only a native surface's input path reads it.
-#[cfg(feature = "native")]
+/// side of an input dispatch (the native App) or of a frame (the frame
+/// harness, which also reads the owner's standing: [`bound_owner_standing`]).
 pub(crate) struct BoundOwnerMark {
     binding: CallbackBinding,
+    /// Only the native input path carries snapshots across generations.
+    #[cfg(feature = "native")]
     generation: Option<u64>,
     document: Option<(Vec<automerge::ChangeHash>, usize)>,
+    standing: Option<OwnerStanding>,
 }
 
-#[cfg(feature = "native")]
+/// What an owner's published controls and synced root read besides its
+/// record and its widgets: what its permissions mean now (a grant expires
+/// with time) and its record's durability, which its root shows once synced.
+#[derive(PartialEq)]
+struct OwnerStanding {
+    permissions: Result<crate::permissions::DirectoryPermissionWitness, String>,
+    save: Result<crate::record::RecordSaveStatus, String>,
+}
+
 impl BoundOwnerMark {
     pub(crate) fn is_committed(&self) -> bool {
         self.document
@@ -1268,7 +1279,23 @@ impl BoundOwnerMark {
 /// Every live bound owner under `root`, once each, in tree order.
 #[cfg(feature = "native")]
 pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
-    fn visit(widget: &dyn Widget, outer: &AutoCommit, marks: &mut Vec<BoundOwnerMark>) {
+    owner_marks(root, outer, false)
+}
+
+/// [`bound_owner_marks`] with each owner's standing. Two such reads are
+/// [`same_owner_standing`] only when nothing an owner's controls, undo status
+/// or synced root reads from outside its widgets moved between them.
+pub(crate) fn bound_owner_standing(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
+    owner_marks(root, outer, true)
+}
+
+fn owner_marks(root: &dyn Widget, outer: &AutoCommit, standing: bool) -> Vec<BoundOwnerMark> {
+    fn visit(
+        widget: &dyn Widget,
+        outer: &AutoCommit,
+        standing: bool,
+        marks: &mut Vec<BoundOwnerMark>,
+    ) {
         if let Some(binding) = widget.callback_binding()
             && !binding.closing.get()
             && binding.lifetime.is_active()
@@ -1277,22 +1304,45 @@ pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<Bo
                 .any(|mark| mark.binding.same_component(&binding))
         {
             let entry = binding.enter();
+            #[cfg(feature = "native")]
             let generation = binding.generation().ok().flatten();
             let document = binding
-                .read_document(outer, |doc, _| crate::widget::settle_mark(doc))
+                .read_document(outer, |doc, _| crate::doc::settle_mark(doc))
                 .ok();
+            let standing = standing.then(|| OwnerStanding {
+                permissions: binding.permissions.borrow().directory_witness(),
+                save: binding
+                    .records
+                    .save_status(&binding.checkout.id)
+                    .map_err(|error| error.to_string()),
+            });
             drop(entry);
             marks.push(BoundOwnerMark {
                 binding,
+                #[cfg(feature = "native")]
                 generation,
                 document,
+                standing,
             });
         }
-        widget.for_each_child(&mut |child| visit(child, outer, marks));
+        widget.for_each_child(&mut |child| visit(child, outer, standing, marks));
     }
     let mut marks = Vec::new();
-    visit(root, outer, &mut marks);
+    visit(root, outer, standing, &mut marks);
     marks
+}
+
+/// Whether two [`bound_owner_standing`] reads name the same owners, each
+/// with its record committed and unmoved and with the same standing.
+pub(crate) fn same_owner_standing(before: &[BoundOwnerMark], after: &[BoundOwnerMark]) -> bool {
+    before.len() == after.len()
+        && before.iter().zip(after).all(|(before, after)| {
+            before.binding.same_component(&after.binding)
+                && before.is_committed()
+                && before.document == after.document
+                && before.standing.is_some()
+                && before.standing == after.standing
+        })
 }
 
 #[cfg(feature = "native")]
@@ -1436,6 +1486,7 @@ pub(crate) fn discover_cached_bound_resources(
             let snapshot = if let Some(cached) = cached {
                 cached
             } else {
+                let _phase = tilo_resource::profiling::Phase::start("ui.bound_discovery_miss");
                 // The snapshot this one replaces: its controls' derivation
                 // and its filter token carry over, so what the two forests
                 // share is neither filtered nor surveyed again.
@@ -4762,6 +4813,11 @@ impl BoundNodeMap {
     }
     pub(crate) fn legacy_for(&self, node: NodeId) -> Option<crate::history_mode::HistoryOwner> {
         self.nodes.get(&node).and_then(|entry| entry.legacy.clone())
+    }
+    /// Whether any admitted node belongs to a legacy tile, whose record no
+    /// [`bound_owner_standing`] read follows.
+    pub(crate) fn has_legacy(&self) -> bool {
+        self.nodes.values().any(|entry| entry.legacy.is_some())
     }
     pub(crate) fn legacy_status(
         &self,

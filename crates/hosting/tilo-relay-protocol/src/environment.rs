@@ -14,6 +14,8 @@
 //! | worker → relay | [`StreamOpen::LegacyLaunch`] | one [`LegacyLaunchOutcome`] |
 //! | device → relay | [`StreamOpen::ComputeContent`] | one [`ContentReply`], then its bytes |
 //! | relay → device | [`WorkerStreamOpen::ComputeContent`] | one [`ContentReply`], then its bytes |
+//! | device → relay | [`StreamOpen::ComputeContentProof`] | one [`ContentProof`] |
+//! | relay → device | [`WorkerStreamOpen::ComputeContentProof`] | one [`ContentProof`] |
 //!
 //! The relay never trusts a member-supplied identity: it stamps the
 //! certified peer as [`MemberIdentity`] on everything it forwards to a
@@ -284,6 +286,44 @@ pub enum StreamOpen {
         /// blake3 digest of the bytes asked for.
         digest: [u8; 32],
     },
+    /// Worker only: a proof that the job's requester holds the bytes of
+    /// input `digest`, so this worker may run the job on a copy it already
+    /// holds instead of fetching one. The relay applies the input rule of
+    /// [`Self::ComputeContent`] and asks the requester
+    /// ([`WorkerStreamOpen::ComputeContentProof`]); no bytes move.
+    ComputeContentProof {
+        /// [`ENVIRONMENT_PROTOCOL_VERSION`].
+        version: u16,
+        /// Workspace the job runs in.
+        workspace_id: u64,
+        /// The job naming the digest as an input.
+        job_id: [u8; 16],
+        /// blake3 digest of the input.
+        digest: [u8; 32],
+        /// A fresh random challenge from the worker.
+        nonce: [u8; 32],
+    },
+}
+
+/// The answer on a compute content proof stream: from the requester to the
+/// relay, and from the relay to the worker that asked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContentProof {
+    /// The requester holds the bytes: `proof` is
+    /// `blake3::keyed_hash(nonce, bytes)` over them.
+    Proven {
+        /// The keyed hash of the bytes under the worker's challenge.
+        proof: [u8; 32],
+        /// Where the requester's own content keeps those bytes, when it can
+        /// say (for workspace content, the file version's manifest hash): a
+        /// hint for finding a local copy, never authority to use one.
+        locator: Option<[u8; 32]>,
+    },
+    /// Not proven; `code` says why (`not_authorised`, `missing`, …).
+    Refused {
+        /// Stable machine-readable reason.
+        code: String,
+    },
 }
 
 /// The answer on a compute content stream: from the device holding the
@@ -445,6 +485,24 @@ pub enum WorkerStreamOpen {
         job_id: [u8; 16],
         /// blake3 digest of the bytes asked for.
         digest: [u8; 32],
+    },
+    /// Relay → the requester of a compute job: prove to `asker`, the job's
+    /// worker, that this device holds input `digest`, by keying a hash of
+    /// the bytes with `nonce`. A requester answers only for an input of a
+    /// job it submitted to that worker, exactly as it would serve it.
+    ComputeContentProof {
+        /// [`ENVIRONMENT_PROTOCOL_VERSION`].
+        version: u16,
+        /// Workspace the job runs in.
+        workspace_id: u64,
+        /// The worker that asked, as the relay authenticated it.
+        asker: MemberIdentity,
+        /// The job naming the digest as an input.
+        job_id: [u8; 16],
+        /// blake3 digest of the input.
+        digest: [u8; 32],
+        /// The worker's challenge.
+        nonce: [u8; 32],
     },
 }
 

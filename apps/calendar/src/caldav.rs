@@ -1214,10 +1214,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn write_requests_target_one_resource_and_stay_inert_without_live() {
         // Case `build_put_request_targets_collection_and_carries_event_ics`.
         {

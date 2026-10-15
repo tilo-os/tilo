@@ -95,6 +95,71 @@ fn assert_reply_unchanged(actual: &crate::model::Message, original: &crate::mode
 }
 
 #[test]
+fn stream_display_names_do_not_change_person_bot_or_agent_identity() {
+    let (mut app, mut doc) = chat(backend("Answer"));
+    let start = app.model_command("c_general", "ask").unwrap();
+    pump(&mut app, &mut doc);
+    let mut message = reply(&doc, &start["reply"]);
+    message.appearance = Some(tilo_actions::Appearance {
+        name: "Another person".into(),
+        avatar: None,
+        persona: None,
+    });
+    let initiator = app.user_name(&message.author);
+    let name = app.message_author_name(&message);
+    assert_eq!(name, "Another person");
+    assert!(
+        matches!(app.message_author(&message, &name, &initiator, None),
+        ui::author::Author::Agent { for_person: Some(person), .. } if person == initiator)
+    );
+    assert!(
+        app.message_author_label(&message)
+            .contains("model output, requested by")
+    );
+    message.appearance = None;
+    assert_eq!(app.message_author_name(&message), "Assistant");
+    message.appearance = Some(tilo_actions::Appearance {
+        name: "Another person".into(),
+        avatar: None,
+        persona: None,
+    });
+    let stream_work = message.work.take();
+    let name = app.message_author_name(&message);
+    assert_eq!(
+        name, initiator,
+        "ordinary people cannot adopt appearance names"
+    );
+    assert!(
+        matches!(app.message_author(&message, &name, &initiator, None),
+        ui::author::Author::Person { identity, .. } if identity == crate::model::ME)
+    );
+    assert!(!app.model_message_label(&message).contains("Another person"));
+    message.work = stream_work;
+    message.author = "bot:installed".into();
+    let name = app.message_author_name(&message);
+    assert!(matches!(app.message_author(&message, &name, "", None),
+        ui::author::Author::Bot { appearance: Some(shown), .. } if shown.name == "Another person"));
+    assert!(!app.is_provider_output(&message));
+    let label = app.model_message_label(&message);
+    assert!(label.starts_with("Another person (bot:"));
+    assert!(!label.contains("model output"));
+    message.author = "agent-task:actual".into();
+    app.agent_authors
+        .insert(message.author.clone(), "Actual agent".into());
+    let name = app.message_author_name(&message);
+    assert_eq!(name, app.user_name(&message.author));
+    assert!(name.starts_with("Actual agent"));
+    assert!(matches!(
+        app.message_author(&message, &name, "", None),
+        ui::author::Author::Agent {
+            for_person: None,
+            ..
+        }
+    ));
+    assert!(!app.is_provider_output(&message));
+}
+
+#[test]
 fn completed_stream_is_not_duplicated_and_model_tool_calls_are_inert() {
     let backend = backend("Streamed answer");
     backend.finish.set(true);
@@ -247,6 +312,122 @@ fn empty_chat_hides_ask_and_stale_activation_reports_the_refusal() {
     assert!(backend.requests.borrow().is_empty());
 }
 
+fn message_resource<'a>(
+    rows: &'a [tilo_actions::Resource],
+    id: &str,
+) -> Option<&'a tilo_actions::Resource> {
+    rows.iter().find_map(|row| {
+        if row.id.as_str() == id {
+            Some(row)
+        } else {
+            message_resource(&row.children, id)
+        }
+    })
+}
+
+fn assert_mounted_model_attribution(
+    a: &mut ui::framework::testing::TestApp<crate::ChatShell>,
+    reply: &str,
+) {
+    a.with_surface::<ChatApp, _>(|surface| {
+        let message = surface
+            .search_messages
+            .iter()
+            .find(|m| m.id == reply)
+            .unwrap();
+        assert_eq!(
+            message.author,
+            crate::model::ME,
+            "custody stays with the invoker"
+        );
+        assert_eq!(surface.message_author_name(message), "Assistant");
+        let initiator = surface.user_name(&message.author);
+        assert!(matches!(
+            surface.message_author(message, "Assistant", &initiator, None),
+            ui::author::Author::Agent { name: "Assistant", for_person: Some(person), .. }
+                if person == initiator
+        ));
+        let label = surface.model_message_label(message);
+        assert!(label.starts_with("Assistant (model output, requested by "));
+        assert!(label.contains(&initiator));
+        assert!(label.contains(&crate::i18n::t("chat-agent-complete")));
+        assert!(
+            !surface
+                .model_message_label(message)
+                .contains("Provider summary")
+        );
+    })
+    .unwrap();
+    let assistive_label = a
+        .with_surface::<ChatApp, _>(|surface| {
+            let message = surface
+                .search_messages
+                .iter()
+                .find(|m| m.id == reply)
+                .unwrap();
+            surface.model_message_label(message)
+        })
+        .unwrap();
+    assert!(
+        a.harness().a11y_node_named(&assistive_label).is_some(),
+        "the mounted message exports its model attribution to screen readers"
+    );
+    let resources = a.harness().bound_resources(None).unwrap();
+    let row = message_resource(&resources, &crate::testing::item("messages", reply)).unwrap();
+    // The document owns the primary label (the message text); the live
+    // surface contributes attribution in the resource's presentation.
+    a.with_surface::<ChatApp, _>(|surface| {
+        let live = surface
+            .published_rows()
+            .into_iter()
+            .find(|row| row.id() == crate::testing::item("messages", reply))
+            .unwrap()
+            .into_resource();
+        assert!(
+            live.label
+                .starts_with("Assistant (model output, requested by ")
+        );
+    })
+    .unwrap();
+    let presentation = row.presentation.as_ref().unwrap();
+    assert_eq!(presentation.badge.as_deref(), Some("agent"));
+    assert!(
+        presentation
+            .detail
+            .as_ref()
+            .unwrap()
+            .contains("requested by")
+    );
+}
+
+#[test]
+fn captured_provider_stream_keeps_the_real_invoker_and_model_attribution() {
+    let mut capture = ui::framework::testing::TestApp::<crate::ChatShell>::capture_at(
+        Some("agent-reasoning"),
+        (420, 800),
+    )
+    .unwrap();
+    let label = capture
+        .with_surface::<ChatApp, _>(|surface| {
+            let message = surface
+                .search_messages
+                .iter()
+                .find(|m| m.id == "shot_agent_stream")
+                .unwrap();
+            assert_eq!(message.author, crate::model::ME);
+            assert_eq!(surface.message_author_name(message), "Assistant");
+            let initiator = surface.user_name(&message.author);
+            assert!(
+                matches!(surface.message_author(message, "Assistant", &initiator, None),
+            ui::author::Author::Agent { for_person: Some(person), .. } if person == initiator)
+            );
+            surface.model_message_label(message)
+        })
+        .unwrap();
+    assert!(label.starts_with("Assistant (model output, requested by "));
+    assert!(capture.harness().a11y_node_named(&label).is_some());
+}
+
 #[test]
 fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() {
     use crate::{ChatShell, record::chat, resource::Chat};
@@ -297,24 +478,7 @@ fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() 
             "missing {resource}#{action}"
         );
     }
-    a.with_surface::<ChatApp, _>(|surface| {
-        let message = surface
-            .search_messages
-            .iter()
-            .find(|m| m.id == reply)
-            .unwrap();
-        assert!(
-            surface
-                .model_message_label(message)
-                .contains(&crate::i18n::t("chat-agent-complete"))
-        );
-        assert!(
-            !surface
-                .model_message_label(message)
-                .contains("Provider summary")
-        );
-    })
-    .unwrap();
+    assert_mounted_model_attribution(&mut a, reply);
     a.call_on(
         &message_row,
         "show-agent-reasoning",

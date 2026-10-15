@@ -138,6 +138,16 @@ impl Session {
             identity_broker::spawn(identity_socket.clone(), tree.clone(), channel_keys.clone())?;
         stage("starting the collaboration broker");
         let peer_sync = PeerSync::start(&tree);
+        // No frame loop waits here: open the owner before the broker, whose
+        // services otherwise answer that it is still opening until it is.
+        stage("opening the workspace owner");
+        let opened = match peer_sync.as_ref() {
+            Some(sync) => sync.network.native_owner(),
+            None => crate::shell::native_workspace_owner::open(tree.clone()),
+        };
+        if let Err(error) = &opened {
+            tracing::warn!(%error, "the runtime's workspace owner did not open");
+        }
         let broker = collab_broker::spawn_native(
             root.join(COLLAB_SOCKET),
             &peer_sync.as_ref().map(|sync| Arc::clone(&sync.network)),

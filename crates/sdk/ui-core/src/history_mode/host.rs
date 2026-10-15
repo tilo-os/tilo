@@ -817,6 +817,17 @@ impl HistoryHost {
         // emissions into these queues retain their ordinary dispatch semantics.
         self.suspended_control_queues.clear();
     }
+    /// Closed, with nothing in flight: no input captured or asked for, no
+    /// focus saved or being returned, no control return and no review
+    /// requested. Only input (or a refresh, which recomposes) moves a
+    /// surface out of rest, so a frame that had neither leaves it here.
+    pub(crate) fn at_rest(&self) -> bool {
+        !self.captures_input()
+            && self.saved_focus.is_none()
+            && !self.returning_live
+            && self.control_lease.is_none()
+            && !self.has_review_request()
+    }
     pub(crate) fn has_settled_control_return(&self) -> bool {
         self.control_lease.is_some() && !self.captures_input() && !self.returning_live
     }

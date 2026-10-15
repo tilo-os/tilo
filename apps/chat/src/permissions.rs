@@ -58,7 +58,7 @@ impl ChatPermissions {
     /// the conversation, not a peer-local filesystem path, so a viewer who
     /// can read the room can hydrate the room's verified shared bytes.
     pub fn can_embed(&self, blob: &str) -> bool {
-        let valid_hash = blob.len() == 64 && blob.bytes().all(|byte| byte.is_ascii_hexdigit());
+        let valid_hash = tilo_content::valid_hash(blob);
         let valid_demo = matches!(
             blob,
             crate::images::DEMO_CALL_GRID

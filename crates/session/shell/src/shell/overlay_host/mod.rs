@@ -49,6 +49,7 @@ mod history;
 pub(crate) mod layers;
 mod now_playing;
 mod parked_workspaces;
+mod peer_sync_dispatch;
 mod sheet_accessibility;
 mod shortcut_steps;
 mod shortcut_triggers;
@@ -135,6 +136,7 @@ use crate::shell::quick_settings::vpn::{QuickSettingsVpnPane, VpnPaneOutcome};
 use crate::shell::quick_settings::wifi::QuickSettingsWifiPane;
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
+pub use peer_sync_dispatch::{PeerSyncCall, PeerSyncJob, PeerSyncRunner, PeerSyncWorker};
 pub use tilo_desktop::collaborators::RosterRow;
 use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay};
 use tilo_desktop::drill_in as qs;
@@ -794,11 +796,12 @@ pub struct ShellOverlayHost {
     /// surfaced. It follows the live session transport and can be enabled
     /// when first-login provisioning completes.
     peer_sync_enabled: bool,
-    /// Closure that carries out a peer-sync request against
-    /// `ShellNetwork`, keeping the widget layer transport-agnostic.
-    /// `None` in tests and in sessions booted without peer-sync, where
+    /// Carries peer-sync requests out against `ShellNetwork`, keeping the
+    /// widget layer transport-agnostic: on the network's worker in a
+    /// session, so a relay round trip never holds a frame. Neither bridge
+    /// nor worker in tests and in sessions booted without peer-sync, where
     /// `/invite` and `/connect` report that rather than doing nothing.
-    peer_sync_bridge: Option<PeerSyncBridge>,
+    peer_sync: peer_sync_dispatch::PeerSyncDispatch,
     /// Privileged in-process access to the compositor's bounded clipboard
     /// history. Absent in screenshots and embedders.
     clipboard_manager_bridge: Option<ClipboardManagerBridge>,
@@ -2231,10 +2234,6 @@ impl ShellOverlayHost {
         (search_registry, room_records, qs_action_slot)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "constructor explicitly initializes the host's independent interaction surfaces"
-    )]
     pub fn new(content: Box<dyn Widget>) -> Self {
         #[cfg(test)]
         crate::shell::test_support::ambient_start("overlay production inputs");
@@ -2476,7 +2475,7 @@ impl ShellOverlayHost {
             file_picker_overlay,
             portal_dialogs: inputs.portal_dialogs,
             peer_sync_enabled: false,
-            peer_sync_bridge: None,
+            peer_sync: peer_sync_dispatch::PeerSyncDispatch::default(),
             clipboard_manager_bridge: None,
             device_fabric_bridge: None,
             realtime_continuity_bridge: None,
@@ -3670,7 +3669,14 @@ impl ShellOverlayHost {
     /// built — the native compositor constructs its host inside a
     /// `FrameBuilder` before it has a network handle to bridge to.
     pub fn set_peer_sync_bridge(&mut self, bridge: PeerSyncBridge) {
-        self.peer_sync_bridge = Some(bridge);
+        self.peer_sync.set_bridge(bridge);
+    }
+
+    /// Carry peer-sync requests out on `worker`, off the frame loop: the
+    /// session network's, whose requests wait on relays and the disk. The
+    /// frame pump applies each outcome once it is back.
+    pub fn set_peer_sync_worker(&mut self, worker: PeerSyncWorker) {
+        self.peer_sync.set_worker(worker);
     }
 
     /// Attach the compositor-owned clipboard history to trusted shell chrome.
@@ -3818,73 +3824,148 @@ impl ShellOverlayHost {
         self.published_active_tab = current;
     }
 
-    /// Run one peer-sync request through the installed bridge.
-    fn peer_sync_call(&self, req: PeerSyncRequest) -> Result<PeerSyncResponse, String> {
-        match self.peer_sync_bridge.as_ref() {
-            Some(bridge) => bridge(req),
-            None => Err("peer-sync is not running in this session".to_string()),
+    /// Carry `job` out, applying its outcome now when it is known now and
+    /// from [`Self::pump_peer_sync`] once the worker has it.
+    fn dispatch_peer_sync(
+        &mut self,
+        job: peer_sync_dispatch::Job,
+        follow: peer_sync_dispatch::FollowUp,
+    ) {
+        if let Some((follow, outcome)) = self.peer_sync.submit(job, follow) {
+            self.apply_peer_sync(follow, outcome);
+        }
+    }
+
+    /// Apply one request's outcome: to the card, or as the answer of the
+    /// action that asked.
+    fn apply_peer_sync(
+        &mut self,
+        follow: peer_sync_dispatch::FollowUp,
+        outcome: Result<PeerSyncResponse, String>,
+    ) {
+        use peer_sync_dispatch::FollowUp;
+        match follow {
+            FollowUp::Card {
+                request,
+                copy_result,
+            } => {
+                self.peer_sync_overlay
+                    .finish_typed_request(&request, outcome, copy_result);
+                if matches!(
+                    request,
+                    PeerSyncRequest::IssueInviteFor { .. } | PeerSyncRequest::CancelInvitation(_)
+                ) {
+                    self.refresh_pending_invitations();
+                }
+            }
+            FollowUp::Action {
+                request,
+                request_id,
+            } => {
+                if matches!(
+                    request,
+                    PeerSyncRequest::IssueInvitation(_) | PeerSyncRequest::CancelInvitation(_)
+                ) {
+                    self.refresh_pending_invitations();
+                }
+                let output = outcome.and_then(|response| {
+                    crate::shell::peer_sync_overlay::network_action_output(&request, response)
+                });
+                self.complete_peer_sync_action(request_id, output);
+            }
+            FollowUp::Ignore => {}
+        }
+    }
+
+    /// The workspace a peer-sync request made now is for.
+    fn active_workspace_id(&self) -> Option<crate::shell::state::WorkspaceId> {
+        self.chrome
+            .as_ref()
+            .map(|chrome| chrome.borrow().tree().desktop.active)
+    }
+
+    fn complete_peer_sync_action(
+        &self,
+        request_id: Option<u64>,
+        result: Result<serde_json::Value, String>,
+    ) {
+        if let (Some(request_id), Some(chrome)) = (request_id, self.chrome.as_ref()) {
+            chrome
+                .borrow_mut()
+                .complete_peer_sync_request(request_id, result);
         }
     }
 
     /// Drain the palette's peer-sync intents and act on them, once per
     /// frame from [`Widget::update`]. `/invite` mints a token; `/connect`
-    /// opens the token prompt. Both write their outcome into chrome.
-    fn pump_peer_sync(&mut self) {
-        if let Some(request) = self.peer_sync_overlay.pending_enrollment_request() {
+    /// opens the token prompt. Both write their outcome into chrome; a
+    /// network request's outcome lands here once the worker has it.
+    /// Answers whether anything changed.
+    fn pump_peer_sync(&mut self) -> bool {
+        let answered = self.peer_sync.answered();
+        let mut changed = !answered.is_empty();
+        for (follow, outcome) in answered {
+            self.apply_peer_sync(follow, outcome);
+        }
+        // One enrollment poll at a time: a poll that installs the room
+        // publishes the state file on the worker.
+        let polling = self
+            .peer_sync
+            .in_flight(&PeerSyncRequest::PollEnrollment(0))
+            || self
+                .peer_sync
+                .in_flight(&PeerSyncRequest::CancelEnrollment(0));
+        if !polling && let Some(request) = self.peer_sync_overlay.pending_enrollment_request() {
             self.run_peer_sync_request(&request, false);
         }
         let actions = self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
             chrome.borrow_mut().take_peer_sync_requests()
         });
-        if actions.is_empty() {
-            return;
-        }
+        changed |= !actions.is_empty();
         for action in actions {
             let (request_id, action) = match action {
                 PeerSyncAction::Tracked { request_id, action } => (Some(request_id), *action),
                 action => (None, action),
             };
-            let result = match action {
+            match action {
                 PeerSyncAction::IssueInviteFor { name, copy } => {
                     let _ = copy;
                     self.open_invite_manager();
                     self.peer_sync_overlay.prompt_invite_for(name);
-                    Ok(serde_json::Value::Null)
+                    self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
                 }
                 PeerSyncAction::PromptInvite => {
                     self.open_invite_manager();
-                    Ok(serde_json::Value::Null)
+                    self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
                 }
                 PeerSyncAction::PromptConnect => {
                     self.peer_sync_overlay.prompt_connect();
-                    Ok(serde_json::Value::Null)
+                    self.complete_peer_sync_action(request_id, Ok(serde_json::Value::Null));
                 }
                 PeerSyncAction::Network { workspace, request } => {
-                    self.run_network_action(workspace, &request)
+                    self.run_network_action(workspace, request, request_id);
                 }
                 #[expect(
                     clippy::unreachable,
                     reason = "the palette queues a tracked request around one plain action, never another tracked one"
                 )]
                 PeerSyncAction::Tracked { .. } => unreachable!("tracked requests are unwrapped"),
-            };
-            if let (Some(request_id), Some(chrome)) = (request_id, self.chrome.as_ref()) {
-                chrome
-                    .borrow_mut()
-                    .complete_peer_sync_request(request_id, result);
             }
         }
+        changed
     }
 
     /// Carry out one invitation action's network request against the
-    /// workspace it was authorized in, returning the action's JSON output.
-    /// Resend and cancel are scoped to that workspace's pending invitations,
-    /// so an id from another workspace is not pending here.
+    /// workspace it was authorized in; its JSON output answers the action
+    /// `request_id` once the request is back. Resend and cancel are scoped
+    /// to that workspace's pending invitations, so an id from another
+    /// workspace is not pending here.
     fn run_network_action(
         &mut self,
         workspace: crate::shell::state::WorkspaceId,
-        request: &PeerSyncRequest,
-    ) -> Result<serde_json::Value, String> {
+        request: PeerSyncRequest,
+        request_id: Option<u64>,
+    ) {
         let active = self.chrome.as_ref().and_then(|chrome| {
             chrome
                 .borrow()
@@ -3894,40 +3975,47 @@ impl ShellOverlayHost {
                 .map(|active| active.id)
         });
         if active != Some(workspace) {
-            return Err("the active workspace changed before the invitation request ran".into());
+            self.complete_peer_sync_action(
+                request_id,
+                Err("the active workspace changed before the invitation request ran".into()),
+            );
+            return;
         }
-        if let PeerSyncRequest::ResendInvitation(id) | PeerSyncRequest::CancelInvitation(id) =
-            request
-        {
-            let PeerSyncResponse::PendingInvitations(pending) =
-                self.peer_sync_call(PeerSyncRequest::ListPendingInvitations)?
-            else {
-                return Err("peer-sync answered an unexpected response".into());
-            };
-            if !pending.iter().any(|invite| &invite.id == id) {
-                return Err("invitation is no longer pending".into());
-            }
-        }
-        let outcome = self.peer_sync_call(request.clone());
-        if matches!(
+        let require_pending = matches!(
             request,
-            PeerSyncRequest::IssueInvitation(_) | PeerSyncRequest::CancelInvitation(_)
-        ) {
-            self.refresh_pending_invitations();
-        }
-        crate::shell::peer_sync_overlay::network_action_output(request, outcome?)
+            PeerSyncRequest::ResendInvitation(_) | PeerSyncRequest::CancelInvitation(_)
+        );
+        self.dispatch_peer_sync(
+            peer_sync_dispatch::Job {
+                request: request.clone(),
+                require_pending,
+                workspace: Some(workspace),
+            },
+            peer_sync_dispatch::FollowUp::Action {
+                request,
+                request_id,
+            },
+        );
     }
 
     fn run_peer_sync_request(&mut self, request: &PeerSyncRequest, copy_result: bool) {
-        let outcome = self.peer_sync_call(request.clone());
-        self.peer_sync_overlay
-            .finish_typed_request(request, outcome, copy_result);
-        if matches!(
-            request,
-            PeerSyncRequest::IssueInviteFor { .. } | PeerSyncRequest::CancelInvitation(_)
-        ) {
-            self.refresh_pending_invitations();
+        // The card's request is still being carried out: a second press
+        // would mint or redeem twice.
+        if self.peer_sync.in_flight(request) {
+            return;
         }
+        self.peer_sync_overlay.begin_request(request);
+        self.dispatch_peer_sync(
+            peer_sync_dispatch::Job {
+                request: request.clone(),
+                require_pending: false,
+                workspace: self.active_workspace_id(),
+            },
+            peer_sync_dispatch::FollowUp::Card {
+                request: request.clone(),
+                copy_result,
+            },
+        );
     }
 
     fn open_invite_manager(&mut self) {
@@ -3985,7 +4073,14 @@ impl ShellOverlayHost {
             },
         );
         // Best-effort: without a running network there is nothing to start.
-        let _ = self.peer_sync_call(PeerSyncRequest::PrepareInvitation);
+        self.dispatch_peer_sync(
+            peer_sync_dispatch::Job {
+                request: PeerSyncRequest::PrepareInvitation,
+                require_pending: false,
+                workspace: self.active_workspace_id(),
+            },
+            peer_sync_dispatch::FollowUp::Ignore,
+        );
         self.peer_sync_overlay.set_invite_context(context);
         self.peer_sync_overlay
             .merge_remembered_invitees(room_invitees);
@@ -3995,9 +4090,17 @@ impl ShellOverlayHost {
 
     fn refresh_pending_invitations(&mut self) {
         let request = PeerSyncRequest::ListPendingInvitations;
-        let outcome = self.peer_sync_call(request.clone());
-        self.peer_sync_overlay
-            .finish_typed_request(&request, outcome, false);
+        self.dispatch_peer_sync(
+            peer_sync_dispatch::Job {
+                request: request.clone(),
+                require_pending: false,
+                workspace: self.active_workspace_id(),
+            },
+            peer_sync_dispatch::FollowUp::Card {
+                request,
+                copy_result: false,
+            },
+        );
     }
 
     /// Route one event to the peer-sync card, returning whether it was
@@ -6015,10 +6118,6 @@ impl ShellOverlayHost {
     /// tree, the host outlives the content, and each row is only ever
     /// touched by one reconcile sweep at a time — the frame loop runs
     /// them sequentially, never re-entrantly.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "cross-strip detach dispatch keeps source draining, hover preview, and release commit in one sequential pointer-safety scope"
-    )]
     fn dispatch_cross_strip_detaches(&self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -7557,12 +7656,6 @@ impl ShellOverlayHost {
     /// Focuses one window by identity, then pans the strip to it (unlike a
     /// click on the window itself) since the rail addresses windows that may
     /// be off screen.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "st's only use is producing tree via tree_mut(); the write-guard's \
-                  lifetime is tied to st's borrow, so it can't be dropped before tree's \
-                  last use, and the block already ends right there"
-    )]
     pub fn focus_window_on_strip(&mut self, strip: StripId, group: GroupId, tab: u64) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -14097,10 +14190,6 @@ impl ShellOverlayHost {
     /// Immutable Super-key shell chords: projection/capture actions,
     /// workspace history, and window creation. Configurable actions are
     /// resolved before this function from `ShortcutConfig`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the existing shell chord router remains one auditable precedence table"
-    )]
     fn handle_shell_mod_chords(
         &mut self,
         logical_key: &Key,
@@ -15224,10 +15313,6 @@ impl ShellOverlayHost {
     /// row. Split out of `handle_shell_quick_settings_click`, which
     /// always treats the click as absorbed regardless of what this
     /// does.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the drill-in router keeps each mutually exclusive page next to the shared back/password precedence; splitting it would duplicate modal ordering"
-    )]
     fn handle_shell_quick_settings_drill_in_click(
         &mut self,
         p: Point,
@@ -16470,10 +16555,6 @@ impl ShellOverlayHost {
         self.qs_refresh.kick_field(field);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the ordered root-action dispatch keeps fallback routing adjacent to each action"
-    )]
     fn apply_quick_settings_root_action(&mut self, action: RootAction, chrome: &Chrome) {
         match action {
             RootAction::None => {}
@@ -18154,7 +18235,7 @@ impl Widget for ShellOverlayHost {
             self.projection_overlay.poll_storage(projection_open) | self.close_settled_projection();
         steps.mark("settings-readings");
         // Runs first so an invite token / prompt is in chrome before draw.
-        self.pump_peer_sync();
+        let peer_sync_dirty = self.pump_peer_sync();
         steps.mark("peer-sync");
         self.tick_shortcut_triggers();
         self.pump_shortcut_step_prompts();
@@ -18340,6 +18421,7 @@ impl Widget for ShellOverlayHost {
             || mirror_dirty
             || presence_dirty
             || follow_dirty
+            || peer_sync_dirty
     }
 
     #[allow(
@@ -20262,7 +20344,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 13] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 14] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20338,6 +20420,7 @@ impl ShellOverlayHost {
                     .then(|| now.checked_add(LAUNCHPAD_ACTION_POLL))
                     .flatten(),
             ),
+            ("shortcut-schedule", self.held_firings_wake_deadline(now)),
         ]
     }
 
@@ -23024,7 +23107,6 @@ impl ShellOverlayHost {
     /// neither its surface nor its hit regions.
     #[allow(
         clippy::too_many_lines,
-        clippy::needless_pass_by_ref_mut,
         reason = "all portal sheet variants share one chrome renderer so untrusted app data cannot select a different visual surface"
     )]
     fn draw_portal_dialog_sheet(
@@ -27052,6 +27134,10 @@ mod wifi_password_tests;
 )]
 #[path = "palette_dispatch_tests.rs"]
 mod palette_dispatch_tests;
+
+#[cfg(test)]
+#[path = "peer_sync_worker_tests.rs"]
+mod peer_sync_worker_tests;
 
 #[cfg(test)]
 #[path = "two_workspace_host_tests.rs"]

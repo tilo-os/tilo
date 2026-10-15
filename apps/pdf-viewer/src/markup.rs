@@ -379,7 +379,7 @@ impl PdfMarkup {
     pub fn pinned_source(&self) -> Option<PinnedSource> {
         match &self.source {
             Bytes::Blob { hash, len } => Some(PinnedSource {
-                hash: hex(hash),
+                hash: hex::encode(hash),
                 len: *len,
                 name: self.source_name.clone(),
             }),
@@ -536,26 +536,10 @@ fn blocks_of(text: &str, rich: &[tilo_document::ClipBlock]) -> Vec<ui::widget::B
     }
 }
 
-/// `bytes` as lowercase hex.
-pub(crate) fn hex(bytes: &[u8; 32]) -> String {
-    use std::fmt::Write as _;
-    bytes
-        .iter()
-        .fold(String::with_capacity(64), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
-}
-
 /// The 32 bytes a 64-digit hex hash names.
 pub(crate) fn unhex(hash: &str) -> Option<[u8; 32]> {
     let mut out = [0u8; 32];
-    if hash.len() != 64 {
-        return None;
-    }
-    for (index, byte) in out.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(hash.get(index * 2..index * 2 + 2)?, 16).ok()?;
-    }
+    hex::decode_to_slice(hash, &mut out).ok()?;
     Some(out)
 }
 

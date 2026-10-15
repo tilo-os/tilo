@@ -57,8 +57,9 @@ pub(crate) mod tests {
     use super::*;
 
     pub const GIB_SECTORS: u64 = 1024 * 1024 * 1024 / 512;
-    /// Matches `os/tests/staging_handoff_test.py`: target 64 GiB after a
-    /// 100 GiB Windows region, then a 1 GiB staging ESP and 40 GiB root.
+    /// Matches `crates/system/install-helpers/tests/staging_handoff.rs`:
+    /// target 64 GiB after a 100 GiB Windows region, then a 1 GiB staging ESP
+    /// and 40 GiB root.
     pub const TARGET: (u64, u64) = (
         100 * GIB_SECTORS + 2048,
         100 * GIB_SECTORS + 2048 + 64 * GIB_SECTORS - 1,

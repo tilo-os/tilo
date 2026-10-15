@@ -3766,6 +3766,13 @@ impl Widget for NavShell {
         self.toasts_drawn = self.toasts_painted;
         self.toasts_drawn_scene.clone_from(&self.toasts_scene);
         self.for_each_owned_mut(|child| child.mark_drawn());
+        // The shell paints its titles and notices itself, so they learn
+        // here what it painted: as children they would otherwise ask for
+        // a frame forever.
+        for header in &mut self.headers {
+            header.title.mark_drawn();
+        }
+        self.toasts.mark_drawn();
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {

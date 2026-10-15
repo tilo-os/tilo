@@ -326,7 +326,7 @@ impl ArtworkFile {
                     body: mark.body(),
                 })
                 .collect(),
-            media: art.media.clone(),
+            media: BTreeMap::from(&art.media),
         }
     }
 

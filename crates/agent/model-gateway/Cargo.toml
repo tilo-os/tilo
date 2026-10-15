@@ -24,6 +24,11 @@ required-features = ["server"]
 name = "local-tool-acceptance"
 required-features = ["server"]
 
+[[test]]
+name = "socket_activation"
+path = "tests/socket_activation.rs"
+required-features = ["server"]
+
 [features]
 # App builds carry only the protocol and authenticated client transports.
 default = []
@@ -42,6 +47,7 @@ server = [
     "dep:bytes",
     "dep:futures-util",
     "dep:tilo-files",
+    "dep:rustix",
 ]
 # Trusted host CLIs share the server's provider transport and credential policy.
 host-backend = ["server"]
@@ -99,4 +105,4 @@ tempfile.workspace = true
 workspace = true
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process"], optional = true }

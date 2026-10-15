@@ -161,17 +161,42 @@ fn host_log() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("room-load-host-{}.log", std::process::id()))
 }
 
-/// Ad-hoc probes: host log lines `TIMING <step> <microseconds> <size>`,
-/// printed by a relay patched while hunting a hot spot, summarized per step
-/// in arrival order, so a cost that grows with the room shows as rising
-/// tenths.
-fn timings(path: &std::path::Path) -> serde_json::Value {
+/// The host's phase timings (`tilo_relay::timing`, which the host enables):
+///
+/// - `TIMING <step> <microseconds> <size>`, one per occurrence of a phase
+///   that happens about once per newcomer or commit (`join.*`, `commit.*`),
+///   summarized per step in arrival order, so a cost that grows with the room
+///   shows as rising tenths;
+/// - `TIMING_WINDOW <unix second> <step> <count> <total µs> <max µs>`, one per
+///   step and second for frequent phases (`owner.*`, `room.lock`, …),
+///   summarized as totals and as milliseconds spent per second of the run
+///   (`busy_ms_by_s`, from `begun_unix_s`): an owner whose turns add up to
+///   1000 ms a second is saturated.
+fn timings(path: &std::path::Path, begun_unix_s: u64) -> serde_json::Value {
     let Ok(text) = std::fs::read_to_string(path) else {
         return serde_json::Value::Null;
     };
     let mut steps = std::collections::BTreeMap::<String, Vec<(f64, f64)>>::new();
+    let mut windows = std::collections::BTreeMap::<String, Vec<(u64, u64, u64, u64)>>::new();
     for line in text.lines() {
-        let Some(rest) = line.strip_prefix("TIMING ") else {
+        if let Some((_, rest)) = line.split_once("TIMING_WINDOW ") {
+            let mut words = rest.split_whitespace();
+            let (Some(second), Some(step), Some(count), Some(total), Some(max)) = (
+                words.next().and_then(|w| w.parse::<u64>().ok()),
+                words.next(),
+                words.next().and_then(|w| w.parse::<u64>().ok()),
+                words.next().and_then(|w| w.parse::<u64>().ok()),
+                words.next().and_then(|w| w.parse::<u64>().ok()),
+            ) else {
+                continue;
+            };
+            windows
+                .entry(step.to_owned())
+                .or_default()
+                .push((second, count, total, max));
+            continue;
+        }
+        let Some((_, rest)) = line.split_once("TIMING ") else {
             continue;
         };
         let mut words = rest.split_whitespace();
@@ -197,12 +222,43 @@ fn timings(path: &std::path::Path) -> serde_json::Value {
             .collect();
         let total: f64 = values.iter().map(|v| v.0).sum();
         let size = values.last().map_or(0.0, |v| v.1);
+        let mut ms: Vec<f64> = values.iter().map(|v| v.0).collect();
+        let p99 = stats::quantile(&mut ms, 0.99);
         out.insert(
             step,
             serde_json::json!(format!(
-                "n={} total_ms={total:.0} last_size={size} ms_by_tenth={}",
+                "n={} total_ms={total:.0} p99_ms={p99:.1} last_size={size} ms_by_tenth={}",
                 values.len(),
                 by_tenth.join(",")
+            )),
+        );
+    }
+    for (step, seconds) in windows {
+        let count: u64 = seconds.iter().map(|w| w.1).sum();
+        let total_us: u64 = seconds.iter().map(|w| w.2).sum();
+        let max_us = seconds.iter().map(|w| w.3).max().unwrap_or_default();
+        let last = seconds
+            .iter()
+            .map(|w| w.0.saturating_sub(begun_unix_s))
+            .max()
+            .unwrap_or_default();
+        let mut busy = vec![0u64; usize::try_from(last).unwrap_or_default() + 1];
+        for (second, _, total, _) in &seconds {
+            if let Some(slot) = usize::try_from(second.saturating_sub(begun_unix_s))
+                .ok()
+                .and_then(|at| busy.get_mut(at))
+            {
+                *slot += total / 1000;
+            }
+        }
+        let busy: Vec<String> = busy.iter().map(u64::to_string).collect();
+        out.insert(
+            step,
+            serde_json::json!(format!(
+                "n={count} total_ms={} max_ms={:.1} busy_ms_by_s={}",
+                total_us / 1000,
+                max_us as f64 / 1000.0,
+                busy.join(",")
             )),
         );
     }
@@ -317,6 +373,9 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
 
     let cpu0 = procfs::Sample::of(pid).unwrap_or_default().cpu_s;
     let begun = Instant::now();
+    let begun_unix_s = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
     let mut peak_rss = 0u64;
     let ramp = Duration::from_secs_f64(1.0 / args.drive.ramp.max(0.01));
     let mut guests = tokio::task::JoinSet::new();
@@ -455,7 +514,7 @@ async fn bench(args: BenchArgs) -> anyhow::Result<()> {
             fields.insert("spectators".into(), spectator_stats.summary());
         }
         fields.insert("host_log".into(), log_digest(&host_log()));
-        fields.insert("timings".into(), timings(&host_log()));
+        fields.insert("timings".into(), timings(&host_log(), begun_unix_s));
     }
     let _ = std::fs::remove_file(host_log());
     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -478,7 +537,11 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
         match cli.command {
             Command::Host(args) => {
                 let filter = tracing_subscriber::EnvFilter::try_from_env("TILO_RELAY_LOG")
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("tilo_relay=info,warn"));
+                    .unwrap_or_else(|_| {
+                        tracing_subscriber::EnvFilter::new(
+                            "tilo_relay=info,tilo_relay::timing=debug,warn",
+                        )
+                    });
                 tracing_subscriber::fmt()
                     .with_env_filter(filter)
                     .with_ansi(false)

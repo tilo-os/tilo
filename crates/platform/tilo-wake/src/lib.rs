@@ -91,10 +91,6 @@ impl WakeScope {
     ///
     /// Returns [`WakeBindError::Closed`] when the scope has already closed, or
     /// [`WakeBindError::AlreadyBound`] when a destination is already installed.
-    #[allow(
-        clippy::needless_pass_by_ref_mut,
-        reason = "binding requires exclusive lifecycle-owner access despite interior route synchronization"
-    )]
     pub fn bind(
         &mut self,
         sink: impl Fn(WakeEvent) + Send + Sync + 'static,
@@ -169,10 +165,6 @@ impl WakeScope {
     }
 
     /// Stop new authorizations without waiting for previously accepted work.
-    #[allow(
-        clippy::needless_pass_by_ref_mut,
-        reason = "closing requires exclusive lifecycle-owner access and never holds a publisher lock"
-    )]
     pub fn close(&mut self) {
         self.route.open.swap(false, Ordering::AcqRel);
     }

@@ -1,5 +1,0 @@
-reason = "the ratchet lowered db-client to branch run 98171 (4,851,200 B); main had grown it to 4,916,224 B by 6d8549ea5c"
-run = 98772
-
-[apps."so.tilo.db-client"]
-x86_64 = 65536

@@ -455,9 +455,22 @@ impl AgentDoorConsent {
                 })
                 .collect(),
         };
-        if let Err(error) = write_private(path, &stored) {
-            tracing::warn!(%error, path = %path.display(), "agent door: the remembered agent was kept for this session only");
-        }
+        let bytes = match serde_json::to_vec_pretty(&stored) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(%error, "agent door: the remembered agent was kept for this session only");
+                return;
+            }
+        };
+        // `pump` runs on the compositor's loop; the write's fsync can take
+        // seconds under I/O pressure, so the state writer does it. A newer
+        // set of answers that has not been written yet replaces this one.
+        let path = path.to_path_buf();
+        crate::shell::durable_writer::global().submit(path.clone(), move || {
+            if let Err(error) = write_private(&path, &bytes) {
+                tracing::warn!(%error, path = %path.display(), "agent door: the remembered agent was kept for this session only");
+            }
+        });
     }
 
     /// Requests the person has not answered yet.
@@ -467,8 +480,8 @@ impl AgentDoorConsent {
     }
 }
 
-/// Write `value` to `path`, readable by this account only.
-fn write_private(path: &Path, value: &impl serde::Serialize) -> std::io::Result<()> {
+/// Write `bytes` to `path`, readable by this account only.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
     if let Some(parent) = path.parent() {
@@ -477,7 +490,6 @@ fn write_private(path: &Path, value: &impl serde::Serialize) -> std::io::Result<
             .mode(0o700)
             .create(parent)?;
     }
-    let bytes = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
     let staged = path.with_extension("json.tmp");
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -486,7 +498,7 @@ fn write_private(path: &Path, value: &impl serde::Serialize) -> std::io::Result<
         .mode(0o600)
         .open(&staged)?;
     file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    file.write_all(&bytes)?;
+    file.write_all(bytes)?;
     file.sync_all()?;
     std::fs::rename(&staged, path)
 }

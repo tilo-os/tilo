@@ -1309,7 +1309,7 @@ async fn the_owner_restricts_until_a_time_and_lifts_it() {
         request_id,
         user_public_key: guest,
     };
-    let until = tilo_clock::unix_now_ns() / 1_000_000 + 30 * 60_000;
+    let until = tilo_clock::unix_now_ms() + 30 * 60_000;
     rooms
         .restrict_member(&created.room, &cert, request([1; 32]), until)
         .await
@@ -1547,7 +1547,7 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
             .access_request(&member_key, 1, &vault)
             .unwrap()
             .expect("a member waiting for the channel asks for it");
-    let body = postcard::to_stdvec(&tilo_peer_state::NeighbourMsg::MlsAccessRequest {
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsAccessRequest {
         room: created.room.clone(),
         request: Box::new(request),
         delivery: 1,
@@ -1685,4 +1685,175 @@ async fn an_owner_capable_node_stewards_the_channels_of_the_rooms_it_governs() {
     assert!(asked.channels_dir().exists());
     drop(steward);
     asked.shut_down().await;
+}
+
+/// What a test runs inside a room's steward pass, by room.
+type PassHooks = std::sync::Mutex<HashMap<String, Arc<dyn Fn() + Send + Sync>>>;
+
+fn pass_hooks() -> &'static PassHooks {
+    static HOOKS: std::sync::OnceLock<PassHooks> = std::sync::OnceLock::new();
+    HOOKS.get_or_init(PassHooks::default)
+}
+
+/// Run the hook a test installed for `room`'s steward pass, where the pass
+/// does its MLS work.
+pub(crate) fn steward_pass_hook(room: &str) {
+    let hook = pass_hooks().lock().unwrap().get(room).cloned();
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+/// A steward pass's MLS work holds no runtime worker. The pass stalls in
+/// its MLS work until the test, on a runtime with a single worker, lets it
+/// go: run on that worker, the pass would stall the test with it, and give
+/// up waiting unreleased.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "the fixture's Relay::shutdown consumes the relay after the assertions; the suggested later drop would use a moved value"
+    )
+)]
+async fn a_steward_pass_does_its_mls_work_off_the_runtime_workers() {
+    let asked =
+        a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
+            .await;
+    let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
+    let (release, released_rx) = std::sync::mpsc::channel::<()>();
+    let entered_tx = std::sync::Mutex::new(entered_tx);
+    let released_rx = std::sync::Mutex::new(released_rx);
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = Arc::clone(&released);
+    pass_hooks().lock().unwrap().insert(
+        asked.room.clone(),
+        Arc::new(move || {
+            let _ = entered_tx.lock().unwrap().send(());
+            let in_time = released_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .is_ok();
+            observed.store(in_time, std::sync::atomic::Ordering::SeqCst);
+        }),
+    );
+    tilo_test_env::within("the steward pass starts its MLS work", async {
+        while entered.try_recv().is_err() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    // Only this runtime's one worker can get here while the pass stalls.
+    release.send(()).unwrap();
+    let steward = asked.stewardship().await.expect("the node stewards");
+    tilo_test_env::within("the node admits the member to the channel", async {
+        while !steward
+            .channels
+            .lock()
+            .await
+            .members(asked.channel)
+            .is_some_and(|members| members.contains(&asked.member))
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    pass_hooks().lock().unwrap().remove(&asked.room);
+    assert!(
+        released.load(std::sync::atomic::Ordering::SeqCst),
+        "the runtime's worker was free while the pass did its MLS work"
+    );
+    drop(steward);
+    asked.shut_down().await;
+}
+
+/// A decision does not wait for room in its workspace owner's queue. With
+/// the owner stalled on the room's first change and more changes behind it
+/// than its queue holds, every decision still settles and answers, and a
+/// pre-admission still takes the room; once the owner moves, every change
+/// is retained, in the order the room published them.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn decisions_settle_while_their_workspace_owner_is_stalled() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Public").await.unwrap();
+    let records = rooms.inner.host.records.clone();
+    // The creation's own changes are retained before the owner stalls.
+    records.retained(created.workspace_id).await.unwrap();
+    let root = dir
+        .path()
+        .join("workspaces")
+        .join(created.workspace_id.to_string());
+    let (release, reached) = crate::store::test_barrier::install(&root, "state-persist");
+    // Each name is one governance change: more than the owner queues.
+    for index in 0..48 {
+        tilo_test_env::within(
+            format!("rename {index} while the owner is stalled"),
+            rooms.rename(&created.room, &format!("Public {index}")),
+        )
+        .await
+        .unwrap();
+    }
+    tilo_test_env::within("the owner stalls on the first change", reached)
+        .await
+        .unwrap();
+    tilo_test_env::within(
+        "a pre-admission while the owner is stalled",
+        rooms.pre_admit(
+            &cert,
+            PreAdmitRequest {
+                request_id: [9; 32],
+                grant: signed_pre_admission(&created.room, &[9; 8]),
+                recipient_user_public_key: None,
+                inviter_name: None,
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    drop(release);
+    let retained = tilo_test_env::within(
+        "every change retained once the owner moves",
+        records.retained(created.workspace_id),
+    )
+    .await
+    .unwrap();
+    let published: Vec<Vec<u8>> = {
+        let governed = rooms.room(&created.room).await.unwrap();
+        let governed = governed.lock().await;
+        governed
+            .record
+            .outgoing
+            .iter()
+            .filter(|publication| !publication.checkpoint)
+            .map(|publication| publication.bytes.clone())
+            .collect()
+    };
+    assert!(
+        published.len() >= 48,
+        "{} changes published",
+        published.len()
+    );
+    let host = cert.device_public_key;
+    let mut bodies = retained
+        .iter()
+        .filter(|body| body.author == host)
+        .map(|body| &body.body);
+    for change in &published {
+        assert!(
+            bodies.any(|body| body == change),
+            "a published change is retained, after the ones published before it"
+        );
+    }
+    relay.shutdown().await;
 }

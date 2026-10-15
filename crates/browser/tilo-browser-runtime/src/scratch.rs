@@ -83,7 +83,11 @@ fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponen
             .map_err(LaunchError::Record)?;
     }
     let resource = page_resource();
-    let rename = tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |title| {
+    let action = resource
+        .actions
+        .first()
+        .ok_or_else(|| LaunchError::Operation("the scratch page has no rename action".into()))?;
+    let rename = tilo_actions::ActionBinding::new(&resource, action, |title| {
         let mut arguments = serde_json::Map::new();
         arguments.insert("title".into(), serde_json::Value::String(title));
         arguments

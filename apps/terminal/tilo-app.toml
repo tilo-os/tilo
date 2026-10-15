@@ -37,6 +37,9 @@ aarch64 = "aarch64"
 required = ["processes"]
 optional = ["clipboard", "files.paths", "app-files", "threads", "settings"]
 
+[resources]
+kinds = ["terminal.history", "terminal.session", "environment"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

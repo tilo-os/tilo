@@ -1401,8 +1401,8 @@ pub fn verify_agent_delegation(
         clippy::cast_sign_loss,
         reason = "a page clock in milliseconds is well inside u64 nanoseconds"
     )]
-    let now_ns = (now_ms.max(0.0) as u64).saturating_mul(1_000_000);
-    delegation.verify(&user, now_ns).map_err(js_error)?;
+    let at_ns = (now_ms.max(0.0) as u64).saturating_mul(1_000_000);
+    delegation.verify(&user, at_ns).map_err(js_error)?;
     let agent_id = delegation
         .delegate
         .agent_id()
@@ -2004,6 +2004,39 @@ impl WasmPeer {
                 request,
                 Box::new(move |sent| {
                     let _ = reply.send(sent);
+                }),
+            )
+            .map_err(js_error)?;
+        receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)
+    }
+
+    /// Tell the host which video codecs this page decodes (`codecs`, a JSON
+    /// array of `SurfaceStreamStart` labels such as `["h264","vp9"]`), so
+    /// sessions stream their legacy windows in `room` in one every member
+    /// plays. Resolves `false` when the host predates codec adverts.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed arguments, or when the host is not reached or
+    /// refuses the advert.
+    #[wasm_bindgen(js_name = legacyCodecs)]
+    pub async fn legacy_codecs(&self, room: String, codecs: String) -> Result<bool, JsError> {
+        let request = tilo_relay_protocol::legacy_window::CodecsRequest {
+            workspace_id: workspace(&room)?,
+            decode: serde_json::from_str(&codecs).map_err(js_error)?,
+        };
+        if !request.valid() {
+            return Err(js_error("codecs out of bounds"));
+        }
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .legacy_codecs_then(
+                request,
+                Box::new(move |taken| {
+                    let _ = reply.send(taken);
                 }),
             )
             .map_err(js_error)?;

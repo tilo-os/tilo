@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use tilo_seal::secret_service::CallerKey;
 use tilo_seal::{Context, Label, SymmetricKey, envelope};
 use tilo_user_identity::persist::{IdentityPaths, PersistError, load_device_key};
 use zeroize::Zeroizing;
@@ -90,6 +91,17 @@ pub trait KeySource: Send + Sync {
     ///
     /// [`Locked`] while the identity is unavailable.
     fn release(&self) -> std::result::Result<SymmetricKey, Locked>;
+
+    /// The key a caller the store cannot examine proves it holds the
+    /// device identity with ([`crate::app`]). A source with no device
+    /// identity behind it has none, and such callers stay refused.
+    ///
+    /// # Errors
+    ///
+    /// [`Locked`] while the identity is unavailable.
+    fn caller_key(&self) -> std::result::Result<CallerKey, Locked> {
+        Err(Locked::NoIdentity)
+    }
 }
 
 /// The key derived from the machine's device identity and the person's own
@@ -113,13 +125,24 @@ impl DeviceIdentityKey {
     }
 }
 
-impl KeySource for DeviceIdentityKey {
-    fn release(&self) -> std::result::Result<SymmetricKey, Locked> {
+impl DeviceIdentityKey {
+    fn device_seed(&self) -> std::result::Result<Zeroizing<[u8; 32]>, Locked> {
         let device = load_device_key(&self.paths).map_err(|error| match error {
             PersistError::Io(io) if io.kind() == io::ErrorKind::NotFound => Locked::NoIdentity,
             other => Locked::Unreadable(other.to_string()),
         })?;
-        let seed = Zeroizing::new(device.to_bytes());
+        Ok(Zeroizing::new(device.to_bytes()))
+    }
+}
+
+impl KeySource for DeviceIdentityKey {
+    fn caller_key(&self) -> std::result::Result<CallerKey, Locked> {
+        CallerKey::derive(self.device_seed()?.as_ref())
+            .map_err(|error| Locked::Unreadable(error.to_string()))
+    }
+
+    fn release(&self) -> std::result::Result<SymmetricKey, Locked> {
+        let seed = self.device_seed()?;
         let salt = load_or_create_salt(&self.salt_path)
             .map_err(|error| Locked::Unreadable(format!("salt: {error}")))?;
         tilo_seal::secret_service::store_key(seed.as_ref(), &salt, self.account.as_bytes())
@@ -241,6 +264,15 @@ impl Store {
             keys,
             inner: Mutex::new(Inner::default()),
         }
+    }
+
+    /// The key callers prove they hold the device identity with.
+    ///
+    /// # Errors
+    ///
+    /// [`Locked`] while the identity is unavailable.
+    pub fn caller_key(&self) -> std::result::Result<CallerKey, Locked> {
+        self.keys.caller_key()
     }
 
     /// Why the store is locked, or `None` when it is open. Tries to open it.

@@ -2425,10 +2425,6 @@ impl Widget for VideoPlayer {
         self.paint(scene, transform, text_renderer, theme);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one widget event boundary must coordinate pointer, keyboard, transport, scrub, volume, settings, and overlay interaction without splitting event ordering"
-    )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {

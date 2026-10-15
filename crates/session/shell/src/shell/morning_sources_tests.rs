@@ -317,7 +317,7 @@ fn morning_refresh_schedule_uses_durable_existing_scheduler_without_duplicate_re
             .is_empty()
     );
     clock.advance(chrono::Duration::minutes(1));
-    let fire = schedules.observe(
+    let mut fire = schedules.observe(
         TriggerEvent::Tick,
         &armed,
         TriggerContext {
@@ -325,6 +325,9 @@ fn morning_refresh_schedule_uses_durable_existing_scheduler_without_duplicate_re
             devices: &devices,
         },
     );
+    // The firing waits for the ledger the state writer puts on disk.
+    crate::shell::durable_writer::global().flush();
+    fire.extend(schedules.take_settled());
     assert_eq!(fire.len(), 1);
     assert_eq!(fire[0].room, "synthetic-room");
     assert_eq!(fire[0].shortcut, draft.id);

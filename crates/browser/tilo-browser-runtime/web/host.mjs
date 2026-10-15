@@ -54,7 +54,8 @@ const data=createDataLoader({baseURL:import.meta.url,runtime});
 /** The wasm runtime module, once loaded (the peer's codec and certificates). */
 export async function loadRuntime(){await ready();return runtime;}
 /** Open the WebGPU device and compile the renderer once the module is in,
- * while the page joins and opens the workspace; the first mount takes it.
+ * while the page opens the workspace it was let into; the first mount
+ * takes it.
  * Skipped where mounting would refuse WebGPU, and on WebKit, whose renderer
  * starts only once the page's load settled (`settleBeforeGpu`). */
 export function prepareGpu(){

@@ -76,7 +76,12 @@
 //! `participant` (a view that moves only the invoking participant's own
 //! view, such as an agent's caret, so a remote participant may invoke it) and
 //! `kind = "read"` (an effect that only reads, which whoever may read may
-//! invoke; an effect reaches outside the record by default, a view reads). Field
+//! invoke; an effect reaches outside the record by default, a view reads),
+//! and `offload(app = "…", entrypoint = "…", cpu_ms = N, memory_mb = N,
+//! output_mb = N, gpu)` (a `content`, `kind = "read"` transform of content
+//! inputs whose outputs depend on the inputs alone: the system may run it on
+//! the invoker's best-placed device as that signed package's catalogue
+//! entrypoint, and the handler is its local run; [`tilo_actions::Offload`]). Field
 //! `#[param("…")]` describes a parameter; `#[param(secret, "…")]` makes it a
 //! secret the host keeps out of logs, history and confirmations, and
 //! `#[param("…", choices = EXPR)]` names the values it takes when they are a
@@ -381,6 +386,41 @@ pub struct EffectRow {
     pub participant: bool,
     pub edits: bool,
     pub item: Option<&'static str>,
+    pub offload: Option<EffectOffload>,
+}
+
+/// An effect's `#[effect(offload(...))]`: the signed package entrypoint
+/// that performs the same content transform on another of the invoker's
+/// devices, and the bounds of the work ([`tilo_actions::Offload`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EffectOffload {
+    /// The signed package whose catalogue entrypoint performs the transform.
+    pub app: &'static str,
+    /// The package's catalogue (CLI) command that performs it.
+    pub entrypoint: &'static str,
+    /// Whether it needs a GPU.
+    pub gpu: bool,
+    /// CPU time ceiling, in milliseconds.
+    pub cpu_time_ms: u64,
+    /// Memory ceiling, in bytes.
+    pub memory_bytes: u64,
+    /// Ceiling on all outputs together, in bytes.
+    pub output_bytes: u64,
+}
+
+impl EffectOffload {
+    /// The declaration as the action contract carries it.
+    #[must_use]
+    pub fn contract(&self) -> tilo_actions::Offload {
+        tilo_actions::Offload {
+            app: self.app.to_owned(),
+            entrypoint: self.entrypoint.to_owned(),
+            gpu: self.gpu,
+            cpu_time_ms: self.cpu_time_ms,
+            memory_bytes: self.memory_bytes,
+            output_bytes: self.output_bytes,
+        }
+    }
 }
 
 /// The parameters of an effect that takes none.
@@ -447,6 +487,9 @@ pub struct EffectDecl {
     /// (`#[effect(item = connections)]`), its first parameter bound to the
     /// item's id: published on each item resource, as an item verb is.
     pub item: Option<&'static str>,
+    /// A content transform the system may run on the invoker's best-placed
+    /// device (`#[effect(offload(...))]`); the handler is its local run.
+    pub offload: Option<EffectOffload>,
 }
 
 /// The contract tag of an effect that submits only edits of its record
@@ -512,6 +555,7 @@ impl EffectDecl {
             participant: row.participant,
             edits: row.edits,
             item: row.item,
+            offload: row.offload,
         }
     }
 
@@ -614,6 +658,7 @@ impl EffectDecl {
                 }
                 tags
             },
+            offload: self.offload.as_ref().map(EffectOffload::contract),
             ..base
         };
         match self.risk_of {
@@ -723,6 +768,62 @@ mod tests {
     }
 
     const SHADES: [&str; 2] = ["light", "dark"];
+
+    /// A content transform declared offloadable.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.transforms")]
+    enum Transforms {
+        /// Shrink images.
+        #[effect(
+            content,
+            idempotent,
+            kind = "read",
+            offload(
+                app = "so.tilo.shrink",
+                entrypoint = "shrink",
+                cpu_ms = 60000,
+                memory_mb = 512,
+                output_mb = 8
+            )
+        )]
+        Shrink {
+            #[param(content, "The images")]
+            images: Vec<String>,
+        },
+        /// Copy an image.
+        #[effect(content, kind = "read")]
+        Copy {
+            #[param(content, "The image")]
+            image: String,
+        },
+    }
+
+    #[test]
+    fn an_offload_option_declares_a_valid_offloadable_contract() {
+        let specs = Transforms::specs();
+        let shrink = &specs[0];
+        assert_eq!(
+            shrink.contract.offload,
+            Some(tilo_actions::Offload {
+                app: "so.tilo.shrink".into(),
+                entrypoint: "shrink".into(),
+                gpu: false,
+                cpu_time_ms: 60_000,
+                memory_bytes: 512 * 1024 * 1024,
+                output_bytes: 8 * 1024 * 1024,
+            })
+        );
+        assert_eq!(shrink.contract.kind, ActionKind::Read);
+        assert!(
+            shrink.contract.validate_declaration().is_empty(),
+            "{:?}",
+            shrink.contract.validate_declaration()
+        );
+        assert_eq!(specs[1].contract.offload, None, "only where declared");
+        // Its inputs are the content its list of content names.
+        assert!(shrink.params()[0].is_content_list());
+        assert!(specs[1].params()[0].is_content());
+    }
 
     #[test]
     fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {

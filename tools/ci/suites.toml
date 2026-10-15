@@ -37,6 +37,12 @@
 # `inputs` saying what they read. A [[cargo-exempt]] entry names a reading file
 # whose read CI never runs, with the reason.
 
+# The archive smoke remains a prerequisite of t's image publication. Its
+# required hermetic contract runs the real shell with a stub archive runner.
+[[covered]]
+suite = "os/tests/ci_fast_images.sh"
+by = "os/tests/test_ci_fast_images.py"
+
 [[covered]]
 suite = "os/tests/image_size_budget.py"
 by = "os/tests/test_image_size_budget.py"
@@ -93,6 +99,7 @@ suites = [
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",
+  "os/tests/boot_health_greeter.sh",
   "os/tests/board_release_promotion.py",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
@@ -164,14 +171,11 @@ suites = [
   "os/tests/test_image_cohort_archives.py",
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
-  "os/tests/test_install_dev_ssh.py",
-  "os/tests/test_install_handoff_copy.py",
   "os/tests/test_installed_development_disk.py",
   "os/tests/test_loop_partition_nodes.py",
   "os/tests/test_installer_bootc_helper.py",
   "os/tests/test_installer_cmdline_projection.py",
   "os/tests/test_installer_firstboot_runtime.py",
-  "os/tests/test_installer_offline_target.py",
   "os/tests/test_installer_dev_target_uki.py",
   "os/tests/test_installer_code_refresh.py",
   "os/tests/test_installer_overlay.py",
@@ -210,7 +214,6 @@ suites = [
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
-  "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_probe_kvm.py",
   "os/tests/test_windows_dualboot_preflight.py",
@@ -232,8 +235,9 @@ suites = [
 
 [[group]]
 name = "os-workflows"
-inputs = ["os/", ".forgejo/workflows/"]
+inputs = ["os/", ".forgejo/workflows/", "t.toml", "tools/ci/publish/"]
 suites = [
+  "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-relay/test-contract.sh",
   "os/containers/tilo-agent-host/test-contract.sh",
   "os/tests/rpm_snapshot_invariants.sh",
@@ -471,12 +475,16 @@ inputs = [
   "crates/session/shell/examples/redraw_bench.rs",
   # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
   "tools/web/chrome.mjs",
+  # scripts/perf/native_stream_qualification.mjs reads the frame numbers its
+  # session example draws.
+  "crates/hosting/tilo-relay/examples/legacy_stream_source.rs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
   # default collection.
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
   "scripts/perf/browser_qualification.test.mjs",
+  "scripts/perf/native_stream_qualification.test.mjs",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_latency_bench_test.py",
   "scripts/perf/device_notes_latency_test.py",
@@ -582,6 +590,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/workspace-actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/json-text.test.mjs",
   "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs",
@@ -773,6 +782,20 @@ inputs = [
   "os/components.toml",
 ]
 readers = ["crates/system/staging-reclaim/tests/reclaim.rs"]
+
+[[cargo]]
+package = "tilo-install-helpers"
+# The helpers' tests check how the installer backend and its guided
+# partitioner call them.
+inputs = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition"]
+readers = [
+  "crates/system/install-helpers/tests/handoff_copy.rs",
+  "crates/system/install-helpers/tests/dev_ssh.rs",
+  "crates/system/install-helpers/tests/bootc_copy_cache.rs",
+  "crates/system/install-helpers/tests/offline_target.rs",
+  "crates/system/install-helpers/tests/staging_handoff.rs",
+  "crates/system/install-helpers/tests/install_proof.rs",
+]
 
 [[cargo]]
 package = "greeter"
@@ -1207,10 +1230,6 @@ by = "os/tests/imager_release_invariants.sh"
 suite = "os/tests/winget_publication_idempotency.sh"
 by = "os/tests/imager_release_invariants.sh"
 
-[[covered]]
-suite = "tools/ci/focused_test.py"
-by = "tools/tests/test_focused_test.py"
-
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.
 
@@ -1234,8 +1253,7 @@ workflow = "room-service-image.yml"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
-reason = "needs the built registry-server image"
-workflow = "release-registry-server.yml"
+reason = "needs the built registry-server image: t's image-registry-server check runs it"
 
 [[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
@@ -1520,9 +1538,12 @@ reason = "runs inside a booted guest, as root, and repartitions its disk"
 workflow = "dev-disk-boot-diagnostic.yml"
 
 [[unrequired]]
+suite = "os/tests/development_signing_native.sh"
+reason = "needs a privileged node for nested Podman: t's development-signing-<arch> checks run it"
+
+[[unrequired]]
 suite = "os/tests/release_tools_image.sh"
-reason = "needs the built release-tools image"
-workflow = "build-release-tools.yml"
+reason = "needs the built release-tools image: t's image-release-tools-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/rollback-boot-check.sh"

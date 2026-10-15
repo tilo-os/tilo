@@ -23,6 +23,9 @@ aarch64 = "aarch64"
 [capabilities]
 required = ["network.http", "secrets"]
 
+[resources]
+kinds = ["discord.guild"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

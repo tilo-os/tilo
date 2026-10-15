@@ -63,16 +63,51 @@ impl NotificationHistoryStore {
     ) -> std::io::Result<()> {
         let bytes = tilo_desktop::notifications::encode_history(history, wall_now, now)
             .map_err(std::io::Error::other)?;
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-            }
-        }
-        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)
+        write_history(&self.path, &bytes)
     }
+
+    /// [`Self::save`] on the process's state writer, for the compositor's
+    /// loop: under I/O pressure the write's fsyncs can take seconds, and the
+    /// loop must not wait for them. The history is encoded now; a newer save
+    /// that has not started replaces this one, and a failed write is logged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error when the history cannot be encoded.
+    pub fn save_in_background(&self, history: &[Notification]) -> std::io::Result<()> {
+        self.save_in_background_at(history, SystemTime::now(), Instant::now())
+    }
+
+    fn save_in_background_at(
+        &self,
+        history: &[Notification],
+        wall_now: SystemTime,
+        now: Instant,
+    ) -> std::io::Result<()> {
+        let bytes = tilo_desktop::notifications::encode_history(history, wall_now, now)
+            .map_err(std::io::Error::other)?;
+        let path = self.path.clone();
+        crate::shell::durable_writer::global().submit(path.clone(), move || {
+            if let Err(error) = write_history(&path, &bytes) {
+                tracing::warn!(path = %path.display(), "could not save notification history: {error}");
+            }
+        });
+        Ok(())
+    }
+}
+
+/// The directory is `0700` and the file `0600`, written atomically so a crash
+/// mid-write never leaves a torn history.
+fn write_history(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
 }
 
 #[cfg(test)]
@@ -132,6 +167,35 @@ mod tests {
             (Duration::from_secs(119)..=Duration::from_secs(121)).contains(&age),
             "age survives the round trip, got {age:?}"
         );
+    }
+
+    /// The compositor's loop saves the history whenever it changed; under
+    /// I/O pressure the write's fsyncs froze the desktop. The loop only
+    /// hands the write to the state writer.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn saving_from_the_loop_never_waits_for_the_disk() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = NotificationHistoryStore::at(dir.path().join("state/tilo/history.json"));
+        let now = Instant::now();
+        let wall = SystemTime::now();
+        let history = vec![from_app("mail", "queued")];
+        let saving = store.clone();
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(move || {
+            saving
+                .save_in_background_at(&history, wall, now)
+                .expect("encoded");
+        });
+        crate::shell::durable_writer::global().flush();
+        let restored = store.load_at(wall, now);
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].title, "queued");
+        let mode = std::fs::metadata(store.path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "the history file is private");
     }
 
     #[test]

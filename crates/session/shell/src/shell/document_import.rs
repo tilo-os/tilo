@@ -18,7 +18,8 @@ use tilo_peer_state::document_import::{
 };
 use ui::record::RecordId;
 
-use crate::shell::network::ShellNetwork;
+use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
+use crate::shell::network::{NativeOwnerStatus, ShellNetwork};
 use crate::shell::state::RoomId;
 
 /// How long a proposal waits for the owner before it lapses.
@@ -90,18 +91,42 @@ fn action_argument(
 }
 
 /// Governed rooms as this desktop's network and native owner reach them.
+///
+/// Asked by chrome's window transfers on the frame loop, so only an owner
+/// already open is read: opening one waits for the state file.
 pub struct NativeHostedRooms(pub Arc<ShellNetwork>);
+
+impl NativeHostedRooms {
+    fn owner(&self) -> Result<NativeWorkspaceOwner, String> {
+        match self.0.native_owner_status() {
+            NativeOwnerStatus::Open(owner) => Ok(owner),
+            NativeOwnerStatus::Opening => {
+                Err("this desktop's workspace authority is still opening".into())
+            }
+            NativeOwnerStatus::Unavailable => Err("native owner unavailable".into()),
+        }
+    }
+
+    /// This device's key for `room`, once its custody is current.
+    fn signing_key(&self, room: RoomId) -> Result<ed25519_dalek::SigningKey, String> {
+        self.0.native_signing_key_of(&self.owner()?, room)
+    }
+}
 
 impl HostedRooms for NativeHostedRooms {
     fn hosts(&self, room: RoomId) -> bool {
-        self.0
-            .native_owner()
-            .is_ok_and(|owner| owner.contains_room(room))
+        match self.0.native_owner_status() {
+            NativeOwnerStatus::Open(owner) => owner.contains_room(room),
+            // Not known yet: treated as governed, so nothing leaves or
+            // enters it unchecked meanwhile.
+            NativeOwnerStatus::Opening => true,
+            NativeOwnerStatus::Unavailable => false,
+        }
     }
 
     fn read(&self, room: RoomId, app: &str, record: &RecordId) -> Result<Vec<u8>, String> {
         use crate::shell::native_workspace_owner::DocumentRead;
-        let owner = self.0.native_owner()?;
+        let owner = self.owner()?;
         self.0.check_native_custody(&owner, room)?;
         let limit =
             usize::try_from(tilo_actions::remote::MAX_FETCHED_RECORD_BYTES).unwrap_or(usize::MAX);
@@ -135,7 +160,7 @@ impl HostedRooms for NativeHostedRooms {
         title: &str,
         document: &[u8],
     ) -> Pending<Result<[u8; 32], String>> {
-        let signed = self.0.native_signing_key(room).and_then(|key| {
+        let signed = self.signing_key(room).and_then(|key| {
             let issued = tilo_clock::unix_now();
             DocumentImportProposalV1::new(
                 &DocumentImportTerms {
@@ -173,7 +198,7 @@ impl HostedRooms for NativeHostedRooms {
     }
 
     fn proposal(&self, room: RoomId, id: &[u8; 32]) -> Option<ProposalStatus> {
-        let owner = self.0.native_owner().ok()?;
+        let owner = self.owner().ok()?;
         owner
             .with_current(room, |view| {
                 let doc = view.peer().admitted_room().ok_or("no room")?;
@@ -193,7 +218,7 @@ impl HostedRooms for NativeHostedRooms {
 
     fn awaiting_me(&self, room: RoomId) -> Option<Vec<Awaiting>> {
         // Only a listing: answering signs, and checks custody then.
-        let owner = self.0.native_owner().ok()?;
+        let owner = self.owner().ok()?;
         owner
             .with_current(room, |view| {
                 let member = view
@@ -239,7 +264,7 @@ impl HostedRooms for NativeHostedRooms {
         proposal: &DocumentImportProposalV1,
         accepted: bool,
     ) -> Pending<Result<(), String>> {
-        let decision = self.0.native_signing_key(room).and_then(|key| {
+        let decision = self.signing_key(room).and_then(|key| {
             DocumentImportDecisionV1::new(proposal, accepted, tilo_clock::unix_now(), &key)
                 .map_err(|error| error.to_string())
         });

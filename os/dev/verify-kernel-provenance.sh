@@ -41,6 +41,41 @@ environment="$(printf '%s' "$provenance" | python3 "$repo/os/dev/kernel-build-en
 cosign verify --key "$key" "$environment" >/dev/null \
   || die "the kernel buildroot $environment bound by the Tilo kernel is not signed by the release key"
 
-actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"
+if command -v skopeo >/dev/null; then
+  actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"
+else
+  # The image config's architecture, read anonymously from the registry.
+  actual_arch="$(python3 - "$ref" <<'PY'
+import json, re, sys, urllib.error, urllib.parse, urllib.request
+name, digest = sys.argv[1].split("@")
+host, repository = name.split("/", 1)
+token = None
+def get(path, accept):
+    global token
+    for attempt in range(2):
+        request = urllib.request.Request(f"https://{host}/v2/{repository}/{path}", headers={"Accept": accept})
+        if token:
+            # Not forwarded when a blob redirects to storage that signs its own URLs.
+            request.add_unredirected_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            challenge = error.headers.get("WWW-Authenticate", "")
+            if error.code != 401 or attempt or not challenge.startswith("Bearer "):
+                raise
+            # An anonymous pull token, as the registry's challenge describes.
+            fields = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+            query = urllib.parse.urlencode({k: v for k, v in fields.items() if k in ("service", "scope")})
+            with urllib.request.urlopen(f"{fields['realm']}?{query}", timeout=60) as response:
+                answer = json.load(response)
+            token = answer.get("token") or answer.get("access_token")
+manifest = get(f"manifests/{digest}", "application/vnd.oci.image.manifest.v1+json, "
+               "application/vnd.docker.distribution.manifest.v2+json")
+config = get(f"blobs/{manifest['config']['digest']}", "*/*")
+print(config["architecture"])
+PY
+)"
+fi
 [ "$actual_arch" = "$expected_arch" ] \
   || die "signed Tilo kernel architecture is $actual_arch, expected $expected_arch"

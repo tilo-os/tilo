@@ -417,7 +417,6 @@ use crate::compositor::test_control::{
     parse_request, serialise_response,
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
-use crate::shell::overlay_host::PeerSyncRequest;
 
 /// The lock surface hides the complete desktop tree.  Its background widgets
 /// may legitimately keep animating (an opening app, a video, a closing
@@ -7391,9 +7390,6 @@ fn priority_route(
     }
 }
 
-/// How long an invite minted from the palette stays valid.
-const INVITE_EXPIRY_SECONDS: u64 = 3600;
-
 fn active_physical_gamepad_binding(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
@@ -7781,7 +7777,7 @@ fn install_wifi_secret_bridge(
 fn spawn_session_peer_sync(
     frame_builder: &mut FrameBuilder,
     state: &mut State,
-    tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    tree_handle: &crate::shell::state::WorkspaceTreeHandle,
 ) -> Option<Arc<crate::shell::network::ShellNetwork>> {
     match crate::shell::network::ShellNetwork::spawn_for_session(tree_handle.clone()) {
         Ok(handle) => Some(install_session_peer_sync(
@@ -7855,7 +7851,7 @@ fn install_legacy_streams(state: &mut State, net: &Arc<crate::shell::network::Sh
 fn install_session_peer_sync(
     frame_builder: &mut FrameBuilder,
     state: &mut State,
-    tree_handle: crate::shell::state::WorkspaceTreeHandle,
+    tree_handle: &crate::shell::state::WorkspaceTreeHandle,
     handle: crate::shell::network::ShellNetwork,
 ) -> Arc<crate::shell::network::ShellNetwork> {
     let _ = handle.join_default_workspace();
@@ -7875,7 +7871,7 @@ fn install_session_peer_sync(
     frame_builder.host_mut().set_personal_devices(Arc::new(
         crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
     ));
-    install_window_hosting(&net, &tree_handle);
+    install_window_hosting(&net, tree_handle);
     let hosted_net = Arc::clone(&net);
     frame_builder.with_chrome(move |chrome| {
         chrome.window_transfers.set_hosted_rooms(Box::new(
@@ -7883,75 +7879,12 @@ fn install_session_peer_sync(
         ));
     });
     install_legacy_streams(state, &net);
-    let bridge_net = Arc::clone(&net);
-    frame_builder
-        .host_mut()
-        .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
-            let active = tree_handle.read().desktop.active;
-            match req {
-                PeerSyncRequest::PrepareInvitation => Ok(bridge_net.prepare_invitation()),
-                PeerSyncRequest::ExportIdentity => bridge_net
-                    .person_identity_card(active)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::IssueInviteFor {
-                    name,
-                    role,
-                    recipient_user_public_key,
-                } => bridge_net
-                    .issue_invite_bound_with_role(
-                        active,
-                        INVITE_EXPIRY_SECONDS,
-                        &name,
-                        recipient_user_public_key,
-                        role,
-                    )
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::IssueInvitation(terms) => bridge_net
-                    .issue_invitation(active, &terms)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::AcceptInvite(token) => {
-                    bridge_net.accept_peer_invitation(active, &token)
-                }
-                PeerSyncRequest::PollEnrollment(id) => bridge_net.poll_enrollment(id),
-                PeerSyncRequest::CancelEnrollment(id) => bridge_net.cancel_enrollment(id),
-                PeerSyncRequest::ListPendingInvitations => {
-                    let room = tree_handle
-                        .read()
-                        .desktop
-                        .active_workspace()
-                        .map(|workspace| workspace.room)
-                        .ok_or_else(|| "no active workspace".to_string())?;
-                    Ok(
-                        crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
-                            bridge_net
-                                .pending_invitations(room)
-                                .into_iter()
-                                .map(|invite| {
-                                    crate::shell::overlay_host::PendingInvitationSummary {
-                                        id: invite.id,
-                                        name: invite.name,
-                                        role: invite.role,
-                                        expiry_unix_seconds: invite.expiry_unix_seconds,
-                                    }
-                                })
-                                .collect(),
-                        ),
-                    )
-                }
-                PeerSyncRequest::ResendInvitation(id) => bridge_net
-                    .resend_invitation(&id)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::CancelInvitation(id) => {
-                    if bridge_net.cancel_invitation(&id) {
-                        Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
-                            "canceled".into(),
-                        ))
-                    } else {
-                        Err("invitation is no longer pending".into())
-                    }
-                }
-            }
-        }));
+    // Invitations, redemptions and enrollments wait on relays and the
+    // disk: chrome's requests run on the network's worker, never here.
+    net.start_peer_sync_worker();
+    frame_builder.host_mut().set_peer_sync_worker(
+        crate::shell::overlay_host::PeerSyncWorker::for_network(&net),
+    );
     net
 }
 
@@ -9018,6 +8951,9 @@ pub fn run() {
     if let Some(reason) = live_settings.degraded() {
         tracing::warn!(%reason, "settings changes may arrive late");
     }
+    // Continuity checks run per fabric message on this loop: from here on
+    // they read this snapshot, never the settings document.
+    crate::shell::continuity_policy::follow(&live_settings);
     spawn_auto_brightness_worker(live_settings.clone());
 
     // `--backend drm|winit` selects the native backend implementation.
@@ -9380,7 +9316,7 @@ pub fn run() {
     // Peer sync is constructed here because this is the compositor that boots
     // as the Tilo session.
     let mut peer_sync = enable_peer_sync
-        .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
+        .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, &tree_handle))
         .flatten();
     let mut device_fabric_runtime = peer_sync.as_ref().map(|network| {
         crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(network, notif_bridge.clone())
@@ -11402,7 +11338,7 @@ pub fn run() {
                 // older periodic sample.
                 crate::shell::device_fabric_runtime::person_layout::refresh(
                     network,
-                    crate::shell::continuity_policy::ContinuityPolicySnapshot::load(),
+                    continuity_policy.current(),
                 );
                 if let Some(view) =
                     crate::shell::device_fabric_runtime::person_layout::current(network)
@@ -12233,7 +12169,7 @@ pub fn run() {
         let pump_bookkeeping_done = Instant::now();
         let pump_network_started = pump_bookkeeping_done;
         if let Some(net) = peer_sync.as_ref() {
-            pump_phase!("network-tick", net.tick());
+            pump_phase!("network-tick", net.frame_tick());
             let runtime = device_fabric_runtime.get_or_insert_with(|| {
                 crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
                     net,
@@ -12739,7 +12675,7 @@ pub fn run() {
                     peer_sync = Some(install_session_peer_sync(
                         &mut frame_builder,
                         &mut state,
-                        tree_handle.clone(),
+                        &tree_handle,
                         network,
                     ));
                     if let Some(net) = peer_sync.as_ref() {

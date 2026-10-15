@@ -2,7 +2,8 @@
 //! `shell_proof_fixture`).
 use super::*;
 use crate::ShellAuthority as _;
-use tilo_peer_state::{NeighbourMsg, StatePeer};
+use neighbour_wire::NeighbourMsg;
+use tilo_peer_state::StatePeer;
 use tilo_relay::store::WorkspaceStore;
 use tilo_relay::transport::Envelope;
 

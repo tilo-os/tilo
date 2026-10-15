@@ -1,4 +1,20 @@
+use super::accessibility::{review_action_target, tool_action_a11y_label};
+use super::block_layout::{line_spacing as block_line_spacing, list_marker_x};
+use super::image_layout::{
+    cropped_source as cropped_image_source, paint_transform as image_paint_transform,
+};
+use super::text_runs::{
+    block_change_decos, block_comment_ranges, block_note_refs, block_runs, composed_block,
+    note_numbering, note_text, running_head_runs,
+};
+use super::toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE};
 use super::*;
+use crate::compact_swatch_palette::PaletteKind;
+use crate::effects::WordProcessorEffect;
+use crate::style_menu::StyleMenuAction;
+use ui::{PresenceCtx, clipboard_paste};
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 fn edits(doc: &mut automerge::AutoCommit) -> ui::widget::Edits<'_> {
     ui::widget::Edits::lend(doc)
 }

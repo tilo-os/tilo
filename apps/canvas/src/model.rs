@@ -14,7 +14,7 @@ use ui::num::f32_of_f64;
 use ui::num::f64_of_usize;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Id, Identified, JsonSchema, Keyed, Model};
+use ui::tilo_resource::{self, Id, Identified, JsonSchema, Keyed, Map, Model};
 use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 
 /// The largest artwork side, in units.
@@ -558,7 +558,7 @@ pub struct Artwork {
     /// [`Artwork::settle`]).
     pub marks: Keyed<Mark>,
     /// Media presets saved in this artwork, by id.
-    pub media: BTreeMap<String, crate::media::MediumSpec>,
+    pub media: Map<crate::media::MediumSpec>,
     pub reference: Option<Reference>,
     pub selection: Option<Selection>,
 }
@@ -572,7 +572,7 @@ impl Default for Artwork {
             ground: Ground::default(),
             layers: Keyed::new(),
             marks: Keyed::new(),
-            media: BTreeMap::new(),
+            media: Map::new(),
             reference: None,
             selection: None,
         }

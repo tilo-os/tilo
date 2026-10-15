@@ -5791,10 +5791,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the phases share one linked pair: quiet, an older neighbour, departure"
-    )]
     async fn linked_actors_keep_liveness_on_the_transport_and_say_nothing_while_idle() {
         // The upkeep tick runs every 50 ms here, a hundred times its pace in
         // a session, so a second of idling is a hundred ticks.

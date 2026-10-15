@@ -160,6 +160,7 @@ members = [
     "crates/collab/collab-fixtures",
     "crates/collab/collab-types",
     "crates/collab/neighbour-wire",
+    "crates/collab/owner-commit",
     "crates/collab/reference",
     "crates/collab/feedback-review",
     "crates/collab/feedback",
@@ -354,6 +355,7 @@ members = [
     "crates/system/host-fs",
     "crates/system/host-info",
     "crates/system/image-policy-check",
+    "crates/system/install-helpers",
     "crates/system/libvirt-domain",
     "crates/system/messaging-protocol",
     "crates/system/os-actions",
@@ -683,6 +685,9 @@ walkdir = "2.5.0"
 lru = { version = "0.18.3", default-features = false }
 moka = { version = "0.12.15", features = ["sync"] }
 regex = "1"
+# For patterns in code every browser visitor loads first (action schemas,
+# feedback redaction): about a tenth of `regex`'s size, ASCII classes only.
+regex-lite = "0.1"
 semver = "1"
 parking_lot = "0.12.5"
 fluent = "0.17.0"

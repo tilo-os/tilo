@@ -2,7 +2,7 @@
 "apps/word-processor/src/actions.rs" = 2
 "apps/word-processor/src/actions/continuation.rs" = 1
 "apps/word-processor/src/semantic_read/action/tests.rs" = 1
-"apps/word-processor/src/widget.rs" = 1
+"apps/word-processor/src/widget/controls.rs" = 1
 "apps/word-processor/src/widget/tests.rs" = 4
 
 [ratchets.untyped_action_args]
@@ -22,3 +22,6 @@
 "apps/word-processor/src/widget/participant_tests.rs" = 2
 "apps/word-processor/src/widget/tests.rs" = 15
 "apps/word-processor/src/word_processor.rs" = 5
+
+[ratchets.widget_owned_document]
+"apps/word-processor/src/widget/controls.rs" = 1

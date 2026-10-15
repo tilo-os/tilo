@@ -26,6 +26,9 @@ aarch64 = "aarch64"
 required = ["network.http"]
 optional = ["files.open", "files.save", "files.paths", "app-files", "open-uri", "network.fetch-proxy", "network.sockets"]
 
+[resources]
+kinds = ["feeds.library"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

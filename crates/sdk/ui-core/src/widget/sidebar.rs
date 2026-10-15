@@ -27,22 +27,10 @@ use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::{AuthoredExtent, SplitHandle, SplitOrientation, SplitRatio};
 
 /// The docked sidebar width every shell shares (`Metrics::sidebar_width`).
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
-)]
 pub const DEFAULT_DRAWER_DOCKED_WIDTH: f64 = Metrics::BASE.sidebar_width as f64;
 /// The overlay drawer width (`Metrics::drawer_width`).
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
-)]
 pub const DEFAULT_DRAWER_WIDTH: f64 = Metrics::BASE.drawer_width as f64;
 /// At or above this width the drawer docks (`Metrics::compact_breakpoint`).
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
-)]
 pub const DEFAULT_DRAWER_BREAKPOINT: f64 = Metrics::BASE.compact_breakpoint as f64;
 /// Upper bound (seconds) on the per-frame delta used to advance the slide, so
 /// a stale clock (first frame, or a parked event loop) can't teleport it.

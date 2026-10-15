@@ -2146,7 +2146,7 @@ mod tests {
                 .map(|reader| reader.route)
         };
         let overridden = Rc::new(crate::resource::Windows {
-            routes: std::collections::BTreeMap::from([("adobe-reader".into(), Route::Proton)]),
+            routes: ui::tilo_resource::Map::from_iter([("adobe-reader", Route::Proton)]),
         });
 
         let mut capture = WindowsApp::new_offline();

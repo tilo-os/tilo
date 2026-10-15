@@ -479,10 +479,6 @@ async fn serve_cli() -> anyhow::Result<()> {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "each argument is a separately audited CronJob control at the CLI boundary"
-)]
 fn cmd_authorize_channel(
     storage: &Storage,
     owner_key_file: &std::path::Path,

@@ -15,6 +15,9 @@ pub(crate) use file_clipboard::test_support::TestTransferPause;
 #[path = "broker_services/native_effect_tests.rs"]
 mod native_effect_tests;
 mod nearby_transfer;
+mod owner_source;
+#[cfg(test)]
+pub(crate) use owner_source::OPENING as NATIVE_OWNER_OPENING;
 mod resource_views;
 mod task_execution;
 pub use nearby_transfer::NativeNearbyTransfer;
@@ -29,9 +32,13 @@ use tilo_action_broker::services::{
 
 /// The same state.json owner used by canonical enrollment and ingress. Network
 /// availability never supplies or removes this durable admission boundary.
+///
+/// Built on the compositor's loop, so building it only starts the owner's
+/// open ([`owner_source`]): synchronous questions answer from an owner
+/// already open, commits wait for the open inside their futures.
 pub(crate) struct NativeOwnerCommitService {
     tree: WorkspaceTreeHandle,
-    owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
+    owner: owner_source::OwnerSource,
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 }
@@ -40,38 +47,40 @@ impl NativeOwnerCommitService {
         tree: WorkspaceTreeHandle,
         network: Option<Arc<super::network::ShellNetwork>>,
     ) -> Self {
-        let opened = match network.as_ref() {
-            Some(network) => network.native_owner(),
-            None => super::native_workspace_owner::open(tree.clone()),
-        };
-        let owner = match opened {
-            Ok(owner) => Some(owner),
-            Err(error) => {
-                tracing::warn!(%error,"native durable owner unavailable");
-                None
-            }
-        };
         Self {
+            owner: owner_source::OwnerSource::new(&tree, network.as_ref()),
             tree,
-            owner,
             network,
             history_keys: None,
         }
     }
-    pub(crate) fn owner(&self) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
-        self.owner.clone()
+    /// The owner, waiting for its open: for a worker thread, never the loop.
+    pub(crate) fn resolve_owner(
+        &self,
+    ) -> Result<super::native_workspace_owner::NativeWorkspaceOwner, String> {
+        self.owner.resolve()
+    }
+    /// The owner if it is open, never waiting: a synchronous question while
+    /// it opens hears so, and `unavailable` when there is none.
+    fn opened_owner(
+        &self,
+        unavailable: &str,
+    ) -> Result<super::native_workspace_owner::NativeWorkspaceOwner, String> {
+        self.owner.opened(unavailable)
     }
 }
-impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
+impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
     fn commit_member_effect_receipt(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        request: tilo_owner_commit::OwnerCommitRequest,
         caller: tilo_user_identity::DeviceCert,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
+    ) -> tilo_owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
         Box::pin(async move {
-            let owner = owner.ok_or("native effect governor unavailable")?;
+            let owner = owner
+                .resolve()
+                .map_err(|error| format!("native effect governor unavailable: {error}"))?;
             let room = super::state::RoomId::parse(&request.room).ok_or("invalid effect room")?;
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
@@ -99,27 +108,25 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
     }
     fn health(&self) -> Result<(), String> {
-        self.owner
-            .as_ref()
-            .ok_or("native durable owner unavailable")?
+        self.opened_owner("native durable owner unavailable")?
             .health()
     }
     fn commit(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        request: tilo_owner_commit::OwnerCommitRequest,
+    ) -> tilo_owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
         Box::pin(async move {
-            let owner = owner.ok_or("native durable owner unavailable")?;
+            let owner = owner
+                .resolve()
+                .map_err(|error| format!("native durable owner unavailable: {error}"))?;
             let room = super::state::RoomId::parse(&request.room).ok_or("invalid native room")?;
             if let Some(network) = network {
                 network.check_native_custody(&owner, room)?;
                 // The room's receipts are its governor's to record.
-                if let tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                    redacted,
-                    ..
-                } = &request.operation
+                if let tilo_owner_commit::CommitOperation::EffectReceipt { redacted, .. } =
+                    &request.operation
                     && network.governed_elsewhere(room)
                 {
                     return record_receipt_elsewhere(&network, &owner, room, &request, redacted)
@@ -128,13 +135,13 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
             }
             if matches!(
                 request.operation,
-                tilo_peer_state::owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+                tilo_owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
             ) {
                 return owner.commit_workspace_task_command(request, std::time::SystemTime::now());
             }
             if matches!(
                 request.operation,
-                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
+                tilo_owner_commit::CommitOperation::EffectReceipt { .. }
             ) {
                 let (key, governor) =
                     tilo_identity_host::broker::trusted_current_device(&request.room)
@@ -155,10 +162,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         id: uuid::Uuid,
         mutation: bool,
     ) -> Result<(), String> {
-        let owner = self
-            .owner
-            .as_ref()
-            .ok_or("native checkpoint governor unavailable")?;
+        let owner = &self.opened_owner("native checkpoint governor unavailable")?;
         owner.health()?;
         let room_id = super::state::RoomId::parse(room).ok_or("invalid checkpoint room")?;
         if let Some(network) = self.network.as_ref() {
@@ -197,7 +201,9 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         let owner = self.owner.clone();
         let network = self.network.clone();
         Box::pin(async move {
-            let owner = owner.ok_or("native checkpoint governor unavailable")?;
+            let owner = owner
+                .resolve()
+                .map_err(|error| format!("native checkpoint governor unavailable: {error}"))?;
             owner.health()?;
             let room =
                 super::state::RoomId::parse(&request.room).ok_or("invalid checkpoint room")?;
@@ -232,13 +238,11 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
     }
 
     fn requires_room(&self, room: &str) -> bool {
-        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
+        tilo_owner_commit::OwnerCommitService::requires_room(self, room)
     }
 
     fn health(&self) -> Result<(), String> {
-        self.owner
-            .as_ref()
-            .ok_or("native membership owner unavailable")?
+        self.opened_owner("native membership owner unavailable")?
             .health()
     }
 
@@ -247,20 +251,20 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         room: &str,
     ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
         let room = super::state::RoomId::parse(room).ok_or("invalid native task room")?;
-        self.owner
-            .as_ref()
-            .ok_or("native task owner unavailable")?
+        self.opened_owner("native task owner unavailable")?
             .workspace_task_snapshot(room)
     }
 
     fn execute(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        request: tilo_owner_commit::OwnerCommitRequest,
+    ) -> tilo_owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
         Box::pin(async move {
-            let owner = owner.ok_or("native membership owner unavailable")?;
+            let owner = owner
+                .resolve()
+                .map_err(|error| format!("native membership owner unavailable: {error}"))?;
             let room = super::state::RoomId::parse(&request.room)
                 .ok_or("invalid native membership room")?;
             if let Some(network) = network.as_ref() {
@@ -271,7 +275,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             }
             let receipt = if matches!(
                 request.operation,
-                tilo_peer_state::owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
+                tilo_owner_commit::CommitOperation::WorkspaceTaskCommand { .. }
             ) {
                 owner.commit_workspace_task_command(request, std::time::SystemTime::now())?
             } else {
@@ -307,10 +311,10 @@ async fn grant_authorship_at_host(
     network: &super::network::ShellNetwork,
     owner: &super::native_workspace_owner::NativeWorkspaceOwner,
     room: super::state::RoomId,
-    request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
-) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
+    request: &tilo_owner_commit::OwnerCommitRequest,
+) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
     const REFUSED: &str = "workspace membership requires the governing owner";
-    let tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
+    let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
         caller,
         command:
             tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
@@ -339,7 +343,7 @@ async fn grant_authorship_at_host(
                 {
                     return Ok(None);
                 }
-                Ok(Some(tilo_peer_state::owner_commit::OwnerCommitReceipt {
+                Ok(Some(tilo_owner_commit::OwnerCommitReceipt {
                     binding: request.binding()?,
                     generation: view.generation(),
                     aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
@@ -361,11 +365,10 @@ async fn record_receipt_elsewhere(
     network: &super::network::ShellNetwork,
     owner: &super::native_workspace_owner::NativeWorkspaceOwner,
     room: super::state::RoomId,
-    request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
+    request: &tilo_owner_commit::OwnerCommitRequest,
     redacted: &[u8],
-) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
-    let tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { invocation, .. } =
-        &request.operation
+) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
+    let tilo_owner_commit::CommitOperation::EffectReceipt { invocation, .. } = &request.operation
     else {
         return Err("missing effect receipt operation".into());
     };
@@ -396,7 +399,7 @@ async fn record_receipt_elsewhere(
                             "admitted terminal receipt differs from this broker's outcome".into(),
                         );
                     }
-                    return Ok(Some(tilo_peer_state::owner_commit::OwnerCommitReceipt {
+                    return Ok(Some(tilo_owner_commit::OwnerCommitReceipt {
                         binding: request.binding()?,
                         generation: view.generation(),
                         aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
@@ -1680,7 +1683,8 @@ impl ContinuationServices for NativeContinuations {
         }) = ui::collaboration::handoff::HandoffReport::decode(&message)
         {
             use super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
-            if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::AppContinuations) {
+            if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::AppContinuations)
+            {
                 return Err("app continuation permission is disabled".into());
             }
             return super::personal_continuity_registry::global_registry()
@@ -1869,6 +1873,7 @@ pub fn native_services(
                 pairing: super::device_pairing::Pairing::session(),
             }) as Arc<dyn tilo_action_broker::services::DevicePairingServices>
         }),
+        identity_admin: membership.as_ref().map(super::identity_admin::broker_door),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),

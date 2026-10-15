@@ -15,8 +15,9 @@
 
 use std::sync::Arc;
 
+use neighbour_wire::NeighbourMsg;
 use tilo_connector::BlobAccess as _;
-use tilo_peer_state::{NeighbourMsg, peer_handle};
+use tilo_peer_state::peer_handle;
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::room_bots::installed::FsBlobs;
 use tilo_relay::rooms::RoomSummary;

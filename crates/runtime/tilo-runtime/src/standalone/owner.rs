@@ -24,12 +24,10 @@ use std::{
 };
 use tilo_action_broker::channel_encryption::ChannelKeyProvider;
 use tilo_desktop_model::RoomId;
-use tilo_peer_state::{
-    SeedState, StatePeer,
-    owner_commit::{
-        CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
-    },
+use tilo_owner_commit::{
+    CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
 };
+use tilo_peer_state::{SeedState, StatePeer};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// The owner's file in the profile.

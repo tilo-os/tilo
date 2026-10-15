@@ -68,6 +68,81 @@ def action_inputs(block):
 
 
 class BuilderCandidates(unittest.TestCase):
+    def test_windows_recipe_preserves_tooling_without_the_crypto_cli(self):
+        builder = (ROOT / 'os/Containerfile.builder').read_text()
+        block = builder.split('ARG JSIGN_VERSION=', 1)[1].split('\nRUN ', 1)[1].split('\n\n', 1)[0]
+        script = '\n'.join(line for line in block.splitlines()
+                           if not line.lstrip().startswith('--mount='))
+        # Run the actual shell recipe without downloading assets or modifying the
+        # host. Only the generated jsign wrapper is written, inside the fixture.
+        script = script.replace('/usr/local/bin/jsign', './jsign')
+        stubs = r'''
+record() { builtin printf '%s\n' "$*" >> calls; [[ $1 != "$FAIL_AT" ]]; }
+uname() { builtin printf '%s\n' "$ARCH"; }
+dnf() {
+  record dnf "$@" || return 1
+  if [[ $1 == install ]]; then builtin printf '%s\n' "$@" > packages; fi
+}
+awk() { builtin printf '%064d\n' 1; }
+sha256sum() { command cat >> checksums; record sha256sum "$@"; }
+tar() { record tar "$@"; }
+bash() { record bash "$@"; }
+wine() { record wine "$@"; }
+wineserver() { record wineserver "$@"; }
+cp() { record cp "$@"; }
+rm() { record rm "$@"; }
+install() { record install "$@"; }
+chmod() { record chmod "$@"; }
+jsign() { record jsign "$@"; }
+# Neither removed crypto tool may be reintroduced by the recipe.
+osslsigncode() { record osslsigncode "$@"; return 1; }
+openssl() { record openssl "$@"; return 1; }
+test() {
+  if [[ $1 == -f && $2 == /opt/inno-setup/ISCC.exe ]]; then
+    record inno-present
+  else
+    builtin test "$@"
+  fi
+}
+'''
+        for arch, failure in [('aarch64', 'none')] + [
+            ('x86_64', failure) for failure in
+            ('none', 'dnf', 'sha256sum', 'bash', 'wine', 'wineserver', 'cp',
+             'inno-present', 'install', 'chmod', 'jsign')
+        ]:
+            with self.subTest(arch=arch, failure=failure), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory)
+                result = subprocess.run(
+                    ['bash', '-e', '-c', stubs + script], cwd=work,
+                    env={**os.environ, 'ARCH': arch, 'FAIL_AT': failure,
+                         'INNO_SETUP_VERSION': '6.7.3', 'JSIGN_VERSION': '7.6'},
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode == 0, failure == 'none', result.stderr)
+                if arch == 'aarch64':
+                    self.assertEqual(list(work.iterdir()), [])
+                elif failure == 'none':
+                    self.assertEqual((work / 'packages').read_text().splitlines(), [
+                        'install', '-y', '--setopt=install_weak_deps=False',
+                        'wine-core', 'wine-common', 'wine-cms', 'java-25-openjdk-headless',
+                        'python3-pyyaml', 'python3-jsonschema',
+                    ])
+                    calls = (work / 'calls').read_text().splitlines()
+                    self.assertEqual(calls.count('sha256sum --check --strict'), 2)
+                    self.assertEqual((work / 'checksums').read_text().splitlines(), [
+                        f'{1:064d}  /tilo-assets/innosetup-6.7.3.exe',
+                        f'{1:064d}  /tilo-assets/jsign-7.6.jar',
+                    ])
+                    self.assertIn('bash /tmp/wine-prefix.sh', calls)
+                    self.assertIn('wineserver -w', calls)
+                    self.assertIn('cp -r /tmp/inno-prefix/drive_c/inno-setup /opt/inno-setup', calls)
+                    self.assertIn('inno-present', calls)
+                    self.assertIn('jsign --help', calls)
+                    self.assertFalse(any(call.split()[0] in ('openssl', 'osslsigncode')
+                                         for call in calls), calls)
+                    self.assertEqual((work / 'jsign').read_text(),
+                                     '#!/bin/sh\nexec java -jar /usr/local/share/jsign/jsign.jar "$@"\n')
+
     def test_registry_write_ordering(self):
         with self.subTest(phase="native_registry_writers_are_serialized"):
             build_job = BUILD.split('\n  build:\n', 1)[1].split('\n  images:\n', 1)[0]
