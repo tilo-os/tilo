@@ -437,7 +437,8 @@ impl InputCaptureBackend {
         options: HashMap<String, OwnedValue>,
     ) -> Reply {
         answer(async move {
-            let requested = opt_u32(&options, "capabilities").unwrap_or(0) & capability::ALL;
+            let requested = crate::portal::option::<u32>(&options, "capabilities").unwrap_or(0)
+                & capability::ALL;
             if requested == 0 {
                 return Err(Ended::Failed);
             }
@@ -513,7 +514,8 @@ impl InputCaptureBackend {
         options: HashMap<String, OwnedValue>,
     ) -> Reply {
         answer(async move {
-            let requested = opt_u32(&options, "capabilities").unwrap_or(0) & capability::ALL;
+            let requested = crate::portal::option::<u32>(&options, "capabilities").unwrap_or(0)
+                & capability::ALL;
             let requested_persist_mode = match requested_persist_mode(&options) {
                 Ok(mode) => mode,
                 Err(()) => return Err(Ended::Failed),
@@ -689,7 +691,9 @@ impl InputCaptureBackend {
                             zone_set == current_zone_set && valid_barrier(barrier, &zones)
                         }) {
                             Some(barrier) => accepted.push(barrier),
-                            None => failed.push(opt_u32(&raw, "barrier_id").unwrap_or(0)),
+                            None => failed.push(
+                                crate::portal::option::<u32>(&raw, "barrier_id").unwrap_or(0),
+                            ),
                         }
                     }
                     if let Ok(mut state) = self.compositor.state.lock()
@@ -971,7 +975,7 @@ fn close_session(state: &Arc<Mutex<CaptureState>>, key: &str) {
 }
 #[cfg(target_os = "linux")]
 fn parse_barrier(raw: &HashMap<String, OwnedValue>) -> Option<PointerBarrier> {
-    let id = opt_u32(raw, "barrier_id")?;
+    let id = crate::portal::option::<u32>(raw, "barrier_id")?;
     if id == 0 {
         return None;
     }
@@ -997,15 +1001,11 @@ fn valid_barrier(barrier: &PointerBarrier, zones: &[CaptureZone]) -> bool {
         inside && (vertical_edge || horizontal_edge)
     })
 }
-fn opt_u32(values: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
-    u32::try_from(values.get(key)?.try_clone().ok()?).ok()
-}
-
 /// InputCapture v2 accepts the common persistence vocabulary. Until Tilo has
 /// a durable, revocable restore store, a valid request is answered with the
 /// effective mode zero in `Start` rather than a misleading restore record.
 fn requested_persist_mode(values: &HashMap<String, OwnedValue>) -> Result<u32, ()> {
-    let mode = opt_u32(values, "persist_mode").unwrap_or(0);
+    let mode = crate::portal::option::<u32>(values, "persist_mode").unwrap_or(0);
     (mode <= 2).then_some(mode).ok_or(())
 }
 fn insert_value(values: &mut HashMap<String, OwnedValue>, key: &str, value: Value<'_>) {

@@ -35,15 +35,6 @@ impl EmailBackend {
         }
     }
 }
-#[cfg(target_os = "linux")]
-fn string(options: &HashMap<String, OwnedValue>, key: &str, max: usize) -> Option<String> {
-    options
-        .get(key)?
-        .try_clone()
-        .ok()
-        .and_then(|v| String::try_from(v).ok())
-        .filter(|v| v.len() <= max && !v.chars().any(char::is_control))
-}
 fn strings(
     options: &HashMap<String, OwnedValue>,
     key: &str,
@@ -133,7 +124,7 @@ impl EmailBackend {
             ) else {
                 return Err(Ended::Failed);
             };
-            if let Some(address) = string(&options, "address", 4096) {
+            if let Some(address) = crate::portal::text_option(&options, "address", 4096) {
                 addresses.push(address);
             }
             let attachment_paths = attachments
@@ -149,11 +140,11 @@ impl EmailBackend {
                 addresses,
                 cc,
                 bcc,
-                subject: string(&options, "subject", 998),
-                body: string(&options, "body", 256 * 1024),
+                subject: crate::portal::text_option(&options, "subject", 998),
+                body: crate::portal::text_option(&options, "body", 256 * 1024),
                 attachments,
                 attachment_paths: attachment_paths.unwrap_or_default(),
-                activation_token: string(&options, "activation_token", 4096),
+                activation_token: crate::portal::text_option(&options, "activation_token", 4096),
             };
             let path = handle.to_string();
             let dialogs = self.dialogs.clone();

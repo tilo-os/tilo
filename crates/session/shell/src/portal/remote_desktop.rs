@@ -470,7 +470,8 @@ impl RemoteDesktopBackend {
         answer(async move {
             tracing::debug!("RemoteDesktop.SelectDevices: app={app_id}");
             let key = session_handle.to_string();
-            let requested_persist = opt_u32(&options, "persist_mode").unwrap_or(0);
+            let requested_persist =
+                crate::portal::option::<u32>(&options, "persist_mode").unwrap_or(0);
             if requested_persist > 2 {
                 return Err(Ended::Failed);
             }
@@ -482,7 +483,7 @@ impl RemoteDesktopBackend {
                     .filter(|record| record.app_id == app_id)
             });
             let mut types = restored.as_ref().map_or_else(
-                || opt_u32(&options, "types").unwrap_or(device_type::ALL),
+                || crate::portal::option::<u32>(&options, "types").unwrap_or(device_type::ALL),
                 |record| record.devices,
             ) & device_type::ALL;
             if types == 0 {
@@ -984,12 +985,6 @@ fn remote_action_from_eis(request: reis::request::EisRequest) -> Option<RemoteAc
         }),
         _ => None,
     }
-}
-
-#[cfg(target_os = "linux")]
-fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
-    let v = options.get(key)?.try_clone().ok()?;
-    u32::try_from(v).ok()
 }
 
 #[cfg(test)]

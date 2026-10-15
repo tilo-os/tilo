@@ -38,15 +38,6 @@ impl AccountBackend {
     }
 }
 
-fn option_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    options
-        .get(key)?
-        .try_clone()
-        .ok()
-        .and_then(|v| String::try_from(v).ok())
-        .filter(|s| !s.is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control))
-}
-
 #[interface(name = "org.freedesktop.impl.portal.Account")]
 #[cfg(target_os = "linux")]
 impl AccountBackend {
@@ -63,7 +54,8 @@ impl AccountBackend {
             let auth = authenticate_call(&self.ctx, &hdr, &app_id, Some(&window))
                 .await
                 .or_fail()?;
-            let reason = option_string(&options, "reason");
+            let reason =
+                crate::portal::text_option(&options, "reason", 1024).filter(|s| !s.is_empty());
             let path = handle.to_string();
             let dialogs = self.dialogs.clone();
             let cancel_path = path.clone();
@@ -148,6 +140,9 @@ mod tests {
             "reason".into(),
             OwnedValue::from(zbus::zvariant::Str::from("line\nbreak")),
         );
-        assert_eq!(option_string(&options, "reason"), None);
+        assert_eq!(
+            crate::portal::text_option(&options, "reason", 1024).filter(|s| !s.is_empty()),
+            None
+        );
     }
 }
