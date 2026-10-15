@@ -9718,6 +9718,9 @@ pub fn run() {
         .host_mut()
         .set_quick_settings_wake(Arc::clone(&session_wake));
     frame_builder.with_chrome(|chrome| {
+        // From here on the loop never waits on the disk to open a tab's
+        // record: the record store's thread opens it and wakes the loop.
+        chrome.open_records_without_waiting(Arc::clone(&session_wake));
         if let Some(apps) = chrome.hosted_inputs.in_process() {
             let mut apps = apps.borrow_mut();
             apps.bind_messaging_record_wake(Arc::clone(&session_wake));

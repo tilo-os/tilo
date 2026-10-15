@@ -241,6 +241,15 @@ impl Binding {
     }
 }
 
+/// What the tile shows while its record cannot be opened. A document the
+/// store is still opening on its own thread is not a failure.
+fn record_unavailable(error: &crate::record::RecordOpenError) -> String {
+    match error {
+        crate::record::RecordOpenError::Opening => "Opening the document".to_owned(),
+        other => format!("Document storage unavailable: {other}"),
+    }
+}
+
 fn admit_record(
     store: &RecordStore,
     checkout: &RecordCheckout,
@@ -1011,8 +1020,7 @@ impl TileHost {
         if let Err(error) = admit_record(&store, &tab, create) {
             if self.binding.is_some() && self.owner_bound_work {
                 self.pending_binding = Some(PendingBinding { store, tab, create });
-                self.record_transition_error =
-                    Some(format!("Document storage unavailable: {error}"));
+                self.record_transition_error = Some(record_unavailable(&error));
                 self.record_intent_transition_blocked = false;
                 return;
             }
@@ -1023,7 +1031,7 @@ impl TileHost {
             self.renew_history_lifetime();
             self.binding = None;
             self.pending_binding = Some(PendingBinding { store, tab, create });
-            self.record_error = Some(format!("Document storage unavailable: {error}"));
+            self.record_error = Some(record_unavailable(&error));
             return;
         }
         if self.binding.is_some()
@@ -1047,7 +1055,7 @@ impl TileHost {
         if let Err(error) = admit_record(&store, &tab, create) {
             self.binding = None;
             self.pending_binding = Some(PendingBinding { store, tab, create });
-            self.record_error = Some(format!("Document storage unavailable: {error}"));
+            self.record_error = Some(record_unavailable(&error));
             return;
         }
         self.pending_binding = None;
@@ -1074,7 +1082,7 @@ impl TileHost {
                 self.pending_binding = Some(pending);
                 // The tile shows the storage context; the caller gets the
                 // exact admission refusal.
-                let shown = format!("Document storage unavailable: {error}");
+                let shown = record_unavailable(&error);
                 if self.binding.is_some() {
                     self.record_transition_error = Some(shown);
                 } else {
@@ -1119,7 +1127,7 @@ impl TileHost {
         let changing_owner = match (&self.binding, &want) {
             (Some(binding), Some(want)) if want.id != binding.live => {
                 if let Err(error) = binding.store.open_existing_record_checked(want) {
-                    let shown = format!("Document storage unavailable: {error}");
+                    let shown = record_unavailable(&error);
                     if self.owner_bound_work {
                         self.record_transition_error = Some(shown);
                         self.record_intent_transition_blocked = true;
@@ -1158,7 +1166,7 @@ impl TileHost {
                 if !was_unavailable {
                     self.renew_history_lifetime();
                 }
-                self.record_error = Some(format!("Document storage unavailable: {error}"));
+                self.record_error = Some(record_unavailable(&error));
                 return Err(error.to_string());
             }
         };

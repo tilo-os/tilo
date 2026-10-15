@@ -1247,6 +1247,12 @@ pub struct RecordSet {
     // Retained from the private native construction scope; weakly borrows the
     // one actual worker after construction ends. Never a positive authority.
     native_initial: Option<crate::collaboration::native_initial::InitialReadBridge>,
+    /// Set by a caller that must not wait on the disk (the compositor, see
+    /// [`RecordStore::open_without_waiting`]): a record whose document the
+    /// store has yet to open is opened by the store's own thread, which
+    /// calls this when done, and the caller is told
+    /// [`RecordOpenError::Opening`] meanwhile.
+    storage_wake: Option<durable_store::ReadyWake>,
     // Drop after the writers and reservations above. Temporary profiles must
     // outlive asynchronous flushes and recovery handles, not just their host.
     _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
@@ -1312,6 +1318,7 @@ impl RecordSet {
             pending: HashMap::new(),
             next_reservation: 0,
             native_initial: crate::collaboration::native_initial::capture_bridge(),
+            storage_wake: None,
             _profile_lifetime: None,
         }
     }
@@ -1337,6 +1344,7 @@ impl RecordSet {
             pending: HashMap::new(),
             next_reservation: 0,
             native_initial: None,
+            storage_wake: None,
             _profile_lifetime: None,
         }
     }
@@ -1681,6 +1689,22 @@ impl RecordSet {
                 context: "record set has no document store".into(),
                 source: std::io::Error::from(std::io::ErrorKind::Unsupported),
             })
+    }
+
+    /// With [`Self::storage_wake`] set, make sure leasing `record_key`'s
+    /// document waits on nothing: `Err(Opening)` while the store's thread
+    /// opens it.
+    fn prepare_scoped_document(&self, record_key: &str) -> Result<(), RecordOpenError> {
+        let Some(wake) = &self.storage_wake else {
+            return Ok(());
+        };
+        app_state::validate_record_identity(&self.package_id, &self.home, record_key)?;
+        let key = StorageKey::record(&self.package_id, &self.home, record_key);
+        match self.documents()?.prepare_shared(&key, wake) {
+            Ok(()) => Ok(()),
+            Err(durable_store::StoreError::Opening(_)) => Err(RecordOpenError::Opening),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// The shared-writer document for one record in this set's room.
@@ -2340,6 +2364,7 @@ impl RecordOwners {
             native_initial: (joins_construction && self.portable.is_none())
                 .then(crate::collaboration::native_initial::capture_bridge)
                 .flatten(),
+            storage_wake: None,
             _profile_lifetime: self.profile_lifetime.clone(),
         });
         if let Some(cache) = &self.portable {
@@ -2379,6 +2404,11 @@ pub enum RecordOpenError {
     MissingRecord,
     #[error("record is reserved or already initialized")]
     Busy,
+    /// The store's own thread is still opening the record's document; the
+    /// caller is woken when it is done (see
+    /// [`RecordStore::open_without_waiting`]).
+    #[error("the document is still opening")]
+    Opening,
     #[error("the new record identity already exists or is reserved")]
     AlreadyExists,
     #[error("record initialization failed: {0}")]
@@ -3215,6 +3245,16 @@ impl RecordStore {
         self.0.borrow_mut().open_record(want, None)
     }
 
+    /// From now on, never wait on the disk to open or create a record: one
+    /// whose document the store has yet to open is refused with
+    /// [`RecordOpenError::Opening`] while the store's own thread opens it,
+    /// and `wake` is called when that is done, so the caller asks again.
+    /// For a caller on a frame loop. A store with no thread of its own
+    /// still opens in place.
+    pub fn open_without_waiting(&self, wake: durable_store::ReadyWake) {
+        self.0.borrow_mut().storage_wake = Some(wake);
+    }
+
     /// Create exactly the new resource named by its owning action. Reopening
     /// existing tabs must use existing-only admission instead.
     ///
@@ -3246,6 +3286,7 @@ impl RecordStore {
         }
         let owner = if set.persistent {
             let key = want.id.storage_key();
+            set.prepare_scoped_document(&key)?;
             let mut owner = set.scoped_document(&key)?;
             // An empty/corrupt document is existing evidence too, never
             // permission to replace it with a freshly initialized one.
@@ -3346,6 +3387,7 @@ impl RecordStore {
                 return Err(RecordOpenError::IdentityMismatch);
             }
             let key = want.id.storage_key();
+            set.prepare_scoped_document(&key)?;
             let mut owner = set.scoped_document(&key)?;
             let (mut doc, adopted) = if let Some(doc) = owner.load_complete()? {
                 (doc, false)
