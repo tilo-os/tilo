@@ -49,13 +49,24 @@ const workspace = s => s.workspaces.findIndex(w => w.id === s.activeWorkspace);
 // a second.
 async function polls(what, read, expected, tries = 150) {
   progress = what;
+  const started = {at: Date.now(), presented: await presented()};
   let got;
   for (let i = 0; i < tries; i++) {
     got = await read();
-    if (JSON.stringify(got) === JSON.stringify(expected)) return;
+    if (JSON.stringify(got) === JSON.stringify(expected)) {
+      console.log(JSON.stringify({settled: what, ms: Date.now() - started.at, tries: i + 1,
+        presented: [started.presented, await presented()]}));
+      return;
+    }
     await sleep(100);
   }
   if (process.env.SHOTS_DIR) writeFileSync(join(process.env.SHOTS_DIR, 'navigation-failed.png'), await tab.screenshot());
+  // Whether the page kept presenting frames while it waited (a frame that
+  // never came reads differently from one that came without the change),
+  // and where the last click landed against where its target is now.
+  console.error(JSON.stringify({waited: what, ms: Date.now() - started.at, tries,
+    presented: [started.presented, await presented()],
+    lastClick: lastClick && {...lastClick, now: await bounds(lastClick.name, lastClick.described)}}));
   // What the page said last (a module that did not load, a panic) and the
   // modules it fetched.
   console.error(tab.log.slice(-30).join('\n'));
@@ -68,17 +79,22 @@ const settles = async (what, read, expected, tries) => polls(what, async () => r
 // The centre of the first semantics node with this accessible name (and,
 // when given, a description starting with `described`), once the desktop
 // shows it.
+const bounds = (name, described = '') => evaluate(`(()=>{const walk=n=>{if(!n||typeof n!=='object')return null;
+  if(n.name===${JSON.stringify(name)}&&n.bounds&&(n.description??'').startsWith(${JSON.stringify(described)}))return n.bounds;
+  for(const v of Object.values(n)){const r=walk(v);if(r)return r}return null};
+  return walk(tiloMount.state().semantics)})()`);
+// The frames the page has presented and the last semantics it reported.
+const presented = () => evaluate('(({frames, phase}) => ({frames, phase}))(tiloMount.state())').catch(String);
+let lastClick;
 async function named(name, described = '') {
-  let bounds;
-  for (let i = 0; i < 150 && !bounds; i++) {
+  let found;
+  for (let i = 0; i < 150 && !found; i++) {
     if (i) await sleep(100);
-    bounds = await evaluate(`(()=>{const walk=n=>{if(!n||typeof n!=='object')return null;
-      if(n.name===${JSON.stringify(name)}&&n.bounds&&(n.description??'').startsWith(${JSON.stringify(described)}))return n.bounds;
-      for(const v of Object.values(n)){const r=walk(v);if(r)return r}return null};
-      return walk(tiloMount.state().semantics)})()`);
+    found = await bounds(name, described);
   }
-  assert.ok(bounds, `the desktop shows "${name}"`);
-  return [(bounds.x0 + bounds.x1) / 2, (bounds.y0 + bounds.y1) / 2];
+  assert.ok(found, `the desktop shows "${name}"`);
+  lastClick = {name, described, bounds: found, presented: await presented()};
+  return [(found.x0 + found.x1) / 2, (found.y0 + found.y1) / 2];
 }
 const mouse = (type, x, y, extra = {}) => tab.send('Input.dispatchMouseEvent', {type, x, y, ...extra});
 async function click(x, y) {
