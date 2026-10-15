@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source import is_test_file, line_number  # noqa: E402
+from rust_source import Literal, is_test_file, lex, line_number, matching  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -66,115 +66,6 @@ class Finding:
 
 
 # --- Rust source ------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Literal:
-    start: int
-    end: int
-    value: str
-    byte: bool
-
-
-CHAR_LITERAL = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]{1,6}\}|.)|[^'\\\n])'")
-LEXEME = re.compile(r"""//|/\*|"|'""")
-STRING_BODY = re.compile(r'(?:[^"\\]|\\.)*"', re.DOTALL)
-BLOCK_COMMENT_EDGE = re.compile(r"/\*|\*/")
-NOT_NEWLINE = re.compile(r"[^\n]")
-
-
-def _is_ident(char: str) -> bool:
-    return char.isalnum() or char == "_"
-
-
-def _prefix_start(text: str, quote: int, floor: int) -> tuple[int, int | None, bool]:
-    """Where the literal whose quote is at ``quote`` starts.
-
-    Returns (start, raw hash count or None, byte literal).
-    """
-    i = quote
-    while i > floor and text[i - 1] == "#":
-        i -= 1
-    hashes = quote - i
-    if i > floor and text[i - 1] == "r":
-        start = i - 1
-        byte = start > floor and text[start - 1] in "bc"
-        start -= 1 if byte else 0
-        if start == 0 or not _is_ident(text[start - 1]):
-            return start, hashes, byte and text[start] == "b"
-    if hashes == 0 and quote > floor and text[quote - 1] in "bc":
-        start = quote - 1
-        if start == 0 or not _is_ident(text[start - 1]):
-            return start, None, text[start] == "b"
-    return quote, None, False
-
-
-def lex(text: str) -> tuple[str, list[Literal]]:
-    """Blank comments and literals, keeping offsets and newlines.
-
-    Returns the blanked code and the string literals it contained.
-    """
-    pieces: list[str] = []
-    literals: list[Literal] = []
-    position = 0
-    length = len(text)
-    while match := LEXEME.search(text, position):
-        start = match.start()
-        lexeme = match.group()
-        if lexeme == "//":
-            end = text.find("\n", start)
-            end = length if end < 0 else end
-        elif lexeme == "/*":
-            depth, end = 1, start + 2
-            while depth and (edge := BLOCK_COMMENT_EDGE.search(text, end)):
-                depth += 1 if edge.group() == "/*" else -1
-                end = edge.end()
-            end = end if not depth else length
-        elif lexeme == '"':
-            quote = start
-            start, hashes, byte = _prefix_start(text, quote, position)
-            if hashes is not None:
-                terminator = '"' + "#" * hashes
-                close = text.find(terminator, quote + 1)
-                end = length if close < 0 else close + len(terminator)
-                value = text[quote + 1 : max(close, quote + 1)]
-            else:
-                body = STRING_BODY.match(text, quote + 1)
-                end = body.end() if body else length
-                value = text[quote + 1 : end - 1]
-            literals.append(Literal(start, end, value, byte))
-        else:
-            char = CHAR_LITERAL.match(text, start)
-            if not char or (start > position and _is_ident(text[start - 1])
-                            and text[start - 1] != "b"):
-                pieces.append(text[position : start + 1])
-                position = start + 1
-                continue
-            start -= 1 if start > position and text[start - 1] == "b" else 0
-            end = char.end()
-        pieces.append(text[position:start])
-        pieces.append(NOT_NEWLINE.sub(" ", text[start:end]))
-        position = end
-    pieces.append(text[position:])
-    return "".join(pieces), literals
-
-
-BRACKET = re.compile(r"[()\[\]{}]")
-CLOSERS = {"(": ")", "[": "]", "{": "}"}
-
-
-def matching(code: str, open_index: int) -> int:
-    """Index just past the bracket that closes ``code[open_index]``."""
-    stack = [CLOSERS[code[open_index]]]
-    for bracket in BRACKET.finditer(code, open_index + 1):
-        char = bracket.group()
-        if char in CLOSERS:
-            stack.append(CLOSERS[char])
-        elif char == stack[-1]:
-            stack.pop()
-            if not stack:
-                return bracket.end()
-    return len(code)
 
 
 def split_top_level(text: str) -> list[str]:
