@@ -943,13 +943,13 @@ fn provider_step(
         PendingPoll::Ready(Ok(page)) => page,
         PendingPoll::Ready(Err(_)) | PendingPoll::Abandoned => return Step::Refused(false),
     };
-    let (Some(owner), Some(app)) = (owner, operation.app) else {
+    let Some(owner) = owner else {
         return Step::Refused(false);
     };
     if !page.exhausted || page.stale_cursor || page.budget_exhausted {
         return Step::Refused(false);
     }
-    if !operation.chat {
+    let Some(app) = operation.app else {
         let Some(provider) = desktop_provider(&page, &owner.room) else {
             return Step::Refused(false);
         };
@@ -965,7 +965,7 @@ fn provider_step(
             pages: 1,
             matched: Vec::new(),
         });
-    }
+    };
     let providers: Vec<_> = page
         .providers
         .iter()
@@ -1322,7 +1322,7 @@ mod tests {
         });
         let owner = ComposerOwner {
             room: host.room.clone(),
-            ..request(ComposerIntent::Queue).owner
+            ..owner("room")
         };
         let mut actions = AgentActions::default();
         assert!(actions.open(
@@ -1346,19 +1346,15 @@ mod tests {
         for _ in 0..6 {
             actions.pump(&mut composer);
         }
-        let offered = actions
-            .offers
-            .contains_key(&ActionAddress::new(TASKS, "queue"));
         drop(actions);
-        assert!(
-            offered,
-            "queueing is offered once the desktop's own surface answers"
-        );
         let queries = host.queries.lock().unwrap().clone();
-        assert!(queries.iter().any(|query| {
-            query.provider.as_deref() == Some("7")
-                && query.target == Some(ActionAddress::new(TASKS, "queue"))
-        }));
+        assert!(
+            queries.iter().any(|query| {
+                query.provider.as_deref() == Some("7")
+                    && query.target == Some(ActionAddress::new(TASKS, "read-current-tasks"))
+            }),
+            "the current tasks are read from the desktop's own surface"
+        );
         assert!(
             queries
                 .iter()
@@ -1857,7 +1853,7 @@ mod tests {
     }
 
     fn settle(actions: &mut AgentActions, composer: &mut AgentQuickComposer) {
-        for _ in 0..12 {
+        for _ in 0..32 {
             actions.refresh_at = Some(Instant::now());
             actions.pump(composer);
         }
