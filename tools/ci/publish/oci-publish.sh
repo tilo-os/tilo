@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The publishing half of an image: push OUT/image.oci.tar to REPOSITORY with its digest
 # unchanged, attach the signature oci-sign.sh made if there is one, and point TAG... at it.
-# Writes OUT/receipt.json, the digest receipt deployments pin. Holds the registry token
-# (REGISTRY_USER, REGISTRY_TOKEN), never signing credentials.
+# Writes OUT/receipt.json, the digest receipt deployments pin. Logs in to the registry as `oidc`
+# with an identity token from t for the registry (`id_token = ["registry.tilo.so"]`), which the
+# registry accepts for this repository's main, stable and v* tags; never signing credentials.
 #
 # usage: oci-publish.sh dev|release REPOSITORY OUT TAG...
 # The first argument is the channel the check publishes to; it must be this run's (lib.sh), so a
@@ -18,14 +19,15 @@ shift 3
 [[ $wanted == dev || -s $out/signature ]] || die 'a release is published signed only'
 (($#)) || die 'no tags'
 require_commit
-: "${REGISTRY_TOKEN:?REGISTRY_TOKEN is required}"
 digest=$(cat "$out/digest")
 [[ $(archive_digest "$out/image.oci.tar") == "$digest" ]] || die 'the archive is not the build'
 registry=${repository%%/*}
 auth=$scratch/registry-auth.json
 export REGISTRY_AUTH_FILE=$auth DOCKER_CONFIG=$scratch/docker
 mkdir -p "$DOCKER_CONFIG"
-printf '%s' "$REGISTRY_TOKEN" | skopeo login --authfile "$auth" -u "${REGISTRY_USER:-t}" --password-stdin "$registry"
+password=$(id_token "$registry")
+printf '%s' "$password" | skopeo login --authfile "$auth" -u oidc --password-stdin "$registry"
+unset password
 cp "$auth" "$DOCKER_CONFIG/config.json"
 first=${1//\{commit\}/$T_COMMIT}
 skopeo copy --preserve-digests --authfile "$auth" "oci-archive:$out/image.oci.tar" "docker://$repository:$first"

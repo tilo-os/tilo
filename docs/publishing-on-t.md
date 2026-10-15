@@ -13,16 +13,24 @@ of this is described in its [pipelines document](https://code.tilo.so/tilo/t/src
   the stabilizer pushes, and t publishes them by itself when those move.
 - **Building and signing are separate checks.** A build runs arbitrary code (build scripts,
   dependencies), so it holds no secrets. The check that signs `needs` the build, receives its
-  outputs, refuses any digest but the one the build produced, and is the only check holding
-  signing credentials. Pushing is a third check, holding a registry token but no signing
-  credentials.
+  outputs, refuses any digest but the one the build produced, and is the only check that may
+  sign. Pushing is a third check, which may push but not sign.
+- **Publishing holds no stored credentials.** A publishing check declares `id_token =
+  ["<audience>"]` and asks t, while it runs, for an OpenID Connect identity token (t's
+  [identity tokens](https://code.tilo.so/tilo/t/src/branch/main/docs/pipelines.md#identity-tokens)).
+  The token names this repository, the reference and the commit, is meant for one audience
+  and lasts minutes, so there is nothing long-lived to leak: a registry token or access key is
+  worth something to whoever takes it until someone notices and rotates it, a stolen identity
+  token expires before that. The registry and AWS check its signature against t's published
+  keys and decide from its claims what the job may do.
 - **Signing keys never leave KMS.** The release keys (`alias/tilo-release-signing`,
   `alias/tilo-pcr-prediction`, `alias/tilo-efi-signing`) are non-exportable AWS KMS keys. A
-  signing check holds credentials of an IAM user that may only ask KMS to sign with them. A leak
-  of those is revoked, not a lost root of trust.
-- **Secrets live in t's server config**, never in this repository: each `[[secret]]` names the
-  references (`refs`) and node labels (`nodes`) it may reach. A run of someone's working tree
-  never gets any.
+  signing check exchanges its identity token for a role that may only ask KMS to sign with
+  them, and only for `stable` and `v*` tags.
+- **t decides who gets tokens and secrets**, from its server config, never from this
+  repository: each audience (`[[oidc.audience]]`) and each `[[secret]]` names the references
+  (`refs`) and node labels (`nodes`) it may reach. A run of someone's working tree never gets
+  any.
 - **Release jobs run on fresh machines.** Secrets for releases reach only nodes labelled
   `release`, which take nothing but trusted jobs. Those nodes are `t worker --once` pods under
   Kata: one job per VM. Only workers whose token may offer the `release` label get it, so the
@@ -40,7 +48,8 @@ of this is described in its [pipelines document](https://code.tilo.so/tilo/t/src
 | `workflow_dispatch` with inputs | `on = ["dispatch"]` with `[check.dispatch_inputs]`; `t dispatch <check> --ref stable --input k=v` |
 | `pull_request` (build without publishing) | the build check itself: `t test image-<name>` before pushing |
 | `needs:` plus `upload-artifact`/`download-artifact` | `needs = [...]` with the need's `outputs` |
-| `secrets.*`, `enable-openid-connect` | `secrets = [...]`, from the server config, by reference and node |
+| `enable-openid-connect` | `id_token = ["<audience>"]`: the same `ACTIONS_ID_TOKEN_REQUEST_*` variables, from t's issuer |
+| `secrets.*` | `secrets = [...]`, from the server config, by reference and node |
 | `runs-on: runner-arm64`, `runner-disk-100g` | `requires = ["arch=arm64"]`, `requires = ["disk-100g"]` |
 | KVM, loop devices | `requires = ["/dev/kvm"]`, `devices = ["/dev/loop-control"]`, `privileged = true` |
 | `macos-aarch64` runners | `requires = ["os=macos", "arch=arm64"]` (t's macOS workers) |
@@ -54,9 +63,10 @@ anywhere else: `oci-build.sh` builds an image into an OCI archive and records it
 digest; `oci-sign.sh` signs that digest with the KMS key (Cosign's simple-signing payload,
 signed as a blob, so the signer needs no registry access); `oci-publish.sh` pushes the archive
 with its digest unchanged, attaches the signature, verifies it against `keys/cosign.pub`, tags
-it and writes a digest receipt. `os/dev/configure-cosign-kms.sh` takes the signing user's
-credentials (`TILO_SIGNING_AWS_ACCESS_KEY_ID`, `TILO_SIGNING_AWS_SECRET_ACCESS_KEY`) instead of
-Forgejo's OIDC token when they are set.
+it and writes a digest receipt, logging in to the registry as `oidc` with a `registry.tilo.so`
+identity token. `os/dev/configure-cosign-kms.sh` turns an identity token into the AWS signing
+role for Cosign, from t (audience `sts.amazonaws.com`) as from Forgejo Actions; it parses with
+sed, since the skopeo image the checks run in has no jq.
 
 ## Declared in t.toml
 
@@ -68,15 +78,17 @@ Forgejo's OIDC token when they are set.
 
 `t test image-room-service` builds the image from your tree exactly as a release would, without
 publishing anything. The publishing checks run only as trusted runs; `t test publish-room-service`
-on a working tree reports them skipped ("needs secrets") after running their builds.
+on a working tree reports them skipped ("needs identity tokens: runs on …") after running their
+builds.
 
 ## Inventory
 
 Every workflow that publishes, signs or releases, with what it needs and where it goes. "OIDC"
 means the job asks Forgejo for an identity token (`enable-openid-connect`): to assume the AWS
 signing role for Cosign (`os/dev/configure-cosign-kms.sh`), to obtain a lease from a credential
-broker installed on the runner, or as a Forgejo API token. On t all of these become fixed
-credentials in the server config, limited by reference and node.
+broker installed on the runner, or as a Forgejo API token. On t these become t's identity
+tokens wherever the other side can trust t's issuer (the registry and AWS already do), and
+fixed credentials in the server config, limited by reference and node, only where it can't.
 
 ### Container images
 
@@ -138,16 +150,23 @@ see `t.toml`): `check.yml`, `lint.yml`, `app-sdk.yml`, `browser-auth-e2e.yml`, `
 `perf-room-capacity.yml`, `sdk-native-envelope.yml`, `standalone-app.yml`,
 `wasm-check-qualification.yml`, `web-size-native-envelope.yml`, `resolve-builder.yml`.
 
-## Secrets
+## Identity tokens and secrets
 
-All in t's server config (sops-encrypted in the infra repository), none in this repository:
+Registry pushes and KMS signing use identity tokens from t (issuer `https://code.tilo.so/t`,
+subject `repo:tilo/tilo:ref:refs/heads/<branch>` or `…:ref:refs/tags/<tag>`). Which runs get
+them is t's server config; what they may do is the other side's:
+
+| audience | refs | nodes | accepted by |
+|---|---|---|---|
+| `registry.tilo.so` | `main`, `stable`, `tag:v*` | `release` | registry.tilo.so, as the password of the user `oidc`: tilo/tilo may push under `tilo/` from `main`, `stable` and `v*` tags |
+| `sts.amazonaws.com` | `stable`, `tag:v*` | `release` | the AWS role `TiloTReleaseSigner`, for `stable` and `v*` tags of tilo/tilo only: `kms:Sign`, `kms:GetPublicKey` and `kms:DescribeKey` on the three release keys |
+
+The key reference (`COSIGN_KEY_REF`) and the role (`AWS_SIGNING_ROLE_ARN`) are not secret; the
+signing checks set them in `t.toml`. What has no OpenID Connect verifier yet stays a secret in
+t's server config (sops-encrypted in the infra repository), none in this repository:
 
 | name | refs | nodes | what |
 |---|---|---|---|
-| `REGISTRY_USER`, `REGISTRY_TOKEN` | `main` | | a registry account that may push development tags only |
-| `REGISTRY_USER`, `REGISTRY_TOKEN` | `stable`, `tag:*` | `release` | the account that pushes releases |
-| `COSIGN_KEY_REF` | `stable`, `tag:*` | `release` | `awskms:///arn:aws:kms:<region>:<account>:alias/tilo-release-signing` |
-| `TILO_SIGNING_AWS_ACCESS_KEY_ID`, `TILO_SIGNING_AWS_SECRET_ACCESS_KEY` | `stable`, `tag:*` | `release` | an IAM user allowed `kms:Sign` and `kms:GetPublicKey` on the three release keys, from the cluster's egress addresses only |
 | `TAPP_PUBLISHER_IDENTITY`, `RUNTIME_BUNDLE_SIGNING_KEY` | `stable`, `tag:*` | `release` | the app and runtime publisher identities, for the app and OS chains once ported |
 
 ## Windows

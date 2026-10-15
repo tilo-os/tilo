@@ -1106,18 +1106,21 @@ default = false
 # Publishing (docs/publishing-on-t.md). Each image is a chain of checks:
 #
 #   image-<name>[-context]  build, no secrets: runs anywhere, also for a working tree
-#   sign-<name>             signs the built digest with the release key in KMS; only
-#                           signing credentials, on stable and release tags, on release nodes
-#   publish-<name>          main: pushes a development tag with the development push token
-#   release-<name>          stable: pushes the signed release with the release push token
+#   sign-<name>             signs the built digest with the release key in KMS; holds only
+#                           the signing identity, on stable and release tags, on release nodes
+#   publish-<name>          main: pushes a development tag
+#   release-<name>          stable: pushes the signed release
 #
 # The server runs publish-* on every new head of main and release-* on every new head of
 # stable by itself (`on`), as trusted runs; nobody runs them from a working tree. Building and
 # signing never share a check: the build runs arbitrary code, the signing check refuses any
-# digest but the build's. Secrets (REGISTRY_USER, REGISTRY_TOKEN, COSIGN_KEY_REF,
-# TILO_SIGNING_AWS_ACCESS_KEY_ID, TILO_SIGNING_AWS_SECRET_ACCESS_KEY) live in the t server's
-# config, limited to the references and nodes that may use them. Check names have no `/` yet
-# because the deployed server refuses it.
+# digest but the build's. No check holds a stored credential: each asks t for an identity
+# token (`id_token`) naming this repository, the reference and the commit, valid for minutes,
+# so there is nothing long-lived to leak. registry.tilo.so takes the `registry.tilo.so`
+# token as a push credential (user `oidc`) for main, stable and v* tags; AWS exchanges the
+# `sts.amazonaws.com` token for the TiloTReleaseSigner role, which trusts stable and v* tags
+# only and may do nothing but sign with the release keys. Check names have no `/` yet because
+# the deployed server refuses it.
 
 # The room service (room-service-image.yml): deployed by digest from release-room-service's
 # receipt.
@@ -1150,7 +1153,8 @@ run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/room-service /tar
 inputs = ["tools/ci/publish/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-room-service"]
 outputs = ["/target/publish/room-service/payload.json", "/target/publish/room-service/signature"]
-secrets = ["COSIGN_KEY_REF", "TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 on = ["stable"]
 
 [[check]]
@@ -1160,7 +1164,7 @@ run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/room-servi
 inputs = ["tools/ci/publish/**"]
 needs = ["image-room-service"]
 outputs = ["/target/publish/room-service/receipt.json"]
-secrets = ["REGISTRY_USER", "REGISTRY_TOKEN"]
+id_token = ["registry.tilo.so"]
 on = ["main"]
 
 [[check]]
@@ -1170,7 +1174,7 @@ run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/room-s
 inputs = ["tools/ci/publish/**", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-room-service", "sign-room-service"]
 outputs = ["/target/publish/room-service/receipt.json"]
-secrets = ["REGISTRY_USER", "REGISTRY_TOKEN"]
+id_token = ["registry.tilo.so"]
 on = ["stable"]
 
 # The web entry (web-entry.yml): the Tilo app on the web, deployed by digest.
@@ -1203,7 +1207,8 @@ run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/web-entry /target
 inputs = ["tools/ci/publish/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-web-entry"]
 outputs = ["/target/publish/web-entry/payload.json", "/target/publish/web-entry/signature"]
-secrets = ["COSIGN_KEY_REF", "TILO_SIGNING_AWS_ACCESS_KEY_ID", "TILO_SIGNING_AWS_SECRET_ACCESS_KEY"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 on = ["stable"]
 
 [[check]]
@@ -1213,7 +1218,7 @@ run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/web-entry 
 inputs = ["tools/ci/publish/**"]
 needs = ["image-web-entry"]
 outputs = ["/target/publish/web-entry/receipt.json"]
-secrets = ["REGISTRY_USER", "REGISTRY_TOKEN"]
+id_token = ["registry.tilo.so"]
 on = ["main"]
 
 [[check]]
@@ -1223,7 +1228,7 @@ run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/web-en
 inputs = ["tools/ci/publish/**", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["image-web-entry", "sign-web-entry"]
 outputs = ["/target/publish/web-entry/receipt.json"]
-secrets = ["REGISTRY_USER", "REGISTRY_TOKEN"]
+id_token = ["registry.tilo.so"]
 on = ["stable"]
 
 # The fast CI images (build-ci-fast-images.yml), x86_64 only. CI tooling, not a product:
@@ -1260,5 +1265,5 @@ bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/ci-control /targe
 inputs = ["tools/ci/publish/**"]
 needs = ["image-ci-fast", "image-ci-control"]
 outputs = ["/target/publish/ci-fast/receipt.json", "/target/publish/ci-control/receipt.json"]
-secrets = ["REGISTRY_USER", "REGISTRY_TOKEN"]
+id_token = ["registry.tilo.so"]
 on = ["main"]
