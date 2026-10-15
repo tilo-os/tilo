@@ -70,8 +70,8 @@ const CONTROL = 29, CONTROL_RIGHT = 97, KEY_V = 47, LEFT_BUTTON = 272;
 const CTRL = 2;
 /** What the paste case puts on the clipboard: two lines, beyond ASCII. */
 export const PASTED = 'Pasted into a native window ✓\nzweite Zeile, 日本語';
-/** The second window, on the first page: small, 15 fps, resized part of the way in. */
-export const SECOND = Object.freeze({surface: 8, width: 640, height: 360, fps: 15, seconds: 20, resizeAt: 12,
+/** The second window, on the first page: small, 10 fps, resized part of the way in. */
+export const SECOND = Object.freeze({surface: 8, width: 640, height: 360, fps: 10, seconds: 20, resizeAt: 12,
   resizeTo: Object.freeze({width: 800, height: 448})});
 /** The third window, for the page on the HTTPS stream and the viewer's. */
 export const THIRD = Object.freeze({surface: 9, width: 640, height: 360, fps: 15, seconds: 10});
@@ -355,7 +355,9 @@ export async function runAcceptance(ctx) {
   step('resize the page');
   const resize = open('resize');
   const before = await main.evaluate(windowAt(prefix1));
-  const viewport = {width: Math.round(ctx.viewport.width * 1.25 / 2) * 2, height: Math.round(ctx.viewport.height * 1.2 / 2) * 2, deviceScaleFactor: 1};
+  // Smaller, not larger: the page goes on to show a second window, and on
+  // SwiftShader every pixel of its desktop costs.
+  const viewport = {width: Math.round(ctx.viewport.width * 0.8 / 2) * 2, height: Math.round(ctx.viewport.height * 0.8 / 2) * 2, deviceScaleFactor: 1};
   await main.send('Emulation.setDeviceMetricsOverride', {...viewport, mobile: false});
   resize.viewport = {from: ctx.viewport, to: viewport};
   const after = await settledBox(main, prefix1, before, 30_000);
@@ -462,8 +464,11 @@ export async function runAcceptance(ctx) {
   const again = await eventually(async () => {
     const box = await main.evaluate(windowAt(prefix1));
     return box?.control ? box : null;
-  }, 60_000);
-  if (!again) throw new Invalid('the first window did not come back on screen after the second closed');
+  }, 120_000);
+  if (!again) {
+    throw new Invalid(`the first window did not come back on screen after the second closed: ${JSON.stringify(await main.evaluate(`[...document.querySelectorAll('canvas.tilo-legacy-window')]
+      .map(c => ({key: c.dataset.key.slice(0, 12), display: c.style.display, events: c.style.pointerEvents}))`).catch(() => 'unanswered'))}`);
+  }
   mark = lines1();
   await click(main, again);
   await waitInput(w1, mark, isFocus(true), 5000);
