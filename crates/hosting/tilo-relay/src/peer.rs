@@ -4348,6 +4348,73 @@ impl HostAdmission {
     }
 }
 
+/// Fresh-lineage stages written at once, process-wide: each holds a
+/// blocking thread through its barriers.
+const FRESH_STAGES: usize = 16;
+
+/// Stage `envelope` before its owner turn when it is a checkpoint that may
+/// start its lineage ([`crate::store::WorkspaceStore::stage_fresh_checkpoint`]).
+/// Every newcomer of a room retains such a checkpoint first, its identity
+/// record, and the owner commits one in a single barrier instead of three
+/// rounds of them. `None` when it is not one, or the stage failed: the turn
+/// then retains it as any checkpoint.
+async fn stage_fresh_checkpoint(
+    store: &crate::store::WorkspaceStore,
+    envelope: &Envelope,
+) -> Option<crate::store::retained::FreshCheckpoint> {
+    static STAGES: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    let Envelope::Delta { delta, .. } = envelope else {
+        return None;
+    };
+    let Some((channel, crate::coedit::RetentionKind::Checkpoint)) =
+        crate::coedit::retention_metadata(delta)
+    else {
+        return None;
+    };
+    let raw = crate::transport::encode(envelope).ok()?;
+    let permit = STAGES
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(FRESH_STAGES)))
+        .clone()
+        .acquire_owned()
+        .await
+        .ok()?;
+    let store = store.clone();
+    let staged = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        store.stage_fresh_checkpoint(&channel, &raw)
+    })
+    .await
+    .ok()?;
+    staged
+        .inspect_err(|error| tracing::debug!(%error, "fresh checkpoint stage failed"))
+        .ok()
+        .flatten()
+}
+
+/// Begin retaining `raw` in the owner's turn: commit `fresh`, its stage,
+/// when there is one and it still starts its lineage; otherwise retain it
+/// as usual and leave the stage to the owner's disposal.
+fn retain_or_commit_stage(
+    state: &mut crate::persistence::State,
+    channel: &[u8; 32],
+    seq: Option<u64>,
+    raw: Vec<u8>,
+    fresh: Option<crate::store::retained::FreshCheckpoint>,
+) -> Result<crate::store::retained::RetainBuild, crate::store::StoreError> {
+    let Some(fresh) = fresh else {
+        return state.store.start_retain(channel, seq, raw);
+    };
+    // Disposed of after the job, unless its lineage selected it by then.
+    state.retention_candidates.push(fresh.discard_paths());
+    if seq.is_some() {
+        return state.store.start_retain(channel, seq, raw);
+    }
+    match state.store.start_fresh_retain(channel, fresh, raw)? {
+        Ok(build) => Ok(build),
+        Err((_, raw)) => state.store.start_retain(channel, None, raw),
+    }
+}
+
 /// Admit `envelope`, authored by this host's own device, through the
 /// workspace's ordered persistence owner, as a device's commit is admitted,
 /// without waiting for it to be durable: commits queued one after another
@@ -4436,8 +4503,20 @@ async fn enqueue_state_inner(
     }
     trace_native_publication("admission_authorized", &envelope, None);
     let payloads = runtime.store.payloads().clone();
+    let store = runtime.store.clone();
     drop(runtime);
     let owner = crate::persistence::handle(workspace).await;
+    let continuity_evidence = source.as_ref().and_then(|source| {
+        crate::store::continuity::Evidence::authenticated(&*payloads, &envelope, &source.peer)
+    });
+    // A checkpoint that may start its lineage is staged before its turn;
+    // the turn commits the stage, or retains it as usual if it cannot.
+    let mut fresh = if sync || continuity_evidence.is_some() {
+        None
+    } else {
+        stage_fresh_checkpoint(&store, &envelope).await
+    };
+    drop(store);
     trace_native_publication("persistence_admission_wait", &envelope, None);
     let admission_trace = StateAdmissionTrace::new(&envelope);
     let mut wait_trace = AdmissionWaitTrace(admission_trace.clone());
@@ -4447,9 +4526,6 @@ async fn enqueue_state_inner(
     let persist_metrics = metrics.clone();
     let prepare_workspace = workspace.clone();
     let prepare_source = source.clone();
-    let continuity_evidence = source.as_ref().and_then(|source| {
-        crate::store::continuity::Evidence::authenticated(&*payloads, &envelope, &source.peer)
-    });
     let delta_len = delta.len();
     let mut envelope = Some(envelope);
     let mut commit: Option<StateCommit> = None;
@@ -4575,7 +4651,7 @@ async fn enqueue_state_inner(
                 if let Some((channel, seq)) = retention {
                     #[cfg(test)]
                     crate::store::test_barrier::pause(state.store.root(), "state-persist");
-                    let build = state.store.start_retain(&channel, seq, raw)?.with_continuity(continuity.clone());
+                    let build = retain_or_commit_stage(state, &channel, seq, raw, fresh.take())?.with_continuity(continuity.clone());
                     state.retention_scratch = Some(build.scratch().to_owned());
                     retained_build = Some(build);
                 } else {

@@ -119,6 +119,8 @@ impl Rooms {
         let mut stewardship = steward.channels.lock().await;
         if create {
             let messages = stewardship.open_channel(channel, &allowed)?;
+            // After the channel changes a settle handed over.
+            room.publisher.flushed().await;
             self.publish_channel_governance(workspace_id, messages)
                 .await?;
         }
