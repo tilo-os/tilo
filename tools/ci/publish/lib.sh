@@ -8,6 +8,9 @@
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 scratch=${TMPDIR:-/tmp}
+# Build scripts that prepare test fixtures (tilo-fs) write them to this cache; the source tree
+# is read-only in t's sandbox, so it lives in the build directory.
+export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-${CARGO_TARGET_DIR:-$repo_root/target}/test-assets}
 
 die() { printf 'publish: %s\n' "$*" >&2; exit 1; }
 
