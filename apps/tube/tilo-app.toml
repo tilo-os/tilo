@@ -24,6 +24,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard", "files.paths", "app-files", "secrets", "network.http", "network.sockets", "threads", "media.decode", "media.session", "processes", "settings"]
 
+[resources]
+kinds = ["tube.library", "tube.watch-history"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

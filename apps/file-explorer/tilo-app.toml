@@ -33,6 +33,9 @@ aarch64 = "aarch64"
 required = ["files.paths"]
 optional = ["clipboard", "app-files", "secrets", "threads", "media.decode", "processes", "open-uri"]
 
+[resources]
+kinds = ["files.folder", "tilo.accounts"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
