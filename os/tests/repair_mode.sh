@@ -156,6 +156,21 @@ else
       systemd-bless-boot.service Requires that target; without both, a failed
       health check would still bless the boot and no rollback would ever happen."
 fi
+# Blessing renames the booted entry on the ESP, which stays mounted read-only.
+# Without a writable view of its own, systemd-bless-boot fails with EROFS and a
+# deployment that boots fine keeps spending tries until it is abandoned. The
+# remount has to be in the same Exec line as the blessing: each Exec line gets
+# a mount namespace of its own.
+b="$OS/usr/lib/systemd/system/systemd-bless-boot.service.d/10-tilo-writable-esp.conf"
+if [ -r "$b" ] && grep -qx 'PrivateMounts=yes' "$b" && grep -qx 'ExecStart=' "$b" \
+   && grep -E '^ExecStart=/bin/sh .*mount -o remount,rw .*exec /usr/lib/systemd/systemd-bless-boot good' "$b" >/dev/null \
+   && grep -Fq 'systemd-bless-boot.service.d/10-tilo-writable-esp.conf' "$OS/Containerfile"; then
+  ok "systemd-bless-boot remounts the ESP writable in its own namespace, in the blessing's own process, and the image ships it"
+else
+  bad "systemd-bless-boot has no private writable view of the read-only ESP (or the image
+      does not ship $b): blessing a good boot fails with EROFS, so a working
+      deployment spends a try on every boot and the boot loader abandons it."
+fi
 if grep -q 'ConditionKernelCommandLine=!tilo.mode=repair' "$h"; then
   ok "the health check does not run in repair mode"
 else
