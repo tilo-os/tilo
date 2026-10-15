@@ -109,8 +109,10 @@ impl Rooms {
         let host = self.inner.host.cert.user_public_key;
         let relay_person = device.user_public_key == host;
         // An agent is a device of the relay's user too, but it governs
-        // nothing: it joins rooms only through its delegation.
-        #[cfg(feature = "agents")]
+        // nothing: it joins rooms only through its delegation. The registry
+        // is the relay's in every build, so is this refusal: an agent
+        // registered with a relay built without its supervisor is still no
+        // person.
         let agent = relay_person
             && self
                 .inner
@@ -119,8 +121,6 @@ impl Rooms {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .contains_key(&device.device_public_key);
-        #[cfg(not(feature = "agents"))]
-        let agent = false;
         if agent {
             return Err(CollaborationError::new(
                 "room administration requires a person's device, not an agent's",

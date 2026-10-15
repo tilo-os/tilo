@@ -497,8 +497,8 @@ pub(crate) struct RoomHost {
     /// The live handshake trust policy, for [`crate::room_access::decide`].
     #[cfg(feature = "agents")]
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
-    /// Agent delegations, for [`crate::room_access::decide`].
-    #[cfg(feature = "agents")]
+    /// Agent delegations, for [`crate::room_access::decide`] and for
+    /// refusing an agent the administration only a person holds.
     pub(crate) agents: crate::peer::AgentRegistry,
 }
 

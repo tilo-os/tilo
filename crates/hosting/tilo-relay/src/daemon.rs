@@ -921,7 +921,6 @@ impl Relay {
                             .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
                         #[cfg(feature = "agents")]
                         trust_policy: handler.trust_policy.clone(),
-                        #[cfg(feature = "agents")]
                         agents: handler.agents.clone(),
                     },
                     cfg.state_root.join("rooms"),

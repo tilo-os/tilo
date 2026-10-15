@@ -318,6 +318,18 @@ pub(crate) struct RelayTrust<'a> {
 }
 
 impl RelayTrust<'_> {
+    /// Whether `device` is an agent this relay was told about, delegated or
+    /// withdrawn. An agent is a device of the relay's own person, yet no
+    /// person: what only the host's person may do (its compute, its rooms'
+    /// administration) is never its to do. A poisoned registry counts every
+    /// device as an agent, so it refuses rather than admits.
+    pub(crate) fn is_agent(&self, device: &[u8; 32]) -> bool {
+        !self
+            .agents
+            .read()
+            .is_ok_and(|agents| !agents.contains_key(device))
+    }
+
     /// Whether `peer`'s certificate is current relay-wide at `now_ns`. A
     /// poisoned list or policy refuses.
     ///

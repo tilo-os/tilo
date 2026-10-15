@@ -97,6 +97,8 @@ mod remote_action_routing;
 mod room_admission;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
+#[path = "tenant_isolation.rs"]
+mod tenant_isolation;
 
 #[path = "additional_protocol.rs"]
 mod additional_protocol;
