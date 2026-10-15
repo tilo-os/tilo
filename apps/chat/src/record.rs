@@ -493,8 +493,6 @@ fn seconds(cx: &ActionCx) -> i64 {
 
 fn valid_attachment(attachment: &crate::model::Attachment) -> bool {
     use crate::model::Attachment;
-    let valid_blob =
-        |blob: &str| blob.len() == 64 && blob.bytes().all(|byte| byte.is_ascii_hexdigit());
     let valid_name = |name: &str| {
         !name.is_empty()
             && name.len() <= MAX_ATTACHMENT_NAME_BYTES
@@ -503,7 +501,7 @@ fn valid_attachment(attachment: &crate::model::Attachment) -> bool {
     match attachment {
         Attachment::Image { name, blob, w, h } => {
             valid_name(name)
-                && valid_blob(blob)
+                && tilo_content::valid_hash(blob)
                 && (1..=MAX_ATTACHMENT_DIMENSION).contains(w)
                 && (1..=MAX_ATTACHMENT_DIMENSION).contains(h)
         }
@@ -515,13 +513,15 @@ fn valid_attachment(attachment: &crate::model::Attachment) -> bool {
             size,
         } => {
             valid_name(name)
-                && valid_blob(blob)
+                && tilo_content::valid_hash(blob)
                 && (1..=MAX_ATTACHMENT_BYTES).contains(size)
                 && *w <= MAX_ATTACHMENT_DIMENSION
                 && *h <= MAX_ATTACHMENT_DIMENSION
         }
         Attachment::File { name, blob, size } => {
-            valid_name(name) && valid_blob(blob) && (1..=MAX_ATTACHMENT_BYTES).contains(size)
+            valid_name(name)
+                && tilo_content::valid_hash(blob)
+                && (1..=MAX_ATTACHMENT_BYTES).contains(size)
         }
     }
 }

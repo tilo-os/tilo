@@ -1093,7 +1093,8 @@ impl tilo_action_broker::record_content::ContentShelf for Shelf {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
-    use tilo_action_broker::record_content::{PIECE_BYTES, content_hash};
+    use tilo_action_broker::record_content::PIECE_BYTES;
+    use tilo_content::hash_bytes;
     use tilo_peer_state::peer_handle;
 
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
@@ -1143,7 +1144,7 @@ async fn a_joined_room_s_record_content_crosses_the_host_both_ways() {
     let picture: Vec<u8> = (0..PIECE_BYTES + 5)
         .map(|index| u8::try_from(index % 241).unwrap())
         .collect();
-    let hash = content_hash(&picture);
+    let hash = hash_bytes(&picture);
     let mut arrivals = content.subscribe(&route);
     tilo_test_env::within("the runtime's request", async {
         loop {
