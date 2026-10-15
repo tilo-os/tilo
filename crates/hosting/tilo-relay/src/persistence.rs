@@ -55,6 +55,8 @@ const REPLAY_BYTES: usize = 64 * 1024;
 const NORMAL_MESSAGES: usize = GLOBAL_MESSAGES - REPLAY_MESSAGES;
 const NORMAL_BYTES: usize = GLOBAL_BYTES - REPLAY_BYTES;
 const BLOCKING_WORKERS: usize = 4;
+/// The most blocking workers a host with many cores runs at once.
+const MAX_BLOCKING_WORKERS: usize = 16;
 const RECLAIM_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 const RECLAIM_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
 /// How far past the sequence it hands out [`State::next_sequence`] reserves
@@ -98,9 +100,22 @@ fn replay_byte_budget() -> &'static Arc<Semaphore> {
     BYTES.get_or_init(|| Arc::new(Semaphore::new(REPLAY_BYTES)))
 }
 
+/// Blocking workers every workspace's owner, replay and publication share:
+/// one per core the process may use, between [`BLOCKING_WORKERS`] (what a
+/// small node keeps) and [`MAX_BLOCKING_WORKERS`]. A crowd joining a room
+/// prepares one replay per newcomer, each as large as the room, and four
+/// workers left a large host's cores idle while the replays queued.
+fn blocking_workers() -> usize {
+    std::thread::available_parallelism().map_or(BLOCKING_WORKERS, |cores| {
+        cores.get().clamp(BLOCKING_WORKERS, MAX_BLOCKING_WORKERS)
+    })
+}
+
+/// Detached replay preparation takes at most half the blocking workers, so
+/// owners always find one.
 fn detached_replay_budget() -> &'static Arc<Semaphore> {
     static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    WORKERS.get_or_init(|| Arc::new(Semaphore::new(2)))
+    WORKERS.get_or_init(|| Arc::new(Semaphore::new((blocking_workers() / 2).max(2))))
 }
 
 #[derive(Clone)]
@@ -1177,7 +1192,7 @@ pub(crate) fn delivery_budget(
 
 fn blocking_budget() -> &'static Arc<Semaphore> {
     static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    WORKERS.get_or_init(|| Arc::new(Semaphore::new(BLOCKING_WORKERS)))
+    WORKERS.get_or_init(|| Arc::new(Semaphore::new(blocking_workers())))
 }
 
 pub(crate) async fn blocking<T: Send + 'static>(
