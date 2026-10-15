@@ -291,6 +291,10 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
         .arg("--room-id-file")
         .arg(dir.join("room-id"))
         .arg("--member-limits")
+        // The relay sees every watching page's subscription and holds the
+        // spectator cap; this service's count only paces new certificates.
+        .arg("--max-spectators")
+        .arg(persistent.max_spectators.to_string())
         .arg("--public-avatars")
         .arg(dir.join("avatars"))
         .arg("--public-avatars-url")
@@ -1347,6 +1351,29 @@ mod tests {
         assert_eq!(after("--live-origin"), "https://live.rooms.example");
         assert_eq!(after("--public-origin"), "https://rooms.example");
         assert_eq!(after("--web-plain"), "0.0.0.0:9780");
+    }
+
+    #[test]
+    fn the_relay_holds_the_spectator_cap() {
+        let vars = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example"),
+            ("TILO_ROOMS_MAX_SPECTATORS", "40"),
+        ];
+        let config = Config::from_lookup(|name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        })
+        .unwrap();
+        let command = child_command(&config, Path::new("/state")).unwrap();
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let at = args.iter().position(|arg| arg == "--max-spectators");
+        assert_eq!(at.map(|at| args[at + 1].as_str()), Some("40"));
     }
 
     #[test]

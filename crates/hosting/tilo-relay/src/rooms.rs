@@ -32,6 +32,8 @@ mod collaboration;
 mod content;
 pub use content::RoomContent;
 mod pages;
+#[cfg(feature = "web")]
+mod spectator_keys;
 #[cfg(feature = "agents")]
 mod steward_endpoint;
 mod stewardship;

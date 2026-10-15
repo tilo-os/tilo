@@ -45,7 +45,9 @@
  * Spectating (the homepage embed): the page makes a device key in memory
  * only and asks the host to certify it as the room's one read-only
  * spectator person (`POST <admission>spectate`), then connects through the
- * ordinary `connectPeer` path with that certificate. Nothing is stored and
+ * ordinary `connectPeer` path with that certificate, watching only (it
+ * writes nothing, and takes the keys of what members seal from the room's
+ * steward). Nothing is stored and
  * no person is created, so a visitor who only scrolls past leaves no member
  * behind.
  */
@@ -451,7 +453,7 @@ export async function spectate({
   // a rounded copy no longer matches its signature.
   return connect({
     ...connectOptions, origin, room, runtime, custody, store: memoryStore(), fetch,
-    userPublicKey: hex(JSON.parse(certificate).user_public_key), label: 'Spectator',
+    userPublicKey: hex(JSON.parse(certificate).user_public_key), label: 'Spectator', watching: true,
     deviceCertificate: `{"cert":${certificate},"hostCert":${JSON.stringify(hostCert)}}`,
   });
 }

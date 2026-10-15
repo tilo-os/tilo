@@ -38,6 +38,7 @@ pub mod session;
 #[cfg(feature = "toolkit")]
 pub mod transport;
 pub mod voice;
+mod watching;
 
 pub use carrier::{HttpClient, HttpFuture, HttpsLink, LinkError};
 pub use channel_crypto::ChannelContentKeys;

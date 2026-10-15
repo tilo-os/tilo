@@ -92,6 +92,11 @@ pub struct PersistentArgs {
     /// Apply per-person change and content budgets to members.
     #[arg(long = "member-limits")]
     pub member_limits: bool,
+    /// Visitors watching the room at once. Each watching page reads the
+    /// room as its spectator person and writes nothing; past this many the
+    /// relay refuses the next one's subscription.
+    #[arg(long = "max-spectators", default_value_t = 1000)]
+    pub max_spectators: usize,
     /// A person (user public key, hex) made an Owner of the room once they
     /// joined; repeatable. A key removed from the list loses the role.
     #[arg(long = "owner", value_name = "HEX")]
@@ -930,6 +935,25 @@ pub(crate) async fn run(
     let room = governed_room(&rooms, &shown, &id_file, &store, &root).await?;
     let spectator = spectator_root(&store, &room)?;
     ensure_spectator_member(&rooms, &host_cert, &root, &room, &spectator).await?;
+    let workspace_id = rooms
+        .summary(&room)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?
+        .workspace_id;
+    hosted
+        .relay
+        .admit_spectators(
+            workspace_id,
+            tilo_relay::Spectators {
+                root: spectator.verifying_key().to_bytes(),
+                seats: persistent.max_spectators,
+                // Every visitor may join this room as a guest, and so read
+                // its channels: one who only watches may read them too.
+                public: true,
+            },
+        )
+        .await
+        .context("let visitors watch the room")?;
     seed_apps(
         &rooms,
         &room,

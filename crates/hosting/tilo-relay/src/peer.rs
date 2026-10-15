@@ -2213,7 +2213,12 @@ async fn handle_subscribe(
                     (Some(expected), None) => !expected.same_channel(&source.tx),
                     (None, Some(_)) => false,
                 };
-                if !source.alive() || !source.admits(&wr, &source.peer) {
+                // The spectator seat is taken here, under the room's lock:
+                // of two spectators let in for the last seat, one ends here.
+                if !source.alive()
+                    || !source.admits(&wr, &source.peer)
+                    || !room_access::seated(&wr, &source.peer)
+                {
                     return Err(crate::persistence::error(
                         "replay subscriber authorization changed",
                     ));
@@ -2313,6 +2318,17 @@ pub(crate) struct StateSession {
     lag: Option<Arc<Lag>>,
 }
 impl StateSession {
+    /// A live session of `peer` whose deliveries go nowhere.
+    #[cfg(test)]
+    pub(crate) fn for_test(peer: AuthenticatedPeer) -> Self {
+        Self {
+            peer,
+            tx: mpsc::channel(1).0,
+            live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            replay: None,
+            lag: None,
+        }
+    }
     /// Everything fanned out to this session so far reached its wire: none
     /// of it is queued, left on disk while it lagged, or still replaying.
     pub(crate) fn caught_up(&self) -> bool {
@@ -2486,9 +2502,23 @@ impl StateSource {
     ) -> bool {
         room_access::decide(runtime, &self.trust(), peer, RoomOperation::State).admitted()
     }
+    /// Whether this source may still hold the room's state over its current
+    /// session: what keeps its subscription and its frames flowing.
     pub(crate) fn authorized(&self, runtime: &crate::workspace::WorkspaceRuntime) -> bool {
+        self.authorized_for(runtime, RoomOperation::State)
+    }
+    /// Whether this source may take a frame of its own into the room now: a
+    /// spectator holds the room's state, and never publishes into it.
+    fn publishes(&self, runtime: &crate::workspace::WorkspaceRuntime) -> bool {
+        self.authorized_for(runtime, RoomOperation::Publish)
+    }
+    fn authorized_for(
+        &self,
+        runtime: &crate::workspace::WorkspaceRuntime,
+        op: RoomOperation,
+    ) -> bool {
         self.alive()
-            && self.admits(runtime, &self.peer)
+            && room_access::decide(runtime, &self.trust(), &self.peer, op).admitted()
             && match &self.federation {
                 Some(lease) => {
                     lease.load(std::sync::atomic::Ordering::SeqCst)
@@ -5609,14 +5639,15 @@ async fn handle_delta(
         trace_native_publication("server_source_refused", &env, None);
         // A live revoke already pushed NotAuthorised and dropped this
         // subscriber; a follow-up write must close rather than refuse twice.
-        if !current_session(&*ws.lock().await, peer, session.outbound) {
+        let runtime = ws.lock().await;
+        if !current_session(&runtime, peer, session.outbound) {
             return Err(PeerError::Protocol(
                 "subscriber authorization changed".into(),
             ));
         }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: "workspace membership changed".into(),
+            reason: unpublished(&runtime, peer).into(),
         }));
     };
     trace_native_publication("server_authorized", &env, None);
@@ -5698,6 +5729,13 @@ async fn handle_compaction(
     if !subscribed.contains(&workspace_id) || peer.role != crate::auth::PeerRole::Device {
         return;
     }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return;
+    };
+    // Compacting rewrites what the room keeps: a spectator never does.
+    if room_access::watches_only(&*ws.lock().await, peer) {
+        return;
+    }
     let Envelope::Compacted {
         statement,
         signature,
@@ -5705,9 +5743,6 @@ async fn handle_compaction(
     } = env
     else {
         compactor.volunteer(workspace_id, peer.device_public_key);
-        return;
-    };
-    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return;
     };
     if let Err(error) = compactor
@@ -5788,7 +5823,8 @@ async fn handle_commit(
         return refused("workspace not bound on this relay");
     };
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
-        return refused("workspace membership changed");
+        let reason = unpublished(&*ws.lock().await, peer);
+        return refused(reason);
     };
     let digest = *blake3::hash(&delta).as_bytes();
     let gate = ws.lock().await.commit_gate.clone();
@@ -5908,24 +5944,29 @@ async fn handle_live_join(
     subscribed: &[u64],
     workspace_id: u64,
 ) -> Result<Option<Envelope>, PeerError> {
-    let refused = || {
+    const UNSUBSCRIBED: &str = "live join requires a subscription";
+    let refused = |reason: &str| {
         Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: "live join requires a subscription".into(),
+            reason: reason.into(),
         }))
     };
     if !subscribed.contains(&workspace_id) {
-        return refused();
+        return refused(UNSUBSCRIBED);
     }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
-        return refused();
+        return refused(UNSUBSCRIBED);
     };
-    let Some(members) = ws
-        .lock()
-        .await
-        .live_join(peer.device_public_key, workspace_id)
-    else {
-        return refused();
+    let members = {
+        let mut runtime = ws.lock().await;
+        // A spectator neither shows nor sends a cursor.
+        if room_access::watches_only(&runtime, peer) {
+            return refused(room_access::DenyReason::WatchOnly.reason());
+        }
+        runtime.live_join(peer.device_public_key, workspace_id)
+    };
+    let Some(members) = members else {
+        return refused(UNSUBSCRIBED);
     };
     for device in members {
         // Live state is never authority: a member notice lost to a full
@@ -5961,7 +6002,13 @@ async fn handle_voice(
     let authority = if subscribed.contains(&workspace_id) {
         let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
         match ws {
-            Some(ws) => ws.lock().await.room_authority.clone(),
+            // A spectator takes no part in the room's calls.
+            Some(ws) => {
+                let runtime = ws.lock().await;
+                (!room_access::watches_only(&runtime, peer))
+                    .then(|| runtime.room_authority.clone())
+                    .flatten()
+            }
             None => None,
         }
     } else {
@@ -6127,14 +6174,15 @@ async fn handle_delta_prefix(
         for envelope in &envelopes {
             trace_native_publication("server_source_refused", envelope, None);
         }
-        if !current_session(&*workspace.lock().await, peer, session.outbound) {
+        let runtime = workspace.lock().await;
+        if !current_session(&runtime, peer, session.outbound) {
             return Err(PeerError::Protocol(
                 "subscriber authorization changed".into(),
             ));
         }
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
-            reason: "workspace membership changed".into(),
+            reason: unpublished(&runtime, peer).into(),
         }));
     };
     for envelope in &envelopes {
@@ -6194,7 +6242,19 @@ async fn authorized_state_source(
 ) -> Result<Option<StateSource>, PeerError> {
     let source = StateSource::new(peer, session);
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    Ok(source.authorized(&runtime).then_some(source))
+    Ok(source.publishes(&runtime).then_some(source))
+}
+
+/// Why the relay took none of `peer`'s frames into the room.
+fn unpublished(
+    runtime: &crate::workspace::WorkspaceRuntime,
+    peer: &AuthenticatedPeer,
+) -> &'static str {
+    if room_access::watches_only(runtime, peer) {
+        room_access::DenyReason::WatchOnly.reason()
+    } else {
+        "workspace membership changed"
+    }
 }
 
 fn checkpoint_prefix_recovery_allowed(
@@ -6289,6 +6349,11 @@ async fn handle_presence(
         // `fanout_delta`).
         if peer.role == crate::auth::PeerRole::Device {
             wr.request_checkpoint(&peer.device_public_key);
+        }
+        // A spectator's presence asks for its baseline and nothing more:
+        // nobody sees it, and it asks the room for no content.
+        if room_access::watches_only(&wr, peer) {
+            return Ok(None);
         }
         wr.fanout_presence(&peer.device_public_key, peer.role, &env, slot);
         let authority = wr.room_authority.clone();
@@ -6510,7 +6575,11 @@ async fn route_record_content(
         from_device_public_key: peer.device_public_key,
         frame,
     };
-    ws.lock().await.route_lossy(&to, stamped);
+    let runtime = ws.lock().await;
+    // A spectator hands no member content.
+    if !room_access::watches_only(&runtime, peer) {
+        runtime.route_lossy(&to, stamped);
+    }
 }
 
 /// Answer a frame addressed to this relay through its app-serving plane,
