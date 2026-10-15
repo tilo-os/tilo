@@ -920,32 +920,56 @@ inputs = ["apps/**", "crates/**", "vendor/**", "os/**", "scripts/ci-fuse-preflig
 cost = "heavy"
 
 # ---------------------------------------------------------------------------
-# Scheduled suites (.forgejo/workflows/ci-nightly.yml, ci-weekly-quality.yml),
-# run on request: `t test 'nightly-*'`. t reserves `/` in check names for package
+# Scheduled suites: nightly-* every night, weekly-* on Sundays, and on request:
+# `t test 'nightly-*'` or `t dispatch <check>`. t reserves `/` in check names for package
 # families, hence the `nightly-` and `weekly-` prefixes. The nightly goldens,
 # app certification and vendored crates are the `goldens`, `certify` and
 # `vendored` checks above.
 
 [[check]]
 name = "nightly-workspace-test"
-requires = ["disk-100g"]
+requires = ["arch=x86_64", "disk-100g"]
 run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
+export TILO_IMAGER_TEST_CACHE_ROOT=$CARGO_TARGET_DIR/ci/imager-test-fs
+mkdir -p "$TILO_IMAGER_TEST_CACHE_ROOT" && chmod 700 "$TILO_IMAGER_TEST_CACHE_ROOT"
+cargo build --locked -p install --bin tilo-install
+# The browser peer's suites drive Chrome and the MoQ library the browser runtime builds.
+bash tools/ci/ensure-browser-dependencies.sh
+npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
+export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
+npm ci --prefix scripts/moq-browser --no-audit --no-fund
+node scripts/moq-browser/build.mjs
 filter=$(python3 tools/ci/nextest_filters.py | sed -n 's/^GOLDEN_FILTER=//p')
 bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "not ($filter)"
 """
-env = { PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_GPU = "1", TILO_REQUIRE_AUDIO = "1" }
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_GPU = "1", TILO_REQUIRE_AUDIO = "1" }
+writable_sources = true
+on = ["schedule:0 3 * * *", "dispatch"]
 cost = "heavy"
 default = false
 
 [[check]]
 name = "nightly-check"
-run = "cargo check --workspace --locked --all-targets"
+requires = ["arch=x86_64"]
+run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
+cargo check --workspace --locked --all-targets
+"""
+on = ["schedule:0 3 * * *", "dispatch"]
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 cost = "heavy"
 default = false
 
 [[check]]
 name = "nightly-examples"
-run = "bash tools/with-test-environment.sh cargo test --workspace --examples --locked"
+requires = ["arch=x86_64"]
+run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
+bash tools/with-test-environment.sh cargo test --workspace --examples --locked
+"""
+on = ["schedule:0 3 * * *", "dispatch"]
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 cost = "heavy"
 default = false
 
@@ -953,7 +977,12 @@ default = false
 [[check]]
 name = "nightly-ignored"
 run = """
-crates/doc/tilo-doc-codec-markdown-wasm/build.sh
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
+export TILO_TEST_NTFS_FIXTURES=0
+# The provider tests read the Markdown provider from its crate's own target/.
+CARGO_TARGET_DIR=$PWD/crates/doc/tilo-doc-codec-markdown-wasm/target crates/doc/tilo-doc-codec-markdown-wasm/build.sh
+# The MCP proof drives the compositor with tilo-control, built beside it.
+cargo build --locked -p tilo-control --bin tilo-control
 bash tools/with-test-environment.sh cargo nextest run --workspace --locked --profile ci --run-ignored only --test-threads 1 \
   -E '(package(shell) and (test(headless_examples_smoke::full_loop_writes_two_pngs) or test(headless_examples_smoke::mcp_live_proof_drives_a_compositor_over_mcp) or test(session_lock_e2e::))) or (package(format-host) and binary(integration))'
 cargo build --locked -p terminal --bin terminal
@@ -961,16 +990,135 @@ TILO_TERMINAL_BINARY=$CARGO_TARGET_DIR/debug/terminal bash tools/with-test-envir
   cargo nextest run -p shell --features agent-control --locked --profile ci --run-ignored only --test-threads 1 \
   -E 'test(headless_examples_smoke::agent_seats_proof_keeps_two_agents_apart)'
 """
+requires = ["arch=x86_64"]
+writable_sources = true
+on = ["schedule:0 3 * * *", "dispatch"]
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 cost = "heavy"
 default = false
 
-# Fuzzing with the pinned nightly toolchain, which ci-nightly.yml installs at run
-# time too; here into the check's own rustup home, as the image's is read-only.
+# Live music search and stream resolution against the third-party services
+# themselves, so a failure may be theirs; kept out of every other suite so
+# ordinary results never depend on their uptime.
+[[check]]
+name = "nightly-live-music"
+run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets
+export TILO_TEST_NTFS_FIXTURES=0
+bash tools/test-env.sh cargo nextest run -p music --locked --profile ci --run-ignored all -E 'test(live_search_and_stream_resolve_through_the_app)'
+"""
+writable_sources = true
+on = ["schedule:0 3 * * *", "dispatch"]
+cache = false
+cost = "minutes"
+default = false
+
+# The nightly's native aarch64 leg: the whole workspace's tests, every target,
+# every example, the app certification, the ignored tests a headless node
+# supports and the visual goldens, in the same builder image.
+[[check]]
+name = "nightly-arm64-workspace-test"
+requires = ["arch=arm64", "disk-100g"]
+run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
+export TILO_IMAGER_TEST_CACHE_ROOT=$CARGO_TARGET_DIR/ci/imager-test-fs
+mkdir -p "$TILO_IMAGER_TEST_CACHE_ROOT" && chmod 700 "$TILO_IMAGER_TEST_CACHE_ROOT"
+cargo build --locked -p install --bin tilo-install
+# The browser peer's suites drive Chrome and the MoQ library the browser runtime builds.
+bash tools/ci/ensure-browser-dependencies.sh
+npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
+export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
+npm ci --prefix scripts/moq-browser --no-audit --no-fund
+node scripts/moq-browser/build.mjs
+filter=$(python3 tools/ci/nextest_filters.py | sed -n 's/^GOLDEN_FILTER=//p')
+bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "not ($filter)"
+"""
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_GPU = "1", TILO_REQUIRE_AUDIO = "1" }
+writable_sources = true
+on = ["schedule:0 3 * * *", "dispatch"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "nightly-arm64-check"
+requires = ["arch=arm64"]
+run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
+cargo check --workspace --locked --all-targets
+"""
+on = ["schedule:0 3 * * *", "dispatch"]
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json" }
+cost = "heavy"
+default = false
+
+[[check]]
+name = "nightly-arm64-examples"
+requires = ["arch=arm64"]
+run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
+bash tools/with-test-environment.sh cargo test --workspace --examples --locked
+"""
+on = ["schedule:0 3 * * *", "dispatch"]
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json" }
+cost = "heavy"
+default = false
+
+[[check]]
+name = "nightly-arm64-certify"
+requires = ["arch=arm64"]
+run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
+cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace
+"""
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1" }
+on = ["schedule:0 3 * * *", "dispatch"]
+cost = "heavy"
+default = false
+
+# BEGIN generated by tools/ci/t_toml.py: arm64-goldens
+[[check]]
+name = "nightly-arm64-goldens"
+image = "registry.tilo.so/tilo/tilo-builder@sha256:b1107264972dda1416a122e58c54f50b12bdb9cb442fb5a40d219839892f7cf9"
+requires = ["arch=arm64"]
+run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p ebook -p shell -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))'"
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
+writable_sources = true
+on = ["schedule:0 3 * * *", "dispatch"]
+cost = "heavy"
+default = false
+# END generated
+
+[[check]]
+name = "nightly-arm64-ignored"
+run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
+export TILO_TEST_NTFS_FIXTURES=0
+# The provider tests read the Markdown provider from its crate's own target/.
+CARGO_TARGET_DIR=$PWD/crates/doc/tilo-doc-codec-markdown-wasm/target crates/doc/tilo-doc-codec-markdown-wasm/build.sh
+# The MCP proof drives the compositor with tilo-control, built beside it.
+cargo build --locked -p tilo-control --bin tilo-control
+bash tools/with-test-environment.sh cargo nextest run --workspace --locked --profile ci --run-ignored only --test-threads 1 \
+  -E '(package(shell) and (test(headless_examples_smoke::full_loop_writes_two_pngs) or test(headless_examples_smoke::mcp_live_proof_drives_a_compositor_over_mcp) or test(session_lock_e2e::))) or (package(format-host) and binary(integration))'
+cargo build --locked -p terminal --bin terminal
+TILO_TERMINAL_BINARY=$CARGO_TARGET_DIR/debug/terminal bash tools/with-test-environment.sh \
+  cargo nextest run -p shell --features agent-control --locked --profile ci --run-ignored only --test-threads 1 \
+  -E 'test(headless_examples_smoke::agent_seats_proof_keeps_two_agents_apart)'
+"""
+requires = ["arch=arm64"]
+writable_sources = true
+on = ["schedule:0 3 * * *", "dispatch"]
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json" }
+cost = "heavy"
+default = false
+
+
+# Fuzzing with the pinned nightly toolchain, installed at run time
+# into the check's own rustup home, as the image's is read-only.
 [[check]]
 name = "nightly-fuzz"
 run = """
 export RUSTUP_HOME=$TMPDIR/rustup
-rustup toolchain install nightly-2026-08-25 --profile minimal
+rustup toolchain install nightly-2026-08-25 --profile minimal --no-self-update
 cargo +nightly-2026-08-25 install cargo-fuzz --locked --version 0.13.2 --root "$TMPDIR/cargo-fuzz"
 export PATH=$TMPDIR/cargo-fuzz/bin:$PATH
 for target in tapp_ingress collab_invite_chain identity_wire sandbox_policy; do
@@ -979,6 +1127,8 @@ done
 """
 env = { RUST_BACKTRACE = "1" }
 inputs = ["fuzz/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+writable_sources = true
+on = ["schedule:0 3 * * *", "dispatch"]
 timeout_secs = 5400
 cost = "heavy"
 default = false

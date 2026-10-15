@@ -10,7 +10,8 @@ so t.toml carries both, generated between markers:
     reads through include_str! or a test fixture path runs its checks again;
   * one `suite-<group>` check per suite group;
   * the `goldens` family, which runs .config/nextest-filters.toml's golden
-    filter in the image .config/visual-goldens-image names.
+    filter in the image .config/visual-goldens-image names, and the nightly
+    `nightly-arm64-goldens` check, which runs it there on aarch64.
 
   t_toml.py write   regenerate the marked blocks in t.toml
   t_toml.py check   fail when they differ from what suites.toml implies
@@ -115,11 +116,33 @@ def goldens(image: str) -> str:
     ]) + "\n"
 
 
+def arm64_goldens(image: str) -> str:
+    """The nightly goldens on aarch64, in the same image: the pixels match on both architectures."""
+    sys.path.insert(0, str(ROOT / "tools/ci"))
+    import nextest_filters
+    golden = nextest_filters.filters()["GOLDEN_FILTER"]
+    packages = " ".join(f"-p {name}" for name in sorted(set(re.findall(r"package\(([\w-]+)\)", golden))))
+    return "\n".join([
+        "[[check]]",
+        'name = "nightly-arm64-goldens"',
+        f"image = {json.dumps(image)}",
+        'requires = ["arch=arm64"]',
+        "run = " + json.dumps(f"bash tools/test-env.sh cargo nextest run --locked --profile ci --tests "
+                              f"--no-tests=pass {packages} -E '{golden}'"),
+        'env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
+        "writable_sources = true",
+        'on = ["schedule:0 3 * * *", "dispatch"]',
+        'cost = "heavy"',
+        "default = false",
+    ]) + "\n"
+
+
 def generated(manifest: suites.Manifest) -> dict[str, str]:
     inputs = package_inputs(manifest)
     return {"test-package-inputs": inputs, "clippy-package-inputs": inputs,
             "check-package-inputs": inputs, "suites": suite_checks(manifest),
-            "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip())}
+            "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
+            "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip())}
 
 
 def render(text: str, blocks: dict[str, str]) -> str:
