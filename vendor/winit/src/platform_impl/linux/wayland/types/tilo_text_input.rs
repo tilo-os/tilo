@@ -2,7 +2,7 @@
 use sctk::globals::GlobalData;
 use sctk::reexports::client::globals::{BindError, GlobalList};
 use sctk::reexports::client::protocol::wl_surface::WlSurface;
-use sctk::reexports::client::{Connection, Dispatch, Proxy, QueueHandle, delegate_dispatch};
+use sctk::reexports::client::{delegate_dispatch, Connection, Dispatch, Proxy, QueueHandle};
 
 use crate::event::{PrivateIme, PrivateImeKind, WindowEvent};
 use crate::platform_impl::wayland::state::WinitState;

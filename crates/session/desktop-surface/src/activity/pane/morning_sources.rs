@@ -5,6 +5,24 @@ use super::{
     t_args, text_width,
 };
 
+/// The app a chosen source lives in, as a person would name it. Never the
+/// resource id: a source whose names are all identifiers reads generically.
+fn morning_source_name(target: &ui::HistoryResourceTarget) -> String {
+    target
+        .app_label
+        .as_deref()
+        .and_then(|label| ui::human_label(label, target.app_id.as_deref().unwrap_or_default()))
+        .or_else(|| target.display_name())
+        .map_or_else(|| t("activity-morning-source-unnamed"), str::to_owned)
+}
+
+/// The resource's own title, else its app, else the generic source name.
+pub(super) fn morning_resource_name(target: &ui::HistoryResourceTarget) -> String {
+    target
+        .display_name()
+        .map_or_else(|| t("activity-morning-source-unnamed"), str::to_owned)
+}
+
 struct MorningPaint<'a> {
     scene: &'a mut Scene,
     transform: Affine,
@@ -158,10 +176,7 @@ impl RoomActivityPane {
                 t_args(
                     "activity-morning-source",
                     &[
-                        (
-                            "source",
-                            target.app_label.as_deref().unwrap_or(&target.id).into(),
-                        ),
+                        ("source", morning_source_name(target).into()),
                         ("time", format_relative_time(*time, self.now()).into()),
                     ],
                 )
@@ -220,10 +235,7 @@ impl RoomActivityPane {
             t_args(
                 "activity-morning-recorded",
                 &[
-                    (
-                        "source",
-                        target.app_label.as_deref().unwrap_or(&target.id).into(),
-                    ),
+                    ("source", morning_source_name(target).into()),
                     ("time", format_relative_time(*time, self.now()).into()),
                 ],
             )
@@ -273,9 +285,12 @@ impl RoomActivityPane {
         let tight = f64::from(spacing.s1);
         let padding = f64::from(spacing.s4);
         let x0 = self.sheet.x0 + inset;
-        let caption = if !self.host.morning_sources_available() {
-            t("activity-morning-unavailable")
-        } else if self.chosen_morning_sources().is_empty() {
+        // A host without private morning sources (a visitor in the browser)
+        // has nothing to choose or show, so the section takes no space.
+        if !self.host.morning_sources_available() {
+            return y;
+        }
+        let caption = if self.chosen_morning_sources().is_empty() {
             t("activity-morning-empty")
         } else {
             t("activity-morning-description")
@@ -340,7 +355,7 @@ impl RoomActivityPane {
             .join("\n");
         let title = evidence.as_ref().map_or_else(
             || t("activity-morning-unavailable"),
-            |(target, _)| target.label.clone(),
+            |(target, _)| morning_resource_name(target),
         );
         let h = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, theme);
         let (_, caption_height) =

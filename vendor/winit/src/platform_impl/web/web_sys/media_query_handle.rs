@@ -42,7 +42,8 @@ impl Drop for MediaQueryListHandle {
 }
 
 fn remove_listener(mql: &MediaQueryList, listener: &Closure<dyn FnMut()>) {
-    mql.remove_listener_with_opt_callback(Some(listener.as_ref().unchecked_ref())).unwrap_or_else(
-        |e| web_sys::console::error_2(&"Error removing media query listener".into(), &e),
-    );
+    mql.remove_listener_with_opt_callback(Some(listener.as_ref().unchecked_ref()))
+        .unwrap_or_else(|e| {
+            web_sys::console::error_2(&"Error removing media query listener".into(), &e)
+        });
 }

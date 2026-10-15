@@ -95,12 +95,19 @@ pub struct DispatchRunner<T: 'static> {
 
 impl<T> DispatchRunner<T> {
     pub fn run(&self) {
-        while let Some(Closure(closure)) =
-            self.receiver.try_recv().expect("should only be closed when `Dispatcher` is dropped")
+        while let Some(Closure(closure)) = self
+            .receiver
+            .try_recv()
+            .expect("should only be closed when `Dispatcher` is dropped")
         {
             // SAFETY: The given `Closure` here isn't really `'static`, so we shouldn't do anything
             // funny with it here. See `Self::queue()`.
-            closure(&self.wrapper.value().expect("don't call this outside the main thread"))
+            closure(
+                &self
+                    .wrapper
+                    .value()
+                    .expect("don't call this outside the main thread"),
+            )
         }
     }
 }

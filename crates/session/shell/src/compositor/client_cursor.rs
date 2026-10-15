@@ -100,9 +100,9 @@ fn read_cursor_surface(surface: &WlSurface, output_scale: f64) -> Option<Arc<Cur
                     .hotspot
             })
             .unwrap_or_default();
+        let scale = crate::compositor::state::committed_surface_scale(states);
         let mut attrs = states.cached_state.get::<SurfaceAttributes>();
         let current = attrs.current();
-        let buffer_scale = current.buffer_scale;
         let buffer = match &current.buffer {
             Some(BufferAssignment::NewBuffer(buffer)) => Some(buffer.clone()),
             Some(BufferAssignment::Removed) | None => None,
@@ -118,12 +118,15 @@ fn read_cursor_surface(surface: &WlSurface, output_scale: f64) -> Option<Arc<Cur
                     return None;
                 }
             };
+        // Buffer pixels per logical pixel: the buffer scale, or what a
+        // viewport makes of the buffer (a fractionally scaled client).
+        let density = scale.density(width, height).map_or(1.0, |(x, _)| x);
         CursorBitmap::from_client(
             &rgba,
             width,
             height,
             (hotspot.x, hotspot.y),
-            buffer_scale,
+            density,
             output_scale,
         )
         .map(Arc::new)

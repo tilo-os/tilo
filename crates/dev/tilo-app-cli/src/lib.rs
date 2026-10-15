@@ -6939,10 +6939,7 @@ type DevChooser = ();
 /// in, as its shell publishes it; `None` outside a session.
 #[cfg(target_os = "linux")]
 fn session_room() -> Option<String> {
-    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
-    if !runtime.is_absolute() {
-        return None;
-    }
+    let runtime = tilo_paths::xdg::runtime_dir()?;
     let room = std::fs::read_to_string(runtime.join("tilo-session").join("workspace-id")).ok()?;
     let room = room.trim();
     (!room.is_empty()).then(|| room.to_owned())
@@ -7879,30 +7876,9 @@ fn stop_dev_child(child: &mut Option<Child>) {
     stop_dev_process_tree(&mut running);
 }
 
-#[cfg(unix)]
+#[cfg(not(windows))]
 fn stop_dev_process_tree(running: &mut Child) {
-    let Ok(pid) = i32::try_from(running.id()) else {
-        let _ = running.kill();
-        let _ = running.wait();
-        return;
-    };
-    // SAFETY: both development spawn paths create a process group whose ID is
-    // the child PID. Negating that validated PID confines SIGTERM to it.
-    let _ = unsafe { libc::kill(pid.saturating_neg(), libc::SIGTERM) };
-    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(1)) else {
-        let _ = running.kill();
-        let _ = running.wait();
-        return;
-    };
-    while Instant::now() < deadline {
-        if running.try_wait().ok().flatten().is_some() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    // SAFETY: the same dedicated process-group invariant applies to SIGKILL.
-    let _ = unsafe { libc::kill(pid.saturating_neg(), libc::SIGKILL) };
-    let _ = running.wait();
+    bounded_command::terminate_tree(running, Duration::from_secs(1));
 }
 
 #[cfg(windows)]
@@ -7918,12 +7894,6 @@ fn stop_dev_process_tree(running: &mut Child) {
     if !stopped_tree {
         let _ = running.kill();
     }
-    let _ = running.wait();
-}
-
-#[cfg(not(any(unix, windows)))]
-fn stop_dev_process_tree(running: &mut Child) {
-    let _ = running.kill();
     let _ = running.wait();
 }
 

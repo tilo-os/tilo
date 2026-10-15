@@ -9,8 +9,9 @@
  * preview): a workspace whose host has an admission door is first watched
  * read-only as its spectator, so scrolling past mints no member, and the
  * visitor joins as themselves on their first click, tap or key press. A
- * visitor who already joined that host comes back at once. The embedding page
- * hears `{type: 'tilo-embed', state}`: `watching`, `joined`, or `full` /
+ * visitor who already joined that host comes back at once. The embedding page,
+ * if it is the web host's embedder (`entry.json` `embedder`), hears
+ * `{type: 'tilo-embed', state}`: `watching`, `joined`, or `full` /
  * `unavailable` when it should show its static fallback. A visitor the host
  * has no seat for watches live instead and is let in once a seat frees up.
  */
@@ -18,7 +19,7 @@ import {AdmissionError} from './admission.mjs';
 import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
-import {loadRuntime, mountDesktop, prepareGpu} from './host.mjs';
+import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -34,8 +35,6 @@ import {
   spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
-/** Where an embed's state goes: the site that embeds the workspace. */
-const EMBEDDER = 'https://tilo.so';
 /** Set for the one reload that turns an embed's spectator into a member. */
 const JOIN_NOW = 'tilo-embed-join';
 
@@ -391,7 +390,9 @@ export async function startEntryPage({mode}) {
   };
   // The arrival screen's line and bar follow those steps (arrival.mjs).
   startArrival({mode});
-  const tell =state => { if (embed && parent !== window) parent.postMessage({type: 'tilo-embed', state}, EMBEDDER); };
+  /** Where an embed's state goes: the site the web host names as its embedder, once the entry is read. */
+  let embedder = null;
+  const tell = state => { if (embed && embedder && parent !== window) parent.postMessage({type: 'tilo-embed', state}, embedder); };
   let joinNow = false;
   try { joinNow = sessionStorage.getItem(JOIN_NOW) === '1'; sessionStorage.removeItem(JOIN_NOW); } catch { /* No storage: watch first. */ }
   /** How this page entered through a host's door: `joined`, `watching` (until a gesture) or `seatless`. */
@@ -462,10 +463,12 @@ export async function startEntryPage({mode}) {
   };
   const deps = {
     loadRuntime: async () => (runtime = await loadRuntime()),
+    prefetchApplication,
     // An embed always shows the workspace the embedding site names.
     chosenWorkspace: () => (embed ? null : remembering(() => chosenWorkspace())),
     onScope: next => {
       admitting = next;
+      embedder = next.entry?.embedder ?? null;
       const known = remembering(() => rememberedRoom(next.scope));
       if (known?.name && !workspaceName) workspaceName = known.name;
     },
@@ -673,8 +676,10 @@ export async function startEntryPage({mode}) {
     // on, reaches the console and the host's error report.
     status.textContent = failureMessage(error, {workspace: workspaceName, loaded: Boolean(runtime)});
     const known = admitting && remembering(() => rememberedRoom(admitting.scope));
-    // A declined invitation or a damaged link says nothing about the room.
-    if (known && !(error instanceof AdmissionError && error.code !== 'no-access')) {
+    // A declined or unusable invitation, a damaged link or this browser's
+    // device key held by another tab says nothing about the room.
+    const local = error?.name === 'CustodyError' || (error instanceof AdmissionError && !['no-access', 'refused', 'host-changed'].includes(error.code));
+    if (known && !local) {
       // A room this browser was a member of: say what is known, and stop
       // reopening it on a bare entry.
       remembering(() => markUnavailable(known));

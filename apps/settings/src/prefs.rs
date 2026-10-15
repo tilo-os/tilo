@@ -230,6 +230,11 @@ pub struct InputPrefs {
 
 impl Default for InputPrefs {
     fn default() -> Self {
+        // A person who never chose a layout types the machine's: this whole
+        // section is written back on any input change, so a fixed US default
+        // here would pin US over the layout the system was installed with.
+        let keyboard_layouts = settings_store::keyboard_sources::default_sources();
+        let keyboard_layout = keyboard_layouts.first().cloned().unwrap_or_default();
         Self {
             touchpad_natural_scroll: settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
             mouse_natural_scroll: settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL,
@@ -240,7 +245,7 @@ impl Default for InputPrefs {
             key_repeat: 0.5,
             key_repeat_delay_ms: None,
             key_repeat_rate_hz: None,
-            keyboard_layout: "us".to_string(),
+            keyboard_layout,
             tap_drag: true,
             tap_drag_lock: false,
             disable_while_typing: true,
@@ -255,7 +260,7 @@ impl Default for InputPrefs {
             scroll_speed: 1.0,
             compose_key: None,
             caps_lock: None,
-            keyboard_layouts: vec!["us".into()],
+            keyboard_layouts,
             keyboard_model: "pc105".into(),
             keyboard_assignments: std::collections::BTreeMap::new(),
             keyboard_preview: None,
@@ -1033,7 +1038,12 @@ mod tests {
         assert!(input.tap_to_click);
         assert!(input.touchpad_natural_scroll);
         assert!(!input.mouse_natural_scroll);
-        assert_eq!(input.keyboard_layout, "us");
+        // Unchosen sources follow the layout the machine was set up with.
+        assert_eq!(
+            input.keyboard_layouts,
+            settings_store::keyboard_sources::default_sources()
+        );
+        assert_eq!(input.keyboard_layout, input.keyboard_layouts[0]);
         let power = PowerPrefs::default();
         assert!(power.auto_suspend);
         assert_eq!(power.blank_minutes, 10);

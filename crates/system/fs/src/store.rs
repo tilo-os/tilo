@@ -190,6 +190,8 @@ pub struct ContentStore {
     /// Open deferred-durability groups, and whether a write inside one
     /// still waits for its database sync; see [`ContentStore::defer_sync`].
     deferred: std::sync::Mutex<(usize, bool)>,
+    /// Database syncs writes have asked for; see [`ContentStore::write_syncs`].
+    write_syncs: std::sync::atomic::AtomicU64,
     /// File-backed content and the daemon's bounded cache.
     files: Arc<FileArea>,
     /// The directory of an ephemeral store's area, removed with it.
@@ -384,6 +386,7 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc,
             deferred: std::sync::Mutex::new((0, false)),
+            write_syncs: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: None,
             runtime: Some(runtime),
@@ -422,6 +425,7 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc,
             deferred: std::sync::Mutex::new((0, false)),
+            write_syncs: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: scratch,
             runtime: None,
@@ -465,6 +469,7 @@ impl ContentStore {
             mutation: tokio::sync::Mutex::new(()),
             gc: GcGate::default(),
             deferred: std::sync::Mutex::new((0, false)),
+            write_syncs: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: Some(scratch),
             runtime: None,
@@ -512,6 +517,14 @@ impl ContentStore {
         deferred.0 = deferred.0.saturating_add(1);
     }
 
+    /// How many database syncs the writes to this store have made so far: one
+    /// per write outside a deferred-durability group, one per group that
+    /// wrote. Each is an fsync, so a caller writing many blobs can check that
+    /// it pays for one rather than one per blob.
+    pub fn write_syncs(&self) -> u64 {
+        self.write_syncs.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Closes a group opened by [`Self::defer_sync`]; the last one syncs the
     /// database if a write inside the groups skipped it.
     ///
@@ -532,6 +545,10 @@ impl ContentStore {
             }
             sync
         };
+        if sync {
+            self.write_syncs
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         if sync && let Err(error) = self.store().sync_db().await {
             self.deferred
                 .lock()
@@ -873,6 +890,8 @@ impl ContentStore {
             deferred.0 > 0
         };
         if !deferred {
+            self.write_syncs
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.store().sync_db().await?;
         }
         Ok(())

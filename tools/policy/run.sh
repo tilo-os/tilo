@@ -82,6 +82,8 @@ run 'Document content stays behind the document layer' \
   python3 tools/policy/check_document_engine_boundary.py
 run 'Desktop crates dependency boundary' \
   python3 tools/policy/check_desktop_model_dependencies.py
+run 'Shell service modules stay below the compositor' \
+  python3 tools/policy/check_shell_layers.py
 run 'Shared app runtime carries no OS internals or dead weight' \
   python3 tools/policy/check_runtime_dylib_surface.py
 run 'Browser wasm32 builds stay off the workspace-hack' \
@@ -90,6 +92,7 @@ run 'No new interpreter scripts in the OS image' \
   python3 tools/policy/check_image_interpreters.py
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py
 run 'rustls is the only TLS stack' python3 tools/policy/check_tls_stack.py
+run 'No telemetry, analytics or crash-upload client' python3 tools/policy/check_no_telemetry.py
 run 'No setup-specific references' python3 tools/policy/check_setup_neutral.py
 run 'Vendored crates carry licence and provenance' \
   python3 tools/policy/check_vendor_provenance.py

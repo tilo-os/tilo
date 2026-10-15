@@ -27,6 +27,7 @@ pub mod mcp_http;
 pub mod mcp_process;
 mod os_search;
 pub mod profile;
+pub mod session_door;
 pub mod standalone;
 pub mod unix;
 pub mod viewer;

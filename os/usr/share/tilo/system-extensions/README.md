@@ -137,7 +137,8 @@ image, because the image decides which bytes are acceptable:
    everything instead), and then runs `systemd-sysext refresh`. A file changed in `/var` does not survive the next
    activation; a changed artifact or manifest is not merged.
 
-`/usr/libexec/tilo-extension` is the only consumer. It takes exactly one
+`/usr/libexec/tilo-extension` (built from `crates/system/extension-helper`)
+is the only consumer. It takes exactly one
 argument, `<verb>:<id>` (`install`, `remove`, `refresh`, `status`), `activate`,
 or `refresh:all`, and accepts only ids that have a catalogue entry.
 
@@ -242,6 +243,40 @@ manifest bytes, as `cosign sign-blob` writes it. Verified by
   rollback, the manifest kept for that base applies again. Each part's
   extension-release carries `ID`, `VERSION_ID` and `ARCHITECTURE` of the base,
   so systemd-sysext itself refuses a part built for another OS release.
+
+### Prebuilt sysext images (`format: "sysext-raw"`)
+
+Not every optional extension is assembled from upstream packages. Windows
+compatibility (`windows-compat`: the FEX payload and x86 guest root on ARM,
+Proton, the Steam runtime and the virtio-win media, about 3 GB) is built by Tilo
+CI as one read-only file-system image, `tilo-windows-compat.raw`
+(`windows-compat-sysext` in `os/Containerfile`, `os/dev/build-windows-compat-sysext.sh`),
+and is **not part of the OS image**. It overlays exactly the `/usr` paths the
+compatibility service and the Windows VM already name, so nothing that reads
+them changes. The catalogue entry (`sysext.d/windows-compat.json`) hosts it on
+`code.tilo.so` only and carries `size.download_bytes` / `size.installed_bytes`,
+which the desktop must show before the person opts in
+(`os_actions::windows_compat::SizeDisclosure`; display only, the manifest's
+pinned sizes are what is enforced).
+
+A `sysext-raw` part is exactly one artifact (up to 6 GiB) pinned by URL, length
+and SHA-256 in a manifest signed by the same extension-manifest key as every
+other manifest. `tools/extensions/sysext_image.py manifest` writes it from the
+descriptor the build printed; `extension-manifests.yml` pins it for each
+promoted image and `publish.sh` signs and publishes it unchanged. On the device
+the helper verifies the signature, downloads and hashes the file, and activation
+(every boot, offline) re-hashes it and links it into `/var/lib/extensions` as
+`<part>.raw` (copying when `/var/lib/extensions` and the state directory are
+different mounts). Nothing about the image's contents is trusted beyond that
+hash: systemd-sysext still refuses it on another OS release or architecture
+through the image's own `extension-release`. Remove deletes the image and its
+record; capsules and VM disks are untouched.
+
+The default path works without it. The compatibility planner refuses a launch
+with `WindowsSupportNotInstalled`, and `tilo-windows-provision` explains the
+missing media; both name the one action that fixes it:
+`systemctl start tilo-extension@install:windows-compat.service` (an
+administrator; the existing polkit rule already allows it).
 
 ### Device state
 

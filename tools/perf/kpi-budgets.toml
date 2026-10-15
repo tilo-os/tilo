@@ -550,7 +550,7 @@ min_delta = 1.0
 baseline_min_runs = 1
 source = "KPI: Workspace switch, dropped frames (compositor side, headless)"
 
-# Idle wakeups (crates/session/shell/tests/idle_wakeups.rs, #3973): a
+# Idle wakeups (crates/session/shell/examples/idle-wakeups.rs, #3973): a
 # headless dev build on the shared `runner` class with a signed-in desktop,
 # a restored Notes tab and a Terminal, left alone and sampled from /proc over
 # 60 s; context switches per second of every thread of the compositor's
@@ -1405,6 +1405,48 @@ min_delta = 2.0
 baseline_min_runs = 3
 source = "notes-latency, a note's open action to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
 
+# The pointer moving a few pixels over the long note, and a host frame with no
+# input at all (what a caret blink or another window's animation costs Notes).
+# An idle frame publishes no accessibility change and walks no widgets; on an
+# M5 Max, release, it is 0.25-0.28 ms to frame (0.64-0.66 ms while every frame
+# rebuilt the semantic tree), a pointer move 0.7 ms.
+
+[kpi."render.notes_latency.pointer.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+baseline_min_runs = 3
+source = "notes-latency, a pointer move over a 136-block note to the frame that shows it (reported)"
+
+[kpi."render.notes_latency.pointer.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a pointer move over a 136-block note to its frame rasterised (lavapipe; reported)"
+
+[kpi."render.notes_latency.idle.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.25
+baseline_min_runs = 3
+source = "notes-latency, a host frame with no input over a 136-block note, accessibility walk included (reported)"
+
+[kpi."render.notes_latency.idle.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+baseline_min_runs = 3
+source = "notes-latency, a host frame with no input over a 136-block note, rasterised where it changed (lavapipe; reported)"
+
 # The installed desktop: Dev / VM acceptance's nightly run on the newest
 # published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
 # (scripts/vm-acceptance, acceptance/records.py). Those runs compare and publish
@@ -1850,6 +1892,54 @@ unit = "usd"
 p50 = 0.001
 enforce = true
 source = "KPI: Relay cost per active collaborator-hour"
+
+# A public room host at 100 guests: crates/dev/room-load, three runs on
+# runner-large (perf-scheduled.yml, `hosting-room`; adapters.py room-load),
+# each run one sample. 100 is the largest room the capacity sweep of
+# 2026-10-14 (docs/benchmarks/room-host-capacity-2026-10.md, Perf / room host
+# capacity run 112979) admitted whole: there, 100 guests joined with join p99
+# 9.9 s and chat delivery p99 5.5 s, the host's process tree peaked at
+# 122 MiB and used 1.14 cores; past about 250 members joins time out at any
+# arrival rate. The ceilings are about twice those, with the relay CPU's
+# tolerances: join and delivery time at this size swing between runs (join
+# p99 5.7 s in the sweep's first run), and a guest that did not join fails
+# the adapter outright. Raise the point to 300 guests once the room admits
+# them.
+[kpi."hosting.room.join_p99_ms.g100"]
+unit = "ms"
+p50 = 20000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2000.0
+source = "room-load: guests' p99 time from /join to the room's Ready, per run"
+
+[kpi."hosting.room.chat_p99_ms.g100"]
+unit = "ms"
+p50 = 12000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "room-load: p99 delivery of chat changes sent while their receiver was in the room, per run"
+
+[kpi."hosting.room.rss_mib_peak.g100"]
+unit = "MiB"
+p50 = 250.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "room-load: peak proportional memory of the host's process tree (relay and Automerge workers)"
+
+[kpi."hosting.room.cpu_percent.g100"]
+unit = "percent"
+p50 = 250.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "room-load: the host's process tree's CPU during the hold, as a share of one core"
 
 # Browser runtime (scripts/perf/browser_qualification.mjs): the release
 # desktop bundle (build.sh --bundle desktop, the bytes web-entry.yml

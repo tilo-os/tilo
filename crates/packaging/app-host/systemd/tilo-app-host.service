@@ -4,12 +4,17 @@ After=tilo-graphical-session.target
 PartOf=tilo-graphical-session.target
 
 [Service]
+# Session-critical: every launch asks the broker, so it is never queued behind
+# applications or batch work (see os/etc/systemd/user/session.slice.d).
+Slice=session.slice
 Type=notify
 # The package store is the one the launcher, the shell and tilo-install
 # read and write; the daemon keeps no store of its own. Packages the daemon
 # once kept in its own state directory move into it at startup.
 ExecStartPre=+/usr/bin/mkdir -p %h/.local/share/tilo-apps
-# Only the broker-owned checkpoint and account Flatpak state are writable.
+# mkdir -p preserves existing runtime root permissions; only a new root is private.
+ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.local/share/tilo-runtime
+# Only canonical package/runtime roots, broker state and account Flatpak state are writable.
 # Repository configuration and the rest of this person's home remain read-only.
 ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak
 ExecStart=/usr/libexec/tilo-app-host --socket %t/tilo/services/app-host.sock --store %h/.local/share/tilo-apps
@@ -34,4 +39,6 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 StateDirectory=tilo-app-host
 StateDirectoryMode=0700
-ReadWritePaths=%S/tilo-app-host %h/.local/share/tilo-apps %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak
+# Verified downloads are disposable broker state, never writes to the read-only home.
+Environment=TILO_STORE_CACHE_DIR=%S/tilo-app-host/cache
+ReadWritePaths=%S/tilo-app-host %h/.local/share/tilo-apps %h/.local/share/tilo-runtime %h/.config/tilo-store/registry-checkpoints %h/.local/share/flatpak %h/.cache/flatpak

@@ -48,6 +48,7 @@ filesystem = [
     "dep:tilo-nm",
     "document-media",
     "dep:libc",
+    "dep:rustix",
     "dep:serde_bytes",
     "dep:serde_json",
     "dep:toml",
@@ -184,6 +185,7 @@ tilo-power-mgmt = { version = "0.1.0", path = "../power", default-features = fal
 tilo-nm = { version = "0.1.0", path = "../tilo-nm", optional = true }
 runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = true }
 libc = { workspace = true, optional = true }
+rustix = { workspace = true, features = ["process"], optional = true }
 moka.workspace = true
 serde.workspace = true
 serde_bytes = { workspace = true, optional = true }
