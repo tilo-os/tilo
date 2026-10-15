@@ -33,6 +33,28 @@ macro_rules! chart_leaf {
 }
 pub(crate) use chart_leaf;
 
+/// Paints a chart's title, if it has one, in the top-left corner of `rect`.
+pub(crate) fn draw_title(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    tr: &mut crate::text_render::TextRenderer,
+    theme: &crate::theme::Theme,
+    rect: vello::kurbo::Rect,
+    title: &str,
+) {
+    if title.is_empty() {
+        return;
+    }
+    tr.draw_style(
+        scene,
+        title,
+        theme.tokens.colors.text_primary,
+        transform * vello::kurbo::Affine::translate((rect.x0 + 12.0, rect.y0 + 8.0)),
+        None,
+        &theme.text(crate::tokens::TextRole::Heading),
+    );
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChartNavAction {
     Previous,

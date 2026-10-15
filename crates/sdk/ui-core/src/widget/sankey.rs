@@ -22,7 +22,9 @@ use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::chart_data::{ChartLink, ChartNode};
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
+use crate::widget::chart_navigation::{
+    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
+};
 
 #[derive(Clone, Debug)]
 pub struct SankeyStyle {
@@ -561,16 +563,7 @@ impl Widget for SankeyChart {
         self.measure_label_reserve(tr, theme);
         self.follow_keyboard_anchor();
         let (nodes, links) = self.geometry();
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         for link in &links {
             let Some(spec) = self.links.get(link.index) else {
                 continue;

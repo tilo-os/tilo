@@ -22,7 +22,7 @@ use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartInspection, InteractiveChart, chart_leaf, handle_chart_event,
+    ChartInspection, InteractiveChart, chart_leaf, draw_title, handle_chart_event,
 };
 
 #[derive(Clone, Debug)]
@@ -326,16 +326,7 @@ impl Widget for PolarAreaChart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         let (center, inner, outer) = self.geometry();
         let max = self.max();
         let rings = self.style.rings.max(1);
