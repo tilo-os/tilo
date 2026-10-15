@@ -8192,7 +8192,7 @@ impl PortalBackend {
         scene: &vello::Scene,
         documents: &crate::portal::DocumentStoreHandle,
     ) {
-        use crate::{portal::desktop_services::PortalResult, shell::state::FsMode};
+        use crate::portal::desktop_services::PortalResult;
         for command in self.capture_requests.try_iter().take(8) {
             match command {
                 PortalCaptureCommand::Screenshot { request, reply } => {
@@ -8233,30 +8233,17 @@ impl PortalBackend {
                         });
                         continue;
                     }
-                    let outcome = capture
-                        .capture_portal_screenshot(
-                            frame_builder,
-                            scene,
-                            request.target.unwrap_or(
-                                crate::portal::desktop_services::ScreenshotTarget::Screen,
-                            ),
-                            false,
-                        )
-                        .and_then(|host_path| {
-                            let published =
-                                documents.publish(&request.caller, &[host_path], FsMode::Read);
-                            let path = published.into_iter().next().ok_or_else(|| {
-                                "the document store rejected the screenshot".to_string()
-                            })?;
-                            crate::portal::file_chooser::file_uri(&path).ok_or_else(|| {
-                                "the document store returned a non-absolute screenshot path"
-                                    .to_string()
-                            })
-                        });
-                    let _ = reply.send(match outcome {
-                        Ok(uri) => PortalResult::Success(uri),
-                        Err(error) => PortalResult::Failed(error),
-                    });
+                    // The file is written off the loop; the caller is
+                    // answered once it is complete.
+                    capture.capture_portal_screenshot(
+                        frame_builder,
+                        scene,
+                        request
+                            .target
+                            .unwrap_or(crate::portal::desktop_services::ScreenshotTarget::Screen),
+                        false,
+                        answer_portal_screenshot(documents.clone(), request.caller, reply),
+                    );
                 }
                 PortalCaptureCommand::PickColor {
                     request_handle,
@@ -8325,6 +8312,34 @@ impl PortalBackend {
         };
         let _ = pending_request.reply.send(result);
         true
+    }
+}
+
+/// Answer a non-interactive portal screenshot request once its file is
+/// complete (on the capture worker): the file is republished through the
+/// caller's document subtree before its URI is returned.
+fn answer_portal_screenshot(
+    documents: crate::portal::DocumentStoreHandle,
+    caller: crate::portal::PortalCaller,
+    reply: std::sync::mpsc::SyncSender<crate::portal::desktop_services::PortalResult<String>>,
+) -> impl FnOnce(Result<std::path::PathBuf, String>) + Send + 'static {
+    use crate::portal::desktop_services::PortalResult;
+    move |saved| {
+        let outcome = saved.and_then(|host_path| {
+            let published =
+                documents.publish(&caller, &[host_path], crate::shell::state::FsMode::Read);
+            let path = published
+                .into_iter()
+                .next()
+                .ok_or_else(|| "the document store rejected the screenshot".to_string())?;
+            crate::portal::file_chooser::file_uri(&path).ok_or_else(|| {
+                "the document store returned a non-absolute screenshot path".to_string()
+            })
+        });
+        let _ = reply.send(match outcome {
+            Ok(uri) => PortalResult::Success(uri),
+            Err(error) => PortalResult::Failed(error),
+        });
     }
 }
 
@@ -12856,6 +12871,7 @@ pub fn run() {
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
                 || capture_executor.is_recording()
+                || capture_executor.has_finished_io()
                 || portal_backend
                     .as_ref()
                     .is_some_and(PortalBackend::capture_pending)

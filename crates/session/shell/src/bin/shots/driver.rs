@@ -520,6 +520,9 @@ impl ShellDriver {
         #[cfg(target_os = "linux")]
         if let Some(executor) = self.capture_executor.as_mut() {
             let _ = executor.execute_ready(&mut self.fb, &mut scene);
+            // A still shows the capture as finished: the compositor applies
+            // the worker's result on a later frame, a shot waits for it.
+            let _ = executor.finish_io_blocking(&mut self.fb);
             return scene;
         }
         self.fb.draw_capture_overlays(&mut scene);

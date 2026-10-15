@@ -112,6 +112,25 @@ pub(crate) fn on_a_thread_that_cannot_sync<T: Send>(body: impl FnOnce() -> T + S
     })
 }
 
+/// A FIFO nobody has written yet, at `name` in `directory`: opening it to
+/// read blocks until a writer comes, as a file on the FUSE workspace mount
+/// does while it hydrates from a peer. A test hands it to a loop entry point
+/// to prove the read happens off the loop, then writes the bytes to let it
+/// finish.
+///
+/// # Panics
+///
+/// When the FIFO cannot be made.
+pub(crate) fn blocking_source(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = directory.join(name);
+    let raw = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("path has no NUL");
+    // SAFETY: `raw` is a NUL-terminated path that outlives the call.
+    let made = unsafe { libc::mkfifo(raw.as_ptr(), 0o600) };
+    assert_eq!(made, 0, "mkfifo: {}", std::io::Error::last_os_error());
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
