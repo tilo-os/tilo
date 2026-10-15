@@ -1976,6 +1976,18 @@ impl GroupRow {
         self.lane_canvas_pad(self.leading_pan())
     }
 
+    /// A frame was presented: each group may step its width spring once
+    /// more. The token a step spends returns when the group is marked
+    /// drawn, but a host that presents frames without marking its content
+    /// drawn (the compositor) must say so here, or every width spring it
+    /// does not snap stops after its first step while its group keeps
+    /// asking for animation frames.
+    pub fn frame_presented(&mut self) {
+        for group in &mut self.groups {
+            group.frame_presented();
+        }
+    }
+
     /// Have the parent's draw skip this row, recording only its transform,
     /// so its owner draws it into a scene of its own with
     /// [`Self::draw_apart`]: a presenter that pans each strip on its own

@@ -13320,6 +13320,11 @@ pub fn run() {
                         .with_hdr_layers(frame_builder.take_hdr_layers())
                         .with_backdrop(frame_builder.take_backdrop())
                 };
+                // Without this a window group's width spring stepped once and
+                // stopped: its once-per-drawn-frame token returns only when
+                // content is marked drawn, which this loop never does, and
+                // the group asked for animation frames forever.
+                frame_builder.frame_presented();
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM
                 // backend splits this combined scene per scanout afterwards.

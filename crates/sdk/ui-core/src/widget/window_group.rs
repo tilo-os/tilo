@@ -298,6 +298,9 @@ pub struct WindowGroup {
     /// composition takes several passes and real time moves between them:
     /// stepping or asking on every pass kept the frame from ever settling.
     width_stepped: bool,
+    /// A rebuild found the frame token spent and left the spring where it
+    /// was: the next drawn frame must step it.
+    width_step_skipped: bool,
     close_rebuild_taken: bool,
     /// Last motion policy observed from the active theme. Widget scheduling
     /// has no `Theme` parameter, so draw latches it here and the next
@@ -471,6 +474,7 @@ impl WindowGroup {
             closing_at: None,
             close_requested: false,
             width_stepped: false,
+            width_step_skipped: false,
             close_rebuild_taken: false,
             close_duration: crate::tokens::motion::Durations::default().base(),
             reduce_motion: false,
@@ -626,6 +630,7 @@ impl WindowGroup {
         // One step per drawn frame: composition settle rebuilds the same
         // frame up to eight times and must not walk the spring.
         if std::mem::replace(&mut self.width_stepped, true) {
+            self.width_step_skipped = true;
             return;
         }
         let now = crate::time::now();
@@ -680,10 +685,28 @@ impl WindowGroup {
         self.close_requested
     }
 
+    /// A frame was presented by a host that never marks this group drawn
+    /// ([`super::GroupRow::frame_presented`]): the next frame may step the
+    /// width spring. If a rebuild skipped its step because the token was
+    /// still spent (it came after a tick that rebuilt without painting),
+    /// nothing has asked for the rebuild that would step it, and the spring
+    /// would stay where it stopped while the group kept asking for
+    /// animation frames, so ask for one.
+    pub fn frame_presented(&mut self) {
+        if self.width_step_skipped
+            && !self.reduce_motion
+            && self.width_spring.as_ref().is_some_and(|s| !s.is_settled())
+        {
+            self.style_dirty = true;
+        }
+        self.next_frame();
+    }
+
     /// A new frame may step the width spring and rebuild a closing group
     /// once more. Called when the group is drawn, and by a row for groups
     /// it culled from a frame, so an off-screen transition still ends.
     pub fn next_frame(&mut self) {
+        self.width_step_skipped = false;
         self.width_stepped = false;
         self.close_rebuild_taken = false;
     }
@@ -1169,6 +1192,7 @@ impl WindowGroup {
             closing_at: None,
             close_requested: false,
             width_stepped: false,
+            width_step_skipped: false,
             close_rebuild_taken: false,
             close_duration: crate::tokens::motion::Durations::default().base(),
             reduce_motion: false,
@@ -5271,6 +5295,41 @@ mod tests {
                     "{frame_ms} ms frames: the slot ends at its width",
                 );
             }
+        }
+
+        // Case `a_tick_that_rebuilt_but_did_not_paint_does_not_freeze_the_slot`.
+        {
+            // The host's frame: rebuild when a widget asks (the row steps
+            // the spring in its build, a frame may take two passes), then a
+            // painted frame turns the token. A tick that rebuilds while the
+            // presenter is still busy paints nothing; the step the next
+            // rebuild skips must not leave the slot stopped part-way, asking
+            // for frames forever.
+            let mut g = group_opening("Notes", true, false);
+            g.set_strip_usable_px(1200.0);
+            g.start_spawn_animation();
+            let mut frames = 0;
+            while g.width_spring.is_some() && frames < 400 {
+                g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(16));
+                if Widget::take_structure_dirty(&mut g) {
+                    g.step_width_spring();
+                }
+                if frames % 7 != 3 {
+                    g.frame_presented();
+                }
+                frames += 1;
+            }
+            assert!(
+                g.width_spring.is_none(),
+                "the slot spring froze at {:?} after {frames} frames",
+                g.width_spring
+                    .as_ref()
+                    .map(|s| (s.value(), s.target(), s.velocity())),
+            );
+            assert!(
+                (g.layout_width_px() - g.resolved_width_px()).abs() < 0.5,
+                "the slot ends at its width"
+            );
         }
 
         // Case `closing_collapses_the_slot_and_keeps_drawing`.
