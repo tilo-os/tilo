@@ -1699,7 +1699,10 @@ run = "bash tools/ci/perf-compare.sh"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
 needs = ["perf-fs", "perf-agent", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-hosting-room", "perf-browser", "perf-stream"]
 inputs = ["tools/perf/**", "tools/upload_immutable_packages.sh", "tools/ci/perf-compare.sh"]
-secrets = ["REGISTRY_TOKEN"]
+outputs = ["/target/perf/compare/**"]
+# Publishing to the store needs a token that may write tilo-perf-results; this
+# server's config has none yet, so the run compares only. `secrets =
+# ["REGISTRY_TOKEN"]` publishes once it does.
 cache = false
 default = false
 on = ["schedule:15 1 * * *", "dispatch"]
@@ -1826,7 +1829,7 @@ status=0
 python3 tools/perf/compare.py --results "$records" --store https://code.tilo.so --owner tilo \
   --lane vm-acceptance --groups boot,session,idle,memory,disk,app,render --publish-dir "$TMPDIR/publish" \
   --run "t-${T_COMMIT:-tree}-vm" --summary "$TMPDIR/summary.md" || status=1
-if [[ $publish == true ]]; then
+if [[ $publish == true && -n ${REGISTRY_TOKEN:-} ]]; then
   manifest=$(mktemp)
   for file in "$TMPDIR"/publish/*/*.jsonl; do
     month=$(basename "$(dirname "$file")")
@@ -1838,7 +1841,7 @@ cat "$TMPDIR/summary.md" 2>/dev/null || true
 exit "$status"
 """
 inputs = ["tools/perf/**", "tools/upload_immutable_packages.sh"]
-secrets = ["REGISTRY_TOKEN"]
+# Compares only until the server has a token that may write the store (see perf-scheduled).
 cache = false
 default = false
 on = ["schedule:23 2 * * *"]
