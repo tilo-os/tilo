@@ -281,16 +281,16 @@ impl DesktopChromeSource for NativeChrome {
                 drop(state);
                 let request = match request {
                     AppTrayRequest::Activate { x, y } => {
-                        crate::tray::TrayRequest::Activate { x, y }
+                        tilo_tray_host::TrayRequest::Activate { x, y }
                     }
                     AppTrayRequest::SecondaryActivate { x, y } => {
-                        crate::tray::TrayRequest::SecondaryActivate { x, y }
+                        tilo_tray_host::TrayRequest::SecondaryActivate { x, y }
                     }
                     AppTrayRequest::ContextMenu { x, y } => {
-                        crate::tray::TrayRequest::ContextMenu { x, y }
+                        tilo_tray_host::TrayRequest::ContextMenu { x, y }
                     }
                 };
-                if let Err(error) = crate::tray::Tray::global().request(&key, request) {
+                if let Err(error) = crate::tray::global().request(&key, request) {
                     tracing::debug!(target: "shell::tray", %key, %error, "tray click not delivered");
                     return false;
                 }
@@ -322,23 +322,23 @@ impl DesktopChromeSource for NativeChrome {
     }
 
     fn app_tray_revision(&self) -> u64 {
-        crate::tray::Tray::global().revision()
+        crate::tray::global().revision()
     }
 
     fn app_tray(&self) -> Vec<AppTrayItem> {
-        crate::tray::Tray::global()
+        crate::tray::global()
             .snapshot()
             .into_iter()
             .map(|item| AppTrayItem {
                 key: item.key,
                 id: item.id,
                 status: match item.status {
-                    crate::tray::ItemStatus::Passive => AppTrayStatus::Passive,
-                    crate::tray::ItemStatus::Active => AppTrayStatus::Active,
-                    crate::tray::ItemStatus::NeedsAttention => AppTrayStatus::NeedsAttention,
+                    tilo_tray_host::ItemStatus::Passive => AppTrayStatus::Passive,
+                    tilo_tray_host::ItemStatus::Active => AppTrayStatus::Active,
+                    tilo_tray_host::ItemStatus::NeedsAttention => AppTrayStatus::NeedsAttention,
                 },
                 icon: match item.icon {
-                    crate::tray::TrayIcon::Pixels {
+                    tilo_tray_host::TrayIcon::Pixels {
                         width,
                         height,
                         rgba,
@@ -347,7 +347,7 @@ impl DesktopChromeSource for NativeChrome {
                         height,
                         rgba,
                     },
-                    crate::tray::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
+                    tilo_tray_host::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
                 },
                 item_is_menu: item.item_is_menu,
             })
