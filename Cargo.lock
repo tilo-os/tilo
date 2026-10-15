@@ -1955,6 +1955,7 @@ dependencies = [
  "tilo-doc",
  "tilo-document",
  "tilo-files",
+ "tilo-model-gateway",
  "tilo-paths",
  "tilo-reference",
  "tilo-rich-text",

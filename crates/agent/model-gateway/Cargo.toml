@@ -32,6 +32,8 @@ required-features = ["server"]
 [features]
 # App builds carry only the protocol and authenticated client transports.
 default = []
+# Bind authenticated native clients to the app I/O runtime, without a server.
+runtime-client = ["dep:tilo-rt"]
 # Hosted-provider relay and HTTP adapter, without in-process inference.
 server = [
     "dep:tilo-clock",

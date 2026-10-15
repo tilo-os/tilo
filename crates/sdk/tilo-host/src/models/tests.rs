@@ -36,7 +36,7 @@ fn error(models: &Models) -> ModelError {
     }
 }
 
-#[cfg(not(all(unix, feature = "native")))]
+#[cfg(not(feature = "native"))]
 #[test]
 fn launcher_is_explicitly_unavailable_without_platform_support() {
     let Err(error) = Models::from_launcher() else {

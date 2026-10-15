@@ -52,6 +52,9 @@ pub fn pending() -> bool {
 /// None means pending: keep the credential local and retry on a later frame.
 /// Storage failures are returned without publishing a reference. A matching
 /// retry consumes the result once; calling again starts a new credential write.
+///
+/// # Errors
+/// Returns a storage error if durable custody or the in-memory mirror is unavailable.
 pub fn seal_blocking(app: &str, bytes: &[u8]) -> Result<Option<String>, SecretError> {
     let value = acknowledged_secret(app, bytes).map_err(|e| failed(&e))?;
     let id = value.as_string();
@@ -79,6 +82,9 @@ pub(crate) fn seal_at_blocking(
 /// False is explicitly pending, not success. Retry with the same arguments
 /// until the committed result or error is consumed. A later identical change
 /// starts a fresh durable merge rather than replaying the previous result.
+///
+/// # Errors
+/// Returns a storage error on conflicting edits, failed persistence, or unavailable custody.
 pub fn merge_json_blocking(
     app: &str,
     key: &str,

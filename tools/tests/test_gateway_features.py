@@ -25,7 +25,8 @@ class GatewayFeaturesTests(unittest.TestCase):
         argv = features.arguments(["tilo-model-gateway"])
         self.assertEqual(argv[0], "--features")
         self.assertEqual(set(argv[1].split(",")),
-                         {"tilo-model-gateway/local-models", "tilo-model-gateway/host-backend"})
+                         {"tilo-model-gateway/local-models", "tilo-model-gateway/host-backend",
+                          "tilo-model-gateway/runtime-client"})
         for binary in manifest["bin"]:
             self.assertIn("server", binary["required-features"])
 

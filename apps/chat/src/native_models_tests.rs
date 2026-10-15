@@ -85,12 +85,13 @@ fn answer(peer: &mut UnixStream, text: &str) {
 }
 
 fn chat(client: &UnixStream) -> (ChatApp, automerge::AutoCommit) {
-    let models = Models::from_descriptor_selection(
+    let backend = tilo_model_gateway::runtime_client::from_descriptor_selection(
         client.as_fd(),
         "chat-profile".into(),
         "chat-model".into(),
     )
     .expect("bind Chat model descriptor");
+    let models = Models::new(backend);
     let identity = LocalIdentity::demo();
     let mut doc = automerge::AutoCommit::new();
     crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
