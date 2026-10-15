@@ -23,17 +23,6 @@ use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
-              matrix math; it never panics or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 /// Maximum hour value (inclusive). 24-hour clock — wraps 23 → 0.
 const HOUR_MAX: u8 = 23;
 /// Maximum minute/second value (inclusive). Wraps 59 → 0.
@@ -559,7 +548,7 @@ impl Widget for TimePicker {
                 scene,
                 &label,
                 colors.text_primary,
-                translated(transform, tx, ty),
+                transform.pre_translate((tx, ty).into()),
                 None,
                 &text_style,
             );
@@ -585,10 +574,12 @@ impl Widget for TimePicker {
             scene,
             colon,
             colors.text_dim,
-            translated(
-                transform,
-                between_h_m_x - f64::from(cw) / 2.0,
-                centre_y - f64::from(ch) / 2.0,
+            transform.pre_translate(
+                (
+                    between_h_m_x - f64::from(cw) / 2.0,
+                    centre_y - f64::from(ch) / 2.0,
+                )
+                    .into(),
             ),
             None,
             &text_style,
@@ -599,10 +590,12 @@ impl Widget for TimePicker {
                 scene,
                 colon,
                 colors.text_dim,
-                translated(
-                    transform,
-                    between_m_s_x - f64::from(cw) / 2.0,
-                    centre_y - f64::from(ch) / 2.0,
+                transform.pre_translate(
+                    (
+                        between_m_s_x - f64::from(cw) / 2.0,
+                        centre_y - f64::from(ch) / 2.0,
+                    )
+                        .into(),
                 ),
                 None,
                 &text_style,

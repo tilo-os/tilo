@@ -42,17 +42,6 @@ use crate::widget::Tone;
 use crate::widget::Widget;
 use crate::widget::activation::Activation;
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
-              matrix math; it never panics or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 /// How strongly a tone washes the pill's body over its ground.
 const TINT_FILL: f32 = 0.15;
 /// How strongly the same tone draws the pill's edge: enough to close the
@@ -589,7 +578,7 @@ pub(crate) fn paint_pill(
             scene,
             &label,
             fade(colors.ink),
-            translated(transform, x, cy - label_h / 2.0),
+            transform.pre_translate((x, cy - label_h / 2.0).into()),
             None,
             &metrics.label,
         );

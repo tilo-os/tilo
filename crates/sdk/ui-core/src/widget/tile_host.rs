@@ -65,17 +65,6 @@ fn edge_bands(rect: Rect, radius: f64) -> Vec<Rect> {
     ]
 }
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
-              or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 /// See [`translated`]: scaling about a pivot point is translate, scale,
 /// translate back — still the same plain f64 matrix math.
 #[allow(
@@ -3087,7 +3076,7 @@ pub fn paint_opening_card(
             scene,
             name,
             on_card,
-            translated(transform, cx - f64::from(tw) / 2.0, y),
+            transform.pre_translate((cx - f64::from(tw) / 2.0, y).into()),
             None,
             &style,
         );
@@ -3110,10 +3099,8 @@ pub fn paint_opening_card(
             scene,
             status,
             theme.on_content().ink_dim,
-            translated(
-                transform,
-                cx - f64::from(tw) / 2.0,
-                indicator.y1 + OPENING_SPINNER_GAP,
+            transform.pre_translate(
+                (cx - f64::from(tw) / 2.0, indicator.y1 + OPENING_SPINNER_GAP).into(),
             ),
             None,
             &style,

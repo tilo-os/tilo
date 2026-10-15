@@ -25,17 +25,6 @@ const CHIP_MARGIN: f64 = 6.0;
 /// Hard cap so a pathological label can't paint a chip wider than the window.
 const CHIP_MAX_W: f64 = 320.0;
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
-              or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 /// The chip's size for `label`: wrapped `Caption` text plus the chip's pads.
 pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
     chip_size_with_width(label, text_renderer, theme, CHIP_MAX_W)
@@ -209,7 +198,7 @@ pub fn draw_chip(
         scene,
         label,
         on_panel.tokens.colors.text_primary,
-        translated(transform, rect.x0 + CHIP_PAD_X, text_y),
+        transform.pre_translate((rect.x0 + CHIP_PAD_X, text_y).into()),
         Some(content_width),
         &text_style,
     );
