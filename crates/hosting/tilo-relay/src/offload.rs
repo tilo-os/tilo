@@ -9,9 +9,10 @@
 //!    ([`WorkspaceContent`]), which is all a worker can ever read;
 //! 2. asks the workspace's relay where the job should run
 //!    ([`ComputePlacement`], the relay's `compute.place`), naming the
-//!    inputs' bytes and how long this device last took for the action, so
-//!    the relay keeps the job here when moving the inputs to a worker would
-//!    take longer than that ([`WallTime`]);
+//!    inputs' digests and bytes and how long this device last took for the
+//!    action, so the relay keeps the job here when moving the inputs to a
+//!    worker would take longer than that ([`WallTime`]) — counting only
+//!    the inputs that worker was not seen to hold already;
 //! 3. when another device is better placed, binds a compute job to it —
 //!    the declared package, entrypoint and ceilings, the inputs by digest,
 //!    no arguments — submits it on this device's long-lived compute session,
@@ -166,6 +167,16 @@ impl Observed {
     }
 }
 
+/// One invocation's inputs as bound in this device's workspace content.
+struct BoundInputs {
+    /// Their byte digests, in invocation order.
+    digests: Vec<[u8; 32]>,
+    /// Each distinct digest once, with its bytes.
+    distinct: Vec<([u8; 32], u64)>,
+    /// The bytes of all of them, in invocation order.
+    bytes: u64,
+}
+
 /// What the compute session is asked to do.
 enum Command {
     Submit {
@@ -307,38 +318,43 @@ impl Offloader {
         if !invalid.is_empty() {
             return Err(OffloadError::NotOffloadable(invalid.join("; ")));
         }
-        let mut inputs = Vec::with_capacity(job.inputs.len());
-        let mut input_bytes = 0_u64;
+        let mut bound = BoundInputs {
+            digests: Vec::with_capacity(job.inputs.len()),
+            distinct: Vec::with_capacity(job.inputs.len()),
+            bytes: 0,
+        };
         for (index, manifest) in job.inputs.iter().enumerate() {
             let (digest, len) = self
                 .content
                 .bind_input(*manifest)
                 .await
                 .map_err(|error| OffloadError::Input { index, error })?;
-            inputs.push(digest);
-            input_bytes = input_bytes.saturating_add(len);
+            bound.digests.push(digest);
+            if !bound.distinct.iter().any(|(listed, _)| *listed == digest) {
+                bound.distinct.push((digest, len));
+            }
+            bound.bytes = bound.bytes.saturating_add(len);
         }
+        let input_bytes = bound.bytes;
         let action = format!("{}:{}", offload.app, offload.entrypoint);
         let remote_started = Instant::now();
-        let (outputs, ran_on, run_time) = match self
-            .remote(job.workspace_id, &offload, (inputs.as_slice(), input_bytes))
-            .await
-        {
-            Ok((worker, outputs)) => (outputs, RanOn::Worker(worker), remote_started.elapsed()),
-            Err(reason) => {
-                tracing::info!(
-                    app = %offload.app,
-                    entrypoint = %offload.entrypoint,
-                    %reason,
-                    "offloadable action runs locally"
-                );
-                // The local run alone: time lost to a worker that failed is
-                // not what running here costs.
-                let local_started = Instant::now();
-                let outputs = self.local(&inputs, local).await?;
-                (outputs, RanOn::Local { reason }, local_started.elapsed())
-            }
-        };
+        let (outputs, ran_on, run_time) =
+            match self.remote(job.workspace_id, &offload, &bound).await {
+                Ok((worker, outputs)) => (outputs, RanOn::Worker(worker), remote_started.elapsed()),
+                Err(reason) => {
+                    tracing::info!(
+                        app = %offload.app,
+                        entrypoint = %offload.entrypoint,
+                        %reason,
+                        "offloadable action runs locally"
+                    );
+                    // The local run alone: time lost to a worker that failed is
+                    // not what running here costs.
+                    let local_started = Instant::now();
+                    let outputs = self.local(&bound.digests, local).await?;
+                    (outputs, RanOn::Local { reason }, local_started.elapsed())
+                }
+            };
         let elapsed = started.elapsed();
         let device = match &ran_on {
             RanOn::Worker(worker) => *worker,
@@ -417,12 +433,13 @@ impl Offloader {
             .map(|observed| observed.scaled_ms(input_bytes))
     }
 
-    /// Run the job on the best-placed other device, or say why not.
+    /// Run the job over `inputs` on the best-placed other device, or say
+    /// why not.
     async fn remote(
         &self,
         workspace_id: u64,
         offload: &Offload,
-        (inputs, input_bytes): (&[[u8; 32]], u64),
+        inputs: &BoundInputs,
     ) -> Result<(DeviceKey, Vec<[u8; 32]>), String> {
         let action = format!("{}:{}", offload.app, offload.entrypoint);
         let placed = self
@@ -431,8 +448,13 @@ impl Offloader {
                 workspace_id,
                 app: &offload.app,
                 gpu: offload.gpu,
-                input_bytes,
-                local_wall_ms: self.local_wall_ms(&action, input_bytes),
+                // A worker stages each distinct input once.
+                input_bytes: inputs
+                    .distinct
+                    .iter()
+                    .fold(0_u64, |sum, (_, bytes)| sum.saturating_add(*bytes)),
+                inputs: &inputs.distinct,
+                local_wall_ms: self.local_wall_ms(&action, inputs.bytes),
             })
             .await
             .map_err(|error| format!("placement unavailable: {error}"))?;
@@ -448,7 +470,7 @@ impl Offloader {
             worker,
             (workspace_id, package_digest),
             offload,
-            inputs,
+            &inputs.digests,
         )?;
         let binding = ComputeJobBinding {
             workspace_id,

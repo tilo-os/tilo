@@ -3,7 +3,9 @@
 //! it there, hydrating its inputs from the invoker's workspace content and
 //! returning its outputs by digest, and returns exactly what running it
 //! locally returns. A device whose own replica already holds the inputs
-//! runs the job on them once the invoker proves it holds the same bytes.
+//! runs the job on them once the invoker proves it holds the same bytes,
+//! and the relay, having seen it do so, keeps placing such jobs there
+//! however slow the link it measured.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -494,8 +496,149 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
     // A job in another workspace never reaches this replica.
     assert!(!worker_held.for_workspace(WORKSPACE + 1).locates());
 
-    // Without a replica the inputs hydrate from the laptop through the
-    // relay, and the output is still the same.
+    // Photographs the desktop does not hold go to it next: it held all of
+    // its last job's inputs, so the relay expects nothing to move. It
+    // finds no copy and fetches them, and the relay measures the link
+    // while forwarding them.
+    let others: Vec<Vec<u8>> = (100..103).map(photograph).collect();
+    let mut other_manifests = Vec::new();
+    for bytes in &others {
+        other_manifests.push(
+            *store
+                .write_content(bytes)
+                .await
+                .unwrap()
+                .unwrap()
+                .as_bytes(),
+        );
+    }
+    let other_bytes: u64 = others
+        .iter()
+        .map(|bytes| u64::try_from(bytes.len()).unwrap())
+        .sum();
+    let elsewhere = tilo_test_env::within(
+        "the offloaded run on photographs the desktop lacks",
+        offloader.invoke(
+            OffloadJob {
+                workspace_id: WORKSPACE,
+                action: &action,
+                inputs: other_manifests,
+            },
+            Arc::clone(&local),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(elsewhere.ran_on, RanOn::Worker(desktop_key));
+    assert_eq!(
+        elsewhere.outputs,
+        thumbnail_batch(&others)
+            .unwrap()
+            .iter()
+            .map(|bytes| *blake3::hash(bytes).as_bytes())
+            .collect::<Vec<_>>()
+    );
+    let lacked = *staging.staged.lock().unwrap().last().unwrap();
+    assert_eq!(
+        (lacked.inputs, lacked.bytes, lacked.held),
+        (others.len(), other_bytes, 0)
+    );
+
+    // Now the link is measured. Weighed against a 250 ms run, more than any
+    // loopback round trip and less than moving 129 MB through the relay
+    // takes, the batch the desktop was seen to hold moves nothing and goes
+    // to it, while the same bytes named by size alone, as placement saw
+    // every batch before, stay on the laptop. Photographs the desktop
+    // fetched are weighed in full: against a 1 ms run they stay too.
+    let quick_run_ms = 250;
+    let sized = |photos: &[Vec<u8>]| -> Vec<([u8; 32], u64)> {
+        photos
+            .iter()
+            .map(|bytes| {
+                (
+                    *blake3::hash(bytes).as_bytes(),
+                    u64::try_from(bytes.len()).unwrap(),
+                )
+            })
+            .collect()
+    };
+    let (held_inputs, lacked_inputs) = (sized(&photographs), sized(&others));
+    let input_total = u64::try_from(input_bytes).unwrap();
+    let ask =
+        |what: &'static str, listed: Vec<([u8; 32], u64)>, input_bytes: u64, local_wall_ms: u64| {
+            let placement = Arc::clone(&placement);
+            async move {
+                let placed = placement
+                    .place(PlacementQuery {
+                        workspace_id: WORKSPACE,
+                        app: PACKAGE,
+                        gpu: false,
+                        input_bytes,
+                        inputs: &listed,
+                        local_wall_ms: Some(local_wall_ms),
+                    })
+                    .await
+                    .unwrap();
+                eprintln!("placing {what} against a {local_wall_ms} ms local run: {placed:?}");
+                placed
+            }
+        };
+    let to_holder = ask(
+        "the held batch",
+        held_inputs.clone(),
+        input_total,
+        quick_run_ms,
+    )
+    .await;
+    assert_eq!(to_holder.worker, Some(desktop_key), "{}", to_holder.reason);
+    let by_size = ask(
+        "the batch by size alone",
+        Vec::new(),
+        input_total,
+        quick_run_ms,
+    )
+    .await;
+    assert_eq!(by_size.worker, None, "{}", by_size.reason);
+    assert!(
+        by_size.reason.starts_with("inputs_heavier_than_gain"),
+        "{}",
+        by_size.reason
+    );
+    let kept_here = ask("the fetched photographs", lacked_inputs, other_bytes, 1).await;
+    assert_eq!(kept_here.worker, None, "{}", kept_here.reason);
+    // What placement weighed before it knew what the desktop holds: every
+    // byte of the batch, against the laptop's own run.
+    let local_ms = u64::try_from(here.elapsed.as_millis()).unwrap();
+    ask("the batch by size alone", Vec::new(), input_total, local_ms).await;
+
+    // So the batch the desktop holds goes to it however slow the link,
+    // and moves no input byte.
+    let again = tilo_test_env::within(
+        "the offloaded run on held inputs over a measured link",
+        offloader.invoke(
+            OffloadJob {
+                workspace_id: WORKSPACE,
+                action: &action,
+                inputs: manifests.clone(),
+            },
+            Arc::clone(&local),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.ran_on, RanOn::Worker(desktop_key));
+    assert_eq!(again.output, here.output);
+    let held_again = *staging.staged.lock().unwrap().last().unwrap();
+    assert_eq!(
+        (held_again.inputs, held_again.bytes, held_again.held),
+        (0, 0, IMAGES),
+        "held inputs move no bytes"
+    );
+
+    // Without a replica the relay still expects the desktop to hold the
+    // photographs, so the job goes there; the inputs hydrate from the
+    // laptop through the relay, and the output is still the same. A wrong
+    // hint costs time, never the output, and this run unlearns it.
     staging.next.lock().unwrap().held = None;
     let there = tilo_test_env::within(
         "the offloaded run",
@@ -526,10 +669,17 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
     let fetched = *staging.staged.lock().unwrap().last().unwrap();
     assert_eq!(fetched.bytes, u64::try_from(input_bytes).unwrap());
     assert_eq!(fetched.held, 0);
+    let unlearned = ask(
+        "the batch it fetched again",
+        held_inputs,
+        input_total,
+        quick_run_ms,
+    )
+    .await;
+    assert_eq!(unlearned.worker, None, "{}", unlearned.reason);
     let times = offloader.wall_times();
     assert!(times.iter().any(|time| time.device == laptop_key));
     assert!(times.iter().any(|time| time.device == desktop_key));
-    let input_total = u64::try_from(input_bytes).unwrap();
     assert!(
         times.iter().all(|time| time.input_bytes == input_total),
         "{times:?}"
@@ -538,7 +688,8 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
         "offloadable action ({IMAGES} images, {input_bytes} input bytes): \
          local {:?}, offloaded {:?} (inputs staged in {:?}), \
          offloaded to a worker already holding them {:?} (staged in {:?}), \
-         offloaded to a home server's replica {:?} (staged in {:?}) \
+         offloaded to a home server's replica {:?} (staged in {:?}), \
+         and again once the link was measured {:?} (staged in {:?}) \
          (single host: both devices share its cores)",
         here.elapsed,
         there.elapsed,
@@ -547,6 +698,8 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
         from_held.elapsed,
         on_replica.elapsed,
         from_replica.elapsed,
+        again.elapsed,
+        held_again.elapsed,
     );
     drop(replica);
 
@@ -560,6 +713,7 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
             app: PACKAGE,
             gpu: false,
             input_bytes: 1 << 40,
+            inputs: &[],
             local_wall_ms: Some(1),
         })
         .await
@@ -576,6 +730,7 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
             app: PACKAGE,
             gpu: false,
             input_bytes: 1,
+            inputs: &[],
             local_wall_ms: Some(600_000),
         })
         .await

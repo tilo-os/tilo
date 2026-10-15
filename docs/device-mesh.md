@@ -149,6 +149,22 @@ replica already held them (0.55–1.2 s of staging, no input bytes sent). A
 1 MiB input staged in 42–54 ms fetched against 17–34 ms proven; a 15 MiB one
 in 879 ms against 185 ms.
 
+Placement weighs only what a worker would receive. `compute.place` takes the
+job's inputs as `inputs: [{digest, bytes}]` (at most `MAX_COMPUTE_INPUTS`),
+which `Offloader` sends. The relay notes, per live job, which inputs the
+requester proved and which it forwarded; when the job completes, an input
+proven and never forwarded is one the worker held, and a forwarded one is
+not. It remembers up to `MAX_KNOWN_HOLDINGS` such digests per requester and
+worker, plus the share of the last completed job's inputs the worker held,
+which is what an input not seen yet is expected to be (a replica keeping the
+originals holds the next photo too); a reattaching worker starts unknown.
+Moving only the rest, plus the round trip, is weighed against the
+requester's own run, so a worker expected to receive nothing costs only the
+round trip: a home server holding a phone's photos takes the thumbnail batch
+however slow the uplink. None of this is the worker's word or grants anything: every job
+still proves possession or fetches, and a hint gone wrong (an evicted copy)
+costs one fetched run, which unlearns it.
+
 ### Offloadable actions
 
 An action whose contract declares `offload` (`tilo_actions::Offload`: a signed

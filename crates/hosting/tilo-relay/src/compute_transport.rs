@@ -13,7 +13,7 @@
     reason = "wire fields are documented by the module security contract"
 )]
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -58,6 +58,12 @@ pub const WORKER_NOT_ADMITTED: &str = "worker_not_admitted";
 /// The placement reason when moving a job's inputs to every eligible
 /// worker would take longer than running the job where it was asked.
 pub const INPUTS_HEAVIER_THAN_GAIN: &str = "inputs_heavier_than_gain";
+/// Most input digests the relay remembers a worker holding, or not, for one
+/// requester; the one learned first is forgotten first.
+pub const MAX_KNOWN_HOLDINGS: usize = 4_096;
+/// Most live jobs whose input movements the relay follows at once. Past
+/// it a new job is not followed, and teaches placement nothing.
+const MAX_FOLLOWED_JOBS: usize = 1_024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ComputeEnvelope {
@@ -327,13 +333,98 @@ impl SmoothedThroughput {
 }
 
 /// What a job asks to move against what it costs where it was asked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InputWeight {
     /// The bytes of every input the job lists.
     pub input_bytes: u64,
     /// The requester's own wall time for this action over inputs like
     /// these: what offloading has to beat.
     pub local_wall_ms: u64,
+    /// The job's distinct inputs by digest, each with its bytes, when the
+    /// requester named them; their bytes are part of `input_bytes`. An
+    /// input a worker is known to hold is not weighed as moving to it.
+    pub inputs: Vec<([u8; 32], u64)>,
+}
+
+/// Which of one requester's inputs a worker was seen to hold: a routing
+/// hint the relay learns from the jobs it carried, never from the
+/// worker's word.
+///
+/// An input counts as held when, in a job that completed, the requester
+/// proved to the worker that it holds the bytes (the proof route of
+/// [`crate::compute_content`]) and the relay then forwarded none of them:
+/// the worker staged its own copy, which it does only when that copy
+/// reproduces the proof. An input the relay forwarded is not held. Knowing
+/// this grants nothing: every job still proves possession or fetches, so a
+/// hint gone wrong (the worker evicted its copy) costs one slower run, and
+/// that run unlearns it.
+#[derive(Clone, Debug, Default)]
+struct Holdings {
+    /// Each input learned, and whether the worker held it.
+    known: HashMap<[u8; 32], bool>,
+    /// The order inputs were first learned in, oldest first.
+    order: VecDeque<[u8; 32]>,
+    /// The share of its last completed job's inputs the worker held, per
+    /// mille: what is expected of an input not learned yet. A replica that
+    /// keeps a workspace's originals holds the next photograph too.
+    held_per_mille: u64,
+}
+
+impl Holdings {
+    fn learn(&mut self, digest: [u8; 32], held: bool) {
+        if self.known.insert(digest, held).is_none() {
+            self.order.push_back(digest);
+        }
+        while self.order.len() > MAX_KNOWN_HOLDINGS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.known.remove(&oldest);
+            }
+        }
+    }
+
+    /// Of `bytes` of inputs not learned yet, those expected to move.
+    fn unknown_moving(&self, bytes: u64) -> u64 {
+        let moving = u128::from(bytes)
+            .saturating_mul(u128::from(1_000_u64.saturating_sub(self.held_per_mille)))
+            .div_ceil(1_000);
+        u64::try_from(moving).unwrap_or(u64::MAX)
+    }
+
+    /// The bytes of `weight`'s inputs this worker is expected to receive.
+    fn moving(&self, weight: &InputWeight) -> u64 {
+        let listed = weight
+            .inputs
+            .iter()
+            .fold(0_u64, |sum, (_, bytes)| sum.saturating_add(*bytes));
+        let mut moving = self.unknown_moving(weight.input_bytes.saturating_sub(listed));
+        for (digest, bytes) in &weight.inputs {
+            moving = moving.saturating_add(match self.known.get(digest) {
+                Some(true) => 0,
+                Some(false) => *bytes,
+                None => self.unknown_moving(*bytes),
+            });
+        }
+        moving
+    }
+}
+
+/// The job an input moved for, as its durable record binds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JobScope {
+    pub job_id: [u8; 16],
+    /// The job's requester and worker.
+    pub pair: (DeviceKey, DeviceKey),
+    pub expires_at_ms: u64,
+}
+
+/// What the relay carried for one live job's inputs.
+#[derive(Clone, Debug)]
+struct FollowedJob {
+    scope: JobScope,
+    /// Inputs the requester proved to the worker it holds.
+    proven: BTreeSet<[u8; 32]>,
+    /// Inputs the relay forwarded from the requester to the worker.
+    forwarded: BTreeSet<[u8; 32]>,
 }
 
 /// Placement weighed against moving the inputs.
@@ -354,6 +445,9 @@ pub struct InputsHeavierThanGain {
     pub worker: DeviceKey,
     /// What the job would move to it.
     pub input_bytes: u64,
+    /// The bytes of the job's inputs that worker is expected to hold
+    /// already, which would not move.
+    pub held_bytes: u64,
     /// The measured requester-to-worker rate.
     pub bytes_per_second: u64,
     /// The estimated time to move the inputs, round trip included.
@@ -368,10 +462,11 @@ impl std::fmt::Display for InputsHeavierThanGain {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "{INPUTS_HEAVIER_THAN_GAIN}: moving {} bytes to {} takes about {} ms at {} bytes/s; \
-             the requester ran it in {} ms",
+            "{INPUTS_HEAVIER_THAN_GAIN}: moving {} bytes to {} ({} more held there) takes about \
+             {} ms at {} bytes/s; the requester ran it in {} ms",
             self.input_bytes,
             hex::encode(self.worker.get(..4).unwrap_or_default()),
+            self.held_bytes,
             self.transfer_ms,
             self.bytes_per_second,
             self.local_wall_ms,
@@ -405,6 +500,11 @@ pub struct ComputeTransportState {
     latency: HashMap<DeviceKey, SmoothedRtt>,
     /// Smoothed content rate per (requester, worker) pair.
     throughput: HashMap<(DeviceKey, DeviceKey), SmoothedThroughput>,
+    /// Which of a requester's inputs a worker was seen to hold, per
+    /// (requester, worker) pair.
+    holdings: HashMap<(DeviceKey, DeviceKey), Holdings>,
+    /// The input movements of live jobs, until each settles.
+    followed: HashMap<[u8; 16], FollowedJob>,
     /// Members' environment sessions and legacy launches routed to workers.
     pub environments: crate::environment_routing::WorkspaceEnvironments,
 }
@@ -539,12 +639,23 @@ impl ComputeTransportState {
         ))
     }
 
+    /// The bytes of `weight`'s inputs that would move from `requester` to
+    /// `worker`: all of them, less those it was seen to hold
+    /// ([`Holdings`]).
+    fn moving_bytes(&self, requester: &DeviceKey, worker: &DeviceKey, weight: &InputWeight) -> u64 {
+        self.holdings
+            .get(&(*requester, *worker))
+            .map_or(weight.input_bytes, |holdings| holdings.moving(weight))
+    }
+
     /// [`Self::place`], weighed against moving the inputs: the
     /// best-ranked eligible worker whose inputs move faster than the
     /// requester ran the job itself, or [`WeighedPlacement::Local`] when
-    /// none does. A worker whose rate is not measured yet is not held
-    /// back: offloading to it is how it gets measured. Without a `weight`
-    /// this is [`Self::place`].
+    /// none does. Only what a worker would receive is weighed: inputs it
+    /// was seen to hold do not move, so a worker that holds them all costs
+    /// the round trip alone, however slow its link. A worker whose rate is
+    /// not measured yet is not held back: offloading to it is how it gets
+    /// measured. Without a `weight` this is [`Self::place`].
     ///
     /// # Errors
     ///
@@ -552,7 +663,7 @@ impl ComputeTransportState {
     pub fn place_weighed(
         &self,
         needs: &ComputeRequirements<'_>,
-        weight: Option<InputWeight>,
+        weight: Option<&InputWeight>,
         now_ms: u64,
     ) -> Result<WeighedPlacement, NoEligibleWorker> {
         let mut placement = self.place(needs, now_ms)?;
@@ -565,9 +676,10 @@ impl ComputeTransportState {
             let Ok(rank) = candidate.verdict else {
                 continue;
             };
-            match self.transfer_estimate(&needs.requester, &candidate.device, weight.input_bytes) {
+            let moving = self.moving_bytes(&needs.requester, &candidate.device, weight);
+            match self.transfer_estimate(&needs.requester, &candidate.device, moving) {
                 Some((transfer_ms, rate)) if transfer_ms >= weight.local_wall_ms => {
-                    best_refused.get_or_insert((candidate.device, transfer_ms, rate));
+                    best_refused.get_or_insert((candidate.device, moving, transfer_ms, rate));
                 }
                 _ => {
                     chosen = Some((candidate.device, rank));
@@ -580,16 +692,83 @@ impl ComputeTransportState {
             placement.rank = rank;
             return Ok(WeighedPlacement::Worker(placement));
         }
-        let (worker, transfer_ms, bytes_per_second) =
-            best_refused.unwrap_or((placement.worker, u64::MAX, 0));
+        let (worker, input_bytes, transfer_ms, bytes_per_second) =
+            best_refused.unwrap_or((placement.worker, weight.input_bytes, u64::MAX, 0));
         Ok(WeighedPlacement::Local(InputsHeavierThanGain {
             worker,
-            input_bytes: weight.input_bytes,
+            input_bytes,
+            held_bytes: weight.input_bytes.saturating_sub(input_bytes),
             bytes_per_second,
             transfer_ms,
             local_wall_ms: weight.local_wall_ms,
             considered: placement.considered,
         }))
+    }
+
+    /// The live job `scope` names, followed from now on; `None` when the
+    /// relay already follows as many as it will.
+    fn follow(&mut self, scope: JobScope, now_ms: u64) -> Option<&mut FollowedJob> {
+        if !self.followed.contains_key(&scope.job_id) && self.followed.len() >= MAX_FOLLOWED_JOBS {
+            self.followed
+                .retain(|_, job| job.scope.expires_at_ms > now_ms);
+        }
+        if !self.followed.contains_key(&scope.job_id) && self.followed.len() >= MAX_FOLLOWED_JOBS {
+            return None;
+        }
+        let job = self.followed.entry(scope.job_id).or_insert(FollowedJob {
+            scope,
+            proven: BTreeSet::new(),
+            forwarded: BTreeSet::new(),
+        });
+        (job.scope == scope).then_some(job)
+    }
+
+    /// The requester of the job `scope` names proved to its worker that it
+    /// holds input `digest`. Whether the worker held it too shows when the
+    /// job completes: it did unless the relay forwarded the bytes.
+    pub fn observe_proof(&mut self, scope: JobScope, digest: [u8; 32], now_ms: u64) {
+        if let Some(job) = self.follow(scope, now_ms) {
+            job.proven.insert(digest);
+        }
+    }
+
+    /// The relay is forwarding input `digest` of the job `scope` names from
+    /// its requester to its worker: the worker did not hold it. Noted
+    /// before the first byte moves, so the job cannot complete first.
+    pub fn observe_forwarded(&mut self, scope: JobScope, digest: [u8; 32], now_ms: u64) {
+        if let Some(job) = self.follow(scope, now_ms) {
+            job.forwarded.insert(digest);
+        }
+    }
+
+    /// Stop following job `job_id` of `worker`. When it `completed`, learn
+    /// from it which inputs the worker held ([`Holdings`]).
+    fn settle(&mut self, job_id: &[u8; 16], worker: &DeviceKey, completed: bool) {
+        let Some(job) = self.followed.remove(job_id) else {
+            return;
+        };
+        if !completed || job.scope.pair.1 != *worker {
+            return;
+        }
+        let held = job
+            .proven
+            .difference(&job.forwarded)
+            .copied()
+            .collect::<Vec<_>>();
+        let total = held.len().saturating_add(job.forwarded.len());
+        if total == 0 {
+            return;
+        }
+        let holdings = self.holdings.entry(job.scope.pair).or_default();
+        for digest in &held {
+            holdings.learn(*digest, true);
+        }
+        for digest in &job.forwarded {
+            holdings.learn(*digest, false);
+        }
+        let held = u64::try_from(held.len()).unwrap_or(u64::MAX);
+        let total = u64::try_from(total).unwrap_or(u64::MAX);
+        holdings.held_per_mille = held.saturating_mul(1_000).checked_div(total).unwrap_or(0);
     }
 
     pub fn remove_worker(&mut self, worker: &DeviceKey) {
@@ -604,10 +783,13 @@ impl ComputeTransportState {
         connection: Option<iroh::endpoint::Connection>,
     ) {
         // A new connection is a new path; the old one's RTT and rate say
-        // nothing.
+        // nothing. A worker that reattaches may have restarted on other
+        // storage, so what it was seen to hold is unknown again too.
         self.latency.remove(&device);
         self.throughput
             .retain(|(requester, worker), _| *requester != device && *worker != device);
+        self.holdings.retain(|(_, worker), _| *worker != device);
+        self.followed.retain(|_, job| job.scope.pair.1 != device);
         self.sessions.insert(
             device,
             ComputeSubscriber {
@@ -690,6 +872,8 @@ impl ComputeTransportState {
         self.sessions.remove(device);
         self.workers.remove(device);
         self.latency.remove(device);
+        // Its jobs end with it; none of them completes here.
+        self.followed.retain(|_, job| job.scope.pair.1 != *device);
     }
 
     /// Detach the session whose disconnect signal is `disconnect`, unless a
@@ -766,6 +950,7 @@ impl ComputeTransportState {
                 store,
                 next_sequence(),
             )?;
+            self.settle(&record.spec.job_id, worker, false);
             ended.insert(record.spec.job_id);
         }
         if !ended.is_empty() {
@@ -908,14 +1093,15 @@ impl ComputeTransportState {
         )
     }
 
-    /// Apply a terminal result from the job's bound worker.
+    /// Apply a terminal result from the job's bound worker. A completed job
+    /// teaches placement which of its inputs the worker held.
     ///
     /// # Errors
     ///
     /// Returns an error for forged routes, non-terminal or invalid lifecycle
     /// transitions, oversized metadata, unknown jobs, or store failures.
     pub fn accept_result(
-        &self,
+        &mut self,
         authenticated_worker: DeviceKey,
         store: &WorkspaceStore,
         update: &ComputeResultUpdate,
@@ -923,14 +1109,22 @@ impl ComputeTransportState {
         if !update.phase.is_terminal() {
             return Err(ComputeTransportError::InvalidLifecycle);
         }
-        Self::accept_worker_update(
+        let outcome = Self::accept_worker_update(
             authenticated_worker,
             store,
             &update.binding,
             update.sequence,
             update.phase.clone(),
             &update.log_tail,
-        )
+        )?;
+        if outcome != ComputeRouteOutcome::Duplicate {
+            self.settle(
+                &update.binding.job_id,
+                &authenticated_worker,
+                matches!(update.phase, ComputeJobPhase::Completed { .. }),
+            );
+        }
+        Ok(outcome)
     }
 
     fn accept_worker_update(
@@ -1245,9 +1439,10 @@ mod tests {
         let heavy = InputWeight {
             input_bytes: 129 * MB,
             local_wall_ms: 507,
+            inputs: Vec::new(),
         };
         let WeighedPlacement::Local(kept) = state
-            .place_weighed(&needs.requirements(), Some(heavy), 200)
+            .place_weighed(&needs.requirements(), Some(&heavy), 200)
             .unwrap()
         else {
             panic!("129 MB on a 38 MB/s link is slower than 507 ms here");
@@ -1264,9 +1459,10 @@ mod tests {
         let light = InputWeight {
             input_bytes: 2 * MB,
             local_wall_ms: 20_000,
+            inputs: Vec::new(),
         };
         assert!(matches!(
-            state.place_weighed(&needs.requirements(), Some(light), 200).unwrap(),
+            state.place_weighed(&needs.requirements(), Some(&light), 200).unwrap(),
             WeighedPlacement::Worker(placement) if placement.worker == [2; 32]
         ));
         // Without a weight, placement is unchanged.
@@ -1283,7 +1479,7 @@ mod tests {
         laptop.power = PowerAvailability::Battery(80);
         state.advertise([5; 32], 7, 200, laptop).unwrap();
         let WeighedPlacement::Worker(placement) = state
-            .place_weighed(&needs.requirements(), Some(heavy), 200)
+            .place_weighed(&needs.requirements(), Some(&heavy), 200)
             .unwrap()
         else {
             panic!("an unmeasured worker is not held back");
@@ -1296,6 +1492,288 @@ mod tests {
         let (disconnect, _disconnected) = mpsc::channel(1);
         state.attach([2; 32], sender, disconnect, None);
         assert_eq!(state.throughput(&[1; 32], &[2; 32]), None);
+    }
+
+    /// Run `job` to `phase` on its worker, as the worker reports it.
+    fn finish(
+        state: &mut ComputeTransportState,
+        store: &WorkspaceStore,
+        job: &ComputeJobSpec,
+        phase: ComputeJobPhase,
+    ) {
+        let binding = ComputeJobBinding {
+            workspace_id: job.workspace_id,
+            job_id: job.job_id,
+            requester: job.requester,
+            worker: job.worker,
+        };
+        state
+            .accept_status(
+                job.worker,
+                store,
+                &ComputeStatusUpdate {
+                    binding: binding.clone(),
+                    sequence: 1,
+                    phase: ComputeJobPhase::Running,
+                    log_tail: Vec::new(),
+                },
+            )
+            .unwrap();
+        state
+            .accept_result(
+                job.worker,
+                store,
+                &ComputeResultUpdate {
+                    binding,
+                    sequence: 2,
+                    phase,
+                    log_tail: Vec::new(),
+                },
+            )
+            .unwrap();
+    }
+
+    /// The thumbnail batch: twelve camera originals of 10.75 MB.
+    fn batch(job_id: u8, first_photo: u8) -> (ComputeJobSpec, Vec<([u8; 32], u64)>) {
+        let photos = (first_photo..first_photo.saturating_add(12))
+            .map(|seed| ([seed; 32], 10_750_000))
+            .collect::<Vec<_>>();
+        let mut job = spec();
+        job.job_id = [job_id; 16];
+        job.inputs = photos.iter().map(|(digest, _)| *digest).collect();
+        (job, photos)
+    }
+
+    fn scope(job: &ComputeJobSpec) -> JobScope {
+        JobScope {
+            job_id: job.job_id,
+            pair: (job.requester, job.worker),
+            expires_at_ms: job.expires_at_ms,
+        }
+    }
+
+    /// Weighing the batch against the requester's own 507 ms run.
+    fn weigh(
+        state: &ComputeTransportState,
+        photos: &[([u8; 32], u64)],
+        listed: bool,
+    ) -> WeighedPlacement {
+        let weight = InputWeight {
+            input_bytes: photos.iter().map(|(_, bytes)| bytes).sum(),
+            local_wall_ms: 507,
+            inputs: if listed { photos.to_vec() } else { Vec::new() },
+        };
+        state
+            .place_weighed(&spec().requirements(), Some(&weight), 200)
+            .unwrap()
+    }
+
+    /// Over a slow measured link (a phone's 1 MB/s uplink), the 129 MB
+    /// thumbnail batch stays on the phone while the relay knows nothing of
+    /// what the worker holds, exactly as before. Once a completed job shows
+    /// the worker staged its own proven copies, the batch goes to it, and
+    /// so does the next batch of new photographs; once a job shows it
+    /// fetched them after all (its copies gone or not matching), placement
+    /// is back to weighing every byte. None of it is the worker's word.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one worker's holdings learned, used and unlearned, top to bottom"
+    )]
+    fn placement_discounts_inputs_the_worker_was_seen_to_hold() {
+        const MB: u64 = 1_000_000;
+        let root = tempfile::tempdir().unwrap();
+        let (mut state, store) = admitted(root.path());
+        state.observe_latency([2; 32], Duration::from_millis(30));
+        state.observe_transfer(
+            ([1; 32], [2; 32]),
+            10_750_000,
+            Duration::from_millis(10_750),
+        );
+        assert_eq!(state.throughput(&[1; 32], &[2; 32]), Some(MB));
+
+        // Nothing known: every byte is weighed, as before.
+        let (held_run, photos) = batch(20, 10);
+        for listed in [false, true] {
+            let WeighedPlacement::Local(kept) = weigh(&state, &photos, listed) else {
+                panic!("129 MB at 1 MB/s is slower than 507 ms");
+            };
+            assert_eq!((kept.input_bytes, kept.held_bytes), (129 * MB, 0), "{kept}");
+            assert!(kept.transfer_ms > 129_000, "{kept}");
+        }
+
+        // A job on those photographs completes with the phone having proved
+        // each and the relay forwarding none: the worker held them all.
+        state
+            .accept_request([1; 32], 7, 200, &store, &held_run)
+            .unwrap();
+        for (digest, _) in &photos {
+            state.observe_proof(scope(&held_run), *digest, 200);
+        }
+        finish(
+            &mut state,
+            &store,
+            &held_run,
+            ComputeJobPhase::Completed {
+                outputs: vec![[7; 32]],
+            },
+        );
+        assert!(state.followed.is_empty(), "a settled job is not followed");
+        for listed in [true, false] {
+            let WeighedPlacement::Worker(placement) = weigh(&state, &photos, listed) else {
+                panic!("nothing moves to a worker holding every input");
+            };
+            assert_eq!(placement.worker, [2; 32]);
+        }
+        // Moving nothing still costs the round trip: a job the phone runs
+        // faster than that stays on the phone.
+        let quick = InputWeight {
+            input_bytes: 129 * MB,
+            local_wall_ms: 20,
+            inputs: photos.clone(),
+        };
+        let WeighedPlacement::Local(kept) = state
+            .place_weighed(&spec().requirements(), Some(&quick), 200)
+            .unwrap()
+        else {
+            panic!("a 30 ms round trip is slower than a 20 ms run");
+        };
+        assert_eq!(
+            (kept.input_bytes, kept.held_bytes, kept.transfer_ms),
+            (0, 129 * MB, 30),
+            "{kept}"
+        );
+        // The next batch is new photographs, never seen: a worker that held
+        // all of its last job's inputs is expected to hold these too.
+        let (_, new_photos) = batch(21, 30);
+        assert!(matches!(
+            weigh(&state, &new_photos, true),
+            WeighedPlacement::Worker(placement) if placement.worker == [2; 32]
+        ));
+
+        // The hint goes wrong: the worker no longer holds the photographs.
+        // The job placed on it proves them, fetches them anyway (its copies
+        // gone or not matching), and still completes on the phone's bytes;
+        // it cost a slow run, and the relay weighs every byte again.
+        let (fetched_run, _) = batch(22, 10);
+        state
+            .accept_request([1; 32], 7, 200, &store, &fetched_run)
+            .unwrap();
+        for (digest, _) in &photos {
+            state.observe_proof(scope(&fetched_run), *digest, 200);
+            state.observe_forwarded(scope(&fetched_run), *digest, 200);
+        }
+        finish(
+            &mut state,
+            &store,
+            &fetched_run,
+            ComputeJobPhase::Completed {
+                outputs: vec![[7; 32]],
+            },
+        );
+        for (batch_photos, listed) in [(&photos, true), (&photos, false), (&new_photos, true)] {
+            let WeighedPlacement::Local(kept) = weigh(&state, batch_photos, listed) else {
+                panic!("a worker seen fetching its inputs is weighed as receiving them");
+            };
+            assert_eq!((kept.input_bytes, kept.held_bytes), (129 * MB, 0), "{kept}");
+        }
+
+        // Half held: only the half it fetched is weighed.
+        let (half_run, _) = batch(23, 10);
+        state
+            .accept_request([1; 32], 7, 200, &store, &half_run)
+            .unwrap();
+        for (index, (digest, _)) in photos.iter().enumerate() {
+            state.observe_proof(scope(&half_run), *digest, 200);
+            if index % 2 == 1 {
+                state.observe_forwarded(scope(&half_run), *digest, 200);
+            }
+        }
+        finish(
+            &mut state,
+            &store,
+            &half_run,
+            ComputeJobPhase::Completed {
+                outputs: vec![[7; 32]],
+            },
+        );
+        let WeighedPlacement::Local(kept) = weigh(&state, &photos, true) else {
+            panic!("64.5 MB at 1 MB/s is still slower than 507 ms");
+        };
+        assert_eq!(
+            (kept.input_bytes, kept.held_bytes),
+            (64_500_000, 64_500_000),
+            "{kept}"
+        );
+
+        // A job that fails teaches nothing: these new photographs are only
+        // expected half held, as the last completed job was.
+        let (failed_run, other_photos) = batch(24, 50);
+        state
+            .accept_request([1; 32], 7, 200, &store, &failed_run)
+            .unwrap();
+        for (digest, _) in &other_photos {
+            state.observe_proof(scope(&failed_run), *digest, 200);
+        }
+        finish(
+            &mut state,
+            &store,
+            &failed_run,
+            ComputeJobPhase::Failed {
+                code: "input_unavailable".into(),
+            },
+        );
+        assert!(matches!(
+            weigh(&state, &other_photos, true),
+            WeighedPlacement::Local(kept) if kept.input_bytes == 64_500_000
+        ));
+
+        // A worker that reattaches may have restarted on other storage:
+        // what it was seen to hold is unknown again.
+        let (sender, _receiver) = mpsc::channel(1);
+        let (disconnect, _disconnected) = mpsc::channel(1);
+        state.attach([2; 32], sender, disconnect, None);
+        assert!(state.holdings.is_empty());
+    }
+
+    /// What a worker was seen to hold is bounded per requester: the input
+    /// learned first is forgotten first.
+    #[test]
+    fn known_holdings_stay_bounded() {
+        let mut holdings = Holdings::default();
+        let digest = |index: usize| {
+            let mut digest = [0; 32];
+            digest[..8].copy_from_slice(&u64::try_from(index).unwrap().to_le_bytes());
+            digest
+        };
+        for index in 0..=MAX_KNOWN_HOLDINGS {
+            holdings.learn(digest(index), true);
+        }
+        holdings.learn(digest(MAX_KNOWN_HOLDINGS), false);
+        assert_eq!(holdings.known.len(), MAX_KNOWN_HOLDINGS);
+        assert_eq!(holdings.order.len(), MAX_KNOWN_HOLDINGS);
+        assert!(!holdings.known.contains_key(&digest(0)));
+        assert_eq!(holdings.known.get(&digest(1)), Some(&true));
+        assert_eq!(
+            holdings.known.get(&digest(MAX_KNOWN_HOLDINGS)),
+            Some(&false)
+        );
+
+        // So are the live jobs followed: past the bound a new job is not,
+        // until expired ones make room.
+        let mut state = ComputeTransportState::default();
+        let job = |index: usize| JobScope {
+            job_id: digest(index)[..16].try_into().unwrap(),
+            pair: ([1; 32], [2; 32]),
+            expires_at_ms: 10_000,
+        };
+        for index in 0..=MAX_FOLLOWED_JOBS {
+            state.observe_proof(job(index), [4; 32], 200);
+        }
+        assert_eq!(state.followed.len(), MAX_FOLLOWED_JOBS);
+        assert!(!state.followed.contains_key(&job(MAX_FOLLOWED_JOBS).job_id));
+        state.observe_proof(job(MAX_FOLLOWED_JOBS), [4; 32], 10_000);
+        assert_eq!(state.followed.len(), 1);
     }
 
     /// A worker that leaves mid-job fails each job it held, Pending or
@@ -1574,7 +2052,7 @@ mod tests {
         // Phase `status_result_are_monotonic_bounded_and_worker_bound`.
         {
             let root = tempfile::tempdir().unwrap();
-            let (state, store) = admitted(root.path());
+            let (mut state, store) = admitted(root.path());
             let status = ComputeStatusUpdate {
                 binding: binding(),
                 sequence: 1,
