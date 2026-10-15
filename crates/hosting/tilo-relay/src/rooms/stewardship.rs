@@ -27,7 +27,7 @@ use collab_types::{
     ChannelId, ChannelRoute, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1,
 };
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::NeighbourMsg;
+use neighbour_wire::NeighbourMsg;
 
 /// Channels one room keeps a steward for.
 const MAX_CHANNELS: usize = 4096;

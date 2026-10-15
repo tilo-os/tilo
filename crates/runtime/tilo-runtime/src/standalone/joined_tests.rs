@@ -255,8 +255,8 @@ impl HostedRoom {
         .await;
         for (bytes, kind) in &publications {
             let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-            let checkpoint = *kind == tilo_peer_state::transport::Retention::Checkpoint;
-            let (channel, _) = tilo_peer_state::transport::retention(&message, checkpoint).unwrap();
+            let checkpoint = *kind == neighbour_wire::Retention::Checkpoint;
+            let (channel, _) = neighbour_wire::retention(&message, checkpoint).unwrap();
             if checkpoint {
                 publisher.publish_checkpoint(channel, bytes.clone())
             } else {

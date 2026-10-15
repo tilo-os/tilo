@@ -56,7 +56,7 @@ fn fixture() -> (SigningKey, RetentionAuthority, StatePeer, SystemTime) {
 }
 fn encoded(msg: &NeighbourMsg) -> ([u8; 32], Vec<u8>) {
     (
-        crate::transport::retention(msg, true).unwrap().0,
+        neighbour_wire::retention(msg, true).unwrap().0,
         postcard::to_allocvec(msg).unwrap(),
     )
 }

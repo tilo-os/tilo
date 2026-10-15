@@ -11,7 +11,8 @@
 
 use std::sync::{Arc, PoisonError, RwLock};
 
-use tilo_peer_state::{NeighbourMsg, peer_handle};
+use neighbour_wire::NeighbourMsg;
+use tilo_peer_state::peer_handle;
 
 use super::Rooms;
 

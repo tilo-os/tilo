@@ -2075,7 +2075,7 @@ pub(super) mod tests {
         let channel = collab_types::ChannelId::new();
         let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
         let ack = |through: u8, timestamp: u64| {
-            let message = tilo_peer_state::NeighbourMsg::MlsGovernanceAck {
+            let message = neighbour_wire::NeighbourMsg::MlsGovernanceAck {
                 room: "room".into(),
                 ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
                     channel,
@@ -2084,7 +2084,7 @@ pub(super) mod tests {
                 )),
                 delivery: 0,
             };
-            let (route, _) = tilo_peer_state::transport::retention(&message, false).unwrap();
+            let (route, _) = neighbour_wire::retention(&message, false).unwrap();
             let bytes = crate::transport::encode(&Envelope::Delta {
                 workspace_id: 7,
                 author_device_public_key: [1; 32],
@@ -2182,7 +2182,7 @@ pub(super) mod tests {
         let channel = collab_types::ChannelId::new();
         let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
         let ack = |through: u8| {
-            let message = tilo_peer_state::NeighbourMsg::MlsGovernanceAck {
+            let message = neighbour_wire::NeighbourMsg::MlsGovernanceAck {
                 room: "room".into(),
                 ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
                     channel,
@@ -2191,7 +2191,7 @@ pub(super) mod tests {
                 )),
                 delivery: 0,
             };
-            let (route, _) = tilo_peer_state::transport::retention(&message, false).unwrap();
+            let (route, _) = neighbour_wire::retention(&message, false).unwrap();
             let bytes = crate::transport::encode(&Envelope::Delta {
                 workspace_id: 7,
                 author_device_public_key: [1; 32],

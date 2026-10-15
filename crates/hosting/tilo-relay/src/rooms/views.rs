@@ -135,7 +135,7 @@ impl Rooms {
             .records
             .view_channel(
                 workspace,
-                tilo_peer_state::transport::app_document_channel(&source.app_id, &source.record),
+                neighbour_wire::app_document_channel(&source.app_id, &source.record),
                 MAX_VIEW_DOCUMENT_BYTES,
             )
             .await?;
@@ -171,7 +171,7 @@ fn replay_source(
     let mut bytes = 0usize;
     let mut found = false;
     for retained in retained {
-        let Ok(tilo_peer_state::NeighbourMsg::AppDocument {
+        let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             cluster_id,
             record_id,

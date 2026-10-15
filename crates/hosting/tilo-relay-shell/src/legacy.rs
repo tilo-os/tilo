@@ -18,8 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use neighbour_wire::NeighbourMsg;
 use tilo_moq::live::LiveRelay;
-use tilo_peer_state::NeighbourMsg;
 use tilo_relay_protocol::legacy_window as wire;
 use tilo_relay_protocol::web::live_room;
 use tilo_relay_session::AttributedPresence;

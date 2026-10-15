@@ -1012,7 +1012,7 @@ impl WorkspaceRuntime {
         author: &[u8; 32],
         from_role: PeerRole,
         envelope: &Envelope,
-        slot: Option<tilo_peer_state::PresenceSlot>,
+        slot: Option<neighbour_wire::PresenceSlot>,
     ) -> usize {
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
@@ -2028,7 +2028,7 @@ mod tests {
         });
         let mailbox = Arc::new(PresenceMailbox::default());
         rt.route_presence(RECIPIENT, Arc::clone(&mailbox));
-        let caret = Some(tilo_peer_state::PresenceSlot {
+        let caret = Some(neighbour_wire::PresenceSlot {
             id: 1,
             motion: false,
         });

@@ -7860,14 +7860,12 @@ mod private_transport_tests {
 
         fn frame(
             authority: &tilo_peer_state::retained_proof::RetentionAuthority,
-            message: &tilo_peer_state::NeighbourMsg,
+            message: &neighbour_wire::NeighbourMsg,
         ) -> Vec<u8> {
-            let channel = tilo_peer_state::transport::retention(message, true)
-                .unwrap()
-                .0;
+            let channel = neighbour_wire::retention(message, true).unwrap().0;
             let body = postcard::to_allocvec(message).unwrap();
             let source = match message {
-                tilo_peer_state::NeighbourMsg::AppDocument { envelope, .. } => {
+                neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } => {
                     *envelope.author.as_bytes()
                 }
                 _ => authority.governor().device_public_key,

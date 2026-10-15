@@ -36,7 +36,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
                 std::time::SystemTime::now(),
             )
             .unwrap();
-        let tilo_peer_state::NeighbourMsg::AppDocument {
+        let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             record_id,
             envelope,

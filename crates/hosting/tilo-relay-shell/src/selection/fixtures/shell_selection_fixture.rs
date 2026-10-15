@@ -21,8 +21,9 @@
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use neighbour_wire::{NeighbourMsg, Retention};
 use std::{fs, path::Path};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
+use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
 
@@ -283,8 +284,7 @@ fn write_batch(dir: &Path, name: &str, batch: &Batch) -> serde_json::Value {
                 let bytes = postcard::to_allocvec(message).unwrap();
                 fs::write(dir.join(&file), &bytes).unwrap();
                 let (channel, actual) =
-                    tilo_peer_state::transport::retention(message, kind == Retention::Checkpoint)
-                        .unwrap();
+                    neighbour_wire::retention(message, kind == Retention::Checkpoint).unwrap();
                 assert_eq!(actual, kind);
                 serde_json::json!({
                     "file": file,

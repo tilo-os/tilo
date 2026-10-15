@@ -32,9 +32,10 @@ test-support = [
 # Signed document envelopes the seam hands the core.
 collab-types = { path = "../../collab/collab-types" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-# The desktop's peer-sync messages, retention proofs and the one
-# host-retention classifier.
+# Retention proofs, coverage routes and the state peers they come from.
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The desktop's peer-sync messages and the host-retention classifier.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
 # Retained-store primitives and the seam the store drives selection through.
 tilo-relay-store = { path = "../tilo-relay-store" }
 # Retained frames: relay envelopes carrying co-edit payloads; the
