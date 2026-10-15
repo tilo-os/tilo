@@ -18,8 +18,8 @@ use tilo_automerge::ApplyIncoming;
 use tilo_resource::__private::{ObjId, Value};
 use tilo_resource::history;
 use tilo_resource::{
-    ActionCx, Collection, Doc, Grid, Id, Identified, Keyed, Model, ModelError, Ordered, Reader,
-    Replica, Resource, Set, Slot, resource,
+    ActionCx, Collection, Doc, Grid, Id, Identified, Keyed, Map, Model, ModelError, Ordered,
+    Reader, Replica, Resource, Set, Slot, resource,
 };
 
 thread_local! {
@@ -1038,5 +1038,156 @@ fn the_edits_between_two_keyed_values_ask_each_item_once() {
     assert!(
         asked <= 2 * 300,
         "{asked} ids asked to compare 300 cues with 300: each at most once per side"
+    );
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Shelf {
+    pub title: String,
+    pub progress: Map<Counted>,
+}
+
+#[resource(kind = "test.shelf", label = "Shelf")]
+impl Shelf {
+    /// Rename.
+    #[action]
+    pub fn retitle(&mut self, title: String) {
+        self.title = title;
+    }
+
+    /// Record where a book is read to.
+    #[action]
+    pub fn mark(&mut self, book: String, at: String) {
+        match self.progress.get_mut(&book) {
+            Some(held) => held.0 = at,
+            None => {
+                self.progress.insert(book, Counted(at));
+            }
+        }
+    }
+
+    /// Forget a book.
+    #[action]
+    pub fn forget(&mut self, book: String) {
+        self.progress.remove(&book);
+    }
+}
+
+fn book(n: usize) -> String {
+    format!("book {n:04}")
+}
+
+fn random_shelf_action(replica: &mut Replica<Shelf>, rng: &mut Lcg, step: usize) {
+    let result = match rng.next(8) {
+        0 => replica.apply(Shelf::RETITLE.with(format!("shelf {step}"))),
+        1 | 2 => replica.apply(Shelf::FORGET.with(book(rng.next(150)))),
+        _ => replica.apply(Shelf::MARK.with((book(rng.next(150)), format!("at {step}")))),
+    };
+    result.unwrap();
+}
+
+#[test]
+fn a_reader_whose_state_a_view_holds_copies_one_chunk_of_a_map() {
+    let mut replica = Replica::<Shelf>::new();
+    for n in 0..1000 {
+        replica
+            .apply(Shelf::MARK.with((book(n), format!("page {n}"))))
+            .unwrap();
+    }
+    let mut reader = Reader::<Shelf>::open(replica.doc_mut()).unwrap();
+    // A view keeps the state it was shown, as a surface's `present` may.
+    let shown = Rc::clone(reader.state());
+
+    // A change to another field copies no entry of the map.
+    replica
+        .apply(Shelf::RETITLE.with("renamed".to_owned()))
+        .unwrap();
+    let before = clones();
+    assert!(reader.sync(replica.doc()).unwrap());
+    assert_eq!(clones() - before, 0, "no entry copied for a rename");
+    let renamed = Rc::clone(reader.state());
+    assert_eq!(shown.title, "");
+    assert_eq!(renamed.title, "renamed");
+    for n in 0..1000 {
+        assert!(
+            std::ptr::eq(
+                renamed.progress.get(&book(n)).unwrap(),
+                shown.progress.get(&book(n)).unwrap()
+            ),
+            "entry {n} shared"
+        );
+    }
+
+    // A change to one entry copies its chunk, not the map.
+    replica
+        .apply(Shelf::MARK.with((book(500), "changed".into())))
+        .unwrap();
+    let before = clones();
+    assert!(reader.sync(replica.doc()).unwrap());
+    let copied = clones() - before;
+    assert!(
+        copied <= 64,
+        "{copied} entries copied: one chunk at most, not the map"
+    );
+    let now = reader.state();
+    assert!(!Rc::ptr_eq(now, &renamed), "the held state was not changed");
+    assert_eq!(renamed.progress.get(&book(500)).unwrap().0, "page 500");
+    assert_eq!(now.progress.get(&book(500)).unwrap().0, "changed");
+    assert_eq!(now.as_ref(), &replica.state().unwrap());
+    let shared = (0..1000)
+        .filter(|n| {
+            std::ptr::eq(
+                now.progress.get(&book(*n)).unwrap(),
+                renamed.progress.get(&book(*n)).unwrap(),
+            )
+        })
+        .count();
+    assert!(shared >= 1000 - 64, "{shared} of 1000 entries still shared");
+}
+
+#[test]
+fn a_held_map_stays_as_it_was_shown_while_the_reader_follows() {
+    let mut rng = Lcg(37);
+    let mut replica = Replica::<Shelf>::new();
+    for step in 0..120 {
+        random_shelf_action(&mut replica, &mut rng, step);
+    }
+    let mut reader = Reader::<Shelf>::open(replica.doc_mut()).unwrap();
+    let mut held: Vec<(Rc<Shelf>, Shelf)> = Vec::new();
+    for step in 120..520 {
+        held.push((Rc::clone(reader.state()), replica.state().unwrap()));
+        random_shelf_action(&mut replica, &mut rng, step);
+        reader.sync(replica.doc()).unwrap();
+        assert_eq!(
+            reader.state().as_ref(),
+            &replica.state().unwrap(),
+            "after step {step}"
+        );
+    }
+    for (at, (shown, read)) in held.iter().enumerate() {
+        assert_eq!(shown.as_ref(), read, "state shown before step {}", at + 120);
+    }
+}
+
+#[test]
+fn a_map_is_stored_as_a_btree_map_is() {
+    use tilo_resource::__private::ROOT;
+    let entries: BTreeMap<String, String> =
+        (0..100).map(|n| (book(n), format!("page {n}"))).collect();
+    let map = Map::from(entries.clone());
+
+    let mut doc = Doc::new();
+    tilo_resource::write_key(&mut doc, &ROOT, "progress", &map).unwrap();
+    let read: BTreeMap<String, String> = tilo_resource::read_key(&doc, &ROOT, "progress").unwrap();
+    assert_eq!(read, entries);
+
+    let mut doc = Doc::new();
+    tilo_resource::write_key(&mut doc, &ROOT, "progress", &entries).unwrap();
+    let read: Map<String> = tilo_resource::read_key(&doc, &ROOT, "progress").unwrap();
+    assert_eq!(read, map);
+    assert_eq!(map.to_json(), entries.to_json());
+    assert_eq!(
+        <Map<String> as Model>::SHAPE,
+        <BTreeMap<String, String> as Model>::SHAPE
     );
 }

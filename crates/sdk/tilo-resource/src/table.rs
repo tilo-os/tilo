@@ -2963,7 +2963,7 @@ impl<T: 'static> MapEntries for std::collections::BTreeMap<String, T> {
     }
 }
 
-/// What `BTreeMap<String, T>`'s table reaches into one with.
+/// What the table of a map of string keys reaches into one with.
 #[allow(
     clippy::type_complexity,
     reason = "each field reaches into the map one way"
@@ -2980,31 +2980,26 @@ pub struct MapDesc {
     item_staged: (fn() -> Box<dyn Any>, Unstage),
 }
 
-/// The [`MapDesc`] of `BTreeMap<String, T>`.
-pub struct MapOf<T>(PhantomData<T>);
+/// The [`MapDesc`] of the map `M` of string keys to `T`s: a
+/// `BTreeMap<String, T>` ([`MapOf`]) or a [`Map`](crate::Map), stored
+/// alike.
+pub struct MapIn<T, M>(PhantomData<fn() -> (T, M)>);
 
-impl<T: Model> MapOf<T> {
+/// The [`MapDesc`] of `BTreeMap<String, T>`.
+pub type MapOf<T> = MapIn<T, std::collections::BTreeMap<String, T>>;
+
+impl<T: Model, M: MapEntries + Default + 'static> MapIn<T, M> {
     pub const DESC: MapDesc = MapDesc {
         item: T::TABLE,
         item_nullable: T::NULLABLE,
-        entries: |value| {
-            Some(value.downcast_ref::<std::collections::BTreeMap<String, T>>()? as &dyn MapEntries)
-        },
-        entries_mut: |value| {
-            Some(
-                value.downcast_mut::<std::collections::BTreeMap<String, T>>()?
-                    as &mut dyn MapEntries,
-            )
-        },
+        entries: |value| Some(value.downcast_ref::<M>()? as &dyn MapEntries),
+        entries_mut: |value| Some(value.downcast_mut::<M>()? as &mut dyn MapEntries),
         fresh: |out| {
-            let out = out.downcast_mut::<Option<std::collections::BTreeMap<String, T>>>()?;
-            Some(out.insert(std::collections::BTreeMap::new()) as &mut dyn MapEntries)
+            let out = out.downcast_mut::<Option<M>>()?;
+            Some(out.insert(M::default()) as &mut dyn MapEntries)
         },
-        staged: (
-            empty_of::<std::collections::BTreeMap<String, T>>,
-            unwrap_of::<std::collections::BTreeMap<String, T>>,
-        ),
-        replace: replace_of::<std::collections::BTreeMap<String, T>>,
+        staged: (empty_of::<M>, unwrap_of::<M>),
+        replace: replace_of::<M>,
         item_staged: (empty_of::<T>, unwrap_of::<T>),
     };
 
