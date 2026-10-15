@@ -138,26 +138,53 @@ pub(crate) fn service_socket_is_live(path: &std::path::Path) -> bool {
     path.exists() && std::os::unix::net::UnixStream::connect(path).is_ok()
 }
 
-/// Bind the session's CRDT fan-out broker on the service socket the
-/// launcher hands to apps. `None` means a degraded session, not a normal
-/// one — every app manifest declares `collab`, so nothing collaborates
-/// until this succeeds; reported at `error!` and surfaced via `chrome_state::set_collab_unavailable`.
-pub(crate) fn spawn_session_collab_broker(
-    chrome: &crate::shell::chrome_state::Chrome,
+/// Why the session's broker did not come up, for the chrome to say.
+#[derive(Debug)]
+pub(crate) enum BrokerStartFailure {
+    /// The services directory could not be created.
+    ServicesRoot(String),
+    /// Another session on this `XDG_RUNTIME_DIR` is listening on the socket.
+    SocketTaken,
+    /// The broker could not start: its socket, its invocation journal.
+    Broker(String),
+}
+
+/// What binding the session's broker produced.
+pub(crate) type BrokerStart = Result<crate::shell::collab_broker::BrokerHandle, BrokerStartFailure>;
+
+/// Start binding the session's CRDT fan-out broker on the service socket
+/// the launcher hands to apps, on the session-start worker.
+///
+/// Binding blocks by nature: it opens the broker's invocation journal (a
+/// read of the whole journal and its directory and file syncs), its MLS
+/// vault (the system secret store, which waits for the keyring) and every
+/// channel's sealed state. On the compositor loop that froze the desktop
+/// for as long as the disk or keyring took, at session start and on the
+/// tick first login completes. The loop polls the returned start each tick
+/// and installs the outcome with [`finish_session_collab_broker`]; until
+/// then the session says its services are starting and holds launches.
+pub(crate) fn start_session_collab_broker(
     peer_sync: Option<&std::sync::Arc<crate::shell::network::ShellNetwork>>,
-) -> Option<crate::shell::collab_broker::BrokerHandle> {
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    wake: crate::session_runtime::Wake,
+) -> crate::session_runtime::PendingStart<BrokerStart> {
+    let peer_sync = peer_sync.cloned();
+    crate::session_runtime::start_on_worker(wake, move || {
+        Ok(bind_session_collab_broker(peer_sync.as_ref(), membership))
+    })
+}
+
+/// Bind the session's broker here, waiting for whatever it opens.
+fn bind_session_collab_broker(
+    peer_sync: Option<&std::sync::Arc<crate::shell::network::ShellNetwork>>,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+) -> BrokerStart {
     if let Err(e) = launcher::services::ensure_services_root() {
         tracing::error!(
             "collab: cannot create {} ({e}); apps will start without collaboration",
             launcher::services::services_root().display()
         );
-        chrome
-            .borrow_mut()
-            .set_collab_unavailable(crate::shell::i18n::t_args(
-                "collab-unavailable-services-root",
-                &[("error", e.to_string().into())],
-            ));
-        return None;
+        return Err(BrokerStartFailure::ServicesRoot(e.to_string()));
     }
 
     let capnp_path = launcher::services::collab_socket();
@@ -168,17 +195,12 @@ pub(crate) fn spawn_session_collab_broker(
              collaboration.",
             capnp_path.display()
         );
-        chrome
-            .borrow_mut()
-            .set_collab_unavailable(crate::shell::i18n::t("collab-unavailable-socket-taken"));
-        return None;
+        return Err(BrokerStartFailure::SocketTaken);
     }
 
-    let peer_sync_owned = peer_sync.cloned();
-    let membership = chrome.borrow().tree_handle();
     match crate::shell::collab_broker::spawn_native(
         capnp_path.clone(),
-        &peer_sync_owned,
+        &peer_sync.cloned(),
         membership,
     ) {
         Ok(handle) => {
@@ -187,25 +209,68 @@ pub(crate) fn spawn_session_collab_broker(
                 capnp_path.display(),
                 peer_sync.is_some()
             );
-            crate::shell::channel_encryption::ChannelKeyProvider::session()
-                .set(handle.channel_encryption());
-            chrome.borrow_mut().clear_collab_unavailable();
-            Some(handle)
+            Ok(handle)
         }
         Err(e) => {
             tracing::error!(
                 "collab: bind {} failed ({e}); apps will start without collaboration",
                 capnp_path.display()
             );
-            chrome
-                .borrow_mut()
-                .set_collab_unavailable(crate::shell::i18n::t_args(
-                    "collab-unavailable-broker",
-                    &[("error", e.to_string().into())],
-                ));
-            None
+            Err(BrokerStartFailure::Broker(e.to_string()))
         }
     }
+}
+
+/// Install a finished [`start_session_collab_broker`] on the loop: the
+/// session's channel keys follow the broker's encryption service, and the
+/// chrome says whether collaboration is available. `None` means a degraded
+/// session, not a normal one — every app manifest declares `collab`, so
+/// nothing collaborates until this succeeds; surfaced via
+/// `chrome_state::set_collab_unavailable`. `outcome` is an error when the
+/// start ended without one (its job panicked).
+pub(crate) fn finish_session_collab_broker(
+    chrome: &crate::shell::chrome_state::Chrome,
+    outcome: Result<BrokerStart, String>,
+) -> Option<crate::shell::collab_broker::BrokerHandle> {
+    let failure = match outcome {
+        Ok(Ok(handle)) => {
+            crate::shell::channel_encryption::ChannelKeyProvider::session()
+                .set(handle.channel_encryption());
+            chrome.borrow_mut().clear_collab_unavailable();
+            return Some(handle);
+        }
+        Ok(Err(failure)) => failure,
+        Err(ended) => {
+            tracing::error!(%ended, "collab: the broker's start ended without an outcome; apps will start without collaboration");
+            BrokerStartFailure::Broker(ended)
+        }
+    };
+    let notice = match failure {
+        BrokerStartFailure::ServicesRoot(error) => crate::shell::i18n::t_args(
+            "collab-unavailable-services-root",
+            &[("error", error.into())],
+        ),
+        BrokerStartFailure::SocketTaken => crate::shell::i18n::t("collab-unavailable-socket-taken"),
+        BrokerStartFailure::Broker(error) => {
+            crate::shell::i18n::t_args("collab-unavailable-broker", &[("error", error.into())])
+        }
+    };
+    chrome.borrow_mut().set_collab_unavailable(notice);
+    None
+}
+
+/// Bind and install the session's broker on this thread, for tests that
+/// need it before they go on.
+#[cfg(test)]
+pub(crate) fn spawn_session_collab_broker(
+    chrome: &crate::shell::chrome_state::Chrome,
+    peer_sync: Option<&std::sync::Arc<crate::shell::network::ShellNetwork>>,
+) -> Option<crate::shell::collab_broker::BrokerHandle> {
+    let membership = chrome.borrow().tree_handle();
+    finish_session_collab_broker(
+        chrome,
+        Ok(bind_session_collab_broker(peer_sync, membership)),
+    )
 }
 
 #[cfg(test)]
