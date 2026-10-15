@@ -131,7 +131,10 @@ pub(crate) fn cells_from_rows(
 ///
 /// # Errors
 ///
-/// `value` is not a string, number, boolean or null.
+/// `value` is not a string, number, boolean or null, or is a formula that
+/// does not parse: refused here, before any action is built, so a caller
+/// learns which cell to fix rather than finding `#ERROR!` in it later and
+/// no part of the edit is written.
 pub(crate) fn cell_write(
     (col, row): (u32, u32),
     value: &serde_json::Value,
@@ -139,6 +142,12 @@ pub(crate) fn cell_write(
     let Some(raw) = raw_of(value)? else {
         return Ok(None);
     };
+    crate::formula::check_formula(&raw).map_err(|error| {
+        format!(
+            "cell {}: the formula `{raw}` does not parse: {error}",
+            addr_to_a1(col, row)
+        )
+    })?;
     let date = value.as_str().and_then(crate::infer::iso_date_entry);
     let (raw, fmt) = match date {
         Some(date) => (date.raw, Some(date.format.as_str())),

@@ -27,6 +27,9 @@ use crate::model::{Addr, CellFormat, GridEdit};
 use crate::settings::DocSettings;
 use tilo_locale::{Currency, DateStyle, TimeStyle};
 
+/// The name of the blank sheet a new workbook starts with.
+pub const FIRST_SHEET_NAME: &str = "Sheet1";
+
 /// One sheet's snapshot pulled out of the CRDT for rendering.
 #[derive(Clone, Debug, Default)]
 pub struct SheetSnapshot {
@@ -352,6 +355,25 @@ impl SheetsDoc {
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
         Self::seed_annotation_roots(doc, &sheet);
         idx
+    }
+
+    /// Whether sheet `idx` was renamed since it was made. A sheet is made
+    /// with its name before its `cells` map, and a later write of the name
+    /// has seen that map, so its op counter is past the map's; a sheet
+    /// without both is treated as renamed, so it is never taken for a new
+    /// workbook's untouched one.
+    pub fn sheet_renamed(doc: &AutoCommit, idx: usize) -> bool {
+        let Some(sheet) = Self::sheet_map(doc, idx) else {
+            return true;
+        };
+        let counter = |key: &str| match doc.get(&sheet, key) {
+            Ok(Some((_, ObjId::Id(counter, _, _)))) => Some(counter),
+            _ => None,
+        };
+        match (counter("name"), counter("cells")) {
+            (Some(name), Some(cells)) => name > cells,
+            _ => true,
+        }
     }
 
     /// Rename sheet `idx`.

@@ -721,3 +721,108 @@ fn computed_values_read_to_fifteen_significant_digits() {
     assert_eq!(rows[1][3], json!(0.75));
     assert_eq!(rows[2][3], json!(0.738_095_238_095_238));
 }
+
+/// The refusal `action` answers `args` with; panics when it is accepted.
+fn refusal(doc: &AutoCommit, action: &str, args: &serde_json::Value) -> String {
+    let encoded = build(doc, action, args);
+    assert_eq!(
+        encoded.type_id,
+        tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
+        "{action} accepted {args}"
+    );
+    String::from_utf8_lossy(&encoded.payload).into_owned()
+}
+
+/// A formula that does not parse is refused naming its cell and what is
+/// wrong, before anything is written: not stored to show `#ERROR!`, and the
+/// valid cells beside it are not written either.
+#[test]
+fn set_cells_refuses_a_formula_that_does_not_parse() {
+    let doc = workbook(&[&["Item", "Price"], &["x", "4"]]);
+    let error = refusal(
+        &doc,
+        "set-cells",
+        &json!({"start": "A4", "rows": [[
+            "Total",
+            "=INDEX(A1:A5, MATCH(\"x\", B1:B5, 0)",
+        ]]}),
+    );
+    assert!(error.contains("cell B4"), "{error}");
+    assert!(error.contains("`INDEX(` is never closed"), "{error}");
+    assert_eq!(raws(&doc), [["Item", "Price"], ["x", "4"]]);
+}
+
+/// A lone `=` is a formula with nothing in it, which the cell would show as
+/// `#ERROR!`, so it is refused like any formula that does not parse.
+#[test]
+fn set_cells_refuses_a_lone_equals_sign() {
+    let doc = workbook(&[&["x"]]);
+    let error = refusal(&doc, "set-cells", &json!({"start": "C2", "rows": [["="]]}));
+    assert!(
+        error.contains("cell C2") && error.contains("nothing follows the `=`"),
+        "{error}"
+    );
+}
+
+/// Only input that starts with `=` is a formula: text that merely starts
+/// with something odd is written as it is, and formulas that parse are
+/// written even when what they compute is an error.
+#[test]
+fn set_cells_writes_valid_formulas_and_text_that_only_looks_odd() {
+    let mut doc = workbook(&[&["1", "2"]]);
+    invoke(
+        &mut doc,
+        "set-cells",
+        &json!({"start": "A2", "rows": [
+            [" =1+", "+1", "#N/A", "'=x", "50%", "(1"],
+            ["=SUM(A1:B1)", "=A1/0", "=NOSUCH(1)", "='Q3 data'!A1", "=-A1%", "=\"a\"&\"b\""],
+        ]}),
+    );
+    assert_eq!(
+        raws(&doc)[1..],
+        [
+            [" =1+", "+1", "#N/A", "'=x", "50%", "(1"],
+            [
+                "=SUM(A1:B1)",
+                "=A1/0",
+                "=NOSUCH(1)",
+                "='Q3 data'!A1",
+                "=-A1%",
+                "=\"a\"&\"b\""
+            ],
+        ]
+    );
+}
+
+/// An import replaces only a new workbook's untouched blank sheet: one
+/// renamed, even back to its default name, is kept beside the import.
+#[test]
+fn an_import_keeps_a_renamed_blank_sheet() {
+    let import = |doc: &mut AutoCommit| {
+        let mut action = crate::actions::import_sheets_action(vec![(
+            "sales".to_string(),
+            vec![CellWrite {
+                col: 0,
+                row: 0,
+                raw: "Region".into(),
+                fmt: None,
+            }],
+        )]);
+        if let SheetsAction::ImportSheets { replace_blank, .. } = &mut action {
+            *replace_blank = true;
+        }
+        tilo_actions::apply_local(doc, &action, encode(&action)).unwrap();
+    };
+    let mut renamed = AutoCommit::new();
+    SheetsDoc::add_sheet(&mut renamed, "Sheet1");
+    SheetsDoc::rename_sheet(&mut renamed, 0, "Costs");
+    import(&mut renamed);
+    assert_eq!(SheetsDoc::sheet_names(&renamed), ["Costs", "sales"]);
+
+    let mut back = AutoCommit::new();
+    SheetsDoc::add_sheet(&mut back, "Sheet1");
+    SheetsDoc::rename_sheet(&mut back, 0, "Costs");
+    SheetsDoc::rename_sheet(&mut back, 0, "Sheet1");
+    import(&mut back);
+    assert_eq!(SheetsDoc::sheet_names(&back), ["Sheet1", "sales"]);
+}
