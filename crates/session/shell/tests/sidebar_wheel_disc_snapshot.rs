@@ -27,8 +27,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-use crate::support::offscreen::OffscreenRenderer;
 use crate::support::snapshot::{SnapshotAssertion, pinned_golden_path};
+use ui::offscreen::OffscreenRenderer;
 
 fn goldens_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -91,13 +91,6 @@ fn screenshots_dir() -> PathBuf {
         PathBuf::from,
     );
     root.join("tilo-screenshots")
-}
-
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
 }
 
 /// Paint the three-workspace disc under `theme`, mounted as the live shell
@@ -183,7 +176,7 @@ fn sidebar_wheel_disc_snapshots_render_spokes_and_a_bounded_summoned_band() {
     {
         let mut renderer = require_capability!(
             Gpu,
-            try_new_renderer(CANVAS_W, CANVAS_H),
+            OffscreenRenderer::try_new(CANVAS_W, CANVAS_H).ok(),
             "no wgpu adapter available for offscreen render"
         );
         let mut tr = TextRenderer::new();
@@ -216,7 +209,7 @@ fn sidebar_wheel_disc_snapshots_render_spokes_and_a_bounded_summoned_band() {
     {
         let mut renderer = require_capability!(
             Gpu,
-            try_new_renderer(CANVAS_W, CANVAS_H),
+            OffscreenRenderer::try_new(CANVAS_W, CANVAS_H).ok(),
             "no wgpu adapter available for offscreen render"
         );
         let mut tr = TextRenderer::new();

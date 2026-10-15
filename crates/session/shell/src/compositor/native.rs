@@ -18277,7 +18277,7 @@ mod tests {
                 &mut ctx,
             );
             // If the renderer wasn't available the executor logged + returned with no
-            // file — treat as a soft skip, mirrors `sidebar_wheel_disc_snapshot.rs::try_new_renderer`.
+            // file — treat as a soft skip, as the snapshot tests do when `OffscreenRenderer::try_new` fails.
             if !path.exists() {
                 eprintln!(
                     "execute_snapshot_writes_a_png_at_path: no wgpu adapter, \

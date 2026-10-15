@@ -21,8 +21,8 @@
     reason = "in a test these are the assertion, not a hazard; pixel probes round f64 rects to u32"
 )]
 
-use crate::support::offscreen::OffscreenRenderer;
 use std::path::PathBuf;
+use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
@@ -32,13 +32,6 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::file_picker::{FileFilter, FilePicker, FilePickerMode};
-
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
-}
 
 fn temp_dir() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -135,7 +128,7 @@ fn dump(name: &str, rgba: &[u8], w: u32, h: u32) {
 #[test]
 fn file_picker_open_and_save_render() {
     let (w, h) = (900u32, 620u32);
-    let Some(mut renderer) = try_new_renderer(w, h) else {
+    let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
         eprintln!("no wgpu adapter — skipping file_picker_open_and_save_render");
         return;
     };
