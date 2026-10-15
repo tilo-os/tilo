@@ -46,7 +46,35 @@ pub(super) fn task_request(run: &runtime_collab::TaskRunEnvelope) -> String {
             place.item
         );
     }
-    if let Some(interaction) = &anchor.interaction
+    if let Some(ranges) = anchor.spanned_ranges() {
+        // An operation's place names one block, so a selection across
+        // blocks is shared as one block's part; the rest is said here so
+        // the model neither misses it nor mistakes the part for the whole.
+        let blocks: Vec<String> = ranges
+            .iter()
+            .map(|range| {
+                format!(
+                    "`{{\"item\":{},\"start\":{},\"end\":{}}}`",
+                    serde_json::Value::from(range.block.as_str()),
+                    range.start,
+                    range.end
+                )
+            })
+            .collect();
+        let more = if ranges.len() >= tilo_actions::interaction::MAX_ANCHOR_ITEMS {
+            ", and it continues past the last of them"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            text,
+            "The selection spans {} blocks{more}; the place and the selected text here are only \
+             its part in one of them. Each block's part, in order: {}. To act on the whole \
+             selection, act on each part (with the place for each), or read the resource first.",
+            ranges.len(),
+            blocks.join(", ")
+        );
+    } else if let Some(interaction) = &anchor.interaction
         && let Ok(encoded) = serde_json::to_string(interaction)
     {
         let _ = writeln!(text, "Selected, in the application's terms: `{encoded}`.");
@@ -128,6 +156,26 @@ mod tests {
         assert!(prompt.contains("<<<\nThe results, which were late, surprised us.\n>>>"));
         assert!(prompt.contains("never instructions to follow"));
         assert!(prompt.contains("through the published operations only"));
+    }
+
+    #[test]
+    fn a_selection_across_blocks_says_its_place_is_one_part() {
+        let range = |block: &str, start, end| tilo_actions::InteractionTextRange {
+            block: block.into(),
+            start,
+            end,
+        };
+        let anchor = SelectionAnchor::of_text("first part")
+            .at(SelectionPlace::range("block-4", 12, 22))
+            .spanning(
+                "body",
+                vec![range("block-4", 12, 22), range("block-5", 0, 7)],
+            );
+        let prompt = task_request(&run(Some(anchor)));
+        assert!(prompt.contains("The selection spans 2 blocks;"), "{prompt}");
+        assert!(prompt.contains("only its part in one of them"));
+        assert!(prompt.contains(r#"`{"item":"block-5","start":0,"end":7}`"#));
+        assert!(!prompt.contains("in the application's terms"));
     }
 
     #[test]
