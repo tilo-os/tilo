@@ -198,7 +198,7 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
                 replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: vec![],
                 shell_authority: Some(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(
+                    tilo_relay_protocol::retention::RetentionAuthority::new(
                         &room.to_string(),
                         governor.clone(),
                     )

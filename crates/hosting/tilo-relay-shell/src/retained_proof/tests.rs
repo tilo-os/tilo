@@ -1,9 +1,10 @@
 use super::*;
-use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, peer_handle, seed_room};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use collab_types::{DocumentMutation, SignedOp};
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, peer_handle, seed_room};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
@@ -284,7 +285,7 @@ fn room_document(msg: &NeighbourMsg) -> AutoCommit {
     let NeighbourMsg::SyncResp { changes, .. } = msg else {
         panic!()
     };
-    crate::room::candidate(None, changes).unwrap()
+    tilo_peer_state::room::candidate(None, changes).unwrap()
 }
 fn room_message(doc: &mut AutoCommit) -> NeighbourMsg {
     NeighbourMsg::SyncResp {
@@ -486,11 +487,11 @@ fn exact_coverage_receipt_hash_heads_watermarks_required() {
     let (app_channel, app_body) = encoded(&batch[1]);
     for case in 0..9 {
         let mut doc = room_document(&batch[0]);
-        let mut coverage = crate::coverage::entries(&doc)
+        let mut coverage = tilo_peer_state::coverage::entries(&doc)
             .unwrap()
-            .remove(&crate::coverage::route_key(APP, "one"))
+            .remove(&tilo_peer_state::coverage::route_key(APP, "one"))
             .unwrap();
-        let mut receipts = crate::durability::entries(&doc).unwrap();
+        let mut receipts = tilo_peer_state::durability::entries(&doc).unwrap();
         match case {
             0 => {
                 receipts.clear();
@@ -516,21 +517,21 @@ fn exact_coverage_receipt_hash_heads_watermarks_required() {
             _ => {}
         }
         if (1..=5).contains(&case) {
-            crate::coverage::put(&mut doc, coverage.clone()).unwrap();
+            tilo_peer_state::coverage::put(&mut doc, coverage.clone()).unwrap();
             receipts.insert(
-                crate::coverage::route_key(APP, "one"),
+                tilo_peer_state::coverage::route_key(APP, "one"),
                 DurableReceipt::new(coverage, 1).unwrap(),
             );
         }
-        crate::durability::put(&mut doc, receipts).unwrap();
+        tilo_peer_state::durability::put(&mut doc, receipts).unwrap();
         if case >= 7 {
             // A trailing byte on one stored route value.
             let field = if case == 7 {
-                crate::coverage::FIELD_V2
+                tilo_peer_state::coverage::FIELD_V2
             } else {
-                crate::durability::FIELD_V2
+                tilo_peer_state::durability::FIELD_V2
             };
-            let route = crate::coverage::route_key(APP, "one");
+            let route = tilo_peer_state::coverage::route_key(APP, "one");
             let (_, routes) = automerge::ReadDoc::get(&doc, ROOT, field).unwrap().unwrap();
             let Some((automerge::Value::Scalar(value), _)) =
                 automerge::ReadDoc::get(&doc, &routes, route.as_str()).unwrap()

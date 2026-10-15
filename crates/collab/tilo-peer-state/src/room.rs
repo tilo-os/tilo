@@ -94,6 +94,30 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
     governance
 }
 
+/// The certificate and revocations one [`RoomGovernance::identities`] row
+/// carries, for a reader outside admission that judges the identity history
+/// (a relay's historical retention proof) without the rest of the row.
+#[derive(Clone, Debug)]
+pub struct IdentityRow {
+    /// The governed device certificate.
+    pub device_cert: tilo_user_identity::DeviceCert,
+    /// The revocations the row publishes.
+    pub revocations: Vec<tilo_user_identity::RevocationEntry>,
+}
+
+/// Decode one [`RoomGovernance::identities`] row exactly as admission does.
+///
+/// # Errors
+///
+/// Returns the decode error if the bytes are not a governed identity row.
+pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
+    let identity: crate::state::GovernedIdentity = serde_json::from_slice(bytes)?;
+    Ok(IdentityRow {
+        device_cert: identity.device_cert,
+        revocations: identity.revocations,
+    })
+}
+
 pub(crate) fn invitation_receipts(
     doc: &AutoCommit,
 ) -> Result<BTreeMap<String, Vec<Vec<u8>>>, String> {

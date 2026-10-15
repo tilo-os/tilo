@@ -7,6 +7,10 @@
 //! `tilo_relay_store::shell` seam: [`binding::NeighbourReplay`] binds a
 //! [`RetentionAuthority`] to a store, and the store steps the [`Selection`],
 //! [`SelectedRead`] and [`tail_cache::FastTail`] that binding hands out.
+use crate::retained_proof::{
+    CoverageDecision, FloorSafety, OrderedTailReadiness, ProofError, RetentionAuthority, RoomInput,
+    VerifiedRoom, VerifiedSnapshot, verify_room, verify_snapshot,
+};
 use neighbour_wire::NeighbourMsg;
 use std::{
     collections::BTreeMap,
@@ -15,13 +19,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use tilo_peer_state::{
-    coverage::{Coverage, route_key},
-    retained_proof::{
-        CoverageDecision, FloorSafety, OrderedTailReadiness, ProofError, RetentionAuthority,
-        RoomInput, VerifiedRoom, VerifiedSnapshot, verify_room, verify_snapshot,
-    },
-};
+use tilo_peer_state::coverage::{Coverage, route_key};
 use tilo_relay_client::coedit::CoeditPayload;
 use tilo_relay_store::{
     StoreError,

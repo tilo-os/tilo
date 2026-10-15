@@ -44,8 +44,6 @@ pub mod workspace_checkpoint;
 pub mod workspace_membership;
 pub mod workspace_task;
 
-pub mod retained_proof;
-
 mod admission;
 pub mod resources;
 pub use admission::{
