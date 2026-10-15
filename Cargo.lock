@@ -15989,6 +15989,7 @@ dependencies = [
  "tilo-sandbox",
  "tilo-sandbox-core",
  "tilo-test-env",
+ "tilo-thumbnail",
  "tilo-user-identity",
  "tokio",
  "tokio-rustls",

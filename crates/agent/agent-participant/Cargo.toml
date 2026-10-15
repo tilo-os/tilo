@@ -135,6 +135,14 @@ base64.workspace = true
 # The campaign benchmark's opt-in trace (`TILO_BENCH_TRACE`).
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
+# Decodes the stills the render service draws (`tests/render_video.rs`).
+tilo-thumbnail = { path = "../../media/thumbnail" }
+
+[features]
+# The end-to-end render test, which needs the media stack, a GPU and the
+# `tilo-video-render` helper built beside the test binary.
+render-tests = []
+
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.
 ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "neighbour-wire", "postcard", "rustls", "sha2", "tilo-test-env", "tokio-rustls"]

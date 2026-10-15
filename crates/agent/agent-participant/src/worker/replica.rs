@@ -271,9 +271,12 @@ impl ConfinedReplica {
     /// the agent may run in it too: those that only read the record and
     /// reach no device's files, without a `path` to write to. What they make
     /// is kept as content, and their output names it.
+    ///
+    /// Renders the host answers in its render service
+    /// ([`crate::render`]) are among them only where the host has one.
     #[must_use]
     pub fn survey_with_effects(&self) -> Vec<ActionDescriptor> {
-        self.survey_of(true)
+        crate::render::offered(self.survey_of(true))
     }
 
     fn survey_of(&self, effects: bool) -> Vec<ActionDescriptor> {

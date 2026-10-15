@@ -44,6 +44,7 @@ pub mod model;
 pub mod participant;
 pub mod planner;
 pub mod profile;
+pub mod render;
 pub mod room_actions;
 pub mod search;
 mod web_apps;

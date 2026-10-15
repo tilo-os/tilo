@@ -2617,15 +2617,24 @@ impl AgentParticipant {
                 descriptor.action_label, descriptor.resource_label
             )
         });
-        let output = match app.invoke(address, arguments, confirmed) {
-            Err(tilo_actions::DoorError::Unknown(_)) => {
-                // Say what the record does offer, so the next plan names it.
-                return Err(Refusal::Agent(unknown_action(
-                    address,
-                    &app.survey_with_effects(),
-                )));
+        // A render is made by the host's render service from the record as
+        // the host holds it, not in the record's worker, which has no GPU or
+        // media stack to make it with.
+        let output = if descriptor.as_ref().is_some_and(crate::render::answers) {
+            crate::render::RenderService::shared()
+                .invoke(app, &self.content, address, arguments)
+                .map_err(Refusal::Door)?
+        } else {
+            match app.invoke(address, arguments, confirmed) {
+                Err(tilo_actions::DoorError::Unknown(_)) => {
+                    // Say what the record does offer, so the next plan names it.
+                    return Err(Refusal::Agent(unknown_action(
+                        address,
+                        &app.survey_with_effects(),
+                    )));
+                }
+                outcome => outcome.map_err(Refusal::Door)?,
             }
-            outcome => outcome.map_err(Refusal::Door)?,
         };
         if let Some(mutation) = app
             .take_mutation()
