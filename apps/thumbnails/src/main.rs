@@ -4,6 +4,9 @@
 
 use std::process::ExitCode;
 
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 fn main() -> ExitCode {
     match thumbnail::batch::run_from_args(std::env::args().skip(1)) {
         Ok(()) => ExitCode::SUCCESS,

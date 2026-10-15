@@ -54,6 +54,26 @@ class AppTextContractTests(unittest.TestCase):
             self.assertEqual(len(violations), 1)
             self.assertIn("font family literal", violations[0].reason)
 
+    def test_only_a_windowless_package_may_go_without_ui(self):
+        compute = (
+            '[package]\nid="so.tilo.sample"\nkind="service"\n'
+            '[entrypoint]\nbin="bin/sample-batch"\ntype="cli"\n'
+            '[cli]\ncommands=["sample-batch"]\n'
+        )
+        cargo = '[package]\nname="sample"\nversion="0.1.0"\n[dependencies]\n'
+        with self.subTest(phase='a compute package needs no ui'):
+            root = self.fixture(cargo, "fn main() {}\n")
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(compute, encoding="utf-8")
+            violations, _, _ = contract.audit(root)
+            self.assertEqual(violations, [])
+        with self.subTest(phase='a windowed app without ui fails'):
+            root = self.fixture(cargo, "fn main() {}\n")
+            (root / "apps" / "sample" / "tilo-app.toml").write_text(
+                compute.replace('type="cli"', 'type="gui"'), encoding="utf-8"
+            )
+            violations, _, _ = contract.audit(root)
+            self.assertIn("shared `ui` crate", "\n".join(item.reason for item in violations))
+
 
 if __name__ == "__main__":
     unittest.main()

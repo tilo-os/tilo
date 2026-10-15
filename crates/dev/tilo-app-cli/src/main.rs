@@ -2588,6 +2588,19 @@ fn certify_surface(app: &Path, executable: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether `app_dir` holds a compute package: a windowless `service` whose
+/// `cli` entrypoint publishes `[cli]` commands for a compute worker to run.
+fn is_compute_package(app_dir: &Path) -> bool {
+    std::fs::read_to_string(app_dir.join("tilo-app.toml"))
+        .ok()
+        .and_then(|text| tilo_app_package::view::ManifestView::from_toml_str(&text).ok())
+        .is_some_and(|manifest| {
+            manifest.kind == tilo_app_package::view::KIND_SERVICE
+                && manifest.entrypoint.cli_bin().is_some()
+                && !manifest.cli_commands.is_empty()
+        })
+}
+
 fn certify_one(path: &Path) -> Result<()> {
     tilo_app_cli::plan_app_task(
         path,
@@ -2629,6 +2642,9 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             dir.file_name()
                 .is_none_or(|name| !name.to_string_lossy().ends_with("-model"))
         })
+        // A compute package has no UI to audit: a worker runs its `[cli]`
+        // command for another app's action, which that app certifies.
+        .filter(|dir| !is_compute_package(dir))
         .collect::<Vec<_>>();
     app_dirs.sort();
     let mut packages = Vec::with_capacity(app_dirs.len());
@@ -3043,6 +3059,16 @@ fn list_examples(human: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_certification_skips_only_compute_packages() {
+        let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+        assert!(is_compute_package(&apps.join("thumbnails")));
+        // The agent is a cli service with no `[cli]` commands, skipped by
+        // name; a window is always certified.
+        assert!(!is_compute_package(&apps.join("agent")));
+        assert!(!is_compute_package(&apps.join("calculator")));
+    }
 
     #[test]
     fn bundle_macos_requires_explicit_existing_inputs_and_output() {
