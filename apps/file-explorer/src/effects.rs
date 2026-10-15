@@ -43,6 +43,16 @@ pub enum FilesEffect {
     /// request is about the selection.
     #[effect(view, kind = "read", returns, idempotent)]
     SelectedEntries,
+    /// Hand over a file.
+    ///
+    /// Gives a file's bytes to the next step, by their content address: an
+    /// attachment to a message, a picture to place, a file to post. Reads
+    /// the file and changes nothing.
+    #[effect(content, kind = "read", idempotent)]
+    HandOver {
+        #[param("The file: an absolute path, a name in the folder shown, or its entry row id")]
+        file: String,
+    },
     /// Read a file's text.
     ///
     /// Answers with what a file says: each page's text for a PDF, the text

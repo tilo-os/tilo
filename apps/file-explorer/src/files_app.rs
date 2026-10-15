@@ -1818,6 +1818,10 @@ impl FileExplorerWidget {
             }
             FilesEffect::SelectedEntries => Some(self.selected_entries_answer()),
             FilesEffect::ReadText { file, from } => Some(self.read_text_answer(&file, from)?),
+            FilesEffect::HandOver { file } => {
+                let hash = self.hand_over(&file)?;
+                Some(serde_json::json!({ "content": tilo_actions::content_resource(&hash) }))
+            }
             FilesEffect::ClearSelection => {
                 self.selection.clear();
                 self.retain_shown_selection();

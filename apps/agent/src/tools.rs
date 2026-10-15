@@ -308,7 +308,7 @@ fn gather_flat_place(offer: &Offer, arguments: &mut serde_json::Map<String, Valu
 /// One operation's parameters as a compact signature and how to pass them,
 /// for an invoke that was refused for its arguments.
 pub fn parameter_hint(offer: &Offer) -> String {
-    if offer.wants_content() {
+    if takes_only_content(offer) {
         return "It takes what an earlier step produced, not words.".into();
     }
     if offer.descriptor.params.is_empty() {
@@ -343,14 +343,29 @@ pub fn parameter_hint(offer: &Offer) -> String {
         .descriptor
         .params
         .iter()
-        .filter(|p| p.required)
+        .filter(|p| p.required && !p.is_content())
         .map(|p| format!("\"{}\": …", p.name))
         .collect::<Vec<_>>()
         .join(", ");
+    let carried = offer.content_param().map_or_else(String::new, |param| {
+        format!(" `{param}` is filled in from what the step before it produced.")
+    });
     format!(
-        "{} takes: {params}. Pass them inside `parameters`, e.g. \"parameters\": {{{example}}}.",
+        "{} takes: {params}. Pass them inside `parameters`, e.g. \"parameters\": {{{example}}}.{carried}",
         offer.descriptor.action_label
     )
+}
+
+/// Whether `offer`'s one input is content an earlier step produced, so it
+/// takes no words at all.
+fn takes_only_content(offer: &Offer) -> bool {
+    offer.descriptor.input.wants_content()
+        || (offer.wants_content()
+            && offer
+                .descriptor
+                .params
+                .iter()
+                .all(tilo_actions::ActionParam::is_content))
 }
 
 /// What a model answers [`PLAN`] with, before it has been checked against a
@@ -825,7 +840,7 @@ pub const MOST_SUMMARISED: usize = 60;
 /// An operation's parameters as a compact signature (`{text: text, n?:
 /// integer [a|b]}`), or what it takes instead; empty for none.
 pub fn parameter_signature(offer: &Offer) -> String {
-    if offer.wants_content() {
+    if takes_only_content(offer) {
         return "{takes what the previous step produced}".into();
     }
     if offer.descriptor.params.is_empty() {
@@ -836,6 +851,9 @@ pub fn parameter_signature(offer: &Offer) -> String {
         .params
         .iter()
         .map(|param| {
+            if param.is_content() {
+                return format!("{}: what the previous step produced", param.name);
+            }
             let mut p = format!(
                 "{}: {}{}",
                 param.name,
@@ -1406,26 +1424,7 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
             s.push('\n');
         }
     }
-    if d.params.is_empty() {
-        s.push_str("  arguments: none. Pass {}.\n");
-    } else if offer.wants_content() {
-        s.push_str(
-            "  arguments: produced content, not words. It must be bound from the prior step.\n",
-        );
-    } else {
-        let example = d
-            .params
-            .iter()
-            .filter(|p| p.required)
-            .map(|p| format!("\"{}\": …", p.name))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let _ = writeln!(
-            s,
-            "  Pass one JSON object containing exactly the parameters above: \
-             {{\"operation\": \"{id}\", \"parameters\": {{{example}}}}}"
-        );
-    }
+    describe_arguments(&mut s, offer, &id);
     // What the resource says about itself. An application with a fact and no
     // operation to hang it on publishes a child resource that exports
     // nothing, and a flat survey walks straight past it.
@@ -1435,6 +1434,39 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
         }
     }
     s
+}
+
+/// How to pass `offer`'s arguments, for [`describe`].
+fn describe_arguments(s: &mut String, offer: &Offer, id: &str) {
+    let d = &offer.descriptor;
+    if d.params.is_empty() {
+        s.push_str("  arguments: none. Pass {}.\n");
+    } else if takes_only_content(offer) {
+        s.push_str(
+            "  arguments: produced content, not words. It must be bound from the prior step.\n",
+        );
+    } else {
+        if let Some(param) = offer.content_param() {
+            let _ = writeln!(
+                s,
+                "  `{param}` is content, not words: invoke this right after the step that \
+                 produced it (a file handed over, a picture made), and it is filled in from \
+                 that step."
+            );
+        }
+        let example = d
+            .params
+            .iter()
+            .filter(|p| p.required && !p.is_content())
+            .map(|p| format!("\"{}\": …", p.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            s,
+            "  Pass one JSON object containing exactly the parameters above: \
+             {{\"operation\": \"{id}\", \"parameters\": {{{example}}}}}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2484,5 +2516,37 @@ mod tests {
                 check(&tool["input_schema"], tool["name"].as_str().unwrap());
             }
         }
+    }
+
+    /// An operation taking content beside words lists its other parameters
+    /// and says the content one is carried in from the step before it.
+    #[test]
+    fn content_beside_words_shows_the_words_and_carries_the_content() {
+        let mut attach = offer(
+            "mail",
+            "mail.mailbox",
+            "mail.mailbox",
+            "attach",
+            "Attach to draft",
+            InputSpec::None,
+        );
+        attach.descriptor.params = vec![
+            tilo_actions::ActionParam::required("content", tilo_actions::ParamType::Text, "file")
+                .as_content(),
+            tilo_actions::ActionParam::required("name", tilo_actions::ParamType::Text, "name"),
+        ];
+        assert_eq!(
+            parameter_signature(&attach),
+            "{content: what the previous step produced, name: text}"
+        );
+        let hint = parameter_hint(&attach);
+        assert!(hint.contains("\"name\": …"), "{hint}");
+        assert!(!hint.contains("\"content\": …"), "{hint}");
+        assert!(hint.contains("`content` is filled in"), "{hint}");
+        let place = &room().offers[1];
+        assert_eq!(
+            parameter_signature(place),
+            "{takes what the previous step produced}"
+        );
     }
 }

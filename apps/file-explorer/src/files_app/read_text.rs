@@ -49,6 +49,18 @@ impl FileExplorerWidget {
         Ok(page(&path, &read, from.unwrap_or(0)))
     }
 
+    /// The bytes of `file`, kept in this window's content store; their
+    /// content hash.
+    pub(crate) fn hand_over(&self, file: &str) -> Result<String, String> {
+        let path = self.named_file(file)?;
+        let bytes = crate::documents::read_file(&path)?;
+        let store = ui::tilo_resource::content::current()
+            .ok_or("this window has no content store to hand the file over through")?;
+        store
+            .put(&bytes)
+            .map_err(|error| format!("{} could not be handed over: {error}", path.display()))
+    }
+
     /// The selected entries, with their paths, changing nothing.
     pub(super) fn selected_entries_answer(&self) -> serde_json::Value {
         let mut answer = self.selection_answer();
