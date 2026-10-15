@@ -19,7 +19,9 @@ use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
+use crate::widget::chart_navigation::{
+    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
+};
 
 #[derive(Clone, Debug)]
 pub struct TreemapStyle {
@@ -277,16 +279,7 @@ impl Widget for Treemap {
         _presence: &PresenceCtx,
     ) {
         self.follow_keyboard_anchor();
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 10.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         for tile in self.layout() {
             let Some(item) = self.items.get(tile.index) else {
                 continue;

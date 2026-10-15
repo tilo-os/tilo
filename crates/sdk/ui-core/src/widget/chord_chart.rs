@@ -23,7 +23,7 @@ use crate::widget::Widget;
 use crate::widget::chart_data::{ChartLink, ChartNode};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartInspection, InteractiveChart, chart_leaf, handle_chart_event,
+    ChartInspection, InteractiveChart, chart_leaf, draw_title, handle_chart_event,
 };
 
 fn polar(center: Point, radius: f64, angle: f64) -> Point {
@@ -362,16 +362,7 @@ impl Widget for ChordChart {
         _presence: &PresenceCtx,
     ) {
         self.measure_label_room(tr, theme);
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 7.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         let (center, inner, outer) = self.geometry();
         let index = self
             .nodes

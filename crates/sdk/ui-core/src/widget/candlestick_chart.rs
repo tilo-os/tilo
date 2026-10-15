@@ -18,7 +18,9 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
-use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
+use crate::widget::chart_navigation::{
+    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
+};
 
 #[derive(Clone, Debug)]
 pub struct Candle {
@@ -392,16 +394,7 @@ impl Widget for CandlestickChart {
         let price = self.price_rect();
         let (min, max) = self.price_range();
         self.follow_keyboard_anchor();
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         for value in crate::charts::nice_ticks(min, max, 5) {
             let fraction = if max > min {
                 (max - value) / (max - min)

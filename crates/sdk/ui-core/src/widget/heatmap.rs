@@ -17,7 +17,9 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
-use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
+use crate::widget::chart_navigation::{
+    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
+};
 
 #[derive(Clone, Debug)]
 pub struct HeatmapCell {
@@ -262,16 +264,7 @@ impl Widget for Heatmap {
             .missing_color
             .unwrap_or(theme.tokens.colors.border_standard);
         let (min, max) = self.range();
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         if self.style.show_axis_labels {
             let grid = self.grid_rect();
             let column_width = grid.width()

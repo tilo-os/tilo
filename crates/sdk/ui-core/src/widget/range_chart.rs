@@ -20,7 +20,9 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
+use crate::widget::chart_navigation::{
+    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
+};
 use crate::widget::{TaffyTreeExt, Widget};
 
 /// One interval. Equal start/end values render as milestones.
@@ -265,16 +267,7 @@ impl Widget for RangeChart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if !self.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.title,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 10.0, self.rect.y0 + 8.0)),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         let plot = self.plot();
         let domain = self.domain();
         let span = domain.1 - domain.0;
