@@ -1,5 +1,5 @@
 //! A GeoGebra-class 2D math input field, built locally for the calculator's
-//! Graph 2D / Graph 3D function editors.
+//! Calculator display and Graph 2D / Graph 3D function editors.
 //!
 //! The formula is a tree of math atoms ([`model`]), the caret is an insertion
 //! point in that tree ([`edit`]), it lays out as stacked 2D notation
@@ -42,8 +42,9 @@ pub fn formula_size(theme: &Theme, tr: &TextRenderer) -> f32 {
     }
 }
 
-/// A controller wrapping one editable formula. The graph screens own one of
-/// these per function row and feed it the linear string from the model.
+/// A controller wrapping one editable formula. Calculator mode and the graph
+/// screens feed it the linear string from the model; the history tape uses
+/// the same layout without a caret.
 pub struct MathField {
     editor: Editor,
     /// Source linear string the editor was last built from; used to detect
