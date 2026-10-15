@@ -4380,6 +4380,318 @@ mod task_review_tests {
         pane.apply_task_action(TaskAction::CancelRun, &mut tree);
         assert!(host.submitted.borrow().is_empty());
     }
+
+    fn draft_descriptor(
+        label: &str,
+        params: Vec<tilo_actions::ActionParam>,
+    ) -> tilo_actions::ActionDescriptor {
+        tilo_actions::ActionDescriptor {
+            semantic_identity: None,
+            address: tilo_actions::ActionAddress::new("inbox", "do"),
+            resource_kind: "mail.mailbox".into(),
+            resource_label: "Inbox".into(),
+            action_label: label.into(),
+            description: None,
+            locus: tilo_actions::ExecutionLocus::ClientLocal,
+            kind: tilo_actions::OperationKind::Document,
+            contract: tilo_actions::ActionContract::default(),
+            input: tilo_actions::InputSpec::None,
+            params,
+            view: None,
+        }
+    }
+
+    /// A Mail message to send, as the owner records it.
+    fn mail_confirmation() -> tilo_desktop_model::WorkspaceTaskConfirmation {
+        use tilo_actions::{ActionParam, ParamType};
+        let descriptor = draft_descriptor(
+            "Send message",
+            vec![
+                ActionParam::required("account", ParamType::Text, "From"),
+                ActionParam::required("message", ParamType::Object, "The message"),
+            ],
+        );
+        let arguments = serde_json::json!({
+            "account": "ada@example.org",
+            "message": {
+                "to": "bob@example.org",
+                "cc": "",
+                "subject": "Note X: release checklist",
+                "body": "Hi Bob,\n\nhere is the release checklist we talked about. It covers the image build, the store listing and the announcement.\n\nThanks!",
+                "attachments": [{"name": "checklist.pdf"}, {"name": "notes.md"}, {"name": "screenshot.png"}]
+            }
+        });
+        confirmation_of(
+            &descriptor,
+            &arguments,
+            tilo_actions::RiskLevel::Destructive,
+            tilo_action_policy::ActionKind::Outside,
+        )
+    }
+
+    /// Files' permanent deletion, drafted generically.
+    fn files_confirmation() -> tilo_desktop_model::WorkspaceTaskConfirmation {
+        use tilo_actions::{ActionParam, ParamType};
+        let descriptor = draft_descriptor(
+            "Delete permanently",
+            vec![
+                ActionParam::required("paths", ParamType::Array, "Files"),
+                ActionParam::optional("keep_versions", ParamType::Boolean, "Keep versions"),
+            ],
+        );
+        let mut confirmation = confirmation_of(
+            &descriptor,
+            &serde_json::json!({
+                "paths": ["/home/user/Trash/report-draft.pdf", "/home/user/Trash/old-notes.md", "/home/user/Trash/scan.png", "/home/user/Trash/budget.ods"],
+                "keep_versions": false
+            }),
+            tilo_actions::RiskLevel::Destructive,
+            tilo_action_policy::ActionKind::Outside,
+        );
+        confirmation.draft.resource_label = "Trash".into();
+        confirmation
+    }
+
+    fn confirmation_of(
+        descriptor: &tilo_actions::ActionDescriptor,
+        arguments: &serde_json::Value,
+        risk: tilo_actions::RiskLevel,
+        kind: tilo_action_policy::ActionKind,
+    ) -> tilo_desktop_model::WorkspaceTaskConfirmation {
+        let arguments = arguments.as_object().unwrap();
+        let digest = tilo_actions::draft::arguments_digest(arguments);
+        tilo_desktop_model::WorkspaceTaskConfirmation {
+            id: tilo_desktop_model::WorkspaceTaskConfirmation::id_for("inbox", "do", &digest),
+            asking: uuid::Uuid::from_u128(1),
+            run_epoch: 3,
+            agent_id: "scribe".into(),
+            app: "so.tilo.mail".into(),
+            resource_kind: "mail.mailbox".into(),
+            resource: "inbox".into(),
+            action: "do".into(),
+            kind,
+            risk,
+            draft: tilo_actions::Draft::render(descriptor, arguments),
+            arguments_digest: digest,
+            requested_at: 100,
+            state: tilo_desktop_model::WorkspaceTaskConfirmationState::Waiting,
+        }
+    }
+
+    fn paused_fixture(
+        confirmation: tilo_desktop_model::WorkspaceTaskConfirmation,
+    ) -> (WorkspaceTree, RoomActivityPane, Rc<ReviewHost>) {
+        let (mut tree, mut pane, host) = review_fixture();
+        let id = pane.selected_task.clone().unwrap();
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.tasks[0].status = WorkspaceTaskStatus::InProgress;
+            snapshot.tasks[0].title = "Send note X by mail to Bob".into();
+            snapshot.controls.get_mut(&id).unwrap().confirmation = Some(confirmation);
+        }
+        pane.refresh(&mut tree);
+        (tree, pane, host)
+    }
+
+    fn paint(pane: &mut RoomActivityPane, theme: &Theme) -> Scene {
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            theme,
+            &PresenceCtx::empty(),
+        );
+        scene
+    }
+
+    fn submitted_answer(host: &ReviewHost) -> crate::activity::TaskReviewCommand {
+        host.submitted.borrow().last().unwrap().command.clone()
+    }
+
+    #[test]
+    fn a_paused_run_shows_its_card_first_and_notifies_once() {
+        let (mut tree, mut pane, _host) = paused_fixture(mail_confirmation());
+        assert!(pane.task_needs_person(&pane.tasks[0]));
+        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
+        paint(&mut pane, &Theme::light());
+        let painted: Vec<TaskAction> = pane
+            .task_action_rects
+            .iter()
+            .map(|(action, _)| *action)
+            .collect();
+        for action in [
+            TaskAction::ConfirmDraft,
+            TaskAction::EditDraft,
+            TaskAction::DeclineDraft,
+            TaskAction::AlwaysAllow,
+        ] {
+            assert!(painted.contains(&action), "{action:?} is on the card");
+            assert!(
+                pane.focus_order()
+                    .contains(&ActivityFocus::TaskAction(action))
+            );
+        }
+        let notices = pane.take_confirmation_notices();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].action, "Send message");
+        pane.refresh(&mut tree);
+        assert!(pane.take_confirmation_notices().is_empty(), "noticed once");
+    }
+
+    #[test]
+    fn confirming_as_drafted_sends_no_edits() {
+        use tilo_desktop_model::WorkspaceTaskConfirmationAnswer;
+        let confirmation = mail_confirmation();
+        let (mut tree, mut pane, host) = paused_fixture(confirmation.clone());
+        pane.apply_task_action(TaskAction::ConfirmDraft, &mut tree);
+        assert_eq!(
+            submitted_answer(&host),
+            crate::activity::TaskReviewCommand::AnswerConfirmation {
+                task_id: pane.selected_task.clone().unwrap(),
+                run_epoch: 3,
+                confirmation_id: confirmation.id,
+                answer: WorkspaceTaskConfirmationAnswer::Confirm { edits: Vec::new() },
+            }
+        );
+    }
+
+    #[test]
+    fn editing_sends_only_the_changed_fields() {
+        use tilo_desktop_model::WorkspaceTaskConfirmationAnswer;
+        let (mut tree, mut pane, host) = paused_fixture(mail_confirmation());
+        pane.apply_task_action(TaskAction::EditDraft, &mut tree);
+        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
+        paint(&mut pane, &Theme::dark());
+        let review = pane.confirmation.as_mut().unwrap();
+        let to = review
+            .fields
+            .iter_mut()
+            .find(|field| field.path == ["message", "to"])
+            .expect("recipients are editable");
+        to.input.set_text("carol@example.org");
+        assert!(pane.focus_order().contains(&ActivityFocus::ConfirmField(0)));
+        pane.apply_task_action(TaskAction::ConfirmDraft, &mut tree);
+        let crate::activity::TaskReviewCommand::AnswerConfirmation {
+            answer: WorkspaceTaskConfirmationAnswer::Confirm { edits },
+            ..
+        } = submitted_answer(&host)
+        else {
+            panic!("a confirmation")
+        };
+        assert_eq!(
+            edits,
+            vec![tilo_actions::DraftEdit {
+                path: vec!["message".into(), "to".into()],
+                text: "carol@example.org".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn declining_carries_the_reason() {
+        use tilo_desktop_model::WorkspaceTaskConfirmationAnswer;
+        let (mut tree, mut pane, host) = paused_fixture(files_confirmation());
+        pane.apply_task_action(TaskAction::DeclineDraft, &mut tree);
+        assert_eq!(pane.keyboard_focus, Some(ActivityFocus::DeclineReason));
+        pane.confirmation
+            .as_mut()
+            .unwrap()
+            .reason
+            .set_text("Keep the budget sheet");
+        pane.apply_task_action(TaskAction::SendDecline, &mut tree);
+        assert!(matches!(
+            submitted_answer(&host),
+            crate::activity::TaskReviewCommand::AnswerConfirmation {
+                answer: WorkspaceTaskConfirmationAnswer::Decline { reason: Some(reason) },
+                ..
+            } if reason == "Keep the budget sheet"
+        ));
+    }
+
+    #[test]
+    fn always_allowing_names_the_draft_it_confirms() {
+        let confirmation = files_confirmation();
+        let (mut tree, mut pane, host) = paused_fixture(confirmation.clone());
+        pane.apply_task_action(TaskAction::AlwaysAllow, &mut tree);
+        assert_eq!(
+            submitted_answer(&host),
+            crate::activity::TaskReviewCommand::AlwaysAllow {
+                task_id: pane.selected_task.clone().unwrap(),
+                run_epoch: 3,
+                confirmation_id: confirmation.id,
+                edits: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn an_answered_draft_offers_no_second_answer() {
+        let mut confirmation = mail_confirmation();
+        confirmation.state = tilo_desktop_model::WorkspaceTaskConfirmationState::Confirmed {
+            person: "local".into(),
+            at: 101,
+            edits: Vec::new(),
+        };
+        let (mut tree, mut pane, host) = paused_fixture(confirmation);
+        assert!(!pane.task_needs_person(&pane.tasks[0]));
+        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
+        paint(&mut pane, &Theme::light());
+        assert!(
+            !pane
+                .task_action_rects
+                .iter()
+                .any(|(action, _)| *action == TaskAction::ConfirmDraft)
+        );
+        pane.apply_task_action(TaskAction::ConfirmDraft, &mut tree);
+        assert!(host.submitted.borrow().is_empty());
+    }
+
+    /// Renders the card for review; written under the target directory.
+    #[test]
+    fn confirmation_card_render_matrix() {
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/confirmation-card-renders");
+        std::fs::create_dir_all(&output).unwrap();
+        for (name, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
+        ] {
+            for (draft, confirmation) in [
+                ("message", mail_confirmation()),
+                ("fields", files_confirmation()),
+            ] {
+                for mode in ["review", "edit", "decline"] {
+                    let (mut tree, mut pane, host) = paused_fixture(confirmation.clone());
+                    host.snapshot.borrow_mut().sampled_at_secs =
+                        i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
+                    pane.refresh(&mut tree);
+                    match mode {
+                        "edit" => {
+                            pane.apply_task_action(TaskAction::EditDraft, &mut tree);
+                        }
+                        "decline" => {
+                            pane.apply_task_action(TaskAction::DeclineDraft, &mut tree);
+                        }
+                        _ => {}
+                    }
+                    let (width, height) = (760, 1000);
+                    pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
+                    paint(&mut pane, &theme);
+                    let scene = paint(&mut pane, &theme);
+                    let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
+                    renderer.render_png(
+                        &scene,
+                        theme.tokens.colors.surfaces.content,
+                        output.join(format!("{name}-{draft}-{mode}.png")),
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

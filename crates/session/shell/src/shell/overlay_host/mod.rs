@@ -10341,6 +10341,20 @@ impl ShellOverlayHost {
     }
 
     /// See [`Self::force_palette_settled`].
+    /// Show `agent`'s answers in the Agents tab, with `open`'s expanded:
+    /// what pressing its Review access and then an app does.
+    pub fn open_agent_review_for_shots(
+        &mut self,
+        agent: &str,
+        open: Option<tilo_action_policy::agent_answers::AnswerScope>,
+    ) {
+        self.workspace_settings_overlay
+            .open_agent_review(agent.to_owned());
+        if let Some(scope) = open {
+            self.workspace_settings_overlay.toggle_agent_app(scope);
+        }
+    }
+
     pub fn force_ws_settings_settled(&mut self) {
         if !self.overlay_flags().ws_settings {
             return;
@@ -11460,6 +11474,11 @@ impl ShellOverlayHost {
             self.room_activity
                 .refresh_observed_local(&tree, &records, &local, Instant::now())
         };
+        // A run newly paused at an action asking first: a banner points at
+        // it, and the person answers in Task Center when they choose.
+        for notice in self.room_activity.take_confirmation_notices() {
+            chrome.borrow_mut().push_task_confirmation(&notice);
+        }
         self.refresh_history_narrative();
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
         let away_changes = self.room_activity.away_change_count(workspace);
@@ -17113,21 +17132,31 @@ impl ShellOverlayHost {
                 }
             }
             WorkspaceSettingsOutcome::ReviewAgent(agent) => {
-                if is_owner && let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    let subject_index = st.tree().desktop.active_workspace().and_then(|ws| {
-                        tilo_desktop::workspace_settings::grant_subjects(ws)
-                            .iter()
-                            .position(|subject| {
-                                subject.kind == tilo_desktop::workspace_settings::SubjectKind::Agent
-                                    && subject.id == agent
-                            })
-                    });
-                    if let Some(subject_index) = subject_index {
-                        st.ws_grant_draft.subject_index = subject_index;
-                        st.open_workspace_settings(WsTab::Permissions);
-                        st.bump();
-                    }
+                // Anyone in the workspace may see what an agent may do; only
+                // someone who governs it gets live controls (`owner_controls`).
+                self.workspace_settings_overlay.open_agent_review(agent);
+                self.bump_chrome();
+            }
+            WorkspaceSettingsOutcome::CloseAgentReview => {
+                self.workspace_settings_overlay.close_agent_review();
+                self.bump_chrome();
+            }
+            WorkspaceSettingsOutcome::ToggleAgentApp(scope) => {
+                self.workspace_settings_overlay.toggle_agent_app(scope);
+                self.bump_chrome();
+            }
+            WorkspaceSettingsOutcome::SetAgentAnswers { agent, answers } => {
+                if self.may_govern_active(tilo_action_policy::roles::governance::GRANT)
+                    && let Some(chrome) = self.chrome.clone()
+                {
+                    let _ = crate::shell::membership::edit_active_workspace_policy(
+                        &mut chrome.borrow_mut(),
+                        move |ws, actor| {
+                            tilo_desktop::workspace_settings::agent_access::set_agent_answers(
+                                ws, actor, &agent, &answers,
+                            )
+                        },
+                    );
                 }
             }
             WorkspaceSettingsOutcome::RemoveAgent(agent) => {

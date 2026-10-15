@@ -105,8 +105,22 @@ pub enum EventOutcome {
     ManageOwnership,
     /// Starts a named, explicit agent setup in the command palette.
     AddAgent,
-    /// Opens Privacy & Security with this agent preselected as the subject.
+    /// Opens this agent's Allow / Ask first / Deny answers, app by app.
     ReviewAgent(String),
+    /// Back from one agent's answers to the roster.
+    CloseAgentReview,
+    /// Opens or closes one app's answers in the agent view.
+    ToggleAgentApp(tilo_action_policy::agent_answers::AnswerScope),
+    /// Sets (or, with `None`, returns to the admission's) the agent's
+    /// answers, each for a kind at a scope.
+    SetAgentAnswers {
+        agent: String,
+        answers: Vec<(
+            tilo_action_policy::agent_answers::AnswerScope,
+            tilo_action_policy::ActionKind,
+            Option<tilo_action_policy::Answer>,
+        )>,
+    },
     RemoveAgent(String),
     Revoke(String),
     SetMemberRole(UserId, CapRole),
@@ -179,6 +193,13 @@ pub struct WorkspaceSettingsOverlay {
     ownership_action_rect: Rect,
     agent_add_rect: Rect,
     agent_control_rects: Vec<(String, Rect, Rect)>,
+    /// The agent whose answers the Agents tab shows instead of the roster,
+    /// and which of its apps is open.
+    agent_review: Option<(
+        String,
+        Option<tilo_action_policy::agent_answers::AnswerScope>,
+    )>,
+    agent_access: super::agent_access::AgentAccessLayout,
     member_sheet: Option<MemberSheet>,
     member_sheet_focus: usize,
     member_sheet_option_rects: Vec<Rect>,
@@ -210,6 +231,8 @@ impl Default for WorkspaceSettingsOverlay {
             ownership_action_rect: Rect::ZERO,
             agent_add_rect: Rect::ZERO,
             agent_control_rects: Vec::new(),
+            agent_review: None,
+            agent_access: super::agent_access::AgentAccessLayout::default(),
             member_sheet: None,
             member_sheet_focus: 0,
             member_sheet_option_rects: Vec::new(),
@@ -619,7 +642,80 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
+        self.agent_access = super::agent_access::AgentAccessLayout::default();
         self.member_sheet_option_rects.clear();
+    }
+
+    /// What a press at `point` on the Agents tab means: the agent view's
+    /// controls, adding an agent, or a roster row's.
+    fn agents_outcome(&self, point: Point, active_tab: WsTab) -> Option<EventOutcome> {
+        if matches!(active_tab, WsTab::Agents) {
+            if let Some(outcome) = self.agent_access_outcome(point) {
+                return Some(outcome);
+            }
+            if self.agent_add_rect.area() > 0.0 && self.agent_add_rect.contains(point) {
+                return Some(EventOutcome::AddAgent);
+            }
+        }
+        self.agent_control_rects
+            .iter()
+            .find_map(|(agent, review, remove)| {
+                if review.area() > 0.0 && review.contains(point) {
+                    Some(EventOutcome::ReviewAgent(agent.clone()))
+                } else if remove.area() > 0.0 && remove.contains(point) {
+                    Some(EventOutcome::RemoveAgent(agent.clone()))
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// What a press at `point` in the agent view means, when it is shown.
+    fn agent_access_outcome(&self, point: Point) -> Option<EventOutcome> {
+        use super::agent_access::AccessTarget;
+        let (agent, _) = self.agent_review.as_ref()?;
+        let set = |answers| EventOutcome::SetAgentAnswers {
+            agent: agent.clone(),
+            answers,
+        };
+        Some(match self.agent_access.hit(point)? {
+            AccessTarget::Back => EventOutcome::CloseAgentReview,
+            AccessTarget::Expand(scope) => EventOutcome::ToggleAgentApp(scope),
+            AccessTarget::Answer(scope, kind, answer) => set(vec![(scope, kind, Some(answer))]),
+            AccessTarget::Reset(scope) => set(super::agent_access::KINDS
+                .into_iter()
+                .map(|kind| (scope.clone(), kind, None))
+                .collect()),
+            AccessTarget::RemoveException(scope, kind) => set(vec![(scope, kind, None)]),
+        })
+    }
+
+    /// Show `agent`'s answers in the Agents tab instead of the roster.
+    pub fn open_agent_review(&mut self, agent: String) {
+        self.agent_review = Some((agent, None));
+    }
+
+    /// Back to the roster.
+    pub fn close_agent_review(&mut self) {
+        self.agent_review = None;
+        self.agent_access = super::agent_access::AgentAccessLayout::default();
+    }
+
+    /// Open `scope`'s answers in the agent view, or close them when open.
+    pub fn toggle_agent_app(&mut self, scope: tilo_action_policy::agent_answers::AnswerScope) {
+        if let Some((_, open)) = &mut self.agent_review {
+            *open = if open.as_ref() == Some(&scope) {
+                None
+            } else {
+                Some(scope)
+            };
+        }
+    }
+
+    /// The agent whose answers are shown, if any.
+    #[must_use]
+    pub fn reviewing_agent(&self) -> Option<&str> {
+        self.agent_review.as_ref().map(|(agent, _)| agent.as_str())
     }
 
     /// Paint the transition-owned marker, shadow and card, returning the
@@ -782,19 +878,8 @@ impl WorkspaceSettingsOverlay {
         if self.ownership_action_rect.area() > 0.0 && self.ownership_action_rect.contains(point) {
             return EventOutcome::ManageOwnership;
         }
-        if matches!(active_tab, WsTab::Agents)
-            && self.agent_add_rect.area() > 0.0
-            && self.agent_add_rect.contains(point)
-        {
-            return EventOutcome::AddAgent;
-        }
-        for (agent, review, remove) in &self.agent_control_rects {
-            if review.area() > 0.0 && review.contains(point) {
-                return EventOutcome::ReviewAgent(agent.clone());
-            }
-            if remove.area() > 0.0 && remove.contains(point) {
-                return EventOutcome::RemoveAgent(agent.clone());
-            }
+        if let Some(outcome) = self.agents_outcome(point, active_tab) {
+            return outcome;
         }
         for (id, rect) in &self.revoke_rects {
             if rect.area() > 0.0 && rect.contains(point) {
@@ -1652,9 +1737,31 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect = Rect::ZERO;
         self.agent_control_rects.clear();
         self.default_app_rects.clear();
+        self.agent_access = super::agent_access::AgentAccessLayout::default();
         let body_rect = Self::body_rect(rect);
-        self.agent_add_rect = agents_add_rect(body_rect);
         let is_owner = model.owner_controls;
+        if let Some(ws) = model.desktop.active_workspace()
+            && let Some((agent, open)) = &self.agent_review
+            && ws
+                .agent_members_at(tilo_clock::unix_now())
+                .iter()
+                .any(|(member, _)| member == agent)
+        {
+            self.agent_add_rect = Rect::ZERO;
+            self.agent_access = super::agent_access::draw_agent_access(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                body_rect,
+                (ws, model.apps),
+                &super::agent_access::AgentAccessView {
+                    agent,
+                    open: open.as_ref(),
+                    editable: is_owner,
+                },
+            );
+            Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
+            return;
+        }
+        self.agent_add_rect = agents_add_rect(body_rect);
         if let Some(ws) = model.desktop.active_workspace() {
             for row in agents_pane_rows(ws, body_rect) {
                 self.agent_control_rects.push((

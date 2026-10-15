@@ -42,6 +42,22 @@ pub enum TaskReviewCommand {
         task_id: String,
         run_epoch: u64,
     },
+    /// Answer the action the run paused at: confirm it as the person
+    /// changed it, or decline it.
+    AnswerConfirmation {
+        task_id: String,
+        run_epoch: u64,
+        confirmation_id: String,
+        answer: tilo_desktop_model::WorkspaceTaskConfirmationAnswer,
+    },
+    /// Confirm it, and let the agent take this action without asking from
+    /// now on: an Allow for that one action, then the confirmation.
+    AlwaysAllow {
+        task_id: String,
+        run_epoch: u64,
+        confirmation_id: String,
+        edits: Vec<tilo_actions::DraftEdit>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

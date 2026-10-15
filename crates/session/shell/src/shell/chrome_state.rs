@@ -891,6 +891,9 @@ pub struct ChromeState {
     /// Toasts that undo a workspace deletion, by toast id: where the
     /// workspace was and what it held.
     workspace_undo_toasts: BTreeMap<u64, (usize, crate::shell::state::Workspace)>,
+    /// Banners pointing at a task whose run waits for the person's answer,
+    /// by banner, to the task they open.
+    task_confirmation_toasts: BTreeMap<u64, String>,
 }
 
 #[derive(Debug)]
@@ -1048,6 +1051,7 @@ impl ChromeState {
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
             pending_closed_tabs: Vec::new(),
             workspace_undo_toasts: BTreeMap::new(),
+            task_confirmation_toasts: BTreeMap::new(),
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
             failed_tab_records: BTreeMap::new(),
@@ -2082,6 +2086,24 @@ impl ChromeState {
         true
     }
 
+    /// Tell the person a task's run paused at an action that asks them
+    /// first, without interrupting them: a banner whose Review opens Task
+    /// Center on that task, where they answer it.
+    pub fn push_task_confirmation(
+        &mut self,
+        notice: &tilo_desktop::activity::ConfirmationNotice,
+    ) -> u64 {
+        let (title, body) = (notice.title(), notice.body());
+        let mut toast = Notification::new(title, body)
+            .with_severity(NotificationSeverity::Info)
+            .with_icon_kind(NotificationIconKind::Permission);
+        toast.dismiss_after = tilo_desktop::notifications::PERSISTENT_DISMISS;
+        toast.actions = vec![("default".into(), notice.review_label())];
+        self.task_confirmation_toasts
+            .insert(toast.id, notice.task_id.clone());
+        self.push_notification_full(toast)
+    }
+
     /// The deletion toast's Undo: put the workspace back where it was, on
     /// screen. The person's other devices get it back with the next list.
     pub fn undo_deleted_workspace(&mut self, toast: u64) -> bool {
@@ -2648,6 +2670,7 @@ impl ChromeState {
         if self.workspace_undo_toasts.remove(&n.id).is_some() {
             return;
         }
+        self.task_confirmation_toasts.remove(&n.id);
         self.notification_log.retain(n);
     }
 
@@ -2724,6 +2747,14 @@ impl ChromeState {
         };
         if self.workspace_undo_toasts.contains_key(&id) {
             self.undo_deleted_workspace(id);
+            return true;
+        }
+        if let Some(task_id) = self.task_confirmation_toasts.remove(&id) {
+            self.record_history(removed);
+            self.open_room_activity(Some(ActivityFocus {
+                task_id: Some(task_id),
+                ..ActivityFocus::default()
+            }));
             return true;
         }
         if let Some(request) = crate::shell::notification::scheduled_launch(&removed) {

@@ -2,7 +2,9 @@ use super::morning::{
     MORNING_OPEN, MORNING_REMOVE, MORNING_SOURCE, MorningCommand, MorningPreferences, MorningSource,
 };
 mod morning_sources;
+mod task_confirmation_view;
 mod task_review_view;
+pub use task_confirmation_view::ConfirmationNotice;
 
 // Room activity — everything that has happened to this workspace, by
 // everyone, in one filterable pane.
@@ -213,6 +215,10 @@ enum ActivityFocus {
     TaskCancelCompose,
     TaskAction(TaskAction),
     DirectionField,
+    /// An editable field of the paused action's draft, by its place.
+    ConfirmField(usize),
+    /// The reason given for declining the paused action.
+    DeclineReason,
     Lens(LensSelection),
     MoreLenses,
     Detail(DetailAction),
@@ -247,6 +253,13 @@ enum TaskAction {
     CloseDirection,
     NextTasks,
     PreviousTasks,
+    ConfirmDraft,
+    EditDraft,
+    DiscardEdits,
+    DeclineDraft,
+    SendDecline,
+    KeepDraft,
+    AlwaysAllow,
     OpenResource,
     StartAgent,
     Launch,
@@ -267,6 +280,13 @@ impl TaskAction {
             Self::CloseDirection => "activity-task-direction-close",
             Self::NextTasks => "activity-task-next",
             Self::PreviousTasks => "activity-task-previous",
+            Self::ConfirmDraft => "activity-confirm-confirm",
+            Self::EditDraft => "activity-confirm-edit",
+            Self::DiscardEdits => "activity-confirm-discard",
+            Self::DeclineDraft => "activity-confirm-decline",
+            Self::SendDecline => "activity-confirm-send-decline",
+            Self::KeepDraft => "activity-confirm-back",
+            Self::AlwaysAllow => "activity-confirm-always",
             Self::OpenResource => "activity-task-open-resource",
             Self::StartAgent => "activity-task-start-agent",
             Self::Launch => "activity-task-launch-agent",
@@ -846,6 +866,9 @@ pub struct RoomActivityPane {
     task_review: Option<Result<std::sync::Arc<super::TaskReviewSnapshot>, String>>,
     review_approval: Option<task_review_view::ApprovalFrontier>,
     direction: Option<task_review_view::DirectionDraft>,
+    confirmation: Option<task_confirmation_view::ConfirmationReview>,
+    confirmation_notices: Vec<ConfirmationNotice>,
+    noticed_confirmations: HashSet<String>,
     review_pending: Option<uuid::Uuid>,
     review_notice: Option<String>,
     review_task_offset: usize,
@@ -1081,6 +1104,9 @@ impl RoomActivityPane {
             task_review: None,
             review_approval: None,
             direction: None,
+            confirmation: None,
+            confirmation_notices: Vec::new(),
+            noticed_confirmations: HashSet::new(),
             review_pending: None,
             review_notice: None,
             review_task_offset: 0,
@@ -2323,6 +2349,7 @@ impl RoomActivityPane {
             .active_workspace()
             .map_or(&[][..], |workspace| workspace.tasks.as_slice());
         self.rebuild_tasks_if_changed(origin, tree_tasks);
+        self.observe_confirmations();
         self.refresh_agent_startup();
         if self
             .selected_task
@@ -2517,9 +2544,15 @@ impl RoomActivityPane {
             },
             TaskListOrigin::Withheld => Vec::new(),
         };
+        let needs_person: HashSet<String> = self
+            .tasks
+            .iter()
+            .filter(|task| self.task_needs_person(task))
+            .map(|task| task.id.clone())
+            .collect();
         self.tasks.sort_by(|left, right| {
-            (left.status != WorkspaceTaskStatus::Waiting)
-                .cmp(&(right.status != WorkspaceTaskStatus::Waiting))
+            (!needs_person.contains(&left.id))
+                .cmp(&!needs_person.contains(&right.id))
                 .then_with(|| left.status.is_finished().cmp(&right.status.is_finished()))
                 .then_with(|| right.updated_at.cmp(&left.updated_at))
                 .then_with(|| left.id.cmp(&right.id))
@@ -4141,7 +4174,7 @@ impl RoomActivityPane {
         let waiting = self
             .tasks
             .iter()
-            .filter(|task| task.status == WorkspaceTaskStatus::Waiting)
+            .filter(|task| self.task_needs_person(task))
             .count();
         let x0 = self.sheet.x0 + 12.0;
         let x1 = self.sheet.x1 - 12.0;
@@ -4175,11 +4208,7 @@ impl RoomActivityPane {
         draw_task_button(scene, transform, tr, theme, rect, &label, true);
         self.view_rects.push((ActivityView::Tasks, rect));
         let mut next = rect.y1 + 8.0;
-        if let Some(task) = self
-            .tasks
-            .iter()
-            .find(|task| task.status == WorkspaceTaskStatus::Waiting)
-        {
+        if let Some(task) = self.tasks.iter().find(|task| self.task_needs_person(task)) {
             let detail = t_args(
                 "activity-catch-up-waiting-detail",
                 &[
@@ -5714,6 +5743,19 @@ impl RoomActivityPane {
             self.apply_review_action(action);
             return handled_outcome();
         }
+        if matches!(
+            action,
+            TaskAction::ConfirmDraft
+                | TaskAction::EditDraft
+                | TaskAction::DiscardEdits
+                | TaskAction::DeclineDraft
+                | TaskAction::SendDecline
+                | TaskAction::KeepDraft
+                | TaskAction::AlwaysAllow
+        ) {
+            self.apply_confirmation_action(action);
+            return handled_outcome();
+        }
         if action != TaskAction::OpenResource
             && (!self.host.mutations_available() || tree.document().pending_ops() > 0)
         {
@@ -6275,6 +6317,9 @@ impl RoomActivityPane {
         if self.direction_event(event, scale_factor, *modifiers, tree) {
             return handled_outcome();
         }
+        if self.confirmation_event(event, (scale_factor, *modifiers, cursor), tree) {
+            return handled_outcome();
+        }
 
         // The inline group-name editor owns every unchorded key until it
         // commits or cancels; Tab included, so a half-typed name cannot be
@@ -6431,6 +6476,7 @@ impl RoomActivityPane {
                 if self.direction.is_some() {
                     order.push(ActivityFocus::DirectionField);
                 }
+                order.extend(self.confirmation_focus_order());
                 order.extend(
                     self.task_rects
                         .iter()
@@ -6572,7 +6618,9 @@ impl RoomActivityPane {
                     (self.selected_task.as_deref() != Some(id.as_str())).then_some(id);
             }
             ActivityFocus::TaskRoute(route) => self.task_route = route,
-            ActivityFocus::DirectionField => {}
+            ActivityFocus::DirectionField
+            | ActivityFocus::ConfirmField(_)
+            | ActivityFocus::DeclineReason => {}
             ActivityFocus::TaskCreate => return self.create_task_from_draft(tree),
             ActivityFocus::TaskCancelCompose => self.close_task_composer(),
             ActivityFocus::TaskAction(action) => return self.apply_task_action(action, tree),
@@ -6727,6 +6775,9 @@ impl RoomActivityPane {
                 .map(|task| task.title.clone()),
             ActivityFocus::TaskRoute(route) => Some(task_route_label(*route)),
             ActivityFocus::DirectionField => Some(t("activity-task-direction-label")),
+            ActivityFocus::ConfirmField(_) | ActivityFocus::DeclineReason => {
+                self.confirmation_field_label(focus)
+            }
             ActivityFocus::TaskCreate => Some(t("a11y-shell-activity-create-task")),
             ActivityFocus::TaskCancelCompose => Some(t("a11y-shell-activity-cancel-task")),
             ActivityFocus::TaskAction(action) => Some(action.label()),
@@ -6943,6 +6994,12 @@ impl RoomActivityPane {
                 None,
                 t("activity-task-direction-label"),
             ),
+            ActivityFocus::ConfirmField(_) | ActivityFocus::DeclineReason => control(
+                Role::TextInput,
+                false,
+                None,
+                t("activity-confirm-field-description"),
+            ),
             ActivityFocus::TaskAction(_) => control(
                 Role::Button,
                 false,
@@ -7010,6 +7067,12 @@ impl RoomActivityPane {
 
         if *focus == ActivityFocus::DirectionField {
             return self.direction.as_ref()?.input.accessibility();
+        }
+        if matches!(
+            focus,
+            ActivityFocus::ConfirmField(_) | ActivityFocus::DeclineReason
+        ) {
+            return self.confirmation_field_accessibility(focus);
         }
         if *focus == ActivityFocus::Timeline {
             return self.timeline.accessibility();
@@ -7263,6 +7326,9 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(route, rect)| (route == value).then_some(*rect)),
             ActivityFocus::DirectionField => self.direction.as_ref().map(|draft| draft.rect),
+            ActivityFocus::ConfirmField(_) | ActivityFocus::DeclineReason => {
+                self.confirmation_field_rect(focus)
+            }
             ActivityFocus::TaskCreate => self.task_create_rect,
             ActivityFocus::TaskCancelCompose => self.task_cancel_rect,
             ActivityFocus::TaskAction(value) => self
