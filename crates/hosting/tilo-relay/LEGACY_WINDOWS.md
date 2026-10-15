@@ -70,6 +70,14 @@ session's clipboard before the paste chord) and `Close`: a member who drives
 a window and closes its desktop window asks the session to close it, as a
 person's close of its tab does. A watcher closing it closes only its view,
 and the desktop does not reopen a window the person closed while it streams.
+Text an input method commits on the member's page (a composed Japanese,
+Chinese or Korean phrase, a dictated sentence, an emoji) travels as one
+`Text` event, never as the keys that composed it: the page composes in a
+hidden text area that holds the window's keyboard, sends text only for the
+window it focuses, and the relay refuses empty text or text over
+`MAX_TEXT_BYTES` (4096, the session's `MAX_REMOTE_TEXT_BYTES`), so it forwards
+nothing the session's input firewall would refuse. The session delivers it
+into the focused field as an input method does.
 
 ## Applications on a node
 
@@ -88,7 +96,9 @@ beside the focused one.
 
 ## Explicit remaining gaps
 
-- IME/text commit and touch input need native endpoints.
+- Touch input needs a native endpoint. An input method's preedit (the
+  uncommitted composition) is not drawn in the window; only the input method's
+  own candidate list shows, beside the window.
 - This increment consumes consented H.264, VP9 and AV1 surface streams; it
   creates no native capture/share endpoint. A session must already grant and
   stream the surface. There is no independent PNG/JPEG/image delivery endpoint.
