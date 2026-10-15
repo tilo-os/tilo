@@ -3,6 +3,124 @@ use tilo_ui::widget::{
     max_group_px, min_group_px,
 };
 
+/// Rebuilding composition twice between paints must not consume the next
+/// frame's width motion. Count real layout and scene-recording progress.
+#[test]
+fn composition_settle_preserves_width_motion_until_the_next_paint() {
+    use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
+    use tilo_ui::Widget;
+    use tilo_ui::presence::PresenceCtx;
+    use tilo_ui::text_render::TextRenderer;
+    use tilo_ui::theme::Theme;
+    use tilo_ui::widget::GroupRow;
+    use vello::kurbo::{Affine, Point};
+
+    let mut opening = group(WindowWidth::Wide, 1200.0);
+    opening.set_strip_usable_px(1200.0);
+    let mut sibling = group(WindowWidth::Wide, 1200.0);
+    sibling.id = 2;
+    let mut row = GroupRow::new(vec![opening, sibling]);
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut initial_tree = TaffyTree::new();
+    let root = row.build_layout(&mut initial_tree, &theme, &mut Default::default());
+    let mut style = initial_tree.style(root).unwrap().clone();
+    style.size.width = Dimension::length(1200.0);
+    style.size.height = Dimension::length(500.0);
+    initial_tree.set_style(root, style).unwrap();
+    initial_tree
+        .compute_layout(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1200.0),
+                height: AvailableSpace::Definite(500.0),
+            },
+        )
+        .unwrap();
+    row.apply_layout(&initial_tree, root, Point::ORIGIN);
+    let usable = row.usable_per_group()[0];
+    assert!(row.remove_group_by_id(1));
+    let mut opening = group(WindowWidth::Wide, usable);
+    opening.start_spawn_animation();
+    row.insert_group(opening, 0);
+    let mut at = tilo_ui::time::now();
+    let mut layouts = 0_u32;
+    let mut paints = 0_u32;
+    let mut advances = 0_u32;
+    let mut previous = 0.0;
+    for _ in 0..100 {
+        at += tilo_ui::time::Duration::from_millis(16);
+        tilo_ui::time::testing::with_monotonic_time(at, || {
+            let dirty = row
+                .children_mut()
+                .into_iter()
+                .next()
+                .unwrap()
+                .take_structure_dirty();
+            if dirty {
+                // The second composition build sees the same frame latch,
+                // but drains the style dirtiness produced by the first.
+                for _ in 0..2 {
+                    let _ = row
+                        .children_mut()
+                        .into_iter()
+                        .next()
+                        .unwrap()
+                        .take_structure_dirty();
+                    let mut tree = TaffyTree::new();
+                    let root = row.build_layout(&mut tree, &theme, &mut Default::default());
+                    let mut style = tree.style(root).unwrap().clone();
+                    style.size.width = Dimension::length(1200.0);
+                    style.size.height = Dimension::length(500.0);
+                    tree.set_style(root, style).unwrap();
+                    tree.compute_layout(
+                        root,
+                        Size {
+                            width: AvailableSpace::Definite(1200.0),
+                            height: AvailableSpace::Definite(500.0),
+                        },
+                    )
+                    .unwrap();
+                    row.apply_layout(&tree, root, Point::ORIGIN);
+                    layouts = layouts.saturating_add(1);
+                }
+                let _ = row
+                    .children_mut()
+                    .into_iter()
+                    .next()
+                    .unwrap()
+                    .take_structure_dirty();
+            }
+            let width = row.group_at_for_test(0).unwrap().get_rect().width();
+            if width > previous + 0.05 {
+                advances = advances.saturating_add(1);
+            }
+            previous = width;
+            let mut scene = vello::Scene::new();
+            row.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            assert!(!scene.encoding().is_empty());
+            paints = paints.saturating_add(1);
+            row.mark_drawn();
+        });
+    }
+    assert_eq!(paints, 100);
+    assert!(
+        layouts > 4 && advances > 4,
+        "width stalled after {layouts} layouts, {paints} paints and {advances} advances at {previous}"
+    );
+    let target = row.group_at_for_test(0).unwrap().resolved_width_px();
+    assert!(
+        (previous - target).abs() < 0.5,
+        "painted width {previous} must settle at {target}"
+    );
+}
+
 /// Display widths this suite pins the width model against. The bug being
 /// covered here only shows up across resolutions: a fixed pixel width is
 /// a *different fraction* of every one of these, so a single-resolution

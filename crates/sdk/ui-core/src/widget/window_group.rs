@@ -550,6 +550,15 @@ impl WindowGroup {
         self.resolved_width_px()
     }
 
+    /// Whether tile geometry still needs a layout or a transition step.
+    /// Deliberately excludes hosted content animation (for example a caret).
+    pub fn geometry_pending(&self) -> bool {
+        self.style_dirty
+            || (!self.reduce_motion
+                && (self.width_spring.as_ref().is_some_and(|s| !s.is_settled())
+                    || self.rect_spring.is_some()))
+    }
+
     /// Width the slot is going to, in the same pixels as
     /// [`Self::layout_width_px`]. A later usable-basis change does not
     /// rewrite an in-flight target, so overflow can use this instead of
@@ -2991,7 +3000,11 @@ impl Widget for WindowGroup {
         let closing = self.is_closing()
             && !self.close_complete()
             && !std::mem::replace(&mut self.close_rebuild_taken, true);
-        bar || active_host || style || active_switched || closing
+        // A composition-settle rebuild can consume `style_dirty` after the
+        // one width step allowed this frame. The spring still needs the next
+        // frame's layout even though that intermediate rebuild cleared it.
+        let width_motion = self.width_spring.as_ref().is_some_and(|s| !s.is_settled());
+        bar || active_host || style || active_switched || closing || width_motion
     }
     fn needs_redraw(&self) -> bool {
         // Redraw follows the presentation tree. Retained inactive hosts still
