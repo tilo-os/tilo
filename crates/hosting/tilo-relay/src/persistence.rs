@@ -35,7 +35,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 #[cfg(test)]
 mod durability_tests;
 mod replay;
-pub(crate) use replay::output_budget;
+pub use replay::output_budget;
 pub(crate) use replay::{
     Authority as ReplayAuthority, ReplayAdvance, ReplayHandle, ReplayTicket, WrittenBatch,
 };
@@ -1160,6 +1160,7 @@ pub(crate) async fn blocking<T: Send + 'static>(
 )]
 mod tests {
     use super::*;
+    use tilo_relay_shell::ShellAuthority as _;
 
     fn test_persistence(
         root: &std::path::Path,
@@ -1660,7 +1661,9 @@ mod tests {
     #[tokio::test]
     async fn first_basis_prerequisites_run_before_priority_capture() {
         let tmp = tempfile::tempdir().unwrap();
-        let authority = crate::store::shell_proof_tests::binding();
+        let authority = tilo_relay_shell::selection::fixtures::producer_authority(
+            &tilo_relay_shell::selection::fixtures::producer_metadata(),
+        );
         let workspace = crate::room_workspace_id(authority.room()).unwrap();
         let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
         store.bind_shell_authority(authority).unwrap();
@@ -1715,7 +1718,9 @@ mod tests {
     #[tokio::test]
     async fn first_basis_capture_waits_only_for_its_fixed_normal_watermark() {
         let tmp = tempfile::tempdir().unwrap();
-        let authority = crate::store::shell_proof_tests::binding();
+        let authority = tilo_relay_shell::selection::fixtures::producer_authority(
+            &tilo_relay_shell::selection::fixtures::producer_metadata(),
+        );
         let workspace = crate::room_workspace_id(authority.room()).unwrap();
         let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
         store.bind_shell_authority(authority).unwrap();
@@ -1773,7 +1778,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn production_admission_linearizes_normal_prefix_before_capture_watermark() {
         let tmp = tempfile::tempdir().unwrap();
-        let authority = crate::store::shell_proof_tests::binding();
+        let authority = tilo_relay_shell::selection::fixtures::producer_authority(
+            &tilo_relay_shell::selection::fixtures::producer_metadata(),
+        );
         let workspace = crate::room_workspace_id(authority.room()).unwrap();
         let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
         store.bind_shell_authority(authority).unwrap();
@@ -1887,14 +1894,14 @@ mod tests {
 
     #[test]
     fn retained_checkpoint_payload_never_materializes_the_plain_state_document() {
-        let meta = crate::store::shell_selection::tests::producer_metadata();
+        let meta = tilo_relay_shell::selection::fixtures::producer_metadata();
         let row = meta["checkpoint2"]
             .as_array()
             .unwrap()
             .iter()
             .find(|row| row["kind"] == "Checkpoint")
             .unwrap();
-        let bytes = crate::store::shell_selection::tests::producer_frame(&meta, row, 2);
+        let bytes = tilo_relay_shell::selection::fixtures::producer_frame(&meta, row, 2);
         let crate::transport::Envelope::Delta { delta, .. } =
             crate::transport::decode(&bytes[4..]).unwrap()
         else {

@@ -4,7 +4,10 @@ name: Browser / authentication
 # images ship: crates/hosting/tilo-room-service/dev/auth-e2e.mjs starts them
 # with dev/run.py and drives headless Chrome through a person's first visit,
 # reloads, tabs, a damaged link, a stolen invitation, a host that forgot its
-# room and a stale link. Release binaries with the image workflow's flags,
+# room, a stale link, a membership the host pruned after an absence and a
+# person the room's moderator removed. Before it, dev/limits-e2e.py checks
+# the persistent room's enabled limits and what it keeps across a restart
+# over plain HTTP. Release binaries with the image workflow's flags,
 # so they come from the same compiler cache. Nightly and on demand; pull
 # requests run it only when the check itself changes.
 on:
@@ -58,6 +61,15 @@ jobs:
           bash scripts/ci-run.sh "room service build" -- \
             cargo build --locked --release -p tilo-room-service
 
+      # No browser and no bundle: the persistent room's caps, join windows,
+      # restart and snapshot bound over plain HTTP, with the same binaries.
+      - name: Enabled limits and kept state of the persistent room
+        run: |
+          set -euo pipefail
+          python3 crates/hosting/tilo-room-service/dev/limits-e2e.py \
+            --relay-bin target/release/tilo-relay --room-service-bin target/release/tilo-room-service \
+            --out "$RUNNER_TEMP/limits-e2e"
+
       - name: Release desktop bundle, as the web entry image builds it
         run: |
           set -euo pipefail
@@ -92,4 +104,13 @@ jobs:
         with:
           name: browser-auth-e2e
           path: ${{ runner.temp }}/auth-e2e/
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: room-limits-e2e
+          path: |
+            ${{ runner.temp }}/limits-e2e/
+            !${{ runner.temp }}/limits-e2e/scratch/
           if-no-files-found: warn

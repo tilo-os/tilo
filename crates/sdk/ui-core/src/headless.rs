@@ -3397,6 +3397,9 @@ impl FrameHarness {
     ) -> bool {
         self.relayout();
         self.idle_control_tick();
+        // Visual readiness includes saves. Like a live window's idle pass,
+        // offer edits to the writer before sampling their durability again.
+        self.persist_tick();
         self.relayout();
         if condition(self) {
             return true;
@@ -3428,6 +3431,9 @@ impl FrameHarness {
             background.park(slice.min(deadline));
             self.relayout();
             self.idle_control_tick();
+            // A later frame can produce another edit; submission and ACK
+            // servicing must continue throughout the same bounded wait.
+            self.persist_tick();
             self.relayout();
             if condition(self) {
                 return true;
@@ -13095,6 +13101,10 @@ impl Drop for FrameHarness {
         self.node_map.clear();
     }
 }
+
+#[cfg(all(test, feature = "native"))]
+#[path = "headless/visual_persistence_tests.rs"]
+mod visual_persistence_tests;
 
 // Draft to append under cfg(test) in headless.rs after initial source release.
 #[cfg(test)]

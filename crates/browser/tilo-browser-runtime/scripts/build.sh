@@ -194,9 +194,11 @@ mkdir -p "$out/app"
 cp "$crate/web/app/index.html" "$out/app/index.html"
 # The live plane's MoQ library is bundled from the published @moq/net pinned
 # in scripts/moq-browser/package-lock.json, never committed, never from a
-# local development copy in web/.
+# local development copy in web/. npm ci writes node_modules beside the lock
+# file: TILO_MOQ_BROWSER_DIR names a writable copy of scripts/moq-browser for
+# builds whose source tree is read-only (t's checks).
 if [[ $moq_kept == 0 ]]; then
-  (cd "$repo/scripts/moq-browser" && npm ci --no-audit --no-fund --silent && node build.mjs "$out/media-moq-library.mjs")
+  (cd "${TILO_MOQ_BROWSER_DIR:-$repo/scripts/moq-browser}" && npm ci --no-audit --no-fund --silent && node build.mjs "$out/media-moq-library.mjs")
 fi
 
 kept fonts.json || python3 - "$repo" "$out" <<'PY'

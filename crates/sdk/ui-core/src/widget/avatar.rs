@@ -405,7 +405,8 @@ impl<'a> AvatarFace<'a> {
         let style = overflow_style(ctx.theme, side);
         let (width, height) = ctx.text.measure_style(&label, None, &style);
         let centre = disc.center();
-        let ink = ctx.theme.text_dim;
+        // As readable as the initials beside it.
+        let ink = ctx.theme.text_primary;
         ctx.text(
             &label,
             &style,
@@ -523,7 +524,7 @@ fn overflow_style(theme: &Theme, side: f64) -> TextStyle {
     theme
         .text(TextRole::Label)
         .strong()
-        .with_content_size(crate::num::f32_of_f64(side * 0.36))
+        .with_content_size(crate::num::f32_of_f64(side * 0.4))
 }
 
 /// Where a retained avatar's picture comes from.

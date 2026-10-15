@@ -21,8 +21,8 @@ pub use nearby_transfer::NativeNearbyTransfer;
 use std::sync::Arc;
 use tilo_action_broker::services::{
     ContinuationServices, HostServices, LaunchContent, LaunchPlace, LaunchScope,
-    LaunchableApplication, LauncherServices, LegacyWorkspaceProjection, NativeDocumentRead,
-    NativeDocumentReadContext, NativeDocumentReads, ShortcutLibraryRequest,
+    LaunchableApplication, Launched, LauncherServices, LegacyWorkspaceProjection,
+    NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, ShortcutLibraryRequest,
     ShortcutLibraryServices, WorkspaceAuthority, WorkspaceControlServices,
     WorkspaceGovernanceRequest, WorkspaceGovernanceServices,
 };
@@ -1035,14 +1035,15 @@ impl LauncherServices for NativeLauncher {
         workspace: &tilo_desktop_model::Workspace,
         content: LaunchContent<'_>,
         place: &LaunchPlace,
-    ) -> Result<(), String> {
+    ) -> Result<Launched, String> {
         if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
-            return launch_host_application(desktop_id, workspace, content);
+            return launch_host_application(desktop_id, workspace, content)
+                .map(|()| Launched::Unconfirmed);
         }
         if content.hash.is_empty()
             && let Some(opened) = self.open_through_governor(app, workspace, place)
         {
-            return opened;
+            return opened.map(|()| Launched::Unconfirmed);
         }
         let mut workspace = workspace.clone();
         if let Some(person) = content.author {
@@ -1050,9 +1051,14 @@ impl LauncherServices for NativeLauncher {
         }
         let document = stage_launch_content(app, content, &mut workspace, &SessionContentStore)?;
         self.place(app, &workspace, place);
-        super::launcher::launch_document_in_workspace(app, &workspace, document.as_deref())
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        // The process it starts keeps the attempt's token in its launch
+        // record, and presents it when its connection is authenticated.
+        super::launch_readiness::identified(|| {
+            super::launcher::launch_document_in_workspace(app, &workspace, document.as_deref())
+                .map(drop)
+                .map_err(|e| e.to_string())
+        })
+        .map(|ticket| Launched::Started { ticket })
     }
     fn authenticated_launch(
         &self,

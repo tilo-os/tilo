@@ -13,6 +13,8 @@
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 
+pub mod compute;
+
 use std::path::PathBuf;
 
 use ed25519_dalek::SigningKey;

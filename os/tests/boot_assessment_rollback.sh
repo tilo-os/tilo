@@ -9,7 +9,10 @@
 # wrapper, `tilo-vm vm ssh NAME --`). With SUDO_PASS the commands that need root
 # go through `sudo -S`; without it RUNNER must already be root. RESET, if set,
 # power-cycles a guest that stopped answering, since a broken boot may never
-# bring its network up; without it such a boot fails the check.
+# bring its network up; without it such a boot fails the check. UNLOCK, if set,
+# runs on the host every few seconds while a rebooted guest does not answer yet:
+# an installed system's encrypted root waits for its passphrase at every boot
+# (UNLOCK types it once the prompt is on screen, e.g. with `vm.sh type -`).
 #
 # STAGE_IMAGE is what `bootc switch` stages: any bootable image other than the
 # booted one that this machine's policy accepts (an immutable tilo-vm digest on
@@ -51,6 +54,7 @@ OUT="${2:-${TILO_RUN:-/tmp}/boot-assessment}"
 RUNNER="${RUNNER:-}"
 SUDO_PASS="${SUDO_PASS:-}"
 RESET="${RESET:-}"
+UNLOCK="${UNLOCK:-}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-420}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-240}"
 SWITCH_TIMEOUT="${SWITCH_TIMEOUT:-2400}"
@@ -95,7 +99,7 @@ id_of() { sed -E 's/\+[0-9]+(-[0-9]+)?\.conf$/.conf/' <<<"$1"; }
 # is on its options line.
 entry_table() {
   as_root '
-    for d in /boot/loader/entries /boot/efi/loader/entries /boot/loader/entries.staged; do
+    for d in /boot/loader/entries /boot/efi/loader/entries /boot/loader/entries.staged /boot/efi/loader/entries.staged; do
       [ -d "$d" ] || continue
       esp="${d%/loader/*}"
       for f in "$d"/bootc*.conf; do
@@ -124,6 +128,7 @@ wait_reachable() {
   while [ "$(date +%s)" -lt "$deadline" ]; do
     id="$(boot_id)"
     if [ -n "$id" ] && [ "$id" != "$old" ]; then printf '%s\n' "$id"; return 0; fi
+    [ -z "$UNLOCK" ] || bash -c "$UNLOCK" >&2 || true
     sleep 3
   done
   return 1
@@ -174,7 +179,7 @@ wait_blessed() {
 record_boot() {
   local name="$1"
   as_root 'echo "cmdline: $(cat /proc/cmdline)"; echo; bootctl status --no-pager 2>&1 | sed -n "/Current Entry/p;/Default Entry/p"; echo
-           ls -l /boot/loader/entries /boot/loader/entries.staged 2>&1; echo
+           ls -l /boot/loader/entries /boot/loader/entries.staged /boot/efi/loader/entries /boot/efi/loader/entries.staged 2>&1; echo
            systemctl --no-pager status tilo-boot-health.service greetd.service systemd-bless-boot.service tilo-boot-entries.service 2>&1 | head -80; echo
            journalctl -b --no-pager -u tilo-boot-health -u tilo-boot-entries -u systemd-bless-boot 2>&1 | tail -60; echo
            systemd-analyze 2>&1 | head -2' > "$OUT/$name.txt" 2>&1
@@ -213,6 +218,16 @@ A_DIGEST="$(booted_digest)"
 A_ENTRY="$(current_entry)"
 [ -n "$A_ENTRY" ] || fail "the boot loader did not report the booted entry (no LoaderEntrySelected); this check cannot see which deployment boots"
 FLAVOUR="$(guest 'cat /usr/lib/tilo/image-flavour 2>/dev/null' | tr -d '\r\n')"
+# Where the ESP is mounted on this layout: /boot on a sealed or dev disk,
+# /boot/efi beside an installed system's separate /boot. Every boot tool looks
+# only there, so an ESP they cannot find leaves each update without a try
+# counter and each good boot unblessed; that fails here, before anything else.
+as_root 'for m in /boot /boot/efi /efi; do ls "$m" >/dev/null 2>&1 || true
+           findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS --mountpoint "$m" || echo "$m: not a mount point"; done
+         echo; bootctl status --no-pager 2>&1 | head -40' > "$OUT/00-esp.txt" 2>&1
+ESP_PATH="$(as_root 'bootctl --print-esp-path 2>/dev/null' | tr -d '\r\n')"
+[ -n "$ESP_PATH" ] || fail "systemd finds no mounted ESP (bootctl --print-esp-path), so no boot here can be blessed; see $OUT/00-esp.txt"
+ok "the ESP is mounted at $ESP_PATH"
 ok "booted ${A_ENTRY} (composefs ${A_DIGEST:0:16}, image flavour ${FLAVOUR:-sealed})"
 # A boot still on trial is blessed (or not) by its own health check first; the
 # booted entry has to be a settled one before another is staged beside it.

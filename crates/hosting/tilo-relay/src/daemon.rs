@@ -921,7 +921,6 @@ impl Relay {
                             .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
                         #[cfg(feature = "agents")]
                         trust_policy: handler.trust_policy.clone(),
-                        #[cfg(feature = "agents")]
                         agents: handler.agents.clone(),
                     },
                     cfg.state_root.join("rooms"),
@@ -1281,6 +1280,35 @@ impl Relay {
             .await
     }
 
+    /// Let visitors watch `workspace_id` read-only as `spectators`: every
+    /// device the spectator root certified reads the room's state and
+    /// writes nothing, up to `spectators.seats` subscribed at once (see
+    /// [`crate::room_access`]). The spectator person must be a member of the
+    /// room, which is also what lets its devices through the handshake.
+    ///
+    /// # Errors
+    ///
+    /// The room is not open on this relay.
+    pub async fn admit_spectators(
+        &self,
+        workspace_id: u64,
+        spectators: crate::room_access::Spectators,
+    ) -> Result<(), RelayError> {
+        let workspace = self
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned()
+            .ok_or_else(|| {
+                RelayError::GovernedAccess(format!("room {workspace_id} is not open here"))
+            })?;
+        workspace.lock().await.spectators = Some(spectators);
+        // Live subscriptions are audited again: fewer seats end the extra.
+        crate::authority_epoch::bump();
+        Ok(())
+    }
+
     fn governed_access_writer(&self) -> GovernedAccessWriter {
         GovernedAccessWriter {
             workspaces: self.workspaces.clone(),
@@ -1625,7 +1653,11 @@ fn open_bound_workspace(
         )?
     };
     if let Some(authority) = &binding.shell_authority {
-        rt.store.bind_shell_authority(authority.clone())?;
+        // The configured authority is typed at the config edge; the store's
+        // shell adapter reads its serialised form.
+        let authority = serde_json::to_value(authority)
+            .map_err(|error| crate::store::StoreError::Json(error.to_string()))?;
+        rt.store.bind_shell(&authority)?;
     }
     rt.checkpoint_prefix_recovery = binding.checkpoint_prefix_recovery;
     rt.admission = rt.admission.rebind(

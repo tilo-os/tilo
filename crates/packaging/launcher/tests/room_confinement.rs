@@ -477,3 +477,191 @@ fn fedora_nss_trust_module_resolves_inside_the_app_sandbox() {
         "TLS trust must not expose private host configuration: {unrelated}"
     );
 }
+
+/// Launch the fixture with `grants` written as the compositor's capability
+/// file, Landlock enforced, and return its stdout.
+fn run_with_grants(
+    data: &DataHome,
+    grants: &[(String, collab_types::caps::Access)],
+    argv: &[&str],
+) -> String {
+    use collab_types::caps::{CapOverride, LaunchGrants, Scope, Subject};
+
+    let caps_file = data.path.join("caps.json");
+    let sandbox = grants
+        .iter()
+        .map(|(path, verb)| {
+            CapOverride::grant(Subject::app(PACKAGE), Scope::FsPath(path.clone()), *verb)
+        })
+        .collect();
+    let grants = LaunchGrants {
+        authors: Vec::new(),
+        sandbox,
+    };
+    std::fs::write(
+        &caps_file,
+        serde_json::to_vec(&grants).expect("encode grants"),
+    )
+    .expect("write capability file");
+    let opts = RunOptions {
+        no_services: true,
+        bwrap_bin: Some(bwrap()),
+        landlock_enforce: true,
+        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+        capabilities_path: Some(caps_file),
+        mode: launcher::run::LaunchMode::Cli {
+            command: "roomtest".to_string(),
+            passthrough_argv: argv.iter().map(std::string::ToString::to_string).collect(),
+        },
+        ..isolated_options(&data.path)
+    };
+    let (status, out) = run_with_captured(&manifest(), roomtest_payload(), &opts).expect("launch");
+    let text = String::from_utf8_lossy(&out).trim().to_string();
+    assert!(
+        status.success(),
+        "fixture exited {status:?} with stdout {text:?}"
+    );
+    text
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one person's home, probed phase by phase through the production launch"
+)]
+fn a_home_grant_never_reaches_tilos_private_configuration() {
+    use collab_types::caps::Access;
+
+    // Built before the home is replaced: the fixture compiles with `rustc`
+    // from the developer's toolchain, which lives under the real `HOME`.
+    let _ = roomtest_payload();
+    let home = tilo_test_env::TestHome::new().expect("temporary home");
+    let store = home.config().join("tilo");
+    let secret = store.join("identity/secrets/0123abcd.key");
+    let vault_key = store.join("accounts/vault/vault.key");
+    let attestors = store.join("trusted-attestors.toml");
+    let revoked = store.join("revoked-keys.toml");
+    for (path, contents) in [
+        (&secret, "root-identity-secret"),
+        (&vault_key, "vault-key-bytes"),
+        (&attestors, "# trusted attestors"),
+        (&revoked, "# revoked keys"),
+    ] {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("store dir");
+        std::fs::write(path, contents).expect("store file");
+    }
+    let note = home.home().join("Documents/note.txt");
+    std::fs::create_dir_all(note.parent().expect("parent")).expect("documents");
+    std::fs::write(&note, "my note").expect("note");
+    let home_dir = home.home().display().to_string();
+    let path = |p: &std::path::Path| p.display().to_string();
+
+    // Phase `a_writable_home_grant_hides_and_protects_the_store`.
+    {
+        let data = DataHome::new();
+        let grant = [(home_dir, Access::Write)];
+        let run = |argv: &[&str]| run_with_grants(&data, &grant, argv);
+
+        // The grant itself works: the person's files read and write.
+        assert_eq!(
+            run(&["read", &path(&note)]),
+            format!("OK {} my note", path(&note))
+        );
+        let other_config = home.config().join("other-app.toml");
+        assert!(
+            run(&["writeabs", &path(&other_config), "x = 1"]).starts_with("WROTE "),
+            "the rest of ~/.config stays writable under a writable home grant"
+        );
+
+        // Tilo's store is an empty directory: no secret, key or trust file.
+        assert_eq!(
+            run(&["readdir", &path(&store)]),
+            format!("OK {}", path(&store)),
+            "the private store must read as empty"
+        );
+        for private in [&secret, &vault_key, &attestors, &revoked] {
+            let line = run(&["read", &path(private)]);
+            assert!(
+                line.starts_with("ERR "),
+                "{} must be unreadable under a home grant: {line}",
+                private.display()
+            );
+        }
+
+        // Nor can the app plant a trust root in the store's place: writing it,
+        // or moving the real store aside to write one where it was.
+        for target in [&attestors, &revoked] {
+            let line = run(&["writeabs", &path(target), "planted"]);
+            assert!(line.starts_with("ERR "), "{line}");
+        }
+        let moved_config = home.home().join(".config-moved");
+        for (from, to) in [
+            (home.config().to_path_buf(), moved_config.clone()),
+            (store.clone(), home.home().join("tilo-moved")),
+        ] {
+            let line = run(&["rename", &path(&from), &path(&to)]);
+            assert!(
+                line.starts_with("ERR "),
+                "{} must not be movable from inside the sandbox: {line}",
+                from.display()
+            );
+        }
+
+        // On the host, every file is where it was, unchanged.
+        assert_eq!(
+            std::fs::read_to_string(&secret).expect("secret"),
+            "root-identity-secret"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&attestors).expect("attestors"),
+            "# trusted attestors"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&revoked).expect("revoked"),
+            "# revoked keys"
+        );
+        assert!(!moved_config.exists());
+        assert_eq!(
+            std::fs::read_to_string(&other_config).expect("other config"),
+            "x = 1",
+            "the write beside the store reached the host"
+        );
+    }
+    // Phase `a_read_only_config_grant_hides_the_store`.
+    {
+        let data = DataHome::new();
+        let grant = [(path(home.config()), Access::Read)];
+        let line = run_with_grants(&data, &grant, &["read", &path(&secret)]);
+        assert!(line.starts_with("ERR "), "{line}");
+        let listing = run_with_grants(&data, &grant, &["readdir", &path(home.config())]);
+        assert!(
+            listing.starts_with("OK ") && listing.contains("tilo"),
+            "the grant still lists ~/.config: {listing}"
+        );
+    }
+    // Phase `a_grant_naming_the_store_is_refused`.
+    {
+        let data = DataHome::new();
+        for granted in [path(&store), path(&store.join("identity"))] {
+            let grant = [(granted.clone(), Access::Write)];
+            let line = run_with_grants(&data, &grant, &["read", &path(&secret)]);
+            assert!(
+                line.starts_with("ERR "),
+                "a grant on {granted} must bind nothing: {line}"
+            );
+        }
+    }
+    // Phase `a_documents_grant_is_unchanged`.
+    {
+        let data = DataHome::new();
+        let documents = path(note.parent().expect("documents"));
+        let grant = [(documents, Access::Write)];
+        assert_eq!(
+            run_with_grants(&data, &grant, &["read", &path(&note)]),
+            format!("OK {} my note", path(&note))
+        );
+        let line = run_with_grants(&data, &grant, &["read", &path(&secret)]);
+        assert!(line.starts_with("ERR "), "{line}");
+    }
+    drop(home);
+}

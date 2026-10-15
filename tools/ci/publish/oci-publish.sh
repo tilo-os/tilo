@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# The publishing half of an image: push OUT/image.oci.tar to REPOSITORY with its digest
+# unchanged, attach the signature oci-sign.sh made if there is one, and point TAG... at it.
+# Writes OUT/receipt.json, the digest receipt deployments pin. Holds the registry token
+# (REGISTRY_USER, REGISTRY_TOKEN), never signing credentials.
+#
+# usage: oci-publish.sh dev|release REPOSITORY OUT TAG...
+# The first argument is the channel the check publishes to; it must be this run's (lib.sh), so a
+# release check can never publish main's tree and a development check never stable's.
+# Tags may contain {commit}, replaced by T_COMMIT.
+set -euo pipefail
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+wanted=${1:?usage: oci-publish.sh dev|release REPOSITORY OUT TAG...}
+repository=${2:?}
+out=${3:?}
+shift 3
+[[ $(channel) == "$wanted" ]] || die "this check publishes to $wanted; the run is for ${T_REF:-}"
+[[ $wanted == dev || -s $out/signature ]] || die 'a release is published signed only'
+(($#)) || die 'no tags'
+require_commit
+: "${REGISTRY_TOKEN:?REGISTRY_TOKEN is required}"
+digest=$(cat "$out/digest")
+[[ $(archive_digest "$out/image.oci.tar") == "$digest" ]] || die 'the archive is not the build'
+registry=${repository%%/*}
+auth=$scratch/registry-auth.json
+export REGISTRY_AUTH_FILE=$auth DOCKER_CONFIG=$scratch/docker
+mkdir -p "$DOCKER_CONFIG"
+printf '%s' "$REGISTRY_TOKEN" | skopeo login --authfile "$auth" -u "${REGISTRY_USER:-t}" --password-stdin "$registry"
+cp "$auth" "$DOCKER_CONFIG/config.json"
+first=${1//\{commit\}/$T_COMMIT}
+skopeo copy --preserve-digests --authfile "$auth" "oci-archive:$out/image.oci.tar" "docker://$repository:$first"
+pushed=$(skopeo inspect --raw --authfile "$auth" "docker://$repository@$digest" | sha256sum | cut -d' ' -f1)
+[[ sha256:$pushed == "$digest" ]] || die "the registry holds sha256:$pushed, not $digest"
+if [[ -s $out/signature ]]; then
+  use_cosign
+  cosign attach signature --payload "$out/payload.json" --signature "$out/signature" "$repository@$digest"
+  cosign verify --insecure-ignore-tlog=true --key "$repo_root/keys/cosign.pub" "$repository@$digest" >/dev/null
+fi
+tags="\"$first\""
+for tag in "${@:2}"; do
+  tag=${tag//\{commit\}/$T_COMMIT}
+  skopeo copy --preserve-digests --authfile "$auth" "docker://$repository@$digest" "docker://$repository:$tag"
+  tags+=",\"$tag\""
+done
+signed=false
+[[ -s $out/signature ]] && signed=true
+printf '{"schemaVersion":3,"repository":"%s","digest":"%s","image":"%s@%s","tags":[%s],"sourceRevision":"%s","reference":"%s","signed":%s}\n' \
+  "$repository" "$digest" "$repository" "$digest" "$tags" "$T_COMMIT" "$T_REF" "$signed" > "$out/receipt.json"
+printf 'published %s@%s\n' "$repository" "$digest"

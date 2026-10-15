@@ -168,6 +168,7 @@ members = [
     "crates/collab/tilo-joined-room",
     "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
+    "crates/collab/workspace-join",
 
     # Dev
     "crates/dev/collab-link",
@@ -208,6 +209,7 @@ members = [
     "crates/hosting/tilo-relay-protocol",
     "crates/hosting/tilo-relay-session",
     "crates/hosting/tilo-relay-shell",
+    "crates/hosting/tilo-relay-store",
 
     # Media
     "crates/media/ocr",
@@ -315,6 +317,7 @@ members = [
     "crates/session/greeter",
     "crates/session/install-profile-model",
     "crates/session/installer",
+    "crates/session/network-secret-agent",
     "crates/session/polkit-agent",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
@@ -326,6 +329,8 @@ members = [
     "crates/system/advisory-lock",
     "crates/system/app-state",
     "crates/system/block-devices",
+    "crates/system/board-successor",
+    "crates/system/boot-order",
     "crates/system/bounded-command",
     "crates/system/cloud-source",
     "crates/system/cloud-source-dav",
@@ -340,12 +345,14 @@ members = [
     "crates/system/endpoint-reachability",
     "crates/system/esp-write",
     "crates/system/extension-helper",
+    "crates/system/firstboot-files",
     "crates/system/fs",
     "crates/system/fs-content",
     "crates/system/fs-protocol",
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",
+    "crates/system/image-policy-check",
     "crates/system/libvirt-domain",
     "crates/system/messaging-protocol",
     "crates/system/os-actions",
@@ -356,6 +363,7 @@ members = [
     "crates/system/secret-vault",
     "crates/system/settings-store",
     "crates/system/ssh-agent-client",
+    "crates/system/staging-reclaim",
     "crates/system/swipe",
     "crates/system/system-extension",
     "crates/system/tilo-bluez",
@@ -651,7 +659,7 @@ notify = "8"
 landlock = "0.4"
 seccompiler = "0.5"
 sd-notify = "0.4"
-sysinfo = "0.32"
+sysinfo = "0.36"
 open = "5.3.5"
 libc = "0.2.186"
 rustix = "1.1.4"

@@ -14,6 +14,12 @@
 //! relay's recheck interval of the change, and no recheck ever waits on the
 //! workspace locks.
 //!
+//! A device the room admits to its live plane publishes there
+//! ([`RoomOperation::Live`]). One that may only watch the room, a public
+//! room's spectator, is granted the plane to receive only
+//! ([`RoomOperation::Watch`]): it sees the members' cursors and previews and
+//! publishes none, so it shows no cursor of its own.
+//!
 //! Frames are checked with the host's canonical codec for sealed live frames
 //! ([`tilo_relay_protocol::live::SealedLiveFrame`]): only their clear kind,
 //! sequence and record are read, never their content.
@@ -56,6 +62,9 @@ struct Grant {
     workspace_id: u64,
     room: String,
     publisher: String,
+    /// What the grant was admitted for: [`RoomOperation::Live`], which
+    /// publishes, or [`RoomOperation::Watch`], which only receives.
+    plane: RoomOperation,
     expires: Instant,
     permitted: AtomicBool,
 }
@@ -119,9 +128,15 @@ impl LiveGrants {
         workspace_id: u64,
         agent: Option<&str>,
     ) -> Option<LiveGrant> {
-        if !admitted(sessions, peer, workspace_id).await {
+        let plane = if admitted(sessions, peer, workspace_id).await {
+            RoomOperation::Live
+        } else if agent.is_none()
+            && admitted_to(sessions, peer, workspace_id, RoomOperation::Watch).await
+        {
+            RoomOperation::Watch
+        } else {
             return None;
-        }
+        };
         let device = peer.device_public_key;
         let grant_token: [u8; 32] = rand::random();
         let room = live_room(workspace_id);
@@ -135,6 +150,7 @@ impl LiveGrants {
             workspace_id,
             room,
             publisher,
+            plane,
             expires: Instant::now()
                 .checked_add(GRANT_TTL)
                 .unwrap_or_else(Instant::now),
@@ -199,7 +215,7 @@ impl LiveGrants {
             let permitted = grant.expires > Instant::now()
                 && match open.get(&grant.session) {
                     Some(peer) if peer.device_public_key == grant.device => {
-                        admitted(sessions, peer, grant.workspace_id).await
+                        admitted_to(sessions, peer, grant.workspace_id, grant.plane).await
                     }
                     Some(_) | None => false,
                 };
@@ -222,13 +238,27 @@ pub(crate) async fn admitted(
     peer: &AuthenticatedPeer,
     workspace_id: u64,
 ) -> bool {
+    admitted_to(sessions, peer, workspace_id, RoomOperation::Live).await
+}
+
+/// Whether `peer` may be on `plane` of `workspace_id`'s live plane now.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn admitted_to(
+    sessions: &Sessions,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+    plane: RoomOperation,
+) -> bool {
     let relay = &sessions.context().relay;
     let workspace = relay.workspaces.lock().await.get(&workspace_id).cloned();
     let Some(workspace) = workspace else {
         return false;
     };
     let workspace = workspace.lock().await;
-    room_access::decide(&workspace, &relay.trust(), peer, RoomOperation::Live).admitted()
+    room_access::decide(&workspace, &relay.trust(), peer, plane).admitted()
 }
 
 struct Admitted {
@@ -243,7 +273,7 @@ impl LiveSession for Admitted {
         &self.grant.publisher
     }
     fn publish(&self) -> bool {
-        true
+        self.grant.plane == RoomOperation::Live
     }
     fn subscribe(&self) -> bool {
         true
@@ -309,6 +339,7 @@ mod tests {
             workspace_id: 3,
             room: live_room(3),
             publisher: hex::encode([2; 32]),
+            plane: RoomOperation::Live,
             expires: Instant::now(),
             permitted: AtomicBool::new(true),
         });

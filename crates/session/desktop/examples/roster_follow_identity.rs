@@ -48,7 +48,8 @@ fn paint_here(
         &CollaboratorsModel {
             host: Rect::new(0.0, 0.0, 800.0, 600.0),
             rows,
-            own_initial: 'Q',
+            own_label: "Quinn",
+            own_rename: false,
             own_color: theme.tokens.colors.presence.of_rgb((170, 120, 130)),
             unavailable: None,
             may_invite: false,
@@ -56,6 +57,7 @@ fn paint_here(
             following_pairs: &[],
             own_status: None,
             own_activity: None,
+            own_activity_generated: false,
             own_status_automatic: false,
             status_sharing: ui::StatusSharing::Automatic,
             status_editing: false,
@@ -111,13 +113,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         ada.activity = Some("Main · Notes".into());
         ada.status = Some(RosterStatus {
             text: "Tightening the launch notes".into(),
-            automatic: false,
+            source: tilo_desktop::collaborators::LineSource::Written,
         });
         ada.recent = Some(RosterStatus {
             text: "Rewrote the intro, resolved two review comments and moved the FAQ \
                    under Pricing"
                 .into(),
-            automatic: true,
+            source: tilo_desktop::collaborators::LineSource::Generated,
         });
         scribe.label = "Scribe".into();
         scribe.initial = 'S';

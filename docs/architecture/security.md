@@ -184,7 +184,24 @@ than the inviter's role, membership changes are the room's policy checks
 `call` action, which no role preset below the owner's holds. What no room
 decides stays the host person's (`host_authority.rs`): creating, listing
 and entering rooms, pre-admission, room grants, administrators, bots,
-application authorship and the host's compute control.
+application authorship and the host's compute control. An agent is a
+device of that person and still none of it: the room authority, the
+compute control stream and compute job content all refuse a device the
+relay's agent registry names (`RelayTrust::is_agent`), in every relay
+build, not only the one that runs agents.
+
+The suite that holds a hosted relay to this is
+`crates/hosting/tilo-relay/tests/tenant_isolation.rs`: one relay governing
+two tenants' rooms, where a member one room lets invite, a member of the
+other and the host's delegated agent try every governance, host and member
+action, the administration door, subscription, write, catalogue and
+compute door against the room that is not theirs, and
+every refusal is checked against that room's governance afterwards. The
+`Security / tenant and agent isolation` workflow
+(`.forgejo/workflows/security-isolation.yml`) runs it nightly and on
+demand with the room-access, admission, revocation and agent-confinement
+suites, against the default relay build and the `agents` build the room
+service ships.
 
 The desktop administers a relay room it holds through those governance
 actions, on the room's own relay session, the same surface agents and
@@ -451,7 +468,8 @@ document it names, whether a checkpoint is governance, a member's own
 continuity checkpoint or complete on its own, and which devices a governance
 step is addressed to (the `ShellPayloads` adapter its embedder injects,
 `crates/hosting/tilo-relay-shell`), plus the retained-proof
-inputs of native shell replay (`store::shell_selection`). It also refuses a
+inputs of native shell replay (that crate's `selection`, which the store
+steps through the `tilo-relay-store` seam). It also refuses a
 document change its app's published surface does not allow, or that
 the room's governor did not grant its author (`surfaces`), fetching each
 app's `surface.toml` by content hash from the registry (`apps.tilo.so` unless
