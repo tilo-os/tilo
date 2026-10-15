@@ -165,7 +165,8 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
-read-fonts = { version = "0.39" }
+read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
+read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
@@ -192,7 +193,8 @@ signature = { version = "3", default-features = false, features = ["alloc", "dig
 simd-adler32 = { version = "0.3" }
 simdutf8 = { version = "0.1", default-features = false, features = ["aarch64_neon", "std"] }
 siphasher = { version = "1" }
-skrifa = { version = "0.42" }
+skrifa-8e56bb57e3bdefa1 = { package = "skrifa", version = "0.44" }
+skrifa-b32c9ddb6d93a9d2 = { package = "skrifa", version = "0.42" }
 slab = { version = "0.4" }
 slotmap = { version = "1", default-features = false, features = ["std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union", "write"] }
@@ -402,7 +404,8 @@ rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
 raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
-read-fonts = { version = "0.39" }
+read-fonts-4beaf6d1349630b6 = { package = "read-fonts", version = "0.41", default-features = false, features = ["experimental_font_api", "std"] }
+read-fonts-f645eb7eb1285ab4 = { package = "read-fonts", version = "0.39" }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
@@ -429,7 +432,8 @@ signature = { version = "3", default-features = false, features = ["alloc", "dig
 simd-adler32 = { version = "0.3" }
 simdutf8 = { version = "0.1", default-features = false, features = ["aarch64_neon", "std"] }
 siphasher = { version = "1" }
-skrifa = { version = "0.42" }
+skrifa-8e56bb57e3bdefa1 = { package = "skrifa", version = "0.44" }
+skrifa-b32c9ddb6d93a9d2 = { package = "skrifa", version = "0.42" }
 slab = { version = "0.4" }
 slotmap = { version = "1", default-features = false, features = ["std"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union", "write"] }
@@ -494,7 +498,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -526,7 +530,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -558,7 +562,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
@@ -590,7 +594,7 @@ ashpd = { version = "0.13", default-features = false, features = ["file_chooser"
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
-harfrust = { version = "0.5" }
+harfrust = { version = "0.12" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }

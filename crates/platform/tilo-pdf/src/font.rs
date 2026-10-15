@@ -336,7 +336,7 @@ impl TextSetter {
             harfrust::Direction::LeftToRight
         });
         buffer.guess_segment_properties();
-        let glyphs = shaper.shape(buffer, &[]);
+        let glyphs = shaper.shape(buffer, harfrust::ShapeOptions::new());
         let infos = glyphs.glyph_infos();
         let positions = glyphs.glyph_positions();
         // Cluster start offsets, to give each glyph the text it came from.
