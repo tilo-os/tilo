@@ -1004,7 +1004,9 @@ default = false
 # tabs, a damaged link, a stolen invitation, a host that forgot its room, a
 # stale link, a pruned membership and a removed member. Before it,
 # dev/limits-e2e.py checks the persistent room's limits and what it keeps across
-# a restart over plain HTTP. Release binaries with the images' flags. The bundle
+# a restart over plain HTTP, and dev/owner-key-e2e.py that only a throwaway
+# room's creator mints its invitations and watches its members. Release
+# binaries with the images' flags. The bundle
 # records the commit it was built from, so a committed tree must match it
 # exactly; a working tree with changes runs as a development build.
 [[check]]
@@ -1017,6 +1019,8 @@ cargo build --locked --release -p tilo-room-service
 bin=$CARGO_TARGET_DIR/release
 python3 crates/hosting/tilo-room-service/dev/limits-e2e.py \
   --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out "$TMPDIR/limits-e2e"
+python3 crates/hosting/tilo-room-service/dev/owner-key-e2e.py \
+  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out "$TMPDIR/owner-key-e2e"
 cp -r scripts/moq-browser "$TMPDIR/moq-browser"
 TILO_MOQ_BROWSER_DIR=$TMPDIR/moq-browser crates/browser/tilo-browser-runtime/scripts/build.sh "$TMPDIR/auth-bundle" --bundle desktop
 bash tools/ci/ensure-browser-dependencies.sh

@@ -101,6 +101,11 @@ pub struct Room {
     /// The room's user root (`connectPeer({userPublicKey})`).
     pub user_public_key: String,
     pub expires_at_ms: u64,
+    /// The capability of whoever created the room (the page holding the
+    /// `POST /rooms` answer) to mint invitations and watch its members. It
+    /// appears in no guest link, and neither the room's id (its hostname)
+    /// nor its uuid (in every guest link) leads to it.
+    owner_key: String,
     stdin: Mutex<OperatorInput>,
     events: broadcast::Sender<Event>,
     history: std::sync::Mutex<Vec<Member>>,
@@ -136,6 +141,13 @@ fn uuid_v4() -> String {
         part(8..10),
         part(10..16)
     )
+}
+
+/// A fresh room owner key: 32 bytes from the operating system, in hex.
+fn owner_key() -> Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|error| anyhow::anyhow!("room owner key: {error}"))?;
+    Ok(hex::encode(bytes))
 }
 
 fn deadline(after: Duration) -> tokio::time::Instant {
@@ -278,6 +290,7 @@ impl Room {
             uuid: uuid_v4(),
             user_public_key,
             expires_at_ms: placement.expires_at_ms,
+            owner_key: owner_key()?,
             stdin: Mutex::new(stdin),
             events,
             history: std::sync::Mutex::default(),
@@ -298,6 +311,19 @@ impl Room {
             reader.abandon_admissions();
         });
         Ok(room)
+    }
+
+    /// The owner's key, for the URLs only the room's creator is given.
+    pub fn owner_key(&self) -> &str {
+        &self.owner_key
+    }
+
+    /// Whether `presented` is the room's owner key, compared in constant
+    /// time so the answer's timing says nothing about how much matched.
+    pub fn owned_by(&self, presented: &str) -> bool {
+        use subtle::ConstantTimeEq;
+        presented.len() == self.owner_key.len()
+            && bool::from(presented.as_bytes().ct_eq(self.owner_key.as_bytes()))
     }
 
     /// Resolves once the relay broke the operator protocol; the room must
@@ -516,35 +542,31 @@ impl Room {
     }
 }
 
+/// A room on in-memory pipes, with the relay's ends to speak for it.
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-mod tests {
+pub(crate) mod testing {
     use super::*;
     use tokio::io::DuplexStream;
 
     /// The relay's ends of a room's pipes.
-    struct Relay {
+    pub(crate) struct Relay {
         commands: Lines<BufReader<DuplexStream>>,
         events: DuplexStream,
     }
 
     impl Relay {
-        async fn say(&mut self, line: &str) {
+        pub(crate) async fn say(&mut self, line: &str) {
             self.events
                 .write_all(format!("{line}\n").as_bytes())
                 .await
                 .unwrap();
         }
 
-        async fn report(&mut self, event: &RoomEvent) {
+        pub(crate) async fn report(&mut self, event: &RoomEvent) {
             self.say(&event.to_line()).await;
         }
 
-        async fn command(&mut self) -> OperatorCommand {
+        pub(crate) async fn command(&mut self) -> OperatorCommand {
             let line = tokio::time::timeout(Duration::from_secs(5), self.commands.next_line())
                 .await
                 .expect("the service sent no command")
@@ -554,7 +576,7 @@ mod tests {
         }
     }
 
-    fn started(version: u16, user: &str) -> RoomEvent {
+    pub(crate) fn started(version: u16, user: &str) -> RoomEvent {
         RoomEvent::Started {
             version,
             origin: "https://127.0.0.1:9700".into(),
@@ -566,18 +588,23 @@ mod tests {
         }
     }
 
-    fn placement() -> Placement {
+    fn placement(id: &str) -> Placement {
         Placement {
-            id: "room".into(),
+            id: id.into(),
             port: 9700,
-            origin: "https://room.localhost".into(),
+            origin: format!("https://{id}.localhost"),
             expires_at_ms: u64::MAX,
             directory: PathBuf::from("/nonexistent/tilo-room-test"),
         }
     }
 
     /// Attaches a room to in-memory pipes after the relay said `first`.
-    async fn attach_after(first: &[String]) -> (Result<Arc<Room>>, Relay) {
+    pub(crate) async fn attach_after(first: &[String]) -> (Result<Arc<Room>>, Relay) {
+        attach_as("room", first).await
+    }
+
+    /// [`attach_after`] for the room with service id `id`.
+    async fn attach_as(id: &str, first: &[String]) -> (Result<Arc<Room>>, Relay) {
         let (stdin, relay_stdin) = tokio::io::duplex(64 * 1024);
         let (mut relay_stdout, stdout) = tokio::io::duplex(64 * 1024);
         for line in first {
@@ -586,7 +613,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let room = Room::attach(placement(), Box::new(stdin), stdout).await;
+        let room = Room::attach(placement(id), Box::new(stdin), stdout).await;
         let relay = Relay {
             commands: BufReader::new(relay_stdin).lines(),
             events: relay_stdout,
@@ -594,9 +621,48 @@ mod tests {
         (room, relay)
     }
 
-    async fn running_room() -> (Arc<Room>, Relay) {
-        let (room, relay) = attach_after(&[started(room_operator::VERSION, "ab").to_line()]).await;
+    pub(crate) async fn running_room() -> (Arc<Room>, Relay) {
+        running_room_as("room").await
+    }
+
+    /// A started room with service id `id` on in-memory pipes; the relay's
+    /// ends must be kept, or the room sees its relay gone.
+    pub(crate) async fn running_room_as(id: &str) -> (Arc<Room>, Relay) {
+        let (room, relay) = attach_as(id, &[started(room_operator::VERSION, "ab").to_line()]).await;
         (room.unwrap(), relay)
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+mod tests {
+    use super::testing::{attach_after, running_room, started};
+    use super::*;
+
+    #[tokio::test]
+    async fn each_room_has_its_own_unguessable_owner_key_and_only_it_opens_the_room() {
+        let (room, _relay) = running_room().await;
+        let (other, _other_relay) = running_room().await;
+        let key = room.owner_key().to_owned();
+        assert_eq!(key.len(), 64, "32 bytes in hex: {key}");
+        assert!(key.bytes().all(|b| b.is_ascii_hexdigit()), "{key}");
+        assert_ne!(key, other.owner_key(), "two rooms share an owner key");
+        assert!(room.owned_by(&key));
+        for wrong in [
+            String::new(),
+            room.id.clone(),
+            room.uuid.clone(),
+            other.owner_key().to_owned(),
+            key.get(..63).unwrap().to_owned(),
+            format!("{key}0"),
+            key.to_uppercase(),
+        ] {
+            assert!(!room.owned_by(&wrong), "{wrong:?} opened the room");
+        }
     }
 
     #[tokio::test]
