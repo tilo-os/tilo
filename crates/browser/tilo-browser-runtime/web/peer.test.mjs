@@ -198,6 +198,36 @@ test('first connect certifies over HTTPS once, shows the pairing code and keeps 
   assert.equal(runtime.peer.disposed, true);
 });
 
+// What a host on a clock with nanosecond resolution issues: 19 significant
+// digits, which a JS number does not hold (json-text.mjs).
+const NANOS = '1792023733547123457';
+const LINUX_CERT = `{"device_public_key":[221],"issued_at_ns":${NANOS},"expires_at_ns":${NANOS}9,"signature":[1]}`;
+
+test('a certificate reaches the session byte for byte, its nanosecond timestamps intact', async () => {
+  const runtime = fakeRuntime();
+  runtime.certifyDevice = async () => `{"cert":${LINUX_CERT},"hostCert":{"issued_at_ns":${NANOS}}}`;
+  const peer = await connect(options(runtime, memoryStore(), {displayName: 'Ada "A"'}));
+  assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
+  assert.ok(runtime.peer.configText.includes(`"hostCert":{"issued_at_ns":${NANOS}}`));
+  assert.equal(runtime.peer.config.displayName, 'Ada "A"');
+  await peer.dispose();
+});
+
+test('a guest certificate from an invitation reaches the session byte for byte', async () => {
+  const runtime = fakeRuntime();
+  runtime.askToJoin = async () => `{"reply":{"kind":"admitted","room":"${ROOM}","workspaceId":"7","name":"Acme","role":"Editor"},"cert":${LINUX_CERT}}`;
+  runtime.hostInfo = async () => `{"hostCert":{"issued_at_ns":${NANOS}},"webtransportPort":443,"certificateSha256":"${'ab'.repeat(32)}"}`;
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
+  const peer = await joinWorkspace({
+    origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, admissionToken: 'token',
+    runtime, custody, store: memoryStore(), storage: null,
+    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); },
+  });
+  assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
+  assert.ok(runtime.peer.configText.includes(`"hostCert":{"issued_at_ns":${NANOS}}`));
+  await peer.dispose();
+});
+
 test('a page holding the root certifies itself, with no pairing code, and renews a certificate about to expire', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();

@@ -29,6 +29,9 @@ test-support = ["tilo-relay-store/test-support"]
 # plane. Needs the browser listener for steering from pages.
 agents = ["web", "dep:tilo-agent-participant", "dep:tilo-desktop-model", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:notes", "dep:canvas", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
 web = ["tilo-relay-shell/web", "dep:tilo-moq","dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
+# The legacy_stream_source example: a session streaming a window through the
+# production H.264 encoder (needs the GStreamer stack). No binary uses it.
+stream-source = ["dep:tilo-media"]
 
 [[bin]]
 name = "tilo-relay"
@@ -127,6 +130,8 @@ iroh-base.workspace = true
 
 # Identity + workspace directory + cert-chain verification.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# The production real-time encoder, for the legacy_stream_source example only.
+tilo-media = { path = "../../platform/tilo-media", features = ["realtime"], optional = true }
 
 # Workspace CRDT (same version as identity + shell).
 automerge.workspace = true
@@ -312,6 +317,14 @@ test = true
 [[example]]
 name = "keystroke_writes"
 test = false
+
+# A native session streaming a legacy window to the host through the
+# production encoder, for the browser streaming qualification
+# (scripts/perf/native_stream_qualification.mjs).
+[[example]]
+name = "legacy_stream_source"
+test = true
+required-features = ["stream-source"]
 
 [lints]
 workspace = true

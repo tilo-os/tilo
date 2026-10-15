@@ -51,6 +51,13 @@ const MAX_INPUT_BACKLOG_BYTES = 128 * 1024;
 export const INDEX_EXPIRE_MS = 5000;
 /** Decoder backlog past which frames are skipped until the next keyframe. */
 const MAX_DECODE_QUEUE = 6;
+/**
+ * A stream skipping a backlog that then goes quiet this long sends no
+ * keyframe to resume from: a still window. It is subscribed again, and the
+ * group the host replays (its keyframe and every frame since) is decoded
+ * whole, so the window ends on its current picture rather than a stale one.
+ */
+export const RESYNC_QUIET_MS = 500;
 /** Most events one input request carries (`legacy_window::MAX_INPUT_EVENTS`). */
 const MAX_INPUT_EVENTS = 64;
 // Native input permits 120 offered events per second. A 32-event burst plus
@@ -152,11 +159,18 @@ export function h264CodecString(accessUnit) {
 /**
  * WebCodecs decode of one stream: configured from its first keyframe, frames
  * before a keyframe (or after a backlog) are skipped until the next one.
+ * `catchUp()` decodes the next group whole, however long the queue grows:
+ * a group the host replays (to a new subscription) arrives at once, and only
+ * all of it ends on the window's current picture. `onStall()` is told when
+ * a backlog starts a skip.
  */
-export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, onError = () => {}}) {
+export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, onError = () => {}, onStall = () => {}}) {
   let decoder = null;
   let codec = null;
   let waitKey = true;
+  // false, 'key' (the next keyframe starts the group to catch up on) or
+  // 'group' (decoding that group; the keyframe after it ends it).
+  let catchingUp = false;
   const stats = {decoded: 0, skipped: 0, errors: 0};
   function close() {
     try { if (decoder && decoder.state !== 'closed') decoder.close(); } catch {}
@@ -182,9 +196,15 @@ export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, o
           if (!decoder || decoder.state === 'closed' || codec !== next) open(next);
         } catch (error) { stats.errors++; onError(error); close(); return false; }
         waitKey = false;
+        catchingUp = catchingUp === 'key' ? 'group' : false;
       }
       if (waitKey || !decoder) { stats.skipped++; return false; }
-      if (decoder.decodeQueueSize > MAX_DECODE_QUEUE) { waitKey = true; stats.skipped++; return false; }
+      if (catchingUp !== 'group' && decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
+        waitKey = true;
+        stats.skipped++;
+        onStall();
+        return false;
+      }
       try {
         decoder.decode(new EncodedVideoChunk({type: frame.key ? 'key' : 'delta', timestamp: frame.tsUs, data: frame.data}));
         return true;
@@ -196,6 +216,7 @@ export function createStreamDecoder({VideoDecoder, EncodedVideoChunk, onFrame, o
       }
     },
     reset() { waitKey = true; },
+    catchUp() { catchingUp = 'key'; waitKey = true; },
     close,
   };
 }
@@ -316,7 +337,7 @@ export function createLegacyWindows({
   const streams = new Map(); // `${publisher}:${surface}` -> entry
   const inputSenders = new Map(); // One native rate budget across a publisher's windows.
   const indexed = new Map(); // publisher -> last index time
-  const stats = {indexes: 0, frames: 0, drawn: 0, placed: 0, inputSent: 0, inputRefused: 0};
+  const stats = {indexes: 0, frames: 0, drawn: 0, placed: 0, inputSent: 0, inputRefused: 0, resyncs: 0};
   let api;
   let unwatch = [];
   let frame;
@@ -370,12 +391,16 @@ export function createLegacyWindows({
     canvas.height = stream.height;
     canvas.style.cssText = 'position:absolute;left:0;top:0;display:none;object-fit:contain;background:#000;transform-origin:0 0;pointer-events:none;outline:none';
     layer.append(canvas);
-    const entry = {publisher, stream, canvas, context: null, reassembler: createReassembler(), visible: false, rect: '', control: false};
+    const entry = {publisher, stream, canvas, context: null, reassembler: createReassembler(), visible: false, rect: '', control: false,
+      stalledAt: undefined, lastChunkAt: now()};
     entry.decoder = createStreamDecoder({
       VideoDecoder, EncodedVideoChunk,
       onFrame: picture => draw(entry, picture),
       onError: report,
+      onStall: () => { entry.stalledAt ??= now(); },
     });
+    // What the host replays to this new subscription arrives at once.
+    entry.decoder.catchUp();
     entry.unsubscribe = api.subscribeMemberRecord(publisher, {app: LEGACY_APP, record: stream.record}, bytes => onStreamFrame(entry, bytes));
     bindInput(entry);
     streams.set(key, entry);
@@ -615,11 +640,12 @@ export function createLegacyWindows({
       entry.decoder?.reset();
       entry.reassembler.reset();
     } else if (value.kind === 'chunk') {
+      entry.lastChunkAt = now();
       const encoded = entry.reassembler.push(value);
       if (!encoded) return;
       if (entry.paint) {
         try { if (paintFrame(streamKey(entry.publisher, entry.stream), encoded.data)) stats.drawn++; } catch (error) { report(error); }
-      } else entry.decoder.decode(encoded);
+      } else if (entry.decoder.decode(encoded) && encoded.key) entry.stalledAt = undefined;
     } else if (value.kind === 'end') {
       entry.decoder?.reset();
       entry.reassembler.reset();
@@ -722,9 +748,25 @@ export function createLegacyWindows({
       for (const event of events) queueInput(entry, event);
     }
   }
+  /** Subscribe again to each stream whose backlog skip is waiting for a
+   * keyframe that a quiet (still) window will not send (`RESYNC_QUIET_MS`). */
+  function resync() {
+    const t = now();
+    for (const entry of streams.values()) {
+      if (entry.paint || entry.stalledAt === undefined || t - entry.lastChunkAt < RESYNC_QUIET_MS) continue;
+      entry.stalledAt = undefined;
+      entry.reassembler.reset();
+      entry.decoder.catchUp();
+      try { entry.unsubscribe(); } catch {}
+      entry.unsubscribe = api.subscribeMemberRecord(entry.publisher, {app: LEGACY_APP, record: entry.stream.record},
+        bytes => onStreamFrame(entry, bytes));
+      stats.resyncs++;
+    }
+  }
   function tick() {
     frame = undefined;
     if (closed) return;
+    resync();
     closeDismissed();
     forwardPaintInput();
     layout();

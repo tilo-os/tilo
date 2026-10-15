@@ -11,6 +11,7 @@ const KEY = 'tilo-host-memberships';
 
 const reply = ({status = 200, headers = {}, body = {}}) => ({
   ok: status === 200, status, headers: new Map(Object.entries(headers)), json: async () => body,
+  text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
 });
 
 function harness({person = identity(0x22), membership = null, joinReply = {status: 200, body: {invitation: 'INV', admissionToken: 'TOKEN', origin: 'https://rooms.example'}}, connectFails = false} = {}) {
@@ -255,6 +256,16 @@ test('a spectator certifies an in-memory device key and connects without a perso
   assert.equal((await connected.custody.sign(new Uint8Array([1]))).length, 64);
   await connected.store.put('k', 'v');
   assert.equal(await connected.store.get('k'), 'v');
+});
+
+test("the host's certificate reaches a spectator's session byte for byte, its nanosecond timestamps intact", async () => {
+  const nanos = '1792023733547123457';
+  const certificate = `{"user_public_key":[${Array(32).fill(94)}],"device_public_key":[1],"issued_at_ns":${nanos}}`;
+  const {calls, options} = spectating({body: {certificate, origin: 'https://rooms.example', room: 'ROOM'}});
+  options.runtime = {hostInfo: async () => `{"hostCert":{"issued_at_ns":${nanos}}}`};
+  await spectate(options);
+  assert.equal(calls.connected[0].deviceCertificate, `{"cert":${certificate},"hostCert":{"issued_at_ns":${nanos}}}`);
+  assert.equal(calls.connected[0].userPublicKey, '5e'.repeat(32));
 });
 
 test('above the spectator cap the embed is told the room is full', async () => {
