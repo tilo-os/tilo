@@ -912,7 +912,7 @@ pub struct FrameBuilder {
     enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AnimationDemand {
     pub host: u32,
     pub floating: bool,
@@ -1979,6 +1979,17 @@ impl FrameBuilder {
         if let Some(keyboard) = self.osk_overlay.as_mut() {
             keyboard.place_floating(Rect::new(x0, y0, x0 + width, y0 + height));
         }
+    }
+
+    /// Install adversarial app content while retaining the real host, pump,
+    /// layout and paint passes for native scheduling regression tests.
+    #[cfg(test)]
+    pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
+        let mut frame = Self::new((800, 600));
+        frame.node_map.clear();
+        *frame.host = ShellOverlayHost::with_fixture_content(content);
+        frame.rebuild_layout_tree();
+        frame
     }
 
     /// Run the widget tree's per-frame pump (`sync` then `update`).

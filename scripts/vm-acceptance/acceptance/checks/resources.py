@@ -240,7 +240,8 @@ def runtime_idle(sample: dict, procs: list[dict], seconds: float, comm: str) -> 
 
 def painters(painted: list[dict]) -> dict[str, int]:
     """Painted ticks by what made them paint: the compositor's paint reasons and, when
-    client surfaces committed, the apps whose commits the frame carried. A trace from a
+    client surfaces committed, the apps whose commits the frame carried, and when it
+    animated, whose motion it was. A trace from a
     compositor that predates the columns counts them as unattributed."""
     out: dict[str, int] = {}
     for r in painted:
@@ -250,6 +251,8 @@ def painters(painted: list[dict]) -> dict[str, int]:
             label = str(r.get("paint_reasons") or "") or "no reason"
             if r.get("paint_clients"):
                 label += f" by {r['paint_clients']}"
+            if r.get("paint_animations"):
+                label += f" of {r['paint_animations']}"
         out[label] = out.get(label, 0) + 1
     return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
 
