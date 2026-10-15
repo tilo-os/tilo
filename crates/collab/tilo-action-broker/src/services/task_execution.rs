@@ -102,11 +102,53 @@ impl NativeTaskActionRequirement {
         if bound.epoch != binding.epoch || !bound.allows(&node, self.need.kind, now) {
             return Err("native task action exceeds its frozen execution authority".into());
         }
-        let task = policy.task_answer(&binding.task_id, &node, self.need.kind, &cx);
-        if verdict.answer != Answer::Allow || task.is_some_and(|answer| answer != Answer::Allow) {
-            return Err("native task action is no longer authorized by its owner".into());
+        if verdict.answer != Answer::Allow {
+            let basis = match verdict.parts.first().map(|part| part.basis) {
+                Some(tilo_action_policy::Basis::Grant(grant)) => {
+                    format!("grant {} on {}", grant.id, grant.node)
+                }
+                _ => format!("no grant covers {}", verdict.node),
+            };
+            return Err(unattended_refusal(
+                verdict.answer,
+                self.need.kind,
+                &format!("the agent's grants in this workspace ({basis})"),
+            ));
+        }
+        if let Some(answer) = policy
+            .task_answer(&binding.task_id, &node, self.need.kind, &cx)
+            .filter(|answer| *answer != Answer::Allow)
+        {
+            return Err(unattended_refusal(
+                answer,
+                self.need.kind,
+                "this task's own grants",
+            ));
         }
         Ok(())
+    }
+}
+
+/// Why an unattended task run may not take an action `whose` grants answer
+/// `answer` (anything but Allow) for: one that asks first has nobody to ask,
+/// so it is refused as surely as one they deny, but the agent (and whoever
+/// reads its report) should learn which it was rather than retry it.
+fn unattended_refusal(
+    answer: tilo_action_policy::Answer,
+    kind: tilo_action_policy::ActionKind,
+    whose: &str,
+) -> String {
+    if answer == tilo_action_policy::Answer::Ask {
+        format!(
+            "native task action asks a person first: {whose} answer \"ask\" for {}, and an \
+             unattended task run has nobody to ask",
+            kind.phrase()
+        )
+    } else {
+        format!(
+            "native task action is not allowed: {whose} do not allow {}",
+            kind.phrase()
+        )
     }
 }
 

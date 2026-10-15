@@ -48,6 +48,37 @@ fn approved_run_cannot_exceed_its_starters_live_action_permission() {
     );
 }
 
+/// An action the agent's grants answer "ask" for is refused to an
+/// unattended run, saying it asks first, apart from one they deny.
+#[test]
+fn an_unattended_run_is_told_an_action_asks_first() {
+    let room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let (mut peer, starter, key, now) = policy_fixture(room);
+    let authority = WorkspaceTaskAuthority::Person { caller: starter };
+    let requirement = approve_task(&mut peer, &authority, now);
+    let grant = |id: &str, answer| {
+        Grant::new(
+            id,
+            Subject::agent("scribe"),
+            action_node(room, &requirement),
+            KindSet::UNDOABLE,
+            answer,
+            Subject::person("governor"),
+        )
+    };
+    peer.governance_mut()
+        .put_governed_grants(&[grant("agent-asks", Answer::Ask)], &key, now)
+        .unwrap();
+    let asks = requirement.check(&peer, room, "scribe", now).unwrap_err();
+    assert!(asks.contains("asks a person first"), "{asks}");
+    assert!(asks.contains("agent-asks"), "{asks}");
+    peer.governance_mut()
+        .put_governed_grants(&[grant("agent-denied", Answer::Deny)], &key, now)
+        .unwrap();
+    let denied = requirement.check(&peer, room, "scribe", now).unwrap_err();
+    assert!(denied.contains("not allowed"), "{denied}");
+}
+
 fn policy_fixture(room: &str) -> (StatePeer, DeviceCert, SigningKey, std::time::SystemTime) {
     let governor = certificate(1, 2);
     let starter = certificate(3, 4);
