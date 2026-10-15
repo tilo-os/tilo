@@ -110,10 +110,9 @@ builds.
 
 Until the cutover, every workflow keeps publishing while its checks run on t beside it. A
 workflow is retired only once its checks have built on t from a working tree (`t test`) and
-their trusted half has published from main or stable. Two things block the rest for now:
+their trusted half has published from main or stable. What blocks the rest for now:
 trusted runs and privileged checks need the Tilo job sandbox, which replaces the Kata release
-and privileged pools (rpm's database can't be written on their storage); and a worker can't
-hand t outputs of several GiB, so the multi-GiB aarch64 images build but aren't kept.
+and privileged pools (rpm's database can't be written on their storage).
 
 | workflow | checks on t | built with `t test` | still blocked |
 |---|---|---|---|
@@ -122,9 +121,9 @@ hand t outputs of several GiB, so the multi-GiB aarch64 images build but aren't 
 | `release-registry-server.yml` | `image-registry-server`, `publish-registry-server` | build and the image test, server answering `/health` | trusted half: release nodes |
 | `release-relay.yml` | `rpm-snapshot`, `image-relay`, `sign-relay`, `release-relay` (`v*` tags) | `rpm-snapshot`, `image-relay` (its Compose contract, then the build) | trusted half: release nodes |
 | `build-env-runtime.yml` | `rpm-snapshot`, `image-env-runtime-tree-*`, `env-runtime-packer`, `env-runtime-preview`, `image-env-runtime-preview`, `seal-env-runtime`, `image-env-runtime`, `sign-env-runtime`, `release-env-runtime` | both trees, packer, throwaway seal and index | trusted half: release nodes, and the `TAPP_PUBLISHER_IDENTITY` secret |
-| `build-buildroots.yml` | `image-kernel-buildroot-*`, `sign-kernel-buildroot`, `release-kernel-buildroot` | x86_64 built and audited; aarch64 built, output too large for t | trusted half: release nodes; the pin (`kernel-buildroot.sh pin`, a check that pushes) once the workflow stops proposing it |
-| `build-ci-builder.yml` | `image-ci-builder-*` | x86_64; aarch64 built, output too large for t | canaries: images built in the same run (`image = { check = … }`) and the compiler cache; signing and promotion: release nodes |
-| `build-rpms.yml` | `image-rpms-*` | both built; their outputs too large for t | signing with SLSA provenance and promotion: not written yet, release nodes |
+| `build-buildroots.yml` | `image-kernel-buildroot-*`, `sign-kernel-buildroot`, `release-kernel-buildroot` | both architectures built and audited | trusted half: release nodes; the pin (`kernel-buildroot.sh pin`, a check that pushes) once the workflow stops proposing it |
+| `build-ci-builder.yml` | `image-ci-builder-*` | both architectures (6.5 min each) | canaries: images built in the same run (`image = { check = … }`) and the compiler cache; signing and promotion: release nodes |
+| `build-rpms.yml` | `image-rpms-*` | both architectures (15–18 min) | signing with SLSA provenance and promotion: not written yet, release nodes |
 | `build-kernel.yml` | `image-kernel-*`, `kernel-acceptance-*` | aarch64 in 2 h 11 min (no compiler cache) | acceptance (KVM boot, Secure Boot probe): privileged nodes; signing with provenance and the pin: not written yet |
 | `build-legacy-guest.yml` | `legacy-guest-agent`, `legacy-guest-e2e-binaries`, `image-legacy-guest`, `legacy-guest-e2e`, `sign-legacy-guest`, `release-legacy-guest` | agent and end-to-end binaries | guest image and end-to-end test: privileged nodes; trusted half: release nodes; the pin (`legacy-guest.sh pin`) |
 | `build-env-tools.yml` | `env-tools-binaries-*`, `env-tools-*` | binaries on both architectures | catalog build: privileged nodes; publication: tools are sealed inside the build, so publishing needs them re-signed with the publisher identity afterwards and the catalog rewritten |
