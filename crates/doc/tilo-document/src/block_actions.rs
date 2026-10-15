@@ -287,7 +287,7 @@ pub(crate) fn declarations() -> Vec<ActionDecl<RichText>> {
                 })
             },
         )
-        .describe("Replace one block's text, changing only the characters that differ. `text` is written the way the read shows it: a [link](url) in it becomes a real link. Answers the block's id.")
+        .describe("Replace one block's whole text, changing only the characters that differ. `text` is written the way the read shows it: a [link](url) in it becomes a real link. To change part of a block (a selected phrase) use `replace-range` at that place instead. Answers the block's id.")
         .answering(),
         ActionDecl::new(
             "replace-range",
@@ -303,24 +303,21 @@ pub(crate) fn declarations() -> Vec<ActionDecl<RichText>> {
                     "text",
                     "The text that replaces those characters, on one line",
                 ),
-                optional(
-                    "markdown",
-                    ParamType::Boolean,
-                    "Read `text` as inline Markdown (**bold**, _italic_, `code`, [link](url)); default plain text",
-                ),
+                markdown_param(),
             ],
             |args, _| {
                 let (block, start, end) = range_of(args)?;
+                let (text, markdown) = text_of(args)?;
                 Ok(RichTextAction::ReplaceBlockRange {
                     block,
                     start,
                     end,
-                    text: args.text("text").ok_or("give the text")?.to_owned(),
-                    markdown: args.boolean("markdown").unwrap_or(false),
+                    text,
+                    markdown,
                 })
             },
         )
-        .describe("Replace characters of one block, or insert at a caret in it, leaving the rest of the block and the page's blocks as they are: rewrite a selected phrase, or turn it into a link with `markdown` and `[text](url)`. Answers the block's id.")
+        .describe("Replace characters of one block, or insert at a caret in it, leaving the rest of the block and the page's blocks as they are. The way to change a person's selection, or part of a block: rewrite a selected phrase, or turn it into a link by writing `[text](url)`. Answers the block's id.")
         .answering(),
         ActionDecl::new("set-block-kind", "Set block kind", set_kind, |args, _| {
             let named = args
