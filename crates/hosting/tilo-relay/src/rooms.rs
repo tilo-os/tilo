@@ -179,6 +179,10 @@ struct GovernedRoom {
     /// Admits the governance each settle retains to the host's order, after
     /// the room's lock is released.
     publisher: Arc<publisher::RoomPublisher>,
+    /// Member writes to follow before compacting a sealed record history
+    /// again, after a compaction failed: each attempt opens and merges the
+    /// whole history.
+    compaction_wait: usize,
 }
 
 impl RoomRecord {
@@ -236,6 +240,7 @@ impl GovernedRoom {
             record,
             peer,
             publisher: Arc::default(),
+            compaction_wait: 0,
         };
         this.persist()?;
         Ok(this)
@@ -277,6 +282,7 @@ impl GovernedRoom {
             path,
             stewardship,
             publisher: Arc::default(),
+            compaction_wait: 0,
         })
     }
 

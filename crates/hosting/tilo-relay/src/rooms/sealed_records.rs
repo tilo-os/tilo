@@ -20,6 +20,11 @@ use tilo_peer_state::StatePeer;
 
 use super::{GovernedRoom, Rooms, SystemTime};
 
+/// Member writes followed before a failed compaction is tried again. A
+/// record whose merged snapshot outgrew one mutation never compacts; trying
+/// on every write opened and merged its whole history each time.
+const COMPACTION_RETRY: usize = 256;
+
 /// The content keys of one record's channel, as its steward holds them.
 pub(super) struct RecordKeys {
     keys: ChannelContentKeys,
@@ -142,6 +147,10 @@ impl Rooms {
         if due.is_empty() {
             return Ok(());
         }
+        if room.compaction_wait > 0 {
+            room.compaction_wait = room.compaction_wait.saturating_sub(1);
+            return Ok(());
+        }
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
         let mut compacted = 0usize;
@@ -161,6 +170,7 @@ impl Rooms {
             match compaction {
                 Ok(_) => compacted = compacted.saturating_add(1),
                 Err(error) => {
+                    room.compaction_wait = COMPACTION_RETRY;
                     tracing::warn!(room = %room.room(), %app, %record, %error,
                         "a sealed record history was not compacted");
                 }
