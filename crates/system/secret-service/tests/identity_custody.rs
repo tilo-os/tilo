@@ -259,10 +259,11 @@ fn assert_private_key_file(identities: &Path, seed: u8) {
     assert_eq!(mode(&identities.join("secrets")), 0o700);
 }
 
-/// A launch reads the key and signs with it.
-fn assert_launch_signs(record: &Path, seed: u8) {
-    let identity = runtime_identity::load_for_launch(record)
-        .unwrap_or_else(|error| panic!("launch of {}: {error}", record.display()));
+/// A host-side custody read retrieves the stored key and signs with it.
+/// App launches read only public metadata, never the signing key.
+fn assert_stored_key_signs(record: &Path, seed: u8) {
+    let identity = runtime_identity::load_from_path(record.to_path_buf())
+        .unwrap_or_else(|error| panic!("loading stored key from {}: {error}", record.display()));
     let message = b"identity custody qualification";
     let signature = identity.sign(message).unwrap();
     SigningKey::from_bytes(&[seed; 32])
@@ -287,7 +288,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     assert_eq!(protection(&identities, "absent"), KeyProtection::BrokerFile);
     assert_record_names(&absent, "broker-file-v1", 1);
     assert_private_key_file(&identities, 1);
-    assert_launch_signs(&absent, 1);
+    assert_stored_key_signs(&absent, 1);
     assert_eq!(Custody::for_session(), Custody::LocalFile);
     assert_eq!(
         Custody::LocalFile.label(),
@@ -313,7 +314,8 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
         !key_file(&identities, 2).exists(),
         "a key the Secret Service holds was also written to a file"
     );
-    assert_launch_signs(&keyring, 2);
+    assert_stored_key_signs(&keyring, 2);
+    let launch_metadata = runtime_identity::load_metadata_for_launch(&keyring).unwrap();
     let vault = bus.path("data/tilo/secrets/vault.tseal");
     let sealed = std::fs::read(&vault).unwrap();
     // The item's value is the key in hex, as `secret-tool` stored it.
@@ -331,7 +333,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     //    next call reopens the forgotten session instead of failing.
     bus.stop_service();
     bus.start_service("device-a");
-    assert_launch_signs(&keyring, 2);
+    assert_stored_key_signs(&keyring, 2);
 
     // 4. Locked: the store's vault belongs to another device identity. The
     //    secured key stays where it is, unreadable but untouched; a new key
@@ -342,8 +344,13 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     let record_before = std::fs::read(&keyring).unwrap();
     let sealed_before = std::fs::read(&vault).unwrap();
     assert!(
-        runtime_identity::load_for_launch(&keyring).is_err(),
+        runtime_identity::load_from_path(keyring.clone()).is_err(),
         "a locked store released a key"
+    );
+    // Launch validation must not read the key, even while its store is locked.
+    assert_eq!(
+        runtime_identity::load_metadata_for_launch(&keyring).unwrap(),
+        launch_metadata
     );
     assert!(
         runtime_identity::secure_identity(&identities, "keyring").is_err(),
@@ -369,15 +376,15 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     bus.stop_service();
     bus.start_service("device-a");
     assert_eq!(bus.status(), "open");
-    assert_launch_signs(&keyring, 2);
-    assert_launch_signs(&locked, 3);
+    assert_stored_key_signs(&keyring, 2);
+    assert_stored_key_signs(&locked, 3);
 
     // 6. A damaged record fails its launch by name and is never re-keyed.
     let truncated = identities.join("truncated.json");
     let prefix = record_before.get(..record_before.len() / 2).unwrap();
     std::fs::write(&truncated, prefix).unwrap();
     std::fs::set_permissions(&truncated, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let Err(error) = runtime_identity::load_for_launch(&truncated) else {
+    let Err(error) = runtime_identity::load_metadata_for_launch(&truncated) else {
         panic!("a truncated record launched");
     };
     assert!(
@@ -385,7 +392,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
         "the launch error does not name the damage: {error}"
     );
     assert_eq!(std::fs::read(&truncated).unwrap(), prefix);
-    assert_launch_signs(&keyring, 2);
+    assert_stored_key_signs(&keyring, 2);
 
     drop(env);
 }
