@@ -127,7 +127,8 @@ pub struct Property {
     /// The element's text content, untrimmed (`calendar-data` and
     /// `address-data` are payloads where whitespace matters).
     pub text: Option<String>,
-    /// Local names of child elements, e.g. `collection` in `resourcetype`.
+    /// Local names of descendant elements, e.g. `collection` in `resourcetype`
+    /// or `read` nested inside a privilege.
     pub children: Vec<String>,
 }
 
@@ -316,9 +317,20 @@ fn parse_response(node: Node<'_, '_>, limits: &Limits) -> Result<Response, XmlEr
                 .map(|prop| Property {
                     namespace: prop.tag_name().namespace().map(ToOwned::to_owned),
                     name: prop.tag_name().name().to_owned(),
-                    text: prop.text().map(ToOwned::to_owned),
+                    text: if matches!(
+                        prop.tag_name().name(),
+                        "current-user-principal" | "calendar-home-set"
+                    ) {
+                        prop.descendants()
+                            .find(|node| node.is_element() && node.tag_name().name() == "href")
+                            .and_then(|node| node.text())
+                            .map(ToOwned::to_owned)
+                    } else {
+                        prop.text().map(ToOwned::to_owned)
+                    },
                     children: prop
-                        .children()
+                        .descendants()
+                        .skip(1)
                         .filter(Node::is_element)
                         .map(|child| child.tag_name().name().to_owned())
                         .collect(),

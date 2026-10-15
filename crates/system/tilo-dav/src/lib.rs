@@ -9,6 +9,8 @@
 pub mod body;
 #[cfg(feature = "client")]
 pub mod client;
+#[cfg(feature = "client")]
+pub mod discovery;
 pub mod multistatus;
 #[cfg(feature = "net")]
 pub mod net;

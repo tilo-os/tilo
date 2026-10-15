@@ -14188,6 +14188,7 @@ dependencies = [
  "agent-provider-config",
  "async-imap",
  "bounded-command",
+ "calendar",
  "cloud-source",
  "cloud-source-dropbox",
  "cloud-source-gdrive",

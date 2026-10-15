@@ -73,6 +73,7 @@ impl std::error::Error for Error {}
 pub struct DavClient {
     http: Client,
     credentials: Option<Arc<Credentials>>,
+    redirects: Redirects,
 }
 
 impl DavClient {
@@ -92,6 +93,7 @@ impl DavClient {
         Ok(Self {
             http: builder.build().map_err(Error::Build)?,
             credentials: None,
+            redirects: options.redirects,
         })
     }
 
@@ -101,7 +103,12 @@ impl DavClient {
         Self {
             http: self.http.clone(),
             credentials: Some(Arc::new(credentials)),
+            redirects: self.redirects,
         }
+    }
+
+    pub(crate) fn refuses_redirects(&self) -> bool {
+        self.redirects == Redirects::Refuse
     }
 
     /// `PROPFIND` for `props` at `depth`.

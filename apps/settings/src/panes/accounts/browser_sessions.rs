@@ -76,7 +76,6 @@ impl Removal {
         }
         let call = self.invocation.as_ref()?.with(Clone::clone);
         match call {
-            RemoteCall::Pending => None,
             RemoteCall::Refused(error) => self.finish(Err(format!("{error:?}"))),
             RemoteCall::Done(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
                 self.reply.take()?.finish(Ok(output));
@@ -91,14 +90,16 @@ impl Removal {
                 .finish(Err(
                     message.unwrap_or_else(|| "Account removal was cancelled".into())
                 )),
-            RemoteCall::Done(_) => None,
+            RemoteCall::Pending | RemoteCall::Done(_) => None,
         }
     }
 
     fn finish(&mut self, result: Result<(), String>) -> Option<Result<(), String>> {
-        self.reply
-            .take()?
-            .finish(result.clone().map(|()| Default::default()));
+        self.reply.take()?.finish(
+            result
+                .clone()
+                .map(|()| ui::tilo_actions::ActionOutput::default()),
+        );
         Some(result)
     }
 }

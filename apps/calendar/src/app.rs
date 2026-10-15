@@ -2097,6 +2097,9 @@ impl CalendarApp {
         let mut out = vec![(CalTarget::Local, "On this device".to_string())];
         for acc in &self.accounts.accounts {
             for cal in &acc.calendars {
+                if cal.read_only {
+                    continue;
+                }
                 out.push((CalTarget::Remote(cal.id.clone()), cal.name.clone()));
             }
         }

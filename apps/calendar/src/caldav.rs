@@ -749,6 +749,12 @@ mod live {
         };
         let mut result = super::MutationResult::default();
         for job in jobs {
+            if job.calendar.read_only {
+                result
+                    .failures
+                    .push((job.event.id, "Calendar is read-only".into()));
+                continue;
+            }
             let mut request = super::build_put_request(&job.config, &job.calendar, &job.event);
             if let Some(href) = &job.href {
                 request.url = absolute_resource_url(&job.config, href);
@@ -800,6 +806,12 @@ mod live {
         };
         let mut result = super::MutationResult::default();
         for job in jobs {
+            if job.calendar.read_only {
+                result
+                    .failures
+                    .push((job.id, "Calendar is read-only".into()));
+                continue;
+            }
             let url = job.href.as_ref().map_or_else(
                 || super::build_delete_request(&job.config, &job.calendar, job.id).url,
                 |href| absolute_resource_url(&job.config, href),
@@ -889,6 +901,7 @@ mod live {
                 name: "Test".into(),
                 color: 0,
                 visible: true,
+                read_only: false,
             }
         }
 
@@ -1019,6 +1032,42 @@ END:VCALENDAR</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:
                 .expect_err("oversized body");
                 assert_eq!(error, "calendar response exceeds the 8 MiB safety limit");
             }
+        }
+
+        #[test]
+        fn read_only_collections_never_send_mutations() {
+            let server = Responder::silent();
+            let config = config(server.url());
+            let mut calendar = calendar();
+            calendar.read_only = true;
+            let event = super::super::pull_calendar(&config, &calendar, today())
+                .events
+                .remove(0);
+            let upload = push_jobs_live(&[super::super::UploadJob {
+                config: config.clone(),
+                calendar: calendar.clone(),
+                event: event.clone(),
+                href: None,
+                etag: None,
+            }]);
+            assert!(upload.confirmed.is_empty());
+            assert_eq!(
+                upload.failures,
+                vec![(event.id, "Calendar is read-only".into())]
+            );
+            let removed = remove_jobs_live(&[super::super::RemoveJob {
+                config,
+                calendar,
+                id: event.id,
+                href: None,
+                etag: None,
+            }]);
+            assert!(removed.confirmed.is_empty());
+            assert_eq!(
+                removed.failures,
+                vec![(event.id, "Calendar is read-only".into())]
+            );
+            server.assert_untouched();
         }
 
         #[test]
