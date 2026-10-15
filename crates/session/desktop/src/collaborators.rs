@@ -25,9 +25,6 @@ use ui::widget::ButtonRole;
 
 const FOOTER_H: f64 = 40.0;
 const ACTIONS_H: f64 = 40.0;
-/// Minimum pointer target (HIG §9.6): every button in this popover —
-/// Follow/Stop, Invite, Join — is at least this tall.
-const MIN_TARGET: f64 = 32.0;
 const INVITED_ROW_ALPHA: f32 = 0.55;
 /// Rows the People popover shows before its list scrolls.
 const VISIBLE_ROWS: usize = 8;
@@ -266,6 +263,15 @@ impl std::fmt::Debug for StatusField {
 )]
 pub struct CollaboratorsOverlay {
     panel: Rect,
+    /// The panel's width, `metrics.panel_width_list` (HIG 9.6) narrowed to
+    /// the host less its margins, resolved when the controls are measured so
+    /// text wraps at the width it is painted at.
+    panel_width: f64,
+    /// The floating Panel margin it keeps from the host's edges.
+    panel_margin: f64,
+    /// `metrics.min_pointer_target` (HIG 9.6): every button in this popover
+    /// (Follow/Stop, Invite, Join) is at least this tall.
+    min_target: f64,
     viewport: Rect,
     host: Rect,
     scroll_gutter: f64,
@@ -344,6 +350,16 @@ pub struct CollaboratorsOverlay {
 }
 
 impl CollaboratorsOverlay {
+    /// The minimum pointer target: the theme's, once a frame measured it,
+    /// the base token before that.
+    fn min_target(&self) -> f64 {
+        if self.min_target > 0.0 {
+            self.min_target
+        } else {
+            f64::from(ui::tokens::Metrics::BASE.min_pointer_target)
+        }
+    }
+
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -669,7 +685,7 @@ impl CollaboratorsOverlay {
                 transform.pre_translate(
                     (banner.x0 + 8.0, banner.y0 + 7.0 + self.exposure_line_height).into(),
                 ),
-                Some(Self::disclosure_width(theme)),
+                Some(self.disclosure_width(theme)),
                 &tokens.typography.style(TextRole::Caption),
             );
         }
@@ -688,7 +704,7 @@ impl CollaboratorsOverlay {
                 reason,
                 colors.semantic.danger,
                 transform.pre_translate((rect.x0 + 16.0, roster_top + 4.0).into()),
-                Some(Self::disclosure_width(theme)),
+                Some(self.disclosure_width(theme)),
                 &tokens.typography.style(TextRole::Caption),
             );
         }
@@ -748,7 +764,7 @@ impl CollaboratorsOverlay {
     }
 
     fn configure_scroll(&mut self, theme: &Theme, model: &CollaboratorsModel<'_>) {
-        let available = (model.host.y1 - self.panel.y0 - 8.0)
+        let available = (model.host.y1 - self.panel.y0 - self.panel_margin)
             .min(self.visible_height)
             .max(1.0);
         let gutter = if self.panel.height() > available {
@@ -1310,7 +1326,7 @@ impl CollaboratorsOverlay {
     }
 
     fn row_action_rect(&self, panel: Rect, y: f64) -> Rect {
-        let height = self.follow_height.max(MIN_TARGET);
+        let height = self.follow_height.max(self.min_target());
         let top = y + (self.row_h() - height) / 2.0;
         Rect::new(
             panel.x1 - 12.0 - self.follow_width.max(FOLLOW_MIN_W),
@@ -1742,9 +1758,27 @@ impl CollaboratorsOverlay {
             .get(VISIBLE_ROWS)
             .map_or(rows_h, |top| top - list_top);
         self.visible_height = list_top + visible_rows_h + tail_h;
-        let x1 = host.x1 - 16.0 - self.scroll_gutter;
-        let y0 = host.y0 + 48.0;
-        self.panel = Rect::new(x1 - (320.0 - self.scroll_gutter), y0, x1, y0 + height);
+        // Under the bar at the Panel margin, its trailing edge (scroll gutter
+        // included) the same margin in from the host's: never off a narrow
+        // host. The height scrolls inside the host (`configure_scroll`).
+        let (width, margin) = if self.panel_width > 0.0 {
+            (self.panel_width, self.panel_margin)
+        } else {
+            (
+                f64::from(ui::tokens::Metrics::BASE.panel_width_list)
+                    .min(host.width() - 2.0 * f64::from(ui::tokens::Spacing::BASE.s2))
+                    .max(1.0),
+                f64::from(ui::tokens::Spacing::BASE.s2),
+            )
+        };
+        let x1 = host.x1 - margin - self.scroll_gutter;
+        let y0 = host.y0 + f64::from(crate::topbar::TOPBAR_HEIGHT_PX) + margin;
+        self.panel = Rect::new(
+            (x1 - (width - self.scroll_gutter)).max(host.x0 + margin),
+            y0,
+            x1,
+            y0 + height,
+        );
         self.activity = Rect::new(
             self.panel.x0 + 8.0,
             self.panel.y1 - footer_h + 4.0,
@@ -1770,7 +1804,7 @@ impl CollaboratorsOverlay {
             .collect();
         if may_invite {
             // Shared control metrics preserve the minimum target as text grows.
-            let control_h = self.control_height.max(MIN_TARGET);
+            let control_h = self.control_height.max(self.min_target());
             let y0 = self.panel.y1 - footer_h - actions_h + (actions_h - control_h) / 2.0;
             let gap = 8.0;
             let half = (self.panel.width() - 16.0 - gap) / 2.0;
@@ -1778,13 +1812,13 @@ impl CollaboratorsOverlay {
                 self.panel.x0 + 8.0,
                 y0,
                 self.panel.x0 + 8.0 + half,
-                y0 + self.control_height.max(MIN_TARGET),
+                y0 + self.control_height.max(self.min_target()),
             );
             self.join = Rect::new(
                 self.invite.x1 + gap,
                 y0,
                 self.panel.x1 - 8.0,
-                y0 + self.control_height.max(MIN_TARGET),
+                y0 + self.control_height.max(self.min_target()),
             );
         } else {
             self.invite = Rect::ZERO;
@@ -1891,8 +1925,12 @@ impl CollaboratorsOverlay {
         )
     }
 
-    fn disclosure_width(theme: &Theme) -> f32 {
-        280.0 - theme.tokens.metrics.scrollbar_gutter
+    /// A disclosure or warning line: the panel less its 20 px insets and
+    /// the scroll gutter.
+    fn disclosure_width(&self, theme: &Theme) -> f32 {
+        ui::num::f32_of_f64(
+            (self.panel_width - 40.0 - f64::from(theme.tokens.metrics.scrollbar_gutter)).max(0.0),
+        )
     }
 
     fn measure_controls(
@@ -1901,6 +1939,11 @@ impl CollaboratorsOverlay {
         theme: &Theme,
         model: &CollaboratorsModel<'_>,
     ) {
+        self.panel_margin = ui::widget::floating_surface::viewport_margin(theme);
+        self.min_target = f64::from(theme.tokens.metrics.min_pointer_target);
+        self.panel_width = f64::from(theme.tokens.metrics.panel_width_list)
+            .min(model.host.width() - 2.0 * self.panel_margin)
+            .max(1.0);
         let (_, heading_height) = text.measure_style(
             &crate::i18n::t("a11y-shell-people"),
             None,
@@ -1916,12 +1959,12 @@ impl CollaboratorsOverlay {
         self.exposure_line_height = f64::from(line);
         self.exposure_height = model.screen_exposure.map_or(44.0, |detail| {
             let (_, height) =
-                text.measure_style(detail, Some(Self::disclosure_width(theme)), &caption);
+                text.measure_style(detail, Some(self.disclosure_width(theme)), &caption);
             f64::from(line + height) + 16.0
         });
         self.warning_height = model.unavailable.map_or(24.0, |reason| {
             let (_, height) =
-                text.measure_style(reason, Some(Self::disclosure_width(theme)), &caption);
+                text.measure_style(reason, Some(self.disclosure_width(theme)), &caption);
             f64::from(height) + 8.0
         });
         self.control_height = ButtonFace::height(ControlSize::Regular, theme);
@@ -1971,7 +2014,7 @@ impl CollaboratorsOverlay {
             ui::widget::ListRowFace::new(&Self::sharing_choice(model.status_sharing))
                 .checked(true)
                 .height(text, theme)
-                .max(MIN_TARGET);
+                .max(f64::from(theme.tokens.metrics.min_pointer_target));
         self.offered_modes = [
             ui::StatusSharing::Automatic,
             ui::StatusSharing::ManualOnly,
@@ -2025,7 +2068,7 @@ impl CollaboratorsOverlay {
         let caption = theme.text(TextRole::Caption);
         self.expanded_lines = text.clamp_to_lines_style(
             &recent.text,
-            Self::recent_width(theme),
+            self.recent_width(theme),
             RECENT_MAX_LINES,
             &caption,
         );
@@ -2088,7 +2131,7 @@ impl CollaboratorsOverlay {
         let (watching, line) =
             text.measure_style(&Self::watching_label(model.watching), None, &caption);
         let dots = f64_of_usize(here_count.min(4)) * 7.0 + 8.0;
-        let width = 320.0 - f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let width = self.panel_width - f64::from(theme.tokens.metrics.scrollbar_gutter);
         let needed = 16.0
             + f64::from(heading)
             + f64::from(theme.tokens.spacing.s3)
@@ -2111,10 +2154,15 @@ impl CollaboratorsOverlay {
 
     /// Width of a status-style line under a row: from past its icon to the
     /// panel's trailing inset. Below the Follow button, so it spans it.
-    fn recent_width(theme: &Theme) -> f32 {
+    fn recent_width(&self, theme: &Theme) -> f32 {
         // The text column inset, the icon's text inset and the panel's
         // 12 px trailing inset (`ROW_TEXT_INSET + ROW_ICON_TEXT_INSET + 12`).
-        320.0 - theme.tokens.metrics.scrollbar_gutter - 73.0
+        ui::num::f32_of_f64(
+            (self.panel_width
+                - f64::from(theme.tokens.metrics.scrollbar_gutter)
+                - (ROW_TEXT_INSET + ROW_ICON_TEXT_INSET + 12.0))
+                .max(0.0),
+        )
     }
 
     fn paint_status_field(
@@ -3235,7 +3283,8 @@ mod tests {
                 .chain(overlay.row_action_rects().iter().copied())
             {
                 assert!(
-                    rect.height() >= MIN_TARGET && rect.width() >= MIN_TARGET,
+                    rect.height() >= f64::from(ui::tokens::Metrics::BASE.min_pointer_target)
+                        && rect.width() >= f64::from(ui::tokens::Metrics::BASE.min_pointer_target),
                     "{rect:?} is at least 32 x 32"
                 );
             }

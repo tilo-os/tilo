@@ -417,7 +417,7 @@ struct Session {
 }
 
 /// Sizes of the panel, all read off the theme's tokens.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Metrics {
     /// The app mark standing in for a window without a preview.
     icon: f64,
@@ -464,13 +464,50 @@ impl Metrics {
     }
 }
 
+impl Metrics {
+    /// These metrics fitted to `host` with `caption_h` reserved under the
+    /// cards: unchanged when one card fits inside the margins, otherwise
+    /// the outer margin falls to the card inset and the preview well
+    /// shrinks (keeping 16:10) until one card does, so the panel never
+    /// runs off a small display.
+    fn fitted(self, host: Rect, caption_h: f64) -> Self {
+        let room = |m: &Self| {
+            (
+                host.width() - 2.0 * (m.margin + m.pad),
+                host.height() - 2.0 * (m.margin + m.pad) - caption_h,
+            )
+        };
+        let (room_w, room_h) = room(&self);
+        if room_w >= self.card_w && room_h >= self.card_h {
+            return self;
+        }
+        let mut m = self;
+        m.margin = m.margin.min(m.inset);
+        let (room_w, room_h) = room(&m);
+        let text_part = m.card_h - m.well_h;
+        let well_w = (m.card_w - 2.0 * m.inset)
+            .min(room_w - 2.0 * m.inset)
+            .min((room_h - text_part) * 16.0 / 10.0)
+            .max(0.0);
+        m.well_h = well_w * 10.0 / 16.0;
+        m.card_w = well_w + 2.0 * m.inset;
+        m.card_h = text_part + m.well_h;
+        m.icon = m.icon.min(m.well_h * 0.6);
+        m
+    }
+}
+
 /// Where everything of an open switcher sits.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Geometry {
     panel: Rect,
     /// `(window index, card)` for the page on screen.
     cards: Vec<(usize, Rect)>,
+    /// The page position line under the cards; zero when every window is
+    /// on screen and there is nothing to add to the cards.
     caption: Rect,
+    /// The metrics the cards were laid out at, fitted to the host.
+    metrics: Metrics,
 }
 
 fn usize_to_f64(n: usize) -> f64 {
@@ -495,10 +532,33 @@ fn geometry(host: Rect, count: usize, selected: usize, m: Metrics) -> Geometry {
     if count == 0 {
         return Geometry::default();
     }
+    // The caption only says where the page is, so it exists only when the
+    // windows do not all fit.
+    let whole = geometry_with(host, count, selected, m.fitted(host, 0.0), 0.0);
+    if whole.cards.len() >= count {
+        return whole;
+    }
+    let fitted = m.fitted(host, m.caption_h);
+    let paged = geometry_with(host, count, selected, fitted, m.caption_h);
+    if paged.cards.len() >= count {
+        // Shrinking the cards to make room for the line fitted them all
+        // after all: there is no page to report.
+        return geometry_with(host, count, selected, fitted, 0.0);
+    }
+    paged
+}
+
+fn geometry_with(
+    host: Rect,
+    count: usize,
+    selected: usize,
+    m: Metrics,
+    caption_h: f64,
+) -> Geometry {
     let pitch_x = m.card_w + m.gap;
     let pitch_y = m.card_h + m.gap;
-    let avail_w = (host.width() - 2.0 * (m.margin + m.pad) + m.gap).max(pitch_x);
-    let avail_h = (host.height() - 2.0 * (m.margin + m.pad) - m.caption_h + m.gap).max(pitch_y);
+    let avail_w = host.width() - 2.0 * (m.margin + m.pad) + m.gap;
+    let avail_h = host.height() - 2.0 * (m.margin + m.pad) - caption_h + m.gap;
     let columns = fit_count(avail_w, pitch_x).min(count);
     let rows_fit = fit_count(avail_h, pitch_y);
     let page = columns.saturating_mul(rows_fit).max(1);
@@ -508,7 +568,7 @@ fn geometry(host: Rect, count: usize, selected: usize, m: Metrics) -> Geometry {
     let grid_w = usize_to_f64(columns) * pitch_x - m.gap;
     let grid_h = usize_to_f64(rows) * pitch_y - m.gap;
     let panel_w = grid_w + 2.0 * m.pad;
-    let panel_h = grid_h + m.caption_h + 2.0 * m.pad;
+    let panel_h = grid_h + caption_h + 2.0 * m.pad;
     let center = host.center();
     let panel = Rect::new(
         center.x - panel_w / 2.0,
@@ -537,7 +597,7 @@ fn geometry(host: Rect, count: usize, selected: usize, m: Metrics) -> Geometry {
         .collect();
     let caption = Rect::new(
         panel.x0 + m.pad,
-        panel.y1 - m.pad - m.caption_h,
+        panel.y1 - m.pad - caption_h,
         panel.x1 - m.pad,
         panel.y1 - m.pad,
     );
@@ -545,6 +605,7 @@ fn geometry(host: Rect, count: usize, selected: usize, m: Metrics) -> Geometry {
         panel,
         cards,
         caption,
+        metrics: m,
     }
 }
 
@@ -1124,8 +1185,8 @@ impl WindowSwitcher {
         };
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let m = self.metrics;
         let geometry = self.geometry();
+        let m = geometry.metrics;
         let panel = geometry.panel;
 
         // A Panel (HIG §9.1): the shell's floating-surface ground, edge and
@@ -1159,9 +1220,9 @@ impl WindowSwitcher {
                     self.hover == Some(*index) && *index != session.selected,
                     false,
                 );
-                self.draw_card(
+                Self::draw_card(
                     &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                    *card,
+                    (*card, m),
                     window,
                     state,
                     previews,
@@ -1169,26 +1230,23 @@ impl WindowSwitcher {
             }
         }
 
-        // The chosen window's whole title, which a card can only elide.
-        if let Some(window) = session.windows.get(session.selected) {
-            let caption = if session.windows.len() > geometry.cards.len() {
-                t_args(
-                    "window-switcher-caption-paged",
-                    &[
-                        ("title", ArgValue::Text(window.title.clone())),
-                        (
-                            "position",
-                            ArgValue::Number(usize_to_f64(session.selected.saturating_add(1))),
-                        ),
-                        (
-                            "count",
-                            ArgValue::Number(usize_to_f64(session.windows.len())),
-                        ),
-                    ],
-                )
-            } else {
-                window.title.clone()
-            };
+        // Where this page sits among the windows, when they do not all fit.
+        // The selected window's title is on its card already; repeating it
+        // here only said the same thing twice.
+        if geometry.caption.height() > 0.0 {
+            let caption = t_args(
+                "window-switcher-caption-paged",
+                &[
+                    (
+                        "position",
+                        ArgValue::Number(usize_to_f64(session.selected.saturating_add(1))),
+                    ),
+                    (
+                        "count",
+                        ArgValue::Number(usize_to_f64(session.windows.len())),
+                    ),
+                ],
+            );
             let text = text_renderer.elide_to_width_style(
                 &caption,
                 f32_of_f64(geometry.caption.width()),
@@ -1199,7 +1257,7 @@ impl WindowSwitcher {
             text_renderer.draw_style(
                 scene,
                 &text,
-                colors.text_primary,
+                colors.text_dim,
                 transform.pre_translate(
                     (
                         geometry.caption.center().x - f64::from(w) / 2.0,
@@ -1216,9 +1274,8 @@ impl WindowSwitcher {
     /// One window's card: its live preview (or app mark) over its elided
     /// title, lifted by the shared selection tier when selected or hovered.
     fn draw_card(
-        &self,
         ctx: &mut PaintCtx<'_>,
-        card: Rect,
+        (card, m): (Rect, Metrics),
         window: &SwitcherWindow,
         state: ui::chrome::SelectionState,
         previews: &mut dyn WindowThumbnails,
@@ -1227,7 +1284,6 @@ impl WindowSwitcher {
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let m = self.metrics;
         ui::chrome::selection_tier(theme, state).paint(scene, transform, card, m.card_radius);
         let well = Rect::new(
             card.x0 + m.inset,
@@ -1529,6 +1585,63 @@ mod tests {
         assert!(host.contains(many.panel.origin()));
         assert!(many.panel.x1 <= host.x1 && many.panel.y1 <= host.y1);
     }
+    /// The panel and every card on it stay inside the display at every
+    /// size, from a phone-class window to the desktop, whatever the
+    /// window count: a host too small for one full card gets a smaller
+    /// card, never a panel that runs off the screen.
+    #[test]
+    fn the_switcher_panel_fits_every_host() {
+        for theme in [Theme::dark(), Theme::dark().with_text_scale(1.5)] {
+            let m = Metrics::from_tokens(&theme.tokens);
+            for (w, h) in [
+                (240.0, 160.0),
+                (320.0, 480.0),
+                (480.0, 300.0),
+                (640.0, 400.0),
+                (800.0, 600.0),
+                (1280.0, 800.0),
+                (1472.0, 920.0),
+            ] {
+                let host = Rect::new(0.0, 0.0, w, h);
+                for count in [1, 3, 12] {
+                    for selected in [0, count - 1] {
+                        let g = geometry(host, count, selected, m);
+                        let inside = |r: Rect| {
+                            r.x0 >= host.x0 - 1e-9
+                                && r.y0 >= host.y0 - 1e-9
+                                && r.x1 <= host.x1 + 1e-9
+                                && r.y1 <= host.y1 + 1e-9
+                        };
+                        assert!(
+                            inside(g.panel),
+                            "panel {:?} leaves {host:?} with {count} windows",
+                            g.panel
+                        );
+                        assert!(!g.cards.is_empty(), "a card is always on screen");
+                        assert!(
+                            g.cards.iter().any(|(index, _)| *index == selected),
+                            "the selected window is on the page"
+                        );
+                        for (index, card) in &g.cards {
+                            assert!(
+                                g.panel.contains(card.origin())
+                                    && card.x1 <= g.panel.x1 + 1e-9
+                                    && card.y1 <= g.panel.y1 + 1e-9,
+                                "card {index} {card:?} leaves the panel {:?} on {host:?}",
+                                g.panel
+                            );
+                        }
+                        assert_eq!(
+                            g.caption.height() > 0.0,
+                            g.cards.len() < count,
+                            "a position line only when the windows are paged"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn closing_an_unselected_candidate_preserves_the_selected_window_and_removes_its_card() {
         let mut tree = tree();
