@@ -162,7 +162,9 @@ pub enum Shape {
         weight: Option<u16>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         italic: bool,
-        /// `start`, `center` or `end` at `x`.
+        // With a width, every renderer aligns within the box `x` to
+        // `x + width`; the surface budget leaves room only for "in `width`".
+        /// `start`, `center` or `end` at `x`, or in `width`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         align: Option<String>,
         /// Times size (1.2).

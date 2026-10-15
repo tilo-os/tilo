@@ -110,6 +110,11 @@ pub struct PlanContext {
     /// ([`crate::search::SEARCH_ROOM`]): those people have open first, then
     /// the latest changed.
     pub searchable: Vec<crate::search::SearchDoc>,
+    /// Whether this plan may rightly find nothing left to do: the check of
+    /// a task's finished work, or the turn after its reads. No steps, with
+    /// a reply saying so, is then the answer; a first plan must still name
+    /// the work.
+    pub may_plan_nothing: bool,
 }
 
 impl PlanContext {

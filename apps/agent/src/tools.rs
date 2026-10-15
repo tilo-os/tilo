@@ -1689,6 +1689,33 @@ pub fn read_plan(
     revealed: &Revealed,
     most_steps: Option<usize>,
 ) -> Result<Answer, String> {
+    read_plan_as(input, revealed, most_steps, false)
+}
+
+/// [`read_plan`], for a turn on which nothing left to do is a fair answer
+/// (the check of a task's finished work): no steps, with a `reply` saying
+/// so, is that answer rather than a slip. Without the `reply` an empty plan
+/// is refused as [`read_plan`] refuses it, so a model that wrote nothing is
+/// asked to say why.
+///
+/// # Errors
+///
+/// As [`read_plan`], except for an empty `steps` with a `reply`.
+pub fn read_plan_allowing_none(
+    input: &Value,
+    revealed: &Revealed,
+    most_steps: Option<usize>,
+) -> Result<Answer, String> {
+    read_plan_as(input, revealed, most_steps, true)
+}
+
+/// [`read_plan`]; `allows_none` when no steps with a `reply` is an answer.
+fn read_plan_as(
+    input: &Value,
+    revealed: &Revealed,
+    most_steps: Option<usize>,
+    allows_none: bool,
+) -> Result<Answer, String> {
     let steps = input
         .get("steps")
         .and_then(Value::as_array)
@@ -1726,8 +1753,22 @@ pub fn read_plan(
         actions.push(operation);
         arguments.push(arguments_object.clone());
     }
+    let reply: Option<String> = input
+        .get("reply")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reply| !reply.is_empty())
+        .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect());
     if actions.is_empty() {
-        return Err("the plan named nothing to do".to_string());
+        if !allows_none {
+            return Err("the plan named nothing to do".to_string());
+        }
+        if reply.is_none() {
+            return Err(
+                "the plan named nothing to do; if nothing is left to do, say so in `reply`"
+                    .to_string(),
+            );
+        }
     }
     // The cap, enforced rather than asked for, and refused rather than
     // truncated: half of a misread sequence is still a run of edits to
@@ -1762,12 +1803,7 @@ pub fn read_plan(
             .map(str::trim)
             .filter(|t| !t.is_empty())
             .map(str::to_owned),
-        reply: input
-            .get("reply")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|reply| !reply.is_empty())
-            .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect()),
+        reply,
     })
 }
 
@@ -2324,6 +2360,24 @@ mod tests {
     /// summary showed can be planned with no listing, a prefix-less copy
     /// names the one shown operation, and anything else is refused with
     /// what to copy instead.
+    /// A check of finished work may answer that nothing is left, with a
+    /// reply saying so; anywhere else, and without a reply, no steps is
+    /// still refused.
+    #[test]
+    fn an_empty_plan_is_an_answer_only_where_allowed_and_with_a_reply() {
+        let revealed = Revealed::new();
+        let none = json!({"reply": "All done.", "steps": [], "why": "", "then": null});
+        let answer = read_plan_allowing_none(&none, &revealed, Some(STEPS)).expect("allowed");
+        assert!(answer.actions.is_empty());
+        assert_eq!(answer.reply.as_deref(), Some("All done."));
+        let refused = read_plan(&none, &revealed, Some(STEPS)).expect_err("a first plan");
+        assert_eq!(refused, "the plan named nothing to do");
+        let silent = json!({"steps": [], "why": "", "then": null});
+        let refused =
+            read_plan_allowing_none(&silent, &revealed, Some(STEPS)).expect_err("no reply");
+        assert!(refused.contains("say so in `reply`"), "{refused}");
+    }
+
     #[test]
     fn the_plan_tool_set_is_byte_stable_and_a_plan_names_what_was_shown() {
         let before = serde_json::to_string(&definitions(Some(STEPS))).unwrap();

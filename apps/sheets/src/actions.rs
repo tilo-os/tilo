@@ -1619,13 +1619,23 @@ fn range_area(c0: u32, r0: u32, c1: u32, r1: u32) -> usize {
     width.saturating_mul(height)
 }
 
-/// A workbook of one sheet with no cells, formats, charts or comments.
+/// Whether the workbook is only the blank sheet a new workbook starts with,
+/// which an import or a new sheet with content replaces rather than leaving
+/// an empty first tab: one sheet, still bearing the default name it was made
+/// with, without cells, formats, charts or comments, and neither hidden,
+/// coloured nor imported. A blank sheet someone named (say "Costs") is one
+/// they mean to fill, so it is kept and later steps can still find it.
 fn workbook_is_blank(doc: &Doc) -> bool {
     if SheetsDoc::sheet_count(doc) != 1 {
         return false;
     }
     let snap = SheetsDoc::snapshot_sheet(doc, 0, APPLY_CURRENCY);
-    snap.raw.is_empty()
+    snap.name == crate::doc::FIRST_SHEET_NAME
+        && !SheetsDoc::sheet_renamed(doc, 0)
+        && !SheetsDoc::sheet_hidden(doc, 0)
+        && SheetsDoc::sheet_color(doc, 0).is_none()
+        && SheetsDoc::sheet_source(doc, 0).is_none()
+        && snap.raw.is_empty()
         && snap.fmt.is_empty()
         && snap.bold.is_empty()
         && SheetsDoc::charts(doc, 0).is_empty()

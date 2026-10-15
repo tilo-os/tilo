@@ -14,6 +14,7 @@
 //!             ├── "id"         (Str)
 //!             ├── "layout"     (Str)
 //!             ├── "background" (Str)
+//!             ├── "touched"    (Bool, set once an edit reaches the slide)
 //!             ├── "notes"      (Text)
 //!             └── "elements"   (List)
 //!                 └── [j] (Map)
@@ -47,6 +48,12 @@ use ui::widget::BlockContent;
 /// text/style edits. The large gap makes ordinary insert/reorder operations a
 /// single absolute write.
 const ORDER_GAP: i64 = 1_i64 << 32;
+
+/// The slide key an edit sets: a new deck's starter slide is the only one
+/// without it, which is what lets `add-slide` take its place. A layout or
+/// background written over the starter's own value leaves the slide looking
+/// pristine, so its state alone cannot tell.
+const TOUCHED: &str = "touched";
 
 pub struct SlidesDoc;
 
@@ -331,6 +338,7 @@ impl SlidesDoc {
         let Some((body, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
             return false;
         };
+        Self::touch_at(doc, slide_idx);
         let blocks =
             tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body);
         let spans: Vec<tilo_document::action::Span> = blocks
@@ -449,12 +457,14 @@ impl SlidesDoc {
 
     pub fn set_slide_layout(doc: &mut AutoCommit, slide_idx: usize, layout: Layout) {
         if let Some(s) = Self::slide_obj(doc, slide_idx) {
+            Self::touch(doc, &s);
             let _ = doc.put(&s, "layout", layout.as_str());
         }
     }
 
     pub fn set_slide_background(doc: &mut AutoCommit, slide_idx: usize, bg: Background) {
         if let Some(s) = Self::slide_obj(doc, slide_idx) {
+            Self::touch(doc, &s);
             let _ = doc.put(&s, "background", bg.as_str());
         }
     }
@@ -477,6 +487,7 @@ impl SlidesDoc {
         ins: &str,
     ) {
         if let Some(s) = Self::slide_obj(doc, slide_idx) {
+            Self::touch(doc, &s);
             let tid = match doc.get(&s, "notes") {
                 Ok(Some((Value::Object(ObjType::Text), id))) => id,
                 _ => doc
@@ -500,10 +511,11 @@ impl SlidesDoc {
     /// The text of slide `slide_id`'s speaker notes, created when the slide
     /// has none yet: where an edit of them applies.
     pub fn notes_text_for_edit(doc: &mut AutoCommit, slide_id: &str) -> Option<ObjId> {
+        let slide = Self::slide_by_id(doc, slide_id)?;
+        Self::touch(doc, &slide);
         if let Some(notes) = Self::notes_text(doc, slide_id) {
             return Some(notes);
         }
-        let slide = Self::slide_by_id(doc, slide_id)?;
         doc.put_object(&slide, "notes", ObjType::Text).ok()
     }
 
@@ -514,8 +526,53 @@ impl SlidesDoc {
             .map(|(_, _, object)| object)
     }
 
+    /// Remember that an edit reached `slide`. Written once, so typing does
+    /// not add an operation per keystroke.
+    fn touch(doc: &mut AutoCommit, slide: &ObjId) {
+        if !matches!(doc.get(slide, TOUCHED), Ok(Some(_))) {
+            let _ = doc.put(slide, TOUCHED, true);
+        }
+    }
+
+    fn touch_at(doc: &mut AutoCommit, slide_idx: usize) {
+        if let Some(slide) = Self::slide_obj(doc, slide_idx) {
+            Self::touch(doc, &slide);
+        }
+    }
+
+    /// Remember that an edit reached slide `slide_id`: for the edits that
+    /// write a text object directly rather than through this module.
+    pub fn touch_slide(doc: &mut AutoCommit, slide_id: &str) {
+        if let Some(slide) = Self::slide_by_id(doc, slide_id) {
+            Self::touch(doc, &slide);
+        }
+    }
+
+    /// Remember that every slide was written by an edit: a deck replaced
+    /// wholesale holds no starter slide.
+    pub fn touch_all(doc: &mut AutoCommit) {
+        for (_, _, slide) in Self::ordered_slides(doc) {
+            Self::touch(doc, &slide);
+        }
+    }
+
+    /// Whether any edit has reached the slide at `slide_idx` since it was
+    /// seeded. Only a seeded slide no edit has reached is a starter.
+    pub fn is_touched(doc: &AutoCommit, slide_idx: usize) -> bool {
+        Self::slide_obj(doc, slide_idx)
+            .is_some_and(|slide| matches!(doc.get(&slide, TOUCHED), Ok(Some(_))))
+    }
+
+    /// Element `elem_id` on slide `slide_idx`, marking the slide touched:
+    /// where an element edit applies.
+    fn element_for_edit(doc: &mut AutoCommit, slide_idx: usize, elem_id: &str) -> Option<ObjId> {
+        let element = Self::element_obj(doc, slide_idx, elem_id)?;
+        Self::touch_at(doc, slide_idx);
+        Some(element)
+    }
+
     pub fn set_element_pos(doc: &mut AutoCommit, slide_idx: usize, elem_id: &str, x: f64, y: f64) {
-        if let Some(e) = Self::element_obj(doc, slide_idx, elem_id) {
+        if let Some(e) = Self::element_for_edit(doc, slide_idx, elem_id) {
             let _ = doc.put(&e, "x", x);
             let _ = doc.put(&e, "y", y);
         }
@@ -530,7 +587,7 @@ impl SlidesDoc {
         w: f64,
         h: f64,
     ) {
-        if let Some(e) = Self::element_obj(doc, slide_idx, elem_id) {
+        if let Some(e) = Self::element_for_edit(doc, slide_idx, elem_id) {
             let _ = doc.put(&e, "x", x);
             let _ = doc.put(&e, "y", y);
             let _ = doc.put(&e, "w", w);
@@ -545,7 +602,7 @@ impl SlidesDoc {
         key: &str,
         value: &str,
     ) {
-        if let Some(e) = Self::element_obj(doc, slide_idx, elem_id) {
+        if let Some(e) = Self::element_for_edit(doc, slide_idx, elem_id) {
             let _ = doc.put(&e, key, value);
         }
     }
@@ -557,7 +614,7 @@ impl SlidesDoc {
         key: &str,
         value: f64,
     ) {
-        if let Some(e) = Self::element_obj(doc, slide_idx, elem_id) {
+        if let Some(e) = Self::element_for_edit(doc, slide_idx, elem_id) {
             let _ = doc.put(&e, key, value);
         }
     }
@@ -569,13 +626,13 @@ impl SlidesDoc {
         key: &str,
         value: bool,
     ) {
-        if let Some(e) = Self::element_obj(doc, slide_idx, elem_id) {
+        if let Some(e) = Self::element_for_edit(doc, slide_idx, elem_id) {
             let _ = doc.put(&e, key, value);
         }
     }
 
     pub fn set_element_z(doc: &mut AutoCommit, slide_idx: usize, elem_id: &str, z: i64) {
-        if let Some(e) = Self::element_obj(doc, slide_idx, elem_id) {
+        if let Some(e) = Self::element_for_edit(doc, slide_idx, elem_id) {
             let _ = doc.put(&e, "z", z);
         }
     }
@@ -594,6 +651,7 @@ impl SlidesDoc {
         let Some((body, containers)) = Self::element_body_at(doc, slide_idx, elem_id) else {
             return;
         };
+        Self::touch_at(doc, slide_idx);
         let blocks =
             tilo_doc::model::materialize_region(doc, &containers, tilo_doc::model::Region::Body);
         let mut at = char_pos;
@@ -634,6 +692,7 @@ impl SlidesDoc {
 
     pub fn add_element(doc: &mut AutoCommit, slide_idx: usize, el: &Element) {
         if let Some(elements) = Self::elements_list(doc, slide_idx) {
+            Self::touch_at(doc, slide_idx);
             let n = doc.length(&elements);
             if let Ok(e) = doc.insert_object(&elements, n, ObjType::Map) {
                 Self::write_element(doc, &e, el);
@@ -650,6 +709,7 @@ impl SlidesDoc {
                 if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&elements, j)
                     && read_str(doc, &e, "id").as_deref() == Some(elem_id)
                 {
+                    Self::touch(doc, &slide);
                     let _ = doc.delete(&elements, j);
                     return;
                 }
@@ -674,6 +734,8 @@ impl SlidesDoc {
         if let Ok(so) = doc.insert_object(&slides, n, ObjType::Map) {
             Self::write_slide(doc, &so, slide);
             let _ = doc.put(&so, "order", rank);
+            // An edit wrote it: no starter, however empty.
+            Self::touch(doc, &so);
         }
     }
 

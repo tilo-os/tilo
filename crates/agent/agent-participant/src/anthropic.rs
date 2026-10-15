@@ -357,7 +357,7 @@ impl PlanModel for AnthropicModel {
             let (mut seen, mut answered) = (String::new(), String::new());
             for call in &calls {
                 let result = if call.name == tilo_agent::tools::PLAN {
-                    match tilo_agent::tools::read_plan(&call.input, &revealed, most_steps) {
+                    match crate::model::read_planned(&call.input, &revealed, most_steps, briefing) {
                         Ok(answer) => match carried_gap(&answer, catalogue) {
                             None => return Ok(answer),
                             Some(gap) => tilo_agent::tools::plan_refused(&gap),

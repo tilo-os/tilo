@@ -241,6 +241,9 @@ struct Running {
     /// The steps that ran, briefly, oldest first: what a repair must not
     /// do again.
     ran: Vec<String>,
+    /// The operations that ran, oldest first: a check that plans one again
+    /// with the same arguments would add a second slide or event.
+    invoked: Vec<Step>,
 }
 
 impl Running {
@@ -262,7 +265,8 @@ impl Running {
 
 impl Running {
     /// `step` ran and answered `output`, making `content`; `edited` when it
-    /// changed a record.
+    /// changed a record. Only an operation changes one: opening a new record
+    /// publishes it, but a task that only opened has done none of its work.
     fn ran_step(
         &mut self,
         step: &Step,
@@ -271,8 +275,11 @@ impl Running {
         edited: bool,
     ) {
         self.performed = self.performed.saturating_add(1);
-        if matches!(step.action, StepAction::Invoke { .. }) {
+        let invoked = matches!(step.action, StepAction::Invoke { .. });
+        let edited = edited && invoked;
+        if invoked {
             self.acted = self.acted.saturating_add(1);
+            self.invoked.push(step.clone());
         }
         if edited {
             self.edited_at.insert(step.app.clone(), self.performed);
@@ -358,24 +365,100 @@ impl Running {
         });
     }
 
-    /// The exports that ran before a later step changed their app's record,
-    /// each once (the latest of the same export).
+    /// The exports that ran before a later step changed their app's record:
+    /// of each record, only its latest export, and none when an export of
+    /// it ran after that last change. The deliverable is what the plan
+    /// exported last; re-running an earlier PNG after the final PPTX made
+    /// the PNG the task's result.
     fn stale_exports(&self) -> Vec<Step> {
         let mut stale: Vec<Step> = Vec::new();
         for (at, step) in self.exports.iter().rev() {
-            let changed_after = self
-                .edited_at
-                .get(&step.app)
-                .is_some_and(|edited| edited > at);
-            let newer_ran = self.exports.iter().any(|(later, other)| {
-                later > at && other.log_names() == step.log_names() && other.record == step.record
-            });
-            if changed_after && !newer_ran && !stale.contains(step) {
+            let Some(edited) = self.edited_at.get(&step.app) else {
+                continue;
+            };
+            let same_record = |other: &Step| other.app == step.app && other.record == step.record;
+            let newer_ran = self
+                .exports
+                .iter()
+                .any(|(later, other)| later > at && same_record(other));
+            if edited > at && !newer_ran {
                 stale.push(step.clone());
             }
         }
         stale.reverse();
         stale
+    }
+
+    /// When a follow-up plan found nothing offered fits after the task
+    /// changed something: one check of what the request still asks, rather
+    /// than ending on a `then` the model could not plan. Not after the check
+    /// or the export turn, which end the task done. Returns whether it is
+    /// queued.
+    fn check_left(&mut self) -> bool {
+        if !self.changed
+            || self.follow_ups.took(FollowUp::Checking)
+            || matches!(
+                self.follow_ups.turn,
+                Some(FollowUp::Checking | FollowUp::Exporting)
+            )
+        {
+            return false;
+        }
+        self.follow_ups.take(FollowUp::Checking);
+        self.steps.clear();
+        self.steps.push_back(Step {
+            app: String::new(),
+            record: None,
+            action: StepAction::Continue(format!("{CHECK_LEFT}{CHECK_RAN}{}", self.ran.join("; "))),
+            carries: false,
+        });
+        true
+    }
+
+    /// Whether a follow-up plan that failed with `error` leaves the task
+    /// done rather than failed: only when its steps changed or made
+    /// something (reads and opens alone are not the work), and the plan was
+    /// the check or the export turn, or found nothing offered fits.
+    fn done_despite(&self, error: &str) -> bool {
+        self.changed
+            && (matches!(
+                self.follow_ups.turn,
+                Some(FollowUp::Checking | FollowUp::Exporting)
+            ) || error.starts_with(NOTHING_LEFT))
+    }
+
+    /// Put `steps`, a plan of the rest, before what is left. The export
+    /// turn runs exports only: a model asked for the missing export that
+    /// rewrote the note as well lost what the first plan had written right.
+    /// A check runs no operation again as it ran: one that adds (a slide,
+    /// an event) would add it twice.
+    fn queue_rest(&mut self, steps: Vec<Step>) {
+        let turn = self.follow_ups.turn.take();
+        for step in steps.into_iter().rev() {
+            let dropped = match turn {
+                Some(FollowUp::Exporting) => {
+                    matches!(step.action, StepAction::Invoke { .. }) && !is_export(&step)
+                }
+                Some(FollowUp::Checking) => self.ran_already(&step),
+                _ => false,
+            };
+            if !dropped {
+                self.steps.push_front(step);
+            }
+        }
+    }
+
+    /// Whether `step` is an operation that already ran with the same
+    /// arguments, in the same app.
+    fn ran_already(&self, step: &Step) -> bool {
+        let StepAction::Invoke { address, arguments } = &step.action else {
+            return false;
+        };
+        self.invoked.iter().any(|ran| {
+            ran.app == step.app
+                && matches!(&ran.action, StepAction::Invoke { address: a, arguments: b }
+                    if a == address && b == arguments)
+        })
     }
 
     /// A task that starts with `steps`, and what was read while planning
@@ -400,6 +483,7 @@ impl Running {
             edited_at: BTreeMap::new(),
             by_model: false,
             ran: Vec::new(),
+            invoked: Vec::new(),
         };
         for (app, seen) in read {
             running.observe(app, seen);
@@ -503,7 +587,14 @@ const CHECK_WORK: &str = "Check what this task made against the request, item by
      name, date, element, file and export it asks for, using what the records above now hold \
      (read one only if what it holds is not shown). If anything asked for is missing or wrong, \
      plan only the steps that fix it, without redoing what is right. If everything is as asked, \
-     plan no steps at once.";
+     plan no steps and say so in `reply`.";
+
+/// What a task is checked with, once, when a follow-up plan found nothing
+/// offered fits after its steps changed something: the request is shown
+/// beside it.
+const CHECK_LEFT: &str = "Plan what the request still asks for that the steps so far have not \
+     done, using what the records above now hold. If everything it asks for is done, plan no \
+     steps and say so in `reply`.";
 
 /// The apps of `granted` that `task` names and of which no record is
 /// `held` (open or offered in the room).
@@ -544,10 +635,10 @@ fn asks_export(request: &str) -> bool {
 /// What follows [`CHECK_WORK`]: the steps the task ran, each of which
 /// succeeded (a failed step is repaired or ends the task).
 const CHECK_RAN: &str = "\nThe steps this task already ran succeeded, but what they wrote may \
-     still be wrong: compare it with the request. Fix a wrong value by setting it again. Do not \
-     repeat a step that adds something (a slide, a line, an event, a contact, a mark) unless what \
-     it added is missing. An export runs again by itself after a change to what it exported. \
-     The steps: ";
+     still be wrong: compare it with the request. Fix a wrong value by setting it again. Never \
+     plan again a step that adds something (slides, events, contacts, lines, marks, rows): what \
+     it added is there, and running it again adds a second copy. An export runs again by itself \
+     after a change to what it exported. The steps: ";
 
 /// What a task whose plan was only reads is planned again with.
 const READS_ANSWERED: &str = "The reads above have answered. Now plan the steps that make or change \
@@ -661,6 +752,9 @@ pub struct AgentParticipant {
     /// dates") is planned with what the one before it made in view.
     task_touched: Vec<DocumentRoute>,
     previous_touched: Vec<DocumentRoute>,
+    /// The records the current task's plans read while they were made: a
+    /// follow-up plan is offered them, as it is the records it touched.
+    task_read: Vec<DocumentRoute>,
     /// When others' changes last merged into an open record.
     last_merge: Option<Instant>,
     /// Message records ([`MESSAGE_APPS`]) others changed since the running
@@ -775,6 +869,7 @@ impl AgentParticipant {
             keys_wait: None,
             task_touched: Vec::new(),
             previous_touched: Vec::new(),
+            task_read: Vec::new(),
             last_merge: None,
             news: Vec::new(),
             left: false,
@@ -1117,6 +1212,7 @@ impl AgentParticipant {
         }
         self.end_keys_wait();
         self.previous_touched = std::mem::take(&mut self.task_touched);
+        self.task_read.clear();
         // What arrived before the task began is in the room it is planned on.
         self.news.clear();
         self.plan(id, &text, None);
@@ -1183,7 +1279,16 @@ impl AgentParticipant {
 
     fn plan(&mut self, id: String, text: &str, request: Option<String>) {
         let continues = request.is_some();
-        let context = self.plan_context(text, request);
+        let mut context = self.plan_context(text, request);
+        // A check, or the turn after reads, may find nothing left to do.
+        context.may_plan_nothing = continues
+            && self.running.as_ref().is_some_and(|running| {
+                running.id == id
+                    && matches!(
+                        running.follow_ups.turn,
+                        Some(FollowUp::Checking | FollowUp::AfterReads)
+                    )
+            });
         if let Some(steps) = written_steps(text, &context) {
             self.apply_plan(planning::Planned {
                 task: id,
@@ -1216,6 +1321,9 @@ impl AgentParticipant {
     fn answer_reads(&mut self) {
         for ask in self.planning.asked_reads() {
             let answer = self.read_now(&ask.route, &ask.address, &ask.arguments);
+            if answer.is_ok() && !self.task_read.contains(&ask.route) {
+                self.task_read.push(ask.route.clone());
+            }
             let _ = ask.reply.send(answer);
         }
     }
@@ -1241,11 +1349,16 @@ impl AgentParticipant {
             ready_at,
             by_model,
         } = planned;
+        let turn = self
+            .running
+            .as_ref()
+            .filter(|running| running.id == task && continues)
+            .and_then(|running| running.follow_ups.turn);
         record_plan(
             &self.identity.delegation.agent_id,
             &task,
             &text,
-            continues,
+            (continues, turn),
             by_model,
             &steps,
         );
@@ -1269,19 +1382,7 @@ impl AgentParticipant {
                     for (app, seen) in read {
                         running.observe(app, seen);
                     }
-                    // The export turn runs exports only: a model asked for
-                    // the missing export that rewrote the note as well lost
-                    // what the first plan had written right.
-                    let exporting = running.follow_ups.turn.take() == Some(FollowUp::Exporting);
-                    for step in steps.into_iter().rev() {
-                        if exporting
-                            && matches!(step.action, StepAction::Invoke { .. })
-                            && !is_export(&step)
-                        {
-                            continue;
-                        }
-                        running.steps.push_front(step);
-                    }
+                    running.queue_rest(steps);
                     self.plan_ready_at = Some(ready_at);
                 }
             }
@@ -1289,19 +1390,17 @@ impl AgentParticipant {
                 if !continues && error.starts_with(NOTHING_LEFT) && self.reopen_for(&task, &text) {
                     return;
                 }
+                if continues
+                    && running_it
+                    && error.starts_with(NOTHING_LEFT)
+                    && self.running.as_mut().is_some_and(Running::check_left)
+                {
+                    return;
+                }
                 let finished = if running_it {
                     self.running
                         .take()
-                        .filter(|running| {
-                            // Done only when the steps changed or made
-                            // something: reads alone are not the work.
-                            continues
-                                && running.changed
-                                && (matches!(
-                                    running.follow_ups.turn,
-                                    Some(FollowUp::Checking | FollowUp::Exporting)
-                                ) || error.starts_with(NOTHING_LEFT))
-                        })
+                        .filter(|running| continues && running.done_despite(&error))
                         .map(|running| running.done())
                 } else {
                     None
@@ -1577,8 +1676,11 @@ impl AgentParticipant {
             })
             .collect();
         drop(titles);
-        let mut about = self.open_named(task, &apps, &known);
-        about.extend(self.open_new(task, &apps, &known));
+        // A follow-up is about the records the request named too: its own
+        // text ("check the work", "now export it") names none of them.
+        let naming = naming_text(task, request.as_deref());
+        let mut about = self.open_named(&naming, &apps, &known);
+        about.extend(self.open_new(&naming, &apps, &known));
         known.retain(|(route, _)| !self.apps.contains_key(route));
         let mut open: Vec<(DocumentRoute, Vec<ActionDescriptor>)> = self
             .apps
@@ -1596,7 +1698,8 @@ impl AgentParticipant {
             .filter(|route| {
                 about.contains(route)
                     || touched.contains(route)
-                    || crate::model::task_names_app(task, &route.app_id)
+                    || self.task_read.contains(route)
+                    || crate::model::task_names_app(&naming, &route.app_id)
             })
             .cloned()
             .collect();
@@ -1614,7 +1717,7 @@ impl AgentParticipant {
             .filter(|app| {
                 !open.iter().any(|(route, _)| route.app_id == **app)
                     && !known.iter().any(|(route, _)| route.app_id == **app)
-                    && (apps.len() <= 2 || crate::model::task_names_app(task, app))
+                    && (apps.len() <= 2 || crate::model::task_names_app(&naming, app))
             })
             .filter_map(|app| Some((app.clone(), self.preview(app)?)))
             .collect();
@@ -1628,7 +1731,7 @@ impl AgentParticipant {
                 apps.len() <= MOST_REFERENCED_APPS
                     || open.iter().any(|(route, _)| route.app_id == **app)
                     || previews.iter().any(|(previewed, _)| previewed == *app)
-                    || crate::model::task_names_app(task, app)
+                    || crate::model::task_names_app(&naming, app)
             })
             .cloned()
             .collect();
@@ -1651,6 +1754,7 @@ impl AgentParticipant {
             reference,
             room: self.room.clone(),
             searchable,
+            may_plan_nothing: false,
         }
     }
 
@@ -2250,14 +2354,24 @@ fn picture_size(bytes: &[u8]) -> Option<(&'static str, u32, u32)> {
     None
 }
 
+/// The text a plan's records are chosen by: `task`, and the request it is
+/// the rest of when there is one.
+fn naming_text(task: &str, request: Option<&str>) -> String {
+    match request {
+        Some(request) if request != task => format!("{request}\n{task}"),
+        _ => task.to_owned(),
+    }
+}
+
 /// Appends one JSON line per plan to `TILO_AGENT_PLAN_LOG`, when set: the
-/// task, what was planned (its text, or the rest of it), and the steps or
-/// why there are none, so a task that ended early can be traced to its plan.
+/// task, what was planned (its text, or the rest of it, with the follow-up
+/// turn it is), and the steps or why there are none, so a task that ended
+/// early can be traced to its plan.
 fn record_plan(
     agent: &str,
     task: &str,
     text: &str,
-    continues: bool,
+    (continues, turn): (bool, Option<FollowUp>),
     by_model: bool,
     steps: &Result<Vec<Step>, String>,
 ) {
@@ -2270,6 +2384,7 @@ fn record_plan(
         "agent": agent,
         "task": task,
         "continues": continues,
+        "turn": turn.map(|turn| format!("{turn:?}")),
         "by_model": by_model,
         "text": text.chars().take(4_000).collect::<String>(),
         "steps": steps.as_ref().ok().map(|steps| steps.iter().map(step_brief).collect::<Vec<_>>()),
@@ -2360,6 +2475,8 @@ fn take_news(running: &mut Running, news: &mut Vec<DocumentRoute>) {
         return;
     }
     running.news_replans = running.news_replans.saturating_add(1);
+    // The follow-up turn queued is replaced: the news re-plan is not it.
+    running.follow_ups.turn = None;
     let news = std::mem::take(news);
     // The re-plan is of the rest of the request, as a repair's is.
     let left = running.steps.len();
@@ -2811,5 +2928,174 @@ mod tests {
         running.steps.clear();
         running.plan_more(true);
         assert!(running.steps.is_empty(), "checked once");
+    }
+
+    fn invoke_with(app: &str, resource: &str, action: &str, arguments: serde_json::Value) -> Step {
+        let mut step = invoke(app, resource, action);
+        if let (
+            StepAction::Invoke {
+                arguments: slot, ..
+            },
+            serde_json::Value::Object(given),
+        ) = (&mut step.action, arguments)
+        {
+            *slot = given;
+        }
+        step
+    }
+
+    fn open_step(app: &str) -> Step {
+        Step {
+            app: app.into(),
+            record: None,
+            action: StepAction::Open,
+            carries: false,
+        }
+    }
+
+    /// Opening a new record publishes it, but is none of the task's work:
+    /// a task that only read and opened is not done because a follow-up
+    /// found nothing offered fits.
+    #[test]
+    fn an_open_is_not_a_change_and_reads_with_opens_are_not_done_by_a_follow_up_error() {
+        let mut running = Running::new("t1".into(), "fix the deck".into(), Vec::new(), Vec::new());
+        running.by_model = true;
+        running.ran_step(&open_step("so.tilo.slides"), None, Vec::new(), true);
+        running.ran_step(
+            &invoke("so.tilo.slides", "slides.deck", "inspect"),
+            None,
+            Vec::new(),
+            false,
+        );
+        assert!(!running.changed);
+        assert!(running.edited_at.is_empty());
+        running.follow_ups.take(FollowUp::AfterReads);
+        assert!(!running.done_despite(&format!("{NOTHING_LEFT}: no slide app")));
+        assert!(!running.check_left(), "nothing changed to check");
+
+        running.ran_step(
+            &invoke("so.tilo.slides", "slides.deck", "add-slide"),
+            None,
+            Vec::new(),
+            true,
+        );
+        running.follow_ups.turn = None;
+        assert!(running.done_despite(&format!("{NOTHING_LEFT}: all done")));
+    }
+
+    /// A model's `then` that finds nothing offered fits after the task
+    /// changed something is checked once, the request beside it, before
+    /// the task is done; a check that then finds nothing ends it done.
+    #[test]
+    fn a_rest_that_finds_nothing_left_after_a_change_is_checked_once() {
+        let mut running =
+            Running::new("t1".into(), "build the deck".into(), Vec::new(), Vec::new());
+        running.by_model = true;
+        running.ran_step(
+            &invoke("so.tilo.slides", "slides.deck", "add-slide"),
+            None,
+            Vec::new(),
+            true,
+        );
+        assert!(running.check_left());
+        assert!(matches!(
+            running.steps.front().map(|step| &step.action),
+            Some(StepAction::Continue(rest))
+                if rest.starts_with(CHECK_LEFT) && rest.ends_with(&format!("{CHECK_RAN}add-slide"))
+        ));
+        assert_eq!(running.follow_ups.turn, Some(FollowUp::Checking));
+        running.steps.clear();
+        assert!(!running.check_left(), "once");
+        assert!(running.done_despite(&format!("{NOTHING_LEFT}: all done")));
+
+        let mut checked =
+            Running::new("t2".into(), "build the deck".into(), Vec::new(), Vec::new());
+        checked.changed = true;
+        checked.follow_ups.take(FollowUp::Checking);
+        checked.follow_ups.turn = None;
+        assert!(!checked.check_left(), "the check was already taken");
+    }
+
+    /// A check that plans an operation again exactly as it ran (a slide of
+    /// the same title) has it dropped; a different one, or a fix, runs. The
+    /// export turn keeps only exports.
+    #[test]
+    fn a_check_drops_an_operation_that_already_ran_as_it_ran() {
+        let slides = "so.tilo.slides";
+        let menu = || {
+            invoke_with(
+                slides,
+                "slides.deck",
+                "add-slide",
+                serde_json::json!({"title": "Menu"}),
+            )
+        };
+        let mut running =
+            Running::new("t1".into(), "build the deck".into(), Vec::new(), Vec::new());
+        running.ran_step(&menu(), None, Vec::new(), true);
+        running.follow_ups.take(FollowUp::Checking);
+        let prices = invoke_with(
+            slides,
+            "slides.deck",
+            "add-slide",
+            serde_json::json!({"title": "Prices"}),
+        );
+        let retitle = invoke_with(
+            slides,
+            "slides.slide:s1",
+            "set-title",
+            serde_json::json!({"title": "Menu"}),
+        );
+        running.queue_rest(vec![menu(), prices.clone(), retitle.clone()]);
+        assert_eq!(
+            running.steps.iter().collect::<Vec<_>>(),
+            [&prices, &retitle]
+        );
+        assert_eq!(running.follow_ups.turn, None);
+
+        running.steps.clear();
+        running.follow_ups.take(FollowUp::Exporting);
+        let export = invoke(slides, "slides.deck", "export-pptx-content");
+        running.queue_rest(vec![menu(), export.clone()]);
+        assert_eq!(running.steps.iter().collect::<Vec<_>>(), [&export]);
+    }
+
+    /// An earlier export of a record is not run again when a later export
+    /// of the same record ran after its last change: the PPTX exported
+    /// last stays the deliverable, not the PNG exported before the edit.
+    /// Of several stale exports of one record, only the latest runs again.
+    #[test]
+    fn only_the_latest_export_of_a_record_runs_again_and_none_after_a_fresh_one() {
+        let slides = "so.tilo.slides";
+        let png = invoke(slides, "slides.slide:s1", "export-slide-png-content");
+        let pptx = invoke(slides, "slides.deck", "export-pptx-content");
+        let edit = invoke(slides, "slides.deck", "add-slide");
+        let mut running = Running::new("t1".into(), "deck".into(), Vec::new(), Vec::new());
+        running.ran_step(&png, None, vec!["png".into()], false);
+        running.ran_step(&edit, None, Vec::new(), true);
+        running.ran_step(&pptx, None, vec!["pptx".into()], false);
+        assert!(
+            running.stale_exports().is_empty(),
+            "{:?}",
+            running.stale_exports()
+        );
+
+        let mut both = Running::new("t2".into(), "deck".into(), Vec::new(), Vec::new());
+        both.ran_step(&png, None, vec!["png".into()], false);
+        both.ran_step(&pptx, None, vec!["pptx".into()], false);
+        both.ran_step(&edit, None, Vec::new(), true);
+        assert_eq!(both.stale_exports(), [pptx]);
+    }
+
+    /// A follow-up's records are chosen by the request it is the rest of as
+    /// well as by its own words, which name none of them.
+    #[test]
+    fn a_follow_up_names_the_records_its_request_names() {
+        let request = "Add a Prices slide to the partner deck and export it as PPTX";
+        let naming = naming_text(CHECK_WORK, Some(request));
+        assert!(crate::model::task_names_app(&naming, "so.tilo.slides"));
+        assert!(!crate::model::task_names_app(CHECK_WORK, "so.tilo.slides"));
+        assert_eq!(naming_text(request, None), request);
+        assert_eq!(naming_text(request, Some(request)), request);
     }
 }

@@ -276,13 +276,13 @@ fn import_xlsx_content() -> ActionDecl<SheetsWorkbook> {
     )
     .describe(
         "Add every sheet of an .xlsx workbook kept as content, formulas, formats and \
-         hidden sheets included; a new workbook's blank sheet gives way to them.",
+         hidden sheets included; a new workbook's untouched blank sheet gives way to them.",
     )
 }
 
-/// The workbook's new sheet, appended, with its first content when given;
-/// `count` is how many sheets the workbook has, `titled` whether it has a
-/// title already.
+/// The workbook's new sheet, appended, with its first content when given
+/// (replacing a new workbook's untouched blank first sheet); `count` is how
+/// many sheets the workbook has, `titled` whether it has a title already.
 fn new_sheet(count: usize, titled: bool) -> ActionDecl<SheetsWorkbook> {
     ActionDecl::new(
         "new-sheet",
@@ -343,8 +343,9 @@ fn new_sheet(count: usize, titled: bool) -> ActionDecl<SheetsWorkbook> {
                 return Ok(add_sheet_action(&name));
             }
             // A sheet and its content in one change, as an import makes
-            // them; a new workbook's blank first sheet gives way to it, and
-            // the workbook takes the name it is given in the same change.
+            // them; only a new workbook's untouched blank first sheet gives
+            // way to it (a renamed one is kept), and the workbook takes the
+            // name it is given in the same change.
             let mut cells = content.unwrap_or_default();
             if let Some(formats) = args.object("formats") {
                 cells = crate::cell_actions::with_formats(cells, formats)?;
@@ -364,7 +365,9 @@ fn new_sheet(count: usize, titled: bool) -> ActionDecl<SheetsWorkbook> {
     )
     .describe(
         "Add a sheet at the end of the workbook, with its content when given; naming the \
-         workbook too when it has no name yet.",
+         workbook too when it has no name yet. A new workbook's untouched blank Sheet1 is \
+         replaced by a sheet with content; every other sheet, a renamed blank one included, \
+         is kept.",
     )
     // With content it answers it, as a cell edit does; a blank sheet, null.
     .returns(tilo_actions::ResultSpec::Json {
@@ -502,7 +505,7 @@ impl Resource for SheetsWorkbook {
         if SheetsDoc::is_empty(doc) {
             tilo_actions::Action::apply(
                 &SheetsAction::AddSheet {
-                    name: "Sheet1".into(),
+                    name: crate::doc::FIRST_SHEET_NAME.into(),
                     new_sheet_id: FIRST_SHEET_ID.into(),
                 },
                 doc,
@@ -1379,6 +1382,151 @@ mod tests {
         assert_eq!(
             answer["rows"],
             serde_json::json!([["Price", "Tier"], [49.0, "Basic"]])
+        );
+    }
+
+    /// The workbook's sheet names, in order.
+    fn sheet_names(app: &TestApp<SheetsShell>) -> Vec<String> {
+        app.state()
+            .sheets
+            .iter()
+            .map(|sheet| sheet.name.clone())
+            .collect()
+    }
+
+    /// Rename the workbook's sheet `idx` through its own action.
+    fn rename(app: &mut TestApp<SheetsShell>, idx: usize, name: &str) {
+        let sheet = app.state().sheets[idx].id.clone();
+        app.call_on(
+            &crate::actions::sheet_resource_id(&sheet),
+            "rename",
+            serde_json::json!({ "value": name }),
+        )
+        .unwrap();
+    }
+
+    /// A blank sheet someone renamed is one they mean to use: a new sheet
+    /// with content is added after it rather than replacing it, so later
+    /// steps still find it by its name.
+    #[test]
+    fn new_sheet_keeps_a_renamed_blank_sheet() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        rename(&mut app, 0, "Costs");
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Menu", "rows": [["Dish", "Price"], ["Soup", 6]]}),
+        )
+        .unwrap();
+        assert_eq!(sheet_names(&app), ["Costs", "Menu"]);
+        app.call(
+            "set-cells",
+            serde_json::json!({"sheet": "Costs", "start": "A1", "rows": [["Rent", 900]]}),
+        )
+        .unwrap();
+
+        // Renamed back to its default name, it was still touched.
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        rename(&mut app, 0, "Costs");
+        rename(&mut app, 0, "Sheet1");
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Menu", "rows": [["Dish"]]}),
+        )
+        .unwrap();
+        assert_eq!(sheet_names(&app), ["Sheet1", "Menu"]);
+    }
+
+    /// A new workbook's untouched blank sheet still gives way to the first
+    /// sheet made with content, so the workbook does not open on an empty
+    /// first tab.
+    #[test]
+    fn the_untouched_default_sheet_is_still_replaced_by_new_sheet() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Menu", "rows": [["Dish", "Price"], ["Soup", 6]]}),
+        )
+        .unwrap();
+        assert_eq!(sheet_names(&app), ["Menu"]);
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Drinks", "rows": [["Tea", 3]]}),
+        )
+        .unwrap();
+        assert_eq!(
+            sheet_names(&app),
+            ["Menu", "Drinks"],
+            "only the blank one gives way"
+        );
+    }
+
+    /// A new sheet whose content has a formula that does not parse is
+    /// refused naming the cell, by rows or by records, and no sheet is
+    /// added.
+    #[test]
+    fn new_sheet_refuses_a_formula_that_does_not_parse() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        for (args, says) in [
+            (
+                serde_json::json!({"name": "Menu", "rows": [
+                    ["Dish", "Price"], ["Soup", 6], ["Tea", 3],
+                    ["Top", "=INDEX(A1:A3, MATCH(\"x\", B1:B3, 0)"],
+                ]}),
+                "cell B4: the formula `=INDEX(A1:A3, MATCH(\"x\", B1:B3, 0)` does not parse: \
+                 `INDEX(` is never closed: add `)`",
+            ),
+            (
+                serde_json::json!({"name": "Menu", "columns": ["Dish", "Price", "Total"],
+                    "records": [{"Dish": "Soup", "Price": 6, "Total": "=[Price]*"}]}),
+                "cell C2: the formula `=B2*` does not parse",
+            ),
+            (
+                serde_json::json!({"name": "Menu", "rows": [["=SUM(B:B)"]]}),
+                "cell A1: the formula `=SUM(B:B)` does not parse: `B:B` is not a range",
+            ),
+        ] {
+            let error = app.call("new-sheet", args).unwrap_err().to_string();
+            assert!(error.contains(says), "{error}");
+        }
+        assert_eq!(sheet_names(&app), ["Sheet1"]);
+        assert!(app.state().sheets[0].snapshot.raw.is_empty());
+    }
+
+    /// `set-records` refuses a record whose formula does not parse, naming
+    /// the cell it would land in, and writes none of the records.
+    #[test]
+    fn set_records_refuses_a_formula_that_does_not_parse() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Budget", "columns": ["Item", "Price", "Qty", "Total"]}),
+        )
+        .unwrap();
+        let error = app
+            .call(
+                "set-records",
+                serde_json::json!({"sheet": "Budget", "records": [
+                    {"Item": "Venue", "Price": 145, "Qty": 8, "Total": "=[Price]*[Qty]"},
+                    {"Item": "Food", "Price": 30, "Qty": 8, "Total": "=SUM([Price], [Qty]"},
+                ]}),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("cell D3") && error.contains("`SUM(` is never closed"),
+            "{error}"
+        );
+        let state = app.state();
+        let budget = state
+            .sheets
+            .iter()
+            .find(|sheet| sheet.name == "Budget")
+            .expect("the sheet");
+        assert_eq!(
+            budget.snapshot.raw.len(),
+            4,
+            "only the header row: {:?}",
+            budget.snapshot.raw
         );
     }
 }

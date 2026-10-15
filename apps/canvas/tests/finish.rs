@@ -327,3 +327,49 @@ fn tracked_centred_text_centres_its_letters() {
         "the ink box holds every letter: {entry}"
     );
 }
+
+/// With a `width`, `align` places the words within the box `x` to
+/// `x + width`, as the shape's schema says: drawn ink, the exported SVG and
+/// the box selection uses all agree, so an agent can centre a caption over
+/// a span by giving the span.
+#[test]
+fn aligned_text_with_a_width_aligns_within_its_box() {
+    let mut app = TestApp::<App>::new().unwrap();
+    draw(
+        &mut app,
+        &json!([
+            {"id": "mid", "shape": {"kind": "text", "x": 200, "y": 200, "text": "RAIL", "size": 80, "align": "center", "width": 800}},
+            {"id": "end", "shape": {"kind": "text", "x": 200, "y": 400, "text": "RAIL", "size": 80, "align": "end", "width": 800}},
+        ]),
+    );
+    let measured = view(&mut app, "inspect", json!({"measure": ["mid", "end"]}));
+    // The ink box is read from the drawn pixels: where the words really are.
+    let ink = |index: usize| {
+        let ink = measured["measured"][index]["ink"].as_array().unwrap();
+        let left = ink[0].as_f64().unwrap();
+        (left, left + ink[2].as_f64().unwrap())
+    };
+    let (left, right) = ink(0);
+    assert!(
+        (f64::midpoint(left, right) - 600.0).abs() < 4.0,
+        "centred on x + width / 2, not on x: {measured}"
+    );
+    let (_, right) = ink(1);
+    assert!(
+        (right - 1000.0).abs() < 8.0,
+        "ends at x + width, not at x: {measured}"
+    );
+    let svg = view(&mut app, "export-svg", json!({}));
+    let markup = svg["svg"].as_str().unwrap();
+    assert!(
+        markup.contains(r#"x="600" y="200""#) && markup.contains(r#"text-anchor="middle""#),
+        "{markup}"
+    );
+    assert!(
+        markup.contains(r#"x="1000" y="400""#) && markup.contains(r#"text-anchor="end""#),
+        "{markup}"
+    );
+    let art = app.state();
+    let area = art.mark("mid").unwrap().shape.text_box().unwrap();
+    assert_eq!((area.x0, area.x1), (200.0, 1000.0));
+}
