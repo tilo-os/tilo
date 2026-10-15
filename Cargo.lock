@@ -22696,6 +22696,7 @@ dependencies = [
 name = "word-processor"
 version = "0.1.0"
 dependencies = [
+ "quick-xml 0.41.0",
  "regex",
  "runtime-dylib",
  "serde",
@@ -22722,6 +22723,7 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
+ "zip",
 ]
 
 [[package]]

@@ -571,6 +571,10 @@ suites = [
   "crates/browser/tilo-browser-compute/scripts/test_packaging.py",
 ]
 
+[[unrequired]]
+suite = "crates/agent/agent-participant/tests/mounted_resource/accounts.test.mjs"
+reason = "requires live Chromium and browser storage; executed by the required app SDK browser lane after provisioning Chromium, not the hermetic ci-fast image"
+
 [[group]]
 name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
@@ -1080,6 +1084,11 @@ package = "tilo-font-catalog"
 # helper reads the fonts through it.
 inputs = ["crates/sdk/ui-core/assets/fonts/", "tools/font-catalog.py"]
 readers = ["crates/sdk/font-catalog/build.rs"]
+
+[[cargo]]
+package = "word-processor"
+inputs = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+readers = ["apps/word-processor/build.rs"]
 
 [[cargo]]
 package = "pdf-viewer"

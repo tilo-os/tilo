@@ -86,6 +86,7 @@ tilo-vmd = ["os/components.toml", "os/scripts/install-components.py", "os/dev/in
 ush = ["os/usr/lib/systemd/user/tilo-ush.service"]
 video-editor = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 video-player = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 # END generated
 
 [[cargo]]
@@ -144,6 +145,7 @@ tilo-vmd = ["os/components.toml", "os/scripts/install-components.py", "os/dev/in
 ush = ["os/usr/lib/systemd/user/tilo-ush.service"]
 video-editor = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 video-player = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 # END generated
 
 [[cargo]]
@@ -202,6 +204,7 @@ tilo-vmd = ["os/components.toml", "os/scripts/install-components.py", "os/dev/in
 ush = ["os/usr/lib/systemd/user/tilo-ush.service"]
 video-editor = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 video-player = ["tools/test-assets-build.rs", "tools/test-assets.py"]
+word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 # END generated
 
 # The suite reads the whole tree (every blob's bytes, layout, references), and
@@ -795,6 +798,7 @@ python3 tools/ci/prepare_sdk_moq.py license "$web/calculator/bundle"
 bash tools/ci/ensure-browser-dependencies.sh
 npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
 export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
+node --test crates/agent/agent-participant/tests/mounted_resource/accounts.test.mjs
 cargo run --locked -p tilo-agent-participant --example mounted-resource -- "$web/calculator/bundle"
 "$app" build apps/chat --platform web
 python3 tools/ci/prepare_sdk_moq.py license "$web/chat/bundle"
