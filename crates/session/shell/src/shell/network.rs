@@ -9071,6 +9071,45 @@ mod tests {
         );
     }
 
+    /// Each of the person's devices restates its fabric checkpoint, and the
+    /// merge reaches the compositor's loop through `net.tick`. The merged
+    /// fabric and its backup (four fsyncs) are written by the state writer.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn merging_a_peer_fabric_checkpoint_never_waits_for_the_disk() {
+        let dir = tempfile::tempdir().expect("temp");
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xF3; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer_device = iroh::SecretKey::generate();
+        let (mut net, _commands) = personal_continuity_network_for_test(user);
+        let path = dir.path().join("personal-device-fabric.postcard");
+        net.device_fabric_path = Some(path.clone());
+        authenticated_personal_peer(&net, &root, &peer_device);
+        let owner = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            peer_device.public().as_bytes(),
+        ))
+        .unwrap();
+        let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
+        incoming.upsert(fabric_snapshot(owner.clone(), 8)).unwrap();
+        let payload = PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap());
+        crate::shell::durable_writer::global().flush();
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            net.dispatch_personal_fabric(
+                personal_continuity_topic_id(&user),
+                peer_device.public(),
+                crate::network::actor::MembershipEpoch::for_test(1),
+                user,
+                payload,
+            );
+        });
+        assert!(net.device_fabric().snapshots().contains_key(&owner));
+        crate::shell::durable_writer::global().flush();
+        assert!(
+            load_device_fabric(&path).snapshots().contains_key(&owner),
+            "the state writer stored the merged fabric"
+        );
+    }
+
     #[test]
     fn continuity_obligations_wait_for_the_write_of_their_value() {
         let durability = ContinuityDurability::default();
