@@ -186,10 +186,12 @@ video-editor = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 video-player = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 # END generated
 
+# The suite reads the whole tree (every blob's bytes, layout, references), and
+# lists it through Git, which t's copy of the tree has no .git for.
 [[check]]
 name = "policy"
-run = "bash tools/policy/run.sh"
-inputs = ["tools/policy/**", "scripts/**", "Cargo.toml", "**/Cargo.toml", ".forgejo/**"]
+run = "bash tools/ci/t-git-index.sh bash tools/policy/run.sh"
+inputs = ["**"]
 
 
 # ---------------------------------------------------------------------------
