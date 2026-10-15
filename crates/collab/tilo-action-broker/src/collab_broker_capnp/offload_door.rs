@@ -36,6 +36,14 @@ pub(super) struct QueuedOffload {
 const MAX_OFFLOADED_HERE: usize = 256;
 
 impl CapnpBrokerState {
+    /// The route this broker's door asks where an admitted offloadable
+    /// invocation runs, as its host installed it; `None` runs every one
+    /// through its app's own handler.
+    #[must_use]
+    pub fn action_offload(&self) -> Option<&Arc<dyn ActionOffload>> {
+        self.services.action_offload.as_ref()
+    }
+
     /// The offload request for an admitted invocation of `action` in
     /// `room` with wire `argument`, when it declares an offload and this
     /// device routes offloads; `None` runs it here as any other.

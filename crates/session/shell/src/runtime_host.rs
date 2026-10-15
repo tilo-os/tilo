@@ -136,6 +136,9 @@ impl Session {
         stage("starting the identity service");
         let identity =
             identity_broker::spawn(identity_socket.clone(), tree.clone(), channel_keys.clone())?;
+        let blob_socket = root.join(BLOB_SOCKET);
+        stage("opening the content store");
+        let media = tilo_runtime::profile::MediaHost::start(&root.join("content"), &blob_socket)?;
         stage("starting the collaboration broker");
         let peer_sync = PeerSync::start(&tree);
         // No frame loop waits here: open the owner before the broker, whose
@@ -148,15 +151,15 @@ impl Session {
         if let Err(error) = &opened {
             tracing::warn!(%error, "the runtime's workspace owner did not open");
         }
-        let broker = collab_broker::spawn_native(
+        let broker = collab_broker::spawn_native_offloading(
             root.join(COLLAB_SOCKET),
             &peer_sync.as_ref().map(|sync| Arc::clone(&sync.network)),
             tree.clone(),
+            // Offloadable actions of the room may run on a better-placed
+            // device of this person, over the room's media in this store.
+            tilo_runtime::offload::action_offload(&[room_id.as_str()], media.store()),
         )?;
         channel_keys.set(broker.channel_encryption());
-        let blob_socket = root.join(BLOB_SOCKET);
-        stage("opening the content store");
-        let media = tilo_runtime::profile::MediaHost::start(&root.join("content"), &blob_socket)?;
         Ok(Self {
             broker,
             _peer_sync: peer_sync,
