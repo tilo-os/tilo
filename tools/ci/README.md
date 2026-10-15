@@ -63,12 +63,12 @@ the smaller `os/Containerfile.ci-fast`.
 | `check.yml` vendored | `tools/ci/test-vendored-crates.sh [vendor/<crate>...]`: each patched vendored crate's own `cargo test`, from a copy of the workspace lock (`VENDORED_TEST_CRATES` in `affected_packages.py`; `ci-nightly.yml` runs all) |
 | `check.yml` wasm | `tools/ci/check-wasm.sh`; `tools/ci/build-web-examples.sh example-<name>...` builds the web examples |
 | `lint.yml` | `tools/policy/run.sh`, `bash tools/ci/check-changed-rustfmt.sh origin/main`, `python3 tools/ci/check_changed_rust_allows.py origin/main`, `cargo deny --workspace check`, `cargo hakari generate --diff && cargo hakari manage-deps --dry-run`, `bash tools/ci/check-unused-dependencies.sh --changed origin/main ''` |
-| `app-sdk.yml` policy | `python3 tools/policy/check_app_portability.py`, `python3 tools/policy/check_app_capabilities.py`, `python3 tools/web/generate_web_desktop.py --check` |
-| `app-sdk.yml` linux | `cargo build -p tilo-app-cli --bin tilo-app`, then `target/debug/tilo-app build --target linux apps/calculator` and `target/debug/tilo-app package --target linux apps/calculator --output calculator.tapp` |
-| `app-sdk.yml` web | `target/debug/tilo-app build --target web --bundle desktop apps/calculator`; `node --test crates/platform/*/web/*.test.mjs` |
-| `app-sdk.yml` web-size | `target/debug/tilo-app build --target web --bundle desktop --release apps/calculator`, then `python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle`; uploads/downloads the exact release worker, verifies hashes and qualifies it in disposable staging. Runs alongside the dev mount. |
+| `t test sdk-policy sdk-web-budget` | `python3 tools/policy/check_app_portability.py`, `python3 tools/policy/check_app_capabilities.py`, `python3 tools/web/generate_web_desktop.py --check` |
+| `t test sdk-linux` | `cargo build -p tilo-app-cli --bin tilo-app`, then `target/debug/tilo-app build --target linux apps/calculator` and `target/debug/tilo-app package --target linux apps/calculator --output calculator.tapp` |
+| `t test sdk-web` | `target/debug/tilo-app build --target web --bundle desktop apps/calculator`; `node --test crates/platform/*/web/*.test.mjs` |
+| `t test sdk-web-size` | `target/debug/tilo-app build --target web --bundle desktop --release apps/calculator`, then `python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle`; then qualifies the release private image worker in headless Chromium. |
 | t `runtime-macos` | `cargo check -p tilo-runtime --all-targets --locked`, on macOS |
-| t `sdk-macos` | the `app-sdk.yml` linux lane's commands with `--target macos`, on macOS |
+| t `sdk-macos` | the `sdk-linux` check's commands with `--target macos`, on macOS |
 | t `apps-macos` | `cargo build --locked $(python3 tools/ci/macos_apps.py)`, then `cargo nextest run` and the doctests with the same packages, on macOS |
 | `t test real-fuse` | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
 | `t test native-tier1` | `tools/native-tier1.sh` on a host with pre-content fanotify, Btrfs and loop devices |
