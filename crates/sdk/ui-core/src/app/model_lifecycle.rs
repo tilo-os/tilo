@@ -45,6 +45,8 @@ struct HostedPublicationStamp {
 
 #[derive(Default)]
 pub(super) struct HostedPumpState {
+    #[cfg(test)]
+    pub(super) calls: usize,
     authority: Option<HostedAuthorityWitness>,
     publication: Option<HostedPublicationStamp>,
 }
@@ -52,6 +54,7 @@ pub(super) struct HostedPumpState {
 /// What one hosted pump did; used by focused tests and the timing trace.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct HostedPumpReport {
+    pub(super) presentation_changed: bool,
     pub(super) updated: bool,
     pub(super) synced: bool,
     pub(super) published: bool,
@@ -62,6 +65,12 @@ impl super::App {
     /// same phases as the window runner, without adding caller attribution.
     pub fn pump_hosted_model(&mut self) {
         self.pump_hosted_model_as(host_perf_baseline());
+    }
+
+    /// Presence and connection changes can change pixels without dirtying a widget.
+    pub(super) fn pump_embedded_model(&mut self) -> bool {
+        self.pump_hosted_model_as(host_perf_baseline())
+            .presentation_changed
     }
 
     /// [`Self::pump_hosted_model`], answering whether the app's record
@@ -126,6 +135,10 @@ impl super::App {
 
     /// [`Self::pump_hosted_model_as`], and whether the record changed.
     fn pump_hosted_model_with_record(&mut self, always_refresh: bool) -> (HostedPumpReport, bool) {
+        #[cfg(test)]
+        {
+            self.actions.hosted.calls += 1;
+        }
         let started = hosted_pump_timing().then(crate::time::now);
         let _entry = self.enter_wake_scope();
         let (inbound, directory) = self.pump_collab_presence_inner(true);
@@ -150,7 +163,10 @@ impl super::App {
             || in_flight
             || deadline_due
             || wakes.is_none_or(|(_, sync)| sync);
-        let mut report = HostedPumpReport::default();
+        let mut report = HostedPumpReport {
+            presentation_changed: inbound,
+            ..HostedPumpReport::default()
+        };
         if force_sync
             || invocations
             || record
