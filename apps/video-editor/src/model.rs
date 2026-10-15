@@ -1503,7 +1503,7 @@ impl Clip {
             Param::MaskFeather => self.mask.feather = v,
             Param::CurveMix => self.curves.mix = v,
             Param::EffectAmount(id) => {
-                if let Some(e) = self.effects.iter_mut().find(|e| e.id == id) {
+                if let Some(e) = self.effects.find_mut(&key(id)) {
                     e.amount = v;
                 }
             }
@@ -1977,7 +1977,7 @@ impl Project {
     }
 
     pub fn marker_mut(&mut self, id: MarkerId) -> Option<&mut Marker> {
-        self.markers.iter_mut().find(|m| m.id == id)
+        self.markers.find_mut(&key(id))
     }
 
     pub fn remove_marker(&mut self, id: MarkerId) -> bool {

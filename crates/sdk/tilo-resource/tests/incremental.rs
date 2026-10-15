@@ -1406,3 +1406,388 @@ fn the_edits_of_a_local_copy_match_comparing_every_item() {
         }
     }
 }
+
+// --- Saving a map over the state it was copied from --------------------------
+
+thread_local! {
+    static PAGES_COMPARED: Cell<usize> = const { Cell::new(0) };
+    static PAGES_STORED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Text that counts how often it is compared and written.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Page(pub String);
+
+impl tilo_resource::Settable for Page {}
+
+impl Model for Page {
+    tilo_resource::leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        self.0.to_json()
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        String::from_json(value).map(Self)
+    }
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        String::load(doc, value, id).map(Self)
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::default())
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        PAGES_STORED.with(|stored| stored.set(stored.get() + 1));
+        self.0.store(doc, slot)
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        PAGES_COMPARED.with(|compared| compared.set(compared.get() + 1));
+        self == before
+    }
+}
+
+/// What `run` returned, and how many [`Page`]s it compared and wrote.
+fn pages_counted<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
+    let compared = || PAGES_COMPARED.with(Cell::get);
+    let stored = || PAGES_STORED.with(Cell::get);
+    let (was_compared, was_stored) = (compared(), stored());
+    let out = run();
+    (out, compared() - was_compared, stored() - was_stored)
+}
+
+fn actor(name: &str) -> automerge::ActorId {
+    automerge::ActorId::from(name.as_bytes())
+}
+
+/// Close the open change at a fixed time, so two documents that made the
+/// same operations end at the same heads.
+fn commit_at_zero(doc: &mut Doc) {
+    doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+}
+
+#[test]
+fn saving_a_map_changed_in_one_entry_visits_one_chunk() {
+    use tilo_resource::__private::ROOT;
+    let held: Map<Page> = (0..1000)
+        .map(|n| (book(n), Page(format!("page {n}"))))
+        .collect();
+    let mut doc = Doc::new().with_actor(actor("base"));
+    tilo_resource::write_key(&mut doc, &ROOT, "progress", &held).unwrap();
+    commit_at_zero(&mut doc);
+
+    let mut now = held.clone();
+    now.insert(book(500), Page("changed".into()));
+    let mut changed = doc.fork().with_actor(actor("me"));
+    let ((), compared, stored) = pages_counted(|| {
+        tilo_resource::write_key_changed(
+            &mut changed,
+            &ROOT,
+            "progress",
+            &now,
+            &held,
+            &tilo_resource::Delta::nothing(),
+        )
+        .unwrap();
+    });
+    assert_eq!(stored, 1, "only the changed entry is written");
+    assert!(
+        compared <= 2 * 64,
+        "{compared} entries of 1000 compared: the changed chunk's, at most twice"
+    );
+
+    let mut whole = doc.fork().with_actor(actor("me"));
+    tilo_resource::write_key(&mut whole, &ROOT, "progress", &now).unwrap();
+    commit_at_zero(&mut changed);
+    commit_at_zero(&mut whole);
+    assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
+    let read: Map<Page> = tilo_resource::read_key(&changed, &ROOT, "progress").unwrap();
+    assert_eq!(read, now);
+
+    // An unchanged copy writes nothing and compares nothing.
+    let mut same = doc.fork().with_actor(actor("me"));
+    let ((), compared, stored) = pages_counted(|| {
+        tilo_resource::write_key_changed(
+            &mut same,
+            &ROOT,
+            "progress",
+            &held.clone(),
+            &held,
+            &tilo_resource::Delta::nothing(),
+        )
+        .unwrap();
+    });
+    assert_eq!((compared, stored), (0, 0));
+    assert_eq!(automerge::transaction::Transactable::pending_ops(&same), 0);
+
+    // The edits between the two compare that chunk too, and are the edits
+    // between the same entries in a BTreeMap.
+    let root = tilo_resource::Path::<Map<Page>, Map<Page>>::root();
+    let (edits, compared, _) = pages_counted(|| root.edits(&held, &now));
+    assert!(compared <= 64, "{compared} entries compared for the edits");
+    assert_eq!(edit_parts(&edits), btree_edits(&held, &now));
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Folio {
+    pub id: String,
+    pub page: Page,
+}
+
+impl Identified for Folio {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Volume {
+    pub title: String,
+    pub folios: Keyed<Folio>,
+    pub stack: Ordered<Folio>,
+}
+
+#[test]
+fn saving_a_record_whose_items_no_change_touched_visits_none() {
+    use tilo_resource::__private::ROOT;
+    use tilo_resource::Fields;
+    let folios: Vec<Folio> = (0..300)
+        .map(|n| Folio {
+            id: format!("f{n:04}"),
+            page: Page(format!("page {n}")),
+        })
+        .collect();
+    let before = Volume {
+        title: "volume".into(),
+        folios: folios.clone().into(),
+        stack: folios.into(),
+    };
+    let mut doc = Doc::new().with_actor(actor("base"));
+    before.write_fields(&mut doc, &ROOT).unwrap();
+    commit_at_zero(&mut doc);
+
+    let mut after = before.clone();
+    after.title = "renamed".into();
+    let mut changed = doc.fork().with_actor(actor("me"));
+    let ((), compared, stored) = pages_counted(|| {
+        after
+            .write_changed_fields(
+                &before,
+                &mut changed,
+                &ROOT,
+                &tilo_resource::Delta::nothing(),
+            )
+            .unwrap();
+    });
+    assert_eq!((compared, stored), (0, 0), "no item visited for a rename");
+
+    // One item changed: the lists are written as a whole write writes them.
+    after.folios.find_mut(&Id::from_raw("f0150")).unwrap().page = Page("changed".into());
+    let mut changed = doc.fork().with_actor(actor("me"));
+    let mut whole = doc.fork().with_actor(actor("me"));
+    after
+        .write_changed_fields(
+            &before,
+            &mut changed,
+            &ROOT,
+            &tilo_resource::Delta::nothing(),
+        )
+        .unwrap();
+    after.write_fields(&mut whole, &ROOT).unwrap();
+    commit_at_zero(&mut changed);
+    commit_at_zero(&mut whole);
+    assert_eq!(changed.get_heads(), whole.get_heads(), "the same change");
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Mark {
+    pub at: String,
+    pub page: i64,
+}
+
+fn mark_key(n: usize) -> String {
+    format!("k{n:04}")
+}
+
+type EditParts = Vec<(Vec<tilo_resource::Segment>, tilo_resource::EditOp)>;
+
+fn edit_parts<R>(edits: &[tilo_resource::Edit<R>]) -> EditParts {
+    edits
+        .iter()
+        .map(|edit| (edit.path().to_vec(), edit.op().clone()))
+        .collect()
+}
+
+/// The edits between two maps compared entry by entry, as a `BTreeMap`
+/// of the same entries is.
+fn btree_edits<T: Model + Clone>(before: &Map<T>, after: &Map<T>) -> EditParts {
+    let before: BTreeMap<String, T> = before.into();
+    let after: BTreeMap<String, T> = after.into();
+    edit_parts(
+        &tilo_resource::Path::<BTreeMap<String, T>, BTreeMap<String, T>>::root()
+            .edits(&before, &after),
+    )
+}
+
+/// Change `map` at random: entries changed, added (some in runs that split
+/// a chunk), removed (some in runs that empty one), now and then all of it
+/// cleared or replaced by an equal map that shares nothing.
+fn change_marks(map: &mut Map<Mark>, rng: &mut Lcg, step: usize) {
+    let page = i64::try_from(step).unwrap();
+    for _ in 0..rng.next(6) {
+        let n = rng.next(400);
+        match rng.next(12) {
+            0..=3 => {
+                if let Some(mark) = map.get_mut(&mark_key(n)) {
+                    mark.page = page;
+                }
+            }
+            4 | 5 => {
+                map.insert(
+                    mark_key(n),
+                    Mark {
+                        at: format!("at {step}"),
+                        page,
+                    },
+                );
+            }
+            6 => {
+                // A run of new keys inside one chunk: it splits.
+                for k in 0..rng.next(80) {
+                    map.insert(format!("{}-{k:02}", mark_key(n)), Mark::default());
+                }
+            }
+            7 | 8 => {
+                map.remove(&mark_key(n));
+            }
+            9 => {
+                // A run of keys gone: a chunk may empty.
+                for k in n..n + rng.next(70) {
+                    map.remove(&mark_key(k));
+                }
+            }
+            10 => {
+                if rng.next(4) == 0 {
+                    map.clear();
+                }
+            }
+            _ => {
+                let apart: BTreeMap<String, Mark> = (&*map).into();
+                *map = Map::from(apart);
+            }
+        }
+    }
+}
+
+/// What a collaborator writes into the map meanwhile: entries put,
+/// removed, or changed inside.
+fn peer_marks(doc: &mut Doc, rng: &mut Lcg, step: usize) {
+    use tilo_resource::__private::{ObjType, ROOT, ReadDoc};
+    let mut peer = doc.fork().with_actor(actor("peer"));
+    let progress = match peer.get(ROOT, "progress").unwrap() {
+        Some((Value::Object(ObjType::Map), id)) => Some(id),
+        _ => None,
+    }
+    .unwrap();
+    let keys: Vec<String> = peer.keys(&progress).collect();
+    for _ in 0..=rng.next(4) {
+        let key = keys
+            .get(rng.next(keys.len() + 1))
+            .cloned()
+            .unwrap_or_else(|| mark_key(rng.next(400)));
+        match rng.next(3) {
+            0 => {
+                let mark = Mark {
+                    at: format!("peer {step}"),
+                    page: -1,
+                };
+                tilo_resource::write_key(&mut peer, &progress, &key, &mark).unwrap();
+            }
+            1 => {
+                if peer.get(&progress, key.as_str()).unwrap().is_some() {
+                    automerge::transaction::Transactable::delete(
+                        &mut peer,
+                        &progress,
+                        key.as_str(),
+                    )
+                    .unwrap();
+                }
+            }
+            _ => {
+                if let Some((Value::Object(ObjType::Map), entry)) =
+                    peer.get(&progress, key.as_str()).unwrap()
+                {
+                    automerge::transaction::Transactable::put(&mut peer, &entry, "page", 99_i64)
+                        .unwrap();
+                }
+            }
+        }
+    }
+    peer.commit();
+    doc.merge_incoming(&mut peer).unwrap();
+}
+
+#[test]
+fn a_map_saved_over_its_copy_writes_what_a_whole_write_does() {
+    use tilo_resource::__private::{ObjType, ROOT, ReadDoc};
+    let mut saves = 0;
+    for seed in 0..40 {
+        let mut rng = Lcg(seed);
+        let mut held: Map<Mark> = (0..rng.next(400))
+            .map(|n| {
+                (
+                    mark_key(n),
+                    Mark {
+                        at: format!("at {n}"),
+                        page: 0,
+                    },
+                )
+            })
+            .collect();
+        let mut doc = Doc::new().with_actor(actor("base"));
+        tilo_resource::write_key(&mut doc, &ROOT, "progress", &held).unwrap();
+        commit_at_zero(&mut doc);
+        let mut tracker = tilo_resource::Tracker::new();
+        tracker.start(&mut doc);
+        for step in 0..8 {
+            if rng.next(3) == 0 {
+                peer_marks(&mut doc, &mut rng, step);
+            }
+            let dirty = tracker.delta(&mut doc);
+            // What the slot holds now, brought up to date as a reader does:
+            // the entries no one touched still shared with `held`.
+            let mut was = held.clone();
+            let (value, id) = match doc.get(ROOT, "progress").unwrap() {
+                Some((value @ Value::Object(ObjType::Map), id)) => Some((value, id)),
+                _ => None,
+            }
+            .unwrap();
+            was.refresh(&doc, &value, &id, &dirty).unwrap();
+            let read: Map<Mark> = tilo_resource::read_key(&doc, &ROOT, "progress").unwrap();
+            assert_eq!(was, read, "seed {seed} step {step}: refreshed as read");
+
+            let mut now = was.clone();
+            change_marks(&mut now, &mut rng, step);
+            assert_eq!(
+                edit_parts(&tilo_resource::Path::<Map<Mark>, Map<Mark>>::root().edits(&was, &now)),
+                btree_edits(&was, &now),
+                "seed {seed} step {step}: the edits"
+            );
+
+            let mut changed = doc.fork().with_actor(actor("me"));
+            let mut whole = doc.fork().with_actor(actor("me"));
+            tilo_resource::write_key_changed(&mut changed, &ROOT, "progress", &now, &was, &dirty)
+                .unwrap();
+            tilo_resource::write_key(&mut whole, &ROOT, "progress", &now).unwrap();
+            commit_at_zero(&mut changed);
+            commit_at_zero(&mut whole);
+            assert_eq!(
+                changed.get_heads(),
+                whole.get_heads(),
+                "seed {seed} step {step}: the saved change"
+            );
+            saves += 1;
+            doc = changed;
+            tracker.start(&mut doc);
+            held = now;
+        }
+    }
+    assert_eq!(saves, 320);
+}

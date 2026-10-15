@@ -462,7 +462,7 @@ impl VideoEditorApp {
                     else {
                         continue;
                     };
-                    if let Some(m) = self.project.media.iter_mut().find(|m| m.id == mid) {
+                    if let Some(m) = self.project.media.find_mut(&key(mid)) {
                         m.has_audio = true;
                     }
                     self.dispatch_media(mid);
@@ -525,7 +525,7 @@ impl VideoEditorApp {
                     })
                     .collect();
                 for (tid, gain_db, pan) in lanes {
-                    if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+                    if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                         t.gain_db = gain_db;
                         t.pan = pan;
                     }
@@ -1136,7 +1136,7 @@ impl VideoEditorApp {
                 // Lock the first video track and select a clip on it, so both
                 // the lane hatch and the inspector's note are visible.
                 if let Some((tid, _, _)) = self.lane_rects(r).into_iter().next() {
-                    if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+                    if let Some(t) = self.project.tracks.find_mut(&key(tid)) {
                         t.locked = true;
                     }
                     if let Some(c) = self.project.clips_on(tid).first() {
