@@ -437,12 +437,13 @@ impl GovernedRoom {
                     } => changed_records.contains(&(app_id.clone(), record_id.clone())),
                     _ => true,
                 })
+                .filter(|message| for_members(message))
                 .map(|message| publication(message, true))
                 .collect::<Result<_, _>>()?;
             record.published = 0;
         } else {
             let messages = candidate.durable_mutation_messages(&self.peer, key, now, generation)?;
-            for message in &messages {
+            for message in messages.iter().filter(|message| for_members(message)) {
                 record.outgoing.push(publication(message, false)?);
             }
         }
@@ -506,6 +507,20 @@ fn prepare_governance(
     peer.reconcile_administrator_grants(key, now)?;
     peer.reconcile_media_governance(key, now)?;
     peer.validate_media_governance_for_publication()
+}
+
+/// Whether the room publishes `message` of a commit to its members. The
+/// governor's compaction of a record's sealed history bounds its own copy:
+/// every member already holds each write it covers, and the relay retains
+/// those writes for whoever joins later, so sending it on would push the
+/// whole record to every member each time the history fills, for nothing.
+/// It stays in the governor's durable copy alone.
+fn for_members(message: &neighbour_wire::NeighbourMsg) -> bool {
+    !matches!(
+        message,
+        neighbour_wire::NeighbourMsg::AppDocument { envelope, .. }
+            if envelope.kind == collab_types::OpKind::Compaction
+    )
 }
 
 fn publication(
