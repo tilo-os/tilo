@@ -671,6 +671,11 @@ pub struct ShellOverlayHost {
     /// theme, like the root's — measures the type it actually draws, with
     /// the ui scale and the text scale both included.
     qs_type_lines: CenterMetrics,
+    /// The quick settings panel's width and window margin, from the theme
+    /// at the top of each frame (HIG 9.6: a utility Panel is
+    /// `panel_width_utility`, grown with the text; it stays the floating
+    /// Panel margin inside its display).
+    qs_panel: QsPanelMetrics,
     /// Offset into the separate clipboard history. Clipboard and notification
     /// panes retain independent positions when the person switches between
     /// them.
@@ -2442,6 +2447,7 @@ impl ShellOverlayHost {
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
             qs_type_lines: CenterLayout::metrics(&Theme::dark(), &mut TextRenderer::new()),
+            qs_panel: QsPanelMetrics::for_theme(&Theme::dark()),
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
             qs_selected_clipboard: None,
@@ -10332,31 +10338,29 @@ impl ShellOverlayHost {
             .unwrap_or_default()
     }
 
-    /// Mirror of the geometry in `draw_quick_settings`. The panel is sized
-    /// from the controls actually visible on this device, not a fixed grid of
-    /// unavailable radios.
+    /// Mirror of the geometry in `draw_quick_settings`: the utility Panel
+    /// width (HIG 9.6), narrowed to the display that holds the tray so it
+    /// never runs off a narrow one.
     fn quick_settings_width(&self) -> f64 {
-        // Under the tray, on the display whose full top bar holds it.
         let area = self.tray_area();
-        if area.width() >= 1200.0 {
-            400.0
-        } else if area.width() >= 720.0 {
-            360.0
-        } else {
-            320.0
-        }
+        let room = (area.width() - 2.0 * self.qs_panel.margin).max(1.0);
+        self.qs_panel.width.min(room)
     }
 
+    /// Under the tray: the Panel margin in from the display's trailing edge,
+    /// the same margin under the top bar, and never past the display's
+    /// bottom margin.
     fn quick_settings_rect(&self) -> Rect {
         let area = self.tray_area();
+        let margin = self.qs_panel.margin;
         let popover_w = self.quick_settings_width();
-        let x1 = area.x1 - 16.0;
-        let y0 = area.y0 + 48.0;
+        let x1 = area.x1 - margin;
+        let y0 = area.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + margin;
         let desired_h = self.chrome.as_ref().map_or(360.0, |chrome| {
             let state = chrome.borrow();
             self.quick_settings_preferred_height(&state)
         });
-        let popover_h = desired_h.min((area.y1 - y0 - 16.0).max(1.0));
+        let popover_h = desired_h.min((area.y1 - margin - y0).max(1.0));
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
     }
 
@@ -19000,6 +19004,7 @@ impl Widget for ShellOverlayHost {
         self.refresh_active_tab_presence();
         self.qs_root.set_layout_text_scale(theme.text_scale);
         self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
+        self.qs_panel = QsPanelMetrics::for_theme(theme);
         if let Some(chrome) = self.chrome.as_ref() {
             // A live projection holds notification banners back so their
             // contents never reach the room.
@@ -27358,4 +27363,22 @@ pub(crate) fn install_fixture_search_provider(
     provider: std::rc::Rc<dyn crate::shell::search::SearchProvider>,
 ) {
     host.search_registry.register_or_replace(provider);
+}
+
+/// The quick settings panel's theme-resolved size: the utility Panel width
+/// grown with the text, and the floating Panel margin it keeps inside its
+/// display.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct QsPanelMetrics {
+    width: f64,
+    margin: f64,
+}
+
+impl QsPanelMetrics {
+    fn for_theme(theme: &Theme) -> Self {
+        Self {
+            width: f64::from(theme.tokens.metrics.panel_width_utility * theme.text_growth()),
+            margin: ui::widget::floating_surface::viewport_margin(theme),
+        }
+    }
 }

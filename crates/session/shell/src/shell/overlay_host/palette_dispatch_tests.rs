@@ -2323,6 +2323,121 @@ fn peer_sync_sheet_buttons_fit_their_labels() {
     ui::i18n::I18nManager::set_locale("en-US");
 }
 
+/// Every share sheet stays inside the window at every size from a phone to
+/// the desktop at scale 2 (1472x920 logical), its footer buttons included,
+/// and none of them is narrower than its label needs. A short window clips
+/// the form above the footer instead of pushing the sheet off screen.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one size-by-sheet matrix that reads top to bottom"
+)]
+fn peer_sync_sheets_stay_inside_the_window_at_every_size() {
+    use crate::shell::peer_sync_overlay::PendingInvitationSummary;
+    let (mut h, _) = host_with_chrome();
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let pending: Vec<PendingInvitationSummary> = (0..3_u8)
+        .map(|i| PendingInvitationSummary {
+            id: [i; 32],
+            name: format!("Collaborator with a rather long name {i}"),
+            role: crate::network::invite::InviteRole::Editor,
+            expiry_unix_seconds: tilo_clock::unix_now().saturating_add(3_600),
+        })
+        .collect();
+    let snapshots = [
+        PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            pending_invitations: pending,
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            invite_review_open: true,
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            connect_input: Some(String::new()),
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_token: Some("tilo-invite-token".to_string()),
+            ..PeerSyncSnapshot::default()
+        },
+    ];
+    let _ = crate::shell::i18n::t("peer-sync-cancel");
+    for (vw, vh) in [
+        (360.0, 640.0),
+        (640.0, 400.0),
+        (800.0, 600.0),
+        (1280.0, 800.0),
+        (1472.0, 920.0),
+    ] {
+        let window = Rect::new(0.0, 0.0, vw, vh);
+        h.rect = window;
+        for snapshot in snapshots.clone() {
+            h.set_peer_sync_snapshot_for_tests(snapshot);
+            let mut scene = Scene::new();
+            h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            let (sheet, labels) = h.peer_sync_overlay.drawn_labels_for_tests();
+            assert!(
+                window.contains_rect(sheet),
+                "at {vw}x{vh} the sheet {sheet:?} leaves the window"
+            );
+            let rects = h.peer_sync_prompt_rects_for_tests();
+            assert_eq!(labels.len(), rects.len());
+            assert!(
+                rects.iter().any(|(id, _)| *id == "cancel" || *id == "copy"),
+                "at {vw}x{vh} the footer is drawn: {rects:?}"
+            );
+            for (label, (id, rect)) in labels.iter().zip(&rects) {
+                assert!(
+                    sheet.contains_rect(*rect),
+                    "at {vw}x{vh} {id} {label:?} at {rect:?} leaves the sheet {sheet:?}"
+                );
+                let footer = matches!(
+                    *id,
+                    "create"
+                        | "review"
+                        | "back"
+                        | "join"
+                        | "cancel"
+                        | "copy"
+                        | "paste"
+                        | "paste-identity"
+                        | "copy-identity"
+                );
+                if footer {
+                    let mut face = ui::widget::ButtonFace::new(Rect::ZERO, label)
+                        .control_size(ui::widget::ControlSize::Large);
+                    if matches!(*id, "create" | "join" | "copy") {
+                        face = face.role(ui::widget::ButtonRole::Primary);
+                    }
+                    let need = face.intrinsic_width(&mut tr, &theme);
+                    assert!(
+                        rect.width() + 0.5 >= need,
+                        "at {vw}x{vh} {label:?} is {}px wide but its face needs {need}px",
+                        rect.width()
+                    );
+                }
+            }
+            for (i, (_, a)) in rects.iter().enumerate() {
+                for (_, b) in rects.iter().skip(i.saturating_add(1)) {
+                    let o = a.intersect(*b);
+                    assert!(
+                        o.width() <= 0.0 || o.height() <= 0.0,
+                        "at {vw}x{vh} targets overlap: {a:?} and {b:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static str> {
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();

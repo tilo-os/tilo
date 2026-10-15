@@ -301,10 +301,10 @@ qs-power-kept-awake-by-apps = { $power } · { $count } Apps verhindern den Ruhez
 
 # Schnelleinstellungen: Steuerungen bearbeiten
 qs-edit-controls = Steuerungen bearbeiten
-qs-edit-help = Zum Anordnen ziehen · Strg + Auf/Ab
+qs-edit-help = Ziehen oder Strg + Auf/Ab drücken zum Anordnen
 qs-edit-a11y-description = Steuerungen bearbeiten; zum Anordnen ziehen oder Strg plus Pfeiltasten verwenden
-qs-edit-active-heading = AKTIVE STEUERUNGEN
-qs-edit-available-heading = VERFÜGBAR
+qs-edit-active-heading = Aktive Steuerungen
+qs-edit-available-heading = Verfügbar
 qs-edit-reset = Standard wiederherstellen
 qs-edit-reset-a11y = Standard der Schnelleinstellungen wiederherstellen
 qs-edit-done = Fertig
@@ -1808,7 +1808,7 @@ peer-sync-title-invite = Jemanden einladen
 peer-sync-title-join = Einem Arbeitsbereich beitreten
 peer-sync-title-workspace-invite = Einladung zum Arbeitsbereich
 peer-sync-paste-token = Einladungscode einfügen oder eingeben
-peer-sync-identity-copied = Identität kopiert – schick sie der Person, die dich einlädt
+peer-sync-identity-copied = Kopiert
 peer-sync-invite-failed = Einladung fehlgeschlagen: { $error }
 peer-sync-identity-unavailable = Identität nicht verfügbar: { $error }
 peer-sync-joined-room = Raum { $room } beigetreten
@@ -1819,19 +1819,20 @@ peer-sync-invite-canceled = Einladung zurückgezogen
 peer-sync-cancel-failed = Zurückziehen fehlgeschlagen: { $error }
 peer-sync-unexpected-response = Unerwartete Antwort der Zusammenarbeit
 peer-sync-working = Wird ausgeführt …
-peer-sync-using-verified-identity = Verifizierte Identität wird verwendet · { $verification }
+peer-sync-using-verified-identity = Verifizierte Identität wird verwendet: { $verification }
 peer-sync-ask-for-identity = Bitte die Person, dir ihre Tilo-Identität zu schicken, und füge sie dann hier ein.
 peer-sync-name-required = Gib an, für wen diese Einladung ist
 peer-sync-identity-required = Füge den Tilo-Identitätsschlüssel der Person ein, damit die Einladung nicht gestohlen werden kann
 peer-sync-recipient-required = Wähle eine verifizierte Person oder füge ihre Tilo-Identität ein, damit die Einladung nicht gestohlen werden kann
 peer-sync-copied = Kopiert
-peer-sync-pasted = Eingefügt – drück die Eingabetaste zum Beitreten
+peer-sync-joining = Beitreten…
+peer-sync-pasted = Eingefügt
 peer-sync-clipboard-empty = Die Zwischenablage ist leer
-peer-sync-identity-bound = Identität gebunden · { $fingerprint }
+peer-sync-identity-bound = Identität gebunden: { $fingerprint }
 peer-sync-identity-invalid = Das ist kein Tilo-Identitätsschlüssel (erwartet werden 64 Hexadezimalzeichen)
-peer-sync-pending-heading = AUSSTEHENDE EINLADUNGEN
-peer-sync-pending-heading-paged = AUSSTEHENDE EINLADUNGEN · { $first }–{ $last } von { $total } · scrollen
-peer-sync-role-expires = { $role } · { $unit ->
+peer-sync-pending-heading = Ausstehende Einladungen
+peer-sync-pending-heading-paged = Ausstehende Einladungen ({ $first }–{ $last } von { $total })
+peer-sync-role-expires = { $role }, { $unit ->
     [now] läuft gleich ab
     [seconds] läuft in { $count ->
         [one] 1 Sekunde
@@ -1850,7 +1851,7 @@ peer-sync-role-expires = { $role } · { $unit ->
        *[other] { $count } Tagen
     } ab
 }
-peer-sync-received-role-expires = Zugriff als { $role } · { $unit ->
+peer-sync-received-role-expires = Zugriff als { $role }, { $unit ->
     [now] läuft gleich ab
     [seconds] läuft in { $count ->
         [one] 1 Sekunde
@@ -1881,29 +1882,29 @@ peer-sync-create-invite = Einladung erstellen
 peer-sync-review-invite = Einladung prüfen
 peer-sync-paste-identity = Neue Identität einfügen
 peer-sync-copy-identity = Meine Identität kopieren
-peer-sync-recipient-heading = WEN LÄDST DU EIN?
-peer-sync-recipient-new = Jemand Neues · Tilo-Identität austauschen
-peer-sync-role-heading = ZUGRIFF, DEN DIE PERSON ERHÄLT
-peer-sync-review-workspace = Arbeitsbereich · { $workspace }
-peer-sync-review-workspace-this = Arbeitsbereich · dieser Arbeitsbereich
-peer-sync-review-inviter = Eingeladen von · { $inviter }
-peer-sync-review-inviter-you = Eingeladen von · dir
-peer-sync-review-recipient = Empfänger · { $name }
-peer-sync-review-recipient-unnamed = Empfänger · unbenannt
-peer-sync-review-role = Zugriff · { $role }
-peer-sync-review-identity = Gebundene Identität · { $fingerprint }
-peer-sync-review-identity-missing = Gebundene Identität · fehlt
+peer-sync-recipient-heading = Wen lädst du ein?
+peer-sync-recipient-new = Jemand Neues
+peer-sync-role-heading = Zugriff
+peer-sync-review-workspace = Arbeitsbereich: { $workspace }
+peer-sync-review-workspace-this = Arbeitsbereich: dieser Arbeitsbereich
+peer-sync-review-inviter = Eingeladen von: { $inviter }
+peer-sync-review-inviter-you = Eingeladen von: dir
+peer-sync-review-recipient = Empfänger: { $name }
+peer-sync-review-recipient-unnamed = Empfänger: unbenannt
+peer-sync-review-role = Zugriff: { $role }
+peer-sync-review-identity = Gebundene Identität: { $fingerprint }
+peer-sync-review-identity-missing = Gebundene Identität: fehlt
 peer-sync-review-note = Nur diese Identität kann die signierte, eine Stunde gültige Einladung einlösen.
 peer-sync-selected-person = Ausgewählte Person
 peer-sync-name-new-person = Name der neuen Person
 peer-sync-name-placeholder = Name
 peer-sync-recipient-hint = Wähle eine verifizierte Person oder füge ihre Tilo-Identität ein.
-peer-sync-identity-remembered = Verifizierte gespeicherte Identität · { $fingerprint }
-peer-sync-identity-new = Neue Identität gebunden · { $fingerprint }
+peer-sync-identity-remembered = Verifizierte gespeicherte Identität: { $fingerprint }
+peer-sync-identity-new = Neue Identität gebunden: { $fingerprint }
 peer-sync-invite-anyone = Jeder mit dieser Einladung
 peer-sync-invite-received = Einladung erhalten
 peer-sync-paste-invite-hint = Füge die Einladung ein, die man dir geschickt hat.
-peer-sync-token-characters = { $token } · { $count ->
+peer-sync-token-characters = { $token }, { $count ->
     [one] 1 Zeichen
    *[other] { $count } Zeichen
 }

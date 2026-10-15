@@ -292,7 +292,7 @@ impl QuickSettingsRoot {
     fn edit_row_height(&self) -> f64 {
         self.edit_row_height_at(self.layout_scale)
     }
-    /// A section caption band in edit mode ("ACTIVE CONTROLS", "AVAILABLE"):
+    /// A section caption band in edit mode ("Active controls", "Available"):
     /// control padding above the caption line, one related step below it.
     fn caption_band_at(&self, layout_scale: f64) -> f64 {
         (CONTROL_PAD + RELATED_GAP) * layout_scale + self.caption_line_height()
@@ -894,7 +894,7 @@ impl QuickSettingsRoot {
             count,
         )
     }
-    /// Top of the "AVAILABLE" section: one section gap under the last row.
+    /// Top of the "Available" section: one section gap under the last row.
     fn edit_help_baseline(&self) -> f64 {
         self.header_bottom(self.panel) + self.scaled(CONTROL_PAD)
     }
@@ -909,7 +909,7 @@ impl QuickSettingsRoot {
             + (active - 1.0).max(0.0) * self.scaled(RELATED_GAP)
             + self.scaled(SECTION_GAP)
     }
-    /// The add-chips under the "AVAILABLE" caption: pointer-floor tall,
+    /// The add-chips under the "Available" caption: pointer-floor tall,
     /// siblings one sibling gap apart across the panel padding. One helper
     /// feeds paint, hit-testing and the tests.
     fn available_chips(&self, state: &QuickSettingsState) -> Vec<(QuickSettingsControl, Rect)> {
@@ -3402,7 +3402,8 @@ mod tests {
 
         fn edit_help_copy_uses_font_safe_keyboard_names() {
             let copy = QuickSettingsRoot::edit_help_copy();
-            assert_eq!(copy, "Drag to reorder · Ctrl + Up/Down");
+            assert_eq!(copy, "Drag or press Ctrl + Up/Down to reorder");
+            assert!(!copy.contains('·'), "no middle-dot join in chrome copy");
             assert!(!copy.contains('↑'));
             assert!(!copy.contains('↓'));
         }

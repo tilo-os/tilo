@@ -229,6 +229,17 @@ impl TabMenuAction {
         }
     }
 
+    /// The glyph leading the row, so the menu reads at a glance like every
+    /// other menu with icons (HIG 9.3): close, a second column, a window of
+    /// its own.
+    pub fn icon(self) -> ui::icons::Icon {
+        match self {
+            Self::CloseTab => ui::icons::Icon::X,
+            Self::SplitRight => ui::icons::Icon::Columns2,
+            Self::MoveToNewGroup => ui::icons::Icon::AppWindow,
+        }
+    }
+
     /// Stable semantic address of the menu row (`tabmenu:<slug>`): the
     /// `semantic:` target a script or the bench names, and the
     /// `perform_semantic_action` target an assistive technology activates.
@@ -272,7 +283,9 @@ pub fn build_tab_context_menu(tab_count: usize) -> (ContextMenu, Vec<Option<TabM
     let mut menu = ContextMenu::new();
     for item in &items {
         match item {
-            Some(action) => menu.push(MenuItem::action(action.label(), || {})),
+            Some(action) => {
+                menu.push(MenuItem::icon_action(action.icon(), action.label(), || {}));
+            }
             None => menu.push(MenuItem::separator()),
         }
     }
@@ -306,7 +319,7 @@ mod tab_menu_item_tests {
             let (menu, actions) = build_tab_context_menu(3);
             assert_eq!(menu.items().len(), actions.len(), "one menu row per item");
             let labels: Vec<_> = menu.items().iter().filter_map(|i| i.label()).collect();
-            assert_eq!(labels, ["Close Tab", "Split Right", "Move to New Group"]);
+            assert_eq!(labels, ["Close tab", "Split right", "Move to new group"]);
         }
 
         fn semantic_keys_round_trip_and_are_unique() {

@@ -298,10 +298,10 @@ qs-power-kept-awake-by-apps = { $power } · { $count } apps are preventing sleep
 
 # Quick Settings: editing the control grid
 qs-edit-controls = Edit controls
-qs-edit-help = Drag to reorder · Ctrl + Up/Down
+qs-edit-help = Drag or press Ctrl + Up/Down to reorder
 qs-edit-a11y-description = Edit controls; drag or use Control plus Arrow keys to reorder
-qs-edit-active-heading = ACTIVE CONTROLS
-qs-edit-available-heading = AVAILABLE
+qs-edit-active-heading = Active controls
+qs-edit-available-heading = Available
 qs-edit-reset = Reset defaults
 qs-edit-reset-a11y = Reset Quick Settings defaults
 qs-edit-done = Done
@@ -1014,9 +1014,9 @@ window-tab-action-document-refused = The workspace document did not accept the c
 
 # Tab context menu, workspace toasts and placeholder tiles
 shell-workspace-renamed = Workspace renamed
-shell-tab-menu-close = Close Tab
-shell-tab-menu-split-right = Split Right
-shell-tab-menu-new-group = Move to New Group
+shell-tab-menu-close = Close tab
+shell-tab-menu-split-right = Split right
+shell-tab-menu-new-group = Move to new group
 shell-terminal-unavailable = Terminal: { $error }
 shell-app-unavailable = Application unavailable
 shell-activity-title = Activity
@@ -1813,7 +1813,7 @@ peer-sync-title-invite = Invite someone
 peer-sync-title-join = Join a workspace
 peer-sync-title-workspace-invite = Workspace invite
 peer-sync-paste-token = Paste or type the invite token
-peer-sync-identity-copied = Identity copied — send it to the inviter
+peer-sync-identity-copied = Copied
 peer-sync-invite-failed = Invite failed: { $error }
 peer-sync-identity-unavailable = Identity unavailable: { $error }
 peer-sync-joined-room = Joined room { $room }
@@ -1824,19 +1824,20 @@ peer-sync-invite-canceled = Invite canceled
 peer-sync-cancel-failed = Could not cancel: { $error }
 peer-sync-unexpected-response = Unexpected collaboration response
 peer-sync-working = Working…
-peer-sync-using-verified-identity = Using verified identity · { $verification }
+peer-sync-using-verified-identity = Using verified identity: { $verification }
 peer-sync-ask-for-identity = Ask them to send their Tilo identity, then paste it here.
 peer-sync-name-required = Say who this invite is for
 peer-sync-identity-required = Paste their Tilo identity key so the invite cannot be stolen
 peer-sync-recipient-required = Choose a verified person or paste their Tilo identity so the invite cannot be stolen
 peer-sync-copied = Copied
-peer-sync-pasted = Pasted — press Enter to join
+peer-sync-joining = Joining…
+peer-sync-pasted = Pasted
 peer-sync-clipboard-empty = Nothing on the clipboard to paste
-peer-sync-identity-bound = Identity bound · { $fingerprint }
+peer-sync-identity-bound = Identity bound: { $fingerprint }
 peer-sync-identity-invalid = That is not a Tilo identity key (expected 64 hexadecimal characters)
-peer-sync-pending-heading = PENDING INVITES
-peer-sync-pending-heading-paged = PENDING INVITES · { $first }–{ $last } of { $total } · scroll
-peer-sync-role-expires = { $role } · { $unit ->
+peer-sync-pending-heading = Pending invites
+peer-sync-pending-heading-paged = Pending invites ({ $first }–{ $last } of { $total })
+peer-sync-role-expires = { $role }, { $unit ->
     [now] expires in moments
     [seconds] expires in { $count ->
         [one] 1 second
@@ -1855,7 +1856,7 @@ peer-sync-role-expires = { $role } · { $unit ->
        *[other] { $count } days
     }
 }
-peer-sync-received-role-expires = { $role } access · { $unit ->
+peer-sync-received-role-expires = { $role } access, { $unit ->
     [now] expires in moments
     [seconds] expires in { $count ->
         [one] 1 second
@@ -1886,29 +1887,29 @@ peer-sync-create-invite = Create invite
 peer-sync-review-invite = Review invite
 peer-sync-paste-identity = Paste new identity
 peer-sync-copy-identity = Copy my identity
-peer-sync-recipient-heading = WHO ARE YOU INVITING?
-peer-sync-recipient-new = Someone new · exchange their Tilo identity
-peer-sync-role-heading = ACCESS THEY WILL RECEIVE
-peer-sync-review-workspace = Workspace · { $workspace }
-peer-sync-review-workspace-this = Workspace · this workspace
-peer-sync-review-inviter = Invited by · { $inviter }
-peer-sync-review-inviter-you = Invited by · You
-peer-sync-review-recipient = Recipient · { $name }
-peer-sync-review-recipient-unnamed = Recipient · Someone
-peer-sync-review-role = Access · { $role }
-peer-sync-review-identity = Bound identity · { $fingerprint }
-peer-sync-review-identity-missing = Bound identity · missing
+peer-sync-recipient-heading = Who are you inviting?
+peer-sync-recipient-new = Someone new
+peer-sync-role-heading = Access
+peer-sync-review-workspace = Workspace: { $workspace }
+peer-sync-review-workspace-this = Workspace: this workspace
+peer-sync-review-inviter = Invited by: { $inviter }
+peer-sync-review-inviter-you = Invited by: You
+peer-sync-review-recipient = Recipient: { $name }
+peer-sync-review-recipient-unnamed = Recipient: Someone
+peer-sync-review-role = Access: { $role }
+peer-sync-review-identity = Bound identity: { $fingerprint }
+peer-sync-review-identity-missing = Bound identity: missing
 peer-sync-review-note = Only this identity can redeem the signed one-hour invite.
 peer-sync-selected-person = Selected person
 peer-sync-name-new-person = Name the new person
 peer-sync-name-placeholder = Their name
 peer-sync-recipient-hint = Choose a verified person or paste their Tilo identity.
-peer-sync-identity-remembered = Verified remembered identity · { $fingerprint }
-peer-sync-identity-new = New identity bound · { $fingerprint }
+peer-sync-identity-remembered = Verified remembered identity: { $fingerprint }
+peer-sync-identity-new = New identity bound: { $fingerprint }
 peer-sync-invite-anyone = Anyone with this invite
 peer-sync-invite-received = Invite received
 peer-sync-paste-invite-hint = Paste the invite they sent you.
-peer-sync-token-characters = { $token } · { $count ->
+peer-sync-token-characters = { $token }, { $count ->
     [one] 1 character
    *[other] { $count } characters
 }
