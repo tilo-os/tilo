@@ -73,13 +73,11 @@ fn run(receiver: &Receiver<Job>) {
 
 /// Run `job` here and queue its follow-up for the loop.
 fn finish(job: Job) {
-    let follow_up = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
-        Ok(follow_up) => follow_up,
-        Err(_) => {
+    let follow_up =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or_else(|_| {
             tracing::error!("a nearby transfer store job panicked");
             None
-        }
-    };
+        });
     let worker = worker();
     if let Some(follow_up) = follow_up
         && let Ok(mut follow_ups) = worker.follow_ups.lock()
