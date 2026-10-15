@@ -245,6 +245,12 @@ pub fn unix_now_i64() -> i64 {
     i64::try_from(unix_now()).unwrap_or(i64::MAX)
 }
 
+/// Milliseconds since the Unix epoch as a signed timestamp; `0` if the clock
+/// precedes it.
+pub fn unix_now_ms_i64() -> i64 {
+    i64::try_from(unix_now_ms()).unwrap_or(i64::MAX)
+}
+
 /// An injectable millisecond time source.
 pub trait Clock: Send + Sync {
     fn now_ms(&self) -> u64;
