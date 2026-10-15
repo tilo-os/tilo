@@ -17628,6 +17628,7 @@ dependencies = [
 name = "tilo-model-gateway"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
  "accounts",
  "agent-provider-config",
  "base64",

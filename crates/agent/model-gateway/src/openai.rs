@@ -222,11 +222,20 @@ pub fn read_turn(response: &Value) -> Result<Turn, String> {
             name: name.to_owned(),
             input: serde_json::from_str(arguments).unwrap_or_else(|_| json!({})),
         });
-        echoed.push(json!({
+        let mut replay = json!({
             "id": id,
             "type": "function",
             "function": { "name": name, "arguments": arguments },
-        }));
+        });
+        // Gemini on Vertex AI signs each call and refuses a next turn
+        // whose replayed call lacks its `thought_signature`.
+        if let (Some(extra), Some(object)) = (
+            call.get("extra_content").filter(|extra| extra.is_object()),
+            replay.as_object_mut(),
+        ) {
+            object.insert("extra_content".into(), extra.clone());
+        }
+        echoed.push(replay);
     }
     let mut replay = if echoed.is_empty() {
         json!({ "role": "assistant", "content": text.clone().unwrap_or_default() })
@@ -502,6 +511,20 @@ mod tests {
             json!({"role": "assistant", "content": null, "tool_calls": [
                 {"id": "c1", "type": "function", "function": {"name": "plan", "arguments": "{\"why\":\"x\"}"}}]})
         );
+    }
+
+    /// Vertex AI's Gemini signs each call; the signature is replayed with
+    /// it, or the next turn is refused.
+    #[test]
+    fn a_signed_tool_call_is_echoed_with_its_signature() {
+        let signature = json!({"google": {"thought_signature": "c2ln"}});
+        let turn = read_turn(&json!({"choices": [{"message": {
+            "role": "assistant",
+            "tool_calls": [{"id": "c1", "type": "function", "extra_content": signature,
+                "function": {"name": "plan", "arguments": "{}"}}]
+        }}]}))
+        .unwrap();
+        assert_eq!(turn.message["tool_calls"][0]["extra_content"], signature);
     }
 
     #[test]

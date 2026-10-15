@@ -31,6 +31,7 @@ service = [
     "dep:tilo-files",
     "dep:tilo-clock",
     "dep:accounts",
+    "dep:account-custody",
     "dep:reqwest",
     "dep:tilo-net",
     "dep:tilo-rt",
@@ -65,6 +66,9 @@ agent-provider-config = { path = "../provider-config" }
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tilo-clock = { path = "../../platform/tilo-clock", optional = true }
 accounts = { path = "../../system/accounts", optional = true }
+# A provider signed in with Google (Vertex AI) has no key: custody mints and
+# refreshes its access token from the grant Settings sealed.
+account-custody = { path = "../../system/account-custody", optional = true }
 reqwest = { workspace = true, features = ["json"], optional = true }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"], optional = true }
 tilo-rt = { workspace = true, optional = true }
