@@ -827,7 +827,7 @@ inputs = ["tools/ci/standalone-app.sh"]
 cost = "heavy"
 default = false
 
-# Files' collaboration UX without a kernel FUSE mount (ci-filesystem.yml).
+# Files' collaboration UX without a kernel FUSE mount.
 [[check]]
 name = "files-ux"
 run = "cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1"
@@ -835,13 +835,13 @@ env = { TILO_FS_FUSE_REQUIRED = "0", TILO_REQUIRE_FUSE = "0" }
 inputs = ["apps/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
 cost = "minutes"
 
-# The kernel-path filesystem contract over a real FUSE device (ci-filesystem.yml
-# real-fuse). The workflow's two focused-test steps, which bind a commit SHA,
-# run here as the same exact tests.
+# The kernel-path filesystem contract over a real FUSE device, which every test
+# here must find (TILO_REQUIRE_FUSE): a missing device fails instead of skipping.
 [[check]]
 name = "real-fuse"
 devices = ["/dev/fuse"]
 requires = ["/dev/fuse"]
+env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 run = """
 export TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts
 python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE"

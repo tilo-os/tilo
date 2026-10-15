@@ -70,8 +70,8 @@ the smaller `os/Containerfile.ci-fast`.
 | `dev-runtime-macos.yml` check | `cargo check -p tilo-runtime --all-targets --locked`, on macOS |
 | `dev-apps-macos.yml` sdk | the `app-sdk.yml` linux lane's commands with `--target macos`, on macOS |
 | `dev-apps-macos.yml` apps | `cargo build --locked $(python3 tools/ci/macos_apps.py)`, then `cargo test` with the same packages, on macOS |
-| `ci-filesystem.yml` real-fuse | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
-| `ci-filesystem.yml` native-tier1 | `tools/native-tier1.sh` on a host that meets `runner-native-storage` |
+| `t test real-fuse` | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
+| `t test native-tier1` | `tools/native-tier1.sh` on a host with pre-content fanotify, Btrfs and loop devices |
 | `t test render-counters` | `cargo build --release -p ui-examples --example ui-perf`, then `python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf` (pixel parity, then allocation and raster-pixel budgets at 4K; see [docs/ui-performance-benchmark.md](../../docs/ui-performance-benchmark.md#where-this-runs)) |
 | `perf-scheduled.yml` (nightly, not per PR) | `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../docs/measurements/performance.md) |
 
@@ -115,8 +115,7 @@ Jobs that need more than an unprivileged container:
 
 | Job | Needs |
 |---|---|
-| `ci-filesystem.yml` real-fuse | `/dev/fuse` and `CAP_SYS_ADMIN` in the job container |
-| `ci-filesystem.yml` native-tier1 | a privileged container on Linux 6.14+ with pre-content fanotify, Btrfs and loop devices |
+| `ci-filesystem.yml` cloud-servers | service containers (WebDAV, Nextcloud, PostgreSQL) |
 | `ci-staging-loop.yml`, `build-env-tools.yml` | a privileged container |
 | `ci-development-signing.yml` | Docker that can start privileged containers |
 | `dev-disk.yml`, `build-legacy-guest.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
