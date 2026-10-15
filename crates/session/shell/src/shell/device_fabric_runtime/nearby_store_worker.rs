@@ -71,17 +71,19 @@ fn run(receiver: &Receiver<Job>) {
     }
 }
 
-/// Run `job` here and queue its follow-up for the loop.
+/// Run `job` here, queue its follow-up for the loop and wake the loop for
+/// it. A job with nothing to follow wakes nobody.
 fn finish(job: Job) {
     let follow_up =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or_else(|_| {
             tracing::error!("a nearby transfer store job panicked");
             None
         });
+    let Some(follow_up) = follow_up else {
+        return;
+    };
     let worker = worker();
-    if let Some(follow_up) = follow_up
-        && let Ok(mut follow_ups) = worker.follow_ups.lock()
-    {
+    if let Ok(mut follow_ups) = worker.follow_ups.lock() {
         follow_ups.push_back(follow_up);
     }
     let wake = worker.wake.lock().ok().and_then(|wake| wake.clone());
@@ -91,13 +93,28 @@ fn finish(job: Job) {
 }
 
 /// Run `job` on the store's thread, after every job queued before it.
-/// Whatever it returns runs on the loop at its next pump. Whether the job
-/// was queued: a full queue refuses it.
+/// Whatever it returns runs on the loop, which the store thread wakes for
+/// it. Whether the job was queued: a full queue refuses it.
 pub(super) fn on_store_thread(
     network: &ShellNetwork,
     job: impl FnOnce() -> Option<FollowUp> + Send + 'static,
 ) -> bool {
     submit(network, Box::new(job))
+}
+
+/// [`on_store_thread`] for work whose follow-up may wait for the loop's
+/// next pump instead of waking it.
+pub(super) fn on_store_thread_unhurried(
+    job: impl FnOnce() -> Option<FollowUp> + Send + 'static,
+) -> bool {
+    queue(Box::new(move || {
+        if let Some(follow_up) = job()
+            && let Ok(mut follow_ups) = worker().follow_ups.lock()
+        {
+            follow_ups.push_back(follow_up);
+        }
+        None
+    }))
 }
 
 /// Run `operation` on the store, on its thread, after every job queued
