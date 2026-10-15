@@ -153,6 +153,8 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
 # Enrollment envelopes are sealed through the one reviewed sealing crate.
 tilo-seal = { path = "../../system/tilo-seal" }
+# Content addresses the room keeps bytes under.
+tilo-content = { path = "../../system/content", default-features = false }
 zeroize.workspace = true
 blake3.workspace = true
 hex.workspace = true

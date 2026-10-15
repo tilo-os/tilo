@@ -26,6 +26,8 @@ futures = { workspace = true, default-features = true }
 ed25519-dalek.workspace = true
 hex.workspace = true
 blake3.workspace = true
+# Content addresses: how they are derived and what shape they have.
+tilo-content = { path = "../../system/content", default-features = false }
 libc.workspace = true
 tokio-util.workspace = true
 
