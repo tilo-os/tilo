@@ -13833,7 +13833,8 @@ mod tests {
     /// on a room topic, whichever room the window showing it is in.
     #[test]
     fn a_person_records_content_travels_only_between_the_persons_devices() {
-        use tilo_action_broker::record_content::{PIECE_BYTES, content_hash};
+        use tilo_action_broker::record_content::PIECE_BYTES;
+        use tilo_content::hash_bytes;
 
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
         let user = root.verifying_key().to_bytes();
@@ -13856,7 +13857,7 @@ mod tests {
         let poster: Vec<u8> = (0..PIECE_BYTES + 9)
             .map(|index| u8::try_from(index % 239).unwrap())
             .collect();
-        let hash = content_hash(&poster);
+        let hash = hash_bytes(&poster);
         laptop_content.offer(&route, &hash, &poster).unwrap();
         let mut arrivals = phone_content.subscribe(&route);
 
