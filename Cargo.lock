@@ -16718,6 +16718,7 @@ dependencies = [
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-user-identity",
+ "tilo-workspace-join",
  "tokio",
  "uuid",
  "web-time",
@@ -17875,7 +17876,6 @@ dependencies = [
  "channel-crypto",
  "collab-types",
  "ed25519-dalek 3.0.0",
- "flate2",
  "fnv",
  "hex",
  "neighbour-wire",
@@ -17893,6 +17893,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-relay-protocol",
  "tilo-user-identity",
+ "tilo-workspace-join",
  "uuid",
  "web-time",
  "workspace-hack",
@@ -18169,6 +18170,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "n0-future",
+ "neighbour-wire",
  "postcard",
  "rand 0.10.1",
  "serde",
@@ -18179,11 +18181,11 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-delivery-protocol",
- "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-test-env",
  "tilo-user-identity",
+ "tilo-workspace-join",
  "tokio",
  "tracing",
  "uuid",
@@ -19220,6 +19222,23 @@ dependencies = [
  "x11-dl",
  "x11rb",
  "xkbcommon-dl",
+]
+
+[[package]]
+name = "tilo-workspace-join"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "blake3",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "postcard",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "tilo-user-identity",
+ "uuid",
+ "workspace-hack",
 ]
 
 [[package]]

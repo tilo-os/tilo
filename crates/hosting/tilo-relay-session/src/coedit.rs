@@ -67,14 +67,14 @@ pub const POINTER_GAP: std::time::Duration = std::time::Duration::from_millis(50
 /// variants that can have one are decoded, to tell which; the body itself is
 /// sent and forwarded as it came.
 #[must_use]
-pub fn presence_slot(body: &[u8]) -> Option<tilo_peer_state::PresenceSlot> {
+pub fn presence_slot(body: &[u8]) -> Option<neighbour_wire::PresenceSlot> {
     if !body
         .first()
-        .is_some_and(|tag| tilo_peer_state::NeighbourMsg::SLOTTED_PRESENCE_TAGS.contains(tag))
+        .is_some_and(|tag| neighbour_wire::NeighbourMsg::SLOTTED_PRESENCE_TAGS.contains(tag))
     {
         return None;
     }
-    postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(body)
+    postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
         .ok()?
         .presence_slot()
 }

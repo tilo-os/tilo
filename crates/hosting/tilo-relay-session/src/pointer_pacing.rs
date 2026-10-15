@@ -31,7 +31,7 @@
 //!   Deltas and carets may pass a held pointer, as the relay lets them.
 //!
 //! Only slots the sender itself declares as motion
-//! ([`tilo_peer_state::PresenceSlot::motion`]) are paced; the author is never
+//! ([`neighbour_wire::PresenceSlot::motion`]) are paced; the author is never
 //! looked at, so a person's and an agent's pointer travel alike.
 
 use std::collections::HashMap;
@@ -61,7 +61,7 @@ pub enum Pacing {
 /// How presence with `slot` in room `workspace_id` is paced: a motion slot is
 /// held, any other slot passes, and a message without one is an event.
 #[must_use]
-pub fn slot_pacing(workspace_id: u64, slot: Option<tilo_peer_state::PresenceSlot>) -> Pacing {
+pub fn slot_pacing(workspace_id: u64, slot: Option<neighbour_wire::PresenceSlot>) -> Pacing {
     match slot {
         Some(slot) if slot.motion => Pacing::Pointer((workspace_id, slot.id)),
         Some(_) => Pacing::Passes,
@@ -261,8 +261,8 @@ fn in_order<T>(mut moves: Vec<Held<T>>) -> Vec<T> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use neighbour_wire::NeighbourMsg;
     use std::time::Duration;
-    use tilo_peer_state::NeighbourMsg;
 
     const ROOM: u64 = 7;
 

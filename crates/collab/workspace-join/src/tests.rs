@@ -1,4 +1,4 @@
-use crate::join::{
+use crate::{
     InviteGrant, Inviter, JoinChallenge, MemberRole, MembershipChallenge,
     TRANSPORT_IROH_OWNER_ENDPOINT_ADDR_V1, decode_and_verify_invitation,
     decode_and_verify_invitation_text, encode_invitation_text, issue_invitation,

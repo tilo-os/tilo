@@ -168,6 +168,7 @@ members = [
     "crates/collab/tilo-joined-room",
     "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
+    "crates/collab/workspace-join",
 
     # Dev
     "crates/dev/collab-link",

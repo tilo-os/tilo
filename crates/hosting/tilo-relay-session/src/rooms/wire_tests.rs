@@ -9,14 +9,14 @@ use super::{
     PendingInvitation, RemoveMemberRequest, RoomAdminRequest, RoomCommand, RoomReply, RoomSummary,
     SetMemberRoleRequest,
 };
-use tilo_peer_state::GovernedMember;
-use tilo_peer_state::join::{
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_workspace_join::GovernedMember;
+use tilo_workspace_join::{
     JoinChallenge, JoinChallengeRequest, JoinChallengeResponse, JoinCompleteRequest, JoinProof,
     JoinTransportRequest, JoinTransportResponse, MemberRole, MembershipChallenge,
     MembershipChallengeRequest, MembershipChallengeResponse, MembershipCompleteRequest,
     MembershipProof,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 const COMMANDS: &[(&str, &str)] = &[
     ("Create", "0004526f6f6d"),

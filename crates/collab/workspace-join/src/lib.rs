@@ -1,6 +1,13 @@
 //! Transport-neutral, signed workspace invitations and proof-of-possession admission.
+//!
+//! The invitation, join and membership contract a workspace speaks before any
+//! room state is exchanged: signed invitations and their text form, join and
+//! membership proofs, owner transport hints, workspace delegations, and the
+//! rows a join bootstrap and the governed member list carry. Pure types and
+//! signature checks over [`tilo_user_identity`] certificates: no Automerge, no
+//! admission, no transport. `tilo-peer-state` re-exports this crate as
+//! `tilo_peer_state::join`.
 
-use crate::DocumentRow;
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, Verifier as _};
 use serde::{Deserialize, Serialize};
@@ -40,6 +47,30 @@ impl From<MemberRole> for collab_types::Role {
             MemberRole::Moderator => Self::Moderator,
         }
     }
+}
+
+/// An application record, named at its committed heads.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentRow {
+    pub app_id: String,
+    pub record_id: String,
+    pub heads: Vec<String>,
+}
+
+/// One person in a governed workspace, as the governance document lists them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GovernedMember {
+    pub user_public_key: [u8; 32],
+    pub role: MemberRole,
+    pub display_name: Option<String>,
+    pub active_device_keys: Vec<[u8; 32]>,
+    pub removed: bool,
+    /// Made an administrator by the governance writer: `role` is then
+    /// [`MemberRole::Editor`] holding every governance action of the
+    /// workspace, bounded by that role
+    /// (`tilo_action_policy::roles::administrator_grant`).
+    #[serde(default)]
+    pub administrator: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -982,3 +1013,6 @@ fn tagged_digest(value: &[u8], body: &impl Serialize) -> Result<[u8; 32], String
     hasher.update(&encoded);
     Ok(*hasher.finalize().as_bytes())
 }
+
+#[cfg(test)]
+mod tests;

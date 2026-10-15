@@ -1,17 +1,17 @@
 //! The client half of the owner-neutral Iroh transport for the shared
 //! workspace join contract. The relay's side, `WorkspaceJoinProtocol`, stays
-//! in `tilo-relay`; the messages are `tilo_peer_state::join`'s.
+//! in `tilo-relay`; the messages are `tilo_workspace_join`'s.
 
 use std::time::Duration;
 use tilo_delivery_protocol::workspace_join::{
     IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES, MAX_WORKSPACE_JOIN_RESPONSE_BYTES,
     WORKSPACE_JOIN_ALPN, WorkspaceJoinAdmission, WorkspaceJoinError,
 };
-use tilo_peer_state::join::{
+use tilo_user_identity::DeviceCert;
+use tilo_workspace_join::{
     JoinBootstrap, JoinChallengeRequest, JoinTransportRequest, JoinTransportResponse,
     TransportHint, sign_join_proof,
 };
-use tilo_user_identity::DeviceCert;
 
 /// How long one join exchange may take, on either side.
 pub const WORKSPACE_JOIN_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -90,7 +90,7 @@ impl WorkspaceJoinClient {
         &self,
         address: iroh::EndpointAddr,
         signed_invitation: Vec<u8>,
-    ) -> Result<tilo_peer_state::join::JoinInspection, WorkspaceJoinError> {
+    ) -> Result<tilo_workspace_join::JoinInspection, WorkspaceJoinError> {
         match self
             .request(address, JoinTransportRequest::Inspect { signed_invitation })
             .await?
@@ -138,9 +138,7 @@ impl WorkspaceJoinClient {
         match self
             .request(
                 address,
-                JoinTransportRequest::Complete(tilo_peer_state::join::JoinCompleteRequest {
-                    proof,
-                }),
+                JoinTransportRequest::Complete(tilo_workspace_join::JoinCompleteRequest { proof }),
             )
             .await?
         {
