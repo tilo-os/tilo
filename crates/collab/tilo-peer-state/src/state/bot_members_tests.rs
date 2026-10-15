@@ -5,8 +5,8 @@
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
 
-use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_workspace_join::delegation::{Delegate, DelegateScope, Delegation};
 use web_time::{Duration, SystemTime};
 
 use crate::StatePeer;

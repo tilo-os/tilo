@@ -7,6 +7,12 @@
 //! signature checks over [`tilo_user_identity`] certificates: no Automerge, no
 //! admission, no transport. `tilo-peer-state` re-exports this crate as
 //! `tilo_peer_state::join`.
+//!
+//! [`delegation`] holds the root-signed agent and bot delegations, and
+//! [`room_workspace_id`] the stable relay shard a room UUID maps to; both are
+//! re-exported by `tilo-relay-protocol`.
+
+pub mod delegation;
 
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, Verifier as _};
@@ -1012,6 +1018,28 @@ fn tagged_digest(value: &[u8], body: &impl Serialize) -> Result<[u8; 32], String
     hasher.update(value);
     hasher.update(&encoded);
     Ok(*hasher.finalize().as_bytes())
+}
+
+/// Derive the stable numeric host/gossip shard for a room UUID. This is shared
+/// by the shell and admin CLI so local workspace handles never leak onto the
+/// wire and operators cannot accidentally bind a different shard.
+///
+/// # Errors
+///
+/// Returns an error if `room` is not a valid UUID string.
+pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
+    let room = uuid::Uuid::parse_str(room)?;
+    // Encode on the stack: bounded delivery paths derive this id under a
+    // native allowance that funds no heap allocation.
+    let mut canonical = [0u8; 36];
+    let hash = blake3::derive_key(
+        "tilo-room-transport-v1",
+        room.hyphenated().encode_lower(&mut canonical).as_bytes(),
+    );
+    let mut first8 = [0u8; 8];
+    first8.copy_from_slice(&hash[..8]);
+    let id = u64::from_le_bytes(first8);
+    Ok(if id == 0 { 1 } else { id })
 }
 
 #[cfg(test)]
