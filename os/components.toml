@@ -542,6 +542,21 @@ files = [
   { from = "tilo-boot-order", to = "/usr/libexec/tilo-boot-order", mode = "0755" },
 ]
 
+# USB-free install: tilo-staging-reclaim.service (enabled by the installer
+# image, which inherits the helper from here) returns the staging partitions to
+# the Tilo root after the first real session; a swap takes effect at its next
+# start.
+[[component]]
+name = "staging-reclaim"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-staging-reclaim"]
+bins = ["tilo-staging-reclaim"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-staging-reclaim", to = "/usr/libexec/tilo-staging-reclaim", mode = "0755" },
+]
+
 # Downloaded, Tilo-signed system extensions: tilo-extension-activate.service at
 # boot, tilo-extension@VERB:ID.service on demand, the refresh timer and the
 # NetworkManager hook all start it; a swap takes effect at its next start.

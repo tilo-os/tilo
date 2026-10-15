@@ -199,7 +199,11 @@ containerfile="$repo/os/Containerfile"
 # the boot-order component (one new row): it used to reach only the installer
 # image, from the installer's overlay of os/usr, and the installer now
 # inherits it.
-expected_contract=cccdeabdaf82840eae6854da69534783e495f8081e739c837698c14f185b6334
+# The staging reclaim helper is now compiled. The base image carries it from
+# the staging-reclaim component (one new row): it used to reach only the
+# installer image, from the installer's overlay of os/usr, and the installer
+# and the targets it installs now inherit it.
+expected_contract=4ff4b32cc912e6b618758eb82dbe3e35bf9d0e2036adf50c9fd184ebb8777890
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

@@ -17,6 +17,5 @@ os/usr/libexec/tilo-installer-dev-target-uki.py  # installer, CI development tar
 os/usr/libexec/tilo-installer-offline-target.py  # installer: authenticates and imports the signed offline target
 os/usr/libexec/tilo-installer-target-transport.py  # installer: checks and stages one immutable CI target
 os/usr/libexec/tilo-staging-handoff  # installer: live side of USB-free installation
-os/usr/libexec/tilo-staging-reclaim  # installed system: returns the temporary installer space (service and timer)
 os/usr/libexec/tilo-vm-bootc-copy-cache.py  # installer, VMs only: opt-in cache for the bootc-to-Podman export
 os/usr/libexec/tilo-vm-install-proof.py  # installer, VMs only: binds a VM install to its medium and deployment

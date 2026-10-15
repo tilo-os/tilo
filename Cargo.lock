@@ -18669,6 +18669,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-staging-reclaim"
+version = "0.1.0"
+dependencies = [
+ "rustix 1.1.4",
+ "serde_json",
+ "tempfile",
+ "tilo-advisory-lock",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-startup-metrics"
 version = "0.1.0"
 dependencies = [
