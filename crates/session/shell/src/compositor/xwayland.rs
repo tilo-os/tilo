@@ -1131,6 +1131,18 @@ fn has_pending_connection(listener: &UnixListener) -> bool {
     ready > 0 && descriptor.revents & libc::POLLIN != 0
 }
 
+/// Write a fresh authority file for `display` and return its cookie.
+///
+/// This runs under the display registry lock that the compositor loop takes
+/// every tick, often on the loop thread itself, so it must not wait for the
+/// disk. It deliberately does not fsync: the file is valid only while this
+/// session's X server lives, and it sits in the login's runtime directory
+/// (`$XDG_RUNTIME_DIR`, a tmpfs). Readers see it through the page cache as
+/// soon as the write returns, and after a crash it is regenerated with a new
+/// cookie, so durability buys nothing while an fsync under I/O or memory
+/// pressure has frozen the desktop for seconds. Privacy does not depend on
+/// it either: the file is created exclusively with mode 0600 inside a 0700
+/// directory, and no client learns the path before `bind` returns.
 fn write_xauthority(path: &Path, display: u16) -> Result<[u8; 16], String> {
     let cookie = crate::random::bytes::<16>();
     let mut contents = Vec::with_capacity(64);
@@ -1146,7 +1158,6 @@ fn write_xauthority(path: &Path, display: u16) -> Result<[u8; 16], String> {
         .open(path)
         .map_err(|error| format!("creating Xauthority: {error}"))?;
     file.write_all(&contents)
-        .and_then(|()| file.sync_all())
         .map_err(|error| format!("writing Xauthority: {error}"))?;
     Ok(cookie)
 }
@@ -2123,6 +2134,115 @@ mod tests {
                     .any(|window| window == b"MIT-MAGIC-COOKIE-1")
             );
         }
+    }
+
+    /// The errno a denied sync returns, distinctive enough to name in an
+    /// assertion: waiting for the disk is what would deadlock the desktop.
+    const SYNC_DENIED: i32 = libc::EDEADLK;
+
+    /// Make every fsync-family syscall fail with [`SYNC_DENIED`] on the
+    /// calling thread only. Without `SECCOMP_FILTER_FLAG_TSYNC` the filter
+    /// binds this thread (and anything it spawns), never the test harness.
+    fn deny_disk_syncs_on_this_thread() {
+        const DENIED: [libc::c_long; 4] = [
+            libc::SYS_fsync,
+            libc::SYS_fdatasync,
+            libc::SYS_syncfs,
+            libc::SYS_sync,
+        ];
+        let statement = |code: u32, k: u32| libc::sock_filter {
+            code: u16::try_from(code).unwrap(),
+            jt: 0,
+            jf: 0,
+            k,
+        };
+        // Load the syscall number (offset 0 of `seccomp_data`); the
+        // architecture word is not checked because the test only issues
+        // native syscalls.
+        let mut filters = vec![statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0)];
+        for (index, number) in DENIED.into_iter().enumerate() {
+            filters.push(libc::sock_filter {
+                // On a match, skip the remaining comparisons and the allow.
+                jt: u8::try_from(DENIED.len().saturating_sub(index)).unwrap(),
+                ..statement(
+                    libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K,
+                    u32::try_from(number).unwrap(),
+                )
+            });
+        }
+        filters.push(statement(
+            libc::BPF_RET | libc::BPF_K,
+            libc::SECCOMP_RET_ALLOW,
+        ));
+        filters.push(statement(
+            libc::BPF_RET | libc::BPF_K,
+            libc::SECCOMP_RET_ERRNO | u32::try_from(SYNC_DENIED).unwrap(),
+        ));
+        let program = libc::sock_fprog {
+            len: u16::try_from(filters.len()).unwrap(),
+            filter: filters.as_mut_ptr(),
+        };
+        // SAFETY: scalar prctl calls on the current thread. The kernel copies
+        // the program while `filters` is live; the filter only makes syncs
+        // fail on this test thread and grants nothing.
+        unsafe {
+            assert_eq!(
+                libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0),
+                0,
+                "no_new_privs: {}",
+                std::io::Error::last_os_error()
+            );
+            assert_eq!(
+                libc::prctl(
+                    libc::PR_SET_SECCOMP,
+                    libc::SECCOMP_MODE_FILTER,
+                    &raw const program
+                ),
+                0,
+                "installing the sync filter: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+
+    /// The compositor loop binds a workspace's X display through
+    /// `session_for`, and that includes writing the authority file. Nothing
+    /// on that path may wait for the disk: under I/O or memory pressure an
+    /// fsync there froze input and presentation for seconds.
+    #[test]
+    fn binding_a_display_never_waits_for_the_disk() {
+        std::thread::spawn(|| {
+            deny_disk_syncs_on_this_thread();
+            // The guard must observe its subject, or this test proves nothing.
+            let probe = tempfile::tempfile().unwrap();
+            for denied in [probe.sync_all(), probe.sync_data()] {
+                assert_eq!(
+                    denied.unwrap_err().raw_os_error(),
+                    Some(SYNC_DENIED),
+                    "the sync filter is not in force"
+                );
+            }
+
+            let mut fixture = fixture();
+            let (session, fresh) = fixture
+                .displays
+                .session_for("room-a")
+                .expect("binding a display must not sync to disk");
+            assert!(fresh);
+            let display = &fixture.displays.workspaces["room-a"];
+            assert_eq!(session.authority, display.authority);
+            let metadata = fs::metadata(&session.authority).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            let runtime = fs::metadata(&fixture.displays.paths.runtime).unwrap();
+            assert_eq!(runtime.permissions().mode() & 0o777, 0o700);
+            let bytes = fs::read(&session.authority).unwrap();
+            assert!(
+                bytes.ends_with(&display.cookie),
+                "the file carries the cookie"
+            );
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
