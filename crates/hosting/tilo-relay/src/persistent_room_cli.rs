@@ -1317,7 +1317,8 @@ async fn reset_now(context: &PersistentRoom, governance: &Governance) {
     }
 }
 
-/// Removes guests idle past the horizon, in batches.
+/// Removes guests idle past the horizon, in batches. A batch the room
+/// refuses stays seated until the next call.
 async fn prune_idle(
     context: &PersistentRoom,
     governance: &Governance,
@@ -1339,7 +1340,7 @@ async fn prune_idle(
         // should cool their address down for.
         removed.extend(batch.iter().copied());
         let first = batch.first().copied().unwrap_or_default();
-        context
+        if let Err(error) = context
             .rooms
             .prune_members(
                 &context.room,
@@ -1348,7 +1349,17 @@ async fn prune_idle(
                 &batch,
             )
             .await
-            .map_err(|error| anyhow::anyhow!("prune {} guests: {error}", batch.len()))?;
+        {
+            // They keep their seats until the next tick tries again, and
+            // the room goes on serving, as after a failed reset: ending
+            // here dropped every visitor's session and turned each new one
+            // away while the room service restarted it.
+            for key in &batch {
+                removed.remove(key);
+            }
+            tracing::warn!("pruning {} idle guests failed: {error}", batch.len());
+            break;
+        }
         for key in &batch {
             last_seen.remove(key);
         }
