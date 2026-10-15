@@ -12,6 +12,7 @@
 pub mod accessibility;
 #[cfg(target_os = "linux")]
 pub mod activation;
+pub mod activity;
 #[cfg(target_os = "linux")]
 pub(crate) mod admin_control;
 #[cfg(target_os = "linux")]

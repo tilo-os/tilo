@@ -54,4 +54,3 @@ crates/session/shell/src/shell/remote_cursors.rs raw_paint 4
 crates/session/shell/src/shell/render/paint.rs literal_alpha 1
 crates/session/shell/src/shell/render/paint.rs raw_paint 2
 crates/session/shell/src/shell/trusted_ui.rs raw_paint 1
-crates/session/shell/src/tray/item.rs glyph_icon 1

@@ -34,6 +34,13 @@ pub fn register_feedback_startup(
 ) -> Result<(), String> {
     browser::register_feedback_startup(peer, startup)
 }
+/// Code the bundle fetches on first use arrived: lay out and draw every
+/// mount again, so what it changes (search results, spelling marks,
+/// hyphenation) shows.
+#[cfg(target_arch = "wasm32")]
+pub fn refresh_mounts() {
+    browser::refresh_mounts();
+}
 #[cfg(target_arch = "wasm32")]
 mod clipboard;
 #[cfg(target_arch = "wasm32")]

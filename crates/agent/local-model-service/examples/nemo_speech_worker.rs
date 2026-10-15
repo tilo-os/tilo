@@ -259,8 +259,9 @@ mod linux {
             unsafe {
                 worker::prepare()?;
             }
-            // SAFETY: argument-free identity queries cannot fail.
-            if unsafe { libc::geteuid() == 0 || libc::geteuid() != libc::getuid() } {
+            if rustix::process::geteuid().as_raw() == 0
+                || rustix::process::geteuid().as_raw() != rustix::process::getuid().as_raw()
+            {
                 return Err(SpeechError::ModelUnavailable);
             }
             let verify_started = std::time::Instant::now();

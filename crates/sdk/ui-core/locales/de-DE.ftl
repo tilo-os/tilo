@@ -176,6 +176,8 @@ history-selection-clear = Aufheben
 history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernte Änderungen empfangen werden
 history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll. Nach der aktuellen Bearbeitung ist ein neuer Stand für die Synchronisierung nötig.
 history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
+history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
+history-sync-remote-waiting = Entfernte Änderungen werden übernommen, sobald die aktuelle Bearbeitung abgeschlossen ist.
 history-sync-owner-closed = Der Besitzer des Dokuments wurde geschlossen oder hat gewechselt. Verbinde dich neu, bevor du den Nachfolger synchronisierst.
 
 # File history in the History host.
@@ -419,6 +421,7 @@ palette-result-count = { $count ->
 palette-empty = Nichts anzuzeigen
 palette-no-results = Keine Ergebnisse für „{ $query }“
 palette-no-results-hint = Weniger Wörter versuchen oder den Bereich erweitern
+palette-searching = Suche läuft…
 
 # Kalender-Abschnitte in der Arbeitsbereich-Aktivität.
 day-yesterday = Gestern
@@ -427,6 +430,12 @@ day-tomorrow = Morgen
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
 
+save-status-saving = Wird gespeichert…
+save-status-stalled = Noch nicht gespeichert. Neuer Versuch…
+save-status-not-saved = Nicht gespeichert
+save-status-not-saved-detail = Deine Änderungen sind noch da.
+save-status-not-saved-named = „{ $document }“ wurde nicht gespeichert
+save-status-not-saved-notice = Deine Änderungen sind noch in { $app }.
 save-status-saved = Gespeichert
 save-status-failed = Speichern fehlgeschlagen
 save-status-retry = Erneut versuchen

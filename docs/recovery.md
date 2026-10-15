@@ -79,6 +79,16 @@ A deployment that has never booted successfully gets a **try counter** in its bo
 loader entry's file name — `bootc_fedora-44-1+3.conf`. systemd-boot decrements it
 on every attempt, and when it reaches zero it stops offering that entry first.
 
+`tilo-boot-entries.service` adds the counter to every bootc entry except the one
+running now, which it recognises by the `composefs=` identity of the running root.
+On the sealed image every entry has to name a UKI under `EFI/Linux/bootc/`, and the
+identity is read from that UKI's sealed command line; any other entry fails the
+pass. Only a dev image (`/usr/lib/tilo/image-flavour` reads `dev`) also accepts
+bootc's split kernel/initrd entries: `linux` and `initrd` from one
+`EFI/Linux/bootc_composefs-<id>/` directory and exactly one `composefs=` on the
+`options` line. Such a deployment counts and rolls back the same way; it gets no
+repair entry, because that is derived from a UKI.
+
 The counter is only removed when the boot is declared good.
 `tilo-boot-health.service` is what declares it: it is ordered before
 `boot-complete.target`, which `systemd-bless-boot.service` requires, so an

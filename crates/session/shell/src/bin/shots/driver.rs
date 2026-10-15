@@ -36,6 +36,8 @@ use taffy::prelude::NodeId;
 /// have to spend that time. Kept short enough that sleeping 60 frames
 /// (~1 s) doesn't blow scenario runtime.
 const FRAME_MS: u64 = 16;
+/// How long a capture waits for pending visual work before it shows it.
+const CAPTURE_SETTLE: Duration = Duration::from_secs(5);
 
 pub struct ShellDriver {
     /// Layout + paint core, shared with the native compositor mode.
@@ -80,8 +82,31 @@ impl ShellDriver {
         Self::with_tree(WorkspaceTree::bootstrap_demo(), viewport)
     }
 
+    /// [`Self::new`] for scene `name`. `offline` shows the session whose
+    /// collaboration service went away: its apps reach for the session's
+    /// broker at a socket nobody serves, so a room's documents lose their
+    /// route as they do when the service stops.
+    pub fn for_scene(name: &str, viewport: (u32, u32)) -> Self {
+        let broker = (name == "offline").then(|| {
+            let gone =
+                std::env::temp_dir().join(format!("tilo-shots-gone-{}", uuid::Uuid::new_v4()));
+            (gone.join("collab.sock"), gone.join("identity.sock"))
+        });
+        Self::build(WorkspaceTree::bootstrap_demo(), viewport, broker)
+    }
+
     /// Build a driver around the provided workspace tree at `viewport` size.
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
+        Self::build(tree, viewport, None)
+    }
+
+    /// [`Self::with_tree`], its apps reaching the session broker at
+    /// `broker`'s collaboration and identity sockets, when given.
+    fn build(
+        tree: WorkspaceTree,
+        viewport: (u32, u32),
+        broker: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    ) -> Self {
         // Boot adopts every ownerless workspace before the session ever
         // paints (`compositor::session_bootstrap`), so a room you made is a room
         // you own; skipping it renders "no members" for rooms that on a
@@ -94,7 +119,23 @@ impl ShellDriver {
         let mut tree = tree;
         tree.adopt_ownerless_workspaces(&owner);
         let hosted_tabs = hosted_app_tabs(&tree);
-        let mut fb = FrameBuilder::with_tree(tree, viewport);
+        // An owned fixture never reads the wall clock, so frames compare
+        // across minutes; it shows the time it is given, like a session
+        // shows the time it reads.
+        let mut fb = match shell::shell::hosted_inputs::HostedTileInputs::fixture()
+            .and_then(|inputs| inputs.with_fixture_clock(shots_clock()))
+            .and_then(|inputs| match broker {
+                Some((collab, identity)) => inputs.with_session_broker_at(collab, identity),
+                None => Ok(inputs),
+            }) {
+            Ok(inputs) => FrameBuilder::with_tree_and_inputs(&tree, viewport, inputs),
+            Err(error) => {
+                eprintln!(
+                    "shots: fixture inputs unavailable ({error}); the bar shows a placeholder time"
+                );
+                FrameBuilder::with_tree(tree, viewport)
+            }
+        };
         fb.with_chrome(|st| st.act_as(owner));
         // Binding a tab never creates its document: the action that opens
         // an app does. This driver opens every tab of the tree it is handed
@@ -584,7 +625,33 @@ impl ShellDriver {
         // cross-strip dispatch) is reflected in what gets captured.
         let root = self.root_obj.clone();
         self.fb.pump_apps(&mut self.state, &root);
+        // Work a person would see finish a moment after the window opened
+        // (an app's first save being confirmed, an image arriving) finishes
+        // before the capture too; what is still pending after the bound is
+        // stuck, and the shot shows it.
+        let deadline = Instant::now().checked_add(CAPTURE_SETTLE);
+        while self.fb.host().has_pending_visual_work() {
+            if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
+                eprintln!(
+                    "shots: visual work still pending after {CAPTURE_SETTLE:?}; capturing it"
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(FRAME_MS));
+            self.fb.pump_apps(&mut self.state, &root);
+            let _ = self.fb.paint_settled();
+        }
         self.fb.paint_settled()
+    }
+}
+
+/// The moment every shot shows: a weekday morning.
+fn shots_clock() -> tilo_desktop::chrome::ClockSnapshot {
+    tilo_desktop::chrome::ClockSnapshot {
+        unix_seconds: 1_700_000_000,
+        clock: "09:41".into(),
+        weekday: "Tue".into(),
+        date: "14 November".into(),
     }
 }
 
@@ -1391,7 +1458,7 @@ impl ShellDriver {
     /// catalogue) — a one-shot mutation; call on a fresh driver per scene.
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
-            "desktop" => Self::scene_desktop(),
+            "desktop" | "offline" => Self::scene_desktop(),
             "overview" => self.scene_overview(),
             "overview-shared" => self.scene_overview_shared(),
             "palette" => self.scene_palette(),
@@ -2636,6 +2703,7 @@ impl ShellDriver {
     /// legacy `--scenes` flag for default expansion + validation.
     pub const ALL_SCENES: &'static [&'static str] = &[
         "desktop",
+        "offline",
         "multi-group",
         "multi-strip",
         "maximized",

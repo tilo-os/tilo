@@ -81,8 +81,7 @@ async fn main() -> ExitCode {
 }
 
 fn uid() -> u32 {
-    // SAFETY: `geteuid` has no preconditions.
-    unsafe { libc::geteuid() }
+    rustix::process::geteuid().as_raw()
 }
 
 async fn serve(identity_root: Option<std::path::PathBuf>) -> Result<(), String> {

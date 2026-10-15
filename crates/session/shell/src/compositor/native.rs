@@ -1236,15 +1236,13 @@ pub(crate) fn peer_shares_host_security_namespaces(pid: u32) -> bool {
 }
 
 fn unattributed_host_client_allowed(peer_uid: libc::uid_t, shares_namespaces: bool) -> bool {
-    // SAFETY: `geteuid` has no failure mode.
-    peer_uid == unsafe { libc::geteuid() } && shares_namespaces
+    peer_uid == rustix::process::geteuid().as_raw() && shares_namespaces
 }
 
 fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
     let credentials = wayland_peer_credentials(stream)?;
     let pid = u32::try_from(credentials.pid).ok()?;
-    // SAFETY: `geteuid` has no failure mode.
-    if credentials.uid != unsafe { libc::geteuid() } {
+    if credentials.uid != rustix::process::geteuid().as_raw() {
         return None;
     }
     if let Some((identity, custody)) =
@@ -2810,12 +2808,8 @@ fn control_listener_wake(
     }
 }
 
-/// Directory under `$XDG_RUNTIME_DIR` where a running compositor publishes
-/// facts the next terminal command needs; torn down with the session.
-pub const SESSION_RUNTIME_SUBDIR: &str = "tilo-session";
-
-/// File inside [`SESSION_RUNTIME_SUBDIR`] holding the bare socket name (no
-/// trailing newline), so `WAYLAND_DISPLAY=$(cat …)` is exactly right.
+/// File inside the session directory ([`tilo_paths::login::session_dir`])
+/// holding the bare socket name (no trailing newline), so `WAYLAND_DISPLAY=$(cat …)` is exactly right.
 pub const WAYLAND_DISPLAY_FILE: &str = "wayland-display";
 
 /// Where [`publish_wayland_display`] writes, given `$XDG_RUNTIME_DIR`. Split
@@ -2824,11 +2818,7 @@ pub const WAYLAND_DISPLAY_FILE: &str = "wayland-display";
 /// `None` when the variable is unset or not absolute — guessing `/tmp`
 /// would put a session-scoped file somewhere world-writable.
 pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    let dir = PathBuf::from(runtime_dir?);
-    if !dir.is_absolute() {
-        return None;
-    }
-    Some(dir.join(SESSION_RUNTIME_SUBDIR).join(WAYLAND_DISPLAY_FILE))
+    Some(tilo_paths::login::session_dir(runtime_dir)?.join(WAYLAND_DISPLAY_FILE))
 }
 
 /// Publish the compositor's Wayland socket name to
@@ -2861,7 +2851,7 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
 }
 
-/// File inside [`SESSION_RUNTIME_SUBDIR`] naming the room of the workspace in
+/// File inside the session directory naming the room of the workspace in
 /// front: the room a command started now (an app run from a terminal, or by
 /// `tilo-app dev`) joins, as an app the shell starts joins the room it names
 /// with the launcher's `--workspace-id`.
@@ -3834,7 +3824,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             "search_scope": format!("{:?}", chrome.search_scope),
             "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
-            "tray": crate::tray::Tray::global().state_json(),
+            "tray": crate::tray::global().state_json(),
             // Each tab pill's artwork: `toplevel:` when the window set its
             // own, `theme:` for its application's icon.
             "tab_icons": tab_icons_json(&chrome.tree()),
@@ -9511,8 +9501,7 @@ pub fn run() {
         // Readiness has no identity/key authority. The live trusted onboarding
         // state below gates both its response and the ordinary host-app launch.
         let runtime = crate::shell::launcher::runtime_dir();
-        // SAFETY: getuid has no arguments or memory contract.
-        let uid = unsafe { libc::getuid() };
+        let uid = rustix::process::getuid().as_raw();
         let pending = tilo_paths::data_local_dir().is_some_and(|data| {
             crate::shell::desktop_continuation::pending_review(
                 &data.join("tilo-imager/migrations/desktop-continuation.json"),
@@ -9955,22 +9944,22 @@ pub fn run() {
     // the action registry. Held for the session; a second watcher already on
     // the bus (a nested session) leaves this one off.
     let tray_handle: Option<
-        crate::session_runtime::Registration<crate::tray::watcher::WatcherHandle>,
+        crate::session_runtime::Registration<tilo_tray_host::watcher::WatcherHandle>,
     > = notif_runtime.map(|rt| {
         crate::session_runtime::Registration::start(
             rt.handle(),
             "tray",
             async move {
-                crate::tray::watcher::serve(
+                tilo_tray_host::watcher::serve(
                     zbus::connection::Builder::session()?,
-                    std::sync::Arc::clone(crate::tray::Tray::global()),
+                    std::sync::Arc::clone(crate::tray::global()),
                 )
                 .await
             },
             |_| {
                 tracing::info!(
                     "tray: serving {} on session bus",
-                    crate::tray::WATCHER_BUS_NAME
+                    tilo_tray_host::WATCHER_BUS_NAME
                 );
             },
         )
@@ -10362,6 +10351,14 @@ pub fn run() {
         // Keys a control client queued as a physical keyboard's arrive here, with the
         // backend's own events.
         pending_events.extend(test_control_ctx.seat_events.drain(..));
+        // Any input is activity, whoever it is routed to below (a pen or a
+        // pinch can go straight to an app): reset the idle timer and wake the
+        // display if it was dimmed or blanked.
+        apply_session_transitions!(crate::compositor::activity::note_person_input(
+            &mut session,
+            &pending_events,
+            Instant::now(),
+        ));
         input_steps.step("backend-poll");
         let t_backend_poll_done = iter_t0.elapsed();
         if slow_prepaint_phase(t_backend_poll_done) {
@@ -10687,11 +10684,6 @@ pub fn run() {
                     // Instrumentation: the clock starts when the loop takes the event off the
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
-                    // Any input is activity — reset the idle timer and wake the display if it was blanked.
-                    apply_session_transitions!(session.note_activity(Instant::now()));
-                    if let Some(steps) = key_steps.as_mut() {
-                        steps.steps.mark("activity");
-                    }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
@@ -11127,7 +11119,6 @@ pub fn run() {
                     // A 3/4-finger gesture, already resolved into its navigation meaning —
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
-                        apply_session_transitions!(session.note_activity(Instant::now()));
                         apply_shell_gesture(&mut frame_builder, action);
                         session_changed = true;
                     }
@@ -14999,8 +14990,7 @@ mod tests {
         }
         // Phase `unattributed_public_clients_fail_closed_outside_host_namespaces`.
         {
-            // SAFETY: `geteuid` has no failure mode.
-            let uid = unsafe { libc::geteuid() };
+            let uid = rustix::process::geteuid().as_raw();
             assert!(unattributed_host_client_allowed(uid, true));
             assert!(!unattributed_host_client_allowed(uid, false));
             assert!(!unattributed_host_client_allowed(
