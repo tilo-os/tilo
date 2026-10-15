@@ -21,6 +21,8 @@ use tilo_peer_state::{
 
 #[path = "changes_read_tests.rs"]
 mod changes_read;
+#[path = "member_initialization_tests.rs"]
+mod member_initialization;
 
 struct Enrolled {
     _directory: tempfile::TempDir,

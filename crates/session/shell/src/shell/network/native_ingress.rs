@@ -66,6 +66,20 @@ impl ShellNetwork {
         if &certificate != creator {
             return Err("application initialization creator custody changed".into());
         }
+        if self.governed_elsewhere(room) {
+            // The host governing the room created the empty record for this
+            // device; the bootstrap is this member's own change to it, which
+            // the host admits like any other.
+            let revision = owner.initialize_application_record_as_member(
+                room,
+                &certificate,
+                &identity.device_signing_key,
+                initialization,
+                SystemTime::now(),
+            )?;
+            self.schedule_native_owner_publication(room);
+            return Ok(revision);
+        }
         owner.initialize_application_record(
             room,
             &certificate,

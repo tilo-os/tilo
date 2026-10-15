@@ -1,19 +1,21 @@
 //! A member's own business in a room this relay governs, as actions
-//! (provider [`MEMBER_ACTIONS_PROVIDER`]): claiming their topology namespace
-//! and recording their own effect receipt.
+//! (provider [`MEMBER_ACTIONS_PROVIDER`]): claiming their topology namespace,
+//! recording their own effect receipt, and having the host create the empty
+//! record of an app they open there first.
 //!
-//! Neither is governance, and neither grants anything: each runs the room
-//! method the wire door ran, which decides it for the person the room
-//! certified the calling device to (a claim needs their current Write, and
-//! a receipt is only their own). Every person the room admitted is offered
-//! both; an agent or a bot is offered neither.
+//! None is governance, and none grants anything: each runs a room method
+//! that decides it for the person the room certified the calling device to
+//! (a claim needs their current Write, a receipt is only their own, and a
+//! record only for an app the room lets author and a record they may
+//! change). Every person the room admitted is offered all three; an agent or
+//! a bot is offered none.
 
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionHostError, Caller, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_relay_session::rooms::{
-    CLAIM_TOPOLOGY_NAMESPACE, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND, RECORD_EFFECT_RECEIPT,
-    member_resource,
+    CLAIM_TOPOLOGY_NAMESPACE, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND,
+    PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, member_resource,
 };
 
 use super::{Args, Publisher, Verb, invalid, refused};
@@ -26,7 +28,7 @@ pub(super) const MEMBER: Publisher = Publisher {
 };
 
 /// What a member does for themselves, in catalogue order.
-const MEMBER_VERBS: [Verb; 2] = [
+const MEMBER_VERBS: [Verb; 3] = [
     Verb {
         id: CLAIM_TOPOLOGY_NAMESPACE,
         label: "Claim topology namespace",
@@ -40,6 +42,13 @@ const MEMBER_VERBS: [Verb; 2] = [
         gate: RECORD_EFFECT_RECEIPT,
         kind: ActionKind::Outside,
         params: receipt_params,
+    },
+    Verb {
+        id: PREPARE_APPLICATION_RECORD,
+        label: "Prepare application record",
+        gate: PREPARE_APPLICATION_RECORD,
+        kind: ActionKind::Outside,
+        params: record_params,
     },
 ];
 
@@ -62,6 +71,21 @@ fn receipt_params() -> Vec<ActionParam> {
             "redacted",
             ParamType::Text,
             "The canonical redacted public receipt, as JSON text; never the action's arguments or results.",
+        ),
+    ]
+}
+
+fn record_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "app",
+            ParamType::Text,
+            "The application, which the room must already let author its records.",
+        ),
+        ActionParam::optional(
+            "record",
+            ParamType::Text,
+            "The record's id on the wire; the app's primary when omitted.",
         ),
     ]
 }
@@ -115,6 +139,17 @@ impl Rooms {
                 let redacted = args.required_text("redacted")?;
                 self.record_member_effect_receipt(&room, &device, invocation, redacted.as_bytes())
                     .await
+            }
+            PREPARE_APPLICATION_RECORD => {
+                let request = crate::rooms::member_records::PrepareApplicationRecordRequest {
+                    app: args.required_text("app")?.to_owned(),
+                    record: args.text("record")?.unwrap_or_default().to_owned(),
+                };
+                return self
+                    .prepare_member_application_record(&room, &device, &request)
+                    .await
+                    .map(|done| json!({ "created": done.created, "generation": done.generation }))
+                    .map_err(|error| refused(&error));
             }
             _ => return Err(ActionHostError::UnknownAction),
         };

@@ -1118,3 +1118,6 @@ mod spectators;
 
 #[path = "governed_rooms/app_authorship.rs"]
 mod app_authorship;
+
+#[path = "governed_rooms/app_records.rs"]
+mod app_records;
