@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 hex.workspace = true
 bounded-command = { path = "../bounded-command" }
 postcard = { workspace = true, features = ["alloc"] }

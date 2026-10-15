@@ -25,7 +25,7 @@ default = ["rpc"]
 rpc = ["dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:tokio-util"]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Pinned: capnp 0.26 ships with capnp-rpc 0.26 and capnpc 0.26. The
 # whole 0.26 line shares a generator + RPC ABI.
 capnp = { workspace = true, optional = true }

@@ -46,7 +46,7 @@ presentation-feedback = ["tilo-runner-native?/presentation-feedback"]
 dx12-shader-cache = ["tilo-runner-native?/dx12-shader-cache"]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default-features = false }
 # The resource layer the framework binds views to; re-exported so the
 # `#[resource]` and `#[derive(Model)]` expansions resolve through the prelude.

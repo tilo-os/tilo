@@ -35,7 +35,7 @@ store = [
 ]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 tilo-app-package = { version = "0.1.0", path = "../tilo-app-package" }
 ed25519-dalek.workspace = true

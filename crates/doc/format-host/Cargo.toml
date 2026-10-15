@@ -7,7 +7,7 @@ license.workspace = true
 description = "Tilo format-provider router daemon. Runs sandboxed WebAssembly providers under wasmi and serves a Cap'n Proto RPC interface."
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 format-provider-abi = { path = "../format-provider-abi" }
 
 # Interpreter for provider modules: fuel metering and a store limiter give

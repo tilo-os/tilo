@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "OneDrive, OneDrive for Business and SharePoint document libraries as a cloud-source provider over Microsoft Graph: delta feed, ranged reads, upload sessions, versions, share links."
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 chrono = { workspace = true, features = ["std"] }
 cloud-source = { version = "0.1.0", path = "../cloud-source" }
 base64.workspace = true

@@ -20,7 +20,7 @@ test-support = []
 chrono = ["dep:chrono"]
 
 [dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 automerge.workspace = true
 blake3.workspace = true

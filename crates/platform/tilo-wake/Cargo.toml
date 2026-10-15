@@ -16,7 +16,7 @@ path = "src/lib.rs"
 # A leaf: models that route wakes (tilo-resource) also build as sandboxed
 # wasm format providers, which must not link an async runtime.
 [dependencies]
-tilo-lock = { path = "../tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../tilo-lock" }
 thiserror.workspace = true
 
 [lints]

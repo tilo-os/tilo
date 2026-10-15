@@ -44,7 +44,7 @@ workspace-hack = { version = "0.1" }
 libc.workspace = true
 
 [dev-dependencies]
-tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tempfile.workspace = true
 # The bundle-root override is process-wide environment; tests scope and
 # serialise their changes to it.
