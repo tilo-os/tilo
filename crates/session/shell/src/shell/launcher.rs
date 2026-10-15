@@ -2879,6 +2879,9 @@ fn execute_workspace_agent(
             .args
             .extend(["--companion".into(), companion.into()]);
     }
+    if let Some(provider) = workspace_agent_provider() {
+        command.args.extend(["--provider".into(), provider]);
+    }
     if let Err(detail) = spawn_detached(app.clone(), command, None) {
         return Err(LaunchError::AgentLaunchWorkerUnavailable { detail });
     }
@@ -2935,6 +2938,29 @@ fn start_agent_companions(
         }
     }
     running
+}
+
+/// The desktop's default model for a workspace agent, as the nonsecret
+/// selection the agent plans with: profile, model and protocol only. The
+/// agent cannot read Settings from its sandbox, so without this it has no
+/// model and plans by keyword alone; the model gateway keeps the endpoint
+/// and the credential.
+#[cfg(target_os = "linux")]
+fn workspace_agent_provider() -> Option<String> {
+    provider_selection(agent_provider_config::ProviderConfig::load().active_profile()?)
+}
+
+/// `profile`'s default model as the agent's `--provider` selection, or
+/// `None` while the profile names no default model to plan with.
+#[cfg(any(test, target_os = "linux"))]
+fn provider_selection(profile: &agent_provider_config::ProviderProfile) -> Option<String> {
+    let model = profile.default_model.as_ref()?;
+    serde_json::to_string(&serde_json::json!({
+        "profile_id": profile.id,
+        "model_id": model,
+        "protocol": profile.protocol,
+    }))
+    .ok()
 }
 
 /// [`launch`], additionally asking the app to open `document`. Grant the
@@ -8665,5 +8691,27 @@ mod tests {
         files_launch_receives_only_the_staged_projection_path();
         #[cfg(target_os = "linux")]
         runtime_files_never_wait_for_the_disk();
+    }
+
+    /// A launched workspace agent cannot read Settings from its sandbox, so
+    /// the desktop hands it the default model as exactly the nonsecret
+    /// selection the agent accepts, and nothing while no model is chosen.
+    #[test]
+    fn a_workspace_agent_is_handed_the_default_model_selection_only() {
+        let mut profile = agent_provider_config::ProviderProfile::hosted(
+            agent_provider_config::ProviderProtocol::OpenAiCompatible,
+        );
+        assert_eq!(provider_selection(&profile), None);
+        profile.default_model = Some("google/gemini-4-argon".into());
+        let selection: serde_json::Value =
+            serde_json::from_str(&provider_selection(&profile).expect("a selection")).unwrap();
+        assert_eq!(
+            selection,
+            serde_json::json!({
+                "profile_id": profile.id,
+                "model_id": "google/gemini-4-argon",
+                "protocol": profile.protocol,
+            })
+        );
     }
 }

@@ -2997,6 +2997,7 @@ mod tests {
                 ),
                 content: tilo_content::ContentStore::memory(),
                 companions: Vec::new(),
+                provider: None,
             },
             link,
             chooser: Chooser::scripted(
