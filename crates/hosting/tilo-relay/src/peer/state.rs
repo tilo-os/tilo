@@ -685,7 +685,7 @@ pub(super) async fn handle_delta(
 /// retained body. The room's governor stewards its channels and creates
 /// records from these, so every change the relay keeps must reach it, one
 /// sent alone and one in a checkpoint prefix alike.
-fn governor_notice(env: &Envelope) -> Option<Vec<u8>> {
+pub(super) fn governor_notice(env: &Envelope) -> Option<Vec<u8>> {
     let Envelope::Delta { delta, .. } = env else {
         return None;
     };
