@@ -1,4 +1,4 @@
-# The checks CI runs (.forgejo/workflows/check.yml, lint.yml), for `t`.
+# Tilo's checks for t (docs/t.md): what runs before a push and on every commit to main.
 # Each cargo family becomes one check per workspace package: `test/<package>`, `clippy/<package>`.
 
 # CI resolves tilo-builder:latest to a digest per run; pinning one here keeps results comparable.
