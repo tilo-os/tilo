@@ -14,35 +14,35 @@
 //              reaches it as the session's clipboard before the paste chord
 //              (with Control held), byte for byte
 //   resize     the page is resized: W1 follows its tile, and a click on a
-//              window pixel lands on that pixel; then a second window W2
+//              window pixel lands on that pixel; later a second window W2
 //              changes its own size while it streams: the page draws each
 //              picture at its frame's size and ends on the last frame at the
 //              new size
-//   recovery   the page's live plane is dropped while W2 streams: the page
-//              connects again and W2 comes back with newer frames, never a
-//              corrupt one, and ends on its last
+//   fallback   a second device of the owner, on a network where WebTransport
+//              never becomes ready, takes the HTTPS stream, shows W1's still
+//              picture on arrival, follows a window W3 to its last frame and
+//              drives it
+//   viewer     a second person, invited as a viewer and admitted by the
+//              owner, shows W1's still picture and follows W3 to its last
+//              frame, but is offered no control: a click and a key on the
+//              window, and input sent to the host directly, reach no window
+//   recovery   back on the first page alone, its live plane is dropped while
+//              W2 streams: the page connects again and W2 comes back with
+//              newer frames, never a corrupt one, and ends on its last
 //   stale      W2 opening takes the keyboard from W1, and a key typed into
 //              W2 reaches only W2; once W2 closes, nothing typed reaches it
 //              (the page removed it and the host refuses input for it), and
 //              W1 takes the keyboard again when clicked. Over the whole run,
 //              no key and no paste reaches a window that did not hold the
 //              keyboard when it arrived
-//   fallback   then a second device of the owner,
-//              on a network where WebTransport never becomes ready, takes the
-//              HTTPS stream, shows W1's still picture on arrival, follows a
-//              third window W3 to its last frame and drives it
-//   viewer     a second person, invited as a viewer by that device and
-//              admitted by it, shows W1's still picture and follows W3 to its
-//              last frame, but is offered no control: a click and a key on
-//              the window, and input sent to the host directly, reach no
-//              window
 //
-// W2 is watched by the first page alone, and W3 by the two later ones: on the
-// runner one SwiftShader GPU process rasterizes every page's desktop, and a
-// desktop showing a second window presents a frame for each of its pictures,
-// so three desktops at once stalled every page for minutes. The first page
-// stays (a device joining the room's channel is let in by one already in it)
-// but is frozen while W3 streams.
+// On the runner one SwiftShader GPU process rasterizes every page's desktop,
+// and a desktop showing a second window presents a frame for each of its
+// pictures: three such desktops at once stalled every page for minutes, and a
+// page joining while one is busy took most of ten minutes to mount. So the
+// later pages come while the first page is idle, the first page is frozen
+// while W3 streams to them, they leave before W2, and W2 is the first page's
+// alone.
 //
 // Not driven here, with the reason (docs/measurements/performance.md):
 //   Safari     WebKit's only Linux builds are WebKitGTK/WPE, not Safari, and
@@ -379,6 +379,85 @@ export async function runAcceptance(ctx) {
   }
 
 
+  const pageErrors = {};
+
+  // The other members: a second device of the owner on a network where
+  // WebTransport never becomes ready, then a second person, a viewer ----------------
+  // They come while the first page is idle (its window still): a device
+  // joining the room is let in by one already in it, and on SwiftShader a
+  // busy desktop holds up every other page's.
+  step('open the page on the HTTPS stream and the viewer\'s');
+  const fallback = open('fallback');
+  const viewer = open('viewer');
+  const invitation = await main.evaluate(`globalThis.peer.createInvitation({role: 'viewer', expiresIn: 3600})`);
+  const fallbackPage = ctx.openPage('fallback', {room: ctx.room, label: 'Owner on HTTPS'}, {block: true});
+  const viewerPage = ctx.openPage('viewer', {invite: invitation, label: 'Viewer'}, {context: true});
+  const admitted = admitWhile(main, viewerPage);
+  const [other, watcher] = await Promise.all([fallbackPage, viewerPage]);
+  viewer.admitted = await admitted;
+  const transport = await other.evaluate('globalThis.__tiloStream.transport');
+  if (!transport.blocked) throw new Invalid(`the page on a network without WebTransport never tried it: ${JSON.stringify(transport)}`);
+  fallback.carrier = JSON.parse(await other.evaluate(ctx.live)).live?.carrier ?? null;
+  if (fallback.carrier !== 'https-stream') fallback.failures.push(`with WebTransport never ready the page's live plane took ${fallback.carrier}, not the HTTPS stream`);
+  for (const [name, page, found] of [['fallback', other, fallback], ['viewer', watcher, viewer]]) {
+    const final = await settleOn(page, prefix1, w1.stop.lastIndex, 120_000);
+    found.stillPicture = final;
+    if (final !== w1.stop.lastIndex) found.failures.push(`the ${name} page, arriving once the window was still, shows frame ${final}, not its last ${w1.stop.lastIndex}`);
+  }
+
+  // The first page is frozen while the third window streams, so the two
+  // pages showing it have the GPU process to themselves.
+  await main.send('Page.setWebLifecycleState', {state: 'frozen'});
+
+  step('the third window');
+  const w3 =await ctx.startSession('third', {surface: THIRD.surface, seconds: THIRD.seconds, width: THIRD.width, height: THIRD.height, fps: THIRD.fps});
+  const prefix3 = `${w3.session.device}:`;
+  const lines3 = () => w3.source.lines.length;
+  w3.source.process.stdin.write('start\n');
+  await w3.source.line(isEvent('started'), 10_000, 'the third stream start');
+  const stopped3 = JSON.parse(await w3.source.line(isEvent('stopped'), (THIRD.seconds + 120) * 1000, 'the end of the third stream'));
+  const sent3 = ctx.readSent(w3.log);
+  for (const [name, page, found] of [['fallback', other, fallback], ['viewer', watcher, viewer]]) {
+    await settleOn(page, prefix3, stopped3.lastIndex, 120_000);
+    const stream = judgeStream({sent: sent3, draws: await page.evaluate(drawsOf(prefix3)), lastIndex: stopped3.lastIndex});
+    found.thirdWindow = {...stream, failures: undefined};
+    found.failures.push(...stream.failures.map(failure => `the ${name} page's third window: ${failure}`));
+  }
+
+  // The page on the HTTPS stream drives the window; the viewer may not.
+  step('drive from the page on the HTTPS stream, try from the viewer\'s');
+  const ownerSees = await eventually(() => other.evaluate(windowAt(prefix3)), 60_000);
+  if (!ownerSees) throw new Invalid('the third window is not on screen on the page on the HTTPS stream');
+  const surface3 = ownerSees.key.split(':')[1];
+  if (!ownerSees.control) fallback.failures.push('the owner\'s page on the HTTPS stream was offered no control of the window');
+  else {
+    mark = lines3();
+    await click(other, ownerSees);
+    if (!await waitInput(w3, mark, isButton(LEFT_BUTTON, true), 30_000)) fallback.failures.push('a click from the page on the HTTPS stream did not reach the window');
+  }
+  await sleep(1000);
+  const quiet = [[w1, lines1()], [w3, lines3()]];
+  const viewerSees = await watcher.evaluate(windowAt(prefix3));
+  viewer.windowOnScreen = Boolean(viewerSees);
+  if (viewerSees?.control) viewer.failures.push('the viewer was offered control of the window');
+  if (viewerSees) { await click(watcher, viewerSees); await typeKey(watcher, KEYS.z); }
+  if (await watcher.evaluate(legacyInput(w3.session.device, surface3, []))) viewer.failures.push('the host told the viewer it may drive the window');
+  if (await watcher.evaluate(legacyInput(w3.session.device, surface3,
+    [{PointerButton: {button: LEFT_BUTTON, pressed: true}}, {PointerButton: {button: LEFT_BUTTON, pressed: false}}]))) {
+    viewer.failures.push('the host took input the viewer sent it directly');
+  }
+  await sleep(3000);
+  const leaked = quiet.flatMap(([session, from]) => inputsOf(session.source.lines, from));
+  if (leaked.length) viewer.failures.push(`${leaked.length} input events reached the windows while only the viewer gave input: ${JSON.stringify(leaked.slice(0, 3).map(input => input.value))}`);
+  for (const [name, page] of [['fallback', other], ['viewer', watcher]]) if (page.errors.length) pageErrors[name] = page.errors.slice(0, 3);
+  // The third window closes, both pages leave, and the first page carries on
+  // alone.
+  w3.source.process.stdin.write('end\n');
+  await w3.source.line(isEvent('ended'), 10_000, 'the third window closing');
+  await Promise.all([other, watcher].map(page => ctx.browser.send('Target.closeTarget', {targetId: page.targetId})));
+  await main.send('Page.setWebLifecycleState', {state: 'active'});
+
+
   // The second window, on the first page alone (every desktop that shows a
   // stream rasterizes on the runner's one SwiftShader GPU process) ---------------
   step('the second window');
@@ -474,81 +553,10 @@ export async function runAcceptance(ctx) {
   await waitInput(w1, mark, isFocus(true), 5000);
   await typeKey(main, KEYS.f);
   if (!await waitInput(w1, mark, isKey(KEYS.f.evdev, false), 30_000)) stale.failures.push('once the second window closed, a click on the first and a key typed did not reach it');
-  const pageErrors = {};
   if (main.errors.length) pageErrors.first = main.errors.slice(0, 3);
-
-  // The other members: a second device of the owner on a network where
-  // WebTransport never becomes ready, then a second person, a viewer ----------------
-  step('open the page on the HTTPS stream');
-  const fallback = open('fallback');
-  const viewer = open('viewer');
-  const other = await ctx.openPage('fallback', {room: ctx.room, label: 'Owner on HTTPS'}, {block: true});
-  const transport = await other.evaluate('globalThis.__tiloStream.transport');
-  if (!transport.blocked) throw new Invalid(`the page on a network without WebTransport never tried it: ${JSON.stringify(transport)}`);
-  fallback.carrier = JSON.parse(await other.evaluate(ctx.live)).live?.carrier ?? null;
-  if (fallback.carrier !== 'https-stream') fallback.failures.push(`with WebTransport never ready the page's live plane took ${fallback.carrier}, not the HTTPS stream`);
-  step('open the viewer\'s page');
-  const invitation = await other.evaluate(`globalThis.peer.createInvitation({role: 'viewer', expiresIn: 3600})`);
-  const viewerPage = ctx.openPage('viewer', {invite: invitation, label: 'Viewer'}, {context: true});
-  const admitted = admitWhile(other, viewerPage);
-  const watcher = await viewerPage;
-  viewer.admitted = await admitted;
-  for (const [name, page, found] of [['fallback', other, fallback], ['viewer', watcher, viewer]]) {
-    const final = await settleOn(page, prefix1, w1.stop.lastIndex, 120_000);
-    found.stillPicture = final;
-    if (final !== w1.stop.lastIndex) found.failures.push(`the ${name} page, arriving once the window was still, shows frame ${final}, not its last ${w1.stop.lastIndex}`);
-  }
-
-  // The first page is done, but stays: a device that joins the room's
-  // channel is let in by one already in it. It is frozen, so the next two
-  // pages have the GPU process to themselves.
-  await main.send('Page.setWebLifecycleState', {state: 'frozen'});
-
-  step('the third window');
-  const w3 =await ctx.startSession('third', {surface: THIRD.surface, seconds: THIRD.seconds, width: THIRD.width, height: THIRD.height, fps: THIRD.fps});
-  const prefix3 = `${w3.session.device}:`;
-  const lines3 = () => w3.source.lines.length;
-  w3.source.process.stdin.write('start\n');
-  await w3.source.line(isEvent('started'), 10_000, 'the third stream start');
-  const stopped3 = JSON.parse(await w3.source.line(isEvent('stopped'), (THIRD.seconds + 120) * 1000, 'the end of the third stream'));
-  const sent3 = ctx.readSent(w3.log);
-  for (const [name, page, found] of [['fallback', other, fallback], ['viewer', watcher, viewer]]) {
-    await settleOn(page, prefix3, stopped3.lastIndex, 120_000);
-    const stream = judgeStream({sent: sent3, draws: await page.evaluate(drawsOf(prefix3)), lastIndex: stopped3.lastIndex});
-    found.thirdWindow = {...stream, failures: undefined};
-    found.failures.push(...stream.failures.map(failure => `the ${name} page's third window: ${failure}`));
-  }
-
-  // The page on the HTTPS stream drives the window; the viewer may not.
-  step('drive from the page on the HTTPS stream, try from the viewer\'s');
-  const ownerSees = await eventually(() => other.evaluate(windowAt(prefix3)), 60_000);
-  if (!ownerSees) throw new Invalid('the third window is not on screen on the page on the HTTPS stream');
-  const surface3 = ownerSees.key.split(':')[1];
-  if (!ownerSees.control) fallback.failures.push('the owner\'s page on the HTTPS stream was offered no control of the window');
-  else {
-    mark = lines3();
-    await click(other, ownerSees);
-    if (!await waitInput(w3, mark, isButton(LEFT_BUTTON, true), 30_000)) fallback.failures.push('a click from the page on the HTTPS stream did not reach the window');
-  }
-  await sleep(1000);
-  const quiet = [[w1, lines1()], [w2, lines2()], [w3, lines3()]];
-  const viewerSees = await watcher.evaluate(windowAt(prefix3));
-  viewer.windowOnScreen = Boolean(viewerSees);
-  if (viewerSees?.control) viewer.failures.push('the viewer was offered control of the window');
-  if (viewerSees) { await click(watcher, viewerSees); await typeKey(watcher, KEYS.z); }
-  if (await watcher.evaluate(legacyInput(w3.session.device, surface3, []))) viewer.failures.push('the host told the viewer it may drive the window');
-  if (await watcher.evaluate(legacyInput(w3.session.device, surface3,
-    [{PointerButton: {button: LEFT_BUTTON, pressed: true}}, {PointerButton: {button: LEFT_BUTTON, pressed: false}}]))) {
-    viewer.failures.push('the host took input the viewer sent it directly');
-  }
-  await sleep(3000);
-  const leaked = quiet.flatMap(([session, from]) => inputsOf(session.source.lines, from));
-  if (leaked.length) viewer.failures.push(`${leaked.length} input events reached the windows while only the viewer gave input: ${JSON.stringify(leaked.slice(0, 3).map(input => input.value))}`);
-
   for (const [name, session] of [['first', w1], ['second', w2], ['third', w3]]) {
     const stray = focusDiscipline(inputsOf(session.source.lines));
     if (stray.length) stale.failures.push(`${stray.length} keys or pastes reached the ${name} window while it did not hold the keyboard: ${stray.slice(0, 3).join(', ')}`);
   }
-  for (const [name, page] of [['fallback', other], ['viewer', watcher]]) if (page.errors.length) pageErrors[name] = page.errors.slice(0, 3);
   return {cases, children: [w2, w3], pageErrors};
 }

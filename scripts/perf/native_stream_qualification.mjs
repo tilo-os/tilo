@@ -526,7 +526,7 @@ async function attachPage(browser, viewport, {context, window = false, block = f
   await send('Emulation.setFocusEmulationEnabled', {enabled: true});
   if (block) await send('Page.addScriptToEvaluateOnNewDocument', {source: 'globalThis.__tiloBlockWebTransport = true;'});
   await send('Page.addScriptToEvaluateOnNewDocument', {source: PROBE});
-  const page = {send, evaluate, errors, console: console_};
+  const page = {send, evaluate, errors, console: console_, targetId};
   return page;
 }
 
