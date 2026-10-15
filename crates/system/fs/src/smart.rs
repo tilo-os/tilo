@@ -15,6 +15,8 @@ use tokio::sync::mpsc;
 
 use crate::hydration::Hydrator;
 
+pub mod history;
+
 /// Predictive reads are an optimization, not an instruction to fill the disk.
 /// Larger files remain projected until explicitly opened or pinned.
 pub const MAX_PREDICTIVE_FILE_BYTES: u64 = 32 * 1024 * 1024;
