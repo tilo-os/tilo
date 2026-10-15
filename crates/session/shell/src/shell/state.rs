@@ -4788,12 +4788,11 @@ impl WorkspaceTree {
                             );
                         }
                         (
-                            crate::shell::launcher::installed_apps()
-                                .ok()
-                                .and_then(|apps| {
-                                    apps.into_iter()
-                                        .find(|installed| installed.package_id == *app_id)
-                                })
+                            // Built on the compositor loop: the installed
+                            // apps as last enumerated, never a registry read.
+                            crate::shell::launcher::installed_apps_without_waiting()
+                                .into_iter()
+                                .find(|installed| installed.package_id == *app_id)
                                 .map_or_else(|| app_id.clone(), |installed| installed.display_name),
                             TileContent::PeerWindow {
                                 app_id: app_id.clone(),

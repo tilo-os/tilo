@@ -732,15 +732,8 @@ fn open_legacy_document_from_files(
                 ],
             )
         })?;
-        let text = std::fs::read_to_string(&path).map_err(|error| {
-            crate::shell::i18n::t_args(
-                "shell-path-read-failed",
-                &[
-                    ("path", path.display().to_string().into()),
-                    ("error", error.to_string().into()),
-                ],
-            )
-        })?;
+        // The editor reads the file itself; read here, a file on the
+        // workspace mount would hydrate on the compositor loop.
         let title = path.file_name().map_or_else(
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
@@ -767,7 +760,6 @@ fn open_legacy_document_from_files(
                     hosted_inputs::HostedDocument {
                         provider_id: app.package_id,
                         path,
-                        text,
                     },
                 );
             },
@@ -791,8 +783,8 @@ pub(crate) fn open_document_from_files(
         let path = path
             .canonicalize()
             .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
-        let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        // The editor reads the file itself; read here, a file on the
+        // workspace mount would hydrate on the compositor loop.
         let checkout = ui::record::RecordCheckout::new(
             ui::record::RecordId::for_file(&path),
             ui::record::RecordKind::new("text-document"),
@@ -847,7 +839,6 @@ pub(crate) fn open_document_from_files(
                     hosted_inputs::HostedDocument {
                         provider_id: app.package_id,
                         path,
-                        text,
                     },
                 );
             },

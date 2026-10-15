@@ -11255,8 +11255,9 @@ impl ShellOverlayHost {
     }
 
     /// Record the shortcut runs the broker finished, each as one undoable
-    /// run in the workspace document. On the frame pump, never in paint;
-    /// the tree's write lock is taken only while a run waits.
+    /// run in the workspace document. On the frame pump, never in paint.
+    /// Documents on disk are read off the loop, and the tree's write lock
+    /// is taken only to write a run that was found.
     fn record_finished_shortcut_runs(&mut self) {
         if !self.room_activity.shortcut_runs_pending() {
             return;
@@ -11267,15 +11268,14 @@ impl ShellOverlayHost {
         let state = chrome.borrow();
         let records = state.records().clone();
         let local = self.room_records.borrow();
-        let mut tree = state.tree_mut();
         let recorded = self.room_activity.record_finished_shortcut_runs(
-            &mut tree,
+            || state.tree_mut(),
             &records,
             &local,
             Instant::now(),
         );
         if recorded {
-            tree.queue_save();
+            state.tree().queue_save();
         }
     }
 

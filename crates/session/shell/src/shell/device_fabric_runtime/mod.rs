@@ -412,6 +412,105 @@ struct NearbyStagingResult {
     media_request: Option<[u8; 16]>,
 }
 
+/// A small file read for an inline Nearby send, off the loop.
+struct NearbyInlineRead {
+    target: crate::shell::personal_continuity::DeviceId,
+    name: String,
+    result: Result<Vec<u8>, String>,
+}
+
+fn nearby_inline_reads() -> &'static (
+    mpsc::Sender<NearbyInlineRead>,
+    Mutex<mpsc::Receiver<NearbyInlineRead>>,
+) {
+    static QUEUE: OnceLock<(
+        mpsc::Sender<NearbyInlineRead>,
+        Mutex<mpsc::Receiver<NearbyInlineRead>>,
+    )> = OnceLock::new();
+    QUEUE.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel();
+        (sender, Mutex::new(receiver))
+    })
+}
+
+/// Read the small file at `path` for an inline send: no symlink, and no
+/// more than the inline limit, even if it grew since it was inspected.
+fn read_inline_nearby_file(path: &Path) -> Result<Vec<u8>, String> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "device-fabric-error-open-failed",
+                &[("error", error.to_string().into())],
+            )
+        })?;
+    let mut bytes = Vec::new();
+    file.take((crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "device-fabric-error-read-failed",
+                &[("error", error.to_string().into())],
+            )
+        })?;
+    if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
+        return Err(crate::shell::i18n::t("device-fabric-error-file-changed"));
+    }
+    Ok(bytes)
+}
+
+/// Offer the inline sends whose file was read since the last pump. One whose
+/// read failed is reported as failed; with file transfer now off, it is
+/// dropped like a finished staging.
+fn send_nearby_inline_reads(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
+    let reads = nearby_inline_reads().1.lock().map_or_else(
+        |_| Vec::new(),
+        |receiver| receiver.try_iter().collect::<Vec<_>>(),
+    );
+    for read in reads {
+        if !policy.permits(ContinuityCapability::FileTransfer) {
+            continue;
+        }
+        let sent = read.result.and_then(|bytes| {
+            let total_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            network
+                .send_personal_fabric_action(
+                    &read.target,
+                    PersonalFabricAction::NearbyDrop {
+                        content_hash: *blake3::hash(&bytes).as_bytes(),
+                        bytes,
+                        file_name: read.name.clone(),
+                    },
+                )
+                .map(|request| (request, total_bytes))
+        });
+        let Ok(mut state) = nearby_drop_state().lock() else {
+            continue;
+        };
+        match sent {
+            Ok((request, total_bytes)) => {
+                if state.pending.len() >= 256
+                    && let Some(oldest) = state.pending.keys().next().copied()
+                {
+                    state.pending.remove(&oldest);
+                }
+                state
+                    .pending
+                    .insert(request, (read.target, read.name, total_bytes));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "nearby send could not offer a small file");
+                state.events.push_back(NearbyDropEvent::Failed {
+                    file_name: read.name,
+                    peer: read.target,
+                });
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct NearbyStagingAdmission {
     owners: BTreeMap<String, usize>,
@@ -3248,6 +3347,7 @@ fn resume_nearby_transfers(network: &ShellNetwork, policy: ContinuityPolicySnaps
         expire_nearby_consents(network);
     }
     settle_nearby_staging(network, policy);
+    send_nearby_inline_reads(network, policy);
     let entries = try_outbox_entries();
     if let Ok(mut state) = nearby_drop_state().lock() {
         state
@@ -5499,12 +5599,9 @@ pub fn require_speaker_groups() -> Result<(), String> {
 /// # Errors
 ///
 /// Returns an error for an unsafe/oversized source or unavailable fabric route.
-#[expect(
-    clippy::too_many_lines,
-    reason = "validation, staging and the offer stay in one ordered send path"
-)]
+/// The id names the staged transfer for a large source; a small one is read
+/// off the loop and offered later, so its id only acknowledges the request.
 pub fn request_nearby_drop(
-    network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
     path: &Path,
 ) -> Result<[u8; 16], String> {
@@ -5582,52 +5679,53 @@ pub fn request_nearby_drop(
     if metadata.len() == 0 {
         return Err(crate::shell::i18n::t("device-fabric-error-drop-empty"));
     }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|error| {
-            crate::shell::i18n::t_args(
-                "device-fabric-error-open-failed",
-                &[("error", error.to_string().into())],
-            )
-        })?;
-    let mut bytes = Vec::new();
-    file.take((crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| {
-            crate::shell::i18n::t_args(
-                "device-fabric-error-read-failed",
-                &[("error", error.to_string().into())],
-            )
-        })?;
-    if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
-        return Err(crate::shell::i18n::t("device-fabric-error-file-changed"));
-    }
-    let total_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    let request = network.send_personal_fabric_action(
+    read_inline_off_the_loop(
+        nearby_inline_reads().0.clone(),
         target,
-        PersonalFabricAction::NearbyDrop {
-            content_hash: *blake3::hash(&bytes).as_bytes(),
-            bytes,
-            file_name: file_name.clone(),
-        },
+        file_name.clone(),
+        path,
     )?;
     if let Ok(mut state) = nearby_drop_state().lock() {
-        if state.pending.len() >= 256
-            && let Some(oldest) = state.pending.keys().next().copied()
-        {
-            state.pending.remove(&oldest);
-        }
-        state
-            .pending
-            .insert(request, (target.clone(), file_name.clone(), total_bytes));
         state.events.push_back(NearbyDropEvent::Sending {
             file_name,
             peer: target.clone(),
         });
     }
-    Ok(request)
+    Ok(crate::random::nonzero::<16>())
+}
+
+/// A small file goes inline, but its first read may hydrate it from a peer
+/// (a drop from the workspace mount): read `path` on a worker, and offer it
+/// to `target` from the loop once read ([`send_nearby_inline_reads`]), as
+/// staging does for a large one. The read is handed to `sender`.
+fn read_inline_off_the_loop(
+    sender: mpsc::Sender<NearbyInlineRead>,
+    target: &crate::shell::personal_continuity::DeviceId,
+    name: String,
+    path: &Path,
+) -> Result<(), String> {
+    let source = path.to_path_buf();
+    let target = target.clone();
+    // Made on the loop's thread, so the worker wakes the loop the offer
+    // waits for.
+    let wake = crate::shell::search::invocation_wake::waker();
+    std::thread::Builder::new()
+        .name("tilo-nearby-read".into())
+        .spawn(move || {
+            let _ = sender.send(NearbyInlineRead {
+                target,
+                name,
+                result: read_inline_nearby_file(&source),
+            });
+            wake.wake();
+        })
+        .map(|_| ())
+        .map_err(|error| {
+            crate::shell::i18n::t_args(
+                "device-fabric-error-transfer-start",
+                &[("error", error.to_string().into())],
+            )
+        })
 }
 
 /// Send from an already-open Files grant capability. The descriptor, rather
@@ -8455,6 +8553,34 @@ fn withdraw_nearby_transfers(network: &ShellNetwork, media_outgoing: &BTreeSet<[
 mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
+
+    /// A small file dropped onto a device is read for its inline offer on
+    /// a worker: a file whose bytes have not arrived (a FIFO, as a file on
+    /// the workspace mount is while it hydrates) holds neither the drop nor
+    /// the loop, and the bytes reach the offer queue once they arrive.
+    #[test]
+    fn a_small_nearby_drop_is_read_off_the_loop() {
+        let directory = tempfile::tempdir().expect("source directory");
+        let hydrating =
+            crate::shell::disk_sync_guard::blocking_source(directory.path(), "note.txt");
+        let target = DeviceId::new("ab".repeat(32)).expect("device id");
+        let (sender, reads) = mpsc::channel();
+        read_inline_off_the_loop(sender, &target, "note.txt".into(), &hydrating)
+            .expect("the read worker started");
+        // Returned while the read blocks: the drop never waited for it.
+        assert!(
+            reads.try_recv().is_err(),
+            "nothing is read before the bytes arrive"
+        );
+
+        std::fs::write(&hydrating, b"small note\n").expect("the bytes arrive");
+        let read = reads
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the read finished once its bytes arrived");
+        assert_eq!(read.target, target);
+        assert_eq!(read.name, "note.txt");
+        assert_eq!(read.result, Ok(b"small note\n".to_vec()));
+    }
 
     #[test]
     fn rich_display_native_observation_preserves_identity_mode_scale_and_inactive_outputs() {

@@ -92,7 +92,6 @@ mod dropped_content_startup_tests {
             chrome.borrow().hosted_inputs.document(tab),
             Some(HostedDocumentState::Ready(opened))
                 if opened.path == document.canonicalize().unwrap()
-                    && opened.text == "carried words\n"
         ));
         let state = chrome.borrow();
         let tree = state.tree();
@@ -104,6 +103,34 @@ mod dropped_content_startup_tests {
         assert_eq!(group.tabs[0].id, tab);
         drop(tree);
         drop(state);
+    }
+
+    /// A Wayland drop is handled on the compositor loop, and a file dropped
+    /// from the workspace mount hydrates from a peer on its first read. The
+    /// drop opens the editor on the file without reading it: a file whose
+    /// bytes never arrive (a FIFO nobody writes) still opens at once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dropping_a_file_never_reads_it_on_the_loop() {
+        let temp = tempfile::tempdir().unwrap();
+        let document = crate::shell::disk_sync_guard::blocking_source(temp.path(), "hydrating.txt");
+        let tree = WorkspaceTree::bootstrap_demo();
+        let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+        let inputs = HostedTileInputs::fixture_in(temp.path()).unwrap();
+        let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
+
+        let (tab, read) = crate::shell::disk_sync_guard::read_while(&document, b"words\n", || {
+            chrome
+                .borrow_mut()
+                .handle_file_drop_at_placement(&document, Placement::TabAt(group, 0))
+        });
+        assert!(!read, "the drop read the file on the loop");
+        let tab = tab.expect("the drop opened a tab");
+        assert!(matches!(
+            chrome.borrow().hosted_inputs.document(tab),
+            Some(HostedDocumentState::Ready(opened))
+                if opened.path == document.canonicalize().unwrap()
+        ));
     }
 }
 
@@ -2157,11 +2184,13 @@ impl ChromeState {
                             .any(|candidate| candidate.eq_ignore_ascii_case(extension))
                     });
                 if is_editor {
+                    // The size is metadata; the bytes are the editor's to
+                    // read. A drop from the workspace mount would hydrate
+                    // the file from a peer, which the loop must not wait for.
                     if canonical.metadata().ok()?.len() > MAX_HOSTED_TEXT_BYTES {
                         return None;
                     }
-                    hosted_document =
-                        Some((canonical.clone(), std::fs::read_to_string(&canonical).ok()?));
+                    hosted_document = Some(canonical);
                 } else {
                     files_directory = canonical.parent().map(std::path::Path::to_path_buf);
                 }
@@ -2197,13 +2226,12 @@ impl ChromeState {
         if let Some(directory) = files_directory {
             self.hosted_inputs.bind_files_directory(tab_id, directory);
         }
-        if let Some((path, text)) = hosted_document {
+        if let Some(path) = hosted_document {
             self.hosted_inputs.bind_document(
                 tab_id,
                 super::hosted_inputs::HostedDocument {
                     provider_id: "org.tilo.Editor",
                     path: path.clone(),
-                    text,
                 },
             );
             self.tree_mut().native_document_tabs.insert(

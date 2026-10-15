@@ -7131,6 +7131,27 @@ mod spatial_edge_tests {
     }
 }
 
+/// Tell the person where "Send…" put their screenshot, or why it did not.
+fn notify_screenshot_sent(
+    frame_builder: &mut FrameBuilder,
+    sent: Result<crate::shell::screenshot_send::SendReceipt, String>,
+) {
+    match sent {
+        Ok(receipt) => frame_builder.with_chrome(|chrome| {
+            chrome.push_notification(
+                crate::shell::i18n::t("capture-screenshot-sent"),
+                receipt.message(),
+            );
+        }),
+        Err(error) => frame_builder.with_chrome(|chrome| {
+            chrome.push_error_notification(
+                crate::shell::i18n::t("capture-screenshot-not-sent"),
+                error,
+            );
+        }),
+    }
+}
+
 fn finish_nearby_drop(
     event: &WindowEvent,
     network: &crate::shell::network::ShellNetwork,
@@ -7151,8 +7172,7 @@ fn finish_nearby_drop(
             .is_some_and(|drag| drag.paths.as_slice() == [path.as_path()]);
         end_spatial_control(network, active);
         if matches {
-            let _ =
-                crate::shell::device_fabric_runtime::request_nearby_drop(network, &target, &path);
+            let _ = crate::shell::device_fabric_runtime::request_nearby_drop(&target, &path);
         }
         return Some(false);
     }
@@ -13320,21 +13340,12 @@ pub fn run() {
                                 workspace_root: crate::shell::screenshot_send::workspace_files_root(
                                 ),
                             };
-                            match crate::shell::screenshot_send::route(&path, &target, &mut bridge)
-                            {
-                                Ok(receipt) => frame_builder.with_chrome(|chrome| {
-                                    chrome.push_notification(
-                                        crate::shell::i18n::t("capture-screenshot-sent"),
-                                        receipt.message(),
-                                    );
-                                }),
-                                Err(error) => frame_builder.with_chrome(|chrome| {
-                                    chrome.push_error_notification(
-                                        crate::shell::i18n::t("capture-screenshot-not-sent"),
-                                        error,
-                                    );
-                                }),
-                            }
+                            let sent =
+                                crate::shell::screenshot_send::route(&path, &target, &mut bridge);
+                            notify_screenshot_sent(&mut frame_builder, sent);
+                        }
+                        CaptureOutcome::ScreenshotSent(sent) => {
+                            notify_screenshot_sent(&mut frame_builder, sent);
                         }
                         CaptureOutcome::Copied { width, height } => {
                             tracing::info!(width, height, "screenshot copied");
