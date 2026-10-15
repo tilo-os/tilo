@@ -67,6 +67,21 @@ impl Metrics {
             group_gap: f64::from(rhythm.group),
         }
     }
+
+    /// Keep long lists at a readable measure on wide windows, with the
+    /// same content edge for headings, leading marks and trailing metadata.
+    fn column(&self, area: Rect, theme: &Theme) -> Rect {
+        let gutter = self.gutter.min(area.width().max(0.0) / 4.0);
+        let width = (area.width() - 2.0 * gutter)
+            .max(0.0)
+            .min(f64::from(theme.tokens.metrics.readable_width) * f64::from(theme.text_growth()));
+        Rect::new(
+            area.center().x - width / 2.0,
+            area.y0,
+            area.center().x + width / 2.0,
+            area.y1,
+        )
+    }
 }
 
 pub(crate) struct AgendaView {
@@ -127,7 +142,9 @@ impl AgendaView {
             ctx.transform,
             &area,
         );
-        let (x0, x1) = (area.x0 + m.gutter, area.x1 - m.gutter);
+        let column = m.column(area, theme);
+        let (x0, x1) = (column.x0, column.x1);
+        let bleed = ui::chrome::row_bleed(theme);
         let mut y = area.y0 + m.gutter - f64::from(self.scroll.offset_y());
         for (index, item) in items.iter().enumerate() {
             let next_is_row = matches!(items.get(index + 1), Some(Item::Event(_) | Item::Task(_)));
@@ -147,7 +164,7 @@ impl AgendaView {
                     let time = event_time(event);
                     let face = event_face(event, &time, theme);
                     let h = face.height(ctx.text, theme);
-                    let row = Rect::new(x0, y, x1, y + h);
+                    let row = Rect::new(x0 - bleed, y, x1 + bleed, y + h);
                     if row.y1 > area.y0 && row.y0 < area.y1 {
                         let face = face.interaction(Interaction {
                             hovered: row.contains(pointer),
@@ -168,7 +185,7 @@ impl AgendaView {
                 Item::Task(task) => {
                     let face = task_face(task, source, theme);
                     let h = face.height(ctx.text, theme);
-                    let row = Rect::new(x0, y, x1, y + h);
+                    let row = Rect::new(x0 - bleed, y, x1 + bleed, y + h);
                     if row.y1 > area.y0 && row.y0 < area.y1 {
                         let face = if next_is_row {
                             face.separator(false)
@@ -292,15 +309,19 @@ fn draw_heading(ctx: &mut PaintCtx<'_>, band: Rect, day: NaiveDate, today: Naive
     if near {
         let width = f64::from(ctx.text.measure_style(&label, None, &heading).0);
         let x = band.x0 + width + f64::from(theme.tokens.spacing.s2);
-        text_in_band(
-            ctx,
-            &long,
-            &theme.text(TextRole::Caption),
-            theme.text_dim,
-            x,
-            band,
-            band.x1 - x,
-        );
+        if x >= band.x1 {
+            return;
+        }
+        // Prefer the complete date, but don't waste a narrow header on an
+        // elided weekday when the compact date would fit in full.
+        let caption = theme.text(TextRole::Caption);
+        let compact = date::fmt_day_short(day);
+        let date = if f64::from(ctx.text.measure_style(&long, None, &caption).0) <= band.x1 - x {
+            &long
+        } else {
+            &compact
+        };
+        text_in_band(ctx, date, &caption, theme.text_dim, x, band, band.x1 - x);
     }
 }
 
@@ -561,6 +582,42 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn scaled_agenda_rows_keep_a_readable_measure_and_valid_targets() {
+        let theme = Theme::dark().with_ui_scale(1.5);
+        let model = Calendar {
+            events: vec![event(1, None)].into(),
+            ..Calendar::default()
+        };
+        let hidden = HashSet::new();
+        let source = source(&model, date(1), &hidden);
+        let area = Rect::new(0.0, 84.0, 1800.0, 810.0);
+        let mut view = AgendaView::new();
+        view.layout(area, &source, &theme);
+        let mut scene = vello::Scene::new();
+        let mut text = TextRenderer::new();
+        let hits = view.draw(
+            &mut PaintCtx::new(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+            ),
+            area,
+            &source,
+            date(1),
+            Point::ZERO,
+        );
+        assert_eq!(hits.len(), 1);
+        let row = hits[0].0;
+        assert!(area.contains_rect(row));
+        assert_eq!(row.center().x, area.center().x);
+        assert_eq!(
+            row.width(),
+            f64::from(theme.tokens.metrics.readable_width) + 2.0 * ui::chrome::row_bleed(&theme)
+        );
     }
 
     #[test]

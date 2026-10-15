@@ -74,8 +74,13 @@ use crate::timeline_interaction::{
 use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
 use crate::topbar::{Action as TopbarAction, Topbar};
 
+#[cfg(test)]
+mod accessibility_tests;
 mod editor;
+#[cfg(test)]
+mod editor_tests;
 mod month_view;
+mod sidebar_scroll;
 mod sidebar_view;
 mod status;
 
@@ -308,6 +313,7 @@ pub struct CalendarApp {
     // --- responsive state ------------------------------------------------
     /// Responsive drawer state, geometry and chrome interaction.
     sidebar: Sidebar,
+    sidebar_scroll: sidebar_scroll::SidebarScroll,
     /// Responsive navigation chrome and its pointer hit map.
     topbar: Topbar,
     /// The theme of the last layout pass, so the renderer-less layout reads
@@ -333,6 +339,9 @@ pub struct CalendarApp {
     built_notes_w: f64,
 
     hits: Vec<(Rect, Action)>,
+    /// All navigation controls remain available to assistive technology;
+    /// pointer targets are clipped separately to the sidebar viewport.
+    sidebar_semantic_hits: Vec<(Rect, Action)>,
     last_mouse: Point,
     segmented_touch: SegmentedTouch,
     status: Option<String>,
@@ -484,6 +493,7 @@ impl CalendarApp {
             shots_detail_scroll_to_end: false,
             shots_pending_sidebar_menu: false,
             sidebar: Sidebar::new(),
+            sidebar_scroll: sidebar_scroll::SidebarScroll::new(),
             topbar: Topbar::new(),
             layout_theme: Theme::dark(),
             sample_accounts: false,
@@ -498,6 +508,7 @@ impl CalendarApp {
             editor_node: None,
             built_notes_w: -1.0,
             hits: Vec::new(),
+            sidebar_semantic_hits: Vec::new(),
             last_mouse: Point::ZERO,
             segmented_touch: SegmentedTouch::default(),
             status: None,
@@ -3690,6 +3701,7 @@ impl Widget for CalendarApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.sidebar_scroll.sync(state, path);
         let (state, path) = ui::doc::document_ref(state, path);
         self.adopt_person_accounts();
         if !self.seeded {
@@ -3764,6 +3776,24 @@ impl Widget for CalendarApp {
     ) -> NodeId {
         self.layout_theme = theme.clone();
         self.timeline.set_layout_theme(theme);
+        // Externally positioned inputs still need the theme's type metrics.
+        // Otherwise their cached editor font remains at the 1× default.
+        let mut scratch = TaffyTree::new();
+        let mut scratch_map = HashMap::new();
+        for input in [
+            &mut self.title_input,
+            &mut self.location_input,
+            &mut self.invite_input,
+        ] {
+            // Supply the fully resolved role size to both text and prompt
+            // shaping; legacy role defaults otherwise omit UI scaling.
+            input.set_content_size(Some(theme.text(input.text_role()).size));
+            input.build_layout(&mut scratch, theme, &mut scratch_map);
+        }
+        self.tasks.prepare_theme(theme);
+        self.notes_editor
+            .editor_mut()
+            .set_body_size(theme.text(ui::tokens::TextRole::Body).size / theme.text_scale);
         let editor_node = self.notes_editor.build_layout(taffy, theme, node_map);
         let notes_w = self.detail_body_w();
         self.built_notes_w = notes_w;
@@ -4017,21 +4047,22 @@ impl Widget for CalendarApp {
             return;
         }
 
-        // --- Week/day timeline + agenda: scroll and drag ------------------
+        // --- Sidebar, week/day timeline + agenda: scroll and drag --------
         // Owns mouse input inside the scrolling views (wheel, scrollbar,
         // drag-to-create / drag-to-move) before the generic hit-map path.
-        let timeline_handled = self.handle_timeline_input(&mut InputContext {
-            event,
-            scale_factor: ctx.scale_factor,
-            modifiers: *ctx.modifiers,
-            state: ctx.state.reborrow(),
-            path: ctx.path,
-            handled: ctx.handled,
-            focus_target: ctx.focus_target,
-            node_id: ctx.node_id,
-            taffy: ctx.taffy,
-        });
-        if timeline_handled {
+        if self.handle_sidebar_scroll_input(event, ctx)
+            || self.handle_timeline_input(&mut InputContext {
+                event,
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state.reborrow(),
+                path: ctx.path,
+                handled: ctx.handled,
+                focus_target: ctx.focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            })
+        {
             self.dirty = true;
             return;
         }
@@ -4097,6 +4128,7 @@ impl Widget for CalendarApp {
 
     fn wants_pointer_capture(&self) -> bool {
         self.segmented_touch.is_active()
+            || self.sidebar_scroll.wants_pointer_capture()
             || self.agenda.wants_pointer_capture()
             || self.tasks.wants_pointer_capture()
     }
@@ -4114,6 +4146,8 @@ impl Widget for CalendarApp {
         let controls = self
             .hits
             .iter()
+            .rev()
+            .chain(self.sidebar_controls().iter())
             .filter_map(|(rect, action)| {
                 let (target, name, role, state) = self.a11y_control(action)?;
                 seen.insert(target.clone()).then(|| {
@@ -4129,7 +4163,13 @@ impl Widget for CalendarApp {
             .with_name("Calendar")
             .with_bounds(self.rect)
             .with_children(controls);
-        root.children.extend(self.task_list_access_nodes());
+        if self.detail_open {
+            if let Some(notes) = self.notes_editor.accessibility() {
+                root.children.push(notes);
+            }
+        } else {
+            root.children.extend(self.task_list_access_nodes());
+        }
         if self.syncing {
             root.children.push(
                 AccessNode::new(Role::StaticText)
@@ -4164,15 +4204,41 @@ impl Widget for CalendarApp {
         state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
-        let _ = path;
+        if self.detail_open
+            && self
+                .notes_editor
+                .perform_semantic_action(target, action, state, path)
+        {
+            self.dirty = true;
+            return true;
+        }
+        if matches!(action, A11yAction::ScrollIntoView | A11yAction::Focus) {
+            let rect = self
+                .sidebar_controls()
+                .iter()
+                .find_map(|(rect, candidate)| {
+                    self.a11y_control(candidate)
+                        .filter(|(id, _, _, _)| id == target)
+                        .map(|_| *rect)
+                });
+            if let Some(rect) = rect {
+                self.sidebar_scroll.reveal(rect);
+                self.dirty = true;
+                return true;
+            }
+        }
         if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
             return false;
         }
-        let hit = self.hits.iter().find_map(|(_, candidate)| {
-            self.a11y_control(candidate)
-                .filter(|(candidate_target, _, _, _)| candidate_target == target)
-                .map(|_| candidate.clone())
-        });
+        let hit = self
+            .hits
+            .iter()
+            .chain(self.sidebar_controls())
+            .find_map(|(_, candidate)| {
+                self.a11y_control(candidate)
+                    .filter(|(candidate_target, _, _, _)| candidate_target == target)
+                    .map(|_| candidate.clone())
+            });
         if let Some(hit) = hit {
             self.apply_action(hit, state);
             true
@@ -4182,7 +4248,8 @@ impl Widget for CalendarApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        self.sidebar_scroll.needs_redraw()
+            || self.dirty
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
@@ -4194,6 +4261,7 @@ impl Widget for CalendarApp {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.sidebar_scroll.mark_drawn();
         self.notes_editor.mark_drawn();
         self.title_input.mark_drawn();
         self.location_input.mark_drawn();
@@ -4224,13 +4292,15 @@ impl Widget for CalendarApp {
         // waiting for an unrelated input event — and while a scroll container is
         // still settling momentum / fading its bar.
         self.syncing
+            || self.sidebar_scroll.needs_animation_frame()
             || self.timeline.needs_animation_frame()
             || self.agenda.needs_animation_frame()
             || self.tasks.needs_animation_frame()
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.dirty
+        self.sidebar_scroll.needs_redraw()
+            || self.dirty
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()

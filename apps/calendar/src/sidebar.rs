@@ -52,12 +52,11 @@ pub(crate) struct Chrome {
     pub(crate) hits: Vec<(Rect, Action)>,
 }
 
-/// The window width below which the sidebar floats as a drawer: the docked
-/// sidebar plus a calendar two columns wide (an overview and a detail), so a
-/// month grid is never squeezed beside it.
+/// The calendar is one content pane, not an overview/detail pair. Use the
+/// shared readable-content breakpoint so a scaled desktop keeps navigation
+/// docked without squeezing the calendar below its minimum content width.
 fn dock_breakpoint() -> f64 {
-    let m = ui::tokens::Metrics::BASE;
-    f64::from(m.sidebar_width + m.overview_width + m.detail_min_width)
+    f64::from(ui::tokens::Metrics::BASE.compact_breakpoint)
 }
 
 pub(crate) struct Sidebar {
@@ -224,23 +223,47 @@ impl Sidebar {
             let inset = f64::from(local.tokens.spacing.s3);
             let height = SegmentedFace::height(ControlSize::Regular, &local);
             let r = self.rect();
-            let strip = Rect::new(r.x0 + inset, body_y, r.x1 - inset, body_y + height);
-            let segments = segment_rects(strip, View::ALL.len());
+            let width = (r.width() - 2.0 * inset).max(0.0);
             let owned: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
             let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
-            let selected = View::ALL.iter().position(|v| *v == view).unwrap_or(0);
-            let hovered = segments.iter().position(|s| s.contains(pointer));
-            ToggleGroup::paint(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                &local,
-                &SegmentedFace::new(&segments, &labels, selected).hovered(hovered),
-            );
-            for (segment, candidate) in segments.iter().zip(View::ALL) {
-                hits.push((*segment, Action::View(candidate)));
+            // The drawer is narrower than the top bar. Wrap instead of
+            // squeezing five full labels into equal, unreadable segments.
+            let per_row =
+                if SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, ctx.text, &local)
+                    <= width
+                {
+                    View::ALL.len()
+                } else {
+                    View::ALL.len().div_ceil(2)
+                };
+            for (index, candidates) in View::ALL.chunks(per_row).enumerate() {
+                let y = body_y + index as f64 * (height + f64::from(local.tokens.spacing.s1));
+                let strip = Rect::new(r.x0 + inset, y, r.x1 - inset, y + height);
+                let start = index * per_row;
+                let labels = labels
+                    .get(start..start + candidates.len())
+                    .unwrap_or_default();
+                let segments =
+                    SegmentedFace::partition(strip, labels, ControlSize::Regular, ctx.text, &local);
+                let selected = candidates.iter().position(|candidate| *candidate == view);
+                let hovered = segments.iter().position(|s| s.contains(pointer));
+                ToggleGroup::paint(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text,
+                    &local,
+                    &SegmentedFace::new(&segments, labels, 0)
+                        .selection(selected)
+                        .hovered(hovered),
+                );
+                for (segment, candidate) in segments.iter().zip(candidates) {
+                    hits.push((*segment, Action::View(*candidate)));
+                }
             }
-            body_y = strip.y1 + inset;
+            let rows = View::ALL.len().div_ceil(per_row);
+            body_y += rows as f64 * height
+                + rows.saturating_sub(1) as f64 * f64::from(local.tokens.spacing.s1)
+                + inset;
         }
 
         Some(Chrome {
@@ -249,21 +272,6 @@ impl Sidebar {
             hits,
         })
     }
-}
-
-/// `count` equal, contiguous segments across `strip`.
-pub(crate) fn segment_rects(strip: Rect, count: usize) -> Vec<Rect> {
-    let width = strip.width() / count.max(1) as f64;
-    (0..count)
-        .map(|index| {
-            Rect::new(
-                strip.x0 + width * index as f64,
-                strip.y0,
-                strip.x0 + width * (index as f64 + 1.0),
-                strip.y1,
-            )
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -318,6 +326,38 @@ mod tests {
                 !sidebar.visible(),
                 "the drawer stays hidden until it is opened"
             );
+        }
+    }
+
+    #[test]
+    fn scaled_desktop_docks_and_switcher_keeps_every_view_reachable() {
+        let theme = Theme::dark().with_ui_scale(1.5);
+        let mut sidebar = Sidebar::new();
+        sidebar.layout(Rect::new(0.0, 0.0, 1440.0, 810.0), &theme);
+        assert_eq!(sidebar.mode(), Mode::Persistent);
+        assert_eq!(sidebar.rect().width(), 420.0);
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        let chrome = sidebar
+            .draw_chrome(
+                &mut PaintCtx::new(
+                    &mut scene,
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                ),
+                Some(View::Agenda),
+                Point::ZERO,
+            )
+            .expect("docked sidebar chrome");
+        for view in View::ALL {
+            let rect = chrome
+                .hits
+                .iter()
+                .find_map(|(rect, action)| (*action == Action::View(view)).then_some(*rect))
+                .expect("every view remains reachable");
+            assert!(sidebar.rect().contains_rect(rect));
+            assert!(rect.y1 < chrome.body_y);
         }
     }
 

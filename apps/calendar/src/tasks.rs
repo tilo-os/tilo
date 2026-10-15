@@ -126,7 +126,7 @@ struct Regions {
 }
 
 fn regions(area: Rect, theme: &Theme, accepts_new: bool) -> Regions {
-    let gutter = f64::from(theme.tokens.spacing.s6);
+    let gutter = f64::from(theme.tokens.spacing.s6).min(area.width().max(0.0) / 4.0);
     let gap = f64::from(theme.tokens.spacing.rhythm.related);
     let heading_h = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
         f64::from(
@@ -134,8 +134,11 @@ fn regions(area: Rect, theme: &Theme, accepts_new: bool) -> Regions {
                 .1,
         )
     });
-    let x0 = area.x0 + gutter;
-    let x1 = (area.x1 - gutter).max(x0);
+    let width = (area.width() - 2.0 * gutter)
+        .max(0.0)
+        .min(f64::from(theme.tokens.metrics.readable_width) * f64::from(theme.text_growth()));
+    let x0 = area.center().x - width / 2.0;
+    let x1 = x0 + width;
     let heading = Rect::new(x0, area.y0 + gutter, x1, area.y0 + gutter + heading_h);
     let mut y = heading.y1 + gap;
     let entry = accepts_new.then(|| {
@@ -150,12 +153,19 @@ fn regions(area: Rect, theme: &Theme, accepts_new: bool) -> Regions {
     }
 }
 
-fn row_face<'a>(task: &'a Task, due: &'a str, spans: &'a [(&'a str, Tone)]) -> ListRowFace<'a> {
-    let face = ListRowFace::new(&task.title)
+fn row_face<'a>(task: &'a Task, spans: &'a [(&'a str, Tone)]) -> ListRowFace<'a> {
+    ListRowFace::new(&task.title)
         .leading(RowLeading::Checkbox { checked: task.done })
-        .meta_spans(spans);
-    let _ = due;
-    face
+        .meta_spans(spans)
+}
+
+/// Keep a useful title/meta column even at the deepest supported nesting.
+/// Indentation compresses with the pane instead of pushing children off it.
+fn row_indent(width: f64, theme: &Theme) -> f64 {
+    let minimum = f64::from(theme.tokens.metrics.content_min_width) / 2.0;
+    ControlSize::Regular
+        .height(theme)
+        .min((width - minimum).max(0.0) / MAX_DEPTH as f64)
 }
 
 fn content_height(source: &TasksSource<'_>, theme: &Theme) -> f64 {
@@ -163,14 +173,7 @@ fn content_height(source: &TasksSource<'_>, theme: &Theme) -> f64 {
         source
             .rows()
             .iter()
-            .map(|row| {
-                let due = row
-                    .task
-                    .due
-                    .map(|d| date::relative_label(d, source.today))
-                    .unwrap_or_default();
-                row_face(row.task, &due, &[]).height(text, theme)
-            })
+            .map(|row| row_face(row.task, &[]).height(text, theme))
             .sum::<f64>()
             + f64::from(theme.tokens.spacing.s6)
     })
@@ -183,6 +186,17 @@ pub(crate) struct TasksView {
 }
 
 impl TasksView {
+    /// The entry is hand-positioned but its text editor still needs scaled type.
+    pub(crate) fn prepare_theme(&mut self, theme: &Theme) {
+        self.entry
+            .set_content_size(Some(theme.text(TextRole::Body).size));
+        let _ = self.entry.build_layout(
+            &mut taffy::TaffyTree::new(),
+            theme,
+            &mut std::collections::HashMap::new(),
+        );
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             scroll: Scrollable::new_vertical().always_visible(),
@@ -324,8 +338,11 @@ impl TasksView {
             ctx.transform,
             &list,
         );
-        let gutter = f64::from(theme.tokens.spacing.s6);
-        let indent_step = ControlSize::Regular.height(theme);
+        // ListRowFace takes an outer rect: its hover bleeds beyond the
+        // content edge. Align the checkbox with the heading and entry field.
+        let bleed = ui::chrome::row_bleed(theme);
+        let column = self.regions.heading;
+        let indent_step = row_indent(column.width(), theme);
         let mut y = list.y0 - f64::from(self.scroll.offset_y());
         for row in &rows {
             let task = row.task;
@@ -357,10 +374,10 @@ impl TasksView {
                 spans.push((priority.as_str(), tone));
             }
             let meta = spans.as_slice();
-            let face = row_face(task, &due, meta);
+            let face = row_face(task, meta);
             let h = face.height(ctx.text, theme);
-            let x0 = list.x0 + gutter + indent_step * row.depth as f64;
-            let rect = Rect::new(x0, y, (list.x1 - gutter).max(x0), y + h);
+            let x0 = column.x0 - bleed + indent_step * row.depth as f64;
+            let rect = Rect::new(x0, y, (column.x1 + bleed).max(x0), y + h);
             if rect.y1 > list.y0 && rect.y0 < list.y1 {
                 let face = face.interaction(Interaction {
                     hovered: rect.contains(pointer),
@@ -480,6 +497,54 @@ mod tests {
             assert_eq!(source.placement(), placement, "{list:?}");
             assert_eq!(source.accepts_new(), accepts, "{list:?}");
         }
+    }
+
+    #[test]
+    fn scaled_nested_rows_keep_titles_and_checkboxes_inside_the_pane() {
+        let theme = Theme::dark().with_ui_scale(1.5);
+        let area = Rect::new(0.0, 84.0, 600.0, 810.0);
+        let mut tasks = vec![task("Parent", None, None)];
+        for _ in 0..MAX_DEPTH {
+            let parent = tasks.last().expect("parent exists").id;
+            tasks.push(task("Nested task", Some(parent), None));
+        }
+        let deepest = tasks.last().expect("deepest child").id;
+        let model = Calendar {
+            tasks: tasks.into(),
+            ..Calendar::default()
+        };
+        let source = TasksSource {
+            model: &model,
+            list: &ListSel::Inbox,
+            today: day(1),
+        };
+        let mut view = TasksView::new();
+        view.layout(area, &source, &theme);
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        let hits = view.draw(
+            &mut PaintCtx::new(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+            ),
+            &source,
+            Point::ZERO,
+            &PresenceCtx::empty(),
+        );
+        let deepest_row = hits
+            .iter()
+            .find_map(|(rect, action)| (*action == TasksAction::OpenTask(deepest)).then_some(*rect))
+            .expect("deepest child is painted");
+        assert!(deepest_row.width() >= f64::from(theme.tokens.metrics.content_min_width) / 2.0);
+        for (rect, _) in hits {
+            assert!(area.contains_rect(rect));
+        }
+        assert_eq!(
+            view.entry_rect().expect("entry").height(),
+            ControlSize::Regular.height(&theme)
+        );
     }
 
     #[test]

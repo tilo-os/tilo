@@ -677,9 +677,12 @@ impl TimelineInteraction {
                 // in the grid already tells the time.
                 let title_h = line_height(ctx, &ty.title);
                 let subtitle_h = line_height(ctx, &ty.subtitle);
-                let room = block.height() - 2.0 * s1;
+                // An event that began above the viewport still identifies
+                // itself, rather than showing an anonymous coloured column.
+                let visible = block.intersect(body);
+                let room = visible.height() - 2.0 * s1;
                 let max_lines = ((room / title_h).floor() as usize).max(1);
-                let mut y = block.y0 + s1;
+                let mut y = visible.y0 + s1;
                 for line in wrap_lines(ctx, event.title, &ty.title, text_w, max_lines) {
                     ctx.text(&line, &ty.title, tinted.ink, Point::new(text_x, y), None);
                     y += title_h;
@@ -690,7 +693,7 @@ impl TimelineInteraction {
                     fmt_event_min(event.end_min)
                 );
                 for line in [time.as_str(), event.location] {
-                    if line.is_empty() || y + subtitle_h > block.y1 - s1 + 0.5 {
+                    if line.is_empty() || y + subtitle_h > visible.y1 - s1 + 0.5 {
                         break;
                     }
                     let line = ctx.text.elide_to_width_style(
@@ -702,7 +705,6 @@ impl TimelineInteraction {
                     y += subtitle_h;
                 }
                 ctx.scene.pop_layer();
-                let visible = block.intersect(body);
                 if visible.width() > 0.0 && visible.height() > 0.0 {
                     hits.push((visible, TimelineEffect::Select(event.id)));
                 }

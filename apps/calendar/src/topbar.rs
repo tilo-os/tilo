@@ -19,7 +19,6 @@ use ui::widget::{
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 
-use crate::sidebar::segment_rects;
 use crate::{date, model::View};
 
 const NEW_EVENT: &str = "New event";
@@ -89,7 +88,12 @@ impl Topbar {
             return;
         }
         let header = f64::from(theme.tokens.metrics.header_height);
-        self.rect = Rect::new(content.x0, content.y0, content.x1, content.y0 + header);
+        self.rect = Rect::new(
+            content.x0,
+            content.y0,
+            content.x1,
+            (content.y0 + header).min(content.y1),
+        );
         self.view_rect = Rect::new(content.x0, self.rect.y1, content.x1, content.y1);
         let variants = period_title_variants(view, anchor);
         self.geometry = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
@@ -264,6 +268,9 @@ impl Topbar {
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let style = theme.text(TextRole::Title);
         let available = (x1 - x0).max(0.0);
+        if available <= 0.0 {
+            return;
+        }
         let Some(title) = variants
             .iter()
             .find(|variant| f64::from(text.measure_style(variant, None, &style).0) <= available)
@@ -395,7 +402,9 @@ fn solve(
             mid + SegmentedFace::height(ControlSize::Regular, theme) / 2.0,
         );
         x1 = strip.x0 - sibling;
-        segment_rects(strip, View::ALL.len())
+        // Match the shared switcher's measured label widths. Equal shares
+        // can clip "Agenda" even when the strip's total intrinsic width fits.
+        SegmentedFace::partition(strip, &labels, ControlSize::Regular, text, theme)
     } else {
         Vec::new()
     };
@@ -557,6 +566,19 @@ mod tests {
     }
 
     #[test]
+    fn scaled_header_and_content_share_one_boundary() {
+        let theme = Theme::dark().with_ui_scale(1.5);
+        let content = Rect::new(420.0, 0.0, 1440.0, 810.0);
+        let mut bar = Topbar::new();
+        bar.layout(content, false, View::Month, anchor(), &theme);
+        assert_eq!(bar.rect.height(), 84.0);
+        assert_eq!(bar.view_rect(), Rect::new(420.0, 84.0, 1440.0, 810.0));
+        for (rect, _) in actions(&mut bar, &theme) {
+            assert!(bar.rect.contains_rect(rect));
+        }
+    }
+
+    #[test]
     fn period_titles_offer_compact_variants() {
         let variants = period_title_variants(
             View::Week,
@@ -575,6 +597,8 @@ mod tests {
             (Theme::dark(), 800.0),
             (Theme::dark(), 390.0),
             (Theme::dark().with_text_scale(2.0), 1200.0),
+            (Theme::dark().with_ui_scale(1.5), 1020.0),
+            (Theme::dark().with_ui_scale(1.5), 585.0),
         ] {
             let content = Rect::new(0.0, 0.0, width, 700.0);
             let mut bar = Topbar::new();

@@ -49,12 +49,56 @@ impl Column<'_> {
 }
 
 impl CalendarApp {
+    pub(super) fn sidebar_controls(&self) -> &[(Rect, Action)] {
+        if self.sidebar.visible() && !self.detail_open {
+            &self.sidebar_semantic_hits
+        } else {
+            &[]
+        }
+    }
+
+    /// Scrollbar input must run before the generic row hit map; a captured
+    /// drag continues outside the viewport until its release is consumed.
+    pub(super) fn handle_sidebar_scroll_input(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        use winit::event::{MouseButton, WindowEvent};
+
+        if !self.sidebar.visible()
+            || *ctx.handled
+            || (self.detail_open && self.detail_rect.area() > 0.0)
+        {
+            return false;
+        }
+        let route = match event {
+            // Keep the shared controller's pointer current even outside its
+            // viewport, so wheel input cannot use a stale sidebar position.
+            WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. } => true,
+            WindowEvent::MouseWheel { .. }
+            | WindowEvent::MouseInput {
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.sidebar_scroll.wants_pointer_capture()
+                    || self.sidebar_scroll.contains(self.last_mouse)
+            }
+            _ => false,
+        };
+        if route && self.sidebar_scroll.handle_event(event, ctx) {
+            self.dirty = true;
+            return true;
+        }
+        false
+    }
+
     pub(super) fn draw_sidebar(&mut self, ctx: &mut PaintCtx<'_>) -> Vec<(Rect, Action)> {
         let switcher = (!self.topbar.switcher_visible()).then_some(self.view);
         let Some(chrome) = self.sidebar.draw_chrome(ctx, switcher, self.last_mouse) else {
             return Vec::new();
         };
-        let hits = chrome
+        let hits: Vec<_> = chrome
             .hits
             .into_iter()
             .map(|(rect, action)| {
@@ -69,12 +113,21 @@ impl CalendarApp {
             })
             .collect();
         let rect = self.sidebar.rect();
+        let viewport = Rect::new(rect.x0, chrome.body_y.min(rect.y1), rect.x1, rect.y1);
+        let content = self.sidebar_scroll.content_rect(viewport, &chrome.theme);
+        let height = self.sidebar_content_height(content.width(), &chrome.theme);
+        self.sidebar_scroll.set_content_height(height);
+        let offset = self.sidebar_scroll.offset_y();
         let mut column = Column {
-            rect,
-            y: chrome.body_y,
+            rect: content,
+            y: content.y0 - offset,
             theme: &chrome.theme,
-            pointer: self.last_mouse,
-            hits,
+            pointer: if content.contains(self.last_mouse) {
+                self.last_mouse
+            } else {
+                Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY)
+            },
+            hits: Vec::new(),
         };
         let mut ctx = PaintCtx::new(ctx.scene, ctx.transform, ctx.text, &chrome.theme);
         ctx.scene.push_layer(
@@ -82,34 +135,67 @@ impl CalendarApp {
             vello::peniko::BlendMode::default(),
             1.0,
             ctx.transform,
-            &rect,
+            &content,
         );
-        let picker = self.mini_month_rect(&chrome.theme);
         self.draw_sidebar_lists(&mut ctx, &mut column);
         self.draw_sidebar_calendars(&mut ctx, &mut column);
-        // A chosen task list takes the bottom of the sidebar; with none
-        // chosen, the month navigator does.
         if let Some(list) = self.list_sel {
-            let bottom = rect.y1 - f64::from(chrome.theme.tokens.spacing.s3);
-            self.draw_sidebar_tasks(&mut ctx, &mut column, list, bottom);
-        } else if column.y <= picker.y0 {
-            self.draw_sidebar_month(&mut ctx, &mut column, picker);
+            self.draw_sidebar_tasks(&mut ctx, &mut column, list);
         }
+        // Keep the month at the bottom when everything fits, otherwise in
+        // the flow after all navigation and tasks. Nothing is omitted.
+        let picker = self.mini_month_rect(content, column.y, offset, &chrome.theme);
+        self.draw_sidebar_month(&mut ctx, &mut column, picker);
         ctx.scene.pop_layer();
-        column.hits
+        self.sidebar_scroll.draw_bar(&mut ctx);
+        self.sidebar_semantic_hits = hits.iter().chain(&column.hits).cloned().collect();
+        let mut hits = hits;
+        hits.extend(column.hits.into_iter().filter_map(|(rect, action)| {
+            self.sidebar_scroll
+                .clip_hit(rect)
+                .map(|rect| (rect, action))
+        }));
+        hits
     }
 
-    /// The month navigator's rect at the bottom of the sidebar: as wide as
-    /// the column and as tall as that width needs.
-    fn mini_month_rect(&self, theme: &Theme) -> Rect {
-        let r = self.sidebar.rect();
+    /// Measure the same complete flow that drawing traverses, before applying
+    /// the offset so collapsing an account/list immediately clamps scrolling.
+    fn sidebar_content_height(&self, width: f64, theme: &Theme) -> f64 {
+        let row_h = nav_row_height(theme);
+        let section_h = nav_section_height(theme, false);
+        let mut height = 4.0 * row_h;
+        if !self.model.projects.is_empty() {
+            height += section_h + self.model.projects.len() as f64 * row_h;
+        }
+        for account in &self.accounts.accounts {
+            height += section_h;
+            if !account.collapsed {
+                height += account.calendars.len() as f64 * row_h;
+            }
+        }
+        if let Some(list) = self.list_sel {
+            height +=
+                section_h + self.model.tasks_for(&list, self.today).len().max(1) as f64 * row_h;
+        }
         let inset = f64::from(theme.tokens.spacing.s3);
-        let height = self.mini_month.intrinsic_height(r.width() - 2.0 * inset);
+        height
+            + 2.0 * inset
+            + self
+                .mini_month
+                .intrinsic_height((width - 2.0 * inset).max(0.0))
+    }
+
+    /// Month follows the complete body, never overlapping calendars or tasks.
+    fn mini_month_rect(&self, content: Rect, y: f64, offset: f64, theme: &Theme) -> Rect {
+        let inset = f64::from(theme.tokens.spacing.s3);
+        let width = (content.width() - 2.0 * inset).max(0.0);
+        let height = self.mini_month.intrinsic_height(width);
+        let top = (y + inset).max(content.y1 - offset - inset - height);
         Rect::new(
-            r.x0 + inset,
-            r.y1 - inset - height,
-            r.x1 - inset,
-            r.y1 - inset,
+            content.x0 + inset,
+            top,
+            content.x0 + inset + width,
+            top + height,
         )
     }
 
@@ -227,23 +313,15 @@ impl CalendarApp {
         }
     }
 
-    /// The chosen list's tasks under its name, down to `limit`. The
-    /// heading's trailing action puts the list away; a task's checkbox and
+    /// All of the chosen list's tasks under its name. The body's scroller
+    /// makes every row reachable. The heading's trailing action puts the
+    /// list away; a task's checkbox and
     /// label complete it; the rest of the row opens it.
-    fn draw_sidebar_tasks(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        column: &mut Column<'_>,
-        list: ListSel,
-        limit: f64,
-    ) {
+    fn draw_sidebar_tasks(&self, ctx: &mut PaintCtx<'_>, column: &mut Column<'_>, list: ListSel) {
         let theme = column.theme;
         let row_h = nav_row_height(theme);
         let tasks = self.model.tasks_for(&list, self.today);
         let section_h = nav_section_height(theme, false);
-        if column.y + section_h > limit {
-            return;
-        }
         let title = match &list {
             ListSel::Inbox => "Inbox",
             ListSel::Today => "Today",
@@ -283,9 +361,6 @@ impl CalendarApp {
         }
         for task in tasks {
             let rect = column.row(row_h);
-            if rect.y1 > limit {
-                break;
-            }
             let flag = (task.priority != Priority::None).then(|| task.priority.flag());
             let complete = Self::checkbox_row(
                 ctx,

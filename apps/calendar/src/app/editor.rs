@@ -176,6 +176,8 @@ pub(super) struct FormRects {
     /// The "Notes" heading and where the notes editor starts.
     pub(super) notes_label: Rect,
     pub(super) notes_top: f64,
+    /// End of the form before the notes column is placed beside it.
+    content_bottom: f64,
 }
 
 impl FormRects {
@@ -479,9 +481,9 @@ impl CalendarApp {
     pub(super) fn notes_region(&self) -> Rect {
         self.modal.as_ref().map_or(Rect::ZERO, |modal| {
             Rect::new(
-                modal.body.x0,
+                self.notes_origin.x,
                 self.notes_origin.y.max(modal.body.y0),
-                modal.body.x1,
+                self.notes_origin.x + self.notes_w,
                 modal.body.y1,
             )
         })
@@ -490,7 +492,21 @@ impl CalendarApp {
     /// Width of the sheet's body (the form and the notes column) in the
     /// current window and theme.
     pub(super) fn detail_body_w(&self) -> f64 {
+        let width = self.sheet_body_w();
+        Self::notes_column(width, &self.layout_theme)
+            .map_or(width, |(left, gap)| width - left - gap)
+    }
+
+    fn sheet_body_w(&self) -> f64 {
         modal_dialog::body_width(self.rect, modal_dialog::MODAL_MAX_WIDTH, &self.layout_theme)
+    }
+
+    /// A wide editor keeps attached notes beside the form. Narrow sheets
+    /// retain the stacked flow and all controls at their normal scale.
+    fn notes_column(width: f64, theme: &Theme) -> Option<(f64, f64)> {
+        let gap = f64::from(theme.tokens.spacing.s6);
+        (width >= 800.0 * f64::from(theme.text_scale * theme.ui_scale))
+            .then_some(((width - gap) * 0.58, gap))
     }
 
     /// Lay the sheet out for the current selection: the form at its own
@@ -510,9 +526,11 @@ impl CalendarApp {
         let notes_min = 2.0 * f64::from(theme.tokens.metrics.bar_height);
         let (layout, form, content_h) =
             ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-                let width = self.detail_body_w();
+                let width = self.sheet_body_w();
                 let probe = self.form_layout(Rect::new(0.0, 0.0, width, 0.0), text, &theme);
-                let content_h = probe.notes_top + self.notes_content_h.max(notes_min);
+                let content_h = probe
+                    .content_bottom
+                    .max(probe.notes_top + self.notes_content_h.max(notes_min));
                 let actions = [ModalAction::primary(DONE)];
                 let natural = modal_dialog::layout(
                     window,
@@ -526,7 +544,7 @@ impl CalendarApp {
                 let header = f64::from(theme.tokens.metrics.header_height);
                 let chrome_h = natural.card.height() - natural.body.height();
                 let room = (window.height() - 2.0 * header - chrome_h).max(0.0);
-                let layout = if content_h <= room {
+                let mut layout = if content_h <= room {
                     natural
                 } else {
                     let body_h = probe
@@ -537,6 +555,19 @@ impl CalendarApp {
                     let body_h = if body_h > 0.0 { body_h } else { room };
                     modal_dialog::layout(window, &self.sheet_spec(&actions, body_h), text, &theme)
                 };
+                // Full-window modal chrome fixes its height independently
+                // of the requested body. Stop between form rows there too,
+                // rather than slicing a swatch or the next input in half.
+                let rows = probe.row_bottoms();
+                if rows.last().is_some_and(|last| *last > layout.body.height()) {
+                    let end = rows
+                        .into_iter()
+                        .filter(|y| *y <= layout.body.height())
+                        .fold(0.0, f64::max);
+                    if end > 0.0 {
+                        layout.body.y1 = layout.body.y0 + end;
+                    }
+                }
                 let max = (content_h - layout.body.height()).max(0.0);
                 let scroll = if self.shots_detail_scroll_to_end {
                     max
@@ -558,8 +589,8 @@ impl CalendarApp {
             self.detail_scroll_y = self.detail_scroll_max;
         }
         self.detail_rect = layout.card;
-        self.notes_origin = Point::new(layout.body.x0, form.notes_top);
-        self.notes_w = layout.body.width();
+        self.notes_origin = Point::new(form.notes_label.x0, form.notes_top);
+        self.notes_w = form.notes_label.width();
         self.form = form;
         self.modal = Some(layout);
         self.place_form_widgets();
@@ -723,19 +754,29 @@ impl CalendarApp {
 
     /// The form's geometry inside `body` (whose top is already scrolled).
     fn form_layout(&self, body: Rect, text: &mut TextRenderer, theme: &Theme) -> FormRects {
-        match self.selection {
+        let split = Self::notes_column(body.width(), theme);
+        let fields = split.map_or(body, |(left, _)| {
+            Rect::new(body.x0, body.y0, body.x0 + left, body.y1)
+        });
+        let mut form = match self.selection {
             Some(Sel::Event(id)) => self
                 .model
                 .event(id)
-                .map(|event| self.event_form_layout(body, event, text, theme))
+                .map(|event| self.event_form_layout(fields, event, text, theme))
                 .unwrap_or_default(),
             Some(Sel::Task(id)) => self
                 .model
                 .task(id)
-                .map(|task| self.task_form_layout(body, task, text, theme))
+                .map(|task| self.task_form_layout(fields, task, text, theme))
                 .unwrap_or_default(),
             None => FormRects::default(),
+        };
+        form.content_bottom = form.notes_top;
+        if let Some((left, gap)) = split {
+            let notes = Rect::new(body.x0 + left + gap, body.y0, body.x1, body.y1);
+            Self::notes_heading(&mut form, notes, body.y0, text, theme);
         }
+        form
     }
 
     fn event_form_layout(
@@ -933,6 +974,9 @@ impl CalendarApp {
         )];
         let spec = self.sheet_spec(&actions, layout.body.height());
         modal_dialog::paint_backdrop(scene, t, text, theme, &layout, &spec);
+        // The modal owns interaction and semantics; underlying calendar
+        // controls must not remain actionable through the sheet.
+        self.hits.clear();
         self.hits.push((layout.scrim, Action::CloseDetail));
         self.hits.push((layout.card, Action::Noop));
 
@@ -980,6 +1024,16 @@ impl CalendarApp {
             self.form.notes_label,
             self.form.notes_label.width(),
         );
+        if self.form.notes_label.x0 > layout.body.x0 {
+            let x = self.form.notes_label.x0 - f64::from(sheet.tokens.spacing.s6) / 2.0;
+            crate::draw_util::hairline(
+                ctx.scene,
+                t,
+                ui::chrome::panel_ground(theme),
+                Point::new(x, layout.body.y0),
+                Point::new(x, layout.body.y1),
+            );
+        }
         self.notes_editor.draw(scene, t, text, &sheet, presence);
         scene.pop_layer();
         if self.detail_scroll_max > 0.0 {
@@ -989,7 +1043,7 @@ impl CalendarApp {
             let track = Rect::new(
                 layout.body.x1 + gap,
                 layout.body.y0,
-                layout.body.x1 + 2.0 * gap,
+                layout.body.x1 + gap + 6.0,
                 layout.body.y1,
             );
             ui::widget::Scrollbar::vertical().draw(
