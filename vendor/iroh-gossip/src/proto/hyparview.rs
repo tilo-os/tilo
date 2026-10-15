@@ -288,8 +288,10 @@ where
             InEvent::Quit => self.handle_quit(io),
         }
 
-        // this will only happen on the first call
-        if !self.shuffle_scheduled {
+        // TILO PATCH: shuffling needs an active neighbor. Let an outstanding
+        // timer expire once after the last neighbor leaves, then stay asleep;
+        // a later join arms it again without duplicating a pending timer.
+        if !self.shuffle_scheduled && !self.active_view.is_empty() {
             io.push(OutEvent::ScheduleTimer(
                 self.config.shuffle_interval,
                 Timer::DoShuffle,
@@ -528,6 +530,8 @@ where
     }
 
     fn handle_shuffle_timer(&mut self, io: &mut impl IO<PI>) {
+        // TILO PATCH: `handle` rearms only while there is a shuffle recipient.
+        self.shuffle_scheduled = false;
         if let Some(node) = self.active_view.pick_random(&mut self.rng) {
             let active = self.active_view.shuffled_without_and_capped(
                 &[node],
@@ -555,10 +559,6 @@ where
             };
             io.push(OutEvent::SendMessage(*node, Message::Shuffle(message)));
         }
-        io.push(OutEvent::ScheduleTimer(
-            self.config.shuffle_interval,
-            Timer::DoShuffle,
-        ));
     }
 
     fn passive_is_full(&self) -> bool {
