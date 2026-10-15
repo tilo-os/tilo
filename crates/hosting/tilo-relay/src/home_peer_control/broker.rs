@@ -641,7 +641,7 @@ fn approve_personal_device(
     enrollment_command_result(&output, "personal-device enrollment was not completed")
 }
 
-fn main() -> anyhow::Result<std::process::ExitCode> {
+pub fn main() -> anyhow::Result<std::process::ExitCode> {
     // Automerge isolation workers re-enter this binary; serve them first.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return Ok(std::process::ExitCode::from(code));

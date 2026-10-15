@@ -644,6 +644,10 @@ async fn a_relay_says_whether_its_workers_run_environments() {
 /// A device asks its relays what they run, within a budget, and Terminal's
 /// relay list follows the answers: a relay without a worker is not offered,
 /// and one that does not answer does not hold the others up.
+///
+/// Linux only: Terminal's relay list (`ush::relay`) lives in the `ush`
+/// supervisor, which the relay links only on Linux.
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::too_many_lines,
