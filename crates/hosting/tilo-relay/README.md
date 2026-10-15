@@ -147,12 +147,12 @@ What a relay costs per active collaborator is measured, not estimated:
   `tools/perf/kpi-budgets.toml` holds the ceilings.
 - **Timed keystroke writes** (`examples/keystroke_writes`, nightly in the
   same workflow's `hosting` job): the original 21-keystroke network scenario,
-  with one warm-up and 30 ms between edits, asserts a median of one write
+  with one warm-up and 30 ms between edits, reports median and maximum writes
   for the delta and its presence. Run with
   `cargo run --locked -p tilo-relay --example keystroke_writes`.
-  This scheduling-sensitive budget fails the scheduled job directly;
-  the normal gate tests exact one- and two-write schedules at the production
-  writer and separately checks complete network delivery without a timed budget.
+  Network write counts are observational: valid ingress schedules can cost
+  one or two writes. The normal gate tests those exact counts under controlled
+  production-writer preconditions and separately checks complete network delivery.
 
 ```bash
 cargo run --release -p tilo-relay --example relay_load -- \

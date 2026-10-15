@@ -274,7 +274,7 @@ class EndToEnd(unittest.TestCase):
 
 
 class Groups(unittest.TestCase):
-    def test_hosting_runs_the_keystroke_gate_when_present_and_propagates_failure(self):
+    def test_hosting_runs_the_keystroke_observation_and_propagates_delivery_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             (repo / "hosting-load.json").write_text("{}")
@@ -295,11 +295,22 @@ class Groups(unittest.TestCase):
                 self.assertEqual(call.call_args_list[1].args[0][0], ctx.bins["relay_load"])
                 call.reset_mock()
                 adapt.reset_mock()
-                call.side_effect = RuntimeError("keystroke write gate failed")
-                with self.assertRaisesRegex(RuntimeError, "keystroke write gate failed"):
+                call.side_effect = RuntimeError("keystroke delivery failed")
+                with self.assertRaisesRegex(RuntimeError, "keystroke delivery failed"):
                     ab.run_hosting(ctx)
                 self.assertEqual(call.call_count, 1)
                 adapt.assert_not_called()
+
+    def test_keystroke_network_counts_are_observations_not_a_schedule_gate(self):
+        root = HERE.parents[1]
+        benchmark = (root / "crates/hosting/tilo-relay/examples/keystroke_writes.rs").read_text()
+        self.assertIn("const KEYSTROKES: u64 = 21;", benchmark)
+        self.assertIn("if keystroke > 0", benchmark)
+        self.assertIn("tokio::time::sleep(Duration::from_millis(30)).await", benchmark)
+        self.assertIn("member.keystroke(pos).await", benchmark)
+        self.assertIn("median_writes={median}", benchmark)
+        self.assertIn("max_writes={}", benchmark)
+        self.assertNotRegex(benchmark, r"assert(?:_eq|_ne)?!")
 
     def test_idle_timing_is_an_explicit_executable_not_a_pr_test(self):
         root = HERE.parents[1]

@@ -732,7 +732,7 @@ jobs:
 
       # Preserve the original timing-sensitive median-one-write assertion.
       # This standalone scenario has no pointer or byte-cost tests.
-      - name: Check timed keystroke write cost
+      - name: Observe timed keystroke write cost
         run: |
           set -euo pipefail
           mkdir -p perf

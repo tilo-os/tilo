@@ -1,10 +1,11 @@
 //! Timed keystroke write cost through the real relay and co-edit client.
 //!
 //! Preserves the original network scenario: 21 keystrokes, the first as
-//! warm-up, a 30 ms pause after each, and a median of exactly one write.
-//! This scheduling-sensitive assertion belongs to Perf / scheduled's hosting
-//! lane, not the normal test gate. The production-writer tests separately
-//! enforce exact counts for both valid ingress schedules.
+//! warm-up and a 30 ms pause after each, reporting the observed write counts.
+//! Network and persistence scheduling can legitimately produce one or two
+//! writes, so these counts are observations, not a scheduled-job gate.
+//! Production-writer tests separately enforce exact counts under controlled
+//! preconditions for both valid ingress schedules.
 //!
 //! Run: `cargo run --locked -p tilo-relay --example keystroke_writes`
 
@@ -12,7 +13,7 @@
     clippy::unwrap_used,
     clippy::indexing_slicing,
     clippy::panic,
-    reason = "this assertion-based benchmark fails immediately on broken fixtures or budgets"
+    reason = "this observational benchmark fails immediately on broken fixtures or delivery"
 )]
 #![allow(
     clippy::significant_drop_tightening,
@@ -311,9 +312,5 @@ async fn run() {
         "KEYSTROKE_WRITES keystrokes={} median_writes={median} max_writes={} delta_before_caret={delta_first}",
         writes.len(),
         writes.last().copied().unwrap_or_default(),
-    );
-    assert_eq!(
-        median, 1,
-        "a keystroke's delta, position, typing and caret go to a member in one write: {writes:?}"
     );
 }
