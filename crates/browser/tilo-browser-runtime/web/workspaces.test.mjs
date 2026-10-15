@@ -190,7 +190,9 @@ test('the home workspace is listed first, then the person\u2019s own, each host 
 
 function spectating(spectateReply) {
   const calls = {posted: [], connected: []};
-  const certificate = {user_public_key: Array(32).fill(0x5e), device_public_key: Array(32).fill(1), device_label: 'Spectator'};
+  // A real clock reading, beyond 2^53: it must reach the runtime unrounded.
+  const certificate = '{"user_public_key":[' + Array(32).fill(0x5e).join(',') + '],"device_public_key":[' + Array(32).fill(1).join(',')
+    + '],"device_label":"Spectator","issued_at_ns":1791962530023125779}';
   return {
     calls,
     certificate,
@@ -219,7 +221,8 @@ test('a spectator certifies an in-memory device key and connects without a perso
   assert.equal(connected.room, 'ROOM');
   assert.equal(connected.userPublicKey, '5e'.repeat(32));
   assert.equal(Array.from(connected.custody.publicKey, b => b.toString(16).padStart(2, '0')).join(''), devicePublicKey);
-  assert.deepEqual(JSON.parse(connected.deviceCertificate), {cert: certificate, hostCert: {device_public_key: Array(32).fill(9)}});
+  assert.equal(connected.deviceCertificate, `{"cert":${certificate},"hostCert":{"device_public_key":[${Array(32).fill(9).join(',')}]}}`);
+  assert.match(connected.deviceCertificate, /"issued_at_ns":1791962530023125779[,}]/);
   // The key signs, and cannot be exported: nothing about it outlives the page.
   assert.equal((await connected.custody.sign(new Uint8Array([1]))).length, 64);
   await connected.store.put('k', 'v');

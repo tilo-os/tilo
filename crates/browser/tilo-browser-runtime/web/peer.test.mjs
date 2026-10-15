@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody} from './peer.mjs';
+import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withDisplayName} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const SEALED = 0x53;
@@ -1140,4 +1140,12 @@ test('every disposal caller observes storage release failure', async () => {
   await assert.rejects(peer.dispose(), error => error === failure);
   assert.equal(releases, 1);
   assert.equal(runtime.peer.disposed, true);
+});
+
+test('the peer starts from the certificate text, keeping nanosecond timestamps exact', () => {
+  const certified = '{"cert":{"issued_at_ns":1791962530023125779,"expires_at_ns":1792048930023125779},"hostCert":{"issued_at_ns":1}}';
+  const started = withDisplayName(certified, 'Ada');
+  assert.ok(started.includes('1791962530023125779') && started.includes('1792048930023125779'));
+  assert.equal(JSON.parse(started).displayName, 'Ada');
+  assert.equal(withDisplayName(certified, undefined), certified);
 });

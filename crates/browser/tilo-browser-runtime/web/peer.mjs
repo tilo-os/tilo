@@ -43,6 +43,17 @@ export {
 export {joinViaHost, listedWorkspaces, spectate, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
+
+/**
+ * The stored `{cert, hostCert}` JSON with the person's name added, edited as
+ * text: certificate timestamps are nanoseconds, beyond what a JavaScript
+ * number holds exactly, and a parsed and re-serialized copy no longer matches
+ * its signature.
+ */
+export function withDisplayName(certified, displayName) {
+  if (displayName === undefined) return certified;
+  return certified.replace(/\}\s*$/, `,"displayName":${JSON.stringify(displayName)}}`);
+}
 /** A member's cursor colour, from its device key: the same on every page. */
 const COLORS = ['#e5484d', '#30a46c', '#0090ff', '#f76b15', '#8e4ec6', '#12a594', '#d6409f', '#ffc53d'];
 export function colorOf(publisher) {
@@ -891,8 +902,10 @@ async function connect({
   }
 
   async function start() {
-    const certified = JSON.parse(await certificate());
-    if (!sameHost(certified.hostCert, host.hostCert)) {
+    // Kept as text: the peer starts from the exact certificate, whose
+    // nanosecond timestamps a JavaScript number would round.
+    const certified = await certificate();
+    if (!sameHost(JSON.parse(certified).hostCert, host.hostCert)) {
       // Certified by another host than the one answering at this origin
       // now: that host would refuse the session, and the state kept for the
       // other one is never handed to it.
@@ -900,7 +913,7 @@ async function connect({
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
-      JSON.stringify({cert: certified.cert, hostCert: certified.hostCert, displayName}),
+      withDisplayName(certified, displayName),
       custodyForWasm,
       storage ? JSON.stringify({profile, device}) : undefined,
       storage ? undefined : (record ?? undefined),

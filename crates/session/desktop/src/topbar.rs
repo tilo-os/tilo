@@ -84,6 +84,9 @@ const SPARKLINE_FILL_ALPHA: f32 = 0.30;
 /// they share one top and bottom edge. The toolkit's bar control height
 /// (`metrics.bar_control_height`), read from the density tokens.
 const BAR_CONTROL_PX: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
+/// Centre-to-centre distance of the bar's avatar chips: 20 px chips whose
+/// rings cut only each other's edge.
+const AVATAR_STEP: f64 = 20.0;
 
 /// Width reserved for the centre selector's dot column on its left, and
 /// mirrored on its right so the widget content is centred in the band.
@@ -4034,9 +4037,9 @@ impl TopBarChrome {
         self.media_indicator_rect.x0 - f64::from(tokens.spacing.s3)
     }
 
-    /// Up to 3 collaborator chips plus an overflow "+N" chip, growing
-    /// leftward from `stack_right_x`. Returns how many circles were
-    /// actually drawn (chips + the overflow chip, if any).
+    /// Up to 3 collaborator chips in reading order, then the overflow "+N"
+    /// chip last, the whole stack ending at `stack_right_x`. Returns how
+    /// many circles were drawn (chips + the overflow chip, if any).
     fn draw_avatar_chips(
         &self,
         scene: &mut Scene,
@@ -4047,12 +4050,24 @@ impl TopBarChrome {
         stack_right_x: f64,
     ) -> usize {
         let colors = &theme.tokens.colors;
-        // Up to 3 chips, overlapping by 5px, newest on top. Routed
-        // through `ui::Avatar` so the roster stays pixel-identical to
-        // app rosters.
+        let slots = self
+            .collaborator_initials
+            .len()
+            .saturating_add(usize::from(self.collaborator_overflow > 0));
+        // Slot `k` of `slots`, left to right; each chip's ring cuts only the
+        // edge of the one before it, never its initial.
+        let slot_center = |k: usize| {
+            Point::new(
+                stack_right_x
+                    - 10.0
+                    - small_count_to_f64(slots.saturating_sub(1).saturating_sub(k)) * AVATAR_STEP,
+                center_y,
+            )
+        };
+        // Routed through `ui::Avatar` so the roster stays pixel-identical
+        // to app rosters.
         for (i, initial) in self.collaborator_initials.iter().enumerate() {
-            let cx = stack_right_x - small_count_to_f64(i) * 15.0;
-            let center = Point::new(cx - 10.0, center_y);
+            let center = slot_center(i);
             // 20 px chip; large enough that an initial remains legible at 1:1.
             let rect = Rect::new(
                 center.x - 10.0,
@@ -4100,9 +4115,7 @@ impl TopBarChrome {
         }
 
         if self.collaborator_overflow > 0 {
-            let i = self.collaborator_initials.len();
-            let cx = stack_right_x - small_count_to_f64(i) * 15.0;
-            let center = Point::new(cx - 10.0, center_y);
+            let center = slot_center(self.collaborator_initials.len());
             let rect = Rect::new(
                 center.x - 10.0,
                 center.y - 10.0,
@@ -4117,9 +4130,7 @@ impl TopBarChrome {
             );
         }
 
-        self.collaborator_initials
-            .len()
-            .saturating_add(usize::from(self.collaborator_overflow > 0))
+        slots
     }
 
     /// Paint an explicit, persistent disclosure beside the roster. An eye
@@ -4203,7 +4214,7 @@ impl TopBarChrome {
         self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
     }
 
-    /// A compact "+N watching" chip for spectators, right of the avatars,
+    /// A quiet "+N watching" label for spectators, right of the avatars,
     /// ending at `right_x`. Returns its pointer target (zero when nobody is
     /// watching): the bar's control height, like the avatar stack's.
     fn draw_watching_chip(
@@ -4228,18 +4239,12 @@ impl TopBarChrome {
             .with_weight(TextWeight::Medium);
         let (label_w, label_h) = text_renderer.measure_style(&label, None, &style);
         let pad = f64::from(tokens.spacing.s2);
+        // Plain dim text, no chip: spectators are a count, not people.
         let pill = Rect::new(
             right_x - f64::from(label_w) - pad * 2.0,
             center_y - 12.0,
             right_x,
             center_y + 12.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(pill, f64::from(tokens.radii.detail)),
         );
         text_renderer.draw_style(
             scene,
@@ -4274,10 +4279,9 @@ impl TopBarChrome {
     ) {
         let (center_y, stack_right_x) = pos;
         if slot_count > 0 {
-            // Stack grows leftward from `stack_right_x`; each circle is
-            // 20 px wide with 5 px overlap, so step = 15 px.
-            let step = 15.0_f64;
-            let leftmost_cx = stack_right_x - (small_count_to_f64(slot_count) - 1.0) * step;
+            // The stack ends at `stack_right_x`; each circle is 20 px wide,
+            // one AVATAR_STEP from the next.
+            let leftmost_cx = stack_right_x - (small_count_to_f64(slot_count) - 1.0) * AVATAR_STEP;
             let y_mid = center_y;
             self.avatar_stack_rect = Rect::new(
                 leftmost_cx - 20.0,
