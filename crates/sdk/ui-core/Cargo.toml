@@ -54,6 +54,12 @@ ux-bench = []
 # between words. The browser desktop uses this to keep them out of its start
 # module.
 lazy-hyphenation = []
+# The image decoders a web page's images need (`image`: PNG, JPEG, WebP)
+# are not linked into page drawing: the program fetches their code the first
+# time a page draws an image and hands it over (`defer_page_image_decoder`,
+# `install_page_image_decoder`); until then images are left out. The browser
+# desktop uses this to keep them out of its start module.
+lazy-image-decode = []
 # Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
 # `media`'s GStreamer real-time decoder. Apps that stream video enable
 # `media/realtime` themselves; this feature exists so the widget's own tests

@@ -1,8 +1,9 @@
 //! Framework code the first frame does not need, loaded the first time
 //! something uses it: the search engine (tantivy and its codecs), and the
 //! spelling dictionaries (the embedded English list and Hunspell), which
-//! the first text field that checks spelling asks for, and the hyphenation
-//! patterns, which the first hyphenated paragraph asks for.
+//! the first text field that checks spelling asks for, the hyphenation
+//! patterns, which the first hyphenated paragraph asks for, and the image
+//! decoders, which the first web page image asks for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -33,6 +34,10 @@ unsafe extern "C" {
     fn load_hyphenation(callback: Callback, data: *const c_void);
     #[link_name = "__wasm_split_00___hyphenation___00_import_b7d24f9a610ce583_patterns"]
     fn hyphenation_patterns() -> tilo_ui::MakeHyphenation;
+    #[link_name = "__wasm_split_load_page_images_90894fa21934d3a4_decoder"]
+    fn load_page_images(callback: Callback, data: *const c_void);
+    #[link_name = "__wasm_split_00___page_images___00_import_90894fa21934d3a4_decoder"]
+    fn page_image_decoder() -> tilo_ui::webview::paint::MakePageImageDecoder;
 }
 
 #[unsafe(export_name = "__wasm_split_00___search___00_export_8c1f5e0d2b7a4936_engine")]
@@ -60,6 +65,15 @@ extern "C" fn export_spelling_dictionaries() -> spellcheck::MakeDictionaries {
 )]
 extern "C" fn export_hyphenation_patterns() -> tilo_ui::MakeHyphenation {
     tilo_ui::builtin_hyphenation
+}
+
+#[unsafe(export_name = "__wasm_split_00___page_images___00_export_90894fa21934d3a4_decoder")]
+#[allow(
+    improper_ctypes_definitions,
+    reason = "the function pointer only passes between Rust"
+)]
+extern "C" fn export_page_image_decoder() -> tilo_ui::webview::paint::MakePageImageDecoder {
+    tilo_ui::webview::paint::builtin_page_image_decoder
 }
 
 /// Fetch the search engine's module, then install the engine.
@@ -103,8 +117,22 @@ fn fetch_hyphenation() {
     });
 }
 
+/// Fetch the image decoders' module, then install them.
+fn fetch_page_images() {
+    wasm_bindgen_futures::spawn_local(async {
+        if crate::split::load(load_page_images).await {
+            // SAFETY: the module that defines `page_image_decoder` is loaded.
+            tilo_ui::webview::paint::install_page_image_decoder(unsafe { page_image_decoder() });
+            tilo_browser_runtime::refresh_mounts();
+        } else {
+            tilo_ui::webview::paint::page_image_decoder_load_failed();
+        }
+    });
+}
+
 pub(crate) fn register() {
     tilo_search::defer_engine(fetch_search);
     spellcheck::defer_dictionaries(fetch_spelling);
     tilo_ui::defer_hyphenation(fetch_hyphenation);
+    tilo_ui::webview::paint::defer_page_image_decoder(fetch_page_images);
 }
