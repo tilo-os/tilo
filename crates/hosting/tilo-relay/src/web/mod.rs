@@ -1131,7 +1131,7 @@ async fn route(
                 session.peer.device_public_key,
                 session.peer.user_public_key,
                 std::time::Instant::now(),
-                tilo_clock::unix_now_ns() / 1_000_000,
+                tilo_clock::unix_now_ms(),
             );
             if let Some(job) = job {
                 tokio::spawn(web.here.clone().summarize(job));
@@ -1183,7 +1183,7 @@ async fn route(
             Ok(encoded(&rooms.page_join(step).await))
         }
         "/envelope" | "/profile" => {
-            let now_ms = tilo_clock::unix_now_ns() / 1_000_000;
+            let now_ms = tilo_clock::unix_now_ms();
             let kept = if route == "/profile" {
                 &web.profiles
             } else {

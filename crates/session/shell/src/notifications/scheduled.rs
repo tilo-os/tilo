@@ -492,7 +492,7 @@ pub(super) async fn drive(
             // Recheck the wall clock to observe suspend and timezone/clock
             // corrections. Empty ledgers park without polling.
             let millis = next
-                .saturating_sub(i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX))
+                .saturating_sub(tilo_clock::unix_now_ms_i64())
                 .clamp(1000, 30_000);
             let delay = std::time::Duration::from_millis(u64::try_from(millis).unwrap_or(1000));
             tokio::select! { () = tokio::time::sleep(delay) => {}, () = changed.wait() => {} }

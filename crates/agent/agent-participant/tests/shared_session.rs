@@ -593,7 +593,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             "the browser's cursor never reached the agent"
         );
         let frame = page_live
-            .publish_presence(tilo_clock::unix_now_ns() / 1_000_000, |presence| {
+            .publish_presence(tilo_clock::unix_now_ms(), |presence| {
                 presence.focus = Some(LiveRecord {
                     app: SCRATCHPAD.into(),
                     record: route.record.clone(),

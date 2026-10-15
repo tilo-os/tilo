@@ -1309,7 +1309,7 @@ async fn the_owner_restricts_until_a_time_and_lifts_it() {
         request_id,
         user_public_key: guest,
     };
-    let until = tilo_clock::unix_now_ns() / 1_000_000 + 30 * 60_000;
+    let until = tilo_clock::unix_now_ms() + 30 * 60_000;
     rooms
         .restrict_member(&created.room, &cert, request([1; 32]), until)
         .await

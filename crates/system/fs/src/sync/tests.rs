@@ -1058,7 +1058,7 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
             )
             .unwrap();
             authority
-                .register(&token, &[issuer], unix_now_ns() / 1_000_000)
+                .register(&token, &[issuer], unix_now_ms())
                 .unwrap();
             let session = Arc::new(
                 crate::share_session::ShareSession::open_named(
