@@ -1121,3 +1121,6 @@ mod app_authorship;
 
 #[path = "governed_rooms/app_records.rs"]
 mod app_records;
+
+#[path = "governed_rooms/sealed_records.rs"]
+mod sealed_records;

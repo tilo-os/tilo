@@ -205,6 +205,7 @@ impl GovernedRoom {
             RevocationList::new(),
             now,
         )?;
+        select_exact_admission(&mut peer)?;
         peer.install_seed(empty_workspace(&room, authority, &roster, name)?, key, now)?;
         prepare_governance(&mut peer, key, now)?;
         let outgoing = peer
@@ -251,7 +252,7 @@ impl GovernedRoom {
         {
             return Err("room record is inconsistent".into());
         }
-        let peer = StatePeer::restore(
+        let mut peer = StatePeer::restore(
             &record.peer,
             &record.room,
             record.authority.clone(),
@@ -259,6 +260,7 @@ impl GovernedRoom {
             RevocationList::new(),
             SystemTime::now(),
         )?;
+        select_exact_admission(&mut peer)?;
         if !peer.has_governance() {
             return Err("restored room has no governance".into());
         }
@@ -472,6 +474,19 @@ fn valid_name(name: &str) -> Result<&str, String> {
         return Err("workspace name must contain 1–80 characters".into());
     }
     Ok(name)
+}
+
+/// Keep exact admission evidence in the governor's copy of the room. A
+/// member of a room whose channels are stewarded writes its records sealed,
+/// and the governor follows those writes into its copy: with exact evidence
+/// it keeps each one as the record's ciphertext history and acknowledges
+/// it in its next governance change. Without it a sealed write only marks
+/// the record encrypted, and every later change of the room (letting the
+/// next person in among them) is refused as incomplete encryption state.
+/// A room committed before this selection takes it on its next commit.
+fn select_exact_admission(peer: &mut StatePeer) -> Result<(), String> {
+    peer.select_admission_v5()
+        .map_err(|error| format!("room exceeds exact admission bounds: {error}"))
 }
 
 fn prepare_governance(
