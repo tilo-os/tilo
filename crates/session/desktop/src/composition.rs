@@ -430,6 +430,16 @@ impl DesktopSurface {
     pub fn tab_ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.tiles.keys().copied()
     }
+    /// A frame was presented: every strip's window groups may step their
+    /// width springs again ([`GroupRow::frame_presented`]).
+    pub fn frame_presented(&mut self) {
+        for id in self.strip_ids() {
+            if let Some(row) = self.row_mut(id) {
+                row.frame_presented();
+            }
+        }
+    }
+
     pub fn strip_ids(&self) -> Vec<StripId> {
         self.order.clone()
     }

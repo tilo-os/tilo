@@ -4349,6 +4349,13 @@ impl FrameBuilder {
         self.chrome.borrow().revision
     }
 
+    /// A frame was painted for presentation. The content is never marked
+    /// drawn here, so motion that steps once per drawn frame (a window
+    /// group's width spring) is told the frame turned.
+    pub fn frame_presented(&mut self) {
+        self.host.frame_presented();
+    }
+
     pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
         &mut self.host
     }

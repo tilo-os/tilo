@@ -4582,6 +4582,14 @@ impl ShellOverlayHost {
 
     /// The shared desktop surface, when the content is one. Hand-built test
     /// content is not.
+    /// A frame was presented. The compositor never marks its content drawn,
+    /// so the window groups' once-per-drawn-frame motion is told here.
+    pub(crate) fn frame_presented(&mut self) {
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.frame_presented();
+        }
+    }
+
     fn desktop_surface_mut(&mut self) -> Option<&mut tilo_desktop::composition::DesktopSurface> {
         self.content.as_any_mut()?.downcast_mut()
     }
