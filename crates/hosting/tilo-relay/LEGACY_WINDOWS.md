@@ -110,7 +110,7 @@ beside the focused one.
   production H.264 encoder to a release desktop bundle, which must show every
   frame it draws correctly, end on the last one and deliver each click back,
   then holds the acceptance cases of `native_stream_acceptance.mjs` (focus,
-  paste, resize, the HTTPS fallback, a viewer without control, a dropped live
+  paste, an input method's composition, resize, the HTTPS fallback, a viewer without control, a dropped live
   plane, no typing into a stale window) in a governed room.
   Neither is a Linux Wayland capture -> native seat proof. That requires an
   isolated Linux compositor and a consented legacy client.

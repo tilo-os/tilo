@@ -13,6 +13,9 @@
 //   paste      text on the page's clipboard, pasted with Control+V into W1,
 //              reaches it as the session's clipboard before the paste chord
 //              (with Control held), byte for byte
+//   ime        an input method composes on the page (にほん) and commits 日本:
+//              W1 gets the committed text once, as text, and none of the
+//              keys that composed it
 //   resize     the page is resized: W1 follows its tile, and a click on a
 //              window pixel lands on that pixel; later a second window W2
 //              changes its own size while it streams: the page draws each
@@ -33,8 +36,8 @@
 //              W2 reaches only W2; once W2 closes, nothing typed reaches it
 //              (the page removed it and the host refuses input for it), and
 //              W1 takes the keyboard again when clicked. Over the whole run,
-//              no key and no paste reaches a window that did not hold the
-//              keyboard when it arrived
+//              no key, paste or committed text reaches a window that did
+//              not hold the keyboard when it arrived
 //
 // On the runner one SwiftShader GPU process rasterizes every page's desktop,
 // and a desktop showing a second window presents a frame for each of its
@@ -48,10 +51,6 @@
 //   Safari     WebKit's only Linux builds are WebKitGTK/WPE, not Safari, and
 //              lack WebTransport; Safari runs only on macOS under a logged-in
 //              user with remote automation enabled (`safaridriver --enable`)
-//   IME        the legacy-window protocol carries no committed text
-//              (`legacy_window::InputEvent`), and the page forwards physical
-//              keys only: a composition on the page reaches the window as the
-//              keys typed, not as the composed text
 import {sleep} from '../../tools/web/chrome.mjs';
 import {Invalid} from './browser_qualification.mjs';
 
@@ -70,6 +69,9 @@ const CONTROL = 29, CONTROL_RIGHT = 97, KEY_V = 47, LEFT_BUTTON = 272;
 const CTRL = 2;
 /** What the paste case puts on the clipboard: two lines, beyond ASCII. */
 export const PASTED = 'Pasted into a native window ✓\nzweite Zeile, 日本語';
+/** What the ime case composes (the preedit) and commits. */
+export const COMPOSING = 'にほん';
+export const COMPOSED = '日本';
 /** The second window, on the first page: small, 10 fps, resized part of the way in. */
 export const SECOND = Object.freeze({surface: 8, width: 640, height: 360, fps: 10, seconds: 45, resizeAt: 30,
   resizeTo: Object.freeze({width: 800, height: 448})});
@@ -108,7 +110,9 @@ export function focusDiscipline(inputs) {
     const focus = focusOf(input);
     if (focus !== null) { focused = focus; continue; }
     const key = keyOf(input);
-    if (!focused && (key?.pressed || input.value?.ClipboardText)) stray.push(key ? `key ${key.keysym}` : 'pasted text');
+    if (!focused && (key?.pressed || input.value?.ClipboardText || input.value?.Text)) {
+      stray.push(key ? `key ${key.keysym}` : input.value.Text ? 'committed text' : 'pasted text');
+    }
   }
   return stray;
 }
@@ -174,6 +178,21 @@ export function judgePaste(inputs, text) {
   });
   if (early) failures.push('the paste chord reached the window before the text it pastes');
   if (!chord) failures.push('no paste chord (Control+V) followed the text');
+  return failures;
+}
+
+/**
+ * An input method's composition as the window received it: what it
+ * committed, once and exactly, as text, and none of the keys that composed it.
+ */
+export function judgeIme(inputs, text) {
+  const texts = inputs.filter(input => input.value?.Text !== undefined).map(input => input.value.Text.text);
+  const failures = [];
+  if (!texts.length) failures.push('the composed text did not reach the window');
+  else if (texts.length > 1) failures.push(`the composition reached the window ${texts.length} times`);
+  if (texts.length && texts[0] !== text) failures.push(`the window got ${JSON.stringify(texts[0])}, not ${JSON.stringify(text)}`);
+  const keys = inputs.filter(keyOf).length;
+  if (keys) failures.push(`the composition also reached the window as ${keys} key events`);
   return failures;
 }
 
@@ -350,6 +369,19 @@ export async function runAcceptance(ctx) {
   await main.send('Input.dispatchKeyEvent', {type: 'keyUp', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, modifiers: 0});
   await waitInput(w1, mark, isKey(CONTROL, false), 30_000);
   paste.failures.push(...judgePaste(inputsOf(w1.source.lines, mark), PASTED));
+
+  // ime ------------------------------------------------------------------------
+  // An input method composes on the page (CDP drives Chrome's own IME path)
+  // and commits: W1 gets the committed text once, and no key.
+  step('ime');
+  const ime = open('ime');
+  mark = lines1();
+  await main.send('Input.imeSetComposition', {text: COMPOSING, selectionStart: COMPOSING.length, selectionEnd: COMPOSING.length});
+  await main.send('Input.insertText', {text: COMPOSED});
+  await waitInput(w1, mark, input => input.value?.Text !== undefined, 30_000);
+  // A second commit or a stray key arrives with the first or just after it.
+  await sleep(1500);
+  ime.failures.push(...judgeIme(inputsOf(w1.source.lines, mark), COMPOSED));
 
   // resize: the page ---------------------------------------------------------------
   step('resize the page');

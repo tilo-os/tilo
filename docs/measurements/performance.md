@@ -113,19 +113,19 @@ After the timed run, on the same host and in the same room (one the host
 governs, as a shared workspace is), the harness drives the acceptance cases of
 `scripts/perf/native_stream_acceptance.mjs`, and a case that breaks fails the
 run like any other incorrect stream: focus moving onto and off the window with
-clicks, a paste with Control+V, the page resized and the window resizing itself
+clicks, a paste with Control+V, an input method's composition (its committed
+text must arrive once, as text, with none of the keys that composed it), the
+page resized and the window resizing itself
 while it streams, a second device of the owner on a network where WebTransport
 never becomes ready (it must take the HTTPS stream and drive the window), a
 second person invited as a viewer (frames, but no control, and input they send
 the host directly refused), the live plane dropped under the page while a
 window streams (it must resume and end on the last frame), and typing that
-never reaches a window that does not hold the keyboard or has closed. Two
-cases are not automated. Safari: WebKit's Linux builds (WebKitGTK and WPE,
+never reaches a window that does not hold the keyboard or has closed. One
+case is not automated. Safari: WebKit's Linux builds (WebKitGTK and WPE,
 which Playwright's WebKit is) are not Safari and have no WebTransport, and
 Safari runs only on macOS, for a logged-in user who has enabled remote
-automation (`safaridriver --enable`), which no CI runner here provides. IME
-composition: the legacy-window input protocol carries no committed text, so a
-composition on the page cannot reach a native window as composed text.
+automation (`safaridriver --enable`), which no CI runner here provides.
 
 The `latency` group is the compositor's side only (headless, no panel).
 Input-to-presentation latency on the reference machines is a weekly,

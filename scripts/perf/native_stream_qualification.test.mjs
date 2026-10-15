@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {CODE_BITS, analyse, codeCheck, codeGeometry, judgeGoals, parseArgs, readCode} from './native_stream_qualification.mjs';
 import {stats} from './browser_qualification.mjs';
-import {focusDiscipline, inputsOf, judgePaste, judgeStream, pointFor} from './native_stream_acceptance.mjs';
+import {focusDiscipline, inputsOf, judgeIme, judgePaste, judgeStream, pointFor} from './native_stream_acceptance.mjs';
 
 /** Three RGBA rows through the number blocks of frame `index`, as the session draws them. */
 function rows(index, width, {flip} = {}) {
@@ -153,6 +153,8 @@ test('keys and pastes count as stray only while the window does not hold the key
   // Typing before any focus, or after it moved away, reached the wrong window.
   assert.deepEqual(focusDiscipline(inputsOf([key(48, true), key(48, false)])), ['key 48']);
   assert.deepEqual(focusDiscipline(inputsOf([...held, key(18, true), input({ClipboardText: {text: 'y'}})])), ['key 18', 'pasted text']);
+  assert.deepEqual(focusDiscipline(inputsOf([focus(true), input({Text: {text: '日本'}}), focus(false), input({Text: {text: '語'}})])),
+    ['committed text']);
   // Releases sent while the keyboard is let go are not typing.
   assert.deepEqual(focusDiscipline(inputsOf([focus(true), focus(false), key(30, false)])), []);
 });
@@ -204,6 +206,16 @@ test('a paste is the text, exactly, then Control+V', () => {
   assert.match(judgePaste(inputsOf([key(29, true), key(47, true), key(47, false), clip, key(29, false)]), text).join(),
     /before the text it pastes.*no paste chord/);
   assert.match(judgePaste(inputsOf([clip, key(47, true), key(47, false)]), text).join(), /no paste chord/);
+});
+
+test('a composition is its committed text, once, and no key', () => {
+  const text = '日本';
+  assert.deepEqual(judgeIme(inputsOf([input({Text: {text}})]), text), []);
+  assert.deepEqual(judgeIme(inputsOf([]), text), ['the composed text did not reach the window']);
+  assert.match(judgeIme(inputsOf([input({Text: {text: 'にほん'}})]), text).join(), /got "にほん", not "日本"/);
+  assert.match(judgeIme(inputsOf([input({Text: {text}}), input({Text: {text}})]), text).join(), /2 times/);
+  // The keys typed into the input method reached the window as well.
+  assert.match(judgeIme(inputsOf([key(49, true), key(49, false), input({Text: {text}})]), text).join(), /as 2 key events/);
 });
 
 test('a window pixel maps into its letterboxed box', () => {
