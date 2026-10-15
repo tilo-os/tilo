@@ -24,7 +24,7 @@
 //! caller hands it) and returns a value. It edits nothing, so it declares low
 //! risk, no confirmation, and is safe to repeat.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -908,11 +908,12 @@ pub fn run(call: &Call, model: &dyn TransformModel) -> Result<ActionOutput, Fail
     ))
 }
 
-/// The invocation id a directed wire id stands for, the same mapping the
-/// toolkit uses for every app.
-#[must_use]
-pub fn invocation_of(id: u64) -> InvocationId {
-    InvocationId(uuid::Uuid::from_u128(u128::from(id)))
+/// One directed invocation as the broker delivers it: the wire id updates
+/// are sent under, and the invocation they must name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Directed {
+    pub id: u64,
+    pub invocation: InvocationId,
 }
 
 // ---------------------------------------------------------------------------
@@ -926,8 +927,9 @@ pub struct TransformService {
     content: tilo_content::ContentStore,
     finished_tx: Sender<(u64, InvocationUpdate)>,
     finished_rx: Receiver<(u64, InvocationUpdate)>,
-    /// Invocations whose worker has not reported yet.
-    running: HashSet<u64>,
+    /// Invocations whose worker has not reported yet, with the invocation
+    /// each update names.
+    running: HashMap<u64, InvocationId>,
     /// Of those, the ones the caller cancelled: their answer is dropped.
     cancelled: HashSet<u64>,
 }
@@ -941,7 +943,7 @@ impl TransformService {
             content,
             finished_tx,
             finished_rx,
-            running: HashSet::new(),
+            running: HashMap::new(),
             cancelled: HashSet::new(),
         }
     }
@@ -950,14 +952,14 @@ impl TransformService {
     /// `Accepted` while it runs, or `Failed` when it cannot start.
     pub fn start(
         &mut self,
-        id: u64,
+        directed: Directed,
         resource: &str,
         action: &str,
         argument: Option<&str>,
         actor: &str,
         context: Option<&ActionContext>,
     ) -> InvocationUpdate {
-        let invocation = invocation_of(id);
+        let Directed { id, invocation } = directed;
         let failed = |error: Failure| InvocationUpdate::Failed {
             invocation,
             error: *error,
@@ -1014,18 +1016,19 @@ impl TransformService {
                 true,
             ));
         }
-        self.running.insert(id);
+        self.running.insert(id, invocation);
         InvocationUpdate::Accepted { invocation }
     }
 
     /// Cancel a running invocation. Returns the terminal update to send, or
     /// `None` when the id is not running here or was already cancelled.
     pub fn cancel(&mut self, id: u64) -> Option<InvocationUpdate> {
-        if !self.running.contains(&id) || !self.cancelled.insert(id) {
+        let invocation = *self.running.get(&id)?;
+        if !self.cancelled.insert(id) {
             return None;
         }
         Some(InvocationUpdate::Cancelled {
-            invocation: invocation_of(id),
+            invocation,
             message: Some("cancelled by the caller".into()),
         })
     }
@@ -1060,6 +1063,13 @@ mod tests {
             panic!("arguments are a JSON object");
         };
         map
+    }
+
+    fn directed(id: u64) -> Directed {
+        Directed {
+            id,
+            invocation: InvocationId::new(),
+        }
     }
 
     fn store() -> tilo_content::ContentStore {
@@ -1316,10 +1326,24 @@ mod tests {
     fn the_service_answers_on_the_wire_and_drops_a_cancelled_result() {
         let mut service = TransformService::new(Arc::new(Fixed(r#"{"result": "ok"}"#)), store());
         let argument = format!("{ARGUMENTS_JSON_PREFIX}{}", json!({"input": "text"}));
-        let started = service.start(7, RESOURCE_ID, "summarise", Some(&argument), "ada", None);
-        assert!(matches!(started, InvocationUpdate::Accepted { .. }));
+        let seven = directed(7);
+        let started = service.start(
+            seven,
+            RESOURCE_ID,
+            "summarise",
+            Some(&argument),
+            "ada",
+            None,
+        );
+        assert_eq!(
+            started,
+            InvocationUpdate::Accepted {
+                invocation: seven.invocation
+            },
+            "updates name the invocation the broker delivered"
+        );
         let wrong = service.start(
-            8,
+            directed(8),
             "agent.transform:other",
             "summarise",
             Some(&argument),
@@ -1335,10 +1359,18 @@ mod tests {
         }
         assert!(matches!(
             done.as_slice(),
-            [(7, InvocationUpdate::Succeeded { output, .. })] if output.value == Some(json!("ok"))
+            [(7, InvocationUpdate::Succeeded { invocation, output })]
+                if output.value == Some(json!("ok")) && *invocation == seven.invocation
         ));
 
-        service.start(9, RESOURCE_ID, "summarise", Some(&argument), "ada", None);
+        service.start(
+            directed(9),
+            RESOURCE_ID,
+            "summarise",
+            Some(&argument),
+            "ada",
+            None,
+        );
         assert!(matches!(
             service.cancel(9),
             Some(InvocationUpdate::Cancelled { .. })
