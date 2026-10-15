@@ -908,14 +908,14 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
                     .await
                     .unwrap_err()
                     .to_string()
-                    .contains("owner")
+                    .contains("not allowed")
             );
             assert!(
                 invoke(&agent, &run, uuid::Uuid::from_u128(8011))
                     .await
                     .unwrap_err()
                     .to_string()
-                    .contains("owner")
+                    .contains("not allowed")
             );
             assert!(
                 tokio::time::timeout(
@@ -968,7 +968,7 @@ async fn a_native_run_is_held_to_its_tasks_grant_set() {
                     .await
                     .unwrap_err()
                     .to_string()
-                    .contains("owner")
+                    .contains("not allowed")
             );
             assert!(
                 tokio::time::timeout(
@@ -1070,7 +1070,7 @@ async fn native_approval_grants_no_tool_permission_and_deleted_targets_fail_clos
                     .await
                     .unwrap_err()
                     .to_string()
-                    .contains("authorized")
+                    .contains("not allowed")
             );
             assert!(
                 tokio::time::timeout(
