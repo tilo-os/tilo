@@ -182,7 +182,10 @@ containerfile="$repo/os/Containerfile"
 # systemd-bless-boot's drop-in, which lets blessing rename the booted entry on
 # the read-only ESP, is one intentional payload row with a COPY of its own: no
 # existing instruction copies into that drop-in directory.
-expected_contract=bbe63ef7a63db5c3790095d91b09cb4f292e2b99ace8b5a9d82336618b42c9c9
+# tilo-esp-generator, which mounts the boot loader's ESP at /boot/efi on an
+# installed system, is one intentional payload row with a COPY of its own, and
+# its helper tilo-esp-mount rides the existing recovery-files libexec COPY.
+expected_contract=5af14ec2844f3ff23abc9e642c6682db5bbf611b0455d971d573e1805722cdac
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
