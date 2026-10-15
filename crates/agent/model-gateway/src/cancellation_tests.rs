@@ -103,7 +103,10 @@ async fn native_stop_retry() {
             .await
             .unwrap_err();
         assert!(saw_delta);
-        assert!(stopped.contains("cancelled"));
+        assert_eq!(
+            stopped.kind,
+            agent_provider_config::protocol::ErrorKind::Cancelled
+        );
         let retry = transport.call(request(), &mut |_| true).await.unwrap();
         assert!(retry.ok, "{:?}", retry.error);
         let answer: agent_provider_config::protocol::ModelResponse =

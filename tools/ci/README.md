@@ -56,7 +56,7 @@ the smaller `os/Containerfile.ci-fast`.
 | `check.yml` select | `python3 tools/ci/affected_packages.py --metadata "$TILO_CURRENT_WORKTREE_METADATA" --base origin/main` previews the plan: packages per shard, suites, examples |
 | `check.yml` security | `bash tools/run-security-boundary-invariants.sh` |
 | `check.yml` suites | `python3 tools/ci/suites.py run <suite>...` (`suites.py list` names them) |
-| `check.yml` test | `scripts/test-local.sh -p <package>...` (see [Running tests like CI](../../DEVELOPMENT.md#running-tests-like-ci)) |
+| `check.yml` test | `scripts/test-local.sh -p <package>...` (gateway selections enable `local-models,host-backend`, including server tests) (see [Running tests like CI](../../DEVELOPMENT.md#running-tests-like-ci)) |
 | `check.yml` check | `cargo check --locked --all-targets -p <package>...` |
 | `check.yml` clippy | `tools/ci/clippy-check.sh -p <package>...` or `--workspace` |
 | `check.yml` android | `bash tools/ci/install-android-ndk.sh`, then `cargo clippy --locked -p <app> --examples --features android --target aarch64-linux-android -- -D warnings` |

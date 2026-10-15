@@ -6,6 +6,7 @@
 # `crates/doc/tilo-doc-codec-markdown-wasm/build.sh`.
 exclude = [
     "vendor/buffa-build",
+    "vendor/rig-core",
     "tools/web/wasm-split",
     "fuzz",
     "crates/doc/tilo-doc-codec-markdown-wasm",
@@ -984,6 +985,9 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Assemble fragmented OpenAI Chat tool names consistently in Rig's decoder.
+# Exact registry baseline and removal condition: vendor/rig-core/PROVENANCE.md.
+rig-core = { path = "vendor/rig-core" }
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity

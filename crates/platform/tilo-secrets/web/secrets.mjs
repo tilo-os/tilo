@@ -176,15 +176,20 @@ export function pendingAcknowledgements(){
 
 /** Start an immutable credential write; consume its id once, only after commit. */
 export function acknowledgedSecret(app,bytes,env={}){
-  const operation=JSON.stringify(['credential',app,...bytes]);
+  return acknowledgedSeal(app,`request-auth/${globalThis.crypto.randomUUID()}`,bytes,env);
+}
+
+/** Retry an immutable write by namespace and bytes; the first proposed key wins. */
+export function acknowledgedSeal(app,key,bytes,env={}){
+  const namespace=key.slice(0,key.lastIndexOf('/')+1);
+  const operation=JSON.stringify(['credential',app,namespace,...bytes]);
   return acknowledged(operation,async()=>{
     // Only the initiating call makes a copy; retries must not leave extra
     // plaintext buffers behind. The owned copy is wiped on success or failure.
     const owned=bytes.slice();
     try{
-      const id=`request-auth/${globalThis.crypto.randomUUID()}`;
-      await putSecret(app,id,owned,env);
-      return id;
+      await putSecret(app,key,owned,env);
+      return key;
     }finally{owned.fill(0);}
   });
 }

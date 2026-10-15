@@ -2,12 +2,16 @@
 //! Install this transport in the host's `ModelBackend`, not a process global.
 //! Authentication is a host session token, never a provider API key or app ID.
 #[cfg(test)]
+#[path = "client_fixture_tests.rs"]
+mod fixtures;
+#[cfg(test)]
 #[path = "transport_tests.rs"]
 mod tests;
 use crate::{Request, Response};
+use agent_provider_config::protocol::{ErrorKind, ModelError, ModelResponse, StreamEvent};
 use std::{future::Future, pin::Pin, time::Duration};
 
-pub type CallFuture<'a> = Pin<Box<dyn Future<Output = Result<Response, String>> + Send + 'a>>;
+pub type CallFuture<'a> = Pin<Box<dyn Future<Output = Result<Response, ModelError>> + Send + 'a>>;
 pub trait Transport: Send + Sync {
     /// Intermediate events go to `event`; false cancels the operation. Dropping
     /// this future cancels its response. Transports synchronize cancellation or
@@ -71,9 +75,9 @@ impl Transport for FetchTransport {
                 version: crate::RPC_VERSION,
                 value: request,
             })
-            .map_err(|_| "cannot encode model request")?;
+            .map_err(|_| ModelError::new(ErrorKind::InvalidRequest))?;
             if body.len() > 2 * 1024 * 1024 {
-                return Err("model request too large".into());
+                return Err(ModelError::new(ErrorKind::InvalidRequest));
             }
             let mut response = self
                 .client
@@ -83,56 +87,132 @@ impl Transport for FetchTransport {
                 .body(body)
                 .send()
                 .await
-                .map_err(|_| "model service unavailable")?;
+                .map_err(|error| {
+                    ModelError::new(if error.is_timeout() {
+                        ErrorKind::TimedOut
+                    } else {
+                        ErrorKind::Transport
+                    })
+                })?;
             if !response.status().is_success() {
-                return Err("model service rejected request".into());
+                return Err(crate::openai::Failure::from_http(
+                    response.status().as_u16(),
+                    "",
+                    None,
+                )
+                .model_error());
             }
             let mut pending = Vec::new();
             let mut events = 0usize;
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|_| "model stream interrupted")?
-            {
+            while let Some(chunk) = response.chunk().await.map_err(|error| {
+                ModelError::new(if error.is_timeout() {
+                    ErrorKind::TimedOut
+                } else {
+                    ErrorKind::Transport
+                })
+            })? {
                 // Do not append a whole network chunk: validate one byte/line
                 // at a time so a peer cannot defeat the allocation bound.
                 for byte in chunk {
                     if byte == b'\n' {
                         let item: Response = serde_json::from_slice(&pending)
-                            .map_err(|_| "invalid model response")?;
+                            .map_err(|_| ModelError::new(ErrorKind::InvalidResponse))?;
                         pending.clear();
                         if item.event.is_none() {
                             return Ok(item);
                         }
                         events = events.saturating_add(1);
                         if events > crate::MAX_STREAM_EVENTS + crate::MAX_DELTA_EVENTS {
-                            return Err("too many model events".into());
+                            return Err(ModelError::new(ErrorKind::InvalidResponse));
                         }
                         if !event(item) {
-                            return Err("model request cancelled".into());
+                            return Err(ModelError::new(ErrorKind::Cancelled));
                         }
                     } else {
                         if pending.len() >= 2 * 1024 * 1024 {
-                            return Err("model response too large".into());
+                            return Err(ModelError::new(ErrorKind::InvalidResponse));
                         }
                         pending.push(byte);
                     }
                 }
             }
-            Err("model stream ended without a final response".into())
+            Err(ModelError::new(ErrorKind::Truncated))
         })
     }
 }
 
-fn transport_error(detail: String) -> agent_provider_config::protocol::ModelError {
-    if detail.contains("unavailable") {
-        agent_provider_config::protocol::ModelError {
-            kind: agent_provider_config::protocol::ErrorKind::Unavailable,
-            message: detail,
+/// Decode the gateway's public event wire once for synchronous and async clients.
+/// Completed-call compatibility events are inert: only the final turn can dispatch.
+pub(crate) fn decode_event(kind: &str, payload: &str) -> Result<Option<StreamEvent>, ModelError> {
+    let event = match kind {
+        crate::EVENT_TOOL_CALL => return Ok(None),
+        "text_delta" | "reasoning_delta" => {
+            let text = serde_json::from_str(payload)
+                .map_err(|_| ModelError::invalid("invalid gateway text delta"))?;
+            if kind == "text_delta" {
+                StreamEvent::TextDelta { text }
+            } else {
+                StreamEvent::ReasoningDelta { text }
+            }
         }
-    } else {
-        crate::ClientError::Rejected(detail).model_error()
+        crate::EVENT_TOOL_CALL_DELTA => {
+            #[derive(serde::Deserialize)]
+            struct Fragment {
+                index: u32,
+                id: Option<String>,
+                name: Option<String>,
+                delta: String,
+            }
+            let delta: Fragment = serde_json::from_str(payload)
+                .map_err(|_| ModelError::invalid("invalid gateway tool delta"))?;
+            StreamEvent::ToolCallDelta {
+                index: delta.index,
+                id: delta.id,
+                name: delta.name,
+                arguments: delta.delta,
+            }
+        }
+        _ => return Err(ModelError::invalid("unknown gateway stream event")),
+    };
+    Ok(Some(event))
+}
+
+pub(crate) fn decode_completion(output: &str) -> Result<ModelResponse, ModelError> {
+    let response: ModelResponse = serde_json::from_str(output)
+        .map_err(|_| ModelError::invalid("invalid gateway completion"))?;
+    // Refusal and output limits are valid terminal responses. StreamState keeps
+    // their prose, but never exposes their calls. Malformed finals fail here.
+    match response.tool_calls() {
+        Err(error) if !matches!(error.kind, ErrorKind::Refused | ErrorKind::Truncated) => {
+            Err(error)
+        }
+        _ => Ok(response),
     }
+}
+
+fn completion(response: &Response) -> Result<ModelResponse, ModelError> {
+    if !response.ok {
+        return Err(response.failure_error().model_error());
+    }
+    if response.event.is_some() {
+        return Err(ModelError::invalid("missing gateway final response"));
+    }
+    decode_completion(response.output.as_deref().unwrap_or_default())
+}
+
+pub(crate) fn finish_stream(
+    result: Result<ModelResponse, ModelError>,
+    event: &mut dyn FnMut(&StreamEvent),
+) -> Result<ModelResponse, ModelError> {
+    match &result {
+        Ok(response) => event(&StreamEvent::Finished {
+            response: response.clone(),
+        }),
+        Err(error) => event(&StreamEvent::Failed {
+            error: error.clone(),
+        }),
+    }
+    result
 }
 
 /// A selected-model backend suitable for host-scoped installation. Selection
@@ -161,7 +241,6 @@ impl<T: Transport> ModelClient<T> {
         agent_provider_config::protocol::ModelResponse,
         agent_provider_config::protocol::ModelError,
     > {
-        use agent_provider_config::protocol::{ModelError, StreamEvent};
         let mut invalid = false;
         let response = self
             .transport
@@ -174,73 +253,35 @@ impl<T: Transport> ModelClient<T> {
                     stream: true,
                 },
                 &mut |item| {
-                    let payload = item.output.as_deref().unwrap_or_default();
-                    let parsed = match item.event.as_deref() {
-                        Some("text_delta" | "reasoning_delta") => {
-                            serde_json::from_str::<String>(payload).ok().map(|text| {
-                                if item.event.as_deref() == Some("reasoning_delta") {
-                                    StreamEvent::ReasoningDelta { text }
-                                } else {
-                                    StreamEvent::TextDelta { text }
-                                }
-                            })
-                        }
-                        Some(crate::EVENT_TOOL_CALL_DELTA) => {
-                            #[derive(serde::Deserialize)]
-                            struct ToolFragment {
-                                index: u32,
-                                id: Option<String>,
-                                name: Option<String>,
-                                delta: String,
-                            }
-                            serde_json::from_str::<ToolFragment>(payload)
-                                .ok()
-                                .map(|delta| StreamEvent::ToolCallDelta {
-                                    index: delta.index,
-                                    id: delta.id,
-                                    name: delta.name,
-                                    arguments: delta.delta,
-                                })
-                        }
-                        Some(crate::EVENT_TOOL_CALL) => return true,
-                        _ => None,
-                    };
-                    if let Some(parsed) = parsed {
-                        event(&parsed)
-                    } else {
+                    if invalid {
+                        return false;
+                    }
+                    if !item.ok {
                         invalid = true;
-                        false
+                        return false;
+                    }
+                    match decode_event(
+                        item.event.as_deref().unwrap_or_default(),
+                        item.output.as_deref().unwrap_or_default(),
+                    ) {
+                        Ok(Some(parsed)) => event(&parsed),
+                        Ok(None) => true,
+                        Err(_) => {
+                            invalid = true;
+                            false
+                        }
                     }
                 },
             )
             .await;
         let result = match response {
             _ if invalid => Err(ModelError::invalid("invalid gateway stream event")),
-            Err(error) => Err(transport_error(error)),
-            Ok(response) if !response.ok => Err(crate::ClientError::Rejected(
-                response
-                    .error
-                    .unwrap_or_else(|| "provider request failed".into()),
-            )
-            .model_error()),
-            Ok(response) => serde_json::from_str::<agent_provider_config::protocol::ModelResponse>(
-                response.output.as_deref().unwrap_or_default(),
-            )
-            .map_err(|_| ModelError::invalid("invalid gateway completion")),
+            Err(error) => Err(error),
+            Ok(response) => completion(&response),
         };
-        match &result {
-            Ok(response) => {
-                event(&StreamEvent::Finished {
-                    response: response.clone(),
-                });
-            }
-            Err(error) => {
-                event(&StreamEvent::Failed {
-                    error: error.clone(),
-                });
-            }
-        }
-        result
+        finish_stream(result, &mut |item| {
+            event(item);
+        })
     }
 
     pub fn new(transport: T, profile_id: String, model_id: String, timeout: Duration) -> Self {
@@ -302,15 +343,7 @@ impl<T: Transport> agent_provider_config::protocol::ModelBackend for ModelClient
             } else {
                 result
             };
-            match &result {
-                Ok(response) => sink(StreamEvent::Finished {
-                    response: response.clone(),
-                }),
-                Err(error) => sink(StreamEvent::Failed {
-                    error: error.clone(),
-                }),
-            }
-            result
+            finish_stream(result, &mut |event| sink(event.clone()))
         })
     }
 
@@ -318,12 +351,7 @@ impl<T: Transport> agent_provider_config::protocol::ModelBackend for ModelClient
         &'a self,
         request: &'a agent_provider_config::protocol::ModelRequest,
     ) -> agent_provider_config::protocol::CompletionFuture<'a> {
-        use agent_provider_config::protocol::{ErrorKind, ModelError};
         Box::pin(async move {
-            let error = |kind, message: &str| ModelError {
-                kind,
-                message: message.into(),
-            };
             let response = self
                 .transport
                 .call(
@@ -336,23 +364,8 @@ impl<T: Transport> agent_provider_config::protocol::ModelBackend for ModelClient
                     },
                     &mut |_| true,
                 )
-                .await
-                .map_err(transport_error)?;
-            if !response.ok {
-                return Err(crate::ClientError::Rejected(
-                    response
-                        .error
-                        .unwrap_or_else(|| "provider request failed".into()),
-                )
-                .model_error());
-            }
-            serde_json::from_str(
-                response
-                    .output
-                    .as_deref()
-                    .ok_or_else(|| error(ErrorKind::InvalidResponse, "missing model response"))?,
-            )
-            .map_err(|_| error(ErrorKind::InvalidResponse, "invalid model response"))
+                .await?;
+            completion(&response)
         })
     }
 }

@@ -42,7 +42,6 @@ pub(super) fn open(context: &HostContext) -> Result<(), String> {
         imports.remove(&key);
         Ok(())
     });
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     if result.as_ref().err().map(String::as_str) == Some(crate::credentials::PENDING) {
         // The page backend is writing asynchronously. Ask the host to retry
         // on its next turn, not recursively while this record is borrowed.

@@ -556,7 +556,10 @@ impl PlanModel for OpenAiModel {
     ) -> Result<Answer, String> {
         use tilo_model_gateway::host_backend::protocol::{Content, Conversation, ToolResult};
         if self.client.is_none() {
-            self.client = Some(tilo_model_gateway::host_backend::CompletionClient::new()?);
+            self.client = Some(
+                tilo_model_gateway::host_backend::CompletionClient::new()
+                    .map_err(|error| error.to_string())?,
+            );
         }
         let client = self.client.as_mut().ok_or("no model transport")?;
         let deadline = std::time::Instant::now()
@@ -585,15 +588,17 @@ impl PlanModel for OpenAiModel {
                 TURN_OUTPUT_TOKENS,
             );
             let key = openai::turn_key(&run, turn, &serde_json::json!((&self.model, &request)));
-            let response = client.complete(
-                &self.endpoint,
-                &self.api_key,
-                self.target,
-                &self.model,
-                &request,
-                &key,
-                deadline,
-            )?;
+            let response = client
+                .complete(
+                    &self.endpoint,
+                    &self.api_key,
+                    self.target,
+                    &self.model,
+                    &request,
+                    &key,
+                    deadline,
+                )
+                .map_err(|error| error.to_string())?;
             let calls = conversation
                 .validate_response(&response)
                 .map_err(|error| error.to_string())?;

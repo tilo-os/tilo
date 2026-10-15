@@ -8,6 +8,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from package_features import NATIVE_TEST_FEATURES, arguments as feature_arguments
+
 
 # Operations over whole packages rather than exact tests; both accept a
 # bounded package set.
@@ -105,9 +108,14 @@ def execute(root, values, outcomes=None):
         if len(matches) != 1:
             raise ValueError('package is not a unique workspace member: ' + name)
         packages.extend(matches)
+    for package in packages:
+        required = NATIVE_TEST_FEATURES.get(package['name'], ())
+        if not set(required) <= set(package.get('features', {})):
+            raise ValueError('source metadata lacks native verification features: ' + package['name'])
     if values['OPERATION'] == 'check-tests':
         command = ['cargo', 'check', '--locked',
-                   *[arg for name in names for arg in ('-p', name)], '--tests']
+                   *[arg for name in names for arg in ('-p', name)], '--tests',
+                   *feature_arguments(names)]
         print(json.dumps({'source_sha': actual, 'command': command}), flush=True)
         return subprocess.run(command, cwd=root).returncode
     if values['OPERATION'] == 'clippy':
@@ -127,7 +135,8 @@ def execute(root, values, outcomes=None):
                    for t in packages[0]['targets']):
             raise ValueError('integration test target does not belong to package')
         target = ['--test', values['TEST_TARGET']]
-    prefix = ['cargo', 'test', '--locked', '-p', values['PACKAGE'], *target]
+    prefix = ['cargo', 'test', '--locked', '-p', values['PACKAGE'], *target,
+              *feature_arguments(names)]
     # libtest succeeds with zero selected tests. Reject that before executing,
     # and reject ignored tests afterwards rather than reporting false evidence.
     listed = read(prefix + ['--', '--list'])

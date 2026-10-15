@@ -28,6 +28,8 @@ extern "C" {
     fn queue_secret(app: &str, key: &str, bytes: Option<Uint8Array>);
     #[wasm_bindgen(js_name = flushSecrets)]
     fn flush_secrets() -> Promise;
+    #[wasm_bindgen(catch, js_name = acknowledgedSeal)]
+    fn acknowledged_seal(app: &str, key: &str, bytes: &[u8]) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(catch, js_name = acknowledgedSecret)]
     fn acknowledged_secret(app: &str, bytes: &[u8]) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(catch, js_name = acknowledgedMerge)]
@@ -52,6 +54,19 @@ pub fn pending() -> bool {
 /// retry consumes the result once; calling again starts a new credential write.
 pub fn seal_blocking(app: &str, bytes: &[u8]) -> Result<Option<String>, SecretError> {
     let value = acknowledged_secret(app, bytes).map_err(|e| failed(&e))?;
+    let id = value.as_string();
+    if let Some(id) = &id {
+        remember(app, id, Some(bytes))?;
+    }
+    Ok(id)
+}
+
+pub(crate) fn seal_at_blocking(
+    app: &str,
+    key: &str,
+    bytes: &[u8],
+) -> Result<Option<String>, SecretError> {
+    let value = acknowledged_seal(app, key, bytes).map_err(|e| failed(&e))?;
     let id = value.as_string();
     if let Some(id) = &id {
         remember(app, id, Some(bytes))?;

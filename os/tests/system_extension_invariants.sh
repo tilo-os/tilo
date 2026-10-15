@@ -16,7 +16,9 @@ user_model_socket="$repo/os/usr/lib/systemd/user/tilo-models.socket"
 model_gateway="$repo/os/usr/lib/systemd/user/tilo-model-gateway.service"
 model_gateway_socket="$repo/os/usr/lib/systemd/user/tilo-model-gateway.socket"
 user_model_source="$repo/crates/agent/local-model-service/src/main.rs"
-model_gateway_source="$repo/crates/agent/model-gateway/src/main.rs"
+model_gateway_entry="$repo/crates/agent/model-gateway/src/main.rs"
+model_gateway_library="$repo/crates/agent/model-gateway/src/lib.rs"
+model_gateway_source="$repo/crates/agent/model-gateway/src/service.rs"
 settings_models_source="$repo/apps/settings/src/panes/agent_models.rs"
 socket="$repo/os/usr/lib/systemd/system/tilo-system-extension-dispatcher.socket"
 dispatcher="$repo/os/usr/lib/systemd/system/tilo-system-extension-dispatcher@.service"
@@ -153,6 +155,10 @@ need "$model_gateway_socket" 'Backlog=16' 'hosted-model activation queue is unbo
 need "$model_gateway_socket" 'Service=tilo-model-gateway.service' 'hosted-model socket starts the wrong service'
 need "$model_gateway_socket" 'PartOf=tilo-graphical-session.target' 'hosted-model socket can outlive a Tilo session'
 need "$model_gateway_socket" 'WantedBy=tilo-graphical-session.target' 'hosted-model socket starts outside a Tilo session'
+# Follow the binary's production entry point, not an unreferenced adapter or test.
+need "$model_gateway_entry" 'tilo_model_gateway::service::main();' 'hosted-model binary does not enter the native service'
+need "$model_gateway_library" 'pub mod service;' 'hosted-model library does not expose the native service'
+need "$model_gateway_source" 'Action::Serve { socket } => serve(&socket)' 'hosted-model serve command bypasses the native listener'
 need "$model_gateway_source" 'activated_socket(socket)' 'hosted-model gateway ignores systemd socket activation'
 need "$model_gateway" 'RuntimeDirectoryPreserve=yes' 'hosted-model shutdown can remove sibling service sockets'
 need "$model_gateway" 'PrivateDevices=yes' 'hosted-model gateway has ambient device access'

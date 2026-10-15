@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {acknowledgedMerge,acknowledgedSecret,deleteSecret,flushAcknowledgements,flushSecrets,getSecret,indexedDbStorage,loadSecrets,pendingAcknowledgements,putSecret,queueSecret} from './secrets.mjs';
+import {acknowledgedMerge,acknowledgedSeal,acknowledgedSecret,deleteSecret,flushAcknowledgements,flushSecrets,getSecret,indexedDbStorage,loadSecrets,pendingAcknowledgements,putSecret,queueSecret} from './secrets.mjs';
 
 // These tests are single-writer unless they supply a competing lock manager.
 const locks={request:async(_name,fn)=>fn()};
@@ -157,6 +157,23 @@ test('credential publication stays pending while the storage commit is outstandi
   const id=acknowledgedSecret('ack-delayed',bytes,env);
   assert.match(id,/^request-auth\//);
   assert.deepEqual(await loadSecrets({storage,locks:env.locks}),[['ack-delayed',id,bytes]]);
+});
+
+test('immutable seals retry by namespace and bytes and retain the first key',async()=>{
+  const storage=memory(),env={storage,locks:serializedLocks()};
+  const bytes=new TextEncoder().encode('local credential');
+  assert.equal(acknowledgedSeal('generic-seal','tokens/first',bytes,env),null);
+  assert.equal(acknowledgedSeal('generic-seal','tokens/retry',bytes,env),null);
+  assert.equal(acknowledgedSeal('generic-seal','other/first',bytes,env),null);
+  await flushAcknowledgements();
+  assert.equal(acknowledgedSeal('generic-seal','tokens/retry',bytes,env),'tokens/first');
+  assert.equal(acknowledgedSeal('generic-seal','other/retry',bytes,env),'other/first');
+  assert.equal(await getSecret('generic-seal','tokens/retry',env),null);
+  assert.equal((await loadSecrets(env)).length,2,'retries must not duplicate writes');
+  assert.equal(acknowledgedSeal('generic-seal','tokens/new',bytes,env),null,
+    'consumed acknowledgements must not replay into a new transaction');
+  await flushAcknowledgements();
+  assert.equal(acknowledgedSeal('generic-seal','tokens/new',bytes,env),'tokens/new');
 });
 
 test('page inventories reload and merge under a cross-page lock',async()=>{

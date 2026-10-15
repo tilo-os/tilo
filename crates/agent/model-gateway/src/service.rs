@@ -3,9 +3,7 @@
 //! This is a narrow OpenAI-compatible/Anthropic relay for a profile-selected
 //! planning call. It does not include a general `LiteLLM` control plane.
 
-#[cfg(test)]
-#[path = "anthropic_stream.rs"]
-mod anthropic_stream;
+#[cfg(feature = "local-models")]
 #[path = "subject.rs"]
 mod subject;
 
@@ -19,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "host-backend")]
 #[path = "host_backend.rs"]
 pub mod host_backend;
 #[path = "rig_adapter.rs"]
@@ -187,7 +186,7 @@ impl Gateway {
         emit: &mut (dyn FnMut(&Response) -> bool + Send),
     ) -> Response {
         if !crate::caller::permitted(session, &request) {
-            return rejected("caller is not authorized for this gateway operation");
+            return Response::failure(ModelError::new(ErrorKind::PermissionDenied));
         }
         let caller = match session.caller() {
             crate::caller::Caller::Agent => AGENT_APP,
@@ -205,7 +204,7 @@ impl Gateway {
         };
         tokio::select! {
             response = handle_streaming(caller, request, &self.http, emit) => response,
-            () = revoked => rejected("authenticated session was revoked"),
+            () = revoked => Response::failure(ModelError::new(ErrorKind::PermissionDenied)),
         }
     }
 }
@@ -505,6 +504,7 @@ const fn succeeded(output: Option<String>, configured: Option<bool>) -> Response
         output,
         configured,
         error: None,
+        model_error: None,
         event: None,
     }
 }
@@ -536,9 +536,11 @@ pub(super) async fn handle_streaming(
             if app_id == AGENT_APP
                 || (app_id == CHAT_APP && crate::caller::chat_completion(&request)) =>
         {
-            complete_request(http, request, emit).await.map(output)
+            return complete_request(http, request, emit)
+                .await
+                .map_or_else(Response::failure, output);
         }
-        Request::Complete { .. } => Err("caller is not authorized for this completion".into()),
+        Request::Complete { .. } => return permission_denied(),
         Request::Plan {
             profile_id,
             model_id,
@@ -598,7 +600,15 @@ pub(super) async fn handle_streaming(
             Err("only Photos may request fixed local face clustering".into())
         }
         Request::SegmentSubject { image } if app_id == CANVAS_APP || app_id == PHOTOS_APP => {
-            blocking(move || subject::segment(&image)).await.map(output)
+            #[cfg(feature = "local-models")]
+            {
+                blocking(move || subject::segment(&image)).await.map(output)
+            }
+            #[cfg(not(feature = "local-models"))]
+            {
+                let _ = image;
+                Err("on-device subject segmentation is unavailable in this gateway build".into())
+            }
         }
         Request::SegmentSubject { .. } => {
             Err("only Canvas and Photos may find a picture's subject".into())
@@ -661,7 +671,7 @@ async fn complete_request(
     http: &reqwest::Client,
     request: Request,
     emit: Emit<'_>,
-) -> Result<String, String> {
+) -> Result<String, agent_provider_config::protocol::ModelError> {
     let Request::Complete {
         profile_id,
         model_id,
@@ -670,7 +680,9 @@ async fn complete_request(
         stream,
     } = request
     else {
-        return Err("not a completion request".into());
+        return Err(agent_provider_config::protocol::ModelError::new(
+            agent_provider_config::protocol::ErrorKind::InvalidRequest,
+        ));
     };
     rig_adapter::complete(
         http,
@@ -723,12 +735,45 @@ where
         .map_err(|_| "gateway worker failed".to_string())?
 }
 
+use agent_provider_config::protocol::{ErrorKind, ModelError};
+
+fn permission_denied() -> Response {
+    Response::failure(ModelError::new(ErrorKind::PermissionDenied))
+}
+
+fn resolution_error(kind: ErrorKind, message: &str) -> ModelError {
+    ModelError {
+        kind,
+        message: message.into(),
+    }
+}
+
+fn credential_model_error(error: &accounts::secrets::BrokerError) -> ModelError {
+    use accounts::secrets::BrokerError;
+    let kind = match error {
+        BrokerError::Denied | BrokerError::OriginMismatch => ErrorKind::PermissionDenied,
+        BrokerError::InvalidOrigin => ErrorKind::InvalidRequest,
+        BrokerError::NotFound => ErrorKind::Authentication,
+        _ => ErrorKind::Unavailable,
+    };
+    resolution_error(kind, &credential_error(error))
+}
+
+async fn blocking_model<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, ModelError> + Send + 'static,
+) -> Result<T, ModelError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|_| ModelError::new(ErrorKind::Unavailable))?
+}
+
 fn rejected(error: &str) -> Response {
     Response {
         ok: false,
         output: None,
         configured: None,
         error: Some(error.into()),
+        model_error: None,
         event: None,
     }
 }
@@ -756,46 +801,63 @@ fn credential_error(error: &accounts::secrets::BrokerError) -> String {
     }
 }
 
-fn resolve_key(profile: &ProviderProfile) -> Result<Zeroizing<String>, String> {
+fn resolve_key(profile: &ProviderProfile) -> Result<Zeroizing<String>, ModelError> {
     resolve_key_in(&ServiceCredentials::open(), profile)
 }
 
 fn resolve_key_in(
     store: &ServiceCredentials,
     profile: &ProviderProfile,
-) -> Result<Zeroizing<String>, String> {
-    let (reference, authorization) = credential_binding(profile)?;
+) -> Result<Zeroizing<String>, ModelError> {
+    let authorization =
+        ServiceAuthorization::new(SERVICE_NAME, "provider-api-key", &profile.endpoint).map_err(
+            |_| {
+                resolution_error(
+                    ErrorKind::InvalidRequest,
+                    "invalid provider credential origin",
+                )
+            },
+        )?;
+    let reference = authorization
+        .credential_ref(&profile.id)
+        .map_err(|_| resolution_error(ErrorKind::InvalidRequest, "invalid provider profile id"))?;
     // Legacy entries had no origin binding. Never adopt them using an edited
     // endpoint. Explicit migration requires an independently known original
     // origin through ServiceCredentials::migrate_agent_provider.
     if let Some(key) = store
         .resolve(&reference, &authorization)
-        .map_err(|error| credential_error(&error))?
+        .map_err(|error| credential_model_error(&error))?
     {
         return Ok(key);
     }
     if store
         .legacy_agent_provider_status(&profile.id)
-        .map_err(|error| credential_error(&error))?
+        .map_err(|error| credential_model_error(&error))?
     {
-        return Err(
-            "API key migration required; confirm its original endpoint in Settings → Agent Models"
-                .into(),
-        );
+        return Err(resolution_error(
+            ErrorKind::Authentication,
+            "API key migration required; confirm its original endpoint in Settings → Agent Models",
+        ));
     }
-    Err("API key is not configured".into())
+    Err(resolution_error(
+        ErrorKind::Authentication,
+        "API key is not configured",
+    ))
 }
 
-fn configured_profile(profile_id: &str) -> Result<ProviderProfile, String> {
+fn configured_profile(profile_id: &str) -> Result<ProviderProfile, ModelError> {
     let config = ProviderConfig::load();
     if !config.validation_errors().is_empty() {
-        return Err("provider configuration is invalid".into());
+        return Err(resolution_error(
+            ErrorKind::InvalidRequest,
+            "provider configuration is invalid",
+        ));
     }
     config
         .profiles
         .into_iter()
         .find(|profile| profile.id == profile_id && profile.enabled)
-        .ok_or_else(|| "provider is not enabled".into())
+        .ok_or_else(|| resolution_error(ErrorKind::InvalidRequest, "provider is not enabled"))
 }
 
 /// Credential management must also work for disabled profiles.
@@ -865,7 +927,7 @@ fn selection_configured(
     if model_id.is_empty() || model_id.len() > 256 || model_id.chars().any(char::is_control) {
         return Err("invalid selected model id".into());
     }
-    let profile = configured_profile(profile_id)?;
+    let profile = configured_profile(profile_id).map_err(|error| error.message)?;
     if profile.protocol != protocol {
         return Err("provider protocol does not match the selected protocol".into());
     }
@@ -877,7 +939,7 @@ fn selection_configured(
     if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host().is_none() {
         return Err("provider endpoint is invalid".into());
     }
-    if let Some(secret) = plan_secret(&profile)? {
+    if let Some(secret) = plan_secret(&profile).map_err(|error| error.message)? {
         // Header parsing is local and never includes credential bytes in errors.
         let header = match protocol {
             ProviderProtocol::Anthropic => secret,
@@ -948,6 +1010,7 @@ enum Again {
 }
 
 struct ProviderFailure {
+    model_error: agent_provider_config::protocol::ModelError,
     why: String,
     again: Again,
     /// False only when request construction proves no dispatch occurred, or
@@ -960,6 +1023,20 @@ struct ProviderFailure {
     unprocessed: bool,
     /// The provider's HTTP status, when one was received.
     status: Option<u16>,
+}
+
+impl ProviderFailure {
+    fn message(self) -> String {
+        if self.outcome_unknown {
+            // Provider acceptance is not idempotency authority.
+            format!(
+                "provider outcome is unknown; request was not retried ({})",
+                self.why
+            )
+        } else {
+            self.why
+        }
+    }
 }
 
 /// One Plan request's non-content parameters.
@@ -991,13 +1068,16 @@ type ResolvedProfile = (ProviderProfile, Option<Zeroizing<String>>);
 
 /// The configured profile for a planning call and its API key, as
 /// [`PLAN_PROFILES`] keeps them between model turns.
-fn plan_profile(profile_id: &str, model_id: &str) -> Result<ResolvedProfile, String> {
+fn plan_profile(profile_id: &str, model_id: &str) -> Result<ResolvedProfile, ModelError> {
     // Stamped before reading, so a change made while reading is a miss next time.
     let stamp = ProfileSources::current().and_then(|sources| sources.stamp());
     PLAN_PROFILES.resolve((profile_id, model_id), stamp, Instant::now(), || {
         let profile = configured_profile(profile_id)?;
         if !profile.models.iter().any(|model| model.id == model_id) {
-            return Err("model is not configured for this provider".into());
+            return Err(resolution_error(
+                ErrorKind::InvalidRequest,
+                "model is not configured for this provider",
+            ));
         }
         let secret = plan_secret(&profile)?;
         Ok((profile, secret))
@@ -1130,8 +1210,8 @@ impl ProfileCache {
         (profile_id, model_id): (&str, &str),
         stamp: Option<SourceStamp>,
         now: Instant,
-        read: impl FnOnce() -> Result<ResolvedProfile, String>,
-    ) -> Result<ResolvedProfile, String> {
+        read: impl FnOnce() -> Result<ResolvedProfile, ModelError>,
+    ) -> Result<ResolvedProfile, ModelError> {
         let same =
             |entry: &CachedProfile| entry.profile_id == profile_id && entry.model_id == model_id;
         let generation = {
@@ -1189,12 +1269,16 @@ fn fresh(entry: &CachedProfile, now: Instant) -> bool {
 /// A missing credential means unauthenticated only for a literal loopback
 /// endpoint explicitly classified as this device. All other Plan profiles
 /// retain the existing vault requirement.
-fn unauthenticated_local_plan(profile: &ProviderProfile) -> Result<bool, String> {
+fn unauthenticated_local_plan(profile: &ProviderProfile) -> Result<bool, ModelError> {
     if profile.location != EndpointLocation::ThisDevice || profile.credential.is_some() {
         return Ok(false);
     }
-    let endpoint = url::Url::parse(&provider_url(profile))
-        .map_err(|_| "local provider endpoint is invalid".to_string())?;
+    let endpoint = url::Url::parse(&provider_url(profile)).map_err(|_| {
+        resolution_error(
+            ErrorKind::InvalidRequest,
+            "local provider endpoint is invalid",
+        )
+    })?;
     let loopback = match endpoint.host() {
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
@@ -1205,12 +1289,15 @@ fn unauthenticated_local_plan(profile: &ProviderProfile) -> Result<bool, String>
         || !endpoint.username().is_empty()
         || endpoint.password().is_some()
     {
-        return Err("unauthenticated local Plan requires a literal loopback endpoint".into());
+        return Err(resolution_error(
+            ErrorKind::InvalidRequest,
+            "unauthenticated local Plan requires a literal loopback endpoint",
+        ));
     }
     Ok(true)
 }
 
-fn plan_secret(profile: &ProviderProfile) -> Result<Option<Zeroizing<String>>, String> {
+fn plan_secret(profile: &ProviderProfile) -> Result<Option<Zeroizing<String>>, ModelError> {
     if unauthenticated_local_plan(profile)? {
         return Ok(None);
     }
@@ -1225,38 +1312,25 @@ async fn plan_dispatch(
     timing: &mut PlanTiming,
 ) -> Result<String, String> {
     let (profile_id, model_id) = (call.profile_id.to_owned(), call.model_id.to_owned());
-    let (profile, mut secret) = blocking(move || plan_profile(&profile_id, &model_id)).await?;
+    let (profile, mut secret) = blocking_model(move || plan_profile(&profile_id, &model_id))
+        .await
+        .map_err(|error| error.message)?;
     let streaming = call.stream;
     timing.stream = streaming;
-    let ceiling = profile
-        .models
-        .iter()
-        .find(|model| model.id == call.model_id)
-        .and_then(|model| model.request_limits.as_ref())
-        .and_then(|limits| limits.plan_timeout_ms)
-        .map_or(MAX_PROVIDER_TIMEOUT, |milliseconds| {
-            Duration::from_millis(u64::from(milliseconds))
+    let mut body = body;
+    let object = body
+        .as_object_mut()
+        .ok_or("plan body must be a JSON object")?;
+    object.insert("model".into(), call.model_id.into());
+    let output = model_output_limit(&profile, call.model_id, object)?
+        .map(|(_, limit)| limit)
+        .or_else(|| {
+            object
+                .get("max_completion_tokens")
+                .or_else(|| object.get("max_tokens"))
+                .and_then(serde_json::Value::as_u64)
         });
-    let timeout = call.timeout.min(ceiling);
-    timing.timeout_ms = Some(timeout.as_millis());
-    let body = outbound_body(&profile, call.model_id, body, streaming)?;
-    if let Some(model) = profile
-        .models
-        .iter()
-        .find(|model| model.id == call.model_id)
-        && let Some(limits) = &model.request_limits
-    {
-        timing.output_allowance = body
-            .get("max_completion_tokens")
-            .or_else(|| body.get("max_tokens"))
-            .and_then(serde_json::Value::as_u64);
-        timing.runtime_context = limits.runtime_context_tokens;
-        timing.source_context = model.context_window;
-    }
-    let budget = timeout
-        .checked_sub(timing.started.elapsed())
-        .filter(|budget| !budget.is_zero())
-        .ok_or_else(|| "provider request timed out".to_string())?;
+    let budget = timing.budget(call, &profile, output)?;
     let result = rig_adapter::legacy(
         http,
         &profile,
@@ -1268,18 +1342,7 @@ async fn plan_dispatch(
     )
     .await
     .inspect_err(|failure| timing.status = failure.status)
-    .map_err(|failure| {
-        if failure.outcome_unknown {
-            // There is no provider acceptance/status or idempotency authority.
-            // Keep the error bounded and free of provider bodies or credentials.
-            format!(
-                "provider outcome is unknown; request was not retried ({})",
-                failure.why
-            )
-        } else {
-            failure.why
-        }
-    });
+    .map_err(ProviderFailure::message);
     secret.zeroize();
     if let Ok(text) = &result {
         timing.status = Some(200);
@@ -1647,248 +1710,14 @@ const MAX_STREAM_BYTES: usize = 1024 * 1024;
 
 fn stream_failure(why: &str) -> ProviderFailure {
     ProviderFailure {
+        model_error: agent_provider_config::protocol::ModelError::new(
+            agent_provider_config::protocol::ErrorKind::InvalidResponse,
+        ),
         why: why.into(),
         again: Again::Never,
         outcome_unknown: true,
         unprocessed: false,
         status: None,
-    }
-}
-
-/// Historical stream fixtures, with an injectable coalescing clock. Live
-/// provider replies are decoded by Rig, not this regression-only parser.
-#[cfg(test)]
-fn read_sse(
-    mut sse: SseReader,
-    pieces: &[&[u8]],
-    emit: Emit<'_>,
-    timing: &mut PlanTiming,
-    clock: &mut dyn FnMut() -> Instant,
-) -> Result<String, ProviderFailure> {
-    for piece in pieces {
-        if sse.feed(piece, emit, timing, clock)? == Flow::Done {
-            return sse.finish(emit, timing);
-        }
-    }
-    sse.end(emit, timing, clock)
-}
-
-#[derive(Debug, PartialEq, Eq)]
-#[cfg(test)]
-enum Flow {
-    More,
-    Done,
-}
-
-/// What one stream is rebuilt into, by the provider's dialect.
-#[cfg(test)]
-enum Wire {
-    /// OpenAI-compatible `chat.completion.chunk`s.
-    Chat(StreamAssembly),
-    /// Anthropic Messages events.
-    Messages(anthropic_stream::MessageAssembly),
-}
-
-#[cfg(test)]
-impl Wire {
-    fn calls(&self) -> &[StreamCall] {
-        match self {
-            Self::Chat(assembly) => &assembly.calls,
-            Self::Messages(assembly) => &assembly.calls,
-        }
-    }
-
-    /// How many leading tool calls are complete.
-    fn complete(&self) -> usize {
-        match self {
-            Self::Chat(assembly) => assembly.complete(),
-            Self::Messages(assembly) => assembly.complete(),
-        }
-    }
-
-    /// Reasoning chunks and bytes seen, for the content-free progress log.
-    const fn reasoning(&self) -> (u64, u64) {
-        match self {
-            Self::Chat(assembly) => (assembly.reasoning_chunks, assembly.reasoning_bytes),
-            Self::Messages(assembly) => (assembly.reasoning_chunks, assembly.reasoning_bytes),
-        }
-    }
-
-    /// Fold one parsed event in: whether it carried output, and whether it
-    /// ended the stream.
-    fn fold(&mut self, chunk: &serde_json::Value) -> Result<(bool, Flow), ProviderFailure> {
-        match self {
-            Self::Chat(assembly) => {
-                let visible_output = assembly.push(chunk);
-                if assembly.malformed_reasoning_content {
-                    return Err(stream_failure(
-                        "provider reasoning_content was not a string",
-                    ));
-                }
-                Ok((visible_output, Flow::More))
-            }
-            Self::Messages(assembly) => {
-                let folded = assembly.fold(chunk)?;
-                let flow = if folded.stop { Flow::Done } else { Flow::More };
-                Ok((folded.output, flow))
-            }
-        }
-    }
-}
-
-/// The state of one SSE stream, fed its bytes as they arrive.
-#[cfg(test)]
-struct SseReader {
-    wire: Wire,
-    emitted: usize,
-    coalescer: Option<DeltaCoalescer>,
-    /// The start of a line whose newline has not arrived yet.
-    partial: Vec<u8>,
-}
-
-#[cfg(test)]
-impl SseReader {
-    fn new(protocol: ProviderProtocol, deltas: bool) -> Self {
-        Self {
-            wire: match protocol {
-                ProviderProtocol::OpenAiCompatible => Wire::Chat(StreamAssembly::default()),
-                ProviderProtocol::Anthropic => {
-                    Wire::Messages(anthropic_stream::MessageAssembly::default())
-                }
-            },
-            emitted: 0,
-            coalescer: deltas.then(DeltaCoalescer::default),
-            partial: Vec::new(),
-        }
-    }
-
-    /// Take the next bytes of the stream, however the transport split them:
-    /// every line they complete is read; the rest waits for its newline.
-    fn feed(
-        &mut self,
-        bytes: &[u8],
-        emit: Emit<'_>,
-        timing: &mut PlanTiming,
-        clock: &mut dyn FnMut() -> Instant,
-    ) -> Result<Flow, ProviderFailure> {
-        let mut pending = std::mem::take(&mut self.partial);
-        pending.extend_from_slice(bytes);
-        let mut consumed = 0_usize;
-        let mut flow = Flow::More;
-        for line in pending.split_inclusive(|byte| *byte == b'\n') {
-            if line.last() != Some(&b'\n') {
-                // A partial line waits for the rest of it.
-                break;
-            }
-            consumed = consumed.saturating_add(line.len());
-            if self.line(line, emit, timing, clock)? == Flow::Done {
-                flow = Flow::Done;
-                break;
-            }
-        }
-        pending.drain(..consumed);
-        self.partial = pending;
-        Ok(flow)
-    }
-
-    /// The stream closed: read a last line without its newline, as a
-    /// buffered line reader returns it, then finish.
-    fn end(
-        mut self,
-        emit: Emit<'_>,
-        timing: &mut PlanTiming,
-        clock: &mut dyn FnMut() -> Instant,
-    ) -> Result<String, ProviderFailure> {
-        let last = std::mem::take(&mut self.partial);
-        if !last.is_empty() {
-            self.line(&last, emit, timing, clock)?;
-        }
-        self.finish(emit, timing)
-    }
-
-    fn line(
-        &mut self,
-        line: &[u8],
-        emit: Emit<'_>,
-        timing: &mut PlanTiming,
-        clock: &mut dyn FnMut() -> Instant,
-    ) -> Result<Flow, ProviderFailure> {
-        // Anthropic's `event:` lines repeat the `type` its data carries.
-        let Some(data) = line.trim_ascii().strip_prefix(b"data:") else {
-            return Ok(Flow::More);
-        };
-        let data = data.trim_ascii();
-        if data == b"[DONE]" {
-            return Ok(Flow::Done);
-        }
-        let chunk: serde_json::Value = serde_json::from_slice(data)
-            .map_err(|_| stream_failure("provider stream was unreadable"))?;
-        // A failure after a 200 status arrives inside the stream: an error
-        // chunk (OpenRouter) or an `error` event (Anthropic, e.g. overloaded).
-        if chunk.get("error").is_some() {
-            return Err(stream_failure(&format!(
-                "provider stream failed{}",
-                provider_error_detail(data)
-            )));
-        }
-        let (visible_output, flow) = self.wire.fold(&chunk)?;
-        let (reasoning_chunks, reasoning_bytes) = self.wire.reasoning();
-        timing.observe_stream(reasoning_chunks, reasoning_bytes);
-        if visible_output && timing.first_token.is_none() {
-            timing.first_token = Some(timing.started.elapsed());
-        }
-        if reasoning_chunks > 0 && timing.first_reasoning.is_none() {
-            timing.first_reasoning = Some(timing.started.elapsed());
-        }
-        let calls = self.wire.calls();
-        self.emitted = emit_complete(
-            calls,
-            self.emitted,
-            self.wire.complete(),
-            emit,
-            timing,
-            self.coalescer.as_mut(),
-        )?;
-        if let Some(coalescer) = self.coalescer.as_mut() {
-            coalescer.pending(calls, self.emitted, clock(), false, emit)?;
-        }
-        Ok(flow)
-    }
-
-    fn finish(self, emit: Emit<'_>, timing: &mut PlanTiming) -> Result<String, ProviderFailure> {
-        let Self {
-            wire,
-            emitted,
-            mut coalescer,
-            ..
-        } = self;
-        let ended = match &wire {
-            Wire::Chat(assembly) => assembly.finish.is_some(),
-            Wire::Messages(assembly) => assembly.stopped(),
-        };
-        if !ended {
-            return Err(stream_failure("provider stream ended early"));
-        }
-        let calls = wire.calls();
-        emit_complete(
-            calls,
-            emitted,
-            calls.len(),
-            emit,
-            timing,
-            coalescer.as_mut(),
-        )?;
-        timing.tool_calls = calls.len();
-        match wire {
-            Wire::Chat(assembly) => {
-                timing.observe_usage(assembly.usage.as_ref());
-                Ok(assembly.into_completion().to_string())
-            }
-            Wire::Messages(assembly) => {
-                timing.observe_usage(assembly.usage().as_ref());
-                Ok(assembly.into_message()?.to_string())
-            }
-        }
     }
 }
 
@@ -1906,23 +1735,6 @@ struct DeltaCoalescer {
 }
 
 impl DeltaCoalescer {
-    /// Emit coalesced delta frames for the in-progress calls at and after
-    /// `from`; `force` flushes every buffered byte (before a `tool_call`).
-    #[cfg(test)]
-    fn pending(
-        &mut self,
-        calls: &[StreamCall],
-        from: usize,
-        now: Instant,
-        force: bool,
-        emit: Emit<'_>,
-    ) -> Result<(), ProviderFailure> {
-        for index in from..calls.len() {
-            self.flush(calls, index, now, force, emit)?;
-        }
-        Ok(())
-    }
-
     fn flush(
         &mut self,
         calls: &[StreamCall],
@@ -1969,6 +1781,7 @@ impl DeltaCoalescer {
             ),
             configured: None,
             error: None,
+            model_error: None,
             event: Some(EVENT_TOOL_CALL_DELTA.into()),
         };
         self.frames = self.frames.saturating_add(1);
@@ -2018,6 +1831,7 @@ fn emit_complete(
                 ),
                 configured: None,
                 error: None,
+                model_error: None,
                 event: Some(EVENT_TOOL_CALL.into()),
             };
             if !emit(&event) {
@@ -2038,206 +1852,12 @@ struct StreamCall {
     arguments: String,
 }
 
-/// Tool-event state shared by Rig's normalized events and the historical
-/// regression fixtures. Provider wire assembly is exclusively Rig's job.
+/// Presentation state for Rig-normalized tool and reasoning events.
 #[derive(Default)]
 struct StreamAssembly {
     calls: Vec<StreamCall>,
-    #[cfg(test)]
-    id: Option<serde_json::Value>,
-    #[cfg(test)]
-    created: Option<serde_json::Value>,
-    #[cfg(test)]
-    model: Option<serde_json::Value>,
-    #[cfg(test)]
-    content: Option<String>,
-    #[cfg(test)]
-    reasoning_content: Option<String>,
-    #[cfg(test)]
-    malformed_reasoning_content: bool,
-    #[cfg(test)]
-    refusal: Option<String>,
-    #[cfg(test)]
-    frontier: usize,
-    #[cfg(test)]
-    finish: Option<String>,
-    #[cfg(test)]
-    usage: Option<serde_json::Value>,
-    #[cfg(test)]
-    reasoning_seen: bool,
     reasoning_chunks: u64,
     reasoning_bytes: u64,
-}
-
-#[cfg(test)]
-impl StreamAssembly {
-    fn push_reasoning_content(&mut self, value: Option<&serde_json::Value>) {
-        match value {
-            None | Some(serde_json::Value::Null) => {}
-            Some(serde_json::Value::String(reasoning)) => self
-                .reasoning_content
-                .get_or_insert_default()
-                .push_str(reasoning),
-            Some(_) => self.malformed_reasoning_content = true,
-        }
-    }
-
-    fn observe_reasoning(&mut self, reasoning: Option<&str>) {
-        let Some(reasoning) = reasoning.filter(|value| !value.is_empty()) else {
-            return;
-        };
-        self.reasoning_seen = true;
-        self.reasoning_chunks = self.reasoning_chunks.saturating_add(1);
-        self.reasoning_bytes = self.reasoning_bytes.saturating_add(reasoning.len() as u64);
-    }
-
-    /// Fold one chunk in; true when it carried output (text or a tool call).
-    fn push(&mut self, chunk: &serde_json::Value) -> bool {
-        for (field, slot) in [
-            ("id", &mut self.id),
-            ("created", &mut self.created),
-            ("model", &mut self.model),
-        ] {
-            if slot.is_none() {
-                *slot = chunk.get(field).cloned();
-            }
-        }
-        if let Some(usage) = chunk.get("usage").filter(|usage| usage.is_object()) {
-            self.usage = Some(usage.clone());
-        }
-        let Some(choice) = chunk
-            .get("choices")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|choices| {
-                choices.iter().find(|choice| {
-                    choice
-                        .get("index")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0)
-                        == 0
-                })
-            })
-        else {
-            return false;
-        };
-        let mut output = false;
-        let delta = choice.get("delta");
-        let text = |key: &str| {
-            delta
-                .and_then(|delta| delta.get(key))
-                .and_then(serde_json::Value::as_str)
-        };
-        if let Some(content) = text("content").filter(|content| !content.is_empty()) {
-            self.content.get_or_insert_default().push_str(content);
-            output = true;
-        }
-        // Only the explicitly named provider field is replayable. Other
-        // reasoning dialects remain timing metadata; never infer their shape.
-        self.push_reasoning_content(delta.and_then(|delta| delta.get("reasoning_content")));
-        // Reasoning stays outside incremental visible text and tool frames.
-        self.observe_reasoning(text("reasoning").or_else(|| text("reasoning_content")));
-        if let Some(refusal) = text("refusal").filter(|refusal| !refusal.is_empty()) {
-            self.refusal.get_or_insert_default().push_str(refusal);
-            output = true;
-        }
-        for call in delta
-            .and_then(|delta| delta.get("tool_calls"))
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let Some(index) = call
-                .get("index")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|index| usize::try_from(index).ok())
-                .filter(|index| *index < MAX_STREAM_EVENTS)
-            else {
-                continue;
-            };
-            while self.calls.len() <= index {
-                self.calls.push(StreamCall::default());
-            }
-            // A delta for a later index means every earlier call is complete.
-            self.frontier = self.frontier.max(index);
-            let Some(slot) = self.calls.get_mut(index) else {
-                continue;
-            };
-            if let Some(id) = call.get("id").and_then(serde_json::Value::as_str) {
-                slot.id = id.into();
-            }
-            let function = call.get("function");
-            if let Some(name) = function
-                .and_then(|function| function.get("name"))
-                .and_then(serde_json::Value::as_str)
-            {
-                slot.name.push_str(name);
-            }
-            if let Some(arguments) = function
-                .and_then(|function| function.get("arguments"))
-                .and_then(serde_json::Value::as_str)
-            {
-                slot.arguments.push_str(arguments);
-            }
-            output = true;
-        }
-        if let Some(finish) = choice
-            .get("finish_reason")
-            .and_then(serde_json::Value::as_str)
-        {
-            self.finish = Some(finish.into());
-        }
-        output
-    }
-
-    /// How many leading tool calls are complete.
-    fn complete(&self) -> usize {
-        if self.finish.is_some() {
-            self.calls.len()
-        } else {
-            self.frontier.min(self.calls.len())
-        }
-    }
-
-    fn into_completion(self) -> serde_json::Value {
-        let mut message = serde_json::Map::new();
-        message.insert("role".into(), "assistant".into());
-        message.insert(
-            "content".into(),
-            self.content
-                .map_or(serde_json::Value::Null, serde_json::Value::String),
-        );
-        if let Some(reasoning) = self.reasoning_content {
-            message.insert(
-                "reasoning_content".into(),
-                serde_json::Value::String(reasoning),
-            );
-        }
-        if let Some(refusal) = self.refusal {
-            message.insert("refusal".into(), serde_json::Value::String(refusal));
-        }
-        if !self.calls.is_empty() {
-            let calls = self
-                .calls
-                .into_iter()
-                .map(|call| {
-                    serde_json::json!({
-                        "id": call.id,
-                        "type": "function",
-                        "function": { "name": call.name, "arguments": call.arguments },
-                    })
-                })
-                .collect();
-            message.insert("tool_calls".into(), calls);
-        }
-        serde_json::json!({
-            "id": self.id,
-            "object": "chat.completion",
-            "created": self.created,
-            "model": self.model,
-            "choices": [{ "index": 0, "message": message, "finish_reason": self.finish }],
-            "usage": self.usage,
-        })
-    }
 }
 
 /// Timing for one Plan, logged as one content-free line on stderr.
@@ -2272,6 +1892,41 @@ struct PlanTiming {
 }
 
 impl PlanTiming {
+    /// One deadline and content-free policy snapshot for either request shape.
+    fn budget(
+        &mut self,
+        call: &PlanCall<'_>,
+        profile: &ProviderProfile,
+        output: Option<u64>,
+    ) -> Result<Duration, String> {
+        let model = profile
+            .models
+            .iter()
+            .find(|model| model.id == call.model_id);
+        let limits = model.and_then(|model| model.request_limits.as_ref());
+        let ceiling = limits
+            .and_then(|limits| limits.plan_timeout_ms)
+            .map_or(MAX_PROVIDER_TIMEOUT, |ms| {
+                Duration::from_millis(u64::from(ms))
+            });
+        let timeout = call.timeout.min(ceiling);
+        self.stream = call.stream;
+        self.timeout_ms = Some(timeout.as_millis());
+        if let Some(limits) = limits {
+            self.output_allowance = Some(
+                output
+                    .unwrap_or_else(|| u64::from(limits.max_output_tokens))
+                    .min(u64::from(limits.max_output_tokens)),
+            );
+            self.runtime_context = limits.runtime_context_tokens;
+            self.source_context = model.and_then(|model| model.context_window);
+        }
+        timeout
+            .checked_sub(self.started.elapsed())
+            .filter(|budget| !budget.is_zero())
+            .ok_or_else(|| "provider request timed out".to_string())
+    }
+
     fn start() -> Self {
         Self {
             started: Instant::now(),
@@ -2514,24 +2169,16 @@ async fn transform(
 ) -> Result<String, String> {
     validate_transform(&ask)?;
     let model = model_id.clone();
-    let (profile, secret) = blocking(move || plan_profile(&profile_id, &model)).await?;
+    let (profile, secret) = blocking_model(move || plan_profile(&profile_id, &model))
+        .await
+        .map_err(|error| error.message)?;
     let body = transform_body(profile.protocol, &model_id, &ask);
-    let endpoint = provider_url(&profile);
-    let timeout = ask.timeout.min(crate::MAX_TRANSFORM_TIMEOUT);
-    let began = Instant::now();
-    let result = while_busy(
-        || timeout.checked_sub(began.elapsed()),
-        tokio::time::sleep,
-        |budget| {
-            provider_attempt(
-                http,
-                &profile,
-                &endpoint,
-                secret.as_ref().map(|secret| secret.as_str()),
-                &body,
-                budget,
-            )
-        },
+    let result = unary_with_retries(
+        http,
+        &profile,
+        secret.as_ref().map(|secret| secret.as_str()),
+        &body,
+        ask.timeout.min(crate::MAX_TRANSFORM_TIMEOUT),
     )
     .await;
     drop(secret);
@@ -2548,7 +2195,7 @@ fn vision_request(
     image: &VisionImage,
 ) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_vision_image(image)?;
-    let profile = configured_profile(profile_id)?;
+    let profile = configured_profile(profile_id).map_err(|error| error.message)?;
     if !is_supervised_loopback(&profile) {
         return Err("image analysis requires a supervised loopback OpenAI-compatible model".into());
     }
@@ -2575,16 +2222,8 @@ async fn analyze_image(
     image: VisionImage,
 ) -> Result<String, String> {
     let (profile, body) = blocking(move || vision_request(&profile_id, &model_id, &image)).await?;
-    let endpoint = provider_url(&profile);
-    let began = Instant::now();
-    // A local vLLM endpoint is normally unauthenticated. Do not invent a
-    // bearer token, and never look up a hosted-provider secret for it.
-    while_busy(
-        || VISION_TIMEOUT.checked_sub(began.elapsed()),
-        tokio::time::sleep,
-        |budget| provider_attempt(http, &profile, &endpoint, None, &body, budget),
-    )
-    .await
+    // No invented bearer token or hosted-provider credential lookup.
+    unary_with_retries(http, &profile, None, &body, VISION_TIMEOUT).await
 }
 
 /// Validate one fixed face-clustering request against the separate signed
@@ -2598,7 +2237,7 @@ fn face_request(
     images: &[FaceImage],
 ) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_face_images(images)?;
-    let profile = configured_profile(profile_id)?;
+    let profile = configured_profile(profile_id).map_err(|error| error.message)?;
     if !is_supervised_loopback(&profile) {
         return Err("face clustering requires a supervised loopback local model".into());
     }
@@ -2625,14 +2264,7 @@ async fn cluster_faces(
     images: Vec<FaceImage>,
 ) -> Result<String, String> {
     let (profile, body) = blocking(move || face_request(&profile_id, &model_id, &images)).await?;
-    let endpoint = provider_url(&profile);
-    let began = Instant::now();
-    while_busy(
-        || VISION_TIMEOUT.checked_sub(began.elapsed()),
-        tokio::time::sleep,
-        |budget| provider_attempt(http, &profile, &endpoint, None, &body, budget),
-    )
-    .await
+    unary_with_retries(http, &profile, None, &body, VISION_TIMEOUT).await
 }
 
 fn validate_vision_image(image: &VisionImage) -> Result<(), String> {
@@ -2738,16 +2370,20 @@ fn local_face_body(model_id: &str, images: &[FaceImage]) -> serde_json::Value {
     })
 }
 
-async fn provider_attempt(
+async fn unary_with_retries(
     client: &reqwest::Client,
     profile: &ProviderProfile,
-    endpoint: &str,
     secret: Option<&str>,
     body: &serde_json::Value,
-    budget: Duration,
-) -> Result<String, ProviderFailure> {
-    let _ = endpoint; // URL selection belongs to the checked profile.
-    rig_adapter::legacy(client, profile, secret, body.clone(), budget, None, false).await
+    timeout: Duration,
+) -> Result<String, String> {
+    let began = Instant::now();
+    while_busy(
+        || timeout.checked_sub(began.elapsed()),
+        tokio::time::sleep,
+        |budget| rig_adapter::legacy(client, profile, secret, body.clone(), budget, None, false),
+    )
+    .await
 }
 
 /// The most of a provider error body read to classify it.
@@ -2766,116 +2402,38 @@ async fn error_body(mut response: reqwest::Response) -> Vec<u8> {
     detail
 }
 
-/// The provider's machine-readable error classification, and nothing else:
-/// `error.type`, `error.code` and `error.param` (`OpenAI`) or `error.type`
-/// (Anthropic), each only when it is a short identifier. The free-text
-/// `message` is never passed on, because it can quote request content, and
-/// no header is ever read.
-#[cfg(test)]
-fn provider_error_detail(body: &[u8]) -> String {
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return String::new();
-    };
-    let Some(error) = value.get("error") else {
-        return String::new();
-    };
-    let identifier = |key: &str| {
-        error
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| {
-                !value.is_empty()
-                    && value.len() <= 48
-                    && value.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric()
-                            || matches!(byte, b'_' | b'-' | b'.' | b'[' | b']')
-                    })
-            })
-    };
-    let parts = ["type", "code", "param"]
-        .into_iter()
-        .filter_map(|key| {
-            identifier(key)
-                .map(str::to_owned)
-                .or_else(|| {
-                    error
-                        .get(key)
-                        .and_then(serde_json::Value::as_u64)
-                        .map(|code| code.to_string())
-                })
-                .map(|value| format!("{key}={value}"))
-        })
-        .collect::<Vec<_>>();
-    if parts.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", parts.join(" "))
-    }
-}
-
 /// Use only recognized classifications, never echo arbitrary identifiers: a
 /// hostile provider can put a credential in any field, not just `message`.
+#[cfg(test)]
 fn provider_error_advice(status: u16, body: &[u8]) -> &'static str {
-    let value: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
-    let error = value.get("error").unwrap_or(&value);
-    let message = error
-        .get("message")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .chars()
-        .take(4096)
-        .collect::<String>()
-        .to_ascii_lowercase();
-    let codes = ["code", "type"].map(|key| {
-        error
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-    });
-    if codes.iter().any(|code| {
-        matches!(
-            *code,
-            "insufficient_quota"
-                | "insufficient_credits"
-                | "credit_balance_too_low"
-                | "billing_hard_limit_reached"
-        )
-    }) || status == 402
-        || message.contains("credit balance is too low")
-        || message.contains("insufficient credits")
-    {
-        "; provider credits are exhausted; check billing or choose another provider"
-    } else if codes.iter().any(|code| {
-        matches!(
-            *code,
-            "context_length_exceeded" | "context_window_exceeded" | "prompt_too_long"
-        )
-    }) || status == 413
-        || message.contains("prompt is too long")
-        || message.contains("maximum context length")
-    {
-        "; context limit exceeded; shorten the conversation or choose a larger-context model"
-    } else if status == 401
-        || codes.contains(&"authentication_error")
-        || codes.contains(&"invalid_api_key")
-    {
-        "; authentication failed; replace the provider API key"
-    } else if status == 403 || codes.contains(&"permission_error") {
-        "; provider permission denied; check the key's model access"
-    } else if status == 429
-        || codes.contains(&"rate_limit_error")
-        || codes.contains(&"rate_limit_exceeded")
-    {
-        "; provider rate limit reached; wait before retrying"
-    } else if status == 408 || status == 504 {
-        "; provider request timed out; try a shorter request"
-    } else if status >= 500 || codes.contains(&"overloaded_error") {
-        "; provider is unavailable; retry later or choose another provider"
-    } else {
-        "; provider rejected or failed the request; check model and provider settings"
+    classified_error_advice(&crate::openai::Failure::from_http(
+        status,
+        &String::from_utf8_lossy(body),
+        None,
+    ))
+}
+
+fn classified_error_advice(failure: &crate::openai::Failure) -> &'static str {
+    use agent_provider_config::protocol::ErrorKind;
+    match failure.model_error().kind {
+        ErrorKind::CreditsExhausted => {
+            "; provider credits are exhausted; check billing or choose another provider"
+        }
+        ErrorKind::ContextLimit => {
+            "; context limit exceeded; shorten the conversation or choose a larger-context model"
+        }
+        ErrorKind::Authentication => "; authentication failed; replace the provider API key",
+        ErrorKind::PermissionDenied => "; provider permission denied; check the key's model access",
+        ErrorKind::RateLimited => "; provider rate limit reached; wait before retrying",
+        ErrorKind::TimedOut => "; provider request timed out; try a shorter request",
+        ErrorKind::Unavailable | ErrorKind::Provider => {
+            "; provider is unavailable; retry later or choose another provider"
+        }
+        _ => "; provider rejected or failed the request; check model and provider settings",
     }
 }
 
+#[cfg(test)]
 fn again_after(status: u16, retry_after: Option<&str>) -> Again {
     let soon = || Again::Soon(retry_after.and_then(after_seconds));
     match status {
@@ -2889,21 +2447,13 @@ fn again_after(status: u16, retry_after: Option<&str>) -> Again {
 /// agent's own OpenAI-compatible client classifies them, so an exhausted
 /// quota (an `OpenAI` 429 `insufficient_quota`), which asking again cannot
 /// help, is not one.
+#[cfg(test)]
 fn refused_unprocessed(status: u16, body: &[u8]) -> bool {
-    let parsed: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
-    let code = match parsed.get("error") {
-        Some(serde_json::Value::String(_)) => parsed.get("code"),
-        Some(serde_json::Value::Object(error)) => error.get("code").or_else(|| error.get("type")),
-        _ => None,
-    }
-    .and_then(serde_json::Value::as_str);
-    matches!(status, 429 | 529)
-        && !matches!(
-            code,
-            Some("insufficient_credit" | "credit_exhausted" | "insufficient_quota")
-        )
+    crate::openai::Failure::from_http(status, &String::from_utf8_lossy(body), None)
+        .refused_unprocessed(status)
 }
 
+#[cfg(test)]
 fn after_seconds(value: &str) -> Option<Duration> {
     Duration::try_from_secs_f64(value.trim().parse::<f64>().ok()?).ok()
 }
@@ -2993,6 +2543,9 @@ where
         let Some(budget) = left().filter(|budget| !budget.is_zero()) else {
             // Nothing was sent since `last`, which already settled the outcome.
             return Err(last.unwrap_or_else(|| ProviderFailure {
+                model_error: agent_provider_config::protocol::ModelError::new(
+                    agent_provider_config::protocol::ErrorKind::TimedOut,
+                ),
                 why: "provider request timed out".into(),
                 again: Again::Never,
                 outcome_unknown: false,
@@ -3060,6 +2613,35 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn subject_requests_observe_the_build_capability_and_caller_boundary() {
+        let http = provider_client().unwrap();
+        for caller in [CANVAS_APP, PHOTOS_APP, AGENT_APP] {
+            let response = handle(
+                caller,
+                Request::SegmentSubject {
+                    image: VisionImage {
+                        media_type: "image/png".into(),
+                        data_base64: base64::engine::general_purpose::STANDARD
+                            .encode(b"not a picture"),
+                        source_content_hash: "0".repeat(64),
+                    },
+                },
+                &http,
+            )
+            .await;
+            assert!(!response.ok);
+            let expected = if caller == AGENT_APP {
+                "only Canvas and Photos may find a picture's subject"
+            } else if cfg!(feature = "local-models") {
+                "the picture cannot be decoded"
+            } else {
+                "on-device subject segmentation is unavailable in this gateway build"
+            };
+            assert_eq!(response.error.as_deref(), Some(expected));
+        }
+    }
+
     #[test]
     fn existing_user_profile_requires_explicit_original_endpoint_migration() {
         let root = tempfile::tempdir().unwrap();
@@ -3089,7 +2671,13 @@ mod tests {
         assert!(
             resolve_key_in(&store, &loaded)
                 .unwrap_err()
+                .message
                 .contains("migration required")
+        );
+
+        assert_eq!(
+            resolve_key_in(&store, &loaded).unwrap_err().kind,
+            ErrorKind::Authentication
         );
 
         // Editing the profile must not give its new origin custody of the old key.
@@ -3120,7 +2708,10 @@ mod tests {
         );
         migrate_key_in(&store, &loaded, "https://original.example/v1").unwrap();
         loaded.endpoint = "https://edited.example/v1".into();
-        assert!(resolve_key_in(&store, &loaded).is_err());
+        assert_eq!(
+            resolve_key_in(&store, &loaded).unwrap_err().kind,
+            ErrorKind::PermissionDenied
+        );
     }
 
     #[test]
@@ -3399,6 +2990,8 @@ mod tests {
                 std::future::ready(match outcomes[index] {
                     Ok(output) => Ok(output.to_string()),
                     Err((status, retry_after)) => Err(ProviderFailure {
+                        model_error: crate::openai::Failure::from_http(status, "", retry_after)
+                            .model_error(),
                         why: format!("provider returned HTTP {status}"),
                         again: again_after(status, retry_after),
                         outcome_unknown: true,
@@ -3628,80 +3221,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn provider_error_detail_passes_identifiers_never_messages() {
-        let openai = br#"{"error":{"message":"secret document text","type":"invalid_request_error","param":"messages[2].content","code":"unsupported_value"}}"#;
-        assert_eq!(
-            provider_error_detail(openai),
-            " (type=invalid_request_error code=unsupported_value param=messages[2].content)"
-        );
-        let anthropic =
-            br#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
-        assert_eq!(provider_error_detail(anthropic), " (type=overloaded_error)");
-        let router = br#"{"error":{"code":429,"message":"Rate limited upstream"}}"#;
-        assert_eq!(provider_error_detail(router), " (code=429)");
-        let hostile =
-            br#"{"error":{"type":"a b","code":"x\ny","param":"Authorization: Bearer k"}}"#;
-        assert_eq!(provider_error_detail(hostile), "");
-        let long = format!(r#"{{"error":{{"code":"{}"}}}}"#, "x".repeat(49));
-        assert_eq!(provider_error_detail(long.as_bytes()), "");
-        assert_eq!(provider_error_detail(b"<html>bad gateway</html>"), "");
-        assert_eq!(provider_error_detail(b""), "");
-    }
-
-    #[test]
-    fn stream_assembly_completes_tool_calls_in_order() {
-        let mut assembly = StreamAssembly::default();
-        let chunk = |value: serde_json::Value| value;
-        assert!(!assembly.push(&chunk(serde_json::json!({"id": "c", "choices": [{"index": 0, "delta": {"role": "assistant"}}]}))));
-        assert!(assembly.push(&chunk(serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "a", "function": {"name": "list_", "arguments": "{\"x\""}}]}}]}))));
-        assert_eq!(assembly.complete(), 0);
-        assembly.push(&chunk(serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"name": "operations", "arguments": ":1}"}}]}}]})));
-        assert_eq!(assembly.complete(), 0);
-        assembly.push(&chunk(serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 1, "id": "b", "function": {"name": "plan", "arguments": "{}"}}]}}]})));
-        assert_eq!(
-            assembly.complete(),
-            1,
-            "a later index completes the earlier call"
-        );
-        assembly.push(&chunk(serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})));
-        assert_eq!(assembly.complete(), 2);
-        assembly.push(&chunk(
-            serde_json::json!({"choices": [], "usage": {"completion_tokens": 3}}),
-        ));
-        let completion = assembly.into_completion();
-        assert_eq!(completion["id"], "c");
-        let calls = &completion["choices"][0]["message"]["tool_calls"];
-        assert_eq!(calls[0]["function"]["name"], "list_operations");
-        assert_eq!(calls[0]["function"]["arguments"], "{\"x\":1}");
-        assert_eq!(calls[1]["id"], "b");
-        assert_eq!(
-            completion["choices"][0]["message"]["content"],
-            serde_json::Value::Null
-        );
-        assert_eq!(completion["usage"]["completion_tokens"], 3);
-
-        let mut thinking = StreamAssembly::default();
-        assert!(
-            !thinking.push(
-                &serde_json::json!({"choices": [{"index": 0, "delta": {"reasoning": "hm"}}]})
-            )
-        );
-        assert!(thinking.reasoning_seen);
-        assert!(!thinking.into_completion().to_string().contains("hm"));
-
-        let mut text = StreamAssembly::default();
-        text.push(&serde_json::json!({"choices": [{"index": 0, "delta": {"content": "he"}}]}));
-        text.push(&serde_json::json!({"choices": [{"index": 0, "delta": {"content": "llo"}, "finish_reason": "stop"}]}));
-        let completion = text.into_completion();
-        assert_eq!(completion["choices"][0]["message"]["content"], "hello");
-        assert!(
-            completion["choices"][0]["message"]
-                .get("tool_calls")
-                .is_none()
-        );
-    }
-
     /// The real accept loop on its own runtime, serving `listener` (peer
     /// check stubbed: other hosts refuse every peer, and the check itself is
     /// unchanged). `workers` of one proves concurrency comes from serving
@@ -3827,12 +3346,20 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "service_error_tests.rs"]
+mod service_error_tests;
+
+#[cfg(test)]
 #[path = "cache_tests.rs"]
 mod cache_tests;
 
 #[cfg(test)]
 #[path = "plan_tests.rs"]
 mod plan_tests;
+
+#[cfg(test)]
+#[path = "stream_policy_tests.rs"]
+mod stream_policy_tests;
 
 #[cfg(test)]
 #[path = "selection_tests.rs"]

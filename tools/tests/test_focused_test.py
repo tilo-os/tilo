@@ -22,6 +22,33 @@ class FocusedTests(unittest.TestCase):
     def reads(self, listing='module::case: test\n'):
         return ['a' * 40 + '\n', json.dumps(self.metadata), listing]
 
+    def test_gateway_focused_tests_and_compile_checks_enable_server_features(self):
+        self.values.update(PACKAGE='tilo-model-gateway', OPERATION='test-lib', TEST_TARGET='')
+        self.metadata = {'workspace_members': ['gateway-id'], 'packages': [
+            {'id': 'gateway-id', 'name': 'tilo-model-gateway',
+             'features': {'local-models': ['server'], 'host-backend': ['server']},
+             'targets': [{'name': 'tilo_model_gateway', 'kind': ['lib']}]}]}
+        values = focused.request(self.values)
+        flags = ['--features', 'tilo-model-gateway/local-models,tilo-model-gateway/host-backend']
+        with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()) as read, \
+                patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                    [], 0, 'test result: ok. 1 passed; 0 failed; 0 ignored;\n')) as run:
+            self.assertEqual(focused.execute(Path('/focused-test-fixture'), values), 0)
+        self.assertEqual(read.call_args.args[0][-4:], flags + ['--', '--list'])
+        self.assertEqual(run.call_args.args[0][5:7], ['--lib', '--features'])
+        self.assertIn(flags[1], run.call_args.args[0])
+        values.update(OPERATION='check-tests', TEST_NAME='', TEST_NAMES='', TEST_TARGET='')
+        with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
+                patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+            self.assertEqual(focused.execute(Path('/focused-test-fixture'), values), 0)
+        self.assertEqual(run.call_args.args[0][-2:], flags)
+        self.metadata['packages'][0]['features'] = {}
+        with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
+                patch.object(focused.subprocess, 'run') as run, \
+                self.assertRaisesRegex(ValueError, 'source metadata lacks'):
+            focused.execute(Path('/focused-test-fixture'), values)
+        run.assert_not_called()
+
     def test_package_sets_keep_exact_source_membership_and_failure_guards(self):
         values = dict(self.values, PACKAGE='', OPERATION='check-tests', TEST_TARGET='', TEST_NAME='')
         for packages in ([], ['shell'] * 2, ['p' + str(n) for n in range(65)],
