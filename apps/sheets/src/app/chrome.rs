@@ -239,12 +239,16 @@ impl SheetsApp {
                 rename_moved = true;
             }
         }
-        if metrics == self.metrics && !rename_moved {
-            return;
+        if metrics != self.metrics || rename_moved {
+            self.grid.set_metrics(metrics.grid);
+            self.metrics = metrics;
+            self.relayout();
         }
-        self.grid.set_metrics(metrics.grid);
-        self.metrics = metrics;
-        self.relayout();
+        // UI scale changes spacing without changing `text_scale`. Resolve
+        // against the actual painter before opening an anchored menu, not
+        // the toolbar's text-only layout cache.
+        let rect = self.toolbar.get_rect();
+        self.toolbar.lay_out_in(rect, tr, theme);
     }
 
     /// Lay out the bars, the grid and the sheet tabs inside the window.
@@ -556,7 +560,24 @@ impl SheetsApp {
         let bar = self.grid.formula_bar();
         let content = bar.text.as_str();
         let style = theme.text(TextRole::Body);
-        let text_x0 = field.x0 + self.metrics.s3;
+        let inset = self.metrics.s3;
+        let text_width = f64::from(tr.measure_style(content, None, &style).0);
+        let available = (field.width() - 2.0 * inset).max(1.0);
+        if let Some(caret) = bar.caret {
+            let prefix: String = content.chars().take(caret).collect();
+            let caret_x = f64::from(tr.measure_style(&prefix, None, &style).0);
+            // Leave a little breathing room after the caret, including at End.
+            let trailing = (available - self.metrics.s1).max(0.0);
+            self.formula_scroll_x = self
+                .formula_scroll_x
+                .max(caret_x - trailing)
+                .min(caret_x)
+                .max(0.0)
+                .min((text_width - trailing).max(0.0));
+        } else {
+            self.formula_scroll_x = 0.0;
+        }
+        let text_x0 = field.x0 + inset - self.formula_scroll_x;
         // Rebuild the per-character x boundaries for click/caret mapping. This
         // is derived from exactly the text being drawn, so a click maps to the
         // same glyph the user sees (whether it's the live edit buffer or the
@@ -571,7 +592,10 @@ impl SheetsApp {
             BlendMode::default(),
             1.0,
             transform,
-            &RoundedRect::from_rect(field, radius),
+            &RoundedRect::from_rect(
+                Rect::new(field.x0 + inset, field.y0, field.x1 - inset, field.y1),
+                radius,
+            ),
         );
         crate::grid::draw_edit_line(
             scene,
@@ -736,15 +760,25 @@ impl SheetsApp {
             let Some(name) = self.sheet_names.get(*idx) else {
                 continue;
             };
-            let peers = presence.peers_on(&PresenceKey::Tab { id: name.clone() });
-            if peers.is_empty() {
-                continue;
+            let mut peers = presence
+                .peers_on(&PresenceKey::Tab { id: name.clone() })
+                .to_vec();
+            if let Some(sheet) = self.sheet_ids.get(*idx) {
+                for (key, users) in &presence.here {
+                    if super::presence::CellScope::from_key(key)
+                        .is_some_and(|scope| scope.sheet == sheet.as_str())
+                    {
+                        peers.extend(users.iter().cloned());
+                    }
+                }
             }
+            peers.sort_by(|a, b| a.0.cmp(&b.0));
+            peers.dedup();
             let p0 = transform * Point::new(rect.x0, rect.y0);
             let p1 = transform * Point::new(rect.x1, rect.y1);
             let mist_rect = Rect::new(p0.x, p0.y, p1.x, p1.y);
             for user in peers {
-                presence.draw_peer_mist(scene, theme, user, mist_rect);
+                presence.draw_peer_mist(scene, theme, &user, mist_rect);
             }
         }
     }

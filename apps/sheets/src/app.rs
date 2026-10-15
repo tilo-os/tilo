@@ -43,6 +43,11 @@ use ui::widget::{
 mod annotations;
 mod chrome;
 mod overlays;
+#[cfg(test)]
+mod polish_tests;
+mod presence;
+#[cfg(test)]
+mod presence_tests;
 
 use chrome::{ChromeMetrics, CommandSlot, MenuRow};
 use overlays::SettingsSheet;
@@ -373,6 +378,8 @@ pub struct SheetsApp {
     /// drag-select, and the bar's caret/selection rendering. `formula_char_x[i]`
     /// is the x of the boundary before char `i`; the last entry is the end.
     formula_char_x: Vec<f64>,
+    /// Horizontal pan of the formula editor, keeping its caret inside the field.
+    formula_scroll_x: f64,
     /// Whether a drag that began in the formula bar is selecting text.
     formula_bar_selecting: bool,
     sheet_names: Vec<String>,
@@ -525,6 +532,7 @@ impl SheetsApp {
             name_box_edit: None,
             formula_field_rect: Rect::ZERO,
             formula_char_x: Vec::new(),
+            formula_scroll_x: 0.0,
             formula_bar_selecting: false,
             sheet_names: Vec::new(),
             sheet_charts: Vec::new(),
@@ -2634,6 +2642,7 @@ impl Widget for SheetsApp {
         self.apply_staged_overlay();
         self.draw_chrome(scene, transform, text_renderer, theme, presence);
         self.grid.draw(scene, transform, text_renderer, theme);
+        self.draw_cell_presence(scene, transform, text_renderer, theme, presence);
         self.draw_annotation_dock(scene, transform, text_renderer, theme);
         // The transient floating status bubble sits above the grid and the
         // tab strip, below the top layer.
@@ -3167,15 +3176,15 @@ impl Widget for SheetsApp {
 }
 
 impl ui::presence::capability::PublishesPresence for SheetsApp {
-    /// Announce which sheet the local user is viewing, so peers can flag
-    /// that tab. Keyed by sheet name (the same key
-    /// `Self::draw_sheet_tab_presence` reads on the receiving side).
+    /// Publish durable cell anchors so a peer's selection follows inserted
+    /// rows and columns. Empty, not-yet-authored cells retain tab presence.
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
-        let name = self.sheet_names.get(self.active_sheet)?;
-        Some((
-            PresenceKey::Tab { id: name.clone() },
-            PresencePayload::Arrived,
-        ))
+        let key = self.cell_presence_key().or_else(|| {
+            self.sheet_names
+                .get(self.active_sheet)
+                .map(|name| PresenceKey::Tab { id: name.clone() })
+        })?;
+        Some((key, PresencePayload::Arrived))
     }
 }
 
@@ -5024,22 +5033,16 @@ pub(crate) mod tests {
     #[test]
     fn presence_and_sheet_switching_follow_the_active_tab() {
         // Case `presence_payload_announces_active_sheet`.
-        // Presence-in-navigation, producer side: the app announces which
-        // sheet the local user is on as a `Tab { id: sheet_name }` scope, so
-        // peers can flag that tab. Switching sheets moves the announced scope.
+        // Cell presence also identifies the active sheet for navigation.
+        // Switching sheets retargets the same durable cell scope.
         {
             let (mut app, _doc) = seeded_app();
             assert!(!app.sheet_names.is_empty(), "seeded app has sheets");
 
             let (key, payload) =
                 ui::presence::capability::presence_payload(&app).expect("a sheet is active");
-            assert_eq!(
-                key,
-                PresenceKey::Tab {
-                    id: app.sheet_names[app.active_sheet].clone()
-                },
-                "the announced scope must be the active sheet's tab"
-            );
+            let scope = presence::CellScope::from_key(&key).expect("cell scope");
+            assert_eq!(scope.sheet, app.sheet_ids[app.active_sheet].as_str());
             assert_eq!(payload, PresencePayload::Arrived);
 
             // Switching sheets re-targets the announcement at the new tab.
@@ -5048,12 +5051,8 @@ pub(crate) mod tests {
                 app.active_sheet = other;
                 let (key2, _) =
                     ui::presence::capability::presence_payload(&app).expect("still active");
-                assert_eq!(
-                    key2,
-                    PresenceKey::Tab {
-                        id: app.sheet_names[other].clone()
-                    }
-                );
+                let scope = presence::CellScope::from_key(&key2).expect("cell scope");
+                assert_eq!(scope.sheet, app.sheet_ids[other].as_str());
             }
         }
 

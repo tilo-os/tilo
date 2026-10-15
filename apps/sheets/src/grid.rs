@@ -1033,7 +1033,7 @@ impl Grid {
 
     /// The cell area: inside the headers and the scroll bar gutters, so the
     /// last row and the last column are never covered by a bar.
-    fn body_rect(&self) -> Rect {
+    pub(crate) fn body_rect(&self) -> Rect {
         Rect::new(
             self.grid_x0(),
             self.grid_y0(),
@@ -1129,7 +1129,7 @@ impl Grid {
     }
 
     /// Screen rect for a cell, in absolute coords (may lie outside the body).
-    fn cell_screen_rect(&self, c: u32, r: u32) -> Rect {
+    pub(crate) fn cell_screen_rect(&self, c: u32, r: u32) -> Rect {
         let x = self.grid_x0() + self.col_left(c) - self.scroll_x;
         let y = self.grid_y0() + self.row_top(r) - self.scroll_y;
         Rect::new(x, y, x + self.col_w(c), y + self.row_h(r))
@@ -2280,6 +2280,18 @@ impl Grid {
                 transform,
                 body,
                 ui::surface::ContentEdge::Trailing,
+                theme.tokens.colors.surfaces.content,
+            );
+        }
+        if rows
+            .last()
+            .is_some_and(|&r| self.cell_screen_rect(0, r).y1 > body.y1 + 0.5)
+        {
+            ui::surface::content_edge_fade(
+                scene,
+                transform,
+                body,
+                ui::surface::ContentEdge::Bottom,
                 theme.tokens.colors.surfaces.content,
             );
         }

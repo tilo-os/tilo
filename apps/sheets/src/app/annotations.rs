@@ -27,7 +27,7 @@ const MAX_PLOT_POINTS: usize = 48;
 const MAX_SERIES: usize = 6;
 /// The rows a grid keeps visible above the dock; a window too short for them
 /// shows no dock rather than a sliver of sheet.
-const MIN_GRID_ROWS: usize = 6;
+const MIN_GRID_ROWS: usize = 4;
 /// How many lines of a comment the card shows.
 const COMMENT_LINES: usize = 2;
 
@@ -50,7 +50,7 @@ impl ChromeMetrics {
     /// Height of a chart's plot: the legend's line and a step under it, then
     /// a content-sized plot.
     pub(super) fn plot_h(&self) -> f64 {
-        self.lh_caption + self.s1 + self.s16 + self.s6
+        self.lh_caption + self.s1 + self.s16
     }
 
     /// Rows of a comment card's body: the range line, the comment text, the
@@ -86,10 +86,12 @@ pub(super) enum DockCard {
 /// metrics.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct CardMetrics {
-    /// The width a card wants: the utility-panel width, grown with the text.
+    /// Wide, landscape cards want one and a half utility panels, grown with text.
     pub width: f64,
     /// Height of a chart card and of a comment card.
     pub chart_h: f64,
+    pub chart_compact_h: f64,
+    pub chart_single_row_w: f64,
     pub comment_h: f64,
     /// The narrowest a card can be before its action row stops fitting.
     pub chart_min_w: f64,
@@ -99,11 +101,19 @@ pub(super) struct CardMetrics {
 impl CardMetrics {
     pub(super) fn resolve(tr: &mut TextRenderer, theme: &Theme, m: &ChromeMetrics) -> Self {
         let width = f64::from(theme.tokens.metrics.panel_width_utility)
-            * f64::from(ui::tokens::Metrics::text_growth(theme.text_scale));
+            * f64::from(ui::tokens::Metrics::text_growth(theme.text_scale))
+            * 1.5;
         let face = CardFace::new().title("Ag");
-        // The plot gives the type picker's row its height, so a chart card
-        // stands no taller than one with a single row of actions.
-        let chart_h = face.height_for_body(tr, theme, width, m.plot_h() + m.s2 + m.control_h);
+        // Budget both action rows on narrow cards. Wide cards combine the
+        // same commands into one row, giving the sheet back that height.
+        let chart_compact_h =
+            face.height_for_body(tr, theme, width, m.plot_h() + m.s2 + m.control_h);
+        let chart_h = face.height_for_body(
+            tr,
+            theme,
+            width,
+            m.plot_h() + m.s2 + 2.0 * m.control_h + m.s1,
+        );
         let comment_h = face.height_for_body(tr, theme, width, m.comment_rows().height);
         let pad = face
             .body_rect(tr, theme, Rect::new(0.0, 0.0, width, chart_h))
@@ -120,20 +130,24 @@ impl CardMetrics {
             buttons + m.s1 * f64_of_usize(labels.len().saturating_sub(1)) + 2.0 * pad
         };
         let chart_min_w = row(&["Open", "Rename", "Delete"]).max(row(&["Column", "Line", "Cells"]));
+        let chart_single_row_w = row(&["Column", "Line", "Cells", "Open", "Rename", "Delete"]);
         let comment_min_w = row(&["Reply", "Edit", "Resolve", "Delete"])
             .max(row(&["Reply", "Edit", "Reopen", "Delete"]));
         Self {
             width,
             chart_h,
+            chart_compact_h,
+            chart_single_row_w,
             comment_h,
             chart_min_w,
             comment_min_w,
         }
     }
 
-    fn height(&self, card: DockCard) -> f64 {
+    fn height(&self, card: DockCard, width: f64) -> f64 {
         match card {
             DockCard::Comment => self.comment_h,
+            DockCard::Chart(_) if width >= self.chart_single_row_w => self.chart_compact_h,
             DockCard::Chart(_) => self.chart_h,
         }
     }
@@ -174,10 +188,6 @@ impl SheetsApp {
         }
         cards.extend((0..self.sheet_charts.len().min(MAX_CHART_CARDS)).map(DockCard::Chart));
         let pad = m.s3;
-        let card_h = cards
-            .iter()
-            .map(|card| cm.height(*card))
-            .fold(0.0, f64::max);
         let avail = (area.width() - 2.0 * pad).max(0.0);
         let gaps = pad * f64_of_usize(cards.len().saturating_sub(1));
         let mins: Vec<f64> = cards.iter().map(|card| cm.min_width(*card)).collect();
@@ -194,6 +204,11 @@ impl SheetsApp {
             .iter()
             .map(|min| min + (cm.width - min).max(0.0) * grow)
             .collect();
+        let card_h = cards
+            .iter()
+            .zip(&widths)
+            .map(|(card, width)| cm.height(*card, *width))
+            .fold(0.0, f64::max);
         let content_w = widths.iter().sum::<f64>() + gaps + 2.0 * pad;
         // Cards past the edge scroll in, over the bar's lane under them.
         let lane = if content_w > area.width() + 0.5 {
@@ -378,7 +393,12 @@ impl SheetsApp {
         let face = CardFace::new().title(&chart.title);
         face.paint(ctx, card);
         let body = face.body_rect(ctx.text, ctx.theme, card);
-        let rows = self.metrics.control_h * 2.0 + self.metrics.s1;
+        let single_row = card.width() >= self.metrics.cards.chart_single_row_w;
+        let rows = if single_row {
+            self.metrics.control_h
+        } else {
+            self.metrics.control_h * 2.0 + self.metrics.s1
+        };
         let plot = Rect::new(
             body.x0,
             body.y0,
@@ -386,53 +406,54 @@ impl SheetsApp {
             (body.y1 - gap - rows).max(body.y0),
         );
         Self::draw_plot(ctx, plot, chart.kind, series);
-        self.draw_card_actions(
-            ctx,
-            (body.x0, plot.y1 + gap),
-            vec![
-                (
-                    ChartKind::Column.label(),
-                    ButtonRole::Secondary,
-                    AnnotationClick::SetChartKind(chart.id.clone(), ChartKind::Column),
-                ),
-                (
-                    ChartKind::Line.label(),
-                    ButtonRole::Secondary,
-                    AnnotationClick::SetChartKind(chart.id.clone(), ChartKind::Line),
-                ),
-                (
-                    "Cells",
-                    ButtonRole::Secondary,
-                    AnnotationClick::ChartCells(chart.id.clone()),
-                ),
-            ],
-            Some(chart.kind),
-        );
-        self.draw_card_actions(
-            ctx,
+        let mut actions = vec![
             (
-                body.x0,
-                plot.y1 + gap + self.metrics.control_h + self.metrics.s1,
+                ChartKind::Column.label(),
+                ButtonRole::Secondary,
+                AnnotationClick::SetChartKind(chart.id.clone(), ChartKind::Column),
             ),
-            vec![
+            (
+                ChartKind::Line.label(),
+                ButtonRole::Secondary,
+                AnnotationClick::SetChartKind(chart.id.clone(), ChartKind::Line),
+            ),
+            (
+                "Cells",
+                ButtonRole::Secondary,
+                AnnotationClick::ChartCells(chart.id.clone()),
+            ),
+        ];
+        let object_actions = vec![
+            (
+                "Open",
+                ButtonRole::Secondary,
+                AnnotationClick::Open(chart.start),
+            ),
+            (
+                "Rename",
+                ButtonRole::Secondary,
+                AnnotationClick::EditChart(chart.id.clone()),
+            ),
+            (
+                "Delete",
+                ButtonRole::Destructive,
+                AnnotationClick::DeleteChart(chart.id.clone()),
+            ),
+        ];
+        if single_row {
+            actions.extend(object_actions);
+        } else {
+            self.draw_card_actions(
+                ctx,
                 (
-                    "Open",
-                    ButtonRole::Secondary,
-                    AnnotationClick::Open(chart.start),
+                    body.x0,
+                    plot.y1 + gap + self.metrics.control_h + self.metrics.s1,
                 ),
-                (
-                    "Rename",
-                    ButtonRole::Secondary,
-                    AnnotationClick::EditChart(chart.id.clone()),
-                ),
-                (
-                    "Delete",
-                    ButtonRole::Destructive,
-                    AnnotationClick::DeleteChart(chart.id.clone()),
-                ),
-            ],
-            None,
-        );
+                object_actions,
+                None,
+            );
+        }
+        self.draw_card_actions(ctx, (body.x0, plot.y1 + gap), actions, Some(chart.kind));
     }
 
     /// The chart in the theme's series colours: a legend naming each series
