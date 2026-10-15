@@ -3,6 +3,8 @@
 # Keys are added as surfaces are migrated off literals; a string that is still
 # a literal in the source is not translated yet, not intentionally excluded.
 
+mail-title = Mail
+
 ## Account sheet
 mail-setup-heading-add = Add account
 mail-setup-heading-edit = Account settings
@@ -29,6 +31,7 @@ mail-setup-cancel = Cancel
 mail-setup-remove = Remove account
 
 ## Compose window
+mail-compose = Compose
 mail-compose-label-to = To
 mail-compose-label-cc = Cc
 mail-compose-label-bcc = Bcc

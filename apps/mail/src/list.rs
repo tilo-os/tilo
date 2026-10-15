@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -139,7 +139,7 @@ impl RowFrame {
 
     /// The height every row and the space around them take.
     pub(crate) fn content_height(&self, rows: usize, theme: &Theme) -> f64 {
-        self.pitch * rows as f64 + 2.0 * f64::from(theme.tokens.spacing.s2)
+        self.pitch * rows as f64 + f64::from(theme.tokens.spacing.s2)
     }
 
     /// Row `index`'s band, scrolled by `scroll`.
@@ -402,6 +402,30 @@ impl MessageList {
             face = face.swiped(SWIPE_ARCHIVE, press.offset);
         }
         face.paint(ctx, slot.rect);
+        if text.unread {
+            // A quiet dot distinguishes unread mail without relying on weight
+            // alone. Anchor it to the avatar, clear of timestamps and actions.
+            let avatar = face.leading_rect(slot.rect, ctx.text, ctx.theme);
+            let radius = f64::from(ctx.theme.tokens.spacing.s1) / 2.0;
+            let centre = Point::new(avatar.x1 - radius, avatar.y0 + radius);
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                ctx.theme.tokens.colors.surfaces.content,
+                None,
+                &Circle::new(
+                    centre,
+                    radius + f64::from(ctx.theme.tokens.spacing.s1) / 3.0,
+                ),
+            );
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                ctx.theme.tokens.colors.text_primary,
+                None,
+                &Circle::new(centre, radius),
+            );
+        }
     }
 }
 
@@ -461,6 +485,11 @@ impl Widget for MessageList {
             .subtitle("Ag")
             .secondary("Ag")
             .height(ctx.text, theme);
+        // Distribute spare space between complete rows rather than leaving
+        // a sliced sender/preview at the bottom of the resting viewport.
+        let room = (r.height() - f64::from(theme.tokens.spacing.s2)).max(self.row_h);
+        let visible = (room / self.row_h).floor().max(1.0);
+        self.row_h = room / visible;
         let unscrolled = RowFrame::new(r, self.row_h, false, theme);
         self.region
             .set_content_size(r.width(), unscrolled.content_height(rows.len(), theme));
@@ -685,6 +714,31 @@ mod tests {
             &mut TextRenderer::new(),
             &Theme::dark(),
             &PresenceCtx::empty(),
+        );
+    }
+
+    #[test]
+    fn enlarged_resting_list_ends_between_complete_rows() {
+        let mut list = MessageList::new(shared());
+        let theme = Theme::dark().with_ui_scale(1.5);
+        list.rect = Rect::new(336.0, 84.0, 795.0, 810.0);
+        list.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let visible: Vec<_> = list
+            .slots
+            .iter()
+            .filter(|slot| slot.band.y0 < list.rect.y1)
+            .collect();
+        assert!(visible.len() >= 5);
+        assert!(visible.iter().all(|slot| slot.band.y1 <= list.rect.y1));
+        assert!(
+            list.region.overflows_vertically(),
+            "remaining mail is scrollable"
         );
     }
 

@@ -2059,6 +2059,26 @@ impl ComposeWindow {
         // from those sizes before painting, so what is painted is what is
         // hit-tested.
         self.theme = theme.clone();
+        // These fields are positioned outside the host tree. Adopt resolved
+        // type explicitly instead of leaving their stock 14px role size.
+        let body_size = theme.text(TextRole::Body).size;
+        for field in [
+            &mut self.to,
+            &mut self.cc,
+            &mut self.bcc,
+            &mut self.subject,
+            &mut self.plain_body,
+        ] {
+            field.set_content_size(Some(body_size));
+        }
+        if let Some(prompt) = &mut self.prompt {
+            prompt.input.set_content_size(Some(body_size));
+        }
+        // The rich editor applies accessibility text growth itself; only
+        // provide the UI-scaled base so the two scales do not multiply twice.
+        self.editor
+            .editor_mut()
+            .set_body_size(theme.at_unit_text_scale().text(TextRole::Body).size);
         let measured = ComposeMetrics::measure(tr, theme);
         if self.metrics != measured {
             self.metrics = measured;
@@ -2473,6 +2493,40 @@ mod tests {
         w.open_blank();
         w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
         w
+    }
+
+    #[test]
+    fn compose_fields_and_rich_body_adopt_the_ui_scale() {
+        let mut window = win();
+        window.open_demo();
+        let theme = Theme::dark().with_ui_scale(1.5);
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        window.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        window.draw_inputs(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let body = theme.text(TextRole::Body).size;
+        assert!((window.editor.editor().body_size() - body).abs() < 0.01);
+        let caret = window.to.caret_rect(&theme, 0);
+        assert!(
+            caret.height() >= f64::from(body),
+            "recipient type grows with the UI"
+        );
+        assert!(
+            caret.height() < 1.6 * f64::from(body),
+            "the type grows only once"
+        );
     }
 
     #[test]

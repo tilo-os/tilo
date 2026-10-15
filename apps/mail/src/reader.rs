@@ -75,6 +75,17 @@ fn open_link(url: &str) {
     }
 }
 
+/// HTML and selectable text share the theme's already-resolved body size.
+/// Neither the browser nor document-sized spans should apply text scale again.
+fn body_style(theme: &Theme) -> crate::html_mail::DocumentStyle {
+    let body = theme.text(TextRole::Body);
+    crate::html_mail::DocumentStyle {
+        font_px: body.size,
+        line_px: body.line_height_px(),
+        ..crate::html_mail::DocumentStyle::from_theme(theme)
+    }
+}
+
 /// The open message's text: a read-only field, so it can be selected and
 /// copied and its addresses open.
 struct BodyText {
@@ -102,6 +113,9 @@ impl BodyText {
             .multiline(true)
             .with_plain_chrome()
             .with_text_role(TextRole::Body)
+            // The role alone uses the stock size; this is already resolved
+            // for both UI and text scale, so the field must not scale it again.
+            .with_content_size(style.font_px)
             .with_spellcheck(false)
             .with_autocorrect(false)
             .with_id("mail_body")
@@ -201,17 +215,28 @@ impl Flow<'_, '_> {
 
     /// Paint `text` wrapped to the column and move below it.
     fn paragraph(&mut self, text: &str, style: &TextStyle, dim: bool) {
-        let width = ui::num::f32_of_f64(self.width.max(1.0));
-        let (_, h) = self.ctx.text.measure_style(text, Some(width), style);
         let theme = self.ctx.theme;
         let ink = if dim {
             theme.text_dim
         } else {
             theme.text_primary
         };
-        self.ctx
-            .text(text, style, ink, Point::new(self.x, self.y), Some(width));
-        self.y += f64::from(h);
+        self.y += self.wrapped_at(text, style, ink, Point::new(self.x, self.y), self.width);
+    }
+
+    /// Measure and paint metadata with the same wrapping width as the body.
+    fn wrapped_at(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        ink: vello::peniko::Color,
+        at: Point,
+        width: f64,
+    ) -> f64 {
+        let width = ui::num::f32_of_f64(width.max(1.0));
+        let (_, height) = self.ctx.text.measure_style(text, Some(width), style);
+        self.ctx.text(text, style, ink, at, Some(width));
+        f64::from(height)
     }
 
     /// One line elided into `width` at `x`, top at `y`.
@@ -256,27 +281,42 @@ impl Flow<'_, '_> {
         let right = self.x + self.width;
         let date = format_absolute(local_minutes(message.timestamp_min));
         let (date_w, _) = self.ctx.text.measure_style(&date, None, &date_style);
-        let date_x = right - f64::from(date_w);
+        let full_w = (right - text_x).max(1.0);
         let gap = f64::from(spacing.s3);
-        let name_w = (date_x - gap - text_x).max(0.0);
+        let (name_w, _) = self.ctx.text.measure_style(&name, None, &name_style);
+        let inline_date = f64::from(name_w + date_w) + gap <= full_w;
         let mut y = self.y;
         self.line_at(
             &name,
             &name_style,
             theme.text_primary,
             Point::new(text_x, y),
-            name_w,
+            if inline_date {
+                full_w - f64::from(date_w) - gap
+            } else {
+                full_w
+            },
         );
-        // The date sits on the name's line box.
-        self.ctx.text(
-            &date,
-            &date_style,
-            theme.text_dim,
-            Point::new(date_x, y + (name_h - caption_h) / 2.0),
-            None,
-        );
+        if inline_date {
+            // The date sits on the name's line box when both fit.
+            self.ctx.text(
+                &date,
+                &date_style,
+                theme.text_dim,
+                Point::new(right - f64::from(date_w), y + (name_h - caption_h) / 2.0),
+                None,
+            );
+        }
         y += name_h;
-        let full_w = (right - text_x).max(0.0);
+        if !inline_date {
+            y += self.wrapped_at(
+                &date,
+                &date_style,
+                theme.text_dim,
+                Point::new(text_x, y),
+                full_w,
+            );
+        }
         self.line_at(
             &message.from.email,
             &address_style,
@@ -287,8 +327,7 @@ impl Flow<'_, '_> {
         y += caption_h;
         let to = recipients_line(message);
         if !to.is_empty() {
-            self.line_at(&to, &caption, theme.text_dim, Point::new(text_x, y), full_w);
-            y += caption_h;
+            y += self.wrapped_at(&to, &caption, theme.text_dim, Point::new(text_x, y), full_w);
         }
         self.y = y.max(self.y + side);
     }
@@ -413,7 +452,7 @@ impl MessageReader {
     fn load_html_body(&mut self, id: MessageId, html: &str, theme: &Theme) {
         let block_remote = !self.html_load_remote;
         let key = (id, block_remote);
-        let style = crate::html_mail::DocumentStyle::from_theme(theme);
+        let style = body_style(theme);
         if self.html_key == Some(key) && self.html_style.as_ref() == Some(&style) {
             return;
         }
@@ -505,7 +544,7 @@ impl MessageReader {
         presence: &PresenceCtx,
     ) {
         let theme = flow.ctx.theme;
-        let style = crate::html_mail::DocumentStyle::from_theme(theme);
+        let style = body_style(theme);
         let key = (message.id, html.is_some());
         let needs_rebuild = self
             .body
@@ -580,7 +619,9 @@ impl MessageReader {
             ctx,
             state: &state,
             x: r.x0 + gutter,
-            width: (r.width() - 2.0 * gutter).max(1.0),
+            width: (r.width() - 2.0 * gutter)
+                .min(f64::from(theme.tokens.metrics.readable_width))
+                .max(1.0),
             y: r.y0 + gutter - scroll,
             pointer: self.pointer,
             attachments: Vec::new(),
@@ -625,7 +666,7 @@ impl MessageReader {
             flow.line_at(text, &caption, theme.text_dim, Point::new(x, top), width);
             flow.y += line;
         }
-        flow.y += f64::from(spacing.s6);
+        flow.y += f64::from(spacing.s4);
 
         let mut webview_rect = None;
         let count = messages.len();
@@ -658,7 +699,7 @@ impl MessageReader {
                 flow.attachments(message);
             }
             if !is_head {
-                flow.y += f64::from(spacing.s4);
+                flow.y += f64::from(spacing.s3);
                 let ground = theme.tokens.colors.surfaces.content;
                 ui::surface::separator(
                     flow.ctx.scene,
@@ -669,7 +710,7 @@ impl MessageReader {
                     0.0,
                     ground,
                 );
-                flow.y += f64::from(spacing.s4);
+                flow.y += f64::from(spacing.s3);
             }
         }
         flow.y += gutter;
@@ -979,12 +1020,16 @@ mod tests {
     }
 
     fn draw(reader: &mut MessageReader) {
+        draw_with_theme(reader, &Theme::dark());
+    }
+
+    fn draw_with_theme(reader: &mut MessageReader, theme: &Theme) {
         let mut scene = Scene::new();
         reader.draw(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
-            &Theme::dark(),
+            theme,
             &PresenceCtx::empty(),
         );
     }
@@ -1113,6 +1158,194 @@ mod tests {
             )),
             "the reader hands the attachment's address to the app, which owns the portal"
         );
+    }
+
+    #[test]
+    fn sandboxed_html_uses_the_same_resolved_body_type() {
+        let shared = shared();
+        let id = message_from(&shared, "hello@fieldnotes.example");
+        let theme = Theme::dark().with_ui_scale(1.5).with_text_scale(1.5);
+        let mut reader = reader_for(&shared, id, 1200.0, 1400.0);
+        reader.set_html_engine(TestEngine::new());
+        draw_with_theme(&mut reader, &theme);
+        assert_eq!(reader.html_loaded_key(), Some((id, true)));
+        let style = reader
+            .html_style
+            .as_ref()
+            .expect("the browser's body style");
+        let expected = theme.text(TextRole::Body);
+        assert!((style.font_px - expected.size).abs() < 0.01);
+        assert!((style.line_px - expected.line_height_px()).abs() < 0.01);
+    }
+
+    #[test]
+    fn message_bodies_follow_resolved_type_once_at_enlarged_scales() {
+        let shared = shared();
+        let id = message_from(&shared, "billing@lumen-energy.example");
+        let base = Theme::dark();
+        for html in [None, Some("<h1>A heading</h1><p>A message.</p>")] {
+            {
+                let mut state = shared.borrow_mut();
+                let message = state.mailbox.messages.get_mut(&id).unwrap();
+                message.body = "A message.".to_owned();
+                message.html_body = html.map(str::to_owned);
+            }
+            let mut reader = reader_for(&shared, id, 960.0, 1200.0);
+            draw_with_theme(&mut reader, &base);
+            let base_height = reader
+                .body
+                .as_ref()
+                .unwrap()
+                .input
+                .caret_rect(&base, 0)
+                .height();
+            for theme in [
+                Theme::dark().with_text_scale(1.5),
+                Theme::dark().with_ui_scale(1.5),
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.5),
+            ] {
+                draw_with_theme(&mut reader, &theme);
+                let body = reader.body.as_ref().unwrap();
+                let expected = theme.text(TextRole::Body);
+                assert!((body.style.font_px - expected.size).abs() < 0.01);
+                assert!((body.style.line_px - expected.line_height_px()).abs() < 0.01);
+                let growth = f64::from(expected.size / base.text(TextRole::Body).size);
+                let height = body.input.caret_rect(&theme, 0).height();
+                assert!(
+                    (height - base_height * growth).abs() < 0.1,
+                    "plain text and HTML headings grow once with their theme: {height}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sender_metadata_reflows_before_the_body_at_enlarged_text() {
+        let shared = shared();
+        let id = message_from(&shared, "billing@lumen-energy.example");
+        let theme = Theme::dark().with_text_scale(1.5);
+        {
+            let mut state = shared.borrow_mut();
+            let message = state.mailbox.messages.get_mut(&id).unwrap();
+            message.html_body = None;
+            message.from.name = Some("A".to_owned());
+            message.to.clear();
+            message.cc.clear();
+        }
+        let mut reader = reader_for(&shared, id, 420.0, 1400.0);
+        draw_with_theme(&mut reader, &theme);
+        let inline_top = reader.body.as_ref().unwrap().input.get_rect().y0;
+        shared
+            .borrow_mut()
+            .mailbox
+            .messages
+            .get_mut(&id)
+            .unwrap()
+            .from
+            .name = Some("Alexandria from the community garden planning group".to_owned());
+        draw_with_theme(&mut reader, &theme);
+        let stacked_top = reader.body.as_ref().unwrap().input.get_rect().y0;
+        let caption = theme.text(TextRole::Caption);
+        let mut text = TextRenderer::new();
+        let caption_height = f64::from(text.measure_style("Ag", None, &caption).1);
+        assert!(
+            (stacked_top - inline_top - caption_height).abs() < 0.1,
+            "a crowded date gets its own line, not the sender's space"
+        );
+
+        let recipients = {
+            let mut state = shared.borrow_mut();
+            let message = state.mailbox.messages.get_mut(&id).unwrap();
+            message.to = vec![crate::model::Addr::new(
+                "The community garden volunteer coordinators",
+                "volunteers@garden.example",
+            )];
+            message.cc = vec![crate::model::Addr::new(
+                "The neighbourhood planning and maintenance group",
+                "planning@garden.example",
+            )];
+            recipients_line(message)
+        };
+        draw_with_theme(&mut reader, &theme);
+        let wrapped_top = reader.body.as_ref().unwrap().input.get_rect().y0;
+        let width = reader.rect.width()
+            - 2.0 * f64::from(theme.tokens.spacing.s6)
+            - AvatarSize::Regular.side(&theme)
+            - f64::from(theme.tokens.spacing.s3);
+        let wrapped_height = f64::from(
+            text.measure_style(&recipients, Some(ui::num::f32_of_f64(width)), &caption)
+                .1,
+        );
+        assert!(wrapped_height > 2.0 * caption_height);
+        assert!(
+            (wrapped_top - stacked_top - wrapped_height).abs() < 0.1,
+            "all To and Cc names wrap and reserve space above the body"
+        );
+    }
+
+    #[test]
+    fn a_wide_reader_keeps_a_readable_measure_and_reflows_when_narrowed() {
+        let shared = shared();
+        let id = message_from(&shared, "billing@lumen-energy.example");
+        let theme = Theme::dark().with_text_scale(1.5);
+        let mut reader = reader_for(&shared, id, 1600.0, 1200.0);
+        for width in [1600.0, 420.0] {
+            reader.rect.x1 = width;
+            draw_with_theme(&mut reader, &theme);
+            let input = &reader.body.as_ref().unwrap().input;
+            let measure = input.get_rect().width() - 2.0 * input.text_inset_x(&theme);
+            let expected = (width - 2.0 * f64::from(theme.tokens.spacing.s6))
+                .min(f64::from(theme.tokens.metrics.readable_width));
+            assert!((measure - expected).abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn enlarged_attachment_chips_wrap_and_keep_every_save_action() {
+        let shared = shared();
+        let id = message_from(&shared, "billing@lumen-energy.example");
+        {
+            let mut state = shared.borrow_mut();
+            let message = state.mailbox.messages.get_mut(&id).unwrap();
+            message.html_body = None;
+            let template = message.attachments.first().unwrap().clone();
+            message.attachments = (0..3)
+                .map(|index| {
+                    let mut attachment = template.clone();
+                    attachment.filename =
+                        format!("community-garden-planning-and-maintenance-report-{index}.pdf");
+                    attachment
+                })
+                .collect();
+        }
+        let theme = Theme::dark().with_text_scale(1.5);
+        let mut reader = reader_for(&shared, id, 420.0, 1800.0);
+        draw_with_theme(&mut reader, &theme);
+        let chips = reader.attachment_rects().to_vec();
+        assert_eq!(chips.len(), 3);
+        let gutter = f64::from(theme.tokens.spacing.s6);
+        let height = ChipFace::height(&theme);
+        for (index, (rect, message, attachment)) in chips.iter().enumerate() {
+            assert_eq!(*message, id);
+            assert_eq!(*attachment, index);
+            assert!((rect.x0 - gutter).abs() < 0.1);
+            assert!(rect.x1 <= reader.rect.x1 - gutter);
+            assert!((rect.height() - height).abs() < 0.1);
+            if index > 0 {
+                assert!(rect.y0 >= chips[index - 1].0.y1 + f64::from(theme.tokens.spacing.s2));
+            }
+            assert!(reader.press(rect.center()));
+        }
+        let saved: Vec<_> = shared
+            .borrow_mut()
+            .take_intents()
+            .into_iter()
+            .filter_map(|intent| match intent {
+                Intent::SaveAttachment(message, index) => Some((message, index)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(saved, vec![(id, 0), (id, 1), (id, 2)]);
     }
 
     #[test]

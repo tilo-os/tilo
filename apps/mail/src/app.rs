@@ -805,10 +805,10 @@ impl MailApp {
         };
         NavShell::new()
             .with_id("mail-shell")
-            .sidebar(Box::new(sidebar::sidebar(shared)))
+            .sidebar(sidebar::frame(shared))
             .overview(Box::new(MessageList::new(shared.clone())))
             .content(Box::new(MessageReader::new(shared.clone())))
-            .sidebar_header("", vec![Box::new(add_account)])
+            .sidebar_header(crate::i18n::t("mail-title"), vec![Box::new(add_account)])
             .overview_header(
                 overview_title,
                 header_actions(&list_bar(&shared.borrow()), shared, "list"),
@@ -817,6 +817,20 @@ impl MailApp {
                 "",
                 header_actions(&reader_bar(&shared.borrow()), shared, "reader"),
             )
+    }
+
+    /// Mail-specific column proportions, not a smaller font or pointer target.
+    /// Quiet overlay thumbs stay slim even when the content is enlarged.
+    fn navigation_theme(theme: &Theme) -> Theme {
+        let mut navigation = theme.clone();
+        navigation.tokens.metrics.sidebar_width *= 0.8;
+        navigation.tokens.metrics.overview_width *= 0.9;
+        navigation.tokens.metrics.scroll_thumb = navigation
+            .tokens
+            .metrics
+            .scroll_thumb
+            .min(ui::tokens::Metrics::BASE.scroll_thumb * 0.75);
+        navigation
     }
 
     /// Tell the columns what the shell laid out: whether the list and the
@@ -3516,7 +3530,12 @@ impl Widget for MailApp {
             children.push(first_run_node);
         } else {
             self.first_run_node = None;
-            let nav_node = self.nav.build_layout(taffy, theme, node_map);
+            // Mailboxes need less width than a general navigation tree. Reserve
+            // space for all three panes before falling back to a drawer, even
+            // at accessibility scales; keep text and hit targets unchanged.
+            let nav_node = self
+                .nav
+                .build_layout(taffy, &Self::navigation_theme(theme), node_map);
             self.nav_node = Some(nav_node);
             children.push(nav_node);
         }
@@ -3578,7 +3597,8 @@ impl Widget for MailApp {
         if self.is_first_run() {
             self.first_run.draw(scene, t, tr, theme, presence);
         } else {
-            self.nav.draw(scene, t, tr, theme, presence);
+            self.nav
+                .draw(scene, t, tr, &Self::navigation_theme(theme), presence);
         }
         if let Some(id) = self.pending_menu.take() {
             self.open_menu_on_row(id, tr, theme);
@@ -3599,7 +3619,8 @@ impl Widget for MailApp {
         if self.is_first_run() {
             self.first_run.draw_overlay(scene, t, tr, theme, presence);
         } else {
-            self.nav.draw_overlay(scene, t, tr, theme, presence);
+            self.nav
+                .draw_overlay(scene, t, tr, &Self::navigation_theme(theme), presence);
         }
         if let Some(confirmation) = &mut self.bulk_purge_confirmation {
             confirmation
@@ -5365,6 +5386,34 @@ mod tests {
             column.center().x,
             column.y0 + geometry.header_height + f64::from(Theme::dark().tokens.spacing.s6),
         )
+    }
+
+    #[test]
+    fn accessibility_scale_keeps_mailboxes_list_reader_and_history_in_one_header() {
+        let (mut app, _) = app();
+        app.layout_theme = Theme::dark().with_ui_scale(1.5);
+        ui::widget::WindowHeader::set_history_control(
+            &mut app.nav,
+            Some(ui::widget::HistoryControl::Closed),
+        );
+        app.layout_for_test(1440.0, 810.0);
+        let geometry = app.nav.geometry();
+        assert_eq!(geometry.sidebar, SidebarPlacement::Docked);
+        assert!(geometry.side_by_side);
+        assert!(geometry.sidebar_column.width() >= 300.0);
+        assert!(geometry.overview_column.width() >= 430.0);
+        assert!(geometry.content_column.width() >= 600.0);
+        assert!(geometry.history.width() > 0.0);
+        assert!(geometry.history.y1 <= geometry.header_height);
+        assert_eq!(geometry.content_column.y0, 0.0);
+        assert_eq!(geometry.overview_column.y0, 0.0);
+        assert!(
+            MailApp::navigation_theme(&app.layout_theme)
+                .tokens
+                .metrics
+                .scroll_thumb
+                <= 6.0
+        );
     }
 
     /// The mailbox starts with a selection; wide shows three columns, narrow

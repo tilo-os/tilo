@@ -7,7 +7,7 @@
 
 use ui::icons::Icon;
 use ui::num::u32_of_usize;
-use ui::widget::{NavAction, NavItem, NavList, NavSection};
+use ui::widget::{Button, Column, Element, NavAction, NavItem, NavList, NavSection};
 
 use crate::account::AccountStore;
 use crate::model::Folder;
@@ -93,6 +93,29 @@ pub(crate) fn sections(state: &MailState) -> Vec<NavSection> {
 /// The row that shows the open folder.
 pub(crate) fn selected_row(state: &MailState) -> Option<String> {
     (!state.accounts.is_empty()).then(|| folder_row_id(state.accounts.active, state.folder))
+}
+
+/// A persistent compose action above the independently scrolling mailboxes.
+pub(crate) fn frame(shared: &Shared) -> Element {
+    let compose = shared.clone();
+    let gutter = ui::tokens::Spacing::BASE.s3;
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .push(Box::new(
+                Column::new()
+                    .with_intrinsic_height()
+                    .with_horizontal_padding(gutter, gutter)
+                    .with_vertical_padding(gutter)
+                    .push(Box::new(
+                        Button::new("mail-compose", &crate::i18n::t("mail-compose"))
+                            .with_icon(Icon::Plus)
+                            .fill_width()
+                            .on_click(move || compose.borrow_mut().push_command(Command::Compose)),
+                    )),
+            ))
+            .push(Box::new(sidebar(shared))),
+    )
 }
 
 /// The accounts-and-folders sidebar: the toolkit list, following the
