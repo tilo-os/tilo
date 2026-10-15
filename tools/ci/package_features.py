@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 
 NATIVE_TEST_FEATURES = {
-    "tilo-model-gateway": ("local-models", "host-backend"),
+    "tilo-model-gateway": ("local-models", "host-backend", "runtime-client"),
 }
 
 

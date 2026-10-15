@@ -34,6 +34,8 @@ portal = ["native", "dep:ashpd"]
 mpris = ["native", "dep:zbus", "dep:tilo-media"]
 
 [dependencies]
+# Native launcher binding lives in the gateway; the SDK only injects its backend.
+tilo-model-gateway = { default-features = false, features = ["runtime-client"], version = "0.1.0", path = "../../agent/model-gateway", optional = true }
 agent-provider-config = { version = "0.1.0", path = "../../agent/provider-config" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 # The authenticated host updates the app process's portable network hints.
@@ -63,10 +65,6 @@ tilo-location.workspace = true
 tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", optional = true }
 # App-scoped secrets, with each target's store.
 tilo-secrets.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-# Native model RPC belongs to each host instance, never the process default.
-tilo-model-gateway = { default-features = false, version = "0.1.0", path = "../../agent/model-gateway", optional = true }
 
 [target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
 # MPRIS needs a Unix session bus; p2p supports hermetic tests.

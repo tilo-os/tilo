@@ -35,6 +35,8 @@ pub mod service;
 /// Direct provider access for trusted host CLIs only, never sandbox RPC callers.
 #[cfg(all(unix, feature = "host-backend"))]
 pub use service::host_backend;
+#[cfg(feature = "runtime-client")]
+pub mod runtime_client;
 #[cfg(all(unix, feature = "server"))]
 pub mod session_directory;
 pub mod transport;

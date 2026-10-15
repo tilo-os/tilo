@@ -1,6 +1,8 @@
 //! Poll local UI futures with the app I/O runtime, not an assumed Tokio UI loop.
-use super::{CompletionFuture, ErrorKind, ModelBackend, ModelError, ModelRequest, StreamSink};
-use tilo_model_gateway::transport::{FdTransport, ModelClient};
+use crate::transport::{FdTransport, ModelClient};
+use agent_provider_config::protocol::{
+    CompletionFuture, ErrorKind, ModelBackend, ModelError, ModelRequest, StreamSink,
+};
 
 pub(super) struct NativeModels {
     client: ModelClient<FdTransport>,
@@ -41,4 +43,18 @@ impl ModelBackend for NativeModels {
     ) -> CompletionFuture<'a> {
         self.on_runtime(self.client.stream(request, sink))
     }
+}
+
+pub(super) fn from_transport(
+    transport: FdTransport,
+    profile_id: String,
+    model_id: String,
+) -> Result<std::rc::Rc<dyn ModelBackend>, ModelError> {
+    let client = ModelClient::new(
+        transport,
+        profile_id,
+        model_id,
+        std::time::Duration::from_secs(120),
+    );
+    Ok(std::rc::Rc::new(NativeModels::new(client)?))
 }
