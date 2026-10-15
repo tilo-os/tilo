@@ -225,6 +225,13 @@ impl ResultSpec {
 /// device, never for a collaborator or a remote participant.
 pub const LOCAL_DEVICE_ONLY: &str = "tilo.local-device-only";
 
+/// The contract tag of an effect a host answers in a separate render
+/// service rather than in the record's app worker: rendering a timeline to
+/// video needs a GPU and a media stack, which a confined worker has neither
+/// of. A host that has no such service leaves the action out of what an
+/// agent is offered.
+pub const HOST_RENDER_TAG: &str = "tilo.host-render";
+
 /// Complete operational contract copied into every inert descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionContract {

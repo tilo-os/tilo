@@ -74,7 +74,8 @@ mod schema;
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
 /// kebab case and its label the first doc line. Variant options:
 /// `#[effect(label = "...", view, row, job, cancellable, returns,
-/// destructive, privileged, idempotent, device_only, programmatic, untrusted, risk = "path", permission = "read")]`.
+/// destructive, privileged, idempotent, device_only, programmatic, untrusted, risk = "path", permission = "read",
+/// tag = some::TAG)]`; `tag` (repeatable) adds a contract tag, a `&'static str` constant.
 /// A `device_only` effect reaches the files, hardware or services of the
 /// device it runs on: only the person at that device may invoke it. In a
 /// vocabulary marked `device_only`, `#[effect(device_only = false)]` exempts

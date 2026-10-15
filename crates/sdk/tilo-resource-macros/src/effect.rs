@@ -112,6 +112,8 @@ struct VariantOptions {
     untrusted: bool,
     participant: bool,
     permission: Option<String>,
+    /// `tag = <expr>`, repeatable: further contract tags.
+    tags: Vec<syn::Expr>,
 }
 
 fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
@@ -156,11 +158,13 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.untrusted = true;
             } else if meta.path.is_ident("participant") {
                 options.participant = true;
+            } else if meta.path.is_ident("tag") {
+                options.tags.push(meta.value()?.parse::<syn::Expr>()?);
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `risk`, `programmatic`, `untrusted`, `participant` or `permission`",
+                     `risk`, `programmatic`, `untrusted`, `participant`, `tag` or `permission`",
                 ));
             }
             Ok(())
@@ -353,6 +357,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             ));
         }
         let participant = options.participant;
+        let tags = &options.tags;
         let kind = if options.view {
             quote!(View)
         } else {
@@ -375,6 +380,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 programmatic: #programmatic,
                 untrusted: #untrusted,
                 participant: #participant,
+                tags: &[#(#tags),*],
             }
         });
 
