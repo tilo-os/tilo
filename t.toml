@@ -1330,7 +1330,7 @@ outputs = ["/target/publish/web-entry/receipt.json"]
 id_token = ["registry.tilo.so"]
 on = ["stable"]
 
-# The fast CI images (build-ci-fast-images.yml), x86_64 only. CI tooling, not a product:
+# The fast CI images, x86_64 only. CI tooling, not a product:
 # published from main, pinned by digest in tools/ci/images.toml by hand.
 [[check]]
 name = "image-ci-fast"
@@ -1354,6 +1354,17 @@ requires = ["arch=x86_64"]
 cost = "minutes"
 default = false
 
+# Both images run what the jobs that use them need, before either is published.
+[[check]]
+name = "image-ci-fast-smoke"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash os/tests/ci_fast_images.sh /target/publish/ci-fast/image.oci.tar /target/publish/ci-control/image.oci.tar"
+inputs = ["tools/ci/publish/**", "os/tests/ci_fast_images.sh"]
+needs = ["image-ci-fast", "image-ci-control"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+default = false
+
 [[check]]
 name = "publish-ci-fast"
 image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
@@ -1362,7 +1373,7 @@ bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/ci-fast /target/p
 bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/ci-control /target/publish/ci-control 'sha-{commit}'
 """
 inputs = ["tools/ci/publish/**"]
-needs = ["image-ci-fast", "image-ci-control"]
+needs = ["image-ci-fast", "image-ci-control", "image-ci-fast-smoke"]
 outputs = ["/target/publish/ci-fast/receipt.json", "/target/publish/ci-control/receipt.json"]
 id_token = ["registry.tilo.so"]
 on = ["main"]
@@ -1473,3 +1484,56 @@ requires = ["arch=aarch64"]
 on = ["dispatch"]
 cost = "heavy"
 default = false
+
+# The release tools image (os/Containerfile.release-tools): the compiler-free environment the
+# release jobs run in, built and tested natively per architecture and published from main as
+# one index. Its consumers pin the index by digest; jobs pull it before they can log in, so it
+# must be anonymously pullable.
+[[check]]
+name = "image-release-tools-x86_64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = """
+mkdir -p $TMPDIR/empty
+bash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.release-tools /target/publish/release-tools/x86_64
+bash os/tests/release_tools_image.sh /target/publish/release-tools/x86_64/image.oci.tar
+"""
+inputs = ["tools/ci/publish/**", "os/Containerfile.release-tools", "os/tests/release_tools_image.sh"]
+outputs = ["/target/publish/release-tools/x86_64/image.oci.tar", "/target/publish/release-tools/x86_64/digest"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "image-release-tools-aarch64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = """
+mkdir -p $TMPDIR/empty
+bash tools/ci/publish/oci-build.sh $TMPDIR/empty os/Containerfile.release-tools /target/publish/release-tools/aarch64
+bash os/tests/release_tools_image.sh /target/publish/release-tools/aarch64/image.oci.tar
+"""
+inputs = ["tools/ci/publish/**", "os/Containerfile.release-tools", "os/tests/release_tools_image.sh"]
+outputs = ["/target/publish/release-tools/aarch64/image.oci.tar", "/target/publish/release-tools/aarch64/digest"]
+requires = ["arch=aarch64"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "image-release-tools"
+run = "python3 tools/ci/publish/oci-index.py /target/publish/release-tools/index /target/publish/release-tools/x86_64/image.oci.tar /target/publish/release-tools/aarch64/image.oci.tar"
+inputs = ["tools/ci/publish/**"]
+needs = ["image-release-tools-x86_64", "image-release-tools-aarch64"]
+outputs = ["/target/publish/release-tools/index/image.oci.tar", "/target/publish/release-tools/index/digest"]
+default = false
+
+[[check]]
+name = "publish-release-tools"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = """
+bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-release-tools /target/publish/release-tools/index 'sha-{commit}'
+bash tools/ci/publish/oci-anonymous.sh registry.tilo.so/tilo/tilo-release-tools /target/publish/release-tools/index
+"""
+inputs = ["tools/ci/publish/**"]
+needs = ["image-release-tools"]
+outputs = ["/target/publish/release-tools/index/receipt.json"]
+id_token = ["registry.tilo.so"]
+on = ["main"]

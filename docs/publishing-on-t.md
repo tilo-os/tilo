@@ -68,13 +68,20 @@ identity token. `os/dev/configure-cosign-kms.sh` turns an identity token into th
 role for Cosign, from t (audience `sts.amazonaws.com`) as from Forgejo Actions; it parses with
 sed, since the skopeo image the checks run in has no jq.
 
+Images built natively per architecture become one multi-platform image with `oci-index.py`, which
+joins their archives into one holding an image index; its digest is fixed by the builds, so the
+same signing and publishing scripts handle it. `oci-run.sh` runs a command inside a built
+archive (buildah, no daemon), which is how image tests run between building and publishing, and
+`oci-anonymous.sh` proves a published image can be pulled with no credentials.
+
 ## Declared in t.toml
 
 | chain | build (no secrets) | sign (stable) | publish (main, development tag) | release (stable) |
 |---|---|---|---|---|
 | room service | `image-room-service-context`, `image-room-service` | `sign-room-service` | `publish-room-service`: `dev-<commit>` | `release-room-service`: `sha-<commit>`, signed, receipt |
 | web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry`: `dev-<commit>` | `release-web-entry`: `sha-<commit>`, signed, receipt |
-| ci-fast, ci-control | `image-ci-fast`, `image-ci-control` (built on the ci-fast just built) | | `publish-ci-fast`: `sha-<commit>` | (CI tooling, not a product) |
+| ci-fast, ci-control | `image-ci-fast`, `image-ci-control` (built on the ci-fast just built), `image-ci-fast-smoke` (runs both) | | `publish-ci-fast`: `sha-<commit>` | (CI tooling, not a product) |
+| release tools | `image-release-tools-x86_64`, `-aarch64` (each built and tested natively), `image-release-tools` (their index) | | `publish-release-tools`: index `sha-<commit>`, proven anonymously pullable | (CI tooling, not a product) |
 | local model catalog | `model-catalog-compiler` | `sign-model-catalog`, `review-speech-catalog` (dispatch) | | `publish-model-catalog` (dispatch): the signed catalog in generic packages |
 | cloud promotion | `cloud-drift` (Mondays, reports only) | | | `cloud-promotion` (dispatch): the infra pull request |
 | canonical verifier bundles | `verifier-bundle-<arch>` (`on = ["dispatch"]`, `t outputs`) | | | (reviewed and uploaded by hand) |
@@ -100,8 +107,6 @@ fixed credentials in the server config, limited by reference and node, only wher
 | `room-service-image.yml` | push main (paths), PR build only, dispatch | `GITHUB_TOKEN` (registry push) | x86_64, Docker buildx | `tilo/room-service:sha-<sha>`, digest receipt | declared above; releases from stable |
 | `web-entry.yml` | push main (paths), PR, dispatch | `GITHUB_TOKEN` | x86_64, Docker buildx | `tilo/web-entry:sha-<sha>`, receipt | declared above |
 | `release-registry-server.yml` | push main (paths), PR | `GITHUB_TOKEN` | amd64, buildx; Rust compiled inside the Containerfile with BuildKit cache mounts | `tilo/tilo-registry-server:sha-<sha>`, receipt for GitOps | same chain with `oci-build.sh` on the repository as context (buildah supports cache mounts and the `github-assets` build context); the image test needs `docker run` |
-| `build-ci-fast-images.yml` | PR, push main (paths), dispatch | `GITHUB_TOKEN` | x86_64, buildx plus the daemon's builder for ci-control | `tilo/ci-fast`, `tilo/ci-control`: `sha-<sha>` | declared above; the smoke run of both images is not ported yet |
-| `build-release-tools.yml` | PR, push main (paths) | `GITHUB_TOKEN` | x86_64 and arm64 natively, buildx, `docker run` test | `tilo/tilo-release-tools` index `sha-<sha>`, anonymous pull check | per-arch `image-release-tools-<arch>` with `requires = ["arch=…"]`, one publish check making the index |
 | `build-ci-builder.yml` | weekly, push main (paths), dispatch | `COSIGN_KEY_REF`, `AWS_SIGNING_ROLE_ARN` (OIDC), `GITHUB_TOKEN` | x86_64 and arm64 natively, buildx with gha cache, canary jobs that run inside the candidate image | `tilo/tilo-builder:<sha>`, `:<rust>`, `:latest`, signed index | per-arch builds, sign on the release node, publish; the canary jobs become checks whose `image` is the candidate, which t can't express yet (see gaps) |
 | `release-relay.yml` | push main and `v*` (paths), PR, dispatch | Cosign via OIDC, `GITHUB_TOKEN` | x86_64, buildx with host network for the compiler cache; waits for `build-rpms.yml` by polling the Forgejo API | `tilo/tilo-relay:<semver>`, signed, on tags only | build `FROM` the RPM snapshot (a `needs` on the snapshot check instead of polling), sign and release on `tag:v*` |
 | `build-rpms.yml` | push main (paths), dispatch | Cosign via OIDC, `GITHUB_TOKEN` | x86_64 and arm64, Docker daemon | `tilo/rpms:set-<fingerprint>` signed index with SLSA provenance | build per arch, sign with provenance, publish; published once per fingerprint (cached by inputs) |

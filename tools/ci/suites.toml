@@ -1521,8 +1521,7 @@ workflow = "dev-disk-boot-diagnostic.yml"
 
 [[unrequired]]
 suite = "os/tests/release_tools_image.sh"
-reason = "needs the built release-tools image"
-workflow = "build-release-tools.yml"
+reason = "needs the built release-tools image: t's image-release-tools-<arch> checks run it"
 
 [[unrequired]]
 suite = "os/tests/rollback-boot-check.sh"

@@ -92,10 +92,10 @@ They need:
 - **Images.** `images.toml` pins the CI images by digest. They are public, so
   a fork can pull them as they are. To build its own, publish
   `os/Containerfile.ci-fast`, `os/Containerfile.ci-control` and
-  `os/Containerfile.builder` (`build-ci-fast-images.yml`,
-  `build-ci-builder.yml`), change the pins, and set `TILO_CI_REGISTRY`,
-  `TILO_CI_BUILDER_REPOSITORY` and `TILO_CI_REGISTRY_TOKEN_REALM` for the
-  builder lookup.
+  `os/Containerfile.builder` (t's `image-ci-fast` and `image-ci-control`
+  checks in `t.toml`, and `build-ci-builder.yml`), change the pins, and set
+  `TILO_CI_REGISTRY`, `TILO_CI_BUILDER_REPOSITORY` and
+  `TILO_CI_REGISTRY_TOKEN_REALM` for the builder lookup.
 - **Artifact actions.** The `actions/upload-artifact` and
   `actions/download-artifact` v4 pins are Forgejo's builds (tag `forgejo/v4`),
   since upstream's v4 accepts only GitHub-hosted servers. A copy on GitHub
