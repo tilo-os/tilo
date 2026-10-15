@@ -12476,6 +12476,16 @@ impl ShellOverlayHost {
                 }
             }
         }
+        // Every caller has released the tree by now; the broker reads it.
+        if let Some(request) = outcome.dispatch_task.take() {
+            if self.room_activity.dispatch_task(request) {
+                let tree = chrome.borrow().tree_handle();
+                self.room_activity.refresh(&mut *tree.write());
+                outcome.task_changed = true;
+            } else {
+                outcome.agent_runtime_changed = true;
+            }
+        }
         if outcome.task_refused {
             let mut state = chrome.borrow_mut();
             state.push_notification(
