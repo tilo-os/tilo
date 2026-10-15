@@ -316,8 +316,13 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     assert_launch_signs(&keyring, 2);
     let vault = bus.path("data/tilo/secrets/vault.tseal");
     let sealed = std::fs::read(&vault).unwrap();
+    // The item's value is the key in hex, as `secret-tool` stored it.
+    let hex_key = hex::encode([2_u8; 32]);
     assert!(
-        !sealed.windows(32).any(|window| window == [2_u8; 32]),
+        !sealed.windows(32).any(|window| window == [2_u8; 32])
+            && !sealed
+                .windows(hex_key.len())
+                .any(|window| window == hex_key.as_bytes()),
         "the vault holds the key in the clear"
     );
     assert_eq!(Custody::for_session(), Custody::System);

@@ -39,6 +39,19 @@ file of the person's. Settings labels it **Private session file + app-scoped
 signing broker**; it is intentionally not described as encrypted or
 hardware-backed.
 
+On a Tilo image the Secret Service is `tilo-secret-service`
+(`os/usr/share/doc/tilo/secret-service.md`). Its store is sealed under a key
+derived from the machine's device identity (`/var/lib/tilo/device-private`,
+created at early boot and readable through the `tilo-identity` group), not
+from a login password. It therefore opens after any sign-in method (password,
+fingerprint, automatic login) and never prompts; GNOME Keyring is read once at
+a password login for import and serves nothing. It is locked only while the
+device identity is unavailable, or the store belongs to another device
+identity or is damaged. Then a new identity key falls back to the file store
+above and Settings says so, while a key already in the Secret Service fails to
+load: it is neither re-keyed nor moved to a file, and the store file is never
+replaced, so the key loads again once the device identity is back.
+
 Metadata replacement uses an exclusive no-follow temporary file, fsync,
 rename, and directory fsync. Record and secret reads open once with
 `O_NOFOLLOW|O_CLOEXEC` and validate the open handle's type, owner, permissions,
@@ -65,9 +78,22 @@ Automated tests cover protocol bounds, the broker's refusal to sign with a root
 key, signature verification, one-shot file descriptor ownership, migration
 without secret bytes in metadata, symlink and permission refusal, duplicate
 imports, shared-secret removal, active/final record protections, and prevention
-of migration/chmod outside the canonical identity store. Test builds always use
-the file store, so they do not prove that a desktop keyring is preferred,
-unlocked, or that a dismissed prompt falls back as described; nor do they
-exercise a hardware TPM. Those require the live-session and hardware test
-plans, and Settings reports the software fallback until those tests actually
-succeed.
+of migration/chmod outside the canonical identity store.
+
+`runtime-identity`'s own test builds always use the file store. The store a
+real session chooses is proven by `crates/system/secret-service/tests/identity_custody.rs`,
+which runs the production identity and vault code against the built
+`tilo-secret-service` on a private session bus. With no Secret Service on the
+bus, a new key goes to the 0600 file, the record names `broker-file-v1`,
+Settings' protection is **Private session file**, and a sealed vault keeps its
+key in a local file ("Key file on this device, no keyring"). With the service
+open it is preferred: the record names `secret-service-v1` and holds no key
+byte, no key file is written, the store file holds no plaintext key, and the
+vault key goes to the system store. After the service restarts, a client that
+kept running signs on its next call. While the service is locked, a secured key
+does not load and is not re-keyed or moved, the store file is unchanged, and a
+new key falls back to the file. Once the device identity is back, the original
+key signs again. A truncated record fails its launch with a named error.
+
+Nothing exercises a hardware TPM: no TPM provider exists, so no identity is
+ever reported as hardware-backed.
