@@ -542,6 +542,13 @@ pub fn paint_tilo_mark(scene: &mut Scene, transform: Affine, rect: Rect, theme: 
     }
 }
 
+/// How the bar's focus last arrived, which decides whether its ring shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FocusOrigin {
+    Keyboard,
+    Pointer,
+}
+
 /// `DesktopTree`, not `TopBar`, lets `build_tilo_root` stay a pure
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
@@ -665,6 +672,11 @@ pub struct TopBarChrome {
     /// currently selected inside it for keyboard and accessibility input.
     focused: bool,
     focused_control: Option<String>,
+    /// Whether the bar's focus came from (or was last touched by) the
+    /// pointer. Its ring is for keyboard focus only: a click on the bar used
+    /// to light the overview button in your colour, which says nothing to a
+    /// pointer user.
+    focus_origin: FocusOrigin,
     /// When the time the bar shows next goes stale: the end of the current
     /// minute for the clock, second for the monitor, day for the calendar.
     /// Set when the bar draws and advanced by `update` once reached, so an
@@ -999,6 +1011,7 @@ impl TopBarChrome {
             last_cursor: None,
             focused: false,
             focused_control: None,
+            focus_origin: FocusOrigin::Keyboard,
             time_wake: None,
             strips: strips::StripSwitcher::default(),
         };
@@ -2070,20 +2083,16 @@ impl TopBarChrome {
         TextWeight::Semibold
     }
 
-    /// Routes through the theme's semantic colours rather than a
-    /// literal hex, so the cue tracks the theme under high-contrast.
-    pub fn metric_label_color(&self, theme: &Theme, k: MetricKind) -> Color {
-        let semantic = &theme.tokens.colors.semantic;
-        match k {
-            MetricKind::Cpu => semantic.success,
-            MetricKind::Ram => semantic.info,
-            MetricKind::Tmp => semantic.warning,
-        }
+    /// Secondary ink for every metric label: the words say which reading
+    /// is which. They used to wear the status hues (green, blue, amber) as
+    /// decoration, which made a calm readout the most colourful thing in
+    /// the bar and spent status colour where nothing was wrong.
+    pub fn metric_label_color(&self, theme: &Theme, _k: MetricKind) -> Color {
+        theme.tokens.colors.text_dim
     }
 
-    /// Always the CPU colour at low weight regardless of what the
-    /// chips show — a backdrop, not a competing element. `_k` kept so a
-    /// per-metric variant can be wired in later.
+    /// The label ink at low weight: a backdrop, not a competing element.
+    /// `_k` kept so a per-metric variant can be wired in later.
     pub fn sparkline_fill(&self, theme: &Theme, _k: MetricKind) -> Color {
         self.metric_label_color(theme, MetricKind::Cpu)
             .with_alpha_factor(SPARKLINE_FILL_ALPHA)
@@ -4673,8 +4682,13 @@ impl TopBarChrome {
         );
     }
 
+    /// Keyboard focus is shown; focus a click gave the bar is not.
+    fn focus_ring_visible(&self) -> bool {
+        self.focused && self.focus_origin == FocusOrigin::Keyboard
+    }
+
     fn draw_focus_indicator(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        if !self.focused {
+        if !self.focus_ring_visible() {
             return;
         }
         let Some(target) = self.focused_control.as_deref() else {
@@ -5873,6 +5887,18 @@ impl Widget for TopBarChrome {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        match event {
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                ..
+            } => self.focus_origin = FocusOrigin::Pointer,
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == winit::event::ElementState::Pressed =>
+            {
+                self.focus_origin = FocusOrigin::Keyboard;
+            }
+            _ => {}
+        }
         if self.handle_strip_naming_event(event, ctx) {
             return;
         }
@@ -6301,6 +6327,9 @@ impl Widget for TopBarChrome {
             self.editor_pointer_release = None;
         }
         self.focused = focused;
+        if !focused {
+            self.focus_origin = FocusOrigin::Keyboard;
+        }
         self.responsive.toolbar.set_focus(focused);
         if focused && self.focused_control.is_none() {
             self.focused_control = self
@@ -7034,6 +7063,46 @@ mod tests {
         }
     }
 
+    /// Your colour rings a top-bar control only for keyboard focus. Clicking
+    /// the bar used to light the overview button, the bar's first stop, in
+    /// your colour, though no keyboard was involved.
+    #[test]
+    fn the_focus_ring_follows_the_keyboard_not_a_click() {
+        let mut bar = sample_chrome();
+        bar.set_focus(true);
+        assert!(
+            bar.focus_ring_visible(),
+            "keyboard traversal into the bar shows it"
+        );
+
+        let press = ui::synthetic_input::mouse_input(
+            winit::event::ElementState::Pressed,
+            winit::event::MouseButton::Left,
+        );
+        let _ = dispatch_topbar_event(&mut bar, &press);
+        assert!(bar.is_focused());
+        assert!(
+            !bar.focus_ring_visible(),
+            "a click on the bar shows no ring"
+        );
+
+        let key = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowRight),
+            None,
+            winit::event::ElementState::Pressed,
+        ));
+        let _ = dispatch_topbar_event(&mut bar, &key);
+        assert!(bar.focus_ring_visible(), "a key press brings it back");
+
+        let _ = dispatch_topbar_event(&mut bar, &press);
+        bar.set_focus(false);
+        bar.set_focus(true);
+        assert!(
+            bar.focus_ring_visible(),
+            "focus arriving afresh starts unpointed"
+        );
+    }
+
     #[test]
     fn keyboard_navigation_is_one_focus_stop_with_optional_controls() {
         let mut bar = sample_chrome();
@@ -7218,7 +7287,10 @@ mod tests {
             Some(TopBarChrome::CONTROL_TILO_MARK)
         );
         let mark = bar.tilo_mark_rect();
-        assert!(mark.width() >= 32.0 && mark.height() >= 32.0, "{mark:?}");
+        assert!(
+            mark.width() >= BAR_CONTROL_PX && mark.height() >= BAR_CONTROL_PX,
+            "{mark:?}"
+        );
         assert!(mark.x1 <= bar.overview_btn_rect.x0, "the mark leads");
         assert!(
             bar.test_rects()
@@ -7701,68 +7773,41 @@ mod tests {
         assert!(!name.contains("unidentified session"), "{name}");
     }
 
-    /// Asserts the colours differ AND move with the theme, which a
-    /// hardcoded hex could never catch.
+    /// Status hues mean something is wrong or happening (HIG 9.4); a
+    /// resting readout's labels are ink.
     #[test]
-    fn system_monitor_metric_labels_are_distinct_and_theme_driven() {
+    fn system_monitor_metric_labels_are_neutral_ink_not_status_colour() {
         let chrome = sample_chrome();
-        let kinds = [MetricKind::Cpu, MetricKind::Ram, MetricKind::Tmp];
-
         for (name, theme) in [
             ("dark", Theme::dark()),
             ("light", Theme::light()),
             ("high_contrast", Theme::high_contrast()),
         ] {
-            let c: Vec<Color> = kinds
-                .iter()
-                .map(|k| chrome.metric_label_color(&theme, *k))
-                .collect();
-            for i in 0..c.len() {
-                for j in (i + 1)..c.len() {
+            let colors = &theme.tokens.colors;
+            let sem = &colors.semantic;
+            let loud = [
+                ("success", sem.success),
+                ("info", sem.info),
+                ("warning", sem.warning),
+                ("danger", sem.danger),
+                ("your colour", colors.intent.you),
+            ];
+            for k in [MetricKind::Cpu, MetricKind::Ram, MetricKind::Tmp] {
+                let c = chrome.metric_label_color(&theme, k);
+                assert_eq!(
+                    c.to_rgba8().to_u32(),
+                    colors.text_dim.to_rgba8().to_u32(),
+                    "{name}: {k:?} is secondary ink"
+                );
+                for (what, colour) in loud {
                     assert_ne!(
-                        c[i].to_rgba8().to_u32(),
-                        c[j].to_rgba8().to_u32(),
-                        "{name}: {:?} and {:?} render in the same colour, collapsing the cue",
-                        kinds[i],
-                        kinds[j]
+                        c.to_rgba8().to_u32(),
+                        colour.to_rgba8().to_u32(),
+                        "{name}: {k:?} label wears {what}"
                     );
                 }
             }
-            // The accent means live state, not "this is a CPU reading".
-            let accent = theme.tokens.colors.intent.inverted;
-            for (k, col) in kinds.iter().zip(&c) {
-                assert_ne!(
-                    col.to_rgba8().to_u32(),
-                    accent.to_rgba8().to_u32(),
-                    "{name}: {k:?} label reuses the accent"
-                );
-            }
-            let sem = &theme.tokens.colors.semantic;
-            assert_eq!(
-                c[0].to_rgba8().to_u32(),
-                sem.success.to_rgba8().to_u32(),
-                "{name}: CPU"
-            );
-            assert_eq!(
-                c[1].to_rgba8().to_u32(),
-                sem.info.to_rgba8().to_u32(),
-                "{name}: RAM"
-            );
-            assert_eq!(
-                c[2].to_rgba8().to_u32(),
-                sem.warning.to_rgba8().to_u32(),
-                "{name}: TMP"
-            );
         }
-
-        // A hard-coded palette passes every assertion above and fails this one.
-        let dark = chrome.metric_label_color(&Theme::dark(), MetricKind::Cpu);
-        let hc = chrome.metric_label_color(&Theme::high_contrast(), MetricKind::Cpu);
-        assert_ne!(
-            dark.to_rgba8().to_u32(),
-            hc.to_rgba8().to_u32(),
-            "the CPU label paints the same pixel on dark and high-contrast"
-        );
     }
 
     #[test]
@@ -7782,7 +7827,7 @@ mod tests {
             assert_eq!(
                 rgb(fill),
                 rgb(cpu),
-                "{name}: sparkline hue drifted off the CPU label"
+                "{name}: sparkline ink drifted off the labels"
             );
             assert!(
                 fill.components[3] < cpu.components[3],

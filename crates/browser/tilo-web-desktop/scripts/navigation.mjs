@@ -9,7 +9,7 @@
 //   SHOTS_DIR   where a screenshot of a failed step goes, when set
 // Exits non-zero on the first failed expectation.
 import assert from 'node:assert/strict';
-import {writeFileSync} from 'node:fs';
+import {existsSync, readFileSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
 
@@ -28,6 +28,11 @@ for (let i = 0; ; i++) {
   assert.ok(i < 90, `the desktop never presented: ${await evaluate("document.getElementById('status')?.textContent")}`);
 }
 
+// A panic stops the runtime without an exception; say so in the page's log.
+await evaluate(`(() => {
+  const report = globalThis.__tiloRuntimePanic;
+  globalThis.__tiloRuntimePanic = raw => { console.error('runtime panic ' + raw); report?.(raw); };
+})()`);
 const snapshot = () => evaluate('tiloMount.navigation.getSnapshot()');
 const command = body => evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});return true;})()`);
 const label = s => s.entries.find(e => e.route.workspace === s.active.workspace && e.route.strip === s.active.strip && e.route.tab === s.active.tab)?.label;
@@ -35,18 +40,23 @@ const workspace = s => s.workspaces.findIndex(w => w.id === s.activeWorkspace);
 // Waits for what an input asked for: `read` returns `expected`. Some changes
 // land on the next drawn frame, and headless Chrome may draw only about once
 // a second.
-async function polls(what, read, expected) {
+async function polls(what, read, expected, tries = 150) {
   let got;
-  for (let i = 0; i < 150; i++) {
+  for (let i = 0; i < tries; i++) {
     got = await read();
     if (JSON.stringify(got) === JSON.stringify(expected)) return;
     await sleep(100);
   }
   if (process.env.SHOTS_DIR) writeFileSync(join(process.env.SHOTS_DIR, 'navigation-failed.png'), await tab.screenshot());
+  // What the page said last (a module that did not load, a panic) and the
+  // modules it fetched.
+  console.error(tab.log.slice(-30).join('\n'));
+  console.error(await evaluate(`JSON.stringify(performance.getEntriesByType('resource')
+    .filter(e => e.name.endsWith('.wasm')).map(e => e.name.split('/').pop()))`).catch(String));
   assert.deepEqual(got, expected, what);
 }
 // Waits for the navigation snapshot to settle on what an input asked for.
-const settles = async (what, read, expected) => polls(what, async () => read(await snapshot()), expected);
+const settles = async (what, read, expected, tries) => polls(what, async () => read(await snapshot()), expected, tries);
 // The centre of the first semantics node with this accessible name (and,
 // when given, a description starting with `described`), once the desktop
 // shows it.
@@ -138,6 +148,31 @@ await settles('Alt+Shift+Left from a text field steps to the previous window', l
 await chord('ArrowRight');
 await settles('Alt+Shift+Right steps back', label, 'Notes');
 console.log(JSON.stringify({step: 'shortcuts from a text field', ok: true}));
+
+// Workspace Activity over the windows opened above. The pane is its own
+// module (src/activity.rs), fetched the first time it opens; the request
+// stays open until the pane draws it, on the frame after the module
+// arrived. That is one frame more than a view already in the start module
+// takes, and a frame of this software-rendered debug bundle can take over
+// ten seconds in CI.
+const active = (await snapshot()).activeWorkspace;
+await command({kind: 'workspace-activity', workspace: active, view: 'explore'});
+await settles('Explore opens in the desktop once the pane has loaded',
+  s => s.workspaceActivity && [s.workspaceActivity.view, s.workspaceActivity.inSurface], ['explore', true], 600);
+// A split bundle fetched it now; a bundle left whole (`build.sh --no-split`)
+// has it in place.
+const split = join(resolve(bundle), 'pkg', 'split.json');
+if (existsSync(split) && JSON.parse(readFileSync(split, 'utf8')).modules.some(m => m.module === 'activity')) {
+  assert.ok(
+    (await evaluate("performance.getEntriesByType('resource').map(e => e.name)")).some(name => name.endsWith('.activity.wasm')),
+    'the pane came from its own module');
+}
+await command({kind: 'workspace-activity', workspace: active, view: 'catch-up'});
+await settles('the open pane switches to Catch up',
+  s => s.workspaceActivity && [s.workspaceActivity.view, s.workspaceActivity.inSurface], ['catch-up', true]);
+await command({kind: 'close-workspace-activity', workspace: active});
+await settles('and closes', s => s.workspaceActivity, null);
+console.log(JSON.stringify({step: 'workspace activity', ok: true}));
 
 const errors = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
 assert.deepEqual(errors, [], 'no page exception');

@@ -1064,7 +1064,7 @@ impl InstallerApp {
     /// Imager's setup choices. Nothing is confirmed; Review still shows every
     /// choice and requires the typed confirmation.
     fn apply_internal_handoff(&mut self, handoff: crate::internal_handoff::Handoff) {
-        let profile = handoff.media_profile();
+        let profile = crate::internal_handoff::media_profile(&handoff);
         self.internal_handoff = Some(handoff);
         if !self.bind_internal_handoff() {
             self.internal_handoff = None;
@@ -1117,7 +1117,7 @@ impl InstallerApp {
         self.internal_handoff
             .as_ref()
             .filter(|_| self.disks.iter().any(Disk::hosts_staged_installer))
-            .map(crate::internal_handoff::Handoff::host)
+            .map(|handoff| handoff.host_os)
     }
 
     fn selected_disk_hosts_installer(&self) -> bool {

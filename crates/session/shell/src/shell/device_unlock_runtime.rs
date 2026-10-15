@@ -544,10 +544,10 @@ pub fn spawn_enrol_socket() {
     if cfg!(test) || STARTED.set(()).is_err() {
         return;
     }
-    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+    let Some(runtime) = tilo_paths::xdg::runtime_dir() else {
         return;
     };
-    let path = std::path::PathBuf::from(runtime).join(tilo_unlock_protocol::ENROL_SOCKET);
+    let path = runtime.join(tilo_unlock_protocol::ENROL_SOCKET);
     let listener = match crate::shell::test_control_socket::bind_private(&path) {
         Ok(listener) => listener,
         Err(error) => {
