@@ -1295,6 +1295,82 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
     assert_eq!(fixture.store.load_retained().unwrap().len(), 1);
 }
 
+/// Commits are no longer admitted one at a time per room, so a copy of a
+/// commit (a resend after a reconnect) can arrive while the first is still
+/// being made durable: it waits for that one and is answered with its host
+/// order, and the change is retained once.
+#[tokio::test]
+async fn a_copy_of_a_commit_in_flight_waits_for_it_and_is_not_admitted_again() {
+    let fixture = Fixture::new();
+    let (release, reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "state-persist");
+    let session = SessionCtx {
+        workspaces: &fixture.registry,
+        autobind: None,
+        outbound: &fixture.source.tx,
+        state_outbound: None,
+        connection_live: None,
+        own_user_public_key: &fixture.source.own_user,
+        own_device_cert: &fixture.source.peer.cert,
+        own_device_public_key: &fixture.source.peer.cert.device_public_key,
+        app_serving: None,
+        metrics: &fixture.metrics,
+        trust_policy: &fixture.source.policy,
+        disconnect: &fixture.source.disconnect,
+        framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        presence: None,
+        signed_actions: false,
+        private_tx: &fixture.private,
+        revocations: &fixture.source.revocations,
+        live_bridge: None,
+        agents: Box::leak(Box::default()),
+        positions: None,
+        compactor: None,
+        member_limits: None,
+        resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
+    };
+    let Envelope::Delta { delta, .. } = fixture.envelope(1) else {
+        unreachable!()
+    };
+    let commit = Envelope::Commit {
+        workspace_id: 7,
+        op: [5; 16],
+        author_device_public_key: fixture.source.peer.device_public_key,
+        authored_at_ns: 1,
+        delta,
+    };
+    let mut first = Box::pin(handle_commit(
+        &fixture.source.peer,
+        &session,
+        &[7],
+        commit.clone(),
+    ));
+    tokio::select! {
+        _ = &mut first => panic!("a commit was acknowledged before it was retained"),
+        reached = reached => reached.unwrap(),
+    }
+    let mut copy = Box::pin(handle_commit(&fixture.source.peer, &session, &[7], commit));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut copy)
+            .await
+            .is_err(),
+        "a copy of a commit in flight was answered before the commit was durable"
+    );
+    drop(release);
+    let (first, copy) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(first, copy)
+    })
+    .await
+    .unwrap();
+    let order = |answer: Option<Envelope>| match answer {
+        Some(Envelope::Committed { op, seq, .. }) if op == [5; 16] => seq,
+        other => panic!("expected the commit's order, got {other:?}"),
+    };
+    assert_eq!(order(first.unwrap()), order(copy.unwrap()));
+    assert_eq!(fixture.store.load_retained().unwrap().len(), 1);
+}
+
 /// Two commits by the fixture's source within one bucket refill, with a
 /// burst of one change, as a relay whose own user is `stranger` or else
 /// the source's own.

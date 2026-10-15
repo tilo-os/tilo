@@ -169,9 +169,40 @@ pub struct WorkspaceRuntime {
     last_seq: u64,
     /// Recently admitted commits, for de-duplicating resends.
     commits: CommitLedger,
-    /// Held by a `Commit` from its ledger check until it is admitted and
-    /// recorded, so two copies of one commit cannot both be admitted.
-    pub(crate) commit_gate: Arc<AsyncMutex<()>>,
+    /// Commits being admitted, by author and operation id, each held from
+    /// its ledger check until it is admitted and recorded
+    /// ([`Self::claim_commit`]): two copies of one commit cannot both be
+    /// admitted, while different commits are admitted side by side. One
+    /// gate for the whole room held every commit through the previous one's
+    /// durability and publication, so a busy room committed one change at a
+    /// time.
+    commit_claims: CommitClaims,
+    /// Held from a commit's [`Self::remember_commit`] until its ledger write
+    /// is done, so ledger writes reach the file in the order they were
+    /// remembered.
+    pub(crate) commit_ledger_lane: Arc<AsyncMutex<()>>,
+}
+
+/// The commits a room is admitting, by author and operation id, each with
+/// the lock its copies wait on.
+type CommitClaims = Arc<std::sync::Mutex<HashMap<([u8; 32], [u8; 16]), Arc<AsyncMutex<()>>>>>;
+
+/// A commit's claim on its author and operation id
+/// ([`WorkspaceRuntime::claim_commit`]), released when dropped.
+pub(crate) struct CommitClaim {
+    claims: CommitClaims,
+    key: ([u8; 32], [u8; 16]),
+    // Dropped after the entry is gone, waking the copies that waited on it.
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for CommitClaim {
+    fn drop(&mut self) {
+        self.claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
+    }
 }
 
 /// Admitted commits a workspace remembers. A browser resends its whole
@@ -417,7 +448,8 @@ impl WorkspaceRuntime {
             live_members: HashMap::new(),
             last_seq: 0,
             commits,
-            commit_gate: Arc::new(AsyncMutex::new(())),
+            commit_claims: Arc::default(),
+            commit_ledger_lane: Arc::new(AsyncMutex::new(())),
         })
     }
 
@@ -426,9 +458,41 @@ impl WorkspaceRuntime {
         self.commits.by_op.get(&(*author, *op)).copied()
     }
 
+    /// Claim `author`'s commit `op` for admission. Called under the room's
+    /// lock right after [`Self::admitted_commit`] found no record of it, so a
+    /// copy of the commit either sees the claim or, once the claim is
+    /// released after [`Self::remember_commit`], the record. A copy that
+    /// finds the claim gets its lock to wait on, and checks both again.
+    pub(crate) fn claim_commit(
+        &self,
+        author: [u8; 32],
+        op: [u8; 16],
+    ) -> Result<CommitClaim, Arc<AsyncMutex<()>>> {
+        let key = (author, op);
+        let mut claims = self
+            .commit_claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(held) = claims.get(&key) {
+            return Err(held.clone());
+        }
+        let lock = Arc::new(AsyncMutex::new(()));
+        let Ok(held) = lock.clone().try_lock_owned() else {
+            // A lock no one else has seen is free.
+            return Err(lock);
+        };
+        claims.insert(key, lock);
+        drop(claims);
+        Ok(CommitClaim {
+            claims: self.commit_claims.clone(),
+            key,
+            _held: held,
+        })
+    }
+
     /// Remember an admitted commit. The returned write makes it durable, so
     /// a resend is recognised also after a host restart; run it off the
-    /// workspace lock and in admission order (see `commit_gate`).
+    /// workspace lock and in remembering order (see `commit_ledger_lane`).
     pub fn remember_commit(&mut self, record: CommitRecord) -> CommitLedgerWrite {
         self.commits.insert(record);
         self.commits.logged = self.commits.logged.saturating_add(1);
@@ -2080,5 +2144,31 @@ mod tests {
             1
         );
         assert_eq!(mailbox.take(Instant::now() + BATCH_WINDOW, false).len(), 1);
+    }
+
+    /// A commit's claim is its own: a copy of it waits for the claim and
+    /// then finds it recorded, while another commit is claimed at once.
+    #[tokio::test]
+    async fn a_commit_claim_holds_off_its_copies_only() {
+        const AUTHOR: [u8; 32] = [1; 32];
+        let tmp = tempfile::tempdir().unwrap();
+        let rt = WorkspaceRuntime::open(tmp.path(), 9, false, Membership::default()).unwrap();
+        let claim = rt.claim_commit(AUTHOR, [1; 16]).ok().unwrap();
+        let other = rt.claim_commit(AUTHOR, [2; 16]).ok().unwrap();
+        let elsewhere = rt.claim_commit([2; 32], [1; 16]).ok().unwrap();
+        let Err(copy) = rt.claim_commit(AUTHOR, [1; 16]) else {
+            panic!("a copy of a claimed commit was claimed again");
+        };
+        assert!(
+            copy.try_lock().is_err(),
+            "a copy must wait while the commit is admitted"
+        );
+        let waiting = tokio::spawn(async move { drop(copy.lock().await) });
+        drop(claim);
+        waiting.await.unwrap();
+        // Released: the copy (or a later resend) claims it again, now that
+        // the ledger is the one to answer it.
+        drop(rt.claim_commit(AUTHOR, [1; 16]).ok().unwrap());
+        drop((other, elsewhere));
     }
 }
