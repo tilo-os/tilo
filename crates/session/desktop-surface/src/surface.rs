@@ -379,6 +379,10 @@ pub struct DesktopSurface {
     unbuilt: Vec<(StripId, TabId)>,
     /// The sideways swipe in progress, if any.
     swipe: Option<Swipe>,
+    /// The window a pan ended on. Focus goes to it where the strip is,
+    /// without panning it into view: the strip stays where the person left
+    /// it, however little a lone wheel notch moved it.
+    settle: Option<GroupId>,
     search: tilo_desktop_search::DesktopSearch,
     /// The window a group's new-tab control opened search for: the
     /// application chosen there opens as its tab, as in the native shell.
@@ -409,37 +413,88 @@ pub struct DesktopSurface {
 /// least one tab is built per frame, however long it takes.
 const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
 
-/// A pause in wheel input longer than this ends a swipe. A trackpad keeps
+/// A pause in wheel input this long ends a swipe. A trackpad keeps
 /// reporting while the fingers move and through the momentum after they
-/// lift, well inside this.
+/// lift, and a spun mouse wheel's notches come 0 to 50 ms apart, all well
+/// inside this; the pauses between spins are mostly longer.
 const SWIPE_GAP: Duration = Duration::from_millis(200);
 
-/// One horizontally dominant wheel gesture, from its first event over the
-/// step threshold until wheel input pauses for [`SWIPE_GAP`].
+/// Logical pixels a line of sideways wheel travels: the 40 px to the line a
+/// trackpad's pixels are weighed against when telling sideways from
+/// vertical, so both kinds of input move the strip alike.
+const WHEEL_LINE_PX: f64 = 40.0;
+
+/// Sideways travel that steps focus one window on a strip that cannot pan
+/// that way. About the width of a window: a Normal one is two thirds of a
+/// 1280 px strip, so a spin steps about as many windows on a strip that fits
+/// as it pans past on one that overflows. A notch of the native wheel (a
+/// line) is a sixteenth of it, a spin of about twenty notches a window or
+/// two.
+const STEP_TRAVEL_PX: f64 = 640.0;
+
+/// One horizontally dominant wheel gesture, from its first event until
+/// wheel input pauses for [`SWIPE_GAP`]: a trackpad swipe and its momentum,
+/// or a spin of a mouse's sideways wheel.
 #[derive(Clone, Copy)]
 struct Swipe {
-    direction: i32,
-    /// The strip took the gesture (stepped focus or pans), so the rest of
-    /// it is the strip's; else it belongs to the content under the pointer.
-    stepped: bool,
-    /// A trackpad's pixel-delta gesture, which pans the strip under the
-    /// fingers rather than stepping a window.
-    pan: bool,
+    /// The strip took the gesture, so the rest of it is the strip's, ends
+    /// included; else it belongs to the content under the pointer.
+    taken: bool,
+    /// Travel since the last step, toward the next one, while the strip
+    /// cannot pan the way the gesture goes.
+    travel: f64,
+    /// The gesture panned the strip, so its end focuses the window it was
+    /// panned to.
+    panned: bool,
     last: Instant,
 }
 
-/// A wheel event's sideways direction when horizontal motion dominates
-/// (positive is forward, like Super+Right), and whether it is past the step
-/// threshold: half a line, a pixel delta counting 40 px to the line. Winit's
-/// deltas are negative for a wheel turned (or fingers scrolling) rightward,
-/// which scrolls content toward its later columns and so steps forward. The
-/// shell's overlay host classifies wheel input the same way.
-fn sideways(delta: MouseScrollDelta) -> Option<(i32, bool)> {
+/// A wheel event's sideways travel in logical pixels when horizontal motion
+/// dominates, positive forward (toward later windows, like Super+Right).
+/// Winit's deltas are negative for a wheel turned (or fingers scrolling)
+/// rightward, which scrolls content toward its later columns and so moves
+/// forward; it reports pixels physical. The shell's overlay host classifies
+/// wheel input the same way.
+fn sideways(delta: MouseScrollDelta, scale_factor: f64) -> Option<f64> {
     let (dx, dy) = match delta {
-        MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
-        MouseScrollDelta::PixelDelta(p) => (p.x / 40.0, p.y / 40.0),
+        MouseScrollDelta::LineDelta(x, y) => {
+            (f64::from(x) * WHEEL_LINE_PX, f64::from(y) * WHEEL_LINE_PX)
+        }
+        MouseScrollDelta::PixelDelta(p) => {
+            let scale = scale_factor.max(f64::EPSILON);
+            (p.x / scale, p.y / scale)
+        }
     };
-    (dx.abs() > dy.abs()).then_some((if dx < 0.0 { 1 } else { -1 }, dx.abs() > 0.5))
+    (dx.abs() > dy.abs()).then_some(-dx)
+}
+
+/// The window a pan left the person looking at: the focused one while it is
+/// still wholly in view, else the one showing the most of itself, the one
+/// nearer the middle of the view between two showing as much.
+fn panned_to(row: &GroupRow, focused: Option<GroupId>) -> Option<GroupId> {
+    let (left, right) = row.visible_canvas_span();
+    let middle = f64::midpoint(left, right);
+    let shown = |x0: f64, x1: f64| (x1.min(right) - x0.max(left)).max(0.0);
+    let spans = row.group_canvas_spans();
+    if spans
+        .iter()
+        .any(|&(id, x0, x1)| Some(id) == focused && shown(x0, x1) >= x1 - x0 - 0.5)
+    {
+        return focused;
+    }
+    spans
+        .iter()
+        .filter(|&&(_, x0, x1)| shown(x0, x1) > 0.0)
+        .min_by(|&&(_, a0, a1), &&(_, b0, b1)| {
+            let (a, b) = (shown(a0, a1), shown(b0, b1));
+            if (a - b).abs() > 0.5 {
+                b.total_cmp(&a)
+            } else {
+                let off = |x0: f64, x1: f64| (f64::midpoint(x0, x1) - middle).abs();
+                off(a0, a1).total_cmp(&off(b0, b1))
+            }
+        })
+        .map(|&(id, _, _)| id)
 }
 
 impl DesktopSurface {
@@ -477,6 +532,7 @@ impl DesktopSurface {
             reveal: None,
             unbuilt: Vec::new(),
             swipe: None,
+            settle: None,
             search: tilo_desktop_search::DesktopSearch::new(),
             new_tab_into: None,
             search_pointer: Point::ZERO,
@@ -1075,7 +1131,9 @@ impl DesktopSurface {
                 RowOp::Show(strip, group, tab) => {
                     if let Some(row) = self.rows.get_mut(&strip) {
                         row.set_group_active_tab(group, tab);
-                        row.scroll_group_into_view(group);
+                        if self.settle.take() != Some(group) {
+                            row.scroll_group_into_view(group);
+                        }
                     }
                 }
                 RowOp::Width(strip, group, width) => {
@@ -1278,117 +1336,192 @@ impl DesktopSurface {
         }
     }
 
-    /// Whether the strip takes this wheel event. A trackpad's sideways swipe
-    /// (pixel deltas) pans the strip under the fingers, 1:1 and through its
-    /// momentum, when the strip can move that way; else it is the content's.
-    /// A mouse's sideways wheel click (line deltas) steps focus one window,
-    /// as in the shell, and falls through to content when there is no window
-    /// that way. One gesture arrives as many events and all of them follow
-    /// the decision its first one made.
+    /// Whether the strip takes this wheel event. A sideways gesture, a
+    /// trackpad's swipe or a mouse wheel's spin alike, moves the strip by its
+    /// travel: it pans the strip under the pointer, 1:1, while the strip can
+    /// move that way, and when the gesture ends focus goes to the window
+    /// panned to ([`Self::end_idle_swipe`]). A strip whose windows all fit
+    /// cannot pan, so there the travel steps focus a window per
+    /// [`STEP_TRAVEL_PX`], the first event of a gesture stepping at once so
+    /// a single notch is felt.
+    ///
+    /// A gesture arrives as many events and all of them follow the decision
+    /// its first one made: the strip takes it when it can pan or there is a
+    /// window that way, and then keeps the rest of it at the strip's ends so
+    /// the app under the pointer does not scroll sideways at the end of a
+    /// flick; else the content under the pointer has it.
     fn route_swipe(&mut self, delta: MouseScrollDelta, scale_factor: f64, now: Instant) -> bool {
-        if self
-            .swipe
-            .is_some_and(|swipe| now.saturating_duration_since(swipe.last) > SWIPE_GAP)
-        {
-            self.swipe = None;
-        }
-        let Some((direction, past_threshold)) = sideways(delta) else {
+        self.end_idle_swipe(now);
+        let Some(travel) = sideways(delta, scale_factor) else {
             return false;
         };
-        if let MouseScrollDelta::PixelDelta(p) = delta {
-            // Winit reports the page's deltaX negated, in physical pixels.
-            return self.route_pan(-p.x / scale_factor.max(f64::EPSILON), direction, now);
-        }
-        if let Some(swipe) = self.swipe.as_mut()
-            && !swipe.pan
-            && swipe.direction == direction
-        {
-            swipe.last = now;
-            return swipe.stepped;
-        }
-        if !past_threshold {
-            return false;
-        }
-        let stepped = self.step_focus(direction);
-        self.swipe = Some(Swipe {
-            direction,
-            stepped,
-            pan: false,
-            last: now,
+        let forward = if travel > 0.0 { 1 } else { -1 };
+        let (pans, fits) = self.shown_row_ref().map_or((false, true), |row| {
+            (
+                can_pan(row, travel),
+                !can_pan(row, 1.0) && !can_pan(row, -1.0),
+            )
         });
-        stepped
+        let mut swipe = self.swipe.unwrap_or_else(|| {
+            let taken = pans || self.neighbour(forward).is_some();
+            Swipe {
+                taken,
+                // On a strip that fits, the first event steps at once.
+                travel: if taken {
+                    f64::from(forward) * STEP_TRAVEL_PX - travel
+                } else {
+                    0.0
+                },
+                panned: false,
+                last: now,
+            }
+        });
+        swipe.last = now;
+        if swipe.taken {
+            if pans {
+                if let Some(row) = self.shown_row() {
+                    let offset = row.scroll_x() + travel;
+                    swipe.panned |= pan_row(row, offset);
+                }
+            } else if fits {
+                // A reversal starts its travel afresh.
+                if swipe.travel * travel < 0.0 {
+                    swipe.travel = 0.0;
+                }
+                swipe.travel += travel;
+                loop {
+                    if swipe.travel.abs() < STEP_TRAVEL_PX {
+                        break;
+                    }
+                    let step = if swipe.travel > 0.0 { 1 } else { -1 };
+                    if !self.step_focus(step) {
+                        swipe.travel = 0.0;
+                        break;
+                    }
+                    swipe.travel -= f64::from(step) * STEP_TRAVEL_PX;
+                }
+            }
+        }
+        self.swipe = Some(swipe);
+        swipe.taken
     }
 
-    /// Move the shown strip `travel` logical pixels (positive toward later
-    /// windows) as part of a pan gesture. A reversal mid-gesture keeps
-    /// panning; the ends stop the strip without handing the rest of the
-    /// gesture to the app under the pointer.
-    fn route_pan(&mut self, travel: f64, direction: i32, now: Instant) -> bool {
-        let taken = if let Some(swipe) = self.swipe.as_mut()
-            && swipe.pan
-        {
-            swipe.last = now;
-            swipe.stepped
-        } else {
-            let taken = self.shown_row_ref().is_some_and(|row| can_pan(row, travel));
-            self.swipe = Some(Swipe {
-                direction,
-                stepped: taken,
-                pan: true,
-                last: now,
-            });
-            taken
+    /// Whether [`Self::route_swipe`] would take `delta` at `now` only to pan
+    /// the shown strip, answered without routing it. A pan moves where the windows
+    /// are and nothing else. Stepping focus on a strip that fits, a swipe at
+    /// the strip's end, and the end of an earlier pan, which moves focus to
+    /// the window panned to, all do more.
+    fn pans_strip(&self, delta: MouseScrollDelta, now: Instant) -> bool {
+        // Only the direction matters here, which no scale factor changes.
+        let Some(travel) = sideways(delta, 1.0) else {
+            return false;
         };
-        if taken && let Some(row) = self.shown_row() {
-            let offset = row.scroll_x() + travel;
-            pan_row(row, offset);
+        let pans = self.shown_row_ref().is_some_and(|row| can_pan(row, travel));
+        match self.swipe {
+            Some(swipe) if now.saturating_duration_since(swipe.last) < SWIPE_GAP => {
+                swipe.taken && pans
+            }
+            Some(swipe) if swipe.panned => false,
+            _ => pans,
         }
-        taken
+    }
+
+    /// End the swipe once wheel input has paused for [`SWIPE_GAP`]. When it
+    /// panned the strip, focus goes to the window the person panned to, so
+    /// the keyboard and Super+Left/Right carry on from what they look at.
+    /// The strip stays put: framing that window would undo a short pan,
+    /// such as a single notch's.
+    fn end_idle_swipe(&mut self, now: Instant) {
+        let Some(swipe) = self.swipe else {
+            return;
+        };
+        if now.saturating_duration_since(swipe.last) < SWIPE_GAP {
+            return;
+        }
+        self.swipe = None;
+        if !swipe.panned {
+            return;
+        }
+        let mut shared = self.shared.borrow_mut();
+        let Some(current) = navigation::active_route(&shared.tree) else {
+            return;
+        };
+        let Some((group, tab)) = self
+            .shown
+            .zip(self.shown_row_ref())
+            .and_then(|(strip, row)| {
+                if strip != current.strip {
+                    return None;
+                }
+                let group = panned_to(row, Some(current.group))?;
+                let tab = row.groups.iter().find(|g| g.id == group)?.active_tab_id();
+                Some((group, tab))
+            })
+        else {
+            return;
+        };
+        if group == current.group {
+            return;
+        }
+        shared.queue.push(Admitted::Select(RouteIds {
+            group,
+            tab,
+            ..current
+        }));
+        self.settle = Some(group);
     }
 
     /// Focus the window `steps` along the shown strip, walking every tab of
     /// every group in order and stopping at either end, as Super+Left/Right
     /// does in the shell. False when there is nowhere to go.
     fn step_focus(&self, steps: i32) -> bool {
-        let mut shared = self.shared.borrow_mut();
-        let Some(current) = navigation::active_route(&shared.tree) else {
+        let Some(target) = self.neighbour(steps) else {
             return false;
         };
-        let target = {
-            let Some(strip) = shared
-                .tree
-                .workspaces
-                .iter()
-                .find(|w| w.id == current.workspace)
-                .and_then(|w| w.strips.iter().find(|s| s.id == current.strip))
-            else {
-                return false;
-            };
-            let windows: Vec<(GroupId, TabId)> = strip
-                .window_groups
-                .iter()
-                .flat_map(|g| g.tabs.iter().map(move |t| (g.id, t.id)))
-                .collect();
-            let Some(at) = windows
-                .iter()
-                .position(|&(g, t)| g == current.group && t == current.tab)
-            else {
-                return false;
-            };
-            let Some(&(group, tab)) = at
-                .checked_add_signed(isize::try_from(steps).unwrap_or(0))
-                .and_then(|index| windows.get(index))
-            else {
-                return false;
-            };
-            RouteIds {
-                group,
-                tab,
-                ..current
-            }
-        };
-        shared.queue.push(Admitted::Select(target));
+        self.shared
+            .borrow_mut()
+            .queue
+            .push(Admitted::Select(target));
         true
+    }
+
+    /// The window `steps` along the shown strip from the focused one (or the
+    /// one a queued select is about to focus), as
+    /// [`Self::step_focus`] walks it.
+    fn neighbour(&self, steps: i32) -> Option<RouteIds> {
+        let shared = self.shared.borrow();
+        // A step queued since the last update has moved focus already.
+        let current = shared
+            .queue
+            .iter()
+            .rev()
+            .find_map(|admitted| match admitted {
+                Admitted::Select(route) => Some(*route),
+                _ => None,
+            })
+            .or_else(|| navigation::active_route(&shared.tree))?;
+        let strip = shared
+            .tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == current.workspace)
+            .and_then(|w| w.strips.iter().find(|s| s.id == current.strip))?;
+        let windows: Vec<(GroupId, TabId)> = strip
+            .window_groups
+            .iter()
+            .flat_map(|g| g.tabs.iter().map(move |t| (g.id, t.id)))
+            .collect();
+        let at = windows
+            .iter()
+            .position(|&(g, t)| g == current.group && t == current.tab)?;
+        let &(group, tab) = at
+            .checked_add_signed(isize::try_from(steps).unwrap_or(0))
+            .and_then(|index| windows.get(index))?;
+        Some(RouteIds {
+            group,
+            tab,
+            ..current
+        })
     }
 }
 
@@ -1466,7 +1599,8 @@ impl DesktopSurface {
 }
 
 /// Pan `row` to `offset` the way the shell's direct strip pan does, within
-/// the legal range. A strip showing a maximized window stays at home.
+/// the legal range, and keep it there when the strip's geometry changes. A
+/// strip showing a maximized window stays at home.
 fn pan_row(row: &mut GroupRow, offset: f64) -> bool {
     if row.groups.iter().any(|g| g.maximized) {
         return false;
@@ -1475,6 +1609,9 @@ fn pan_row(row: &mut GroupRow, offset: f64) -> bool {
     row.begin_strip_pan();
     let moved = row.update_strip_pan(target - row.scroll_x());
     row.end_strip_pan(ui::time::now());
+    if moved {
+        row.hold_strip_pan();
+    }
     moved
 }
 
@@ -1662,6 +1799,7 @@ impl Widget for DesktopSurface {
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         let before = self.shared.borrow().revision;
         let search_was_open = self.search.is_open();
+        self.end_idle_swipe(ui::time::now());
         self.reconcile();
         self.harvest();
         {
@@ -1879,6 +2017,21 @@ impl Widget for DesktopSurface {
         }
     }
 
+    /// A sideways pan of the shown strip moves windows and changes nothing
+    /// else: no document, focus, selection or declaration. Every other wheel
+    /// reaches a layer above the strip (a banner or the notification centre
+    /// shown, the activity pane, search) or the window under the pointer,
+    /// which answer for themselves.
+    fn view_only_scroll(&self, event: &WindowEvent) -> bool {
+        let WindowEvent::MouseWheel { delta, .. } = event else {
+            return false;
+        };
+        self.notices.as_ref().is_none_or(|layer| !layer.visible())
+            && self.activity.is_none()
+            && !self.search.is_open()
+            && self.pans_strip(*delta, ui::time::now())
+    }
+
     fn wants_pointer_capture(&self) -> bool {
         self.shown
             .and_then(|strip| self.rows.get(&strip))
@@ -1963,6 +2116,19 @@ impl Widget for DesktopSurface {
                 .children()
                 .into_iter()
                 .any(Widget::needs_animation_frame)
+    }
+
+    /// A pan's end, when focus goes to the window panned to.
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let ends = self
+            .swipe
+            .filter(|swipe| swipe.panned)
+            .and_then(|swipe| swipe.last.checked_add(SWIPE_GAP));
+        self.children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .chain(ends)
+            .min()
     }
 
     fn has_pending_visual_work(&self) -> bool {
@@ -2664,44 +2830,124 @@ mod tests {
         MouseScrollDelta::LineDelta(-rightward, 0.0)
     }
 
+    /// One notch of a sideways wheel spun `rightward` as Firefox reports
+    /// it: six lines (negative: leftward).
+    fn notch(rightward: f32) -> MouseScrollDelta {
+        lines(6.0 * rightward)
+    }
+
     #[test]
-    fn one_run_of_sideways_wheel_clicks_steps_one_window() {
+    fn a_wheel_spin_steps_a_strip_that_cannot_pan_by_its_travel() {
+        // Unlaid, the strip cannot pan, as when its windows all fit.
         let (mut surface, handle) = desktop(5);
         let t = ui::time::now();
-        let clicks = [0.2, 1.0, 3.0, 1.0, 0.5];
-        let taken: Vec<bool> = (0u64..)
-            .zip(clicks)
-            .map(|(i, dx)| surface.route_swipe(lines(dx), 1.0, ms(t, 16 * i)))
-            .collect();
+        assert!(surface.route_swipe(notch(1.0), 1.0, t));
         assert_eq!(
-            taken,
-            [false, true, true, true, true],
-            "content keeps the sub-threshold lead-in; the strip keeps the rest"
+            focused(&mut surface, &handle),
+            1,
+            "a spin's first notch steps at once"
         );
-        assert_eq!(focused(&mut surface, &handle), 1);
-
-        let t = ms(t, 1000);
-        for i in 0..30 {
-            surface.route_swipe(lines(1.0), 1.0, ms(t, 16 * i));
+        let gaps = [17, 50, 0, 33, 17, 17, 50];
+        let mut at = 0;
+        for gap in gaps {
+            at += gap;
+            assert!(surface.route_swipe(notch(1.0), 1.0, ms(t, at)));
         }
-        assert_eq!(focused(&mut surface, &handle), 2, "however long it runs");
+        // Eight notches of six lines travel 1920 px: the first notch's step
+        // and one per STEP_TRAVEL_PX after it.
+        assert_eq!(
+            focused(&mut surface, &handle),
+            3,
+            "a step per window's width of travel, not per notch"
+        );
+        for i in 1..=12 {
+            assert!(
+                surface.route_swipe(notch(1.0), 1.0, ms(t, at + 17 * i)),
+                "travel past the last window stays the strip's"
+            );
+        }
+        assert_eq!(focused(&mut surface, &handle), 4);
 
-        let t = ms(t, 16 * 30 + 250);
+        let t = ms(t, 2000);
         assert!(
-            surface.route_swipe(lines(1.0), 1.0, t),
-            "a pause starts a new run"
+            surface.route_swipe(notch(-1.0), 1.0, t),
+            "after a pause a notch back steps back"
         );
         assert_eq!(focused(&mut surface, &handle), 3);
         assert!(
-            surface.route_swipe(lines(-1.0), 1.0, ms(t, 16)),
-            "reversing mid-run is a new run"
+            surface.route_swipe(pixels(240.0, 0.0), 1.0, ms(t, 1000)),
+            "a trackpad's travel steps the same"
         );
         assert_eq!(focused(&mut surface, &handle), 2);
-        assert!(
-            !surface.route_swipe(pixels(-80.0, 0.0), 1.0, ms(t, 32)),
-            "a trackpad swipe pans rather than steps, and an unlaid strip cannot pan"
-        );
-        assert_eq!(focused(&mut surface, &handle), 2);
+        for i in 1..=3 {
+            surface.route_swipe(pixels(240.0, 0.0), 1.0, ms(t, 1000 + 17 * i));
+        }
+        assert_eq!(focused(&mut surface, &handle), 1);
+    }
+
+    #[test]
+    fn a_sideways_spin_pans_an_overflowing_strip_and_focus_follows_it() {
+        for (kind, delta) in [("wheel", notch(1.0)), ("trackpad", pixels(-240.0, 0.0))] {
+            let (surface, handle) = desktop(5);
+            let mut frame = ui::headless::FrameHarness::for_root_with(
+                ui::state::State::new(),
+                surface,
+                (1280, 800),
+                ui::headless::FrameOptions::default(),
+            );
+            for _ in 0..4 {
+                frame.relayout();
+            }
+            let start = frame
+                .root::<DesktopSurface>()
+                .shown_row_ref()
+                .unwrap()
+                .scroll_x();
+            let surface = frame.root_mut::<DesktopSurface>();
+            assert!(
+                surface.shown_row_ref().unwrap().pan_max_scroll_x() > 2000.0,
+                "{kind}: five windows overflow the strip"
+            );
+            let t = ui::time::now();
+            for i in 0..6 {
+                assert!(surface.route_swipe(delta, 1.0, ms(t, 17 * i)), "{kind}");
+            }
+            let row = surface.shown_row_ref().unwrap();
+            assert!(
+                (row.scroll_x() - start - 1440.0).abs() < 0.5,
+                "{kind}: six notches pan six notches' travel, from {start} to {}",
+                row.scroll_x()
+            );
+            let looked_at = panned_to(row, None).unwrap();
+            assert_eq!(
+                handle.read(|tree| navigation::active_route(tree).unwrap().group),
+                handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].id),
+                "{kind}: focus stays put while the strip moves"
+            );
+
+            // Frames lay the strip out while the wheel spins.
+            frame.relayout();
+            let surface = frame.root_mut::<DesktopSurface>();
+            surface.end_idle_swipe(ms(t, 17 * 5 + 250));
+            for _ in 0..4 {
+                frame.relayout();
+            }
+            let surface = frame.root_mut::<DesktopSurface>();
+            let shown = focused(surface, &handle);
+            assert_eq!(
+                handle.read(|tree| tree.workspaces[0].strips[0].window_groups[shown].id),
+                looked_at,
+                "{kind}: the pan's end focuses the window panned to"
+            );
+            assert!(
+                shown >= 1,
+                "{kind}: focus followed the strip to window {shown}"
+            );
+            assert!(
+                (surface.shown_row_ref().unwrap().scroll_x() - start - 1440.0).abs() < 0.5,
+                "{kind}: and the strip stays where the pan left it"
+            );
+        }
     }
 
     #[test]

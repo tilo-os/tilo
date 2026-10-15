@@ -21,6 +21,7 @@ use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
+mod device_pairing;
 mod enrollment_tokens;
 mod native_identity;
 
@@ -278,6 +279,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.confirmation = ConfirmationPolicy::Confirm;
         }
         id if enrollment_tokens::role_of(id).is_some() => contract = enrollment_tokens::contract(),
+        id if device_pairing::is_pair_action(id) => contract = device_pairing::contract(id),
         "identity.devices.copy" | "peer.invite.named" | "agent.invite" => {
             contract.kind = ActionKind::Outside;
         }
@@ -710,6 +712,11 @@ fn active_admin_workspace(
         )));
     }
     Ok((workspace_id, room, actor))
+}
+
+/// The pairing steps answer through a ticket, never through a plain apply.
+fn pairing_needs_lifecycle() -> ActionError {
+    ActionError::Refused("device pairing requires lifecycle dispatch".into())
 }
 
 fn require_explicit_confirmation(args: &ActionArgs, action: &str) -> Result<(), ActionError> {
@@ -1467,6 +1474,27 @@ impl Action {
                 )
                 .map(|_| ())
             },
+        },
+        Action {
+            id: device_pairing::DISCOVER_ID,
+            label: "search-action-identity-device-pair-discover",
+            subtitle: "search-action-identity-device-pair-discover-subtitle",
+            params: device_pairing::DISCOVER_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
+        },
+        Action {
+            id: device_pairing::APPROVE_ID,
+            label: "search-action-identity-device-pair-approve",
+            subtitle: "search-action-identity-device-pair-approve-subtitle",
+            params: device_pairing::APPROVE_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
+        },
+        Action {
+            id: device_pairing::REJECT_ID,
+            label: "search-action-identity-device-pair-reject",
+            subtitle: "search-action-identity-device-pair-reject-subtitle",
+            params: device_pairing::REJECT_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
         },
         Action {
             id: "identity.device.revoke",
@@ -3402,6 +3430,28 @@ impl ActionsProvider {
                         Ok(crate::shell::search::InvocationDisposition::Pending(
                             peer_sync_ticket(chrome.clone(), request_id),
                         ))
+                    },
+                ) as Rc<crate::shell::search::BeginInvokeFn>;
+                (on_open, Some(begin))
+            } else if device_pairing::is_pair_action(action.id) {
+                let action_id = action.id;
+                let on_open = Rc::new(
+                    |_doc: &mut ui::widget::Edits<'_>,
+                     _root: &automerge::ObjId,
+                     _chrome: &Chrome,
+                     _args: &ActionArgs| { Err(pairing_needs_lifecycle()) },
+                ) as Rc<crate::shell::search::OpenFn>;
+                let begin = Rc::new(
+                    move |_doc: &mut ui::widget::Edits<'_>,
+                          _root: &automerge::ObjId,
+                          chrome: &Chrome,
+                          args: &ActionArgs| {
+                        device_pairing::begin(
+                            crate::shell::device_pairing::Pairing::session(),
+                            chrome,
+                            action_id,
+                            args,
+                        )
                     },
                 ) as Rc<crate::shell::search::BeginInvokeFn>;
                 (on_open, Some(begin))

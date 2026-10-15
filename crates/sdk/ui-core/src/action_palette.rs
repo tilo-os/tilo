@@ -331,6 +331,10 @@ pub struct ActionPalette {
     /// The exported actions' titles and descriptions, indexed while they
     /// stay the same.
     action_index: ListIndex,
+    /// [`crate::search::engine_generation`] the rows were ranked with:
+    /// where the index's code loads on first use, an open palette ranks
+    /// again once it is in.
+    engine_generation: u64,
     search_announcement: Option<String>,
     open: bool,
     /// `Some` while collecting a prompted action's argument in the field.
@@ -458,6 +462,7 @@ impl ActionPalette {
             missing_selection: None,
             search_generation: 0,
             action_index: ListIndex::default(),
+            engine_generation: crate::search::engine_generation(),
             search_announcement: None,
             open: false,
             arg: None,
@@ -1084,6 +1089,14 @@ impl ActionPalette {
                 generation: self.search_generation,
                 ..SearchAdvance::default()
             };
+        }
+        let engine_generation = crate::search::engine_generation();
+        if self.engine_generation != engine_generation {
+            self.engine_generation = engine_generation;
+            if self.open {
+                let typed = self.field.value().to_owned();
+                self.rebuild(&typed);
+            }
         }
         if self.validation_queue.is_empty() && self.provider_complete.iter().all(|done| *done) {
             for (key, validation) in &mut self.provider_validation {
@@ -2057,7 +2070,12 @@ impl ActionPalette {
         self.results.set_loading(false);
         self.next_provider = 0;
         self.refresh_progressive_results();
-        if self.providers.is_empty() {
+        if !query.trim().is_empty() && !crate::search::engine_ready() {
+            // The rows are ranked by the index, whose code is still loading.
+            self.search_announcement = Some(String::from("Searching"));
+            self.results.set_empty_text("Searching…");
+            let _ = self.advance_search_page();
+        } else if self.providers.is_empty() {
             self.results.set_empty_text("No matches");
             self.search_announcement = Some(format!("{} results", self.results.len()));
         } else {

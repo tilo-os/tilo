@@ -1,13 +1,17 @@
 # Identity signing boundary
 
-Tilo applications do not receive private identity material. For each authored
-launch, `tilo-launcher` resolves the selected identity on the host, opens exactly
-one Unix socket pair, keeps its end, and places the app end at file descriptor 15
-(`TILO_IDENTITY_BROKER_FD`). That broker answers public metadata in frames of at
-most 4 MiB. It refuses `sign` for every record it serves today: a record whose
-local secret is the person's root (group) key never signs for an application,
-because a root signature over the right 32 bytes is a device certificate or a
-revocation (`runtime_identity::broker`, `SigningIdentity::signs_with_root_key`).
+Tilo applications do not receive private identity material, and the launcher
+does not hold any. For each authored launch, `tilo-launcher` resolves the
+selected identity on the host and reads only its public fields
+(`runtime_identity::load_metadata_for_launch`): the record is validated as
+usual, but its secret provider is never contacted, so no secret is loaded. It
+opens exactly one Unix socket pair, serves that metadata on its end, and places
+the app end at file descriptor 15 (`TILO_IDENTITY_BROKER_FD`). That broker
+answers public metadata in frames of at most 4 MiB and refuses every `sign`: a
+root signature over the right 32 bytes is a device certificate or a revocation,
+so no application ever obtains one (`runtime_identity::broker::serve_metadata`).
+A store record whose key was never secured still fails the launch and names the
+Settings step that secures it.
 Application signatures come from the identity service (`tilo-identity-host`,
 file descriptor 31), which signs with this device's enrolled key and only under
 a grant naming the app, room and action. Read-only workspace participation gets

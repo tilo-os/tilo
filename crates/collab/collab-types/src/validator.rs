@@ -9,6 +9,7 @@
 //! to the borrowed `&mut ChannelState`; callers that want to
 //! validate-without-applying pass a clone and discard it.
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -702,6 +703,61 @@ pub fn named_record_of_channel<'g>(
 ) -> Option<(&'g str, &'g str)> {
     named_records(grants, room)
         .find(|(app, record)| crate::document_channel_id(app, room, record) == channel)
+}
+
+/// The id [`pattern_read_witnesses`] gives a level a pattern leaves open: no
+/// app or record is named so.
+const UNNAMED: &str = "\u{0}unnamed";
+
+/// One record for each grant of `grants` that can refuse Read on records of
+/// `room` it does not name: a Read grant whose answer is not Allow, over a
+/// pattern of records ("Finance: Deny Read" on `room › app`, every resource
+/// of an app, any depth) rather than one named record. Each is `(app,
+/// record)` of a record the grant covers that nothing names: the grant's own
+/// names where it has them, an id no app or record carries where it leaves a
+/// level open.
+///
+/// A steward that does not know which record a channel carries cannot decide
+/// a pattern for it. It still can decide whether the pattern could matter to
+/// someone: a person whose read of every witness is allowed reads every
+/// record those patterns cover. Only grants naming the open levels decide a
+/// witness and the records it stands for differently, and those name a record
+/// (or its app and record), which a route claim then gives the steward
+/// ([`crate::ChannelRoute`]). So a steward withholds every channel whose
+/// route it does not know from whoever may not read a witness, and nobody
+/// else loses anything. A Deny below a record (an item, a field) covers no
+/// record and has no witness: no record's key can carry it.
+#[must_use]
+pub fn pattern_read_witnesses<'g>(
+    grants: impl IntoIterator<Item = &'g Grant>,
+    room: &str,
+) -> BTreeSet<(String, String)> {
+    use tilo_action_policy::{ActionKind, Answer, Level, Segment};
+    let mut witnesses = BTreeSet::new();
+    for grant in grants {
+        if !grant.kinds.contains(ActionKind::Read) || grant.answer == Answer::Allow {
+            continue;
+        }
+        if named_records([grant], room).next().is_some() {
+            continue;
+        }
+        let name_at = |level: Level| {
+            grant
+                .node
+                .segments()
+                .iter()
+                .find_map(|segment| match segment {
+                    Segment::Name(at, id) if *at == level => Some(id.as_str()),
+                    _ => None,
+                })
+                .unwrap_or(UNNAMED)
+        };
+        let (app, record) = (name_at(Level::App), name_at(Level::Resource));
+        if grant.node.covers(&document_node(room, app, record)) {
+            witnesses.insert((app.to_owned(), record.to_owned()));
+        }
+    }
+    witnesses
 }
 
 /// The app segment of an artifact no app claims.

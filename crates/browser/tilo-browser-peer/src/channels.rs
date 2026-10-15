@@ -95,11 +95,13 @@ impl ContentCipher for KeysCipher {
 /// A governance message this device has to sign and send: the device key
 /// is in page custody, so signing happens in the session.
 pub(crate) enum Outgoing {
-    /// Ask the steward for access.
+    /// Ask the steward for access, naming the record the channel carries
+    /// so the steward can decide Read on it.
     Request {
         workspace_id: u64,
         room: String,
         request: MlsAccessRequestV1,
+        route: collab_types::ChannelRoute,
     },
     /// Acknowledge every frame applied so far.
     Ack {
@@ -747,6 +749,10 @@ impl Channels {
             workspace_id: route.workspace_id,
             room: route.document.cluster_id.clone(),
             request,
+            route: collab_types::ChannelRoute::new(
+                route.document.app_id.as_str(),
+                route.document.record.as_str(),
+            ),
         });
     }
 }

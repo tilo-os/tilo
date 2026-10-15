@@ -514,8 +514,8 @@ backoff until each device acknowledges. Held by that module's
 `delivery_survives_a_network_outage` and
 `observing_live_keys_never_opens_a_channel_or_rejoins_after_removal`, plus
 `channel-crypto/tests/content_history.rs::removed_member_cannot_read_content_sealed_after_removal`.
-The steward admits per room, not per record; see `P1-11`. Provisioning and recovery UX were not
-assessed by this reconciliation.
+The steward admits per record, a Deny over an app or a pattern of records included; see `P1-11`.
+Provisioning and recovery UX were not assessed by this reconciliation.
 
 ---
 
@@ -961,17 +961,33 @@ AVCs on a kernel that has it.
 ## P1-11 — A Read Deny below the room does not withhold that record's channel key
 
 `docs/architecture/permissions.md` §5.3. Room grants can deny Read on one app or record, and every
-per-record read path honours it (`StatePeer::check_document_read`). But channel stewards admit
-devices per room: `allowed_devices` in `crates/session/shell/src/shell/channel_policy.rs` asks Read
+per-record read path honours it (`StatePeer::check_document_read`). Channel stewards used to admit
+devices per room: `allowed_devices` in `crates/session/shell/src/shell/channel_policy.rs` asked Read
 once, on the room node, and the steward in `crates/collab/tilo-action-broker/src/channel_encryption.rs`
-admits every allowed device to every record channel of that room. A person denied one record
-therefore still receives that record's MLS keys. The Deny binds every honest client and door; it
-is not a confidentiality boundary against the member's own modified client, and until admission
-asks Read per route the room is that boundary.
+admitted every allowed device to every record channel of that room. A person denied one record
+therefore still received that record's MLS keys, and the room was the confidentiality boundary
+against the member's own modified client.
 
-**Fix direction:** have the steward know which route a channel belongs to and admit a device only
-if its person may Read that route; the same change narrows service members, which already read
-every channel of their room (`crates/collab/channel-crypto/README.md`, Remaining work).
+**Resolved for records, apps and patterns of records.** Stewards admit per channel
+(`ChannelDirectory::allowed_devices(room, channel, route, now)`; the relay's
+`StatePeer::withheld_record_readers`), deciding Read on the channel's record with the same decision
+every door applies. A channel id is a hash of its record's route, so the steward names the record
+from a grant naming it or from the route a device sends beside its access request
+(`NeighbourMsg::MlsRoutedAccessRequest`), which it keeps only if the route hashes to the channel's
+id and keeps beside the channel's group across restarts. A channel whose record it cannot name is
+withheld from every device a Deny over a pattern could keep out
+(`collab_types::pattern_read_witnesses`), so omitting the route gains a denied device nothing. A
+denied device that held a key is removed in a new epoch of that channel alone. Held by
+`channel_encryption`'s `a_read_deny_on_an_app_withholds_every_routed_channel_of_it` and
+`a_device_withheld_from_one_channel_loses_only_that_channels_key`, `channel_policy`'s
+`a_read_deny_over_an_app_withholds_every_routed_channel_of_it`, the relay stewardship's
+`a_read_deny_over_an_app_withholds_its_routed_and_its_unknown_channels` and
+`learned_routes_survive_a_restart_and_only_true_ones_are_kept`, and peer-state's
+`a_read_deny_on_a_record_withholds_only_that_records_channel`.
+
+**Remaining:** a Deny below a record (an item, a field) binds honest clients and doors only. One
+key opens the whole record, so against a modified client the record is the boundary; content that
+must stay hidden from a member belongs in a record of its own, denied by name or pattern.
 
 ## P2-7 — `sudo` and polkit ship in the image although the design brokers every privileged operation
 
@@ -1012,6 +1028,18 @@ lifetime for nothing; app signatures come from the identity service.
 
 **Fix direction:** serve fd 15 from `runtime_identity::load_metadata_from_path`, which validates
 the record without contacting the secret provider.
+
+**Resolved in source.** `start_identity_broker` reads a store record through
+`runtime_identity::load_metadata_for_launch` (an explicit debug record through
+`load_metadata_from_path`) and serves it with `runtime_identity::broker::serve_metadata`, which
+answers metadata and refuses every `sign` with the same bytes. Neither contacts the secret
+provider; an unsecured store record still fails the launch, as does one naming a provider this
+session cannot resolve. The secret-loading `load_for_launch`, the identity-backed `broker::serve`
+and its dead local-signing arm are gone. Held by
+`crates/packaging/launcher/src/run.rs::identity_resolution_tests::a_launch_never_reads_the_identity_secret`
+(the secret is deleted from its provider before the launch),
+`crates/runtime/runtime-identity/src/unix.rs::tests::a_launch_reads_public_fields_without_the_secret_provider`
+and `crates/runtime/runtime-identity/src/broker.rs::tests::broker_answers_metadata_and_refuses_every_sign_over_pinned_bounded_frames`.
 
 ---
 

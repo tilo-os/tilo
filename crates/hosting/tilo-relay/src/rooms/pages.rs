@@ -1,8 +1,8 @@
 //! The rooms as pages reach them over HTTPS (`/rooms`, `/join`; see
 //! [`tilo_relay_protocol::rooms`]).
 //!
-//! `/rooms` is room administration with the authorization of
-//! [`ROOM_ADMIN_ALPN`](super::ROOM_ADMIN_ALPN) ([`Rooms::authorize`]): the
+//! `/rooms` is room administration with the authorization every door has
+//! ([`Rooms::authorize`]): the
 //! session's device is one of the relay's own user, or a member's the
 //! room's governance lets do what it asks. `/join` redeems an invitation for
 //! a device with no session yet. Unlike the workspace-join protocol, a

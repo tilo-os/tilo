@@ -74,6 +74,37 @@ const PEER_RECORD = 'peer-record';
 /** The profile an identity keeps for one host: its device key, certificate
  * and documents there. */
 export const identityProfile = (identity, origin) => `tilo-identity:${identity.userPublicKey}@${new URL(origin).host}`;
+
+/** The namespace of a profile's storage its peer keeps its certificate,
+ * record (outbox, synced documents) and channel state in, until the host at
+ * the profile's origin is set up again. */
+export const PROFILE_DEVICE = 'tilo-browser-device';
+/** Which namespace each profile keeps its peer in now (`localStorage`):
+ * absent for a profile still on `PROFILE_DEVICE`. */
+const PROFILE_DEVICES = 'tilo-profile-devices';
+const readProfileDevices = namespaces => {
+  try {
+    const all = JSON.parse(namespaces?.getItem(PROFILE_DEVICES) ?? '{}');
+    return all && typeof all === 'object' && !Array.isArray(all) ? all : {};
+  } catch { return {}; }
+};
+/** The namespace `profile`'s peer keeps its state in now. */
+export function profileDevice(profile, namespaces = globalThis.localStorage) {
+  const device = readProfileDevices(namespaces)[profile];
+  return typeof device === 'string' && device ? device : PROFILE_DEVICE;
+}
+function keepProfileDevice(profile, device, namespaces) {
+  const all = readProfileDevices(namespaces);
+  all[profile] = device;
+  namespaces?.setItem(PROFILE_DEVICES, JSON.stringify(all));
+}
+/** The namespace a profile keeps a host's state in once that host replaced
+ * the one it kept state for: named after the host's device key, so it never
+ * shares a record with another host's. */
+const hostNamespace = hostCert => {
+  const key = hexKey(hostCert?.device_public_key);
+  return /^[0-9a-f]{64}$/.test(key) ? `${PROFILE_DEVICE}:${key}` : undefined;
+};
 /** The wasm runtime, loaded through the page host. */
 const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.();
 /** Whether a stored `{cert}` expires within a day (a page holding the root
@@ -608,11 +639,14 @@ export async function withCustody(custody, connecting, signal) {
 
 async function connect({
   origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity, deviceCertificate,
-  profile, device = 'tilo-browser-device', displayName = '', vaultStorage,
+  profile, device, displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
-  voice: voiceOptions = {}, requireExistingCertificate = false,
+  voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
 }) {
   userPublicKey ??= identity?.userPublicKey;
+  // Only a peer in its profile's own namespace moves to a fresh one when the
+  // host at its origin was set up again; a caller's store or namespace stays.
+  const ownNamespace = device === undefined && !store;
   if (identity && userPublicKey !== identity.userPublicKey) {
     throw new TypeError('userPublicKey must be the unlocked identity\'s');
   }
@@ -628,6 +662,7 @@ async function connect({
   signal?.throwIfAborted();
   const surfaceModule = async () => desktop ?? await import('./host.mjs');
   let storage;
+  device ??= profile ? profileDevice(profile, namespaces) : PROFILE_DEVICE;
   if (profile) {
     const surface = await surfaceModule();
     if (typeof surface.openProfileStorage !== 'function') throw new Error('profile storage is unavailable');
@@ -635,9 +670,8 @@ async function connect({
     store ??= profileStore(runtime, profile, device);
   }
   // Seals the channel state the runtime keeps in the profile's storage.
-  const channelVault = storage
-    ? await openChannelVault({profile: `${profile}/${device}`, userPublicKey, storage: vaultStorage ?? idbStorage()})
-    : undefined;
+  const vaultOf = () => openChannelVault({profile: `${profile}/${device}`, userPublicKey, storage: vaultStorage ?? idbStorage()});
+  let channelVault = storage ? await vaultOf() : undefined;
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
   const custodyKeyHex = () => [...(custodyForWasm.publicKey ?? [])].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -727,7 +761,8 @@ async function connect({
   const reportStorage = error => {
     try { peer?.reportFailure(undefined, undefined, storageFailureCode(error), 'Changes could not be saved on this device.'); } catch {}
   };
-  const unsubscribeStorage = storage?.subscribe?.(status => { if (status.persistence === 'failed') reportStorage(status.error); });
+  const watchStorage = () => storage?.subscribe?.(status => { if (status.persistence === 'failed') reportStorage(status.error); });
+  let unsubscribeStorage = watchStorage();
   function observeSurface(entry, status) {
     if (status.phase === 'closed') { dropSurface(entry); return; }
     if (Number.isSafeInteger(status.gpuGeneration)) entry.generation = status.gpuGeneration;
@@ -802,16 +837,50 @@ async function connect({
     await admitted;
   }
 
+  /** Move this peer onto a fresh namespace of its profile for the host
+   * `hostCert`, the one that just admitted this device. What the profile
+   * kept for the previous host (its certificate, record, outbox and
+   * documents) stays in its own namespace, untouched and never opened for
+   * this host. */
+  async function adoptHost(hostCert) {
+    const fresh = hostNamespace(hostCert);
+    if (!ownNamespace || !storage || !fresh || fresh === device) throw new AdmissionError('host-changed', HOST_CHANGED);
+    unsubscribeStorage?.();
+    const previous = storage;
+    storage = undefined;
+    await previous.release();
+    const surface = await surfaceModule();
+    storage = await surface.openProfileStorage(profile, fresh);
+    device = fresh;
+    store = profileStore(runtime, profile, device);
+    channelVault = await vaultOf();
+    unsubscribeStorage = watchStorage();
+    keepProfileDevice(profile, device, namespaces);
+  }
+
   async function certificate() {
     if (requireExistingCertificate && deviceCertificate) throw Error('Resource links require a previously certified device');
-    if (deviceCertificate) {
-      await store.put(CERTIFICATE, deviceCertificate);
-      deviceCertificate = undefined;
-    }
-    const existing = await store.get(CERTIFICATE);
+    let existing = await store.get(CERTIFICATE);
     if (requireExistingCertificate) {
       if (!existing) throw Error('Sign in on this browser and obtain admission before opening a resource link');
       return existing; // Host checks expiry/revocation; never renew or pair implicitly.
+    }
+    const admitted = deviceCertificate;
+    deviceCertificate = undefined;
+    const answering = admitted ? JSON.parse(admitted).hostCert : host.hostCert;
+    if (existing && !sameHost(JSON.parse(existing).hostCert, answering)) {
+      // What this browser kept was certified by, and its record is pinned
+      // to, another host than the one answering at this origin now (it was
+      // set up again). Kept state is never handed to it, nor renewed for it.
+      // Only a device that host has just admitted (an invitation redeemed,
+      // its door, a pairing) goes on, in a namespace of its own.
+      if (!admitted) throw new AdmissionError('host-changed', HOST_CHANGED);
+      await adoptHost(answering);
+      existing = undefined;
+    }
+    if (admitted) {
+      await store.put(CERTIFICATE, admitted);
+      return admitted;
     }
     if (existing && !(identity && expiresWithinADay(existing))) return existing;
     const issued = identity
@@ -824,10 +893,9 @@ async function connect({
   async function start() {
     const certified = JSON.parse(await certificate());
     if (!sameHost(certified.hostCert, host.hostCert)) {
-      // What this browser kept was certified by, and is pinned to, another
-      // host than the one answering at this origin now (it was set up
-      // again): that host would refuse the session, and the kept state is
-      // never handed to it.
+      // Certified by another host than the one answering at this origin
+      // now: that host would refuse the session, and the state kept for the
+      // other one is never handed to it.
       throw new AdmissionError('host-changed', HOST_CHANGED);
     }
     const record = storage ? undefined : await store.get(PEER_RECORD);
@@ -1151,14 +1219,19 @@ async function connect({
       }
       if (request?.kind === 'reauthenticate') {
         if (requireExistingCertificate) throw Error('Sign in through the identity flow before reopening this resource');
+        // What the page learnt of the host at load may be stale (a new
+        // certificate). A host set up again is not certified for here: the
+        // record is pinned to the one before, so that is the page's to offer
+        // (`joinViaHost`), with the kept certificate left as it is.
+        const answering = JSON.parse(await runtime.hostInfo(post));
+        const kept = await store.get(CERTIFICATE);
+        if (kept && !sameHost(JSON.parse(kept).hostCert, answering.hostCert)) throw new AdmissionError('host-changed', HOST_CHANGED);
         voice?.reset();
         stopLive();
         peer.dispose();
         resetReady();
         await store.delete(CERTIFICATE);
-        // The host may be another one now (a new certificate, a new user
-        // root): what the page learnt of it at load is stale too.
-        host = JSON.parse(await runtime.hostInfo(post));
+        host = answering;
         carriers = carriersFor(host);
         await start();
         return {operationId: 'reauthenticate'};
@@ -1175,6 +1248,11 @@ async function connect({
 /** What a person is told when the host at an origin is no longer the one
  * this browser's kept state belongs to. */
 export const HOST_CHANGED = 'This workspace’s host was set up again and is no longer the one this browser kept your work for, so Tilo did not open it. Ask the workspace’s owner what happened.';
+/** What a person is asked when they may join a host that was set up again
+ * through its door (`joinViaHost`'s `confirmRejoin`). */
+export const REJOIN_CHANGED_HOST = 'This workspace’s host was set up again. Join it again as yourself? Changes this browser had not sent to the old host stay on this device.';
+/** What a person is told when they chose not to join it again. */
+export const NOT_REJOINED = 'This workspace’s host was set up again, and you did not join it again. Reload the page to join it as yourself.';
 /** Whether two host certificates name the same host (its person and device),
  * as the peer's saved record pins it; unknown when either is missing. */
 const sameHost = (kept, current) => !kept || !current

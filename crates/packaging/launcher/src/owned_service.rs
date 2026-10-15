@@ -265,7 +265,7 @@ impl ServiceEndpoint {
             return Err(io::Error::last_os_error());
         }
         if usize::try_from(length).map_err(io::Error::other)? != std::mem::size_of::<libc::ucred>()
-            || credentials.uid != unsafe { libc::geteuid() }
+            || credentials.uid != rustix::process::geteuid().as_raw()
             || credentials.pid <= 1
         {
             return Err(io::ErrorKind::PermissionDenied.into());

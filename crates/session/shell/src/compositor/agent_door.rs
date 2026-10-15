@@ -145,8 +145,7 @@ pub(crate) fn authorize(stream: &UnixStream) -> Result<ClientFacts, PeerRefusal>
         uid: credentials.uid,
         shares_namespaces: super::native::peer_shares_host_security_namespaces(pid),
     };
-    // SAFETY: `geteuid` has no failure mode.
-    peer_decision(&peer, unsafe { libc::geteuid() })?;
+    peer_decision(&peer, rustix::process::geteuid().as_raw())?;
     Ok(ClientFacts {
         client: String::new(),
         version: None,

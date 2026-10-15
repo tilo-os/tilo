@@ -1,8 +1,11 @@
 //! Opening an app for the first time in a room a home relay governs: the
-//! relay's person asks through the room-admin door to let the app author the
-//! room's records, and every member's replica verifies the change.
+//! relay's person asks, as the host's own `tilo.host` action on the room's
+//! session, to let the app author the room's records, and every member's
+//! replica verifies the change.
+use super::governance_actions::{ask, host_operation, outcome, subscribed};
 use super::*;
-use tilo_relay::rooms::GrantAppAuthorshipRequest;
+use tilo_actions::remote::{ActionHostError, InvokeArgument, RemoteActionMessage};
+use tilo_relay::rooms::GRANT_APP_AUTHORSHIP;
 
 const OPENED: &str = "so.tilo.notes";
 
@@ -17,7 +20,7 @@ fn authors(peer: &StatePeer, member: &TestDevice) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_hosts_person_grants_app_authorship_through_the_room_admin_door() {
+async fn the_hosts_person_grants_app_authorship_through_the_hosts_action() {
     let alice = TestUser::fresh("Fixture governor");
     let bob = TestUser::fresh("Fixture editor");
     let host = alice.enrol("private-host", DeviceCapabilities::host());
@@ -25,48 +28,27 @@ async fn the_hosts_person_grants_app_authorship_through_the_room_admin_door() {
     let member = bob.enrol("private-member", DeviceCapabilities::member());
     let scratch = tempfile::tempdir().unwrap();
     let relay = start(scratch.path(), &alice, &host).await;
-    let address = relay.node_addr();
-    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
-    let room = admin
-        .create(address.clone(), "Private app opening")
-        .await
-        .unwrap();
-    admin
-        .send(
-            address.clone(),
-            RoomCommand::Enter {
-                room: room.room.clone(),
-            },
-        )
-        .await
-        .unwrap();
+    let room = create_and_enter(&relay, &host, &laptop, "Private app opening").await;
+    let workspace = room.workspace_id;
     topology_namespace::admit(&relay, &host, &member, &room.room).await;
-    let grant = |request_id, app: &str| RoomCommand::GrantAppAuthorship {
-        room: room.room.clone(),
-        request: GrantAppAuthorshipRequest {
-            request_id,
-            app: app.into(),
-        },
+    let grant = |app: &str| {
+        host_operation(
+            GRANT_APP_AUTHORSHIP,
+            serde_json::json!({ "room": room.room, "app": app }),
+        )
     };
 
-    let editor = RoomAdminClient::new(device_endpoint(&member).await, member.cert.clone());
-    assert!(
-        editor
-            .send(address.clone(), grant([81; 32], OPENED))
-            .await
-            .is_err(),
+    // The caller is the device its relay session authenticated: an editor
+    // asking is refused as a stranger to the host's operations.
+    let editor = subscribed(&relay, &member, workspace).await;
+    assert_eq!(
+        outcome(ask(&editor, &host, workspace, grant(OPENED)).await),
+        Err(ActionHostError::UnknownAction),
         "only the host's person lets an app author the room"
     );
-    let mismatch = RoomAdminClient::new(device_endpoint(&member).await, laptop.cert.clone());
-    assert!(
-        mismatch
-            .send(address.clone(), grant([81; 32], OPENED))
-            .await
-            .is_err(),
-        "the caller must be the authenticated QUIC endpoint"
-    );
+    drop(editor);
 
-    let state_session = session(&relay, &member, room.workspace_id).await;
+    let state_session = session(&relay, &member, workspace).await;
     let mut peer = StatePeer::new(
         &room.room,
         host.cert.clone(),
@@ -76,11 +58,10 @@ async fn the_hosts_person_grants_app_authorship_through_the_room_admin_door() {
     )
     .unwrap();
     peer.select_admission_v5().unwrap();
-    let reply = admin
-        .send(address.clone(), grant([82; 32], OPENED))
-        .await
-        .unwrap();
-    assert!(matches!(reply, RoomReply::Governance { .. }), "{reply:?}");
+    let owner = subscribed(&relay, &laptop, workspace).await;
+    let first = grant(OPENED);
+    let reply = outcome(ask(&owner, &host, workspace, first.clone()).await).unwrap();
+    assert!(reply["generation"].as_u64().is_some(), "{reply}");
     receive_until(
         "a member verifies the signed app authorship",
         &state_session,
@@ -90,18 +71,21 @@ async fn the_hosts_person_grants_app_authorship_through_the_room_admin_door() {
     )
     .await;
     assert_eq!(
-        admin
-            .send(address.clone(), grant([82; 32], OPENED))
-            .await
-            .unwrap(),
+        outcome(ask(&owner, &host, workspace, first.clone()).await).unwrap(),
         reply,
         "an exact retry answers the change it committed"
     );
+    let RemoteActionMessage::Invoke(mut other) = first else {
+        unreachable!("a grant is an invocation")
+    };
+    let serde_json::Value::Object(argument) =
+        serde_json::json!({ "room": room.room, "app": "so.tilo.file-explorer" })
+    else {
+        unreachable!("an object")
+    };
+    other.argument = InvokeArgument::Json(argument);
     assert!(
-        admin
-            .send(address, grant([82; 32], "so.tilo.file-explorer"))
-            .await
-            .is_err(),
+        outcome(ask(&owner, &host, workspace, RemoteActionMessage::Invoke(other)).await).is_err(),
         "a retry naming another app is refused"
     );
     relay.shutdown().await;

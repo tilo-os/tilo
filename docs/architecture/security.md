@@ -23,7 +23,7 @@ The scenarios we defend against:
 - The certified device public key is the Iroh `EndpointId` used by the shell, filesystem, and workspace-host client. It is the stable peer identity everywhere.
 - Identity decisions carry the whole peer id (`PeerOrigin`), never a fold of it: an equality check a digest can be ground against is not an identity check.
 - The personal signing identity is the user root. It certifies each device key; workspace hosts accept only device certificates chaining to the configured user root and permitted by the workspace membership/revocation state.
-- **No application ever obtains a root signature.** A root signature over the right 32 bytes is a device certificate (enrolling the signer's machine as one of the person's devices) or a revocation (evicting the real ones). The per-launch identity broker the launcher hands a sandboxed app (`runtime_identity::broker`) therefore answers metadata only for a root-capable record and refuses `sign`; application signatures come from the identity service (`tilo-identity-host`), which signs with the enrolled *device* key and only when the workspace policy allows the app an `Outside` action on that action's own signature node (`device_signature_node(room, app, action)`) — the open-app authorship grant every opened app holds (`tilo_action_policy::roles::app_authorship`) covers only Read and Undoable and is deliberately not enough.
+- **No application ever obtains a root signature.** A root signature over the right 32 bytes is a device certificate (enrolling the signer's machine as one of the person's devices) or a revocation (evicting the real ones). The per-launch identity broker the launcher hands a sandboxed app (`runtime_identity::broker`) therefore answers metadata only and refuses `sign`, and the launcher reads only the record's public fields for it, never the secret; application signatures come from the identity service (`tilo-identity-host`), which signs with the enrolled *device* key and only when the workspace policy allows the app an `Outside` action on that action's own signature node (`device_signature_node(room, app, action)`) — the open-app authorship grant every opened app holds (`tilo_action_policy::roles::app_authorship`) covers only Read and Undoable and is deliberately not enough.
 - A room's membership grants are written on nodes beneath the room (`room:<id>/…`, `tilo_action_policy::roles`), never at a workspace-wide root: a grant there matches every path, device and host, so a member grant carrying it would read as authority over all of them wherever a person actor is evaluated against the room's grants.
 
 Invite tokens are signed ed25519 blobs scoped to a workspace; see `docs/architecture/collaboration.md §7` for the wire format and validation order.
@@ -171,8 +171,9 @@ refuses agent devices. Other users' agents are not admitted, and agents
 never call the host's room actions.
 
 Room administration on a relay (the room's `tilo.workspace` governance
-actions over `Envelope::RemoteAction`, the `tilo-room-admin/1` ALPN, the
-`/rooms` pages, call control) is one decision, `Rooms::authorize`
+actions and the host's `tilo.host` operations over `Envelope::RemoteAction`,
+the `tilo-room-admin/1` ALPN that now only removes members, the `/rooms`
+pages, call control) is one decision, `Rooms::authorize`
 (`crates/hosting/tilo-relay/src/rooms/authority.rs`). The caller's
 certificate must be current and unrevoked, and not one of the relay's
 agents. A device of the relay's own user administers every room. Any other

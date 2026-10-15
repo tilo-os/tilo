@@ -27,6 +27,22 @@ pub trait AppServingPlane: Send + Sync {
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>>;
 
+    /// As [`Self::serve`], with the certificate the relay's handshake
+    /// verified for `caller`'s device: what the relay hands every message
+    /// that arrives on a session. The host's own operations need it (they
+    /// admit that certificate to a room); an app-serving plane has no use
+    /// for it, and the default ignores it.
+    fn serve_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        let _ = certificate;
+        self.serve(workspace_id, caller, message)
+    }
+
     /// Whether this plane answers `message` from `caller` at all. One that
     /// does not is refused as undeliverable, as by a host that serves no
     /// apps.

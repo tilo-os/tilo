@@ -3740,54 +3740,29 @@ fn pick_crtc(
     res.crtcs().iter().copied().find(|c| !used.contains(c))
 }
 
-/// Choose a scanout mode: trust the first *reasonable* mode (>= 1024 wide), since the kernel lists
-/// the EDID-preferred one first. The PREFERRED flag itself is not trusted — virtio-gpu flags a 640x480 default while advertising up to 5120x2160; fallback caps at 1920x1080.
+/// The plain-data view of a KMS mode the mode policy compares.
+pub(super) fn mode_info(mode: &Mode) -> super::devices::ModeInfo {
+    let (width, height) = mode.size();
+    super::devices::ModeInfo {
+        width,
+        height,
+        refresh_mhz: mode_refresh_mhz(mode),
+        preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
+        interlaced: mode.flags().contains(drm_re::control::ModeFlags::INTERLACE),
+    }
+}
+
+/// Choose a scanout mode by [`super::devices::select_mode`]: the configured
+/// one when still advertised, else the fastest at the native resolution.
 fn pick_configured_mode(
     modes: &[Mode],
     requested: Option<settings_store::hardware::OutputMode>,
 ) -> Option<Mode> {
-    for m in modes {
-        let (w, h) = m.size();
-        tracing::debug!(
-            w,
-            h,
-            preferred = m.mode_type().contains(ModeTypeFlags::PREFERRED),
-            "DRM scanout: candidate mode"
-        );
+    let infos: Vec<super::devices::ModeInfo> = modes.iter().map(mode_info).collect();
+    for info in &infos {
+        tracing::debug!(?info, "DRM scanout: candidate mode");
     }
-    if let Some(wanted) = requested {
-        if let Some(found) = modes.iter().find(|m| {
-            let (w, h) = m.size();
-            u32::from(w) == wanted.width
-                && u32::from(h) == wanted.height
-                // Sysfs exposes geometry but not refresh. A zero refresh in
-                // the typed contract therefore means "any advertised rate"
-                // rather than inventing a value in Settings.
-                && (wanted.refresh_mhz == 0 || mode_refresh_mhz(m) == wanted.refresh_mhz)
-        }) {
-            return Some(*found);
-        }
-        tracing::warn!(
-            ?wanted,
-            "configured DRM mode disappeared; retaining a safe advertised mode"
-        );
-    }
-    let first_reasonable = modes.first().filter(|m| m.size().0 >= 1024);
-    first_reasonable
-        .or_else(|| {
-            modes
-                .iter()
-                .filter(|m| {
-                    let (w, h) = m.size();
-                    w <= 1920 && h <= 1080
-                })
-                .max_by_key(|m| {
-                    let (w, h) = m.size();
-                    u32::from(w).saturating_mul(u32::from(h))
-                })
-        })
-        .or_else(|| modes.first())
-        .copied()
+    super::devices::select_mode(&infos, requested).and_then(|index| modes.get(index).copied())
 }
 
 /// Paint the pointer into a 64×64 ARGB8888 cursor buffer (`[B, G, R, A]`, little-endian), transparent where blank (entirely, for a hidden pointer); `pitch` is the row stride in bytes.

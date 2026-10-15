@@ -2874,9 +2874,10 @@ fn input_surfaces_keep_their_controls_without_native_document_chrome() {
         assert_eq!(app.history_chrome_enabled, ordinary);
         assert_eq!(app.native_document_chrome, ordinary);
         assert_eq!(
-            app.document_sync_status().is_some(),
-            ordinary,
-            "an intentionally unattached input service is not a failed document route"
+            app.document_sync_status(),
+            None,
+            "neither a local document outside any room nor an intentionally \
+             unattached input service has lost a route"
         );
         for (width, height) in [(800, 600), (600, 800)] {
             app.init_layout();
@@ -2904,7 +2905,7 @@ fn input_surfaces_keep_their_controls_without_native_document_chrome() {
         }
         app.action_publication_failure = Some("explicit publication refusal".into());
         assert_eq!(
-            app.document_sync_status(),
+            app.document_sync_status().as_deref(),
             Some("explicit publication refusal"),
             "system-surface presentation must still expose actual errors"
         );

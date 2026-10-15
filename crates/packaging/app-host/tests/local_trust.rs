@@ -5,7 +5,7 @@ use capnp_rpc::rpc_twoparty_capnp;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-use tilo_app_package::trust::{RevocationList, RevokedKey};
+use tilo_app_package::trust::{RevocationList, RevokedKey, TrustFile};
 
 #[path = "../src/local_package/fixture.rs"]
 mod fixture;

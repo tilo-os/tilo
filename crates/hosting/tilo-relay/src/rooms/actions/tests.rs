@@ -24,7 +24,7 @@ use crate::rooms::tests::{governor, guest_device, signed_pre_admission, view_rea
 use crate::rooms::{PreAdmitRequest, Rooms, SetMemberRoleRequest};
 
 /// What a pending answer comes to, on this runtime.
-async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
+pub(super) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     pending.then(move |value| {
         let _ = sender.send(value);
@@ -37,7 +37,7 @@ async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
 
 /// A new person admitted to `room` as an Editor, through the owner's
 /// pre-admission: their device's certificate.
-async fn admit(rooms: &Rooms, room: &str, owner: &DeviceCert, seed: u8) -> DeviceCert {
+pub(super) async fn admit(rooms: &Rooms, room: &str, owner: &DeviceCert, seed: u8) -> DeviceCert {
     let token = [seed; 8];
     let issued = rooms
         .pre_admit(
@@ -93,11 +93,11 @@ async fn grant(rooms: &Rooms, room: &str, owner: &DeviceCert, person: &DeviceCer
         .unwrap();
 }
 
-fn caller(device: &DeviceCert) -> Caller {
+pub(super) fn caller(device: &DeviceCert) -> Caller {
     Caller::authenticated(device.user_public_key, device.device_public_key)
 }
 
-fn request(room: &str, verb: &str, argument: Value) -> InvokeRequest {
+pub(super) fn request(room: &str, verb: &str, argument: Value) -> InvokeRequest {
     let Value::Object(argument) = argument else {
         panic!("arguments are an object");
     };
@@ -120,7 +120,7 @@ fn request(room: &str, verb: &str, argument: Value) -> InvokeRequest {
 
 /// A new room of `rooms`, the workspace carrying it, and its governance
 /// as actions.
-async fn governed(rooms: &Rooms) -> (String, u64, HostRoomActions) {
+pub(super) async fn governed(rooms: &Rooms) -> (String, u64, HostRoomActions) {
     let summary = rooms.create("Team").await.unwrap();
     let host = HostRoomActions::new();
     host.attach(rooms.clone());

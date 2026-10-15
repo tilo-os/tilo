@@ -443,3 +443,44 @@ fn room_admin_wire_cases_cover_every_variant() {
     assert_eq!(commands().len(), 11);
     assert_eq!(replies().len(), 8);
 }
+
+#[test]
+fn every_command_but_removal_names_the_action_that_replaced_it() {
+    for (name, command) in commands() {
+        let replaced = command.replaced_by();
+        assert_eq!(replaced.is_none(), name == "Remove", "{name}: {replaced:?}");
+        if let Some((provider, action)) = replaced {
+            assert!(
+                [
+                    "tilo.workspace",
+                    super::HOST_ACTIONS_PROVIDER,
+                    super::MEMBER_ACTIONS_PROVIDER
+                ]
+                .contains(&provider),
+                "{name}: {provider}"
+            );
+            assert!(!action.is_empty(), "{name}");
+        }
+    }
+    assert_eq!(
+        RoomCommand::List.replaced_by(),
+        Some(("tilo.host", "room.list"))
+    );
+    assert_eq!(super::member_resource("r"), "workspace.member:r");
+}
+
+#[test]
+fn an_actions_invitation_decodes_to_what_was_issued() {
+    let issued = IssuedInvitation {
+        invite_id: [4; 32],
+        signed_invitation: vec![1, 2, 3],
+    };
+    let answered = super::ActionInvitation::of(&issued);
+    assert_eq!(answered.invite, hex::encode([4; 32]));
+    assert_eq!(answered.decode(), Ok(issued));
+    let short = super::ActionInvitation {
+        invite: "00".into(),
+        invitation: String::new(),
+    };
+    assert!(short.decode().is_err());
+}

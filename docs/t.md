@@ -53,8 +53,10 @@ Each failure comes with its relevant output and the command that reproduces it.
 
 ```
 t suggest                      # what to run next: what failed for you, what your change affects
-t test clippy                  # one family (test, clippy, check, policy), a package, a check id, a glob, or `all`
+t test clippy                  # one family (test, clippy, check, goldens), a check (fmt, deny, wasm, ...), a package, a check id, a glob, or `all`
 t test test/tilo-fs            # one package's tests
+t test 'suite-*'               # the suites outside Cargo, one check per group of tools/ci/suites.toml
+t test 'nightly-*'             # the scheduled suites (also 'weekly-*'), only when asked for
 t test test/shell --test 'interaction_test::'   # selected tests; never cached
 t failed                       # run again what failed for you recently
 t cargo check -p shell --tests # any compiling cargo subcommand, output streamed
@@ -110,3 +112,8 @@ requires = ["arch=arm64", "/dev/kvm"]   # also "os=macos", or a label a node was
 
 `t status` lists the connected nodes and what each offers. The format is described in t's
 [README](https://code.tilo.so/tilo/t#declaring-checks).
+
+Some of `t.toml` is generated: the `package_inputs` of the cargo families and the `suite-*`
+checks from [`tools/ci/suites.toml`](../tools/ci/suites.toml), and the `goldens` family from
+`.config/nextest-filters.toml` and `.config/visual-goldens-image`. After changing those, run
+`python3 tools/ci/t_toml.py write`; the policy tests fail while `t.toml` is out of date.

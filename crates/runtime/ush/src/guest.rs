@@ -71,8 +71,10 @@ pub struct GuestUser {
 impl GuestUser {
     /// The user running this process.
     pub fn current() -> Self {
-        // SAFETY: `geteuid`/`getegid` cannot fail.
-        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let (uid, gid) = (
+            rustix::process::geteuid().as_raw(),
+            rustix::process::getegid().as_raw(),
+        );
         let name = std::env::var("USER")
             .ok()
             .filter(|n| is_user_name(n))

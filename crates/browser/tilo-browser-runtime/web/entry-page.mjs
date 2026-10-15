@@ -20,7 +20,7 @@ import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
-import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} from './peer.mjs';
+import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, profileDevice, REJOIN_CHANGED_HOST, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
@@ -116,6 +116,36 @@ function askName(current = '', save = async typed => typed.trim() || null) {
     document.body.append(form);
     input.select();
   });
+}
+
+/**
+ * A link the clipboard refused, over the page where the person can copy it
+ * themselves: selected in a read-only field, so Ctrl+C or a long press
+ * copies it. Gone once copied (`copied()` is called) or closed.
+ */
+function revealLink(link, copied = () => {}) {
+  document.querySelector('[data-card="reveal-link"]')?.remove();
+  const card = document.createElement('div');
+  card.className = 'tilo-entry-card';
+  card.dataset.card = 'reveal-link';
+  card.setAttribute('role', 'dialog');
+  card.setAttribute('aria-label', 'Pairing link');
+  const label = document.createElement('label');
+  label.textContent = 'Pairing link: copy it, then open it on your new device';
+  const input = document.createElement('input');
+  Object.assign(input, {name: 'pairing-link', value: link, readOnly: true, spellcheck: false, autocomplete: 'off'});
+  label.append(input);
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = 'Close';
+  const done = () => card.remove();
+  input.addEventListener('copy', () => { done(); copied(); });
+  close.addEventListener('click', done);
+  card.addEventListener('keydown', event => { if (event.key === 'Escape') done(); });
+  card.append(label, close);
+  document.body.append(card);
+  input.focus();
+  input.select();
 }
 
 /**
@@ -314,6 +344,7 @@ function hostActionParts(mount, names) {
   return name => ({
     setHostActions: actions => { parts.set(name, actions); mount.setHostActions([...parts.values()].flat()); },
     offerHostAction: offer => mount.offerHostAction(offer),
+    acknowledge: text => mount.acknowledge?.(text),
   });
 }
 
@@ -473,7 +504,7 @@ export async function startEntryPage({mode}) {
       if (known?.name && !workspaceName) workspaceName = known.name;
     },
     mountDesktop,
-    enterViaHost: async ({workspace}) => {
+    enterViaHost: async ({workspace, room}) => {
       reportErrors(workspace.admission);
       workspaceName = workspace.name || workspaceName;
       const watch = async () => spectate({workspace, runtime});
@@ -487,7 +518,11 @@ export async function startEntryPage({mode}) {
         const kept = keptMembership(workspace);
         const identity = kept?.paired ? undefined : await browserPerson();
         displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? randomDisplayName();
-        const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode});
+        // A host set up again since this browser joined it: the person may
+        // join it again from the bare entry. A link naming a room of the
+        // previous host stays refused, as that room is gone with it.
+        const confirmRejoin = room ? undefined : () => card(REJOIN_CHANGED_HOST, [['Join again', true], ['Not now', false]]);
+        const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode, confirmRejoin});
         entered = 'joined';
         return peer;
       } catch (error) {
@@ -533,7 +568,7 @@ export async function startEntryPage({mode}) {
       return pairViaHost({origin, room, userPublicKey, workspace, runtime, displayName, label: deviceLabel(),
         onPairingCode: showPairingCode});
     },
-    readAccounts: async origin => readBrowserAccounts({origin, runtime: await loadRuntime()}),
+    readAccounts: async origin => readBrowserAccounts({origin, runtime: await loadRuntime(), currentDevice: profile => profileDevice(profile)}),
     chooseAccount: accounts => card('Open this link as',
       accounts.map(account => [account.displayName || account.userPublicKey.slice(0, 12), account])),
     // A guest ticket: a fresh device of the room's root, certified once the
@@ -882,31 +917,54 @@ function showVisitState({entered, retryAfter, tell, status}) {
 /**
  * The identity actions of the person this page joined as, when this
  * browser holds them (`browserIdentity`): shown in the desktop, offered once
- * the person first posts or creates something in the room.
+ * the person has done enough in the room to be worth keeping, at a pause.
  */
 function keepIdentity({peer, mount, home, name, runtime, link, naming}) {
   const identity = currentIdentity();
   if (!identity?.keepWithPasskey || !mount?.setHostActions) return null;
   // A device paired to a person whose root is elsewhere has nothing to keep.
   if (peer?.userPublicKey && peer.userPublicKey !== identity.userPublicKey) return null;
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? '');
   const actions = createIdentityActions({
     identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: peer?.setDisplayName ? naming : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
+    pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K', revealLink,
   });
   void actions.attach(mount);
   if (peer?.authoredChanges) {
-    // Checked on every peer change, and every few seconds in case a send
-    // changed nothing the peer reports.
+    // Read on every peer change, and every few seconds in case a send
+    // changed nothing the peer reports; stops once the identity is kept.
     let stop = () => {};
     const timer = setInterval(() => check(), 2000);
     const check = () => {
-      if (peer.authoredChanges() > 0) { stop(); clearInterval(timer); actions.authored(); }
+      if (identity.kept) { stop(); clearInterval(timer); return; }
+      actions.authored(peer.authoredChanges());
     };
     stop = peer.subscribe?.(check) ?? stop;
   }
   globalThis.tiloIdentity = actions;
   return actions;
+}
+
+/** How long without input counts as a pause in what the person is doing. */
+const PAUSE_MS = 2500;
+
+/**
+ * Whether the person is between things: no key, pointer or wheel input for
+ * `PAUSE_MS` and no button held (a drag in progress). Only when, never what:
+ * nothing about the input is kept.
+ */
+function inputPause() {
+  let last = Date.now();
+  let held = 0;
+  const touch = () => { last = Date.now(); };
+  addEventListener('pointerdown', () => { held += 1; touch(); }, {capture: true, passive: true});
+  for (const type of ['pointerup', 'pointercancel']) {
+    addEventListener(type, () => { held = Math.max(0, held - 1); touch(); }, {capture: true, passive: true});
+  }
+  for (const type of ['keydown', 'wheel', 'pointermove']) addEventListener(type, touch, {capture: true, passive: true});
+  return () => held === 0 && Date.now() - last >= PAUSE_MS;
 }
 
 /**

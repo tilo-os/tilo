@@ -963,6 +963,7 @@ impl ChannelDirectory for StewardDirectory {
         &self,
         room: RoomId,
         _channel: collab_types::ChannelId,
+        _route: Option<&collab_types::ChannelRoute>,
         _now: u64,
     ) -> BTreeSet<collab_types::Ed25519PublicKey> {
         if room != self.room {

@@ -10327,6 +10327,9 @@ mod tests {
         if !bridge.target.renderer.sparse_fine_supported() {
             return;
         }
+        // What is rendered and how often, not how fast: a dense render of the overflowing
+        // stack on a loaded llvmpipe host can outlast the production fence allowance.
+        bridge.wait_for_gpu_completion_for_test();
         let pitch = width as usize * 4;
         let damage = [vello::FineDamageRect {
             x: 144,
@@ -10371,6 +10374,7 @@ mod tests {
         );
 
         let mut oracle = required_bridge(width, height);
+        oracle.wait_for_gpu_completion_for_test();
         let mut expected = vec![0; pitch * height as usize];
         oracle
             .paint_into_xrgb8888(&overflowing, &mut expected, pitch)
@@ -10397,6 +10401,8 @@ mod tests {
         if !bridge.target.renderer.sparse_fine_supported() {
             return;
         }
+        // The recovery chain's pixels and attempts, not its speed on a loaded llvmpipe host.
+        bridge.wait_for_gpu_completion_for_test();
         let pitch = usize::try_from(width).expect("test width") * 4;
         let damage = [vello::FineDamageRect {
             x: 144,

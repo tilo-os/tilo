@@ -321,3 +321,74 @@ async fn the_whole_catalogue_names_compute_beside_the_other_providers() {
     let unmerged = page(ask(&beside, &stranger, catalogue(None)).await);
     assert_eq!(provider_names(&unmerged), vec!["tilo.workspace"]);
 }
+
+/// The host's other providers, answering each catalogue with the device
+/// whose certificate the transport named, if any, as its revision.
+struct Certified;
+
+impl AppServingPlane for Certified {
+    fn serve(
+        &self,
+        _workspace_id: u64,
+        _caller: &Caller,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        answer_naming(message, "uncertified".into())
+    }
+
+    fn serve_certified(
+        &self,
+        _workspace_id: u64,
+        _caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        answer_naming(message, hex::encode(certificate.device_public_key))
+    }
+}
+
+fn answer_naming(
+    message: RemoteActionMessage,
+    revision: String,
+) -> Option<Pending<RemoteActionMessage>> {
+    let RemoteActionMessage::CatalogueRequest { correlation, query } = message else {
+        return None;
+    };
+    Some(Pending::ready(RemoteActionMessage::CatalogueResponse {
+        correlation,
+        result: Ok(CataloguePage::from_rows(revision, Vec::new(), &query)),
+    }))
+}
+
+#[tokio::test]
+async fn the_rest_is_handed_the_certificate_the_transport_verified() {
+    let root = tempfile::tempdir().unwrap();
+    let plane = ComputePlane {
+        compute: placement(root.path()),
+        rest: Some(Arc::new(Certified)),
+    };
+    let certificate = tilo_user_identity::DeviceCert {
+        user_public_key: OWNER,
+        device_public_key: OWNER_DEVICE,
+        device_label: "laptop".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    // The host's own operations need the certificate (entering a room
+    // admits it), whether asked alone or within the whole catalogue.
+    for message in [catalogue(Some("tilo.host")), catalogue(None)] {
+        let answer = plane
+            .serve_certified(7, &owner(), &certificate, message)
+            .expect("a reply");
+        assert_eq!(
+            page(settled(answer).await).revision,
+            hex::encode(OWNER_DEVICE)
+        );
+    }
+    let uncertified = plane
+        .serve(7, &owner(), catalogue(Some("tilo.host")))
+        .expect("a reply");
+    assert_eq!(page(settled(uncertified).await).revision, "uncertified");
+}

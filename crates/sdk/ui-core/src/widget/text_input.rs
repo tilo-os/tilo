@@ -354,6 +354,10 @@ pub struct TextInput {
     spell_language: String,
     /// Cached by (language, text), so drawing idle fields never starts work.
     spell_cache_key: Option<(String, String)>,
+    /// [`spellcheck::dictionaries_generation`] the spans were checked with:
+    /// where the dictionaries load on first use, the text is checked again
+    /// once they are in.
+    spell_generation: u64,
     spell_spans: Vec<(usize, usize)>,
     /// `spell_spans` were cleared while idle and no longer describe the
     /// cached text, so the next check cannot splice into them.
@@ -643,6 +647,7 @@ impl TextInput {
             spell_active: false,
             spell_language,
             spell_cache_key: None,
+            spell_generation: spellcheck::dictionaries_generation(),
             spell_spans: Vec::new(),
             spell_spans_stale: false,
             spell_dictionary: None,
@@ -4342,6 +4347,11 @@ impl TextInput {
 
     fn refresh_spelling(&mut self) {
         self.refresh_personal_spelling();
+        let generation = spellcheck::dictionaries_generation();
+        if self.spell_generation != generation {
+            self.spell_generation = generation;
+            self.spell_cache_key = None;
+        }
         if !self.checks_spelling() || self.text.is_empty() {
             self.spell_spans.clear();
             self.spell_cache_key = None;

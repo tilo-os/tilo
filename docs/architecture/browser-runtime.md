@@ -469,7 +469,11 @@ other server.
 
 In the desktop this is **Pair a new device** (`identity-actions.mjs`). It
 copies a link that opens the current workspace with a `pair` link secret
-naming the person (`web-routing.md` §6.2). The new device asks for a
+naming the person (`web-routing.md` §6.2), and says "Link copied" in
+passing. When the clipboard refuses, a banner holds the link with **Copy
+link**, whose click may be allowed where the search choice was not; refused
+again, the page shows the link selected in a read-only field to copy by
+hand. Once copied, the banner is withdrawn. The new device asks for a
 certificate and shows its pairing code. The person's device then offers a
 banner that names the code, and choosing the banner approves the device.
 In a governed room the certificate alone admits no device. So where the
@@ -507,11 +511,12 @@ leaves the browser; the page also calls `navigator.storage.persist()`. It is
 a real identity from the start: it joins and owns
 workspaces like any other, and a host that prunes it lets the same person
 join again. Keeping it only adds wraps to its envelope, through the
-desktop's host actions (`identity-actions.mjs`: desktop search, and a banner
-when the person first posts or creates something, sets their name, or when
-`navigator.storage.persisted()` is false):
+desktop's host actions (`identity-actions.mjs`: desktop search, and one
+banner per browser session, never on arrival: after `ASK_AFTER_ACTIONS`
+separate actions or once the person sets their name, at a pause in their
+input):
 
-- **Keep this identity**: one passkey whose user handle is the root public
+- **Keep your name and work**: one passkey whose user handle is the root public
   key and whose PRF input is fixed (SHA-256 of `tilo-seal/v1/user-root-prf`).
 - **Save a recovery key**: to the password manager (`PasswordCredential`)
   where the browser has one, else as a file.
