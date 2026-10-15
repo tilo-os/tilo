@@ -1130,17 +1130,11 @@ copy_booted_image() {
     return
   fi
   step "Copying the running Tilo image into local container storage"
-  VM_COPY_CACHE=/usr/libexec/tilo-vm-bootc-copy-cache.py
-  # VM development can bind-mount the backend and helper from its writable
-  # overlay. The sealed /usr tree cannot gain a helper without an image rebuild.
-  if [ ! -f "$VM_COPY_CACHE" ] \
-      && [ -f /var/lib/tilo-installer/vm-cache-code/tilo-vm-bootc-copy-cache.py ]; then
-    VM_COPY_CACHE=/var/lib/tilo-installer/vm-cache-code/tilo-vm-bootc-copy-cache.py
-  fi
+  VM_COPY_CACHE=/usr/libexec/tilo-vm-bootc-copy-cache
   VM_COPY_CACHE_MARKER=/run/tilo-installer/vm-bootc-copy-cache.enabled
   VM_CACHED_COPY=0
   if [ -e "$VM_COPY_CACHE_MARKER" ] \
-      && python3 "$VM_COPY_CACHE" check; then
+      && "$VM_COPY_CACHE" check; then
     log "  -> reusing the exact booted image from VM-local container storage"
     VM_CACHED_COPY=1
   else
@@ -1154,7 +1148,7 @@ copy_booted_image() {
   if [ "$VM_CACHED_COPY" -eq 0 ] && [ -e "$VM_COPY_CACHE_MARKER" ]; then
     # Receipt creation only accelerates later VM retries; a failed write must
     # never change the completed export or the physical install path.
-    python3 "$VM_COPY_CACHE" record \
+    "$VM_COPY_CACHE" record \
       || log "  -> VM copy cache receipt unavailable; next run will copy again"
   fi
 
@@ -1837,10 +1831,10 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
     die "setup handoff contains the human root secret"
   fi
   if [ -d "$HANDOFF_SRC/etc" ]; then
-    python3 /usr/libexec/tilo-install-handoff-copy.py "$HANDOFF_SRC/etc" "$DEPLOY_ETC"
+    /usr/libexec/tilo-install-handoff-copy "$HANDOFF_SRC/etc" "$DEPLOY_ETC"
   fi
   if [ -d "$HANDOFF_SRC/var" ]; then
-    python3 /usr/libexec/tilo-install-handoff-copy.py "$HANDOFF_SRC/var" "$HANDOFF_VAR"
+    /usr/libexec/tilo-install-handoff-copy "$HANDOFF_SRC/var" "$HANDOFF_VAR"
   fi
   key="$HANDOFF_VAR/lib/tilo/device-private/keypair.bin"
   if [ -f "$key" ]; then
@@ -1880,7 +1874,7 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
       && [ -x /usr/sbin/sshd ] \
       && [ -f /usr/lib/systemd/system/sshd.service ] \
       || die "bring-up SSH requires a verified development target with OpenSSH"
-    python3 /usr/libexec/tilo-install-dev-ssh.py --etc "$DEPLOY_ETC" \
+    /usr/libexec/tilo-install-dev-ssh --etc "$DEPLOY_ETC" \
       --username "$USERNAME" --key "$SSH_REQUEST" \
       || die "could not configure owner-key bring-up SSH"
     rm -f "$DEPLOY_ETC/tilo/bringup-ssh.pub"

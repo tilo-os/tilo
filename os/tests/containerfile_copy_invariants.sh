@@ -203,7 +203,11 @@ containerfile="$repo/os/Containerfile"
 # the staging-reclaim component (one new row): it used to reach only the
 # installer image, from the installer's overlay of os/usr, and the installer
 # and the targets it installs now inherit it.
-expected_contract=4ff4b32cc912e6b618758eb82dbe3e35bf9d0e2036adf50c9fd184ebb8777890
+# The installer backend's handoff copy, dev SSH and VM export cache helpers are
+# now compiled. The base image carries them from the install-helpers component
+# (three new rows): they used to reach only the installer image, from the
+# installer's overlay of os/usr, and the installer now inherits them.
+expected_contract=9f880a1a4a05049f26e0886ff3b6ddd317c045deea26bd6399f28681047b6df0
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
