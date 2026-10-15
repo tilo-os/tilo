@@ -114,6 +114,18 @@ pub enum ChatAction {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         body: Vec<tilo_document::ClipBlock>,
     },
+    /// Add a message to `channel` as written by someone outside the room —
+    /// a seeded conversation, an import, an integration relaying a post —
+    /// shown under the display name `author`. Its `id` is derived from what
+    /// it says, so delivering it again changes nothing. The row records who
+    /// delivered it beside the name it is shown under.
+    DeliverMessage {
+        channel: String,
+        id: String,
+        ts: i64,
+        author: String,
+        text: String,
+    },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
     EditMessage {
@@ -292,6 +304,9 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         ChatAction::SendMessage { channel, id, .. } => {
             ("Send message", channel, id, "chat.message")
         }
+        ChatAction::DeliverMessage { channel, id, .. } => {
+            ("Deliver message", channel, id, "chat.message")
+        }
         ChatAction::EditMessage { channel, id, .. } => {
             ("Edit message", channel, id, "chat.message")
         }
@@ -440,6 +455,40 @@ fn apply_seed_workspace(
     .map_err(ActionError::Refused)
 }
 
+/// Add a message `author` wrote outside the room, under a roster entry of
+/// its own, recording who delivered it. A delivery already held, or one the
+/// channel cannot take, changes nothing.
+fn apply_delivery(
+    doc: &mut Doc,
+    channel: &str,
+    id: &str,
+    ts: i64,
+    author: &str,
+    text: &str,
+) -> Result<(), ActionError> {
+    let delivered_by = signed_by()?;
+    let name = delivered_author_name(author)
+        .ok_or_else(|| ActionError::Refused("a message needs its author".into()))?;
+    if !ChatDoc::accepts_message_action(doc, channel, id, text, None, None) {
+        return Ok(());
+    }
+    let author = delivered_author_id(&name);
+    ChatDoc::ensure_delivered_author(doc, &author, &name);
+    ChatDoc::push_message_with_id(
+        doc,
+        channel,
+        id,
+        NewMessage {
+            author,
+            ts,
+            text: text.to_owned(),
+            ..Default::default()
+        },
+    );
+    ChatDoc::mark_delivered(doc, channel, id, &delivered_by);
+    Ok(())
+}
+
 impl Action for ChatAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         if let Self::Feedback(action) = self {
@@ -456,6 +505,16 @@ impl Action for ChatAction {
             let presence = status.parse().unwrap_or(crate::model::Presence::Online);
             let _ = ChatDoc::ensure_user(doc, &id, name, initials, *color_idx, presence);
             return Ok(());
+        }
+        if let ChatAction::DeliverMessage {
+            channel,
+            id,
+            ts,
+            author,
+            text,
+        } = self
+        {
+            return apply_delivery(doc, channel, id, *ts, author, text);
         }
         if let ChatAction::NameAgent { participant, name } = self {
             ChatDoc::name_agent(doc, participant, &bounded_agent_name(name));
@@ -525,7 +584,8 @@ impl Action for ChatAction {
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
             ChatAction::MarkRead { .. } => tilo_actions::ChangeKind::Housekeeping,
-            ChatAction::SeedStarter { .. }
+            ChatAction::DeliverMessage { .. }
+            | ChatAction::SeedStarter { .. }
             | ChatAction::SeedWorkspace { .. }
             | ChatAction::SeedDemo {}
             | ChatAction::EnsureUser { .. }
@@ -743,6 +803,129 @@ fn bounded_agent_name(name: &str) -> String {
     let name = if name.is_empty() { "Agent" } else { name };
     let end = name.floor_char_boundary(MAX_AGENT_AUTHOR_NAME_BYTES);
     name.get(..end).unwrap_or(name).to_owned()
+}
+
+/// The display name a delivered message is shown under: trimmed, without
+/// control characters, at most [`MAX_AGENT_AUTHOR_NAME_BYTES`]. `None` when
+/// nothing is left.
+pub(crate) fn delivered_author_name(name: &str) -> Option<String> {
+    let name: String = name.trim().chars().filter(|ch| !ch.is_control()).collect();
+    let end = name.floor_char_boundary(MAX_AGENT_AUTHOR_NAME_BYTES);
+    let name = name.get(..end).unwrap_or_default().trim().to_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The roster id a delivered author is recorded under: never a
+/// participant's (participants are signed ids, not `delivered:`), the same
+/// for the same name, and distinct for names that only differ in
+/// punctuation.
+pub(crate) fn delivered_author_id(name: &str) -> String {
+    let mut slug = String::new();
+    for ch in name.chars().flat_map(char::to_lowercase) {
+        if slug.len() >= 48 {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    let hash = crate::identity::fnv1a(name.as_bytes());
+    if slug.is_empty() {
+        format!("delivered:{hash:016x}")
+    } else {
+        format!("delivered:{slug}-{hash:016x}")
+    }
+}
+
+/// `text` as Unix seconds: an integer, or an RFC 3339 instant.
+pub(crate) fn parse_seconds(text: &str) -> Option<i64> {
+    let text = text.trim();
+    text.parse::<i64>().ok().or_else(|| {
+        chrono::DateTime::parse_from_rfc3339(text)
+            .ok()
+            .map(|date| date.timestamp())
+    })
+}
+
+/// Build `deliver-message` on `channel`: the message `author` wrote, at
+/// `ts` (now when absent), with an id derived from all of it so the same
+/// delivery always names the same message.
+fn deliver_message_action(
+    channel: &str,
+    args: &tilo_actions::ActionArgs,
+) -> Result<ChatAction, String> {
+    let author = delivered_author_name(args.text("author").unwrap_or_default())
+        .ok_or("`author` names who wrote it")?;
+    let text = args.text("body").unwrap_or_default().trim().to_owned();
+    if text.is_empty() {
+        return Err("a message needs words".into());
+    }
+    if text.len() > crate::doc::MAX_MESSAGE_TEXT_BYTES {
+        return Err("the message is too long".into());
+    }
+    let ts = match args.text("ts").map(str::trim).filter(|ts| !ts.is_empty()) {
+        Some(ts) => parse_seconds(ts)
+            .ok_or_else(|| format!("`{ts}` is not a time: Unix seconds or 2026-10-11T09:30:00Z"))?,
+        None => unix_now_i64(),
+    };
+    let joined = [channel, &author, &ts.to_string(), &text].join("\u{1f}");
+    let id = format!(
+        "m_dlv_{:016x}{:016x}",
+        crate::identity::fnv1a(joined.as_bytes()),
+        crate::identity::fnv1a(format!("tilo-chat\u{1f}{joined}").as_bytes())
+    );
+    Ok(ChatAction::DeliverMessage {
+        channel: channel.to_owned(),
+        id,
+        ts,
+        author,
+        text,
+    })
+}
+
+/// A refusal the host reports to the caller of a typed action.
+fn invalid_arguments(reason: &str) -> EncodedAction {
+    EncodedAction {
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        payload: reason.as_bytes().to_vec(),
+    }
+}
+
+/// `deliver-message` on a text channel.
+fn deliver_message_spec(channel: &str) -> ActionSpec {
+    use tilo_actions::{ActionParam, ParamType};
+    let channel = channel.to_owned();
+    let mut spec = ActionSpec::typed(
+        "deliver-message",
+        "Deliver message",
+        "Who wrote it",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("author", ParamType::Text, "Who wrote it: the name readers see"),
+            ActionParam::required("body", ParamType::Text, "The message text"),
+            ActionParam::optional(
+                "ts",
+                ParamType::Text,
+                "When it was written: Unix seconds or RFC 3339 (2026-10-11T09:30:00Z); now when absent",
+            ),
+        ],
+        move |args| match deliver_message_action(&channel, args) {
+            Ok(action) => encode(&action),
+            Err(reason) => invalid_arguments(&reason),
+        },
+    )
+    .with_description(
+        "Adds a message to the conversation as written by someone outside the room: a seeded \
+         conversation, an import, an integration. Readers see it under the author's name. \
+         Delivering the same message again changes nothing.",
+    );
+    spec.contract.result = tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    spec
 }
 
 pub fn send_message_action(
@@ -1092,6 +1275,14 @@ fn publish_channel(
                 .with_primary(true),
         );
         channel = channel.with_action(share_resource_spec(&ch.id));
+        channel = channel.with_action(deliver_message_spec(&ch.id));
+        channel = channel.with_action(
+            ChatEffect::ExportContent {
+                channel: ch.id.clone(),
+                format: "md".into(),
+            }
+            .bound_asking(&["format"]),
+        );
         channel = channel.with_action(crate::feedback::submit_spec(&ch.id));
         channel = channel.with_action(crate::feedback::destination_read::spec(&ch.id));
         channel = channel.with_action(ActionSpec::prompted(
@@ -1636,31 +1827,67 @@ pub(crate) fn resolve_child(state: &crate::resource::ChatState, id: &str) -> Opt
     Some(resource)
 }
 
-/// Workspace-level: create a new text channel in the uncategorised group. The
-/// fresh id is minted once, here, at authoring time (like the on-screen "+").
+/// The longest channel id a caller may name.
+const MAX_CHANNEL_ID_BYTES: usize = 64;
+
+/// Whether `id` is a channel id a caller may name: letters, digits, `-` and
+/// `_`, starting with a letter or digit.
+pub(crate) fn valid_channel_id(id: &str) -> bool {
+    id.len() <= MAX_CHANNEL_ID_BYTES
+        && id
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphanumeric())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// Workspace-level: create a new text channel in the uncategorised group.
+/// Its id is the caller's (`id`, so a written step can post into a channel
+/// it names) or minted once, here, at authoring time (like the on-screen
+/// "+"). It answers with the channel's address.
 fn new_channel_action_spec(workspace_id: &str) -> ActionSpec {
-    ActionSpec::prompted(
+    use tilo_actions::{ActionParam, PROMPTED_PARAM, ParamType};
+    let ws = workspace_id.to_string();
+    let mut spec = ActionSpec::typed(
         "new-channel",
         "New channel",
-        "Name",
         "Channel name",
         ExecutionLocus::ClientLocal,
-        {
-            let ws = workspace_id.to_string();
-            move |name: &str| {
-                let name = name.trim();
-                let name = if name.is_empty() { "new-channel" } else { name };
-                let id = format!("c_{}", uuid::Uuid::new_v4().simple());
-                encode(&create_channel_action(
-                    &ws,
-                    "",
-                    &id,
-                    name,
-                    ChannelKind::Text,
-                ))
-            }
+        vec![
+            ActionParam::required(PROMPTED_PARAM, ParamType::Text, "Name"),
+            ActionParam::optional(
+                "id",
+                ParamType::Text,
+                "The channel's id, so it can be addressed as chat.channel:<id>: letters, digits, - and _ (minted when absent)",
+            ),
+        ],
+        move |args| {
+            let name = args.text(PROMPTED_PARAM).unwrap_or_default().trim();
+            let name = if name.is_empty() { "new-channel" } else { name };
+            let id = match args.text("id").map(str::trim).filter(|id| !id.is_empty()) {
+                Some(id) if valid_channel_id(id) => id.to_owned(),
+                Some(_) => {
+                    return invalid_arguments(
+                        "a channel id is letters, digits, - and _, at most 64 characters",
+                    );
+                }
+                None => format!("c_{}", uuid::Uuid::new_v4().simple()),
+            };
+            encode(&create_channel_action(
+                &ws,
+                "",
+                &id,
+                name,
+                ChannelKind::Text,
+            ))
         },
-    )
+    );
+    spec.contract.result = tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    spec
 }
 
 fn new_category_action_spec(workspace_id: &str) -> ActionSpec {

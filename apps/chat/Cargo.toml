@@ -24,6 +24,8 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 fnv.workspace = true
+# Times a delivered message or an export names, as RFC 3339.
+chrono = { workspace = true, features = ["alloc"] }
 emoji = { path = "../../crates/text/emoji" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-files = { path = "../../crates/platform/tilo-files" }

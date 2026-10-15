@@ -129,13 +129,17 @@ fn project(
             ReadError::Limit => SemanticReadError::Limit,
             ReadError::Malformed => SemanticReadError::Malformed,
         })?;
+    // Readers see who wrote each message by name, as the conversation shows
+    // it; the participant id stays beside it for a caller that matches ids.
+    let names = crate::doc::ChatDoc::author_names(document);
     let messages: Vec<serde_json::Value> = page
         .messages
         .iter()
         .map(|message| {
             serde_json::json!({
                 "id": message.id,
-                "author": message.author,
+                "author": names.get(&message.author).unwrap_or(&message.author),
+                "authorId": message.author,
                 "ts": message.ts.to_string(),
                 "parent": message.parent,
                 "edited": message.edited,
@@ -163,8 +167,8 @@ pub fn result_schema() -> &'static serde_json::Value {
     SCHEMA.get_or_init(|| {
         let content = serde_json::json!({"type":"object","required":["channel","messages"],"additionalProperties":false,"properties":{
             "channel":{"type":"string","minLength":1,"maxLength":128},
-            "messages":{"type":"array","maxItems":32,"items":{"type":"object","required":["id","author","ts","parent","edited","text","complete"],"additionalProperties":false,"properties":{
-                "id":{"type":"string","maxLength":128},"author":{"type":"string","maxLength":256},"ts":{"type":"string","pattern":"^-?[0-9]+$"},"parent":{"type":"string","maxLength":128},"edited":{"type":"boolean"},"text":{"type":"string"},"complete":{"type":"boolean"}
+            "messages":{"type":"array","maxItems":32,"items":{"type":"object","required":["id","author","authorId","ts","parent","edited","text","complete"],"additionalProperties":false,"properties":{
+                "id":{"type":"string","maxLength":128},"author":{"type":"string","maxLength":256},"authorId":{"type":"string","maxLength":256},"ts":{"type":"string","pattern":"^-?[0-9]+$"},"parent":{"type":"string","maxLength":128},"edited":{"type":"boolean"},"text":{"type":"string"},"complete":{"type":"boolean"}
             }}}
         }});
         serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{

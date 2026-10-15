@@ -1925,6 +1925,7 @@ dependencies = [
 name = "chat"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "emoji",
  "fnv",
  "image",

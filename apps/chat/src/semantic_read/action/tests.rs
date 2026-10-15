@@ -140,7 +140,7 @@ fn semantic_read_action_encodes_and_json_contract_decodes() {
     assert_eq!(wire["execution"]["mode"], "immediate");
     assert_eq!(wire["result"]["type"], "json");
     let decoded: ActionContract = serde_json::from_value(wire).unwrap();
-    let value = serde_json::json!({"version":1,"record":{"roomId":"77777777-7777-4777-8777-777777777777","appId":"chat","recordId":""},"basis":{"heads":[]},"content":{"channel":"one","messages":[{"id":"m1","author":"Ada","ts":"-1","parent":"","edited":false,"text":"hello","complete":true}]},"nextCursor":null});
+    let value = serde_json::json!({"version":1,"record":{"roomId":"77777777-7777-4777-8777-777777777777","appId":"chat","recordId":""},"basis":{"heads":[]},"content":{"channel":"one","messages":[{"id":"m1","author":"Ada","authorId":"u_ada","ts":"-1","parent":"","edited":false,"text":"hello","complete":true}]},"nextCursor":null});
     decoded
         .result
         .validate(&tilo_actions::ActionOutput {

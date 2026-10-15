@@ -3031,7 +3031,8 @@ impl Widget for ChatApp {
         dyn ui::collaboration::participants::Participants,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::application_view::ApplicationViewState,
-        dyn ui::view::capability::ViewState
+        dyn ui::view::capability::ViewState,
+        dyn ui::resources::PublishesResources
     );
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

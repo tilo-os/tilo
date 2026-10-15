@@ -48,6 +48,12 @@ impl LocalIdentity {
     }
 }
 
+/// How someone delivered into the room by name alone is shown: a monogram
+/// from the name and a colour from the id it is recorded under.
+pub(crate) fn delivered_look(id: &str, name: &str) -> (String, usize) {
+    (initials_of(name), color_from_bytes(id.as_bytes()))
+}
+
 /// A stable palette index (0..8) from arbitrary bytes.
 fn color_from_bytes(b: &[u8]) -> usize {
     (fnv1a(b) % 8) as usize
@@ -55,7 +61,7 @@ fn color_from_bytes(b: &[u8]) -> usize {
 
 /// 64-bit FNV-1a — a stable hash (never used for
 /// security; only to spread ids across the colour palette / host fallback).
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, bytes);
     std::hash::Hasher::finish(&hasher)

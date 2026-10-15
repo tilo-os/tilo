@@ -570,6 +570,63 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
     }
 }
 
+/// Answers for the edits whose caller needs what they made: the channel a
+/// `new-channel` made and the message a `deliver-message` added, so a
+/// written step can post into a channel it named and see what it added.
+/// The workspace itself is published by [`Chat`]; the window publishes
+/// nothing beside it.
+impl ui::resources::PublishesResources for ChatApp {
+    fn document_action_result(
+        &self,
+        _doc: &Doc,
+        address: &tilo_actions::ActionAddress,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        match address.action.as_str() {
+            "new-channel" => Some(made_channel(changes).map_or_else(
+                || serde_json::json!({ "unchanged": "a channel with that id already exists" }),
+                |id| serde_json::json!({ "channel": format!("chat.channel:{id}"), "id": id }),
+            )),
+            "deliver-message" => Some(delivered_message(changes).map_or_else(
+                || serde_json::json!({ "unchanged": "the conversation already holds this message" }),
+                |id| {
+                    serde_json::json!({
+                        "message": format!("chat.message:{id}"),
+                        "channel": address.resource.as_str(),
+                    })
+                },
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// The channel a change made: the key it put into the root `channels` map.
+fn made_channel(changes: &[automerge::Patch]) -> Option<String> {
+    changes
+        .iter()
+        .find_map(|patch| match (&patch.action, patch.path.as_slice()) {
+            (automerge::PatchAction::PutMap { key, .. }, [(_, automerge::Prop::Map(map))])
+                if map == "channels" =>
+            {
+                Some(key.clone())
+            }
+            _ => None,
+        })
+}
+
+/// The delivered message a change added: the id written into its new row.
+fn delivered_message(changes: &[automerge::Patch]) -> Option<String> {
+    changes.iter().find_map(|patch| match &patch.action {
+        automerge::PatchAction::PutMap { key, value, .. } if key == "id" => value
+            .0
+            .as_str()
+            .filter(|id| id.starts_with("m_dlv_"))
+            .map(str::to_owned),
+        _ => None,
+    })
+}
+
 fn draft_keys(doc: &Doc) -> Vec<String> {
     let Ok(Some((Value::Object(ObjType::Map), drafts))) = doc.get(ROOT, "rich_drafts") else {
         return Vec::new();
