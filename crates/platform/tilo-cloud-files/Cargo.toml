@@ -8,6 +8,9 @@ description = "Credential-free cloud file access and identity-anchored independe
 
 [dependencies]
 serde.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack unifies native features, including sockets and OS randomness.
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
