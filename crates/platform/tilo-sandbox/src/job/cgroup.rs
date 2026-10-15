@@ -7,6 +7,14 @@
 //!     <job>/                 one per running job
 //! ```
 //!
+//! The budget bounds what jobs hold together, in two ways. A job is admitted
+//! when the reservations of the running jobs, its own included, fit in the
+//! budget ([`Limits::memory_reserved`]). Its `memory.max` may be higher than
+//! its reservation, so a job that briefly needs more gets it from what others
+//! leave unused; `jobs/memory.max` keeps them all below the pod's limit, and
+//! the caller's guard stops the job furthest past its reservation when memory
+//! runs short.
+//!
 //! A [`CgroupProvider`] makes the job cgroups. [`Direct`] does it itself, in
 //! a cgroup it may write (a privileged container, a systemd unit with
 //! `Delegate=yes`); a per-node broker (not yet built) would do it for a
@@ -35,6 +43,10 @@ pub struct Limits {
     /// `memory.max`, bytes. `memory.high` is never set: with no swap, a
     /// `high` below `max` throttles a job into a hang instead of failing it.
     pub memory_max: Option<u64>,
+    /// The memory the caller's scheduler reserved for the job, bytes: what
+    /// admission counts against the budget. `memory_max` may be above it.
+    /// Without one, the job's `memory_max` is counted.
+    pub memory_reserved: Option<u64>,
     /// `pids.max`.
     pub pids_max: Option<u64>,
     /// `cpu.weight`, 1–10000 (the kernel's default is 100): the job's share.
@@ -45,10 +57,19 @@ pub struct Limits {
     pub io: Vec<IoMax>,
 }
 
+impl Limits {
+    /// What admission counts of this job against the budget: its
+    /// reservation, else its `memory.max`.
+    pub fn counted(&self) -> Option<u64> {
+        self.memory_reserved.or(self.memory_max)
+    }
+}
+
 impl Default for Limits {
     fn default() -> Self {
         Self {
             memory_max: None,
+            memory_reserved: None,
             pids_max: Some(DEFAULT_PIDS_MAX),
             cpu_weight: None,
             cpu_max: None,
@@ -128,8 +149,8 @@ pub enum ProviderError {
     #[error("{0}")]
     Io(String),
     #[error(
-        "the job's memory.max ({asked} bytes) would take the running jobs past their budget \
-         ({used} of {budget} bytes in use)"
+        "the job's memory reservation ({asked} bytes) would take the running jobs' reservations \
+         past their budget ({used} of {budget} bytes reserved)"
     )]
     OverBudget { asked: u64, used: u64, budget: u64 },
     #[error("job name {0:?} is not a single path component")]
@@ -580,14 +601,14 @@ impl Direct {
         self.budget
     }
 
-    /// Admit a job's `memory.max` against the budget, and record it.
+    /// Admit a job's reservation against the budget, and record it.
     fn admit(&self, name: &str, limits: &Limits) -> Result<(), ProviderError> {
         let mut held = self
             .state
             .held
             .lock()
             .map_err(|_| ProviderError::Io("the budget lock is poisoned".into()))?;
-        if let (Some(budget), Some(asked)) = (self.budget, limits.memory_max) {
+        if let (Some(budget), Some(asked)) = (self.budget, limits.counted()) {
             let used = held
                 .iter()
                 .filter(|(n, _)| n.as_str() != name)
@@ -601,7 +622,7 @@ impl Direct {
                 });
             }
         }
-        held.insert(name.to_owned(), limits.memory_max.unwrap_or(0));
+        held.insert(name.to_owned(), limits.counted().unwrap_or(0));
         drop(held);
         Ok(())
     }
@@ -642,5 +663,26 @@ impl CgroupProvider for Direct {
     ) -> Result<QuotaOutcome, ProviderError> {
         crate::job::quota::set_project_quota(dir, project, bytes)
             .map_err(io_err("setting the project quota"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Limits;
+
+    #[test]
+    fn admission_counts_the_reservation_not_the_limit_above_it() {
+        let gib = 1_u64 << 30;
+        let reserved = Limits {
+            memory_max: Some(6 * gib),
+            memory_reserved: Some(2 * gib),
+            ..Limits::default()
+        };
+        assert_eq!(reserved.counted(), Some(2 * gib));
+        let unreserved = Limits {
+            memory_max: Some(3 * gib),
+            ..Limits::default()
+        };
+        assert_eq!(unreserved.counted(), Some(3 * gib));
     }
 }
