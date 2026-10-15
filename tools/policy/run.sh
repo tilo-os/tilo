@@ -44,6 +44,7 @@ run 'Path-filtered package dependency triggers' \
   --check tilo-crypto .forgejo/workflows/ci-development-signing.yml \
   --check tilo-fs .forgejo/workflows/ci-filesystem.yml \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
+  --check tilo-relay 't.toml#image-relay' \
   --check registry-server 't.toml#image-registry-server' \
   --check tilo-runtime 't.toml#runtime-macos' \
   --check tilo-app-cli 't.toml#sdk-linux'

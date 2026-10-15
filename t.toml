@@ -1965,6 +1965,43 @@ inputs = ["tools/ci/publish/**", "os/dev/registry-manifest.py", "os/dev/install-
 outputs = ["/target/publish/rpm-snapshot/rpms-ref"]
 default = false
 
+# The standalone relay image (os/containers/tilo-relay): built on every change from the
+# mirrored base and the published frozen RPM snapshot, signed and released for version tags
+# only, as `<version>` (v1.2.3 -> 1.2.3) and `sha-<commit>`.
+[[check]]
+name = "image-relay"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot /target/publish/relay"
+inputs = ["tools/ci/publish/**", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-secrets/**", "crates/runtime/egress/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/await-rpm-snapshot.sh", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**"]
+needs = ["rpm-snapshot"]
+outputs = ["/target/publish/relay/image.oci.tar", "/target/publish/relay/digest"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+cpus = 16
+memory = "24G"
+default = false
+
+[[check]]
+name = "sign-relay"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-relay /target/publish/relay"
+inputs = ["tools/ci/publish/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-relay"]
+outputs = ["/target/publish/relay/payload.json", "/target/publish/relay/signature", "/target/publish/relay/bundle.json"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+on = ["tag:v*"]
+
+[[check]]
+name = "release-relay"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-relay /target/publish/relay '{version}' 'sha-{commit}'"
+inputs = ["tools/ci/publish/**", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-relay", "sign-relay"]
+outputs = ["/target/publish/relay/receipt.json"]
+id_token = ["registry.tilo.so"]
+on = ["tag:v*"]
+
 # The env-runtime (os/Containerfile.env-runtime, tools/ci/publish/env-runtime.sh): each
 # architecture's tree is built natively from the frozen RPM snapshot, sealed into an
 # `env-runtime` tapp and published as env-runtime:set-<fingerprint> from stable, once per
