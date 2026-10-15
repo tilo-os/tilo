@@ -9,7 +9,9 @@
 //! disk. A CI run once caught a single 6.7 s frame-loop pump that used
 //! 26 ms of CPU, beside "file lease is busy" from a second writer of the
 //! same file. These tests make each sync slow through the file layer's own
-//! test hooks and hold the loop's calls to one frame.
+//! test hooks and hold the loop's calls to one frame. Opening the owner is
+//! the loop's business neither: it binds and publishes off the loop, and
+//! never with the tree held, which the loop takes every tick.
 
 use super::*;
 use crate::shell::{persist, state::WorkspaceTree};
@@ -183,4 +185,142 @@ fn owner_and_authority_lookups_never_wait_for_a_publication_in_progress() {
         .expect("the save thread")
         .expect("the save publishes");
     assert_eq!(published, store::Publication::Written);
+}
+
+#[test]
+fn the_frame_loop_never_opens_the_owner_on_its_own_thread() {
+    // A state file no writer has bound yet: opening its owner takes the
+    // lease, syncs every directory up to `/` and publishes the reopened
+    // generation. The desktop pressure smoke once froze with the loop in
+    // exactly that, reached from `viewer_hosts`.
+    let directory = tempfile::tempdir().expect("a directory for the state file");
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+    let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
+    let room = active_room(&tree);
+
+    let directory_syncs = Rc::new(Cell::new(0_usize));
+    let data_syncs = Rc::new(Cell::new(0_usize));
+    let counted_directories = Rc::clone(&directory_syncs);
+    let counted_data = Rc::clone(&data_syncs);
+    let slowest = with_provision_observer(
+        move |event| {
+            if event.checkpoint == ProvisionCheckpoint::BeforeSync {
+                counted_directories.set(counted_directories.get().saturating_add(1));
+                std::thread::sleep(SLOW_DIRECTORY_SYNC);
+            }
+        },
+        || {
+            with_observer(
+                move |event| {
+                    if event.checkpoint == Checkpoint::BeforeDataFlush {
+                        counted_data.set(counted_data.get().saturating_add(1));
+                        std::thread::sleep(SLOW_DIRECTORY_SYNC);
+                    }
+                },
+                || {
+                    (0..TICKS)
+                        .map(|_| timed(|| network.viewer_hosts(room)).1)
+                        .max()
+                        .unwrap_or_default()
+                },
+            )
+        },
+    );
+
+    assert_eq!(
+        directory_syncs.get(),
+        0,
+        "the frame loop synced the state file's directory chain itself"
+    );
+    assert_eq!(
+        data_syncs.get(),
+        0,
+        "the frame loop published the state file itself"
+    );
+    assert!(
+        slowest <= FRAME,
+        "the frame loop's owner lookup took {slowest:?} with no owner open yet, over one frame ({FRAME:?})"
+    );
+
+    // The owner still opens, off the loop, and the loop then finds it.
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(30))
+        .expect("deadline");
+    while network.opened_native_owner().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the owner never opened off the frame loop"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        tree.read().installed_native_owner().is_some(),
+        "the owner opened off the loop is attached to its writer"
+    );
+}
+
+#[test]
+fn opening_the_owner_never_holds_the_tree_across_a_disk_sync() {
+    let directory = tempfile::tempdir().expect("a directory for the state file");
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+
+    // Whoever opens the owner (an action, enrollment, the loop's background
+    // open), the loop reads and writes the tree every tick meanwhile.
+    let (reached, stages) = std::sync::mpsc::channel::<&'static str>();
+    let opening = tree.clone();
+    let opener = std::thread::spawn(move || {
+        let directories = reached.clone();
+        with_provision_observer(
+            move |event| {
+                if event.checkpoint == ProvisionCheckpoint::BeforeSync {
+                    let _ = directories.send("directory");
+                    std::thread::sleep(SLOW_DIRECTORY_SYNC);
+                }
+            },
+            || {
+                with_observer(
+                    move |event| {
+                        if event.checkpoint == Checkpoint::BeforeDataFlush {
+                            let _ = reached.send("data");
+                            std::thread::sleep(SLOW_DIRECTORY_SYNC);
+                        }
+                    },
+                    || open(opening),
+                )
+            },
+        )
+    });
+
+    let mut seen = std::collections::BTreeMap::<&str, usize>::new();
+    while let Ok(stage) = stages.recv_timeout(Duration::from_secs(30)) {
+        let read_took = timed(|| drop(tree.read())).1;
+        let write_took = timed(|| drop(tree.write())).1;
+        let in_progress = !opener.is_finished();
+        assert!(
+            in_progress,
+            "the open finished before the tree was taken, so they did not race"
+        );
+        for (what, took) in [("read", read_took), ("write", write_took)] {
+            assert!(
+                took <= FRAME,
+                "taking the tree to {what} took {took:?} while opening its owner waited for a {stage} sync, over one frame ({FRAME:?})"
+            );
+        }
+        let count = seen.entry(stage).or_default();
+        *count = count.saturating_add(1);
+    }
+    assert!(
+        seen.contains_key("directory") && seen.contains_key("data"),
+        "the open's directory and data syncs were not both observed: {seen:?}"
+    );
+    opener
+        .join()
+        .expect("the opening thread")
+        .expect("the owner opens");
+    assert!(
+        tree.read().installed_native_owner().is_some(),
+        "the opened owner is attached to its writer"
+    );
 }
