@@ -643,6 +643,14 @@ impl Ebook {
                 block: None,
             })
             .with_effect(&lifecycle)
+            // Reading a chapter of this book, asking which.
+            .with_effect_asking(
+                &BooksEffect::ReadChapter {
+                    book: book.clone(),
+                    chapter: Some(0),
+                },
+                &["chapter"],
+            )
             // Going to and selecting a passage of this book, asking where.
             .with_effect_asking(
                 &BooksEffect::SelectPassage {
@@ -1048,6 +1056,18 @@ pub enum BooksEffect {
         end_block: Option<usize>,
         #[param("Exclusive character offset into the end block; the block's end when omitted")]
         end_char: Option<usize>,
+    },
+    /// Read chapter
+    ///
+    /// Answers with a chapter's text block by block, each with the index a
+    /// passage, a highlight or a note names it by, and the book's title,
+    /// author and chapters. Changes nothing.
+    #[effect(kind = "read", returns, idempotent)]
+    ReadChapter {
+        #[param("The book's id")]
+        book: String,
+        #[param("Chapter, counted from 0; the open chapter when omitted")]
+        chapter: Option<usize>,
     },
     /// Share with workspace
     ///
