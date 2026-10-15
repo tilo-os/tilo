@@ -286,6 +286,7 @@ fn redeeming_an_invitation_opens_the_owner_on_the_worker_not_the_loop() {
         network.opened_native_owner().is_some(),
         "the redemption did not open the owner on the worker"
     );
+    drop(network);
     // This device holds no custody to redeem with, which the worker found
     // only once the owner had opened.
     assert_eq!(
