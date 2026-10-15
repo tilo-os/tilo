@@ -17232,6 +17232,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-cloud-files",
  "tilo-content",
  "tilo-doc",
  "tilo-doc-codecs",
