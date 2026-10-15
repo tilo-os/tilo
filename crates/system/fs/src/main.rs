@@ -3658,6 +3658,19 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     }
 
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+    // The person's prefetch switch and cache budget, applied before the
+    // mount is served.
+    let (cache_policies, kept_policy) = fs::cache_policy::CachePolicies::load(
+        predictive_cache_root
+            .as_ref()
+            .map(|root| root.join(fs::cache_policy::CACHE_POLICY_FILE)),
+        Arc::clone(&heuristics),
+        Arc::clone(hydrator.store.files()),
+    );
+    if let Err(error) = kept_policy {
+        eprintln!("ignoring the kept cache policy: {error:#}");
+    }
+    let cache_policies = Arc::new(cache_policies);
     let predictive_policy_task =
         fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root.clone()).await;
     // Settings' socket receives these same durable services below; it must
@@ -3782,6 +3795,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             storage_history,
             "Current workspace",
         )
+        .with_cache_policy(Arc::clone(&cache_policies))
     });
 
     let _storage = storage_sock
