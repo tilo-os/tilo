@@ -567,7 +567,14 @@ def test_executable(command: tuple[str, ...], target: str, repo: Path, log: Path
 
 
 def side_group(group: Group, repo: Path) -> Group:
-    """Keep A/B comparisons with refs before the idle executable migration usable."""
+    """Select benchmarks from each checked-out side, keeping artifact names stable."""
+    if group.name == "fs":
+        target = ("performance_timing" if
+                  (repo / "crates/system/fs/tests/performance_timing.rs").is_file()
+                  else "performance_gate")
+        return dataclasses.replace(group, tests={
+            "performance_timing": (("cargo", "test", "--locked", "-p", "tilo-fs",
+                                    "--test", target, "--no-run"), target)})
     if group.name != "wakeups" or (repo / "crates/session/shell/examples/idle-wakeups.rs").is_file():
         return group
     return dataclasses.replace(

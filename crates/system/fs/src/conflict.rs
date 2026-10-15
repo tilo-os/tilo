@@ -203,17 +203,47 @@ pub struct ConflictPassStats {
     pub nodes: usize,
     /// Times the namespace lock was taken.
     pub lock_holds: usize,
+    /// Most nodes actually visited during a single namespace lock hold.
+    pub max_nodes_per_hold: usize,
     /// The longest of those holds.
     pub longest_hold: Duration,
     /// All of them together.
     pub total_hold: Duration,
 }
 
-impl ConflictPassStats {
-    fn held(&mut self, hold: Duration) {
-        self.lock_holds = self.lock_holds.saturating_add(1);
-        self.longest_hold = self.longest_hold.max(hold);
-        self.total_hold = self.total_hold.saturating_add(hold);
+/// Count visits at the production call site, and finish a hold only when
+/// its actual mutex guard is released (not at a logical scan-step boundary).
+struct ScanHold<'a> {
+    namespace: std::sync::MutexGuard<'a, Namespace>,
+    stats: &'a mut ConflictPassStats,
+    started: Instant,
+    nodes: usize,
+}
+
+impl<'a> ScanHold<'a> {
+    fn new(namespace: &'a Mutex<Namespace>, stats: &'a mut ConflictPassStats) -> Self {
+        Self {
+            namespace: lock(namespace),
+            stats,
+            started: Instant::now(),
+            nodes: 0,
+        }
+    }
+
+    fn visit(&mut self, found: &mut Found, id: &str) {
+        found.visit(&self.namespace, id);
+        self.nodes = self.nodes.saturating_add(1);
+    }
+}
+
+impl Drop for ScanHold<'_> {
+    fn drop(&mut self) {
+        let hold = self.started.elapsed();
+        self.stats.lock_holds = self.stats.lock_holds.saturating_add(1);
+        self.stats.nodes = self.stats.nodes.saturating_add(self.nodes);
+        self.stats.max_nodes_per_hold = self.stats.max_nodes_per_hold.max(self.nodes);
+        self.stats.longest_hold = self.stats.longest_hold.max(hold);
+        self.stats.total_hold = self.stats.total_hold.saturating_add(hold);
     }
 }
 
@@ -246,12 +276,8 @@ impl NamespaceScan {
     pub fn due(&mut self, namespace: &Mutex<Namespace>) -> Vec<ContentConflict> {
         let mut stats = ConflictPassStats::default();
         let generation = {
-            let ns = lock(namespace);
-            let held = Instant::now();
-            let generation = ns.merge_generation();
-            drop(ns);
-            stats.held(held.elapsed());
-            generation
+            let hold = ScanHold::new(namespace, &mut stats);
+            hold.namespace.merge_generation()
         };
         if self.scanned == Some(generation) {
             self.last = stats;
@@ -263,19 +289,18 @@ impl NamespaceScan {
         let mut found = Found::default();
         let mut after: Option<String> = None;
         loop {
-            let ns = lock(namespace);
-            let held = Instant::now();
+            let mut hold = ScanHold::new(namespace, &mut stats);
             #[cfg(test)]
             if after.is_none() {
-                ns.note_conflict_scan();
+                hold.namespace.note_conflict_scan();
             }
-            let ids = ns.node_ids_after(after.as_deref(), SCAN_STEP_NODES);
+            let ids = hold
+                .namespace
+                .node_ids_after(after.as_deref(), SCAN_STEP_NODES);
             for id in &ids {
-                found.visit(&ns, id);
+                hold.visit(&mut found, id);
             }
-            drop(ns);
-            stats.held(held.elapsed());
-            stats.nodes = stats.nodes.saturating_add(ids.len());
+            drop(hold);
             if ids.len() < SCAN_STEP_NODES {
                 break;
             }
@@ -527,6 +552,7 @@ mod tests {
         let first = scan.last_pass();
         assert_eq!(scan.scans(), 1);
         assert_eq!(first.nodes, nodes);
+        assert_eq!(first.max_nodes_per_hold, 64);
         // The generation, then each step; the last step comes up short.
         assert_eq!(first.lock_holds, 2 + nodes / SCAN_STEP_NODES);
 
@@ -535,7 +561,10 @@ mod tests {
         for _ in 0..3 {
             assert!(scan.due(&a).is_empty());
             let idle = scan.last_pass();
-            assert_eq!((idle.nodes, idle.lock_holds), (0, 1));
+            assert_eq!(
+                (idle.nodes, idle.lock_holds, idle.max_nodes_per_hold),
+                (0, 1, 0)
+            );
         }
         assert_eq!(scan.scans(), 1);
 

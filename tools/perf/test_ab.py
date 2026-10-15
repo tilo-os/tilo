@@ -15,6 +15,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -273,6 +274,43 @@ class EndToEnd(unittest.TestCase):
 
 
 class Groups(unittest.TestCase):
+    def test_fs_ab_builds_each_checked_out_target_with_one_artifact_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, out = root / "repo", root / "out"
+            source = repo / "crates/system/fs/tests/performance_timing.rs"
+            source.parent.mkdir(parents=True)
+            (out / "logs").mkdir(parents=True)
+            executable = root / "test-executable"
+            executable.write_text("test binary")
+
+            def checkout(_repo, *args):
+                self.assertEqual(args[:3], ("checkout", "--quiet", "--detach"))
+                if args[3] == "modern":
+                    source.write_text("timing benchmark")
+                else:
+                    source.unlink(missing_ok=True)
+                return ""
+
+            def build(command, target, checked_out, _log):
+                self.assertEqual(checked_out, repo)
+                expected = "performance_timing" if source.is_file() else "performance_gate"
+                self.assertEqual(target, expected)
+                self.assertEqual(command, ("cargo", "test", "--locked", "-p", "tilo-fs",
+                                           "--test", expected, "--no-run"))
+                return executable, source.parent.parent
+
+            with patch.object(ab, "git", side_effect=checkout), \
+                    patch.object(ab, "test_executable", side_effect=build) as built:
+                # Modern first: selecting against the pre-checkout tree breaks the second side.
+                for side in ("modern", "historical"):
+                    manifest = ab.build_side([ab.GROUPS["fs"]], side, side, repo, out)
+                    self.assertEqual(manifest["fs"]["cwd"], {
+                        "performance_timing": str(source.parent.parent)})
+                    artifact = out / "bin" / side / "fs" / "performance_timing"
+                    self.assertEqual(artifact.read_text(), "test binary")
+                self.assertEqual(built.call_count, 2)
+
     def test_idle_timing_is_an_explicit_executable_not_a_pr_test(self):
         root = HERE.parents[1]
         manifest = tomllib.loads((root / "crates/session/shell/Cargo.toml").read_text())

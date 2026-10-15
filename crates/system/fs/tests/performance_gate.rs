@@ -276,16 +276,22 @@ fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
     assert!(watch.due(&namespace).is_empty());
     let scan = watch.last_pass();
     assert_eq!(scan.nodes, nodes);
-    assert_eq!(
-        scan.lock_holds,
-        nodes.div_ceil(fs::conflict::SCAN_STEP_NODES) + 1
-    );
     assert!(
         scan.nodes >= nodes,
         "the scan examined {} nodes",
         scan.nodes
     );
-    // Independent of the runner: the lock is released every step.
+    // Independent of both scheduling and the production step-size setting.
+    // A whole-namespace hold must fail even if SCAN_STEP_NODES is increased.
+    assert!(
+        scan.max_nodes_per_hold <= 64,
+        "{} actual node visits under one namespace lock hold (maximum 64)",
+        scan.max_nodes_per_hold
+    );
+    assert_eq!(
+        scan.lock_holds,
+        nodes.div_ceil(fs::conflict::SCAN_STEP_NODES) + 1
+    );
     assert!(
         scan.lock_holds > scan.nodes / fs::conflict::SCAN_STEP_NODES,
         "{} nodes in only {} lock holds",
@@ -293,8 +299,8 @@ fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
         scan.lock_holds
     );
     eprintln!(
-        "WORK conflict-scan: nodes={} holds={}",
-        scan.nodes, scan.lock_holds
+        "WORK conflict-scan: nodes={} holds={} max_nodes_per_hold={}",
+        scan.nodes, scan.lock_holds, scan.max_nodes_per_hold
     );
 
     // What every pass of an idle writer now does.
@@ -302,6 +308,7 @@ fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
         assert!(watch.due(&namespace).is_empty());
         let idle = watch.last_pass();
         assert_eq!(idle.nodes, 0, "an idle pass examined nodes");
+        assert_eq!(idle.max_nodes_per_hold, 0);
         assert_eq!(
             idle.lock_holds, 1,
             "an idle pass took the lock more than once"
