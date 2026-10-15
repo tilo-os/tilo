@@ -1534,37 +1534,314 @@ on = ["dispatch"]
 plan = "full"
 
 # ---------------------------------------------------------------------------
-# Checks for nodes with KVM, a privileged container or 100 GB of disk. Each needs
-# what its workflow prepares and a t check cannot: a writable root (they install
-# QEMU, libvirt or filesystem tools with dnf), and artifacts other workflows
-# build. They stay declared so the work is visible; they are not runnable yet.
+# The nightly performance run (.forgejo/workflows/perf-scheduled.yml): one check
+# per KPI group, each writing its records to /target/perf/<group>/, and
+# perf-scheduled, which compares them with the store and publishes them from
+# main. Groups run alone with `t test perf-render`; the whole run with
+# `t dispatch perf-scheduled` (inputs: accept, synthetic_series,
+# synthetic_factor). Measurements of the node they ran on, never stored results.
 
-# Boots Fedora with this change's RPMs (from build-rpms.yml), logs into Tilo and
-# opens apps (.forgejo/workflows/host-session-e2e.yml). Needs KVM, 100 GB of
-# disk and the RPMs in TILO_HOST_SESSION_RPMS.
+[[check]]
+name = "perf-fs"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh fs"
+inputs = ["crates/**", "vendor/**", "apps/**", "tools/perf/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/perf/fs/**"]
+cache = false
+cost = "heavy"
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-agent"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh agent"
+env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
+inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/perf/agent/**"]
+cache = false
+cost = "heavy"
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-footprint"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh footprint"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+inputs = ["tools/perf/**", "tools/ci/perf-scheduled.sh"]
+cost = "seconds"
+outputs = ["/target/perf/footprint/**"]
+cache = false
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-footprint-image"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh footprint-image"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+# The previous build an update starts from is found through main's history.
+git = true
+inputs = ["tools/perf/**", "tools/ci/perf-scheduled.sh"]
+cost = "minutes"
+outputs = ["/target/perf/footprint-image/**"]
+cache = false
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-latency"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh latency"
+env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
+inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/perf/latency/**"]
+cache = false
+cost = "heavy"
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-render"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh render"
+env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
+inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/perf/render/**"]
+cache = false
+cost = "heavy"
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-wakeups"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh wakeups"
+inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/perf/wakeups/**"]
+cache = false
+cost = "heavy"
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-search"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh search"
+inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/perf/search/**"]
+cache = false
+cost = "heavy"
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-hosting"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh hosting"
+env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
+inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/perf/hosting/**"]
+cache = false
+cost = "heavy"
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-hosting-room"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh hosting-room"
+env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
+# 100 guests and their host on one node, as on the large Forgejo runner.
+cpus = 16
+memory = "32G"
+inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/perf/hosting-room/**"]
+cache = false
+cost = "heavy"
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-browser"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh browser"
+# The release bundle names its commit through Git and installs the MoQ
+# library's npm dependencies in scripts/moq-browser.
+git = true
+writable_sources = true
+env = { npm_config_cache = "/tmp/npm-cache" }
+inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/perf/browser/**"]
+cache = false
+cost = "heavy"
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-stream"
+requires = ["arch=x86_64"]
+run = "bash tools/ci/perf-scheduled.sh stream"
+git = true
+writable_sources = true
+env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", npm_config_cache = "/tmp/npm-cache" }
+inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/perf/stream/**"]
+cache = false
+cost = "heavy"
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "perf-scheduled"
+run = "bash tools/ci/perf-compare.sh"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+needs = ["perf-fs", "perf-agent", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-hosting-room", "perf-browser", "perf-stream"]
+inputs = ["tools/perf/**", "tools/upload_immutable_packages.sh", "tools/ci/perf-compare.sh"]
+secrets = ["REGISTRY_TOKEN"]
+cache = false
+default = false
+on = ["schedule:15 1 * * *", "dispatch"]
+
+[check.dispatch_inputs]
+accept = ""
+synthetic_series = ""
+synthetic_factor = "1.0"
+
+# A paired A/B of two refs (perf-scheduled.yml's ab mode): both sides built
+# and run interleaved, `t dispatch perf-ab --input groups=hosting --input
+# base=origin/main --input candidate=<commit>`; `t outputs perf-ab` gives the
+# verdict. Needs groups (fs, agent, latency, render, wakeups, search, hosting,
+# browser) and at least 6 rounds.
+[[check]]
+name = "perf-ab"
+requires = ["arch=x86_64"]
+git = true
+writable_sources = true
+run = """
+[[ -n $T_INPUT_GROUPS ]] || { echo "perf-ab needs --input groups=..." >&2; exit 2; }
+[[ $T_INPUT_ROUNDS =~ ^[0-9]+$ && $T_INPUT_ROUNDS -ge 6 ]] || { echo "rounds must be a number of at least 6" >&2; exit 2; }
+if [[ ,$T_INPUT_GROUPS, == *,browser,* ]]; then
+  bash tools/ci/ensure-browser-dependencies.sh
+  npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
+  export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
+fi
+rm -rf /target/perf-ab
+python3 tools/perf/ab.py run --groups "$T_INPUT_GROUPS" --base "$T_INPUT_BASE" \
+  --candidate "${T_INPUT_CANDIDATE:-${T_COMMIT:-HEAD}}" --rounds "$T_INPUT_ROUNDS" --out /target/perf-ab \
+  --hosting-relay-cpus "${T_INPUT_RELAY_CPUS:-0}" --virtualization kvm --runner t
+"""
+env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", npm_config_cache = "/tmp/npm-cache" }
+outputs = ["/target/perf-ab/**"]
+cache = false
+cost = "heavy"
+timeout_secs = 10800
+default = false
+on = ["dispatch"]
+
+[check.dispatch_inputs]
+groups = ""
+base = "origin/main"
+candidate = ""
+rounds = "8"
+relay_cpus = ""
+
+# ---------------------------------------------------------------------------
+# Checks for nodes with KVM, a privileged VM or 100 GB of disk.
+
+# The desktop session's Fedora 44 RPMs (desktop-package-amd64) on stock Fedora 44
+# Cloud under KVM, as a person runs them: dnf install, the keyring unlocked, SDDM
+# autologin into tilo.desktop, then apps opened through search; the compositor
+# must survive each (dist/session/README.md, "VM test"). In the privileged VM's
+# own Fedora, which takes QEMU from dnf. `t dispatch host-session-e2e --input
+# apps=so.tilo.notes` opens only those apps (empty: all); `t outputs
+# host-session-e2e` gives the report.
 [[check]]
 name = "host-session-e2e"
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-devices = ["/dev/kvm"]
+privileged = true
+writable_sources = true
+needs = ["desktop-package-amd64"]
 run = """
+dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y \
+  qemu-system-x86-core qemu-device-display-virtio-vga qemu-device-display-virtio-gpu \
+  qemu-img openssh-clients xorriso python3 curl
 python3 os/dev/probe-kvm.py x86_64
-python3 dist/session/vm-e2e/run.py test --rpms "${TILO_HOST_SESSION_RPMS:?RPMs from build-rpms.yml}" --out "$TMPDIR/report" --work "$TMPDIR/vm" --image-cache "$CARGO_TARGET_DIR/host-session-images"
+work=$(mktemp -d /var/tmp/host-session-e2e.XXXXXX)
+rpms=dist/ci-output/fedora-44-amd64
+ls "$rpms"/*.rpm
+rm -rf target/host-session-e2e
+python3 dist/session/vm-e2e/run.py test --rpms "$rpms" --out target/host-session-e2e \
+  --work "$work/vm" --image-cache "$work/images" --apps "${T_INPUT_APPS:-}"
 """
+inputs = ["dist/session/**", "os/dev/probe-kvm.py"]
+outputs = ["target/host-session-e2e/**"]
+timeout_secs = 5400
 cost = "heavy"
 default = false
+on = ["dispatch"]
 
-# The OS image's acceptance scenarios in tilo-vm (.forgejo/workflows/vm-acceptance.yml).
-# Needs KVM, 100 GB of disk, a rootless podman store and a published disk image.
+[check.dispatch_inputs]
+apps = ""
+
+# The OS image's acceptance scenarios in tilo-vm (.forgejo/workflows/vm-acceptance.yml),
+# on a privileged x86-64 node with KVM: this tree's components swapped onto the
+# dev disk of the newest main commit before it that has one (tools/ci/vm-acceptance.sh).
+# `t dispatch vm-acceptance --input swap=all --input only=input` runs a selection;
+# `t test vm-acceptance` the checks a working tree's changes select; `t outputs
+# vm-acceptance` gives the report. vm-acceptance-perf runs it nightly on main and
+# publishes its performance records.
 [[check]]
 name = "vm-acceptance"
-requires = ["/dev/kvm", "disk-100g"]
-devices = ["/dev/kvm", "/dev/vhost-vsock", "/dev/net/tun"]
-run = """
-cargo build --locked -p tilo-vm
-python3 scripts/vm-acceptance/run.py --disk "${TILO_VM_ACCEPTANCE_DISK:?a published disk image}" --out "$TMPDIR/report" --tilo-vm "$CARGO_TARGET_DIR/debug/tilo-vm"
-"""
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+privileged = true
+git = true
+writable_sources = true
+run = "bash tools/ci/vm-acceptance.sh"
+inputs = ["**"]
+outputs = ["/target/vm-acceptance/report/**"]
+cache = false
+timeout_secs = 10800
 cost = "heavy"
 default = false
+on = ["dispatch"]
+
+[check.dispatch_inputs]
+swap = "default"
+only = ""
+outputs = "1920x1080@1,1280x800@1.25"
+gl = "auto"
+
+[[check]]
+name = "vm-acceptance-perf"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+needs = ["vm-acceptance"]
+run = """
+records=/target/vm-acceptance/report/records.jsonl
+[[ -s $records ]] || { echo "the acceptance run wrote no performance records" >&2; exit 1; }
+publish=false
+[[ ${T_REF:-} == main && ${T_TRIGGER:-} == schedule ]] && publish=true
+status=0
+python3 tools/perf/compare.py --results "$records" --store https://code.tilo.so --owner tilo \
+  --lane vm-acceptance --groups boot,session,idle,memory,disk,app,render --publish-dir "$TMPDIR/publish" \
+  --run "t-${T_COMMIT:-tree}-vm" --summary "$TMPDIR/summary.md" || status=1
+if [[ $publish == true ]]; then
+  manifest=$(mktemp)
+  for file in "$TMPDIR"/publish/*/*.jsonl; do
+    month=$(basename "$(dirname "$file")")
+    printf '%s\t%s\n' "$file" "https://code.tilo.so/api/packages/tilo/generic/tilo-perf-results/$month/$(basename "$file")"
+  done > "$manifest"
+  TILO_PACKAGE_TOKEN=$REGISTRY_TOKEN bash tools/upload_immutable_packages.sh "$manifest" || status=1
+fi
+cat "$TMPDIR/summary.md" 2>/dev/null || true
+exit "$status"
+"""
+inputs = ["tools/perf/**", "tools/upload_immutable_packages.sh"]
+secrets = ["REGISTRY_TOKEN"]
+cache = false
+default = false
+on = ["schedule:23 2 * * *"]
 
 # The imager's staging helper and reclaim proofs over loop devices
 # (.forgejo/workflows/ci-staging-loop.yml). Needs a privileged node with loop
