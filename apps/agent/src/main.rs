@@ -62,6 +62,12 @@ struct Cli {
     /// 30000 ms, the whole budget of a multi-turn action decision.
     #[arg(long)]
     model_timeout_ms: Option<u64>,
+    /// An application the desktop started beside this agent for its tasks
+    /// (web search). Repeatable. The agent plans its first run only once
+    /// each has published its actions, waiting a bounded while, so that run
+    /// is not planned without them.
+    #[arg(long = "companion")]
+    companions: Vec<String>,
 }
 
 /// The total model budget of one managed action decision (all its turns).
@@ -120,6 +126,7 @@ fn main() -> anyhow::Result<()> {
         model_timeout: Duration::from_millis(model_timeout_ms),
         permissions,
         content: device_content(),
+        companions: cli.companions,
     };
     Session::connect(cfg)?.run_task_runs()
 }
