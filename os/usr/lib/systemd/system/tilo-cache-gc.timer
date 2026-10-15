@@ -1,0 +1,14 @@
+[Unit]
+Description=Remove unused system caches daily
+
+[Timer]
+# Off the boot path, and at most once a day; a machine that was off catches up
+# shortly after it starts.
+OnBootSec=20min
+OnUnitInactiveSec=1d
+RandomizedDelaySec=30min
+Persistent=yes
+Unit=tilo-cache-gc.service
+
+[Install]
+WantedBy=timers.target

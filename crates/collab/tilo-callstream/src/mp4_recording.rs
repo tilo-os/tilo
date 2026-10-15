@@ -1,4 +1,4 @@
-//! In-process MP4/MOV sink for compositor recordings.
+//! In-process MP4/MOV sink for screen recordings.
 //!
 //! The capture path hands over compressed access units from the media
 //! stack's real-time encoder; this module muxes them with `GStreamer`
@@ -48,10 +48,10 @@ pub fn recording_encoder(
     bitrate_bps: u64,
     keyframe_interval_frames: u32,
     screen_content: bool,
-) -> Result<tilo_callstream::VideoEncoder, String> {
+) -> Result<crate::VideoEncoder, String> {
     let mut failures = Vec::new();
     for codec in recording_codecs() {
-        match tilo_callstream::VideoEncoder::with_options(
+        match crate::VideoEncoder::with_options(
             codec,
             width,
             height,
@@ -343,7 +343,7 @@ fn open_muxer(
 )]
 mod tests {
     use super::*;
-    use tilo_callstream::VideoEncoder;
+    use crate::VideoEncoder;
 
     /// What a demuxer sees in `path`: (video caps name, video frames,
     /// duration in seconds, audio track count).

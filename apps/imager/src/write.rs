@@ -31,8 +31,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
-#[cfg(any(test, target_os = "macos", target_os = "windows"))]
-use ui::time::Instant;
 
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceIdentity, TargetDrive,
@@ -1924,23 +1922,8 @@ fn run_finite_status(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut child = command.spawn()?;
-    let deadline = ui::time::now()
-        .checked_add(timeout)
-        .unwrap_or_else(Instant::now);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(status);
-        }
-        if ui::time::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "platform media command timed out",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    bounded_command::wait_or_kill(&mut child, timeout)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "platform media command timed out"))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

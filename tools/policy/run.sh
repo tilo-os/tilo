@@ -82,6 +82,8 @@ run 'Document content stays behind the document layer' \
   python3 tools/policy/check_document_engine_boundary.py
 run 'Desktop crates dependency boundary' \
   python3 tools/policy/check_desktop_model_dependencies.py
+run 'Shell service modules stay below the compositor' \
+  python3 tools/policy/check_shell_layers.py
 run 'Shared app runtime carries no OS internals or dead weight' \
   python3 tools/policy/check_runtime_dylib_surface.py
 run 'Browser wasm32 builds stay off the workspace-hack' \
