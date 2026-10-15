@@ -9717,6 +9717,7 @@ mod workspace_tree_lifecycle_tests {
                         kind: "document".into(),
                         label: "Release brief".into(),
                         agent_request: None,
+                        anchor: None,
                     }),
                 )
                 .expect("non-empty task is created");

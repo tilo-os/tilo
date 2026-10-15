@@ -73,7 +73,7 @@ impl WorkspaceTaskRoute {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceTaskResource {
     pub app_id: Option<String>,
     pub app_label: Option<String>,
@@ -83,8 +83,67 @@ pub struct WorkspaceTaskResource {
     /// Canonical direct-Chat request behind an explicitly queued agent task.
     /// The full instruction lives here rather than in the short Task Center
     /// display title, so an offline agent receives it byte-for-byte later.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub agent_request: Option<WorkspaceAgentRequest>,
+    /// What the person had selected in this resource when they asked: the
+    /// place an agent acts at and a short excerpt. Context, never authority.
+    #[serde(default)]
+    pub anchor: Option<tilo_actions::SelectionAnchor>,
+}
+
+// Absent optional parts are left out of JSON, so the room document reads
+// as it did before they existed, but every part is written in a binary
+// format: postcard reads fields by position and cannot skip one.
+impl Serialize for WorkspaceTaskResource {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(rename = "WorkspaceTaskResource")]
+        struct Readable<'a> {
+            app_id: Option<&'a str>,
+            app_label: Option<&'a str>,
+            id: &'a str,
+            kind: &'a str,
+            label: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            agent_request: Option<&'a WorkspaceAgentRequest>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            anchor: Option<&'a tilo_actions::SelectionAnchor>,
+        }
+        #[derive(Serialize)]
+        #[serde(rename = "WorkspaceTaskResource")]
+        struct Positional<'a> {
+            app_id: Option<&'a str>,
+            app_label: Option<&'a str>,
+            id: &'a str,
+            kind: &'a str,
+            label: &'a str,
+            agent_request: Option<&'a WorkspaceAgentRequest>,
+            anchor: Option<&'a tilo_actions::SelectionAnchor>,
+        }
+        if serializer.is_human_readable() {
+            Readable {
+                app_id: self.app_id.as_deref(),
+                app_label: self.app_label.as_deref(),
+                id: &self.id,
+                kind: &self.kind,
+                label: &self.label,
+                agent_request: self.agent_request.as_ref(),
+                anchor: self.anchor.as_ref(),
+            }
+            .serialize(serializer)
+        } else {
+            Positional {
+                app_id: self.app_id.as_deref(),
+                app_label: self.app_label.as_deref(),
+                id: &self.id,
+                kind: &self.kind,
+                label: &self.label,
+                agent_request: self.agent_request.as_ref(),
+                anchor: self.anchor.as_ref(),
+            }
+            .serialize(serializer)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -516,6 +575,14 @@ impl WorkspaceTask {
         }
         context
     }
+
+    /// What the person had selected in the task's resource when they asked,
+    /// for the agent to act at. Rides beside the action context rather than
+    /// in it: the context is copied into every change the run makes, and a
+    /// selection is the request's context, not each change's.
+    pub fn selection_anchor(&self) -> Option<&tilo_actions::SelectionAnchor> {
+        self.resource.as_ref()?.anchor.as_ref()
+    }
 }
 
 #[cfg(test)]
@@ -596,5 +663,62 @@ mod effect_receipt_redaction_tests {
         assert!(!json.contains("secret text"));
         assert!(!json.contains("secret words"));
         assert!(receipt.is_redacted());
+    }
+}
+
+#[cfg(test)]
+mod selection_anchor_tests {
+    use super::{WorkspaceTask, WorkspaceTaskResource};
+    use tilo_actions::{SelectionAnchor, SelectionPlace};
+
+    fn resource(anchor: Option<SelectionAnchor>) -> WorkspaceTaskResource {
+        WorkspaceTaskResource {
+            app_id: Some("so.tilo.word-processor".into()),
+            app_label: Some("Writer".into()),
+            id: "doc:1".into(),
+            kind: "word-processor.document".into(),
+            label: "Proposal".into(),
+            agent_request: None,
+            anchor,
+        }
+    }
+
+    #[test]
+    fn a_task_resource_written_before_anchors_still_reads() {
+        let older = serde_json::json!({
+            "app_id": "so.tilo.word-processor", "app_label": "Writer",
+            "id": "doc:1", "kind": "word-processor.document", "label": "Proposal"
+        });
+        let read: WorkspaceTaskResource = serde_json::from_value(older.clone()).unwrap();
+        assert_eq!(read, resource(None));
+        assert_eq!(
+            serde_json::to_value(&read).unwrap(),
+            older,
+            "a resource without a selection writes what older readers wrote"
+        );
+    }
+
+    #[test]
+    fn a_task_keeps_the_selection_it_was_asked_about() {
+        let anchor = SelectionAnchor::of_text("the second paragraph")
+            .at(SelectionPlace::range("block-7", 0, 20));
+        let encoded = serde_json::to_value(resource(Some(anchor.clone()))).unwrap();
+        assert_eq!(encoded["anchor"]["place"]["item"], "block-7");
+        let task: WorkspaceTask = serde_json::from_value(serde_json::json!({
+            "id": "task:1", "title": "Tighten this", "created_by": "ada",
+            "assigned_agent": "scribe", "route": "model", "status": "queued",
+            "resource": encoded, "created_at": 1, "updated_at": 1
+        }))
+        .unwrap();
+        assert_eq!(task.selection_anchor(), Some(&anchor));
+        let context = task.action_context();
+        assert_eq!(
+            context.resource.map(|resource| resource.id).as_deref(),
+            Some("doc:1")
+        );
+        assert!(
+            context.item.is_none(),
+            "the selection never becomes every change's item"
+        );
     }
 }

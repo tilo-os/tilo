@@ -670,6 +670,7 @@ mod tests {
                             kind: "document".into(),
                             label: "Document A".into(),
                             agent_request: None,
+                            anchor: None,
                         })),
                     },
                     now,
