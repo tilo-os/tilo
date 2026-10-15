@@ -1372,6 +1372,42 @@ export async function joinWorkspace(options) {
   return withCustody(own, () => join({...options, identity, profile, custody: own}), options.signal);
 }
 
+/**
+ * The certificate (`{cert, hostCert}` JSON) this profile's device already
+ * holds from the host answering at `post`, as the person `identity`, or
+ * `null`. A room keeps the certificate of every device it admitted, also
+ * once its person left (removed, or pruned after an absence), and admits
+ * that device again only under the same certificate: a device that holds
+ * one asks under it rather than certify itself anew. Read from `store`, else
+ * from the namespace the profile keeps its peer in now.
+ */
+async function keptDeviceCertificate({runtime, profile, store, desktop, namespaces = globalThis.localStorage, custody, identity, host}) {
+  let opened;
+  try {
+    if (!store) {
+      const surface = desktop ?? await import('./host.mjs');
+      if (!profile || typeof surface.openProfileStorage !== 'function') return null;
+      const device = profileDevice(profile, namespaces);
+      opened = await surface.openProfileStorage(profile, device);
+      store = profileStore(runtime, profile, device);
+    }
+    const kept = await store.get(CERTIFICATE);
+    const cert = kept ? JSON.parse(kept)?.cert : undefined;
+    const keptHost = kept ? JSON.parse(kept)?.hostCert : undefined;
+    const ours = cert && hexKey(cert.device_public_key) === hexKey(custody.publicKey)
+      && hexKey(cert.user_public_key) === identity.userPublicKey;
+    // Only one this host certified and pinned: a host set up again is
+    // never handed what was kept for the one before it.
+    const here = keptHost && host?.hostCert && sameHost(keptHost, host.hostCert);
+    return ours && here && !expiresWithinADay(kept) ? kept : null;
+  } catch (error) {
+    console.warn('join: the device\'s certificate could not be read', error);
+    return null;
+  } finally {
+    await opened?.release?.();
+  }
+}
+
 async function join({
   origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress, pollMs = 2000,
   admissionToken, runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, certified, ...connectOptions
@@ -1402,8 +1438,12 @@ async function join({
   signal?.throwIfAborted();
   onProgress?.({phase: 'asking'});
   const token = admissionToken ? new TextEncoder().encode(admissionToken) : undefined;
-  const asked = JSON.parse(certified
-    ? await runtime.askToJoinAs(post, bytes, certified, custodyForWasm, requestId, fitDisplayName(displayName || label), token)
+  const host = JSON.parse(await runtime.hostInfo(post));
+  const kept = certified ? null : await keptDeviceCertificate({runtime, profile, store: connectOptions.store,
+    desktop: connectOptions.desktop, namespaces: connectOptions.namespaces, custody: custodyForWasm, identity, host});
+  const held = certified ?? kept;
+  const asked = JSON.parse(held
+    ? await runtime.askToJoinAs(post, bytes, held, custodyForWasm, requestId, fitDisplayName(displayName || label), token)
     : await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId, fitDisplayName(displayName || label), fitDisplayName(label), token));
   let reply = asked.reply;
   const device = hexOf(asked.cert.device_public_key);
@@ -1423,10 +1463,11 @@ async function join({
   }
   forget();
   onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});
-  const host = JSON.parse(await runtime.hostInfo(post));
   return connect({
     ...connectOptions, origin, identity, userPublicKey: person.userPublicKey, room: reply.room, label, displayName, custody, runtime, signal,
     profile: connectOptions.store ? undefined : profile,
-    fetch: fetcher, deviceCertificate: JSON.stringify({cert: asked.cert, hostCert: host.hostCert}),
+    // The kept certificate goes on as the text it was kept as: its
+    // nanosecond timestamps exceed what a JavaScript number holds exactly.
+    fetch: fetcher, deviceCertificate: kept ?? JSON.stringify({cert: asked.cert, hostCert: host.hostCert}),
   });
 }

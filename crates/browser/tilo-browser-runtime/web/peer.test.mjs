@@ -110,7 +110,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
         const listeners = [];
         const durable = [];
         peer = {
-          config: JSON.parse(config), custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0,
+          config: JSON.parse(config), configText: config, custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0,
           phase,
           records: [],
           admission: 'ready',
@@ -435,7 +435,11 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   assert.equal(textOf(values.get(`${profile}/${PROFILE_DEVICE}/certificate`)), kept, 'what was kept for the previous host is untouched');
   assert.deepEqual(JSON.parse(textOf(values.get(`${profile}/${fresh}/certificate`))).hostCert, hostCertOf(1, 3));
   assert.equal(profileDevice(profile, namespaces), fresh, 'the profile keeps its peer there from now on');
-  assert.deepEqual(handles.map(handle => [handle.device, handle.released]), [[PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [fresh, 0]]);
+  assert.equal(runtime.calls.asked.root, identity, 'the kept certificate is the previous host\'s: the device is certified anew');
+  // The refused reconnect, the join reading the device's certificate there,
+  // the admitted session leaving it, and the new host's namespace.
+  assert.deepEqual(handles.map(handle => [handle.device, handle.released]),
+    [[PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [PROFILE_DEVICE, 1], [fresh, 0]]);
   assert.equal(vaultStorage.rows.size, 2, 'the new namespace seals its channel state with a vault of its own');
   assert.equal((await peer.mountDesktop('target', {app: 'scratch'})).device, fresh, 'its desktops mount there too');
   await peer.dispose();
@@ -448,6 +452,51 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   // and outbox never reached the new host.
   assert.ok(runtime.calls.started.every(started => JSON.parse(started.namespace).device === fresh));
   assert.equal(runtime.calls.started.length, 2);
+});
+
+test('a device the room let go asks to join again under the certificate it already holds from that host', async () => {
+  // The room keeps the certificate of every device it admitted, also once
+  // its person was removed or pruned after an absence, and refuses the same
+  // device under another one: a certificate made anew would never get back in.
+  const runtime = fakeRuntime();
+  const {values, handles, desktop, namespaces, vaultStorage} = profileFakes(runtime);
+  const profile = 'tilo-identity:ee@host.example:8443';
+  const identity = person();
+  const host = hostCertOf(1, 2);
+  const certificate = {user_public_key: Array(32).fill(0xee), device_public_key: Array.from(custody.publicKey), issued_at_ns: 5};
+  // Nanoseconds past what a JavaScript number holds exactly: only the kept
+  // text itself still matches the certificate's signature.
+  const kept = JSON.stringify({cert: certificate, hostCert: host}).replace('"issued_at_ns":5', '"issued_at_ns":1792040183583123457');
+  values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(kept));
+  runtime.hostInfo = async () => JSON.stringify({hostCert: host, webtransportPort: 443});
+  runtime.askToJoinAs = async (post, invitation, held, custodyKey, requestId, name, token) => {
+    runtime.calls.askedAs = {held, token: token && new TextDecoder().decode(token)};
+    return JSON.stringify({reply: {kind: 'admitted', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor'}, cert: JSON.parse(held).cert});
+  };
+  const common = {origin: 'https://host.example:8443', identity, runtime, custody, desktop, namespaces, vaultStorage, profile,
+    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); }};
+  const peer = await joinWorkspace({...common, invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
+  assert.equal(runtime.calls.askedAs.held, kept, 'asked under the certificate the device holds');
+  assert.equal(runtime.calls.askedAs.token, 'one-time-token');
+  assert.equal(runtime.calls.asked, undefined, 'no certificate made anew');
+  assert.match(runtime.peer.configText, /"issued_at_ns":1792040183583123457[,}]/, 'and the session runs under it, exactly');
+  assert.equal(textOf(values.get(`${profile}/${PROFILE_DEVICE}/certificate`)), kept, 'kept as the very text it was');
+  assert.equal(runtime.calls.certify.length, 0);
+  assert.deepEqual(handles.map(handle => [handle.device, handle.released]), [[PROFILE_DEVICE, 1], [PROFILE_DEVICE, 0]]);
+  await peer.dispose();
+
+  // Not the device's, or not the person's: certified anew, as before.
+  for (const other of [{...certificate, device_public_key: Array(32).fill(0xdd)}, {...certificate, user_public_key: Array(32).fill(0xaa)}]) {
+    const fresh = fakeRuntime();
+    const fakes = profileFakes(fresh);
+    fakes.values.set(`${profile}/${PROFILE_DEVICE}/certificate`, new TextEncoder().encode(JSON.stringify({cert: other, hostCert: host})));
+    fresh.hostInfo = runtime.hostInfo;
+    fresh.askToJoinAs = async () => assert.fail('another device\'s or person\'s certificate is never presented');
+    const joined = await joinWorkspace({...common, runtime: fresh, desktop: fakes.desktop, namespaces: fakes.namespaces,
+      vaultStorage: fakes.vaultStorage, invitation: Uint8Array.from([1, 2, 3]), admissionToken: 'one-time-token', storage: null});
+    assert.equal(fresh.calls.asked.root, identity);
+    await joined.dispose();
+  }
 });
 
 test('a peer with a store of its own never moves it: a host set up again is refused even once it admitted the device', async () => {

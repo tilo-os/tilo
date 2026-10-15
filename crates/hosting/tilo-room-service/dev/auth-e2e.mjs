@@ -643,11 +643,13 @@ async function main() {
     const moderator = await page(browser, person);
     const moderating = await open(moderator, `${web}/`, settleOptions);
     keepLog('moderator', moderator);
+    if (moderating.entry !== 'open') await shoot('moderator', moderator);
     const visitor = await browser.context();
     const guest = await page(browser, visitor);
     const guestOpened = await open(guest, `${web}/`, settleOptions);
     const guestKey = guestOpened.membership?.userPublicKey ?? null;
     const guestJoins = joinsTo(guest.requests, api);
+    if (guestOpened.entry !== 'open') await shoot('removed-guest', guest);
     const removal = moderating.entry === 'open' && /^[0-9a-f]{64}$/.test(guestKey ?? '') && guestKey !== me
       ? await removeMember(moderator, stack.room, guestKey) : {ok: false, error: 'no moderator and guest to remove'};
     // Their page, left open, makes no join of its own; reloaded, it is refused.
@@ -662,7 +664,8 @@ async function main() {
       && leftOpen === 0 && removedOpened.entry === 'refused' && !removedOpened.desktop && removedOpened.arrival !== 'done'
       && /\bremoved\b/.test(removedOpened.status) && removedJoins.length <= 1 && removedJoins.every(j => j.status === 403),
     {moderator: {entry: moderating.entry, membership: moderating.membership, status: moderating.status},
-      guest: {entry: guestOpened.entry, joins: guestJoins.map(j => j.status), userPublicKey: guestKey}, removal, leftOpen,
+      guest: {entry: guestOpened.entry, phase: guestOpened.phase, arrival: guestOpened.arrival, joins: guestJoins.map(j => j.status),
+        userPublicKey: guestKey, status: guestOpened.status, loading: guestOpened.loading}, removal, leftOpen,
       entry: removedOpened.entry, desktop: removedOpened.desktop, arrival: removedOpened.arrival,
       joins: removedJoins.map(j => j.status), membership: removedOpened.membership, status: removedOpened.status,
       hash: removedOpened.hash});
