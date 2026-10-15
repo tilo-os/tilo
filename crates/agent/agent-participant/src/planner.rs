@@ -155,6 +155,19 @@ pub struct PlanContext {
     /// a reply saying so, is then the answer; a first plan must still name
     /// the work.
     pub may_plan_nothing: bool,
+    /// The content addresses of the pictures the task's steps looked at
+    /// ([`rendered_picture`]), oldest first: a re-plan's model that sees is
+    /// shown the newest with its first turn.
+    pub pictures: Vec<String>,
+    /// The content addresses apps rendered or made for this task (its
+    /// steps' looks and exports): pictures shown to a model that sees,
+    /// whatever [`Self::room_pictures`] says.
+    pub rendered: Vec<String>,
+    /// Whether the agent may show the room's own pictures (a scan, a photo
+    /// someone put in the room) to its model's provider. Off unless the
+    /// person running it turned it on
+    /// ([`crate::vision::ROOM_PICTURES_ENV`]).
+    pub room_pictures: bool,
 }
 
 impl PlanContext {
@@ -234,6 +247,37 @@ pub trait Reads {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionOutput, String>;
+
+    /// The bytes of the content at `hash` the room keeps: a picture a read
+    /// rendered, or one the planning model asks to look at. Content larger
+    /// than [`crate::vision::MOST_SOURCE_BYTES`] may be answered with its
+    /// first bytes alone, one more than that: enough to refuse it.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be had: the room does not keep it.
+    fn look(&mut self, hash: &str) -> Result<Vec<u8>, String> {
+        let _ = hash;
+        Err("no content can be looked at while this task is planned".into())
+    }
+}
+
+/// The content address of the picture `output` rendered (a canvas look, a
+/// PDF page): the `content` its value names, which is content the
+/// operation made. `None` for any other answer.
+#[must_use]
+pub fn rendered_picture(output: &ActionOutput) -> Option<String> {
+    let content = output
+        .value
+        .as_ref()?
+        .get("content")?
+        .as_str()
+        .filter(|content| tilo_actions::content_hash(content).is_some())?;
+    output
+        .resources
+        .iter()
+        .any(|resource| resource == content)
+        .then(|| content.to_owned())
 }
 
 /// No reads: what a planner is given where nothing can be read.
@@ -685,5 +729,39 @@ mod tests {
                 .is_err(),
             "an app outside the catalogue is refused at planning"
         );
+    }
+
+    /// A look's answer names the picture it rendered (its address, which a
+    /// re-plan shows), and the observation still leaves inlined data out.
+    #[test]
+    fn a_look_answer_names_the_picture_it_rendered() {
+        let look = ActionAddress::new("canvas.artwork", "look");
+        let address = format!("tilo.content:{}", "a".repeat(64));
+        let output = ActionOutput {
+            value: Some(
+                serde_json::json!({"width": 768, "height": 512, "content": address,
+                "thumbnail": format!("data:image/png;base64,{}", "A".repeat(4_000))}),
+            ),
+            resources: vec![address.clone()],
+        };
+        assert_eq!(rendered_picture(&output), Some(address.clone()));
+        let seen = observation("so.tilo.canvas", &look, &output).unwrap();
+        assert!(seen.contains(&address), "{seen}");
+        assert!(
+            seen.contains("(data:image/png, 4022 characters, left out)"),
+            "{seen}"
+        );
+        assert!(!seen.contains("AAAA"), "{seen}");
+
+        let named_only = ActionOutput {
+            value: output.value,
+            resources: Vec::new(),
+        };
+        assert_eq!(
+            rendered_picture(&named_only),
+            None,
+            "content it did not make"
+        );
+        assert_eq!(rendered_picture(&ActionOutput::default()), None);
     }
 }

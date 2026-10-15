@@ -95,6 +95,10 @@ tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
 # the host's state directory.
 tilo-content = { path = "../../system/content" }
 uuid.workspace = true
+# Pictures shown to a planning model: sent base64-encoded, and decoded and
+# shrunk only in a confined worker (`worker::shrink_picture`).
+base64.workspace = true
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [target.'cfg(unix)'.dependencies]
 # The worker's confinement: detach, resource limits and, on macOS, Seatbelt.
@@ -131,7 +135,6 @@ tokio = { workspace = true, features = ["full"] }
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }
-base64.workspace = true
 # The campaign benchmark's opt-in trace (`TILO_BENCH_TRACE`).
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 

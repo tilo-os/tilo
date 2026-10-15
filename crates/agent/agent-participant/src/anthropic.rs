@@ -12,10 +12,10 @@ use tilo_agent::surface::Catalogue;
 use tilo_agent::tools::Answer;
 
 use crate::model::{
-    ApiKey, Briefing, MOST_DISCOVERY_TURNS, ModelRequest, PLANNER_INSTRUCTIONS, PlanModel,
-    READ_VIEW, ReadView, carried_gap, first_turn_parts, planning_tools, post_hedged,
-    read_view_answer,
+    ApiKey, Briefing, MOST_DISCOVERY_TURNS, ModelRequest, NoPlanReads, PLANNER_INSTRUCTIONS,
+    PlanModel, ReadView, answer_call, first_turn_parts, planning_tools, post_hedged,
 };
+use crate::vision::{Eyes, Picture};
 
 /// The Messages API version the requests are written for.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -67,6 +67,9 @@ pub struct AnthropicModel {
     /// never forced, and the first refusal leaves the choice to the model
     /// from then on, for every agent of this process.
     forced: bool,
+    /// Whether it is shown pictures, set outright
+    /// ([`crate::vision::VISION_ENV`]); `None` leaves its default, shown.
+    vision: Option<bool>,
     client: std::sync::Arc<std::sync::OnceLock<Box<dyn std::any::Any + Send + Sync>>>,
 }
 
@@ -84,8 +87,17 @@ impl AnthropicModel {
             service_tier: None,
             hedge_after: None,
             forced: forcible(model),
+            vision: None,
             client: std::sync::Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// Show it pictures (`Some(true)`) or not (`Some(false)`); `None`
+    /// leaves the default, which is to.
+    #[must_use]
+    pub fn with_vision(mut self, vision: Option<bool>) -> Self {
+        self.vision = vision;
+        self
     }
 
     /// Ask for `effort` (`low` … `max`); anything else leaves the model's
@@ -132,6 +144,7 @@ impl AnthropicModel {
             idempotency: false,
             headers,
             body: std::sync::Arc::new(body.to_string()),
+            pictures: crate::vision::pictures_in(body),
         };
         post_hedged(&request, &self.model, key, deadline, self.hedge_after)
     }
@@ -231,8 +244,9 @@ fn claude_tools(definitions: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Array(tools)
 }
 
-/// The first turn: the reference (a cache breakpoint), then the rest.
-fn first_message((stable, rest): (&str, &str)) -> serde_json::Value {
+/// The first turn: the reference (a cache breakpoint), then the rest, then
+/// `pictures`, after what is cached.
+fn first_message((stable, rest): (&str, &str), pictures: &[Picture]) -> serde_json::Value {
     let mut content = Vec::new();
     if !stable.is_empty() {
         content.push(serde_json::json!({
@@ -242,7 +256,24 @@ fn first_message((stable, rest): (&str, &str)) -> serde_json::Value {
         }));
     }
     content.push(serde_json::json!({ "type": "text", "text": rest }));
+    content.extend(pictures.iter().map(Picture::anthropic_block));
     serde_json::json!({ "role": "user", "content": content })
+}
+
+/// A call's result block: its text alone, or the text then its pictures.
+fn tool_result(id: &str, text: String, pictures: &[Picture]) -> serde_json::Value {
+    let content = if pictures.is_empty() {
+        serde_json::Value::String(text)
+    } else {
+        let mut blocks = vec![serde_json::json!({ "type": "text", "text": text })];
+        blocks.extend(pictures.iter().map(Picture::anthropic_block));
+        serde_json::Value::Array(blocks)
+    };
+    serde_json::json!({
+        "type": "tool_result",
+        "tool_use_id": id,
+        "content": content,
+    })
 }
 
 /// A tool call of a Messages answer: its id, name and input.
@@ -291,6 +322,10 @@ fn read_answer(answer: &serde_json::Value) -> (Vec<Call>, String) {
 }
 
 impl PlanModel for AnthropicModel {
+    fn sees(&self) -> bool {
+        self.vision.unwrap_or(true)
+    }
+
     fn choose(
         &mut self,
         task: &str,
@@ -302,7 +337,7 @@ impl PlanModel for AnthropicModel {
             &Briefing::default(),
             catalogue,
             most_steps,
-            &mut |_, _| Err("no document can be read here".into()),
+            &mut NoPlanReads,
         )
     }
 
@@ -321,15 +356,21 @@ impl PlanModel for AnthropicModel {
         getrandom::fill(&mut run).map_err(|_| "no randomness for the model call".to_string())?;
         let mut revealed = tilo_agent::tools::Revealed::new();
         let (stable, rest) = first_turn_parts(task, briefing, catalogue, &mut revealed);
+        let mut eyes = Eyes::new(self.sees());
+        eyes.show(&stable);
+        eyes.show(&rest);
+        let (note, first_pictures) = eyes.attach_first(&briefing.pictures);
         let tools = claude_tools(&planning_tools(
             most_steps,
             briefing.describes(),
             briefing.searches(),
+            eyes.sees(),
         ));
-        let mut messages = vec![first_message((&stable, &rest))];
+        let mut messages = vec![first_message((&stable, &(rest + &note)), &first_pictures)];
         let mut reminded = false;
         let mut repeats = crate::model::Repeats::default();
         for turn in 0..MOST_DISCOVERY_TURNS {
+            eyes.next_turn();
             let key = format!("{}-{turn}", hex::encode(run));
             let answer = self.turn(&tools, &messages, &key, deadline)?;
             let (calls, text) = read_answer(&answer);
@@ -356,28 +397,20 @@ impl PlanModel for AnthropicModel {
             let mut results = Vec::with_capacity(calls.len());
             let (mut seen, mut answered) = (String::new(), String::new());
             for call in &calls {
-                let result = if call.name == tilo_agent::tools::PLAN {
-                    match crate::model::read_planned(&call.input, &revealed, most_steps, briefing) {
-                        Ok(answer) => match carried_gap(&answer, catalogue) {
-                            None => return Ok(answer),
-                            Some(gap) => tilo_agent::tools::plan_refused(&gap),
-                        },
-                        Err(error) => tilo_agent::tools::plan_refused(&error),
-                    }
-                } else if call.name == READ_VIEW {
-                    read_view_answer(&call.input, &revealed, read)
-                } else if call.name == crate::search::SEARCH_ROOM {
-                    crate::search::answer(&call.input, &briefing.searchable, &mut revealed)
-                } else {
-                    tilo_agent::tools::answer(&call.name, &call.input, catalogue, &mut revealed)
+                let result = match answer_call(
+                    (&call.name, &call.input),
+                    (catalogue, briefing, most_steps),
+                    &mut revealed,
+                    (&eyes, read),
+                    false,
+                ) {
+                    std::ops::ControlFlow::Break(answer) => return Ok(answer),
+                    std::ops::ControlFlow::Continue(seen) => seen,
                 };
+                let (result, pictures) = eyes.attach(result);
                 crate::model::Repeats::call(&mut seen, &call.name, &call.input, &result);
                 answered.clone_from(&result);
-                results.push(serde_json::json!({
-                    "type": "tool_result",
-                    "tool_use_id": call.id,
-                    "content": result,
-                }));
+                results.push(tool_result(&call.id, result, &pictures));
             }
             repeats.note(seen, &answered)?;
             // The answer as given (its thinking included), then the results,
@@ -424,7 +457,7 @@ mod tests {
             {"name": "read_view", "description": "Read.", "input_schema": {"type": "object"}},
             {"name": "plan", "description": "Plan.", "input_schema": {"type": "object"}},
         ]));
-        let body = model.body(&tools, &[first_message(("reference", "the task"))]);
+        let body = model.body(&tools, &[first_message(("reference", "the task"), &[])]);
         assert_eq!(body["output_config"]["effort"], "low");
         assert!(
             body.get("service_tier").is_none(),
@@ -439,7 +472,7 @@ mod tests {
         assert_eq!(model.endpoint, "https://api.anthropic.com/v1/messages");
         let mut thinking = model;
         thinking.forced = false;
-        let body = thinking.body(&tools, &[first_message(("reference", "the task"))]);
+        let body = thinking.body(&tools, &[first_message(("reference", "the task"), &[])]);
         assert_eq!(body["tool_choice"]["type"], "auto");
     }
 
@@ -470,7 +503,7 @@ mod tests {
             ]})
         };
         let mut messages = vec![
-            first_message(("reference", "the task")),
+            first_message(("reference", "the task"), &[]),
             result("a"),
             result("b"),
         ];
@@ -496,5 +529,105 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].id, "toolu_1");
         assert_eq!(calls[0].name, "plan");
+    }
+
+    /// A Messages answer calling `name` with `input`.
+    fn claude_call(id: &str, name: &str, input: &serde_json::Value) -> String {
+        crate::model::tests::http(
+            "200 OK",
+            &serde_json::json!({"content": [
+                {"type": "tool_use", "id": id, "name": name, "input": input}]})
+            .to_string(),
+        )
+    }
+
+    /// A re-plan's picture follows the first turn's text, a look's picture
+    /// rides in its tool result after its text, the cached reference stays
+    /// byte-identical across turns, and only the last result block carries
+    /// the latest turn's cache breakpoint.
+    #[test]
+    fn pictures_follow_the_cached_prefix_and_ride_in_tool_results() {
+        use crate::Planner as _;
+        use crate::model::tests::{Looks, endpoint, look_context};
+        let (url, sent) = endpoint(vec![
+            claude_call(
+                "t1",
+                crate::READ_VIEW,
+                &serde_json::json!({"operation": "canvas.artwork#look", "arguments": {}}),
+            ),
+            claude_call(
+                "t2",
+                tilo_agent::tools::PLAN,
+                &serde_json::json!({"steps": [{"operation": "canvas.artwork#draw",
+                    "arguments": {"marks": []}}], "then": null}),
+            ),
+        ]);
+        let mut reads = Looks::new('a');
+        let earlier = reads.keep('f', crate::vision::tests::png(5, 5));
+        let mut context = look_context();
+        context.request = Some("draw the band, then look again".into());
+        context.pictures = vec![earlier];
+        let model = AnthropicModel::new(
+            &url,
+            "claude-haiku-5-5",
+            ApiKey::None,
+            std::time::Duration::from_secs(30),
+        );
+        assert!(model.sees());
+        crate::ModelPlanner::new(Box::new(model))
+            .plan_reading("look again", &context, &mut reads)
+            .unwrap();
+        let requests: Vec<serde_json::Value> = sent
+            .try_iter()
+            .map(|(_, body)| serde_json::from_str(&body).unwrap())
+            .collect();
+        let [first, second] = requests.as_slice() else {
+            panic!("{requests:?}");
+        };
+        let tools = serde_json::to_string(&first["tools"]).unwrap();
+        assert!(tools.contains(crate::vision::LOOK_CONTENT), "{tools}");
+        let opening = first["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(opening[0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(opening[2]["type"], "image", "the picture after the text");
+        assert!(
+            opening[1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("picture shown below, 5×5 PNG")
+        );
+        assert_eq!(
+            first["messages"][0]["content"][0].to_string(),
+            second["messages"][0]["content"][0].to_string(),
+            "the cached reference is the same bytes every turn"
+        );
+        assert_eq!(first["system"], second["system"]);
+        assert_eq!(first["tools"], second["tools"]);
+        let results = second["messages"][2]["content"].as_array().unwrap();
+        let result = results.last().unwrap();
+        assert_eq!(result["type"], "tool_result");
+        assert_eq!(result["cache_control"]["type"], "ephemeral");
+        let blocks = result["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "text");
+        assert!(
+            blocks[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("picture shown below, 8×6 PNG")
+        );
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["type"], "base64");
+        assert_eq!(blocks[1]["source"]["media_type"], "image/png");
+        assert!(
+            blocks
+                .iter()
+                .all(|block| block.get("cache_control").is_none()),
+            "only the last result block carries the breakpoint"
+        );
+        assert!(
+            opening[1..]
+                .iter()
+                .all(|block| block.get("cache_control").is_none()),
+            "the first turn's breakpoint stays on its reference alone"
+        );
     }
 }

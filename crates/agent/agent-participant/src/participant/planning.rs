@@ -12,6 +12,8 @@
 //! `read_view`). The records live on the loop, so the planner's thread asks
 //! the loop for each read ([`ReadAsk`]), wakes it, and waits for the answer;
 //! the loop answers on its next pump, free to as it is not planning itself.
+//! A picture the plan shows its model is asked of the loop the same way
+//! ([`LookAsk`]): the room's content store is the loop's.
 
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -22,7 +24,7 @@ use tilo_actions::door::ActionAddress;
 use tilo_browser_peer::DocumentRoute;
 
 use crate::control::AgentControl;
-use crate::planner::{PlanContext, Planner, Reads, Step, observation};
+use crate::planner::{PlanContext, Planner, Reads, Step, observation, rendered_picture};
 
 /// One plan asked of the planner's thread.
 struct Job {
@@ -45,6 +47,8 @@ pub(super) struct Planned {
     /// What the plan's reads found, as observations, each with the app
     /// of the record read.
     pub read: Vec<(String, String)>,
+    /// The pictures the plan's reads rendered, by content address.
+    pub rendered: Vec<String>,
     /// When the planner returned it.
     pub ready_at: Instant,
     /// Whether a model made it (not steps written out or stated outright).
@@ -60,6 +64,14 @@ pub(super) struct ReadAsk {
     pub reply: mpsc::Sender<Result<ActionOutput, String>>,
 }
 
+/// The bytes of content the planner's thread asks of the loop while it
+/// plans: a picture to show its model.
+pub(super) struct LookAsk {
+    pub hash: String,
+    /// Where the loop answers.
+    pub reply: mpsc::Sender<Result<Vec<u8>, String>>,
+}
+
 /// The planner's thread, and the plan it is making.
 pub(super) struct Planning {
     /// Dropped with the participant, which ends the thread after the plan
@@ -68,6 +80,8 @@ pub(super) struct Planning {
     plans: mpsc::Receiver<Planned>,
     /// Reads the plan being made asks of the loop.
     reads: mpsc::Receiver<ReadAsk>,
+    /// Content the plan being made asks of the loop.
+    looks: mpsc::Receiver<LookAsk>,
     /// The task whose plan the thread is making.
     pending: Option<String>,
 }
@@ -75,8 +89,10 @@ pub(super) struct Planning {
 /// [`Reads`] on the planner's thread: each read is asked of the loop.
 struct LoopReads {
     asks: mpsc::Sender<ReadAsk>,
+    looks: mpsc::Sender<LookAsk>,
     control: Arc<AgentControl>,
     found: Vec<(String, String)>,
+    rendered: Vec<String>,
 }
 
 impl Reads for LoopReads {
@@ -102,7 +118,24 @@ impl Reads for LoopReads {
         if let Some(seen) = observation(&route.app_id, address, &output) {
             self.found.push((route.app_id.clone(), seen));
         }
+        if let Some(picture) = rendered_picture(&output) {
+            self.rendered.push(picture);
+        }
         Ok(output)
+    }
+
+    fn look(&mut self, hash: &str) -> Result<Vec<u8>, String> {
+        let (reply, answer) = mpsc::channel();
+        self.looks
+            .send(LookAsk {
+                hash: hash.to_owned(),
+                reply,
+            })
+            .map_err(|_| "the agent stopped".to_string())?;
+        self.control.wake();
+        answer
+            .recv()
+            .map_err(|_| "the agent stopped before it looked".to_string())?
     }
 }
 
@@ -116,6 +149,7 @@ impl Planning {
         let (jobs, asked) = mpsc::channel::<Job>();
         let (made, plans) = mpsc::channel();
         let (read_asks, reads) = mpsc::channel();
+        let (look_asks, looks) = mpsc::channel();
         // Named as the agent's own thread: a model call is logged under the
         // name of the thread that makes it (`TILO_AGENT_USAGE_LOG`), and
         // its usage belongs to the agent.
@@ -129,8 +163,10 @@ impl Planning {
                 while let Ok(job) = asked.recv() {
                     let mut loop_reads = LoopReads {
                         asks: read_asks.clone(),
+                        looks: look_asks.clone(),
                         control: Arc::clone(&control),
                         found: Vec::new(),
+                        rendered: Vec::new(),
                     };
                     let steps = planner.plan_reading(&job.text, &job.context, &mut loop_reads);
                     let answer = Planned {
@@ -139,6 +175,7 @@ impl Planning {
                         continues: job.continues,
                         steps,
                         read: loop_reads.found,
+                        rendered: loop_reads.rendered,
                         ready_at: Instant::now(),
                         by_model: planner.last_planned_by_model(),
                     };
@@ -153,6 +190,7 @@ impl Planning {
             jobs,
             plans,
             reads,
+            looks,
             pending: None,
         })
     }
@@ -192,6 +230,11 @@ impl Planning {
         self.reads.try_iter().collect()
     }
 
+    /// The content the plan being made asks now, for the loop to answer.
+    pub(super) fn asked_looks(&self) -> Vec<LookAsk> {
+        self.looks.try_iter().collect()
+    }
+
     /// The plan made since the last call, if one is ready. A thread that
     /// died while planning fails the plan it was making.
     pub(super) fn take(&mut self) -> Option<Planned> {
@@ -204,6 +247,7 @@ impl Planning {
                 continues: false,
                 steps: Err("the agent's planner stopped".into()),
                 read: Vec::new(),
+                rendered: Vec::new(),
                 ready_at: Instant::now(),
                 by_model: false,
             },

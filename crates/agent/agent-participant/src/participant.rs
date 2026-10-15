@@ -28,7 +28,7 @@ use crate::apps::{AppCatalogue, Seed};
 use crate::control::{AgentControl, AgentIdentity};
 use crate::planner::{
     MESSAGE_APPS, MOST_OBSERVED, PlanContext, Planner, Step, StepAction, Wait, observation,
-    observation_within, readable, written_steps,
+    observation_within, readable, rendered_picture, written_steps,
 };
 use crate::worker::ConfinedReplica;
 use tilo_actions::ActionOutput;
@@ -255,7 +255,13 @@ struct Running {
     /// The operations that ran, oldest first: a check that plans one again
     /// with the same arguments would add a second slide or event.
     invoked: Vec<Step>,
+    /// The pictures its steps and its plans' reads rendered (a canvas
+    /// look), by content address, oldest first, at most [`MOST_LOOKED`].
+    looked: Vec<String>,
 }
+
+/// The most rendered pictures a task keeps the addresses of.
+const MOST_LOOKED: usize = 16;
 
 impl Running {
     /// The reply to a task whose steps all ran: how many, and the content
@@ -718,11 +724,36 @@ impl Running {
             by_model: false,
             ran: Vec::new(),
             invoked: Vec::new(),
+            looked: Vec::new(),
         };
         for (app, seen) in read {
             running.observe(app, seen);
         }
         running
+    }
+
+    /// What a plan of the task is shown of its pictures: on a re-plan
+    /// (`replan`), the newest its steps looked at; and every picture its
+    /// apps rendered or made, which the plan may look at whatever the
+    /// agent may do with the room's own.
+    fn pictures(&self, replan: bool) -> (Vec<String>, Vec<String>) {
+        let newest = if replan {
+            self.looked.last().cloned().into_iter().collect()
+        } else {
+            Vec::new()
+        };
+        let rendered = self.looked.iter().chain(&self.produced).cloned().collect();
+        (newest, rendered)
+    }
+
+    /// Keep the addresses of `pictures`, rendered for the task, newest last.
+    fn looked_at(&mut self, pictures: impl IntoIterator<Item = String>) {
+        for picture in pictures {
+            self.looked.retain(|looked| *looked != picture);
+            self.looked.push(picture);
+        }
+        let over = self.looked.len().saturating_sub(MOST_LOOKED);
+        self.looked.drain(..over);
     }
 
     /// Keep `seen`, read from a record of `app`, for the rest of the task to
@@ -775,6 +806,7 @@ impl Running {
         {
             self.observe(step.app.clone(), observed);
         }
+        self.looked_at(rendered_picture(&output));
         if !produced(&output).is_empty() {
             self.last = Some(output);
         }
@@ -1004,6 +1036,9 @@ pub struct AgentParticipant {
     /// Remote-action frames waiting for an answer, with their senders.
     remote: Vec<([u8; 32], Vec<u8>)>,
     answered: actions::Answered,
+    /// Whether the agent may show the room's own pictures to its model
+    /// ([`PlanContext::room_pictures`]).
+    room_pictures: crate::vision::RoomPictures,
 }
 
 impl AgentParticipant {
@@ -1078,6 +1113,16 @@ impl AgentParticipant {
         peer.join(workspace_id)?;
         peer.live_join(workspace_id)?;
         let unopened = unopened::Unopened::new(&config.room);
+        // The room's own pictures go to the model's provider only where the
+        // person running the agent said so.
+        let room_pictures =
+            crate::vision::RoomPictures::from(crate::vision::room_pictures_allowed(
+                &identity.delegation.agent_id,
+                &identity.delegation.label,
+                std::env::var(crate::vision::ROOM_PICTURES_ENV)
+                    .ok()
+                    .as_deref(),
+            ));
         Ok(Self {
             identity,
             control,
@@ -1114,7 +1159,16 @@ impl AgentParticipant {
             generation: 0,
             remote: Vec::new(),
             answered: actions::Answered::default(),
+            room_pictures,
         })
+    }
+
+    /// Let this agent show the room's own pictures (scans, photos people
+    /// put in the room) to its model's provider, or not; off unless
+    /// [`crate::vision::ROOM_PICTURES_ENV`] turned it on. Pictures its apps
+    /// render (a canvas look, a PDF page) are shown either way.
+    pub fn allow_room_pictures(&mut self, on: bool) {
+        self.room_pictures = on.into();
     }
 
     /// The certified session.
@@ -1560,6 +1614,7 @@ impl AgentParticipant {
                 continues,
                 steps,
                 read: Vec::new(),
+                rendered: Vec::new(),
                 ready_at: Instant::now(),
                 by_model: false,
             });
@@ -1575,19 +1630,29 @@ impl AgentParticipant {
                 continues,
                 steps: Err(error),
                 read: Vec::new(),
+                rendered: Vec::new(),
                 ready_at: Instant::now(),
                 by_model: false,
             });
         }
     }
 
-    /// Answer the reads the plan being made asks of the open records.
+    /// Answer the reads the plan being made asks of the open records, and
+    /// the content it asks to show its model from the room's store.
     fn answer_reads(&mut self) {
         for ask in self.planning.asked_reads() {
             let answer = self.read_now(&ask.route, &ask.address, &ask.arguments);
             if answer.is_ok() && !self.task_read.contains(&ask.route) {
                 self.task_read.push(ask.route.clone());
             }
+            let _ = ask.reply.send(answer);
+        }
+        for ask in self.planning.asked_looks() {
+            let answer = self
+                .content
+                .open(&ask.hash)
+                .ok_or_else(|| format!("the room keeps no content tilo.content:{}", ask.hash))
+                .and_then(|reader| picture_head(reader, &ask.hash));
             let _ = ask.reply.send(answer);
         }
     }
@@ -1610,6 +1675,7 @@ impl AgentParticipant {
             continues,
             steps,
             read,
+            rendered,
             ready_at,
             by_model,
         } = planned;
@@ -1637,6 +1703,7 @@ impl AgentParticipant {
             Ok(steps) if !continues => {
                 let mut running = Running::new(task, text, steps, read);
                 running.by_model = by_model;
+                running.looked_at(rendered);
                 self.running = Some(running);
                 self.plan_ready_at = Some(ready_at);
             }
@@ -1646,6 +1713,7 @@ impl AgentParticipant {
                     for (app, seen) in read {
                         running.observe(app, seen);
                     }
+                    running.looked_at(rendered);
                     running.queue_rest(steps);
                     self.plan_ready_at = Some(ready_at);
                 }
@@ -2059,25 +2127,15 @@ impl AgentParticipant {
         }
     }
 
-    /// What `task` is planned with. Before the model is asked, the records
-    /// of the room the task names by their titles are opened; an app it is
-    /// about of which the room has no record yet is previewed; and what the
-    /// open records it is about hold is read. `request` is the task as it
-    /// was given when `task` is the rest of it.
-    fn plan_context(&mut self, task: &str, request: Option<String>) -> PlanContext {
-        let apps: Vec<String> = self
-            .catalogue
-            .iter()
-            .map(|definition| definition.app_id.to_owned())
-            .filter(|app| self.identity.delegation.permits_app(app))
-            .collect();
-        // The records offered to open are named as their apps name them (a
-        // document's first heading), so a task can say which: read in a
-        // confined worker, started only when one changed since it was read.
+    /// The room's records the agent has not opened, those people have open
+    /// first, each of `apps` named as its app names it (a document's first
+    /// heading) when it is among those offered to open, so a task can say
+    /// which: read in a confined worker, started only when one changed
+    /// since it was read.
+    fn known_titled(&mut self, apps: &[String]) -> Vec<(DocumentRoute, Option<String>)> {
         let mut offered: BTreeMap<&str, usize> = BTreeMap::new();
         let mut titles = crate::worker::ConfinedTitles::default();
-        let mut known: Vec<(DocumentRoute, Option<String>)> = self
-            .unopened
+        self.unopened
             .people_first()
             .into_iter()
             .map(|route| {
@@ -2094,8 +2152,22 @@ impl AgentParticipant {
                     .title(&route, |doc| titles.title(&route.app_id, doc));
                 (route, title)
             })
+            .collect()
+    }
+
+    /// What `task` is planned with. Before the model is asked, the records
+    /// of the room the task names by their titles are opened; an app it is
+    /// about of which the room has no record yet is previewed; and what the
+    /// open records it is about hold is read. `request` is the task as it
+    /// was given when `task` is the rest of it.
+    fn plan_context(&mut self, task: &str, request: Option<String>) -> PlanContext {
+        let apps: Vec<String> = self
+            .catalogue
+            .iter()
+            .map(|definition| definition.app_id.to_owned())
+            .filter(|app| self.identity.delegation.permits_app(app))
             .collect();
-        drop(titles);
+        let mut known = self.known_titled(&apps);
         // A follow-up is about the records the request named too: its own
         // text ("check the work", "now export it") names none of them.
         let naming = naming_text(task, request.as_deref());
@@ -2156,10 +2228,16 @@ impl AgentParticipant {
             .cloned()
             .collect();
         let reference = self.reference(referenced);
-        let (produced, observed) = self
+        let (produced, observed, (pictures, rendered)) = self
             .running
             .as_ref()
-            .map(|running| (running.produced.clone(), running.observations()))
+            .map(|running| {
+                (
+                    running.produced.clone(),
+                    running.observations(),
+                    running.pictures(request.is_some()),
+                )
+            })
             .unwrap_or_default();
         let searchable = self.searchable(&apps, &open);
         PlanContext {
@@ -2175,6 +2253,9 @@ impl AgentParticipant {
             room: self.room.clone(),
             searchable,
             may_plan_nothing: false,
+            pictures,
+            rendered,
+            room_pictures: self.room_pictures == crate::vision::RoomPictures::Shown,
         }
     }
 
@@ -2729,7 +2810,7 @@ fn content_facts(task: &str, content: &tilo_content::ContentStore) -> Vec<String
             .collect();
         let fact = content
             .read(&hash)
-            .and_then(|bytes| picture_size(&bytes))
+            .and_then(|bytes| crate::vision::picture_size(&bytes))
             .map(|(format, width, height)| {
                 format!("{PREFIX}{hash} is a {format} picture {width}×{height} pixels.")
             });
@@ -2742,36 +2823,20 @@ fn content_facts(task: &str, content: &tilo_content::ContentStore) -> Vec<String
     facts
 }
 
-/// A PNG's or JPEG's format and size, from its header.
-fn picture_size(bytes: &[u8]) -> Option<(&'static str, u32, u32)> {
-    let be16 = |at: usize| -> Option<u32> {
-        Some(u32::from(u16::from_be_bytes([
-            *bytes.get(at)?,
-            *bytes.get(at.checked_add(1)?)?,
-        ])))
-    };
-    let be32 = |at: usize| -> Option<u32> {
-        Some(u32::from_be_bytes(
-            bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
-        ))
-    };
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Some(("PNG", be32(16)?, be32(20)?));
-    }
-    if !bytes.starts_with(&[0xFF, 0xD8]) {
-        return None;
-    }
-    let mut at = 2_usize;
-    while *bytes.get(at)? == 0xFF {
-        let marker = *bytes.get(at.checked_add(1)?)?;
-        // A start-of-frame segment holds the size; the others are skipped.
-        if (0xC0..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
-            return Some(("JPEG", be16(at.checked_add(7)?)?, be16(at.checked_add(5)?)?));
-        }
-        let length = usize::try_from(be16(at.checked_add(2)?)?).ok()?;
-        at = at.checked_add(2)?.checked_add(length)?;
-    }
-    None
+/// The content `reader` reads, to show a planning model: at most one byte
+/// more than [`crate::vision::MOST_SOURCE_BYTES`], so a video is never read
+/// whole only to be refused as too large.
+fn picture_head(reader: tilo_content::ContentReader, hash: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let most = u64::try_from(crate::vision::MOST_SOURCE_BYTES)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut bytes = Vec::new();
+    reader
+        .take(most)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("the content tilo.content:{hash} could not be read: {error}"))?;
+    Ok(bytes)
 }
 
 /// The text a plan's records are chosen by: `task`, and the request it is
@@ -3675,5 +3740,89 @@ mod tests {
         }
         assert!(!running.begin_wait(wait_for(&[], None, None), Instant::now(), BTreeMap::new()));
         assert!(running.waits.current.is_none());
+    }
+
+    /// A planning model that keeps the briefing it was given and plans
+    /// nothing more.
+    struct Briefed(std::sync::Arc<std::sync::Mutex<Vec<crate::Briefing>>>);
+
+    impl crate::PlanModel for Briefed {
+        fn choose(
+            &mut self,
+            _: &str,
+            _: &tilo_agent::surface::Catalogue,
+            _: Option<usize>,
+        ) -> Result<tilo_agent::tools::Answer, String> {
+            Err("briefed only".into())
+        }
+
+        fn choose_briefed(
+            &mut self,
+            _: &str,
+            briefing: &crate::Briefing,
+            _: &tilo_agent::surface::Catalogue,
+            _: Option<usize>,
+            _: &mut crate::ReadView<'_>,
+        ) -> Result<tilo_agent::tools::Answer, String> {
+            self.0.lock().unwrap().push(briefing.clone());
+            Err("briefed only".into())
+        }
+
+        fn sees(&self) -> bool {
+            true
+        }
+    }
+
+    /// A look step, then the rest planned again: the re-plan's first turn
+    /// carries the picture the look rendered, and only the newest.
+    #[test]
+    fn a_look_step_then_continue_puts_its_picture_in_the_replans_first_turn() {
+        use crate::planner::Planner as _;
+        let canvas = "so.tilo.canvas";
+        let mut reads = crate::model::tests::Looks::new('a');
+        let earlier = reads.keep('9', crate::vision::tests::png(3, 3));
+        let mut running = Running::new(
+            "t1".into(),
+            "draw, look, fix".into(),
+            Vec::new(),
+            Vec::new(),
+        );
+        for picture in [&earlier, &reads.rendered] {
+            let output = ActionOutput {
+                value: Some(serde_json::json!({"width": 8, "height": 6, "content": picture})),
+                resources: vec![picture.clone()],
+            };
+            running.ran_step(
+                &invoke(canvas, "canvas.artwork", "look"),
+                Some(output.clone()),
+                produced(&output),
+                false,
+            );
+        }
+        let (first, _) = running.pictures(false);
+        assert!(first.is_empty(), "a first plan is shown no step's picture");
+        let (pictures, rendered) = running.pictures(true);
+        assert_eq!(pictures, vec![reads.rendered.clone()]);
+        assert!(
+            rendered.contains(&earlier),
+            "every rendered picture may be looked at"
+        );
+
+        let mut context = crate::model::tests::look_context();
+        context.request = Some("draw, look, fix".into());
+        context.pictures = pictures;
+        context.rendered = rendered;
+        let briefings = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let _ = crate::ModelPlanner::new(Box::new(Briefed(std::sync::Arc::clone(&briefings))))
+            .plan_reading("fix what the look showed", &context, &mut reads);
+        let briefings = std::mem::take(&mut *briefings.lock().unwrap());
+        let [briefing] = briefings.as_slice() else {
+            panic!("{briefings:?}");
+        };
+        let [picture] = briefing.pictures.as_slice() else {
+            panic!("{:?}", briefing.pictures);
+        };
+        assert_eq!(picture.content, reads.rendered);
+        assert_eq!((picture.width, picture.height), (8, 6));
     }
 }

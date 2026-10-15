@@ -15942,6 +15942,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "image",
  "iroh",
  "iroh-base",
  "libc",

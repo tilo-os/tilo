@@ -33,7 +33,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 4;
+pub(crate) const PROTOCOL_VERSION: u32 = 5;
 
 /// What a worker is started to do. It decides what the worker prepares
 /// before it confines itself: a worker that mounts a component (a reader's,
@@ -48,6 +48,8 @@ pub(crate) enum Mode {
     Views,
     /// Mount one record's component to answer its registered reads.
     Read,
+    /// Shrink pictures to show a planning model ([`super::picture`]).
+    Picture,
 }
 
 impl Mode {
@@ -56,6 +58,7 @@ impl Mode {
             Self::Replica => "replica",
             Self::Views => "views",
             Self::Read => "read",
+            Self::Picture => "picture",
         }
     }
 
@@ -64,6 +67,7 @@ impl Mode {
             "replica" => Some(Self::Replica),
             "views" => Some(Self::Views),
             "read" => Some(Self::Read),
+            "picture" => Some(Self::Picture),
             _ => None,
         }
     }
@@ -146,6 +150,14 @@ pub(crate) enum Request {
     /// What the app stored since the last take and what it asked for but
     /// lacked; answered with [`Reply::Content`].
     TakeContent,
+    /// Decode a picture and write it out again within `max_side` pixels a
+    /// side and `max_bytes` ([`Mode::Picture`]); answered with
+    /// [`Reply::Picture`].
+    Shrink {
+        bytes: Vec<u8>,
+        max_side: u32,
+        max_bytes: u64,
+    },
 }
 
 /// A worker's replies.
@@ -184,6 +196,9 @@ pub(crate) enum Reply {
         offered: Vec<Vec<u8>>,
         wanted: Vec<String>,
     },
+    /// A picture written out again as a PNG or JPEG. Not trusted: its
+    /// header is checked before it is shown to anyone.
+    Picture(Vec<u8>),
 }
 
 /// What the confinement let a probe do; every field must come back `false`.
@@ -284,7 +299,7 @@ mod tests {
 
     #[test]
     fn modes_round_trip_by_name() {
-        for mode in [Mode::Replica, Mode::Views, Mode::Read] {
+        for mode in [Mode::Replica, Mode::Views, Mode::Read, Mode::Picture] {
             assert_eq!(Mode::parse(mode.as_str()), Some(mode));
         }
         assert_eq!(Mode::parse("other"), None);

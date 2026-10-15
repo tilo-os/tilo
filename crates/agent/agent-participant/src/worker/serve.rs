@@ -163,6 +163,17 @@ impl Worker {
             Request::Probe { path } => Reply::Probe(probe(&path)),
             Request::PutContent(bytes) => self.content.put(&bytes),
             Request::TakeContent => self.content.take(),
+            Request::Shrink {
+                bytes,
+                max_side,
+                max_bytes,
+            } => {
+                if self.mode == Mode::Picture {
+                    super::picture::shrink(&bytes, max_side, max_bytes)
+                } else {
+                    Reply::Failed("this worker shrinks no pictures".into())
+                }
+            }
             Request::Open {
                 app_id,
                 room,

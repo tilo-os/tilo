@@ -26,8 +26,9 @@ use tilo_model_gateway::openai::{self, Failure, Target as ApiTarget};
 
 use crate::planner::{
     MESSAGE_APPS, NoReads, PlanContext, Planner, Reads, Step, StepAction, Wait, message_app,
-    observation_within, readable, written_steps,
+    observation_within, readable, rendered_picture, written_steps,
 };
+use crate::vision::{Eyes, LOOK_CONTENT, Picture, Seen};
 
 /// What a model is told besides the operations list, built by
 /// [`ModelPlanner`] for each plan: what the agent's apps can do, in full,
@@ -61,6 +62,9 @@ pub struct Briefing {
     /// Whether a plan of no steps, with a reply saying so, is an answer
     /// ([`PlanContext::may_plan_nothing`]).
     pub may_plan_nothing: bool,
+    /// The pictures the first turn shows after its text: on a re-plan, the
+    /// newest the task's steps looked at ([`PlanContext::pictures`]).
+    pub pictures: Vec<Picture>,
 }
 
 impl Briefing {
@@ -91,11 +95,48 @@ impl Briefing {
     }
 }
 
-/// Runs the read an operation id names while a model plans ([`READ_VIEW`])
-/// with its arguments, answering with what it found, summarised, or why it
-/// was not run.
-pub type ReadView<'a> =
-    dyn FnMut(&str, &serde_json::Map<String, serde_json::Value>) -> Result<String, String> + 'a;
+/// What a planning conversation runs while the model plans: the reads it
+/// asks for ([`READ_VIEW`]) and the pictures it looks at
+/// ([`crate::vision::LOOK_CONTENT`]).
+pub trait PlanReads {
+    /// Run the read operation id `id` names with `arguments`, answering
+    /// with what it found, summarised, and the picture it rendered.
+    ///
+    /// # Errors
+    ///
+    /// Why it was not run.
+    fn read(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Seen, String>;
+
+    /// The picture kept as content at `address`, as the model is shown it.
+    ///
+    /// # Errors
+    ///
+    /// Why it is not shown.
+    fn look(&mut self, address: &str) -> Result<Seen, String> {
+        let _ = address;
+        Err("no picture can be shown here".into())
+    }
+}
+
+/// What runs nothing: a conversation where no document can be read.
+pub struct NoPlanReads;
+
+impl PlanReads for NoPlanReads {
+    fn read(
+        &mut self,
+        _: &str,
+        _: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Seen, String> {
+        Err("no document can be read here".into())
+    }
+}
+
+/// The reads and looks of a planning conversation ([`PlanReads`]).
+pub type ReadView<'a> = dyn PlanReads + 'a;
 
 /// The discovery tool that runs a read of an open record in the planning
 /// conversation itself.
@@ -134,6 +175,13 @@ pub trait PlanModel: Send {
     ) -> Result<Answer, String> {
         let _ = (briefing, read);
         self.choose(task, catalogue, most_steps)
+    }
+
+    /// Whether the model is shown pictures: what a read rendered, a
+    /// picture it looks at, the newest a re-plan's steps looked at. One
+    /// that is not reads that they were not shown.
+    fn sees(&self) -> bool {
+        false
     }
 }
 
@@ -639,27 +687,32 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
         }
     }
     let state = briefing_state(context, catalogue);
-    let room = if context.room.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "-{}",
-            blake3::hash(context.room.as_bytes())
-                .to_hex()
-                .get(..16)
-                .unwrap_or_default()
-        )
-    };
     Briefing {
         reference,
         state,
         shown,
         left_out: any_left_out,
         described,
-        cache_key: Some(format!("tilo-agent-plan{room}")),
+        cache_key: Some(cache_key(&context.room)),
         searchable: context.searchable.clone(),
         may_plan_nothing: context.may_plan_nothing,
+        pictures: Vec::new(),
     }
+}
+
+/// The prompt-cache routing key of every planning request in `room`: a
+/// hash of it, so the provider is not told the room.
+fn cache_key(room: &str) -> String {
+    if room.is_empty() {
+        return "tilo-agent-plan".into();
+    }
+    format!(
+        "tilo-agent-plan-{}",
+        blake3::hash(room.as_bytes())
+            .to_hex()
+            .get(..16)
+            .unwrap_or_default()
+    )
 }
 
 /// What changes from plan to plan: which apps a step opens first, and
@@ -736,51 +789,178 @@ fn open_record_descriptor(app: &str, record: &str, title: Option<&str>) -> Actio
     }
 }
 
-/// Run the read `id` names with `arguments`, for a model planning over
-/// `offered` (where each offer runs, and the context they were taken
-/// from): only on an open record, only an operation that only reads
-/// ([`readable`]), and at most `left` more. Answers with what it found,
-/// summarised, for the same conversation.
-fn read_offered(
-    id: &str,
-    arguments: &serde_json::Map<String, serde_json::Value>,
-    (targets, context): (&BTreeMap<String, Target>, &PlanContext),
-    reads: &mut dyn Reads,
-    left: &mut usize,
-) -> Result<String, String> {
-    let Some(Target::Record(route)) = targets.get(id) else {
-        return Err(format!(
-            "{id} is not an operation of a document open now; plan it as a step"
-        ));
-    };
-    let address = surface::decode_address(id).ok_or_else(|| format!("{id} is not an operation"))?;
-    let descriptor = context
-        .open
-        .iter()
-        .find(|(open, _)| open == route)
-        .and_then(|(_, descriptors)| {
-            descriptors
-                .iter()
-                .find(|descriptor| descriptor.address == address)
-        })
-        .ok_or_else(|| format!("{id} is not published now"))?;
-    if !readable(descriptor) {
-        return Err(format!(
-            "{} changes or makes something, so it is not run while planning: plan it as a step",
-            descriptor.action_label
-        ));
-    }
-    if *left == 0 {
-        return Err(format!(
-            "this plan has had its {MOST_READS} reads: plan with what they found"
-        ));
-    }
-    *left = left.saturating_sub(1);
-    let output = reads.read(route, &address, arguments)?;
-    Ok(
-        observation_within(&route.app_id, &address, &output, MOST_READ_CHARS)
-            .unwrap_or_else(|| format!("{id} answered nothing")),
+/// The reads and looks of one plan ([`PlanReads`]) over `targets`, the
+/// offers' places, and `context`, what they were taken from.
+struct PlanningReads<'a> {
+    targets: &'a BTreeMap<String, Target>,
+    context: &'a PlanContext,
+    reads: &'a mut dyn Reads,
+    /// How many more reads the plan may run ([`MOST_READS`]).
+    left: usize,
+    /// Whether the model is shown pictures.
+    sees: bool,
+    /// The content hashes of the pictures apps rendered for this task (its
+    /// steps' looks and exports, its plans' reads): shown whatever the
+    /// agent may do with the room's own pictures.
+    rendered: std::collections::BTreeSet<String>,
+}
+
+/// Why a PDF kept as content is not looked at as a picture.
+fn pdf_hint(address: &str) -> String {
+    format!(
+        "{address} is a PDF, not a picture: open it in pdf-viewer (import-pdf-content), then \
+         look at a page with its look-page view"
     )
+}
+
+impl<'a> PlanningReads<'a> {
+    /// The reads of a plan over `targets` and `context` through `reads`,
+    /// for a model that `sees` pictures or not.
+    fn new(
+        targets: &'a BTreeMap<String, Target>,
+        context: &'a PlanContext,
+        reads: &'a mut dyn Reads,
+        sees: bool,
+    ) -> Self {
+        Self {
+            targets,
+            context,
+            reads,
+            left: MOST_READS,
+            sees,
+            rendered: context
+                .rendered
+                .iter()
+                .chain(&context.pictures)
+                .filter_map(|address| crate::vision::content_hash(address))
+                .collect(),
+        }
+    }
+
+    /// What a re-plan's first turn shows: the newest picture the task's
+    /// steps looked at, to a model that sees.
+    fn newest_look(&mut self) -> Vec<Picture> {
+        let context = self.context;
+        let Some(newest) = context.pictures.last().filter(|_| self.sees) else {
+            return Vec::new();
+        };
+        match self.picture(newest, true) {
+            Ok(picture) => vec![picture],
+            Err(why) => {
+                tracing::debug!(%why, "agent: a looked-at picture is not shown");
+                Vec::new()
+            }
+        }
+    }
+
+    /// The picture at `address` as the model is shown it; `rendered` when
+    /// an app rendered it.
+    fn picture(&mut self, address: &str, rendered: bool) -> Result<Picture, String> {
+        let hash = crate::vision::content_hash(address)
+            .ok_or_else(|| format!("`{address}` is not a content address"))?;
+        let bytes = self.reads.look(&hash)?;
+        if crate::vision::is_pdf(&bytes) {
+            return Err(pdf_hint(address));
+        }
+        crate::vision::prepare(address, &bytes, rendered)
+    }
+}
+
+impl PlanReads for PlanningReads<'_> {
+    /// Run the read `id` names with `arguments`: only on an open record,
+    /// only an operation that only reads ([`readable`]), and at most
+    /// [`MOST_READS`] a plan. Answers with what it found, summarised, and
+    /// the picture it rendered (a canvas look) when the model sees.
+    fn read(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Seen, String> {
+        let Some(Target::Record(route)) = self.targets.get(id) else {
+            return Err(format!(
+                "{id} is not an operation of a document open now; plan it as a step"
+            ));
+        };
+        let address =
+            surface::decode_address(id).ok_or_else(|| format!("{id} is not an operation"))?;
+        let descriptor = self
+            .context
+            .open
+            .iter()
+            .find(|(open, _)| open == route)
+            .and_then(|(_, descriptors)| {
+                descriptors
+                    .iter()
+                    .find(|descriptor| descriptor.address == address)
+            })
+            .ok_or_else(|| format!("{id} is not published now"))?;
+        if !readable(descriptor) {
+            return Err(format!(
+                "{} changes or makes something, so it is not run while planning: plan it as a step",
+                descriptor.action_label
+            ));
+        }
+        if self.left == 0 {
+            return Err(format!(
+                "this plan has had its {MOST_READS} reads: plan with what they found"
+            ));
+        }
+        self.left = self.left.saturating_sub(1);
+        let output = self.reads.read(route, &address, arguments)?;
+        let mut text = observation_within(&route.app_id, &address, &output, MOST_READ_CHARS)
+            .unwrap_or_else(|| format!("{id} answered nothing"));
+        let mut pictures = Vec::new();
+        if let Some(rendered) = rendered_picture(&output) {
+            if let Some(hash) = crate::vision::content_hash(&rendered) {
+                self.rendered.insert(hash);
+            }
+            let withheld = if self.sees {
+                match self.picture(&rendered, true) {
+                    Ok(picture) => {
+                        pictures.push(picture);
+                        None
+                    }
+                    Err(why) => Some(why),
+                }
+            } else {
+                Some("this model is not shown pictures".to_owned())
+            };
+            if let Some(why) = withheld {
+                let _ = write!(text, "\n({rendered} picture not shown: {why})");
+            }
+        }
+        Ok(Seen { text, pictures })
+    }
+
+    /// The picture at `address`: one an app rendered for this task, or —
+    /// only where the agent may show them ([`PlanContext::room_pictures`])
+    /// — one of the room's own. A PDF is looked at page by page in
+    /// pdf-viewer.
+    fn look(&mut self, address: &str) -> Result<Seen, String> {
+        let hash = crate::vision::content_hash(address).ok_or_else(|| {
+            format!("`{address}` is not a content address: give tilo.content:<hash>")
+        })?;
+        let address = crate::vision::content_address(&hash);
+        let bytes = self.reads.look(&hash)?;
+        if crate::vision::is_pdf(&bytes) {
+            return Err(pdf_hint(&address));
+        }
+        if let crate::vision::Admission::Refuse(why) = crate::vision::admit(&bytes) {
+            return Err(format!("{address}: {why}"));
+        }
+        let rendered = self.rendered.contains(&hash);
+        if !rendered && !self.context.room_pictures {
+            return Err(format!(
+                "{address} is a picture from the room, and this agent may not show the room's \
+                 pictures to its model; plan with what the request and the reads say of it"
+            ));
+        }
+        let picture = crate::vision::prepare(&address, &bytes, rendered)?;
+        Ok(Seen {
+            text: format!("{address} is a {} picture.", picture.size_note()),
+            pictures: vec![picture],
+        })
+    }
 }
 
 impl Planner for ModelPlanner {
@@ -812,11 +992,9 @@ impl Planner for ModelPlanner {
             return steps;
         }
         let (catalogue, targets) = catalogue(context);
-        let briefing = briefing(context, &catalogue);
-        let mut left = MOST_READS;
-        let mut read = |id: &str, arguments: &serde_json::Map<String, serde_json::Value>| {
-            read_offered(id, arguments, (&targets, context), reads, &mut left)
-        };
+        let mut briefing = briefing(context, &catalogue);
+        let mut read = PlanningReads::new(&targets, context, reads, self.model.sees());
+        briefing.pictures = read.newest_look();
         // A request that names exactly one operation of an open record, all
         // of whose arguments it states, is that operation: the model would
         // only repeat it.
@@ -1403,6 +1581,9 @@ pub struct OpenAiModel {
     /// After how long a model call is sent again, the first answer of the
     /// two taken ([`HEDGE_ENV`]); `None` never.
     hedge_after: Option<std::time::Duration>,
+    /// Whether it is shown pictures, set outright
+    /// ([`crate::vision::VISION_ENV`]); `None` leaves its default.
+    vision: Option<bool>,
 }
 
 /// What `slot` holds, built by `build` the first time. `T` is inferred from
@@ -1737,13 +1918,38 @@ fn read_view_definition() -> serde_json::Value {
     })
 }
 
-/// The tools a planning model is given: discovery, [`READ_VIEW`] and
-/// `plan`. A function of `most_steps` alone, so every turn and task sends
-/// the same bytes and the provider's prompt cache keeps them.
+/// The [`LOOK_CONTENT`] tool definition.
+fn look_content_definition() -> serde_json::Value {
+    serde_json::json!({
+        "name": LOOK_CONTENT,
+        "description":
+            "See a picture kept as content (tilo.content:<hash>) that this conversation named: \
+             in the request, what was produced, a read's answer or a search result. Use it when \
+             the plan depends on what the picture shows. A read that renders a picture (look) \
+             already shows it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The picture's address, tilo.content:<hash>, exactly as shown."
+                }
+            },
+            "required": ["content"],
+            "additionalProperties": false
+        }
+    })
+}
+
+/// The tools a planning model is given: discovery, [`READ_VIEW`],
+/// [`LOOK_CONTENT`] for a model that sees, and `plan`. A function of its
+/// arguments alone, which stay the same for a model, so every turn and task
+/// sends the same bytes and the provider's prompt cache keeps them.
 pub(crate) fn planning_tools(
     most_steps: Option<usize>,
     describe: bool,
     search: bool,
+    look: bool,
 ) -> serde_json::Value {
     let mut tools = tilo_agent::tools::definitions(most_steps);
     if let Some(tools) = tools.as_array_mut() {
@@ -1791,6 +1997,9 @@ pub(crate) fn planning_tools(
             }
         }
         let at = tools.len().saturating_sub(1);
+        if look {
+            tools.insert(at, look_content_definition());
+        }
         tools.insert(at, read_view_definition());
         if search {
             tools.insert(at, crate::search::definition());
@@ -1805,23 +2014,93 @@ pub(crate) fn read_view_answer(
     input: &serde_json::Value,
     revealed: &tilo_agent::tools::Revealed,
     read: &mut ReadView<'_>,
-) -> String {
+) -> Seen {
     let Some(given) = input.get("operation").and_then(serde_json::Value::as_str) else {
-        return format!("{READ_VIEW} needs an `operation`.");
+        return format!("{READ_VIEW} needs an `operation`.").into();
     };
     let id = match revealed.resolve(given.trim()) {
         Ok(id) => id,
-        Err(error) => return format!("Not read: {error}"),
+        Err(error) => return format!("Not read: {error}").into(),
     };
     let arguments = match input.get("arguments") {
         None | Some(serde_json::Value::Null) => serde_json::Map::new(),
         Some(serde_json::Value::Object(arguments)) => arguments.clone(),
-        Some(_) => return "Not read: `arguments` is an object.".into(),
+        Some(_) => return Seen::from("Not read: `arguments` is an object.".to_owned()),
     };
-    match read(&id, &arguments) {
+    match read.read(&id, &arguments) {
         Ok(found) => found,
-        Err(why) => format!("Not read: {why}"),
+        Err(why) => format!("Not read: {why}").into(),
     }
+}
+
+/// The answer to one [`LOOK_CONTENT`] call: the picture, or why it is not
+/// shown. Only an address this conversation named (`eyes`) is looked at,
+/// so a model cannot fish for content by guessing hashes.
+pub(crate) fn look_content_answer(
+    input: &serde_json::Value,
+    eyes: &Eyes,
+    read: &mut ReadView<'_>,
+) -> Seen {
+    let Some(given) = input.get("content").and_then(serde_json::Value::as_str) else {
+        return format!("{LOOK_CONTENT} needs a `content` address.").into();
+    };
+    let given = given.trim();
+    if !eyes.sees() {
+        return Seen::from("Not shown: this model is not shown pictures.".to_owned());
+    }
+    if !eyes.was_shown(given) {
+        return format!(
+            "Not shown: {given} was not named in this conversation; look only at a content \
+             address the request, a read or a search named."
+        )
+        .into();
+    }
+    match read.look(given) {
+        Ok(seen) => seen,
+        Err(why) => format!("Not shown: {why}").into(),
+    }
+}
+
+/// One discovery call `(name, input)` answered over `catalogue` and
+/// `briefing`: `Break` with the plan that ends the conversation, else
+/// `Continue` with what the model is told (a refused plan, a read's or a
+/// look's answer, a search's, a description). A chat-completions plan
+/// (`chat`) may spell `then` in pieces.
+pub(crate) fn answer_call(
+    (name, input): (&str, &serde_json::Value),
+    (catalogue, briefing, most_steps): (&Catalogue, &Briefing, Option<usize>),
+    revealed: &mut tilo_agent::tools::Revealed,
+    (eyes, read): (&Eyes, &mut ReadView<'_>),
+    chat: bool,
+) -> std::ops::ControlFlow<Answer, Seen> {
+    use std::ops::ControlFlow;
+    if name == tilo_agent::tools::PLAN {
+        // A refused plan goes back to the model with the reason (and the
+        // shown ids it may have meant) for another try.
+        let planned = if chat {
+            read_chat_plan(input.clone(), revealed, most_steps, (catalogue, briefing))
+        } else {
+            read_planned(input, revealed, most_steps, briefing)
+                .map_err(|error| tilo_agent::tools::plan_refused(&error))
+                .and_then(|answer| match carried_gap(&answer, catalogue) {
+                    None => Ok(answer),
+                    Some(gap) => Err(tilo_agent::tools::plan_refused(&gap)),
+                })
+        };
+        return match planned {
+            Ok(answer) => ControlFlow::Break(answer),
+            Err(refused) => ControlFlow::Continue(refused.into()),
+        };
+    }
+    ControlFlow::Continue(if name == READ_VIEW {
+        read_view_answer(input, revealed, read)
+    } else if name == LOOK_CONTENT {
+        look_content_answer(input, eyes, read)
+    } else if name == crate::search::SEARCH_ROOM {
+        crate::search::answer(input, &briefing.searchable, revealed).into()
+    } else {
+        tilo_agent::tools::answer(name, input, catalogue, revealed).into()
+    })
 }
 
 /// The first turn's text: the briefing's reference, the operations
@@ -1883,11 +2162,11 @@ pub(crate) fn first_turn_parts(
 }
 
 /// A Responses first turn: the stable reference, ending at a cache
-/// breakpoint, then the rest. The provider writes its cache only at
-/// breakpoints, so the reference is what another agent's or task's
-/// request, sharing that prefix, reads back; the rest changes with every
-/// plan, and a write of it would cost more than reading it plainly.
-fn first_input((stable, rest): (&str, &str)) -> serde_json::Value {
+/// breakpoint, then the rest, then `pictures`. The provider writes its
+/// cache only at breakpoints, so the reference is what another agent's or
+/// task's request, sharing that prefix, reads back; the rest changes with
+/// every plan, and a write of it would cost more than reading it plainly.
+fn first_input((stable, rest): (&str, &str), pictures: &[Picture]) -> serde_json::Value {
     let mut content = Vec::new();
     if !stable.is_empty() {
         content.push(serde_json::json!({
@@ -1897,7 +2176,101 @@ fn first_input((stable, rest): (&str, &str)) -> serde_json::Value {
         }));
     }
     content.push(serde_json::json!({ "type": "input_text", "text": rest }));
+    content.extend(pictures.iter().map(Picture::responses_part));
     serde_json::json!([{ "role": "user", "content": content }])
+}
+
+/// A chat-completions message's content: `text` alone, or the text then
+/// `pictures`.
+fn chat_content(text: String, pictures: &[Picture]) -> serde_json::Value {
+    if pictures.is_empty() {
+        return serde_json::Value::String(text);
+    }
+    let mut parts = vec![serde_json::json!({ "type": "text", "text": text })];
+    parts.extend(pictures.iter().map(Picture::chat_part));
+    serde_json::Value::Array(parts)
+}
+
+/// The user message carrying a turn's `pictures` after its tool messages,
+/// which take text only; none for no pictures.
+fn chat_pictures(pictures: &[Picture]) -> Option<serde_json::Value> {
+    (!pictures.is_empty()).then(|| {
+        serde_json::json!({
+            "role": "user",
+            "content": chat_content(
+                "The pictures the calls above showed, in order:".into(),
+                pictures,
+            ),
+        })
+    })
+}
+
+/// The models this process has seen refuse a picture in a function call's
+/// output, which are sent pictures after the outputs instead.
+static REFUSED_OUTPUT_PICTURES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether `model` takes pictures in a function call's output.
+fn outputs_carry_pictures(model: &str) -> bool {
+    !REFUSED_OUTPUT_PICTURES
+        .lock()
+        .is_ok_and(|refused| refused.iter().any(|seen| seen == model))
+}
+
+/// Remember that `model` refused a picture in a function call's output.
+fn refused_output_pictures(model: &str) {
+    if let Ok(mut refused) = REFUSED_OUTPUT_PICTURES.lock()
+        && !refused.iter().any(|seen| seen == model)
+    {
+        refused.push(model.to_owned());
+    }
+}
+
+/// A turn's function call outputs as the next Responses input: each its
+/// text, with its pictures in it (`inline`) or, for a model that takes
+/// none there, in one user message after them all.
+fn responses_outputs(
+    outputs: &[(String, String, Vec<Picture>)],
+    inline: bool,
+) -> serde_json::Value {
+    let mut input = Vec::with_capacity(outputs.len().saturating_add(1));
+    let mut after = Vec::new();
+    for (call_id, text, pictures) in outputs {
+        let output = if pictures.is_empty() {
+            serde_json::Value::String(text.clone())
+        } else if inline {
+            let mut parts = vec![serde_json::json!({ "type": "input_text", "text": text })];
+            parts.extend(pictures.iter().map(Picture::responses_part));
+            serde_json::Value::Array(parts)
+        } else {
+            after.extend(pictures.iter().map(Picture::responses_part));
+            serde_json::Value::String(text.clone())
+        };
+        input.push(serde_json::json!({
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": output,
+        }));
+    }
+    if !after.is_empty() {
+        after.insert(
+            0,
+            serde_json::json!({
+                "type": "input_text",
+                "text": "The pictures the calls above showed, in order:",
+            }),
+        );
+        input.push(serde_json::json!({ "role": "user", "content": after }));
+    }
+    serde_json::Value::Array(input)
+}
+
+/// `body` with its input replaced by `input`.
+fn body_with_input(body: &serde_json::Value, input: &serde_json::Value) -> serde_json::Value {
+    let mut body = body.clone();
+    if let Some(object) = body.as_object_mut() {
+        object.insert("input".into(), input.clone());
+    }
+    body
 }
 
 /// Why `answer` cannot run: a step that takes what the step before it
@@ -2030,6 +2403,45 @@ fn read_response_turn(
 }
 
 impl OpenAiModel {
+    /// One Responses turn's request: `input` after the instructions and
+    /// `tools`, continuing `previous`. Instructions and tools are the same
+    /// bytes for every agent and task, and the first input starts with the
+    /// apps' reference, so the prefix the provider caches is shared;
+    /// `cache_key` routes every planning request of the room to the cache
+    /// that holds it.
+    fn responses_body(
+        &self,
+        tools: &serde_json::Value,
+        input: &serde_json::Value,
+        previous: Option<&str>,
+        cache_key: Option<&str>,
+    ) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "instructions": PLANNER_INSTRUCTIONS,
+            "tools": tools,
+            "tool_choice": "required",
+            "parallel_tool_calls": true,
+            "prompt_cache_options": { "mode": "explicit", "ttl": "30m" },
+            "input": input,
+        });
+        if let Some(object) = body.as_object_mut() {
+            if let Some(id) = previous {
+                object.insert("previous_response_id".into(), id.into());
+            }
+            if let Some(key) = cache_key {
+                object.insert("prompt_cache_key".into(), key.into());
+            }
+            if let Some(tier) = &self.service_tier {
+                object.insert("service_tier".into(), tier.clone().into());
+            }
+            if let Some(effort) = &self.reasoning_effort {
+                object.insert("reasoning".into(), serde_json::json!({ "effort": effort }));
+            }
+        }
+        body
+    }
+
     /// [`PlanModel::choose`] over the Responses API: each turn continues the
     /// previous response by id, so the model's reasoning carries across
     /// discovery turns without being replayed.
@@ -2042,45 +2454,40 @@ impl OpenAiModel {
         read: &mut ReadView<'_>,
         (run, deadline, briefing): (&[u8; 16], std::time::Instant, &Briefing),
     ) -> Result<Answer, String> {
+        let mut eyes = Eyes::new(self.sees());
+        eyes.show(task.0);
+        eyes.show(task.1);
+        let (note, first_pictures) = eyes.attach_first(&briefing.pictures);
+        let rest = format!("{}{note}", task.1);
         let tools = response_functions(&planning_tools(
             most_steps,
             briefing.describes(),
             briefing.searches(),
+            eyes.sees(),
         ));
         let cache_key = briefing.cache_key.as_deref();
-        let mut input = first_input(task);
+        let mut input = first_input((task.0, &rest), &first_pictures);
+        // The pictures the input's outputs carry, to send after them should
+        // the model take none in an output.
+        let mut carried = false;
+        let mut outputs: Vec<(String, String, Vec<Picture>)> = Vec::new();
         let mut previous: Option<String> = None;
         let mut repeats = Repeats::default();
         for turn in 0..MOST_DISCOVERY_TURNS {
-            // Instructions and tools are the same bytes for every agent and
-            // task, and the first input starts with the apps' reference, so
-            // the prefix the provider caches is shared; the key routes every
-            // planning request of the room to the cache that holds it.
-            let mut body = serde_json::json!({
-                "model": self.model,
-                "instructions": PLANNER_INSTRUCTIONS,
-                "tools": tools,
-                "tool_choice": "required",
-                "parallel_tool_calls": true,
-                "prompt_cache_options": { "mode": "explicit", "ttl": "30m" },
-                "input": input,
-            });
-            if let Some(object) = body.as_object_mut() {
-                if let Some(id) = &previous {
-                    object.insert("previous_response_id".into(), id.clone().into());
-                }
-                if let Some(key) = cache_key {
-                    object.insert("prompt_cache_key".into(), key.into());
-                }
-                if let Some(tier) = &self.service_tier {
-                    object.insert("service_tier".into(), tier.clone().into());
-                }
-                if let Some(effort) = &self.reasoning_effort {
-                    object.insert("reasoning".into(), serde_json::json!({ "effort": effort }));
-                }
-            }
+            eyes.next_turn();
+            let mut body = self.responses_body(&tools, &input, previous.as_deref(), cache_key);
             let key = openai::turn_key(run, turn, &body);
-            let answer = self.post(&body, &key, deadline)?;
+            let answer = match self.post(&body, &key, deadline) {
+                // A model that takes no picture in a call's output is sent
+                // them after the outputs instead, from now on.
+                Err(error) if carried && error.contains("HTTP 400") => {
+                    refused_output_pictures(&self.model);
+                    input = responses_outputs(&outputs, false);
+                    body = body_with_input(&body, &input);
+                    self.post(&body, &format!("{key}-pictures"), deadline)?
+                }
+                answer => answer?,
+            };
             // A turn the provider cut short while it reasoned is asked once
             // more: it is the length of that one answer, not the plan.
             let (id, calls, text) = match read_response_turn(&answer) {
@@ -2106,34 +2513,28 @@ impl OpenAiModel {
                 ));
             }
             previous = Some(id);
-            let mut outputs = Vec::with_capacity(calls.len());
+            outputs.clear();
             let (mut seen, mut answered) = (String::new(), String::new());
             for call in &calls {
-                let result = if call.name == tilo_agent::tools::PLAN {
-                    match read_planned(&call.input, revealed, most_steps, briefing) {
-                        Ok(answer) => match carried_gap(&answer, catalogue) {
-                            None => return Ok(answer),
-                            Some(gap) => tilo_agent::tools::plan_refused(&gap),
-                        },
-                        Err(error) => tilo_agent::tools::plan_refused(&error),
-                    }
-                } else if call.name == READ_VIEW {
-                    read_view_answer(&call.input, revealed, read)
-                } else if call.name == crate::search::SEARCH_ROOM {
-                    crate::search::answer(&call.input, &briefing.searchable, revealed)
-                } else {
-                    tilo_agent::tools::answer(&call.name, &call.input, catalogue, revealed)
+                let result = match answer_call(
+                    (&call.name, &call.input),
+                    (catalogue, briefing, most_steps),
+                    revealed,
+                    (&eyes, read),
+                    false,
+                ) {
+                    std::ops::ControlFlow::Break(answer) => return Ok(answer),
+                    std::ops::ControlFlow::Continue(seen) => seen,
                 };
+                let (result, pictures) = eyes.attach(result);
                 Repeats::call(&mut seen, &call.name, &call.input, &result);
                 answered.clone_from(&result);
-                outputs.push(serde_json::json!({
-                    "type": "function_call_output",
-                    "call_id": call.id,
-                    "output": result,
-                }));
+                outputs.push((call.id.clone(), result, pictures));
             }
             repeats.note(seen, &answered)?;
-            input = serde_json::Value::Array(outputs);
+            carried = outputs_carry_pictures(&self.model)
+                && outputs.iter().any(|(_, _, pictures)| !pictures.is_empty());
+            input = responses_outputs(&outputs, outputs_carry_pictures(&self.model));
         }
         Err("the model exhausted its discovery turns".into())
     }
@@ -2165,7 +2566,16 @@ impl OpenAiModel {
             service_tier: None,
             client: std::sync::Arc::new(std::sync::OnceLock::new()),
             hedge_after: None,
+            vision: None,
         }
+    }
+
+    /// Show it pictures (`Some(true)`) or not (`Some(false)`), whatever its
+    /// default; `None` leaves the default.
+    #[must_use]
+    pub fn with_vision(mut self, vision: Option<bool>) -> Self {
+        self.vision = vision;
+        self
     }
 
     /// Ask the Responses API for `effort` of reasoning (`none`, `minimal`,
@@ -2224,6 +2634,7 @@ impl OpenAiModel {
             idempotency: self.target.needs_idempotency_key(),
             headers,
             body: std::sync::Arc::new(body.to_string()),
+            pictures: crate::vision::pictures_in(body),
         };
         match post_hedged(&request, &self.model, key, deadline, self.hedge_after) {
             // Flex and the fast tier are served when there is capacity: a
@@ -2276,7 +2687,13 @@ pub(crate) fn post_hedged(
         std::thread::spawn(move || {
             let started = std::time::Instant::now();
             let answer = request.send(&key, deadline);
-            record_usage(&model, agent.as_deref(), started.elapsed(), &answer, hedge);
+            record_usage(
+                &model,
+                agent.as_deref(),
+                (started.elapsed(), request.pictures),
+                &answer,
+                hedge,
+            );
             let _ = sent.send(answer);
         });
     };
@@ -2309,6 +2726,9 @@ pub(crate) struct ModelRequest {
     /// The provider's own headers: its credentials and version.
     pub(crate) headers: Vec<(String, String)>,
     pub(crate) body: std::sync::Arc<String>,
+    /// How many pictures the body carries and their encoded bytes, for the
+    /// usage log ([`crate::vision::pictures_in`]).
+    pub(crate) pictures: (usize, usize),
 }
 
 impl ModelRequest {
@@ -2407,12 +2827,13 @@ impl ModelRequest {
 
 /// Appends one JSON line per model call to `TILO_AGENT_USAGE_LOG`, when
 /// set: which agent asked, how long it took, the provider's reported token
-/// usage, and whether it was a hedge. Benchmarks price runs from these
+/// usage, how many pictures it carried and their encoded bytes (never the
+/// pictures), and whether it was a hedge. Benchmarks price runs from these
 /// lines.
 fn record_usage(
     model: &str,
     agent: Option<&str>,
-    elapsed: std::time::Duration,
+    (elapsed, (pictures, picture_bytes)): (std::time::Duration, (usize, usize)),
     answer: &Result<serde_json::Value, String>,
     hedge: bool,
 ) {
@@ -2432,6 +2853,8 @@ fn record_usage(
         "usage": answer.as_ref().ok().and_then(|answer| answer.get("usage")),
         // The tier the call was served and billed at.
         "service_tier": answer.as_ref().ok().and_then(|answer| answer.get("service_tier")),
+        "pictures": pictures,
+        "picture_bytes": picture_bytes,
         "hedge": hedge,
     });
     // One write per line: `writeln!` writes in pieces, and agents in other
@@ -2447,6 +2870,17 @@ fn record_usage(
 }
 
 impl PlanModel for OpenAiModel {
+    /// The Responses API, `OpenAI`'s own endpoint and Tilo Cloud take
+    /// pictures; another chat-completions server (a local model) is assumed
+    /// not to unless it is said to ([`crate::vision::VISION_ENV`]).
+    fn sees(&self) -> bool {
+        self.vision.unwrap_or_else(|| {
+            self.responses
+                || self.target == ApiTarget::CloudMetered
+                || self.endpoint.starts_with("https://api.openai.com/")
+        })
+    }
+
     fn choose(
         &mut self,
         task: &str,
@@ -2458,7 +2892,7 @@ impl PlanModel for OpenAiModel {
             &Briefing::default(),
             catalogue,
             most_steps,
-            &mut |_, _| Err("no document can be read here".into()),
+            &mut NoPlanReads,
         )
     }
 
@@ -2492,13 +2926,22 @@ impl PlanModel for OpenAiModel {
                 (&run, deadline, briefing),
             );
         }
+        let mut eyes = Eyes::new(self.sees());
+        eyes.show(&stable);
+        eyes.show(&rest);
+        let (note, first_pictures) = eyes.attach_first(&briefing.pictures);
+        // Pictures follow the text, so the prefix a provider caches holds.
         let mut messages = vec![
             serde_json::json!({ "role": "system", "content": PLANNER_INSTRUCTIONS }),
-            serde_json::json!({ "role": "user", "content": stable + &rest }),
+            serde_json::json!({
+                "role": "user",
+                "content": chat_content(stable + &rest + &note, &first_pictures),
+            }),
         ];
         let mut no_call = NoCall::default();
         let mut repeats = Repeats::default();
         for turn in 0..MOST_DISCOVERY_TURNS {
+            eyes.next_turn();
             // Asked for text, the model is offered no tools: a local server
             // may ignore `tool_choice: "none"` and the model call again.
             let body = self.target.shape(if no_call.in_text {
@@ -2507,7 +2950,12 @@ impl PlanModel for OpenAiModel {
                 serde_json::json!({
                     "model": self.model,
                     "messages": messages,
-                    "tools": openai::functions(&planning_tools(most_steps, briefing.describes(), briefing.searches())),
+                    "tools": openai::functions(&planning_tools(
+                        most_steps,
+                        briefing.describes(),
+                        briefing.searches(),
+                        eyes.sees(),
+                    )),
                     "tool_choice": "required",
                 })
             });
@@ -2542,30 +2990,26 @@ impl PlanModel for OpenAiModel {
             }
             messages.push(reply.message);
             let (mut seen, mut answered) = (String::new(), String::new());
+            let mut shown = Vec::new();
             for call in &reply.calls {
-                let result = if call.name == tilo_agent::tools::PLAN {
-                    // A refused plan goes back to the model with the reason
-                    // (and the shown ids it may have meant) for another try.
-                    match read_chat_plan(
-                        call.input.clone(),
-                        &revealed,
-                        most_steps,
-                        (catalogue, briefing),
-                    ) {
-                        Ok(answer) => return Ok(answer),
-                        Err(refused) => refused,
-                    }
-                } else if call.name == READ_VIEW {
-                    read_view_answer(&call.input, &revealed, read)
-                } else if call.name == crate::search::SEARCH_ROOM {
-                    crate::search::answer(&call.input, &briefing.searchable, &mut revealed)
-                } else {
-                    tilo_agent::tools::answer(&call.name, &call.input, catalogue, &mut revealed)
+                let result = match answer_call(
+                    (&call.name, &call.input),
+                    (catalogue, briefing, most_steps),
+                    &mut revealed,
+                    (&eyes, read),
+                    true,
+                ) {
+                    std::ops::ControlFlow::Break(answer) => return Ok(answer),
+                    std::ops::ControlFlow::Continue(seen) => seen,
                 };
+                let (result, pictures) = eyes.attach(result);
                 Repeats::call(&mut seen, &call.name, &call.input, &result);
                 answered.clone_from(&result);
                 messages.push(openai::tool_result(call, &result));
+                shown.extend(pictures);
             }
+            // A tool message takes text only: the pictures follow them all.
+            messages.extend(chat_pictures(&shown));
             repeats.note(seen, &answered)?;
         }
         Err("the model exhausted its discovery turns".into())
@@ -2693,6 +3137,8 @@ impl ModelChoice {
             }
             _ => false,
         };
+        let vision =
+            crate::vision::vision_setting(std::env::var(crate::vision::VISION_ENV).ok().as_deref());
         let planner = ModelPlanner::new(match self {
             Self::Scripted => Box::new(ScriptedModel),
             Self::OpenAi {
@@ -2716,7 +3162,8 @@ impl ModelChoice {
                 let model = OpenAiModel::new(base_url, model, api_key.clone(), timeout, *target)
                     .with_reasoning_effort(profile.reasoning_effort.as_deref())
                     .with_service_tier(profile.service_tier.as_deref())
-                    .with_hedge(profile.hedge_after);
+                    .with_hedge(profile.hedge_after)
+                    .with_vision(vision);
                 Box::new(if *responses {
                     model.with_responses(base_url)
                 } else {
@@ -2746,7 +3193,8 @@ impl ModelChoice {
                     )
                     .with_effort(profile.reasoning_effort.as_deref())
                     .with_service_tier(profile.service_tier.as_deref())
-                    .with_hedge(profile.hedge_after),
+                    .with_hedge(profile.hedge_after)
+                    .with_vision(vision),
                 )
             }
             Self::Settings => match tilo_agent::providers::default_selection() {
@@ -2793,7 +3241,7 @@ impl PlanModel for Unconfigured {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #[test]
     fn a_task_names_an_app_by_the_word_for_its_records() {
         assert!(task_names_app(
@@ -2915,7 +3363,9 @@ mod tests {
 
     /// An endpoint answering `answers` in order, one connection each, and
     /// reporting every request's head and body.
-    fn endpoint(answers: Vec<String>) -> (String, std::sync::mpsc::Receiver<(String, String)>) {
+    pub(crate) fn endpoint(
+        answers: Vec<String>,
+    ) -> (String, std::sync::mpsc::Receiver<(String, String)>) {
         use std::io::{BufRead as _, BufReader, Read as _, Write as _};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -2945,7 +3395,7 @@ mod tests {
         (url, received)
     }
 
-    fn http(status: &str, body: &str) -> String {
+    pub(crate) fn http(status: &str, body: &str) -> String {
         format!(
             "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -3328,7 +3778,7 @@ mod tests {
         })))
     }
 
-    fn route(app: &str, record: &str) -> DocumentRoute {
+    pub(crate) fn route(app: &str, record: &str) -> DocumentRoute {
         DocumentRoute {
             app_id: app.into(),
             cluster_id: "room".into(),
@@ -3454,7 +3904,7 @@ mod tests {
         assert!(error.contains("mail, chat, messages"), "{error}");
         let untimed = serde_json::json!({"steps": [], "then": null, "wait_for": {}});
         assert!(read_planned(&untimed, &revealed, None, &Briefing::default()).is_err());
-        let tools = planning_tools(None, false, false);
+        let tools = planning_tools(None, false, false, false);
         let plan = tools
             .as_array()
             .unwrap()
@@ -3747,7 +4197,7 @@ mod tests {
     }
 
     /// An operation of `resource` with `params`, as a record publishes it.
-    fn operation(
+    pub(crate) fn operation(
         resource: &str,
         action: &str,
         kind: tilo_actions::OperationKind,
@@ -3860,7 +4310,7 @@ mod tests {
     }
 
     /// A view answering with what it finds, as Canvas `inspect` is.
-    fn inspect_view(resource: &str) -> ActionDescriptor {
+    pub(crate) fn inspect_view(resource: &str) -> ActionDescriptor {
         let mut inspect = operation(
             resource,
             "inspect",
@@ -3882,7 +4332,7 @@ mod tests {
 
     /// A canvas open on `c1` publishing `draw` (a large, typed parameter),
     /// `inspect` and a huge generic `apply`.
-    fn canvas_context() -> PlanContext {
+    pub(crate) fn canvas_context() -> PlanContext {
         use tilo_actions::{ActionParam, OperationKind, ParamType};
         let draw = operation(
             "canvas.artwork",
@@ -4554,5 +5004,332 @@ mod tests {
         let again = first_turn("Draw a teal band", &briefed, &offered, &mut revealed);
         assert!(again.starts_with(&briefed.reference));
         assert!(after.starts_with(&briefed.reference));
+    }
+
+    /// A canvas open on `c1` publishing `look` beside `draw` and `inspect`.
+    pub(crate) fn look_context() -> PlanContext {
+        let mut context = canvas_context();
+        let mut look = inspect_view("canvas.artwork");
+        look.address.action = "look".into();
+        look.action_label = "look".into();
+        context.open[0].1.push(look.clone());
+        context.reference[0].1.push(look);
+        context
+    }
+
+    /// Reads whose every read renders the picture at `rendered`, with the
+    /// room's content in `content`; it keeps what it was asked to look at.
+    pub(crate) struct Looks {
+        pub(crate) rendered: String,
+        pub(crate) content: BTreeMap<String, Vec<u8>>,
+        pub(crate) looked: Vec<String>,
+    }
+
+    impl Looks {
+        pub(crate) fn new(rendered: char) -> Self {
+            let rendered = crate::vision::tests::address(rendered);
+            let mut content = BTreeMap::new();
+            content.insert(
+                crate::vision::content_hash(&rendered).unwrap(),
+                crate::vision::tests::png(8, 6),
+            );
+            Self {
+                rendered,
+                content,
+                looked: Vec::new(),
+            }
+        }
+
+        /// Keep `bytes` as the room's content at the address of `fill`.
+        pub(crate) fn keep(&mut self, fill: char, bytes: Vec<u8>) -> String {
+            let address = crate::vision::tests::address(fill);
+            self.content
+                .insert(crate::vision::content_hash(&address).unwrap(), bytes);
+            address
+        }
+    }
+
+    impl Reads for Looks {
+        fn read(
+            &mut self,
+            _: &DocumentRoute,
+            _: &ActionAddress,
+            _: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<tilo_actions::ActionOutput, String> {
+            Ok(tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({"width": 8, "height": 6,
+                    "content": self.rendered, "revision": "r1"})),
+                resources: vec![self.rendered.clone()],
+            })
+        }
+
+        fn look(&mut self, hash: &str) -> Result<Vec<u8>, String> {
+            self.looked.push(hash.to_owned());
+            self.content
+                .get(hash)
+                .cloned()
+                .ok_or_else(|| "the room keeps no such content".into())
+        }
+    }
+
+    /// A Responses answer calling `name` with `input`.
+    fn responses_call(id: &str, name: &str, input: &serde_json::Value) -> String {
+        let answer = serde_json::json!({"id": format!("resp_{id}"), "output": [
+            {"type": "function_call", "call_id": id, "name": name,
+             "arguments": input.to_string()}]});
+        http("200 OK", &answer.to_string())
+    }
+
+    fn bodies(sent: &std::sync::mpsc::Receiver<(String, String)>) -> Vec<serde_json::Value> {
+        sent.try_iter()
+            .map(|(_, body)| serde_json::from_str(&body).unwrap())
+            .collect()
+    }
+
+    fn look_read() -> serde_json::Value {
+        serde_json::json!({"operation": "canvas.artwork#look", "arguments": {}})
+    }
+
+    fn draw_plan() -> serde_json::Value {
+        serde_json::json!({"steps": [{"operation": "canvas.artwork#draw",
+            "arguments": {"marks": []}}], "why": "seen", "then": null})
+    }
+
+    /// On the Responses path a look's picture rides in its call's output,
+    /// as input text naming it then the image, the turn chained by id.
+    #[test]
+    fn a_look_read_shows_its_picture_in_the_responses_output() {
+        let (url, sent) = endpoint(vec![
+            responses_call("r1", READ_VIEW, &look_read()),
+            responses_call("p1", tilo_agent::tools::PLAN, &draw_plan()),
+        ]);
+        let mut reads = Looks::new('a');
+        ModelPlanner::new(Box::new(standard(&url).with_responses(&url)))
+            .plan_reading("make the band match the sky", &look_context(), &mut reads)
+            .unwrap();
+        let requests = bodies(&sent);
+        let tools = serde_json::to_string(&requests[0]["tools"]).unwrap();
+        assert!(tools.contains(LOOK_CONTENT), "a model that sees may look");
+        assert_eq!(requests[1]["previous_response_id"], "resp_r1");
+        let output = requests[1]["input"][0]["output"].as_array().unwrap();
+        let text = output[0]["text"].as_str().unwrap();
+        assert!(
+            text.contains(&reads.rendered) && text.contains("picture shown below, 8×6 PNG"),
+            "{text}"
+        );
+        assert_eq!(output[1]["type"], "input_image");
+        assert!(
+            output[1]["image_url"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
+        assert_eq!(requests[0]["tools"], requests[1]["tools"], "stable tools");
+    }
+
+    /// A Responses model that refuses a picture in an output is sent the
+    /// turn again with the pictures after the outputs, and so from then on.
+    #[test]
+    fn a_responses_model_refusing_output_pictures_gets_them_after_the_outputs() {
+        let (url, sent) = endpoint(vec![
+            responses_call("r1", READ_VIEW, &look_read()),
+            http(
+                "400 Bad Request",
+                r#"{"error":{"message":"image not supported in function_call_output"}}"#,
+            ),
+            responses_call("p1", tilo_agent::tools::PLAN, &draw_plan()),
+        ]);
+        let model = OpenAiModel::new(
+            &url,
+            "refuses-output-pictures",
+            ApiKey::None,
+            std::time::Duration::from_secs(30),
+            ApiTarget::Standard,
+        )
+        .with_responses(&url);
+        ModelPlanner::new(Box::new(model))
+            .plan_reading("look, then draw", &look_context(), &mut Looks::new('a'))
+            .unwrap();
+        let requests = bodies(&sent);
+        assert_eq!(requests.len(), 3);
+        assert!(requests[1]["input"][0]["output"].is_array());
+        let again = requests[2]["input"].as_array().unwrap();
+        assert!(
+            again[0]["output"]
+                .as_str()
+                .unwrap()
+                .contains("picture shown below")
+        );
+        assert_eq!(again[1]["role"], "user");
+        assert_eq!(again[1]["content"][1]["type"], "input_image");
+        assert_eq!(requests[2]["previous_response_id"], "resp_r1");
+        assert!(!outputs_carry_pictures("refuses-output-pictures"));
+    }
+
+    /// Chat completions take text alone in a tool message: the pictures
+    /// follow the tool messages in one user message.
+    #[test]
+    fn the_chat_path_sends_pictures_in_a_user_message_after_the_tool_messages() {
+        let (url, sent) = endpoint(vec![
+            calls("r1", READ_VIEW, &look_read()),
+            calls("p1", tilo_agent::tools::PLAN, &draw_plan()),
+        ]);
+        ModelPlanner::new(Box::new(standard(&url).with_vision(Some(true))))
+            .plan_reading("look, then draw", &look_context(), &mut Looks::new('a'))
+            .unwrap();
+        let requests = bodies(&sent);
+        let messages = requests[1]["messages"].as_array().unwrap();
+        assert_eq!(messages[3]["role"], "tool");
+        assert!(
+            messages[3]["content"]
+                .as_str()
+                .unwrap()
+                .contains("picture shown below")
+        );
+        assert_eq!(messages[4]["role"], "user");
+        assert_eq!(messages[4]["content"][1]["type"], "image_url");
+        assert!(
+            messages[4]["content"][1]["image_url"]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
+    }
+
+    /// A model that is not shown pictures is not offered `look_content`,
+    /// reads that a look's picture was not shown, and nothing is fetched.
+    #[test]
+    fn a_model_that_does_not_see_gets_no_look_content_and_is_told_so() {
+        let (url, sent) = endpoint(vec![
+            calls("r1", READ_VIEW, &look_read()),
+            calls("p1", tilo_agent::tools::PLAN, &draw_plan()),
+        ]);
+        let local = standard(&url);
+        assert!(!local.sees(), "a local chat server is not assumed to see");
+        let mut reads = Looks::new('a');
+        ModelPlanner::new(Box::new(local))
+            .plan_reading("look, then draw", &look_context(), &mut reads)
+            .unwrap();
+        let requests = bodies(&sent);
+        let tools = serde_json::to_string(&requests[0]["tools"]).unwrap();
+        assert!(!tools.contains(LOOK_CONTENT), "{tools}");
+        let answered = requests[1]["messages"][3]["content"].as_str().unwrap();
+        assert!(
+            answered.contains(&reads.rendered) && answered.contains("picture not shown"),
+            "{answered}"
+        );
+        assert_eq!(requests[1]["messages"].as_array().unwrap().len(), 4);
+        assert!(reads.looked.is_empty(), "nothing fetched for a blind model");
+        assert!(
+            !serde_json::to_string(&requests[1])
+                .unwrap()
+                .contains("base64")
+        );
+    }
+
+    /// `look_content` looks only at an address the conversation named, and
+    /// at a room's own picture only where the agent may show them; a PDF
+    /// is pointed to pdf-viewer.
+    #[test]
+    fn look_content_refuses_unshown_addresses_and_room_pictures_unless_allowed() {
+        let mut reads = Looks::new('a');
+        let scan = reads.keep('b', crate::vision::tests::png(10, 10));
+        let pdf = reads.keep('c', b"%PDF-1.4\n".to_vec());
+        let unshown = crate::vision::tests::address('d');
+        let look = |address: &str| serde_json::json!({"content": address});
+        let (url, sent) = endpoint(vec![
+            calls("l1", LOOK_CONTENT, &look(&unshown)),
+            calls("l2", LOOK_CONTENT, &look(&scan)),
+            calls("l3", LOOK_CONTENT, &look(&pdf)),
+            calls("p1", tilo_agent::tools::PLAN, &draw_plan()),
+        ]);
+        let task = format!("trace the scan {scan} onto the canvas; the brief is {pdf}");
+        ModelPlanner::new(Box::new(standard(&url).with_vision(Some(true))))
+            .plan_reading(&task, &look_context(), &mut reads)
+            .unwrap();
+        let requests = bodies(&sent);
+        let answer = |at: usize, message: usize| {
+            requests[at]["messages"][message]["content"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let unnamed = answer(1, 3);
+        assert!(
+            unnamed.starts_with("Not shown:") && unnamed.contains("was not named"),
+            "{unnamed}"
+        );
+        let room = answer(2, 5);
+        assert!(room.contains("may not show the room's pictures"), "{room}");
+        let document = answer(3, 7);
+        assert!(
+            document.contains("is a PDF") && document.contains("look-page"),
+            "{document}"
+        );
+        assert!(
+            !reads
+                .looked
+                .contains(&crate::vision::content_hash(&unshown).unwrap()),
+            "an unnamed address is never fetched"
+        );
+
+        // Allowed, the room's picture is written out again in the confined
+        // worker and shown.
+        let (url, sent) = endpoint(vec![
+            calls("l1", LOOK_CONTENT, &look(&scan)),
+            calls("p1", tilo_agent::tools::PLAN, &draw_plan()),
+        ]);
+        let mut context = look_context();
+        context.room_pictures = true;
+        ModelPlanner::new(Box::new(standard(&url).with_vision(Some(true))))
+            .plan_reading(&task, &context, &mut reads)
+            .unwrap();
+        let requests = bodies(&sent);
+        let shown = requests[1]["messages"][3]["content"].as_str().unwrap();
+        assert!(shown.contains("10×10 JPEG picture"), "{shown}");
+        assert_eq!(
+            requests[1]["messages"][4]["content"][1]["type"],
+            "image_url"
+        );
+    }
+
+    /// A re-plan's first turn shows the newest picture the task's steps
+    /// looked at, after the text, and the text says it is shown.
+    #[test]
+    fn a_replan_shows_the_newest_looked_at_picture_in_its_first_turn() {
+        let (url, sent) = endpoint(vec![responses_plan("canvas.artwork#draw")]);
+        let mut reads = Looks::new('a');
+        let older = reads.keep('e', crate::vision::tests::png(4, 4));
+        let mut context = look_context();
+        context.request = Some("draw a band, then check it looks right".into());
+        context.pictures = vec![older, reads.rendered.clone()];
+        context.observed = vec![format!(
+            "so.tilo.canvas canvas.artwork#look answered {{\"content\":\"{}\"}}",
+            reads.rendered
+        )];
+        ModelPlanner::new(Box::new(standard(&url).with_responses(&url)))
+            .plan_reading("check it looks right", &context, &mut reads)
+            .unwrap();
+        let requests = bodies(&sent);
+        let parts = requests[0]["input"][0]["content"].as_array().unwrap();
+        assert!(
+            parts[0].get("prompt_cache_breakpoint").is_some(),
+            "cached prefix first"
+        );
+        let images = parts
+            .iter()
+            .filter(|part| part["type"] == "input_image")
+            .count();
+        assert_eq!(images, 1, "only the newest");
+        assert_eq!(
+            parts.last().unwrap()["type"],
+            "input_image",
+            "after the text"
+        );
+        let text = parts[parts.len() - 2]["text"].as_str().unwrap();
+        assert!(
+            text.contains(&format!("{} picture shown below, 8×6 PNG", reads.rendered)),
+            "{text}"
+        );
     }
 }

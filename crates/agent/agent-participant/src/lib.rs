@@ -27,6 +27,10 @@
 //!   remote actions the host answers for the delegating user's devices
 //!   ([`control`]); a grant is requested from the page and approved with
 //!   its delegation in one consent step.
+//! - **Pictures.** A planning model that sees is shown what a read rendered
+//!   (a canvas look, a PDF page) and the pictures it asks to look at, within
+//!   limits; the room's own pictures only where the person running the agent
+//!   allows, and decoded only in a confined worker ([`vision`]).
 //! - **Hosting.** [`AgentHost`] runs each agent on its own thread, keeps
 //!   grants and agents under a state directory, resumes them when the host
 //!   restarts and settles expired grants ([`host`]).
@@ -46,6 +50,7 @@ pub mod planner;
 pub mod profile;
 pub mod room_actions;
 pub mod search;
+pub mod vision;
 mod web_apps;
 pub mod worker;
 
@@ -56,8 +61,8 @@ pub use control::{
 };
 pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
 pub use model::{
-    ApiKey, Briefing, CLOUD_MODEL, GatewayModel, ModelChoice, ModelPlanner, OpenAiModel, PlanModel,
-    READ_VIEW, ReadView, ScriptedModel,
+    ApiKey, Briefing, CLOUD_MODEL, GatewayModel, ModelChoice, ModelPlanner, NoPlanReads,
+    OpenAiModel, PlanModel, PlanReads, READ_VIEW, ReadView, ScriptedModel,
 };
 pub use participant::actions::{RECORD_PROVIDER, record_provider};
 pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped};

@@ -35,12 +35,14 @@
 
 mod confine;
 mod effects;
+mod picture;
 mod process;
 pub(crate) mod proto;
 mod read;
 mod replica;
 mod serve;
 
+pub(crate) use picture::shrink_picture;
 pub use proto::ProbeReport;
 pub(crate) use read::{ConfinedRead, ConfinedTitles, ConfinedViews};
 pub use replica::ConfinedReplica;
