@@ -264,17 +264,22 @@ mod tests {
         .0
     }
 
-    /// Put a store in a fresh spool into the session's store cell, for tests
-    /// that must never open the real one. Other tests share the cell, and use
-    /// transfer ids of their own.
-    fn temporary_store() -> tempfile::TempDir {
+    /// A store in a fresh spool, put into the session's store cell for a test
+    /// that must never open the real one. The returned guard keeps the other
+    /// tests that replace the store waiting; the rest use transfer ids of
+    /// their own.
+    fn temporary_store() -> (tempfile::TempDir, std::sync::MutexGuard<'static, ()>) {
+        static REPLACING: Mutex<()> = Mutex::new(());
+        let replacing = REPLACING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let root = tempfile::tempdir().expect("spool directory");
         let store = NearbyTransferStore::open(root.path().join("spool"), tilo_clock::unix_now_ms())
             .expect("temporary nearby store");
         *super::super::nearby_store_cell()
             .lock()
             .expect("nearby store cell") = Some(store);
-        root
+        (root, replacing)
     }
 
     #[test]
