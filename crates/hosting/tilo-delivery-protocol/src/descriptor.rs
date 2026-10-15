@@ -7,8 +7,9 @@
 use crate::auth::{self, VERSION};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::{StatePeer, join::TransportHint};
+use tilo_peer_state::StatePeer;
 use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
+use tilo_workspace_join::TransportHint;
 use web_time::SystemTime;
 
 /// Distinct kind covered by the existing transport-pin signature domain.
@@ -162,7 +163,7 @@ pub fn issue_transport_hint_with_media(
     validate_payload(&payload, current)?;
     let opaque_json = serde_json::to_string(&hex::encode(encode_payload(&payload)?))
         .map_err(|_| DescriptorError::Codec)?;
-    let hint = tilo_peer_state::join::sign_transport_hint(
+    let hint = tilo_workspace_join::sign_transport_hint(
         KIND,
         opaque_json,
         current.pinned_host.clone(),
@@ -290,7 +291,7 @@ fn inspect_pinned_payload(
     {
         return Err(DescriptorError::Lifetime);
     }
-    tilo_peer_state::join::verify_transport_hint_at(
+    tilo_workspace_join::verify_transport_hint_at(
         hint,
         &RevocationList::new(),
         payload.issued_at_ns,
@@ -463,7 +464,7 @@ fn check_hint(
     let digest = hint_digest(hint)?;
     let revocations = validate_authority(current)?;
     validate_payload(&payload, current)?;
-    tilo_peer_state::join::verify_transport_hint_at(hint, &revocations, now_ns(current.now)?)
+    tilo_workspace_join::verify_transport_hint_at(hint, &revocations, now_ns(current.now)?)
         .map_err(|_| DescriptorError::Signature)?;
     check_generation(payload.generation, digest, current.generation)?;
     Ok(payload)
