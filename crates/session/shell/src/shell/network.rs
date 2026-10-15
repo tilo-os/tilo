@@ -1141,9 +1141,13 @@ impl KnownContents {
 /// a successful write marks its number durable. An obligation waits for the
 /// value it was registered behind, or any later one: a newer value replaces
 /// a queued older one, and holds at least as much. It runs on the thread
-/// that next calls [`Self::settle`], the loop, never on the writer.
+/// that next calls [`Self::settle`] (the loop's sync round, or the collab
+/// broker reading owner views), never on the writer, which a flush waits on.
 #[derive(Clone, Default)]
 struct ContinuityDurability(Arc<Mutex<DurabilityLedger>>);
+
+/// How many obligations wait for the disk at most.
+const MAX_CONTINUITY_OBLIGATIONS: usize = 64;
 
 type ContinuityObligation = Box<dyn FnOnce() + Send>;
 
@@ -1176,9 +1180,18 @@ impl ContinuityDurability {
 
     /// Run `obligation` once the newest value handed to the writer is on
     /// disk.
+    ///
+    /// While writes keep failing (a full disk), every sync round adds one, so
+    /// only the newest [`MAX_CONTINUITY_OBLIGATIONS`] wait. Dropping an older
+    /// one is what a failed write always meant: its claims stay
+    /// unacknowledged, and its closed tabs stay recorded, until a later
+    /// round's value covers them.
     fn after_newest(&self, obligation: impl FnOnce() + Send + 'static) {
         if let Ok(mut ledger) = self.0.lock() {
             let sequence = ledger.submitted;
+            if ledger.pending.len() >= MAX_CONTINUITY_OBLIGATIONS {
+                ledger.pending.remove(0);
+            }
             ledger.pending.push((sequence, Box::new(obligation)));
         }
     }
@@ -1301,7 +1314,7 @@ fn persist_pending_invitations(
     };
     let path = path.to_path_buf();
     crate::shell::durable_writer::global().submit(path.clone(), move || {
-        write_pending_invitations(&path, &bytes)
+        write_pending_invitations(&path, &bytes);
     });
 }
 
@@ -4823,22 +4836,31 @@ impl ShellNetwork {
         if !self.enforce_app_continuations_policy() {
             return None;
         }
-        let queued = self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision());
-        if queued && !pending_closed_tabs.is_empty() {
-            // Recorded as closed in the value just handed to the writer; the
-            // tree forgets them once that value is on disk.
-            let tree = tree_handle.clone();
-            self.personal_continuity_durability.after_newest(move || {
-                let mut tree = tree.write();
-                for (tab, room) in pending_closed_tabs {
-                    if tree.continuation_closed_tabs.get(&tab) == Some(&room) {
-                        tree.continuation_closed_tabs.remove(&tab);
-                    }
-                }
-            });
-            self.personal_continuity_durability.settle();
+        if self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision()) {
+            self.forget_closed_tabs_once_on_disk(tree_handle, pending_closed_tabs);
         }
         Some(bytes)
+    }
+
+    /// The tabs `closed` were recorded as closed in the continuity value just
+    /// handed to the writer; the tree forgets them once that value is on disk.
+    fn forget_closed_tabs_once_on_disk(
+        &self,
+        tree: crate::shell::state::WorkspaceTreeHandle,
+        closed: std::collections::HashMap<crate::shell::state::TabId, RoomId>,
+    ) {
+        if closed.is_empty() {
+            return;
+        }
+        self.personal_continuity_durability.after_newest(move || {
+            let mut tree = tree.write();
+            for (tab, room) in closed {
+                if tree.continuation_closed_tabs.get(&tab) == Some(&room) {
+                    tree.continuation_closed_tabs.remove(&tab);
+                }
+            }
+        });
+        self.personal_continuity_durability.settle();
     }
 
     fn persist_and_acknowledge_owner_claims(&self, revision: u64) -> bool {
@@ -8074,6 +8096,7 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_fingerprint: Mutex::new(None),
         personal_continuity_path: None,
         personal_continuity_store: KnownContents::default(),
+        personal_continuity_durability: ContinuityDurability::default(),
         personal_rooms_export: KnownContents::default(),
         personal_workspaces: None,
         last_personal_workspaces_snapshot: Mutex::new(None),
@@ -9018,6 +9041,16 @@ mod tests {
         durability.after_newest(record("already durable"));
         durability.settle();
         assert_eq!(*ran.lock().unwrap(), ["first", "second", "already durable"]);
+
+        // Writes that keep failing leave a bounded backlog.
+        ran.lock().unwrap().clear();
+        let failing = durability.submit();
+        for _ in 0..MAX_CONTINUITY_OBLIGATIONS + 10 {
+            durability.after_newest(record("waiting"));
+        }
+        durability.written(failing);
+        durability.settle();
+        assert_eq!(ran.lock().unwrap().len(), MAX_CONTINUITY_OBLIGATIONS);
     }
 
     #[test]
