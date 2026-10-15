@@ -27,7 +27,7 @@
 //              W1 takes the keyboard again when clicked. Over the whole run,
 //              no key and no paste reaches a window that did not hold the
 //              keyboard when it arrived
-//   fallback   then the first page leaves, and a second device of the owner,
+//   fallback   then a second device of the owner,
 //              on a network where WebTransport never becomes ready, takes the
 //              HTTPS stream, shows W1's still picture on arrival, follows a
 //              third window W3 to its last frame and drives it
@@ -40,7 +40,9 @@
 // W2 is watched by the first page alone, and W3 by the two later ones: on the
 // runner one SwiftShader GPU process rasterizes every page's desktop, and a
 // desktop showing a second window presents a frame for each of its pictures,
-// so three desktops at once stalled every page for minutes.
+// so three desktops at once stalled every page for minutes. The first page
+// stays (a device joining the room's channel is let in by one already in it)
+// but is frozen while W3 streams.
 //
 // Not driven here, with the reason (docs/measurements/performance.md):
 //   Safari     WebKit's only Linux builds are WebKitGTK/WPE, not Safari, and
@@ -469,9 +471,6 @@ export async function runAcceptance(ctx) {
   if (!await waitInput(w1, mark, isKey(KEYS.f.evdev, false), 30_000)) stale.failures.push('once the second window closed, a click on the first and a key typed did not reach it');
   const pageErrors = {};
   if (main.errors.length) pageErrors.first = main.errors.slice(0, 3);
-  // The first page is done: it leaves, so the next two pages have the GPU
-  // process to themselves.
-  await main.send('Page.navigate', {url: 'about:blank'});
 
   // The other members: a second device of the owner on a network where
   // WebTransport never becomes ready, then a second person, a viewer ----------------
@@ -495,8 +494,13 @@ export async function runAcceptance(ctx) {
     if (final !== w1.stop.lastIndex) found.failures.push(`the ${name} page, arriving once the window was still, shows frame ${final}, not its last ${w1.stop.lastIndex}`);
   }
 
+  // The first page is done, but stays: a device that joins the room's
+  // channel is let in by one already in it. It is frozen, so the next two
+  // pages have the GPU process to themselves.
+  await main.send('Page.setWebLifecycleState', {state: 'frozen'});
+
   step('the third window');
-  const w3 = await ctx.startSession('third', {surface: THIRD.surface, seconds: THIRD.seconds, width: THIRD.width, height: THIRD.height, fps: THIRD.fps});
+  const w3 =await ctx.startSession('third', {surface: THIRD.surface, seconds: THIRD.seconds, width: THIRD.width, height: THIRD.height, fps: THIRD.fps});
   const prefix3 = `${w3.session.device}:`;
   const lines3 = () => w3.source.lines.length;
   w3.source.process.stdin.write('start\n');

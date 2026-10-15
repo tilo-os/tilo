@@ -269,27 +269,34 @@ try {
   await wasm.default();
   const origin = q.get('origin'), profile = q.get('profile'), label = q.get('label') || 'Stream viewer';
   let peer;
+  // How far the page got, for a run that ends invalid while it connects.
+  const stage = name => { globalThis.harnessStage = name; };
   if (q.get('invite')) {
     // Another person, with a root of their own and an invitation: the
     // room's owner admits them.
+    stage('joining');
     const {createIdentity} = await import('./root-identity.mjs');
     const {identity} = await createIdentity({passkey: false});
     peer = await joinWorkspace({origin, invitation: q.get('invite'), identity, runtime: wasm, profile,
-      displayName: label, label, pollMs: 250});
+      displayName: label, label, pollMs: 250, onProgress: progress => stage('joining: ' + progress.phase)});
   } else {
     // A device of the host's person, in a room the host governs (as a
     // workspace in Tilo Cloud is): it creates the room when none is named,
     // and enters it as its owner's device before working in it.
     const person = {origin, userPublicKey: q.get('user'), label, displayName: label, runtime: wasm, profile};
     let room = q.get('room');
+    stage('certifying');
     const door = await connectPeer({...person, live: false});
     try {
+      stage('entering the room');
       room ||= (await door.workspaces.create('Stream qualification')).room;
       await door.workspaces.enter(room);
     } finally { await door.dispose(); }
+    stage('connecting to the room');
     peer = await connectPeer({...person, room});
   }
   globalThis.peer = peer;
+  stage('mounting the desktop');
   globalThis.tiloMount = await peer.mountDesktop(document.getElementById('surface'), {});
   globalThis.harnessReady = true;
 } catch (error) { globalThis.harnessError = String(error?.stack ?? error); }
@@ -533,7 +540,11 @@ async function openPage(browser, {name, url, params, viewport, page: options, re
   page.name = name;
   await page.send('Page.navigate', {url: `${url}?${new URLSearchParams(params)}`});
   // The desktop's first frame: SwiftShader compiles its pipelines first.
-  await until(page, 'globalThis.harnessReady || globalThis.harnessError', 240_000, `the ${name} page's desktop did not mount`);
+  await until(page, 'globalThis.harnessReady || globalThis.harnessError', 240_000, `the ${name} page's desktop did not mount`)
+    .catch(async error => {
+      throw new Invalid(`${error.message} (stuck ${await page.evaluate('globalThis.harnessStage ?? null', 10_000).catch(() => 'unanswered')}; `
+        + `page console: ${page.console.slice(-10).join(' | ')}; page errors: ${page.errors.slice(0, 3).join(' | ')})`);
+    });
   const error = await page.evaluate('globalThis.harnessError ?? null');
   if (error) throw new Invalid(`the ${name} page did not connect: ${error}`);
   await until(page, "globalThis.tiloMount?.canvas?.parentElement?.dataset.phase === 'presented'", 240_000,
