@@ -963,6 +963,7 @@ jobs:
           echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
 
       - name: Qualify the stream and record
+        id: h264
         run: |
           set -euo pipefail
           ./os/dev/assert-native-arch.sh x86_64
@@ -976,6 +977,23 @@ jobs:
           python3 tools/perf/adapters.py native-stream --env-json perf/env.json \
             perf/stream.json > perf/stream.jsonl
           cat perf/stream.jsonl
+
+      # A session with no H.264 encoder (a stock device) streams software
+      # VP9 (vp9enc), and every browser decodes it. Same build, same Chrome,
+      # its own series (stream.vp9.*), so neither codec's numbers judge the
+      # other's. It runs even when the H.264 leg failed: the two are separate
+      # verdicts.
+      - name: Qualify the VP9 stream and record
+        if: ${{ !cancelled() && steps.h264.conclusion != 'skipped' }}
+        run: |
+          set -euo pipefail
+          node scripts/perf/native_stream_qualification.mjs "$STREAM_BUNDLE" --out perf/stream-vp9.json \
+            --relay target/release/tilo-relay --source target/release/examples/legacy_stream_source \
+            --renderer swiftshader --viewport 960x540 --warm-up 30 --expect-revision "$(git rev-parse HEAD)" \
+            --codec vp9 | tee perf/stream-vp9-summary.txt
+          python3 tools/perf/adapters.py native-stream --env-json perf/env.json \
+            perf/stream-vp9.json > perf/stream-vp9.jsonl
+          cat perf/stream-vp9.jsonl
 
       - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
