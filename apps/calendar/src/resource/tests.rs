@@ -3,6 +3,66 @@ use crate::model::{Id, key};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Replica, scope_contains};
 
+#[test]
+fn read_only_upload_refusal_keeps_the_event_and_queued_outbox_in_the_source_record() {
+    let server = test_http::Responder::silent();
+    use accounts::person::PersonAccounts;
+    let person = "cb".repeat(32);
+    let mut settings = TestApp::<person_accounts::AccountsOwner>::for_person(&person).unwrap();
+    let mut app = TestApp::<CalendarShell>::for_person(&person).expect("test app");
+    let kept = settings.person::<PersonAccounts>().unwrap();
+    let mut account = crate::AccountStore::sample().accounts.remove(0);
+    account.config.server_url = server.url();
+    account.calendars.truncate(1);
+    account.calendars[0].read_only = true;
+    let remote = account.calendars[0].id.clone();
+    kept.invoke(&PersonAccounts::saving(&account.to_stored_for_test()))
+        .unwrap();
+    let read = app.shared_person::<PersonAccounts>().unwrap();
+    read.record()
+        .merge_peer_document(kept.record().document().unwrap())
+        .unwrap();
+    app.settle();
+    let id = Uuid::new_v4();
+    app.invoke(Calendar::NEW_EVENT.with(calendar::NewEvent {
+        event: EventData {
+            id: id.to_string(),
+            title: "Keep my local edit".into(),
+            start: "2026-09-08T09:00".into(),
+            end: "2026-09-08T09:30".into(),
+            calendar_id: remote,
+            ..EventData::default()
+        },
+    }))
+    .expect("create in the source record");
+    let configured = app
+        .with_widget(|surface: &mut CalendarApp| surface.configured_for_test().clone())
+        .unwrap();
+    let jobs: Vec<_> = crate::outbox::uploads(&state_of(&app), &configured)
+        .into_iter()
+        .map(|(_, job)| job)
+        .collect();
+    assert_eq!(jobs.len(), 1);
+    let result = ui::rt::block_on(crate::caldav::push_jobs(&jobs)).unwrap();
+    assert_eq!(result.failures, [(id, "Calendar is read-only".into())]);
+    assert!(result.confirmed.is_empty());
+    app.settle();
+    // An ordinary failed attempt is retryable, not a terminal settlement.
+    // Read the host's source document, not CalendarApp's render-state copy.
+    let state = state_of(&app);
+    assert_eq!(state.uploads.pending().count(), 1);
+    assert_eq!(state.uploads.entries().len(), 1);
+    assert_eq!(
+        state.event(id).expect("local edit survives").title,
+        "Keep my local edit"
+    );
+    assert!(
+        state.remote.get(&id.to_string()).is_none(),
+        "a refusal cannot claim server confirmation"
+    );
+    server.assert_untouched();
+}
+
 fn notes_of(app: &TestApp<CalendarShell>, item: Id) -> String {
     app.read_document(|doc| read_doc(doc).notes_text(item))
 }
@@ -700,7 +760,7 @@ mod person_accounts {
     use accounts::person::{ACCOUNTS_OWNER, PersonAccounts};
 
     /// Settings, which keeps the person's accounts.
-    struct AccountsOwner;
+    pub(super) struct AccountsOwner;
 
     impl ResourceApp for AccountsOwner {
         type Resource = Calendar;

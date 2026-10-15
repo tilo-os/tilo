@@ -15,7 +15,10 @@
 //! `CalendarAccount`), so an account added in one was invisible to the other.
 //! Reading and writing the one shared store resolves that by construction —
 //! both sides now (de)serialise the same [`accounts::Account`], with the
-//! `CalDAV` settings carried in its opaque `config`.
+//! `CalDAV` settings carried in its opaque `config`. An existing Nextcloud
+//! account can also carry selected calendars: Calendar projects that canonical
+//! account under its original ID and reads its existing vault entry, never a
+//! second account or a copied credential.
 
 use std::path::Path;
 
@@ -34,10 +37,11 @@ pub const TYPE_ID: &str = "caldav";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CalDavConfig {
     /// Friendly account name shown in the sidebar header ("Work", "Fastmail").
+    #[serde(default)]
     pub display_name: String,
-    /// Base `CalDAV` server URL. The well-known discovery path
-    /// (`/.well-known/caldav`) and principal/home-set resolution are handled by
-    /// the sync layer; this is the value the user types.
+    /// Server URL entered in Settings. Settings resolves principal and home-set
+    /// discovery during setup and saves the selected collection URLs below;
+    /// sync reads those collections directly, without guessing login paths.
     pub server_url: String,
     /// Login name for the `CalDAV` server (often the email address).
     pub username: String,
@@ -64,6 +68,9 @@ pub struct RemoteCalendar {
     /// Whether this calendar's events are shown. Off == synced but hidden.
     #[serde(default = "default_true")]
     pub visible: bool,
+    /// The server did not grant write privileges; this remains a sync target.
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 fn default_true() -> bool {
@@ -85,8 +92,9 @@ pub struct CalendarAccount {
     /// keep an explicit field so a later rename doesn't reshuffle the store).
     pub id: String,
     pub config: CalDavConfig,
-    /// Calendars discovered under this account's home-set. Settings refreshes
-    /// this on connect; Calendar reads it to populate the sidebar.
+    /// Calendars selected from this account's discovered home-set. Settings
+    /// writes them after confirmation; Calendar uses them as its sync targets
+    /// and sidebar inventory.
     #[serde(default)]
     pub calendars: Vec<RemoteCalendar>,
     /// Whether this account's calendar list is collapsed in the sidebar.
@@ -147,6 +155,9 @@ impl CalendarAccount {
     fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
         let payload = stored.config_as::<StoredConfig>()?;
         let mut config = payload.config;
+        if config.display_name.is_empty() {
+            config.display_name.clone_from(&stored.display_name);
+        }
         if let Some(secret) = vault.get(&stored.id) {
             config.password = secret.password;
         }
@@ -229,7 +240,8 @@ impl AccountStore {
         )
     }
 
-    /// The `CalDAV` accounts `shared` holds, each password from `vault`.
+    /// Calendar-enabled accounts in `shared`, each sign-in from its canonical
+    /// account ID in `vault`.
     pub fn from_store(shared: &SharedStore, vault: &SecretVault) -> Self {
         Self::from_shared(shared, vault)
     }
@@ -239,13 +251,33 @@ impl AccountStore {
         let accounts = shared
             .list(&ty)
             .into_iter()
+            .chain(
+                shared
+                    .list(&AccountTypeId::from("nextcloud"))
+                    .into_iter()
+                    .filter(|stored| {
+                        stored
+                            .config
+                            .get("use_calendar")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                            && stored
+                                .config
+                                .get("calendars")
+                                .and_then(serde_json::Value::as_array)
+                                .is_some_and(|calendars| !calendars.is_empty())
+                    }),
+            )
+            .filter(|stored| stored.enabled)
             .filter_map(|stored| CalendarAccount::from_stored(stored, vault))
             .collect();
         Self { accounts }
     }
 
     /// Write these accounts into the shared store + vault under an explicit
-    /// config root, preserving accounts of other types already there. The
+    /// config root, preserving unrelated accounts. For a Nextcloud projection,
+    /// only calendar preferences change; its type, services and sign-in stay.
+    /// The
     /// write half of the seam (Settings owns the lifecycle; this exists so the
     /// round-trip is testable).
     ///
@@ -257,9 +289,27 @@ impl AccountStore {
     pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
         let mut shared = SharedStore::load_in(config_root);
         let mut vault = SecretVault::open_in(config_root);
+        let mut vault_changed = false;
         for acct in &self.accounts {
             let id = AccountId::from(acct.id.clone());
+            if let Some(source) = shared
+                .get(&id)
+                .filter(|source| source.type_id.as_str() == "nextcloud")
+            {
+                // Keep the canonical service account and its credential. Calendar
+                // is a projection of it, not a second account with a copied key.
+                let mut stored = source.clone();
+                let config = stored
+                    .config
+                    .as_object_mut()
+                    .ok_or_else(|| std::io::Error::other("Nextcloud settings are not an object"))?;
+                config.insert("calendars".into(), serde_json::to_value(&acct.calendars)?);
+                config.insert("collapsed".into(), acct.collapsed.into());
+                shared.upsert(stored);
+                continue;
+            }
             shared.upsert(acct.to_stored());
+            vault_changed = true;
             if acct.config.password.is_empty() {
                 vault.remove(&id);
             } else {
@@ -270,7 +320,9 @@ impl AccountStore {
             }
         }
         shared.save_in(config_root)?;
-        vault.save();
+        if vault_changed {
+            vault.save();
+        }
         Ok(())
     }
 
@@ -295,12 +347,14 @@ impl AccountStore {
                             name: "Team".into(),
                             color: Palette::Indigo.index() as u8,
                             visible: true,
+                            read_only: false,
                         },
                         RemoteCalendar {
                             id: "work/oncall".into(),
                             name: "On-call".into(),
                             color: Palette::Red.index() as u8,
                             visible: true,
+                            read_only: false,
                         },
                     ],
                     collapsed: false,
@@ -319,12 +373,14 @@ impl AccountStore {
                             name: "Personal".into(),
                             color: Palette::Emerald.index() as u8,
                             visible: true,
+                            read_only: false,
                         },
                         RemoteCalendar {
                             id: "icloud/holidays".into(),
                             name: "Holidays".into(),
                             color: Palette::Amber.index() as u8,
                             visible: false,
+                            read_only: false,
                         },
                     ],
                     collapsed: false,
@@ -363,6 +419,7 @@ mod tests {
                 name: "Team".into(),
                 color: 1,
                 visible: true,
+                read_only: false,
             });
             a.collapsed = true;
             store.upsert(a);

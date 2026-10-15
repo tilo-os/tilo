@@ -49,6 +49,7 @@ use crate::widgets::{
 };
 
 mod browser_sessions;
+mod calendar_selection;
 mod cloud_control;
 mod cloud_signin;
 mod import_review;
@@ -123,6 +124,15 @@ pub enum AccountsEffect {
     /// Check and save the account form, or take the sign-in's next step.
     #[effect(label = "Save account")]
     SaveAccountForm,
+    /// Choose calendars on an existing Nextcloud account, reusing its sign-in.
+    #[effect(row, device_only, label = "Connect calendars")]
+    ConnectNextcloudCalendars { account: String },
+    /// Read the discovered, secret-free calendar choices for the current form.
+    #[effect(returns, kind = "read")]
+    InspectCalendarChoices,
+    /// Select a discovered collection before saving this account.
+    #[effect(view)]
+    SelectCalendar { href: String, selected: bool },
     /// Explicitly request Gmail access alongside the Google files sign-in.
     #[effect(label = "Connect files and Gmail")]
     ConnectGoogleMail,
@@ -221,6 +231,14 @@ pub(crate) fn answer(
         }
         _ => {}
     }
+    answer_model(app, effect, cx)
+}
+
+fn answer_model(
+    app: &SettingsApp,
+    effect: AccountsEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
     let shared = app.accounts().model();
     let mut model = shared.borrow_mut();
     match effect {
@@ -268,7 +286,28 @@ pub(crate) fn answer(
         AccountsEffect::SignInAgain { account } => {
             model.command(AccountViewCommand::Reauthenticate(account));
         }
-        AccountsEffect::SaveAccountForm => model.command(AccountViewCommand::Submit),
+        AccountsEffect::ConnectNextcloudCalendars { account } => {
+            model.connect_nextcloud_calendars(&account)?;
+            app.request_pane(crate::categories::Category::ExternalAccounts);
+        }
+        AccountsEffect::InspectCalendarChoices => {
+            return Ok(Effected::value(model.calendar_choice_summary()));
+        }
+        AccountsEffect::SelectCalendar { href, selected } => {
+            model.select_calendar(&href, selected)?;
+            app.request_pane(crate::categories::Category::ExternalAccounts);
+        }
+        AccountsEffect::SaveAccountForm => {
+            if !model.calendar_choices.is_empty()
+                && !model.calendar_choices.iter().any(|(_, selected)| *selected)
+            {
+                return Err(t("accounts-calendars-empty"));
+            }
+            if !model.calendar_choices.is_empty() {
+                model.validate_calendar_review()?;
+            }
+            model.command(AccountViewCommand::Submit);
+        }
         AccountsEffect::ConnectGoogleMail => model.connect_google_mail()?,
         AccountsEffect::CancelAccountForm => model.command(AccountViewCommand::Cancel),
         AccountsEffect::SaveNewPassword => {
@@ -370,7 +409,7 @@ impl AccountsArea {
         Self {
             cx: cx.clone(),
             remote: ui::RemoteActions::current(),
-            removal: Default::default(),
+            removal: std::cell::RefCell::default(),
             model: std::cell::OnceCell::new(),
             account_root: None,
             read: crate::device_read::DeviceRead::default(),
@@ -485,6 +524,11 @@ impl AccountsArea {
                         account: id.clone(),
                     }));
                 }
+                if view.kind == AccountKind::Nextcloud {
+                    row = row.operation(offer(AccountsEffect::ConnectNextcloudCalendars {
+                        account: id.clone(),
+                    }));
+                }
                 if let Some(mount) = model.cloud.mount(&id) {
                     row = row.operation(offer(AccountsEffect::SyncNow {
                         account: id.clone(),
@@ -509,6 +553,7 @@ impl AccountsArea {
             })
             .collect();
         published.extend(model.thunderbird_import_rows());
+        published.extend(model.calendar_choice_rows());
         for account in model
             .account_root
             .store()
@@ -617,22 +662,22 @@ struct AccountDraft {
     password: String,
 }
 
-struct ProbeJob {
-    receiver: std::sync::mpsc::Receiver<Result<String, String>>,
+struct ProbeJob<T = String> {
+    receiver: std::sync::mpsc::Receiver<Result<T, String>>,
     deadline: ui::time::Instant,
 }
 
-impl ProbeJob {
+impl<T> ProbeJob<T> {
     const DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
-    fn new(receiver: std::sync::mpsc::Receiver<Result<String, String>>) -> Self {
+    fn new(receiver: std::sync::mpsc::Receiver<Result<T, String>>) -> Self {
         Self {
             receiver,
             deadline: ui::time::now() + Self::DEADLINE,
         }
     }
 
-    fn poll(&self, stopped: &str) -> Option<Result<String, String>> {
+    fn poll(&self, stopped: &str) -> Option<Result<T, String>> {
         match self.receiver.try_recv() {
             Ok(result) => Some(result),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(stopped.into())),
@@ -677,7 +722,12 @@ pub struct AccountsPane {
     reauth_error: Option<String>,
     reauth_id: Option<String>,
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
-    form_probe: Option<ProbeJob>,
+    form_probe: Option<ProbeJob<Vec<tilo_dav::discovery::CalendarCollection>>>,
+    calendar_choices: Vec<(tilo_dav::discovery::CalendarCollection, bool)>,
+    /// Canonical Nextcloud metadata only; its credential stays under this ID.
+    calendar_source: Option<accounts::Account>,
+    // Private discovery baseline: never published into the resource tree.
+    calendar_baseline: Option<(Option<accounts::Account>, Option<accounts::Secret>)>,
     form_candidate: Option<AccountDraft>,
     reauth_probe: Option<ProbeJob>,
     reauth_candidate: Option<(accounts::AccountId, accounts::Secret)>,
@@ -743,6 +793,9 @@ impl AccountsPane {
             custodian: read.custodian,
             opener: std::sync::Arc::new(PortalOpener),
             cloud: CloudMounts::live(),
+            calendar_choices: Vec::new(),
+            calendar_source: None,
+            calendar_baseline: None,
             browser_removal_error: None,
             browser_removal_pending: false,
             changed: false,
@@ -787,6 +840,9 @@ impl AccountsPane {
             custodian: account_root.custodian(),
             opener: std::sync::Arc::new(PortalOpener),
             cloud: CloudMounts::at(None),
+            calendar_choices: Vec::new(),
+            calendar_source: None,
+            calendar_baseline: None,
             browser_removal_error: None,
             browser_removal_pending: false,
             changed: false,
@@ -836,15 +892,22 @@ impl AccountsPane {
         self.command(AccountViewCommand::Submit);
     }
 
-    /// Drive the same nonblocking sync polling the live host uses until the
-    /// pending account probe and its synchronous disk transaction finish.
+    /// Drive the live host's nonblocking polling until the pending probe
+    /// finishes: either calendar selection is ready or the account is saved.
+    /// Returns false on failure; a ready calendar review is not a saved account.
     /// Bounded by the probe's production deadline; unlike a fixed number of
     /// scheduler yields this remains reliable when the test suite is busy.
     #[doc(hidden)]
     pub fn finish_form_submission_for_test(&mut self) -> bool {
-        let deadline = ui::time::now() + ProbeJob::DEADLINE;
+        let deadline = ui::time::now() + ProbeJob::<String>::DEADLINE;
         while self.form_open() && ui::time::now() < deadline {
             let _ = self.poll();
+            if !self.calendar_choices.is_empty() {
+                return true;
+            }
+            if self.form_probe.is_none() && self.sign_in.is_none() {
+                return !self.form_open();
+            }
             if self.form_open() {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -1158,6 +1221,12 @@ impl AccountsPane {
 
     /// Take `command`, as the pane's buttons and their effects ask.
     pub fn command(&mut self, command: AccountViewCommand) {
+        if matches!(
+            &command,
+            AccountViewCommand::Add(_) | AccountViewCommand::Edit(_)
+        ) {
+            self.cancel_form();
+        }
         match Some(command) {
             Some(AccountViewCommand::Add(kind)) if kind.signs_in() => {
                 self.open_sign_in(kind, None);
@@ -1501,6 +1570,17 @@ impl AccountsPane {
             } else {
                 t("accounts-reauth")
             };
+            if view.kind == AccountKind::Nextcloud {
+                actions.push(self.bound(
+                    Button::new(
+                        &format!("settings.accounts.calendars.{}", view.id),
+                        &t("accounts-nextcloud-calendars"),
+                    ),
+                    AccountsEffect::ConnectNextcloudCalendars {
+                        account: view.id.clone(),
+                    },
+                ));
+            }
             let edit = t("accounts-edit");
             let check = if view.kind == AccountKind::Mail {
                 t("accounts-check-server")
@@ -1586,6 +1666,9 @@ impl AccountsPane {
         reason = "the form declares every credential field and accessibility label in one reviewable surface"
     )]
     fn account_form(&self, kind: AccountKind) -> SettingsSection {
+        if !self.calendar_choices.is_empty() || self.calendar_source.is_some() {
+            return self.calendar_selection_form();
+        }
         let display_name = t("accounts-display-name");
         let identity_name = if kind == AccountKind::Mail {
             t("accounts-email")
@@ -1615,7 +1698,11 @@ impl AccountsPane {
             | AccountKind::Dropbox
             | AccountKind::ICloudDrive => String::new(),
         };
-        let save = t("accounts-save");
+        let save = t(if kind == AccountKind::CalDav {
+            "accounts-calendar-discover"
+        } else {
+            "accounts-save"
+        });
         let cancel = t("accounts-cancel");
         let name = TextInput::from_state(&self.form_name)
             .with_kind(TextInputKind::Name)
@@ -1686,10 +1773,14 @@ impl AccountsPane {
                     fields.push(field_row(&password_label, Box::new(password)));
                 }
                 if let Some(error) = &self.form_error {
-                    fields.push(note(&t_args(
-                        "accounts-save-error",
-                        &[("error", error.as_str().into())],
-                    )));
+                    fields.push(if self.form_probe.is_some() {
+                        note(error)
+                    } else {
+                        note(&t_args(
+                            "accounts-save-error",
+                            &[("error", error.as_str().into())],
+                        ))
+                    });
                 }
                 fields.push(note(&t("accounts-form-caption")));
                 fields.push(buttons);
@@ -1771,7 +1862,11 @@ impl AccountsPane {
         }
         let identity = draft.identity.trim();
         let username = draft.username.trim();
-        let server = draft.server.trim().trim_end_matches('/');
+        let server = if kind == AccountKind::CalDav {
+            draft.server.trim()
+        } else {
+            draft.server.trim().trim_end_matches('/')
+        };
         if name.trim().is_empty() {
             return Err("enter a display name".into());
         }
@@ -2131,6 +2226,9 @@ impl AccountsPane {
                 self.form_account_id = None;
                 self.form_probe = None;
                 self.form_candidate = None;
+                self.calendar_choices.clear();
+                self.calendar_source = None;
+                self.calendar_baseline = None;
                 self.form_password.set(String::new());
                 self.clear_form_fields();
                 self.changed = true;
@@ -2146,6 +2244,10 @@ impl AccountsPane {
             if let Some(flow) = self.sign_in.as_mut() {
                 flow.submit();
                 self.changed = true;
+                return;
+            }
+            if !self.calendar_choices.is_empty() {
+                self.save_calendar_selection();
                 return;
             }
             let name = self.form_name.with(Clone::clone);
@@ -2177,10 +2279,21 @@ impl AccountsPane {
             match Self::prepare_account(&self.account_root, &draft) {
                 Ok((account, secret)) => {
                     draft.assigned_id = Some(account.id.clone());
+                    if kind == AccountKind::CalDav {
+                        self.calendar_baseline = Some((
+                            self.account_root.store().get(&account.id).cloned(),
+                            self.account_root.vault().get(&account.id),
+                        ));
+                    }
                     let tester = std::sync::Arc::clone(&self.account_tester);
                     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
                     std::thread::spawn(move || {
-                        let _ = sender.send(tester.test(&account, &secret));
+                        let result = if account.type_id.as_str() == "caldav" {
+                            tester.discover_calendars(&account, &secret)
+                        } else {
+                            tester.test(&account, &secret).map(|_| Vec::new())
+                        };
+                        let _ = sender.send(result);
                     });
                     self.form_candidate = Some(draft);
                     self.form_probe = Some(ProbeJob::new(receiver));
@@ -2207,6 +2320,14 @@ impl AccountsPane {
         if let Err(error) = result {
             self.form_candidate = None;
             self.form_error = Some(error);
+        } else if self.form_kind == Some(AccountKind::CalDav) {
+            let calendars = result.unwrap_or_default();
+            if calendars.is_empty() {
+                self.form_candidate = None;
+                self.form_error = Some(t("accounts-calendars-empty"));
+            } else {
+                self.form_error = self.stage_calendar_choices(calendars).err();
+            }
         } else {
             let Some(candidate) = self.form_candidate.take() else {
                 self.form_error = Some("account check result had no pending draft".into());
@@ -2584,7 +2705,7 @@ mod tests {
     /// Drive the host's polling until the pending account probe reports,
     /// however long the probe thread takes to be scheduled.
     fn settle_probes(pane: &mut AccountsPane) {
-        let deadline = ui::time::now() + ProbeJob::DEADLINE;
+        let deadline = ui::time::now() + ProbeJob::<String>::DEADLINE;
         loop {
             let _ = pane.poll();
             if pane.form_probe.is_none() && pane.reauth_probe.is_none() {

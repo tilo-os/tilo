@@ -12,6 +12,18 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 pub trait AccountTester: Send + Sync {
+    /// Resolve real calendars during setup. Test doubles must opt in explicitly.
+    ///
+    /// # Errors
+    /// If discovery is unsupported, unsafe, rejected, or finds no calendars.
+    fn discover_calendars(
+        &self,
+        _account: &accounts::Account,
+        _secret: &accounts::Secret,
+    ) -> Result<Vec<tilo_dav::discovery::CalendarCollection>, String> {
+        Err("Calendar discovery is unavailable".into())
+    }
+
     /// # Errors
     ///
     /// Returns a bounded, user-presentable connection or authentication error.
@@ -211,6 +223,38 @@ impl LiveAccountTester {
 }
 
 impl AccountTester for LiveAccountTester {
+    fn discover_calendars(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+    ) -> Result<Vec<tilo_dav::discovery::CalendarCollection>, String> {
+        let url = account
+            .config
+            .get("server_url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("account has no server URL")?;
+        let url = tilo_dav::Url::parse(url).map_err(|_| "invalid server URL")?;
+        let localhost_http =
+            cfg!(debug_assertions) && url.scheme() == "http" && url.host_str() == Some("localhost");
+        if url.scheme() != "https" && !localhost_http {
+            return Err("refusing to send a credential without HTTPS".into());
+        }
+        let username = account
+            .config
+            .get("username")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("account has no username")?;
+        let client = DavClient::new(&tilo_dav::Options {
+            timeout: Duration::from_secs(2),
+            connect_timeout: Some(Duration::from_secs(2)),
+            redirects: tilo_dav::Redirects::Refuse,
+            ..tilo_dav::Options::default()
+        })
+        .map_err(|_| "could not initialize the secure HTTP client")?
+        .with_credentials(Credentials::new(username, secret.password.clone()));
+        tilo_dav::discovery::calendars(&client, &url)
+    }
+
     fn test(
         &self,
         account: &accounts::Account,
@@ -218,7 +262,25 @@ impl AccountTester for LiveAccountTester {
     ) -> Result<String, String> {
         match account.type_id.as_str() {
             "email" => Self::email(account, secret),
-            "caldav" | "webdav" | "nextcloud" => Self::dav(account, secret),
+            "caldav" => {
+                let configured = account
+                    .config
+                    .get("calendars")
+                    .and_then(serde_json::Value::as_array)
+                    .filter(|calendars| !calendars.is_empty())
+                    .ok_or("Choose calendars in Edit account before checking this connection")?;
+                let discovered = self.discover_calendars(account, secret)?;
+                if !configured.iter().all(|calendar| {
+                    calendar
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|id| discovered.iter().any(|found| found.href == id))
+                }) {
+                    return Err("A selected calendar is no longer accessible. Edit the account to choose calendars again.".into());
+                }
+                Ok(format!("Found {} selected calendars", configured.len()))
+            }
+            "webdav" | "nextcloud" => Self::dav(account, secret),
             _ => Err("unsupported account type".into()),
         }
     }
@@ -399,6 +461,23 @@ mod tests {
             ),
             Err("login contains unsupported control characters".into())
         );
+    }
+
+    #[test]
+    fn a_calendar_account_without_selected_collections_is_not_connected() {
+        let server = Responder::silent();
+        let mut account = accounts::Account::new("empty-calendar", "caldav");
+        account.config = serde_json::json!({
+            "server_url": format!("http://localhost:{}/dav/", server.port()),
+            "username": "ada", "calendars": []
+        });
+        assert!(
+            LiveAccountTester
+                .test(&account, &accounts::Secret::password("secret"))
+                .unwrap_err()
+                .contains("Choose calendars")
+        );
+        server.assert_untouched();
     }
 
     fn dav_account(url: &str) -> accounts::Account {

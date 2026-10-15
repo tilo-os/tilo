@@ -116,6 +116,8 @@ workspace-hack = { version = "0.1" }
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
+# Prove that discovered selections are consumed by Calendar, not just valid JSON.
+calendar = { path = "../calendar", default-features = false }
 # Serialised, self-restoring HOME/XDG redirection for the tests that
 # construct the whole app or persist through the per-user settings file.
 tilo-test-env = { path = "../../crates/dev/test-env" }

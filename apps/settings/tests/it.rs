@@ -107,6 +107,8 @@ mod pane_geometry;
 #[path = "published_surface.rs"]
 mod published_surface;
 
+#[path = "accounts_calendar_loop.rs"]
+mod accounts_calendar_loop;
 #[path = "accounts_mail_loop.rs"]
 mod accounts_mail_loop;
 #[path = "perf_budget.rs"]
