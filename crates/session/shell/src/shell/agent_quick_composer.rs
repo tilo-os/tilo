@@ -239,6 +239,8 @@ pub(crate) struct AgentQuickComposer {
     /// can be inserted there or kept as a note.
     selection: bool,
     conversations: HashMap<ComposerOwner, Vec<ComposerTurn>>,
+    /// Agents whose last turn answers a request, rather than closing a run.
+    answered: HashSet<ComposerOwner>,
     runs: HashMap<ComposerOwner, ComposerRun>,
     /// Ended runs already told, so a repeated projection is told once.
     ended: HashSet<(String, u64)>,
@@ -267,6 +269,7 @@ impl Default for AgentQuickComposer {
             presses: Presses::default(),
             selection: false,
             conversations: HashMap::new(),
+            answered: HashSet::new(),
             runs: HashMap::new(),
             ended: HashSet::new(),
             notice: None,
@@ -488,6 +491,9 @@ impl AgentQuickComposer {
             return;
         };
         self.draft.set(draft.to_owned());
+        if conversation.last().is_some_and(|turn| turn.agent) {
+            self.answered.insert(owner.clone());
+        }
         self.conversations.insert(owner.clone(), conversation);
         self.project(&owner, run);
     }
@@ -557,6 +563,7 @@ impl AgentQuickComposer {
     }
 
     fn remember(&mut self, owner: &ComposerOwner, agent: bool, text: String) {
+        self.answered.remove(owner);
         let turns = self.conversations.entry(owner.clone()).or_default();
         turns.push(ComposerTurn { agent, text });
         let excess = turns.len().saturating_sub(MAX_TURNS);
@@ -716,6 +723,7 @@ impl AgentQuickComposer {
             ComposerOutcome::Answered(answer) => {
                 self.remember(owner, false, asked);
                 self.remember(owner, true, answer);
+                self.answered.insert(owner.clone());
                 None
             }
             ComposerOutcome::Started { task_id, title } => {
@@ -788,9 +796,13 @@ impl AgentQuickComposer {
         // A run being started has no run yet to direct or stop.
         let starting = run.is_some_and(|run| run.phase == RunPhase::Starting);
         let busy = self.busy();
-        self.view
-            .can_use_answer
-            .set(self.selection && answer.is_some() && !running && !busy);
+        self.view.can_use_answer.set(
+            self.selection
+                && answer.is_some()
+                && self.answered.contains(owner)
+                && !running
+                && !busy,
+        );
         self.view.running.set(running && !starting && !busy);
         self.view
             .enabled
@@ -1240,6 +1252,7 @@ mod tests {
         let mut composer = AgentQuickComposer::default();
         let tide = owner("tide");
         open(&mut composer, tide.clone());
+        composer.set_about_selection(true);
         composer.project(&tide, Some(working("task:one", RunPhase::Working)));
         assert!(composer.followed().is_some());
         let done = working("task:one", RunPhase::Finished(Some("Linked it.".into())));
@@ -1247,6 +1260,10 @@ mod tests {
         composer.project(&tide, Some(done));
         assert!(composer.followed().is_none());
         assert_eq!(composer.view.answer.get(), "Linked it.");
+        assert!(
+            !composer.view.can_use_answer.get(),
+            "a run's closing words are not text to insert"
+        );
         assert_eq!(
             composer.conversations[&tide].len(),
             1,
