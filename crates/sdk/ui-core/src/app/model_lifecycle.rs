@@ -68,6 +68,7 @@ impl super::App {
     }
 
     /// Presence and connection changes can change pixels without dirtying a widget.
+    #[cfg(feature = "native")]
     pub(super) fn pump_embedded_model(&mut self) -> bool {
         self.pump_hosted_model_as(host_perf_baseline())
             .presentation_changed
