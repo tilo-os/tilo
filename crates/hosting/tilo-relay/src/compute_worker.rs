@@ -15,7 +15,7 @@
 //! a job chained on an earlier job's output runs without the requester
 //! sending it back.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -47,6 +47,7 @@ use crate::compute_transport::{
 use crate::mesh::{
     ComputeAccelerator, DeviceRole, PowerAvailability, ServerAdvertisement, ServiceCapabilities,
 };
+use crate::offload_content::ReplicaContent;
 
 const HEALTH_INTERVAL: Duration = Duration::from_secs(10);
 const ADVERTISEMENT_LIFETIME_MS: u64 = 30_000;
@@ -183,6 +184,73 @@ impl HeldContent for FileComputeContentStore {
     }
 }
 
+/// Content a worker holds in several places: the first source that holds
+/// an input serves it, and one that cannot be read does not stop the rest.
+struct HeldSources(Vec<Arc<dyn HeldContent>>);
+
+impl HeldContent for HeldSources {
+    fn held(
+        &self,
+        digest: [u8; 32],
+        locator: Option<[u8; 32]>,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let mut failure = None;
+        for source in &self.0 {
+            match source.held(digest, locator, max_bytes) {
+                Ok(Some(bytes)) => return Ok(Some(bytes)),
+                Ok(None) => {}
+                Err(error) => failure = Some(error),
+            }
+        }
+        failure.map_or(Ok(None), Err)
+    }
+
+    fn locates(&self) -> bool {
+        self.0.iter().any(|source| source.locates())
+    }
+}
+
+/// What a production worker holds for the jobs routed to it: the outputs
+/// it retains, for a job in any workspace, and the filesystem replica this
+/// device keeps of a workspace ([`ReplicaContent`]), for that workspace's
+/// jobs only. Either is used only once the job's requester proves it holds
+/// the same bytes ([`hydrate_job_inputs`]).
+#[derive(Clone)]
+pub struct WorkerHeldContent {
+    outputs: Arc<dyn HeldContent>,
+    by_workspace: HashMap<u64, Arc<dyn HeldContent>>,
+}
+
+impl WorkerHeldContent {
+    /// `outputs`, plus each workspace's replica stores in `replicas`.
+    #[must_use]
+    pub fn new(outputs: Arc<dyn HeldContent>, replicas: &BTreeMap<u64, Vec<PathBuf>>) -> Self {
+        let by_workspace = replicas
+            .iter()
+            .filter(|(_, dirs)| !dirs.is_empty())
+            .map(|(&workspace_id, dirs)| {
+                let replica: Arc<dyn HeldContent> = Arc::new(ReplicaContent::new(dirs.clone()));
+                let sources: Arc<dyn HeldContent> =
+                    Arc::new(HeldSources(vec![Arc::clone(&outputs), replica]));
+                (workspace_id, sources)
+            })
+            .collect();
+        Self {
+            outputs,
+            by_workspace,
+        }
+    }
+
+    /// What a job in `workspace_id` may run on in place of fetching.
+    #[must_use]
+    pub fn for_workspace(&self, workspace_id: u64) -> Arc<dyn HeldContent> {
+        self.by_workspace
+            .get(&workspace_id)
+            .map_or_else(|| Arc::clone(&self.outputs), Arc::clone)
+    }
+}
+
 /// Inputs needed to own a production worker session.
 pub struct ProductionComputeWorkerConfig {
     /// Local endpoint used to originate the authenticated worker session.
@@ -205,6 +273,10 @@ pub struct ProductionComputeWorkerConfig {
     pub readiness: Arc<AtomicBool>,
     /// Environment sessions and legacy apps this worker hosts for members.
     pub environments: WorkerEnvironments,
+    /// The filesystem replica stores this device keeps, by relay workspace
+    /// (a home peer's cache directories): content a job in that workspace
+    /// may run on once its requester proves it holds the same bytes.
+    pub replicas: BTreeMap<u64, Vec<PathBuf>>,
 }
 
 /// What a worker hosts for members besides batch jobs.
@@ -411,8 +483,9 @@ pub async fn run_production_compute_worker(
         .ok_or_else(|| ComputeWorkerError::Health("launcher has no trusted data home".into()))?;
     let content = FileComputeContentStore::open(config.state_root.join("content"))?;
     // The outputs this worker retains are content it holds: a job chained
-    // on one runs without its requester sending it back.
-    let held: Arc<dyn HeldContent> = Arc::new(content.clone());
+    // on one runs without its requester sending it back. So is a workspace
+    // replica this device keeps: a job on its files runs on them in place.
+    let held = WorkerHeldContent::new(Arc::new(content.clone()), &config.replicas);
     let advertisement = server_advertisement(&config, &health, 0);
     let executor = Arc::new(ComputeWorker::new(
         advertisement,
@@ -989,7 +1062,7 @@ async fn handle_delivery(
     client: &mut ComputeClient,
     config: &ProductionComputeWorkerConfig,
     health: &WorkerHealth,
-    (executor, held): (&Arc<ProductionExecutor>, &Arc<dyn HeldContent>),
+    (executor, held): (&Arc<ProductionExecutor>, &WorkerHeldContent),
     completed: &tokio::sync::mpsc::Sender<CompletedJob>,
     active: &mut ActiveJobs,
     delivery: ComputeDelivery,
@@ -1046,7 +1119,7 @@ async fn handle_delivery(
             let connection = client.connection();
             let staging = InputStaging {
                 root: config.state_root.join("inputs"),
-                held: Some(Arc::clone(held)),
+                held: Some(held.for_workspace(spec.workspace_id)),
             };
             tokio::spawn(async move {
                 let job = hex::encode(spec.job_id);
@@ -1307,6 +1380,49 @@ impl Drop for ReadinessGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_workspace_replica_is_held_only_for_that_workspace_s_jobs() {
+        let root = tempfile::tempdir().unwrap();
+        let replica = root.path().join("replica");
+        let file: Vec<u8> = (0..2 * 1024 * 1024_u32)
+            .map(|index| u8::try_from(index % 239).unwrap())
+            .collect();
+        let file_digest = *blake3::hash(&file).as_bytes();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let store = runtime
+            .block_on(::fs::store::ContentStore::open(&replica))
+            .unwrap();
+        let manifest = *runtime
+            .block_on(store.write_content(&file))
+            .unwrap()
+            .unwrap()
+            .as_bytes();
+        let outputs = FileComputeContentStore::open(root.path().join("content")).unwrap();
+        let output = b"a retained output".to_vec();
+        let output_digest = *blake3::hash(&output).as_bytes();
+        outputs.put(output_digest, &output).unwrap();
+        let held = WorkerHeldContent::new(Arc::new(outputs), &BTreeMap::from([(7, vec![replica])]));
+
+        let own = held.for_workspace(7);
+        assert!(own.locates());
+        assert_eq!(
+            own.held(file_digest, Some(manifest), u64::MAX),
+            Ok(Some(file.clone()))
+        );
+        assert_eq!(own.held(file_digest, None, u64::MAX), Ok(None));
+        assert_eq!(
+            own.held(output_digest, None, u64::MAX),
+            Ok(Some(output.clone()))
+        );
+        // Another workspace's job never reaches this replica, only the
+        // outputs every job may chain on.
+        let other = held.for_workspace(8);
+        assert!(!other.locates());
+        assert_eq!(other.held(file_digest, Some(manifest), u64::MAX), Ok(None));
+        assert_eq!(other.held(output_digest, None, u64::MAX), Ok(Some(output)));
+        drop(store);
+    }
 
     #[test]
     #[allow(

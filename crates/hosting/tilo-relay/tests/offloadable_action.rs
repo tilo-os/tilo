@@ -9,7 +9,7 @@
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until the test ends"
 )]
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use launcher::capture::{CaptureCancellation, CapturedRunOutput, CapturedTermination};
@@ -28,7 +28,7 @@ use tilo_relay::{
     ComputeResultUpdate, ComputeSandbox, ComputeSandboxInvocation, ComputeStatusUpdate,
     ComputeWorker, ComputeWorkerAdvertisement, Envelope, FileComputeContentStore, HeldContent,
     InputStaging, InputTransfer, PowerAvailability, RelayClient, WorkerEnvironments,
-    run_compute_assignment, serve_worker_stream_with,
+    WorkerHeldContent, run_compute_assignment, serve_worker_stream_with,
 };
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
@@ -449,7 +449,52 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
         (IMAGES, u64::try_from(input_bytes).unwrap())
     );
 
-    // Without that replica the inputs hydrate from the laptop through the
+    // As deployed, the desktop is a home server: its filesystem replica
+    // process keeps the workspace's store open, and the worker beside it
+    // holds what the production worker holds for a job in this workspace —
+    // its retained outputs and that replica, read from beside it.
+    let replica_dir = root.path().join("full-replica");
+    let replica = fs::store::ContentStore::open(&replica_dir).await.unwrap();
+    for bytes in &photographs {
+        replica.write_content(bytes).await.unwrap().unwrap();
+    }
+    let worker_held = WorkerHeldContent::new(
+        Arc::new(FileComputeContentStore::open(root.path().join("retained")).unwrap()),
+        &BTreeMap::from([(WORKSPACE, vec![replica_dir])]),
+    );
+    staging.next.lock().unwrap().held = Some(worker_held.for_workspace(WORKSPACE));
+    let on_replica = tilo_test_env::within(
+        "the offloaded run on a home server's replica",
+        offloader.invoke(
+            OffloadJob {
+                workspace_id: WORKSPACE,
+                action: &action,
+                inputs: manifests.clone(),
+            },
+            Arc::clone(&local),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(on_replica.ran_on, RanOn::Worker(desktop_key));
+    assert_eq!(
+        on_replica.output, here.output,
+        "the same output, run on the replica's copies"
+    );
+    let from_replica = *staging.staged.lock().unwrap().last().unwrap();
+    assert_eq!(
+        (from_replica.inputs, from_replica.bytes),
+        (0, 0),
+        "inputs a replica holds move no bytes"
+    );
+    assert_eq!(
+        (from_replica.held, from_replica.held_bytes),
+        (IMAGES, u64::try_from(input_bytes).unwrap())
+    );
+    // A job in another workspace never reaches this replica.
+    assert!(!worker_held.for_workspace(WORKSPACE + 1).locates());
+
+    // Without a replica the inputs hydrate from the laptop through the
     // relay, and the output is still the same.
     staging.next.lock().unwrap().held = None;
     let there = tilo_test_env::within(
@@ -492,10 +537,18 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
     eprintln!(
         "offloadable action ({IMAGES} images, {input_bytes} input bytes): \
          local {:?}, offloaded {:?} (inputs staged in {:?}), \
-         offloaded to a worker already holding them {:?} (staged in {:?}) \
+         offloaded to a worker already holding them {:?} (staged in {:?}), \
+         offloaded to a home server's replica {:?} (staged in {:?}) \
          (single host: both devices share its cores)",
-        here.elapsed, there.elapsed, fetched.elapsed, preseeded.elapsed, from_held.elapsed,
+        here.elapsed,
+        there.elapsed,
+        fetched.elapsed,
+        preseeded.elapsed,
+        from_held.elapsed,
+        on_replica.elapsed,
+        from_replica.elapsed,
     );
+    drop(replica);
 
     // The relay measured the link while it moved those inputs, so it now
     // weighs moving them against the laptop's own run: inputs far heavier

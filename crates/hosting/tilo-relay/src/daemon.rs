@@ -5,8 +5,8 @@
 //! Also exposes the `Relay` struct so integration tests can spin up
 //! two relays in the same process and let them merge.
 
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -1023,6 +1023,12 @@ impl Relay {
                 state_root: cfg.state_root.join("compute-worker"),
                 readiness: Arc::clone(&compute_ready),
                 environments,
+                // Running jobs on the replica's copies only saves transfers;
+                // without them every input is fetched.
+                replicas: home_peer_replicas(&cfg.home_peer_bundle).unwrap_or_else(|error| {
+                    tracing::warn!(%error, "compute worker runs without the home-peer replica");
+                    BTreeMap::new()
+                }),
             };
             let worker_task = tokio::spawn(async move {
                 if let Err(error) = run_production_compute_worker(worker_config).await {
@@ -1380,6 +1386,49 @@ impl Relay {
     }
 }
 
+/// A home-peer workspace's filesystem ticket and the relay workspaces it
+/// backs.
+fn home_peer_relay_workspaces(
+    workspace: &fs::full_replica::HomePeerBundle,
+) -> Result<(fs::Ticket, Vec<u64>), RelayError> {
+    let ticket = fs::Ticket::decode(&workspace.ticket)
+        .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
+    let relay_workspace_ids = if workspace.relay_workspace_ids.is_empty() {
+        // Bundles exported before room bindings existed have one stable
+        // fallback shard. New enrollment always writes explicit ids.
+        vec![
+            crate::room_workspace_id(&ticket.workspace_id().to_string())
+                .map_err(|error| RelayError::Identity(format!("invalid workspace id: {error}")))?,
+        ]
+    } else {
+        workspace.relay_workspace_ids.clone()
+    };
+    Ok((ticket, relay_workspace_ids))
+}
+
+/// The filesystem replica stores the home peer on this device keeps, by the
+/// relay workspace each backs: content this device's compute worker may run
+/// a job on once the job's requester proves it holds the same bytes.
+fn home_peer_replicas(bundle_path: &Path) -> Result<BTreeMap<u64, Vec<PathBuf>>, RelayError> {
+    let mut replicas = BTreeMap::<u64, Vec<PathBuf>>::new();
+    if !bundle_path.exists() {
+        return Ok(replicas);
+    }
+    let text = std::fs::read_to_string(bundle_path)?;
+    let bundle: fs::full_replica::HomePeerSet = toml::from_str(&text)
+        .map_err(|error| RelayError::Identity(format!("invalid home-peer bundle: {error}")))?;
+    for workspace in &bundle.workspaces {
+        let (_, relay_workspace_ids) = home_peer_relay_workspaces(workspace)?;
+        for id in relay_workspace_ids {
+            let dirs = replicas.entry(id).or_default();
+            if !dirs.contains(&workspace.cache_dir) {
+                dirs.push(workspace.cache_dir.clone());
+            }
+        }
+    }
+    Ok(replicas)
+}
+
 /// Import full-workspace residency from the same bundle the filesystem worker
 /// consumes. The operator cannot accidentally advertise a relay-only binding
 /// for a workspace whose NAS worker is configured to retain complete content.
@@ -1400,19 +1449,7 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
     let mut collaborators = Vec::new();
     let now = unix_now();
     for workspace in bundle.workspaces {
-        let ticket = fs::Ticket::decode(&workspace.ticket)
-            .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
-        let relay_workspace_ids = if workspace.relay_workspace_ids.is_empty() {
-            // Bundles exported before room bindings existed have one stable
-            // fallback shard. New enrollment always writes explicit ids.
-            vec![
-                crate::room_workspace_id(&ticket.workspace_id().to_string()).map_err(|error| {
-                    RelayError::Identity(format!("invalid workspace id: {error}"))
-                })?,
-            ]
-        } else {
-            workspace.relay_workspace_ids.clone()
-        };
+        let (ticket, relay_workspace_ids) = home_peer_relay_workspaces(&workspace)?;
         // An FS authority is deliberately *not* a relay-room membership
         // list.  In particular, an FsPath grant lets a collaborator read a
         // path in the global Files namespace; it must never silently give
@@ -3209,6 +3246,17 @@ mod tests {
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+            // The compute worker beside the replica holds its store for the
+            // shard's jobs, and only that shard's.
+            assert_eq!(
+                home_peer_replicas(&bundle_path).unwrap(),
+                BTreeMap::from([(42, vec![temp.path().join("cache")])])
+            );
+            assert!(
+                home_peer_replicas(&temp.path().join("absent.toml"))
+                    .unwrap()
+                    .is_empty()
+            );
             let mut config = RelayConfig {
                 home_peer_bundle: bundle_path,
                 full_replica_status: status,
