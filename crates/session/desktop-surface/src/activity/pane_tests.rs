@@ -3961,10 +3961,23 @@ mod task_review_tests {
     struct ReviewHost {
         snapshot: RefCell<crate::activity::TaskReviewSnapshot>,
         submitted: RefCell<Vec<crate::activity::TaskReviewRequest>>,
+        mutations: std::cell::Cell<bool>,
+        launched: RefCell<Vec<String>>,
     }
     impl ActivityHost for ReviewHost {
         fn local_user(&self) -> String {
             "local".into()
+        }
+        fn mutations_available(&self) -> bool {
+            self.mutations.get()
+        }
+        fn launch_agent(
+            &self,
+            agent: &str,
+            _workspace: &tilo_desktop_model::Workspace,
+        ) -> Result<(), String> {
+            self.launched.borrow_mut().push(agent.into());
+            Ok(())
         }
         fn task_review_required(&self, _room: &str) -> bool {
             true
@@ -4028,6 +4041,8 @@ mod task_review_tests {
                 )]),
             }),
             submitted: RefCell::default(),
+            mutations: std::cell::Cell::new(false),
+            launched: RefCell::default(),
         });
         let mut pane = RoomActivityPane::new();
         pane.set_host(host.clone());
@@ -4133,6 +4148,38 @@ mod task_review_tests {
                 assert!(!actions.contains(&TaskAction::CancelRun));
             }
         }
+    }
+    #[test]
+    fn an_approved_run_offers_to_start_its_offline_agent() {
+        let (mut tree, mut pane, host) = review_fixture();
+        host.mutations.set(true);
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.tasks[0].status = WorkspaceTaskStatus::InProgress;
+        }
+        pane.refresh(&mut tree);
+        assert!(
+            pane.task_actions_for(&pane.tasks[0])
+                .contains(&TaskAction::StartAgent),
+            "an approved run reaches no one until its agent is running"
+        );
+        pane.apply_task_action(TaskAction::StartAgent, &mut tree);
+        assert_eq!(*host.launched.borrow(), ["scribe"]);
+        assert!(
+            !pane
+                .task_actions_for(&pane.tasks[0])
+                .contains(&TaskAction::StartAgent),
+            "a starting agent is not offered a second start"
+        );
+        host.snapshot.borrow_mut().tasks[0].status = WorkspaceTaskStatus::Done;
+        pane.agent_startup.clear();
+        pane.refresh(&mut tree);
+        assert!(
+            !pane
+                .task_actions_for(&pane.tasks[0])
+                .contains(&TaskAction::StartAgent),
+            "a finished task has no run to start an agent for"
+        );
     }
     #[test]
     fn queued_run_approval_uses_exact_frontier_and_shared_keyboard_controls() {
