@@ -1611,6 +1611,7 @@ beside the model gateway:
 ```bash
 dist/dev/nested-session.sh                                  # core apps + agent
 dist/dev/nested-session.sh --apps "notes chat agent"        # a smaller set
+dist/dev/nested-session.sh --headless --fresh-desktop       # no window at all
 ```
 
 Everything lives in `~/.local/state/tilo-nested` (`--state DIR`): a scratch
@@ -1623,7 +1624,24 @@ command line for driving the session; logs are under `logs/` in the state
 directory. Configure a model provider in the nested Settings app before
 asking the agent to act. The browser installs without its Chromium engine and
 offers to fetch it itself. `--fresh-desktop` forgets saved workspaces and
-windows but keeps the identity and the installed apps.
+windows but keeps the identity and the installed apps. The window opens at
+1280x800 logical pixels at the host's scale, which leaves the task centre room
+for its cards; `TILO_WINIT_SIZE=WxH` (physical pixels) overrides it.
+
+`--headless` starts the same stack on the offscreen backend and needs no
+Wayland session: nothing appears on your desktop, and you drive it only
+through the printed `tilo-control` line (`actions invoke`, `key`, `type`,
+`click-at`, `read APP`, and `snapshot FILE`, which renders the 1280x800 output,
+or `TILO_HEADLESS_SIZE`). Use it for scripted and agent end-to-end runs.
+
+On the first start the script makes the Home workspace a native room: agent
+tasks act with a room's native authority, and the throwaway person has no
+second device to govern one. It runs the packaged-desktop governor fixture,
+which signs an invitation with the session's own device, and the shell
+redeems it at boot; `logs/native.log` says when the room is native. Later
+starts restore it from the saved desktop, and `--fresh-desktop` enrols a new
+one. Admit an agent to the room (`so.tilo.desktop` `add-agent`) before queuing
+tasks for it.
 
 ### Edit → build → log into your own build
 

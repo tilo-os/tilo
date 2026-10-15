@@ -22,6 +22,13 @@
 #   --prepare-only     build and install, then exit without starting the shell
 #   --reset-identity   discard the throwaway identity and mint a new one
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
+#   --headless         run without a window on the offscreen backend, for
+#                      scripted runs driven only through tilo-control
+#
+# The window opens at 1280x800 logical pixels; set TILO_WINIT_SIZE=WxH
+# (physical pixels) to choose another size. A headless session renders a
+# 1280x800 output (TILO_HEADLESS_SIZE overrides it) only when tilo-control
+# asks for a snapshot.
 #
 # Re-running rebuilds through rcargo (incremental on the builder) and repackages
 # only apps whose binary, manifest or surface changed. A changed shared runtime
@@ -29,13 +36,14 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
-default_apps="agent notes code-editor word-processor chat settings sheets file-explorer browser terminal"
+default_apps="agent notes code-editor word-processor chat settings sheets file-explorer browser terminal web-search"
 apps=$default_apps
 state=${XDG_STATE_HOME:-$HOME/.local/state}/tilo-nested
 build=1
 prepare_only=0
 reset_identity=0
 fresh_desktop=0
+headless=0
 shell_args=()
 
 die() { printf 'nested-session: %s\n' "$*" >&2; exit 1; }
@@ -49,6 +57,7 @@ while (($#)); do
         --prepare-only) prepare_only=1; shift ;;
         --reset-identity) reset_identity=1; shift ;;
         --fresh-desktop) fresh_desktop=1; shift ;;
+        --headless) headless=1; shift ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
         --) shift; shell_args=("$@"); break ;;
         *) die "unknown option: $1 (see --help)" ;;
@@ -58,18 +67,26 @@ done
 for tool in rcargo jq bwrap dbus-run-session readelf python3 sha256sum; do
     command -v "$tool" >/dev/null || die "$tool is required on PATH"
 done
-[[ -n ${WAYLAND_DISPLAY:-} ]] || die "run this from a Wayland desktop session (WAYLAND_DISPLAY is unset)"
 host_runtime=${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset}
-case $WAYLAND_DISPLAY in
-    /*) host_display=$WAYLAND_DISPLAY ;;
-    *) host_display=$host_runtime/$WAYLAND_DISPLAY ;;
-esac
-[[ -S $host_display ]] || die "host Wayland socket $host_display does not exist"
+host_display=
+if ((!headless)); then
+    [[ -n ${WAYLAND_DISPLAY:-} ]] || die "run this from a Wayland desktop session (WAYLAND_DISPLAY is unset), or pass --headless"
+    case $WAYLAND_DISPLAY in
+        /*) host_display=$WAYLAND_DISPLAY ;;
+        *) host_display=$host_runtime/$WAYLAND_DISPLAY ;;
+    esac
+    [[ -S $host_display ]] || die "host Wayland socket $host_display does not exist"
+fi
 
 selected=()
 for app in $apps; do
     [[ $app == files ]] && app=file-explorer
-    [[ -f $repo_root/apps/$app/tilo-app.toml ]] || die "no app named $app under apps/"
+    if [[ ! -f $repo_root/apps/$app/tilo-app.toml ]]; then
+        # The default list names apps some branches do not carry yet (web
+        # search, for one); an app asked for by name must exist.
+        [[ $apps == "$default_apps" ]] && continue
+        die "no app named $app under apps/"
+    fi
     selected+=("$app")
 done
 ((${#selected[@]})) || die "no apps selected"
@@ -107,8 +124,9 @@ if ((build)); then
     say "building host binaries (rcargo, profile $profile, dev-overrides)"
     fetch=()
     for name in "${host_bins[@]}"; do fetch+=(--fetch "$profile/$name"); done
+    fetch+=(--fetch "$profile/examples/packaged_native_governor")
     (cd "$repo_root" && rcargo "${fetch[@]}" build --locked --profile "$profile" "${profile_config[@]}" \
-        -p shell --bin shell --features shell/dev-overrides \
+        -p shell --bin shell --example packaged_native_governor --features shell/dev-overrides \
         -p launcher --bin tilo-launcher --features launcher/dev-overrides \
         -p install --bin tilo-install \
         -p tilo-app-package-cli --bin tilo-app-package \
@@ -116,7 +134,7 @@ if ((build)); then
         -p tilo-model-gateway --bin tilo-model-gateway \
         -p tilo-control --bin tilo-control)
 fi
-for name in "${host_bins[@]}"; do
+for name in "${host_bins[@]}" examples/packaged_native_governor; do
     [[ -x $bin/$name ]] || die "missing $bin/$name (run without --no-build)"
 done
 
@@ -310,8 +328,12 @@ fi
 identity_dir=$XDG_CONFIG_HOME/tilo/identity
 marker=$identity_dir/throwaway-test-identity
 if ((reset_identity)) || { [[ -f $marker ]] && [[ -n $(find "$marker" -mmin +1200) ]]; }; then
-    say "discarding the throwaway identity"
-    rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT"
+    # A new identity is a new person: the native workspace the old one
+    # governs belongs to someone else now.
+    say "discarding the throwaway identity and its desktop"
+    rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT" \
+        "$XDG_CONFIG_HOME"/tilo/state.json "$XDG_CONFIG_HOME"/tilo/state.json.* \
+        "$XDG_CONFIG_HOME"/tilo/state.automerge*
     mkdir -p "$TILO_IDENTITY_ROOT"
 fi
 if [[ ! -f $marker ]]; then
@@ -331,6 +353,40 @@ if [[ ! -f $marker ]]; then
     mkdir -m 700 "$runtime"
 fi
 
+# --- Native workspace ---------------------------------------------------------
+# Agent tasks act with a workspace's native authority: a task may open a
+# closed app only in a room this device's native owner holds, and a room is
+# native once a governor admitted the device through a signed invitation.
+# The throwaway person has no other device to govern a room, so the first
+# start runs the repository's packaged-desktop governor fixture: it signs an
+# invitation with this session's own device custody, and the shell redeems it
+# at startup into the Home workspace (TILO_SHELL_JOIN_INVITATION_FILE, the
+# ordinary boot join). The device then governs that room itself, and every
+# later start restores it from the saved desktop.
+native_marker=$state/native-workspace
+[[ -f $XDG_CONFIG_HOME/tilo/state.json ]] || rm -f "$native_marker"
+join_file=
+if [[ ! -f $native_marker ]]; then
+    say "enrolling the Home workspace into a native room"
+    invitation=$state/native-invitation.json
+    rm -f "$invitation"
+    setsid "$bin/examples/packaged_native_governor" "$state" "$invitation" \
+        > "$logs/governor.log" 2>&1 &
+    governor_pid=$!
+    children+=("$governor_pid")
+    tries=300
+    until [[ -s $invitation ]]; do
+        ((tries--)) && kill -0 "$governor_pid" 2>/dev/null \
+            || die "the governor fixture issued no invitation (see $logs/governor.log)"
+        sleep 0.1
+    done
+    # The invitation is a capability: it stays in owner-only files and is
+    # removed once redeemed.
+    join_file=$runtime/join-invitation
+    (umask 077 && jq -er .invitation "$invitation" > "$join_file")
+    rm -f "$invitation"
+fi
+
 mkdir -p "$runtime/tilo/services"
 chmod 700 "$runtime/tilo" "$runtime/tilo/services"
 setsid "$bin/tilo-model-gateway" serve --socket "$runtime/tilo/services/model-gateway.sock" \
@@ -344,14 +400,60 @@ for name in pipewire-0 pulse; do
     [[ -e $host_runtime/$name ]] && ln -s "$host_runtime/$name" "$runtime/$name"
 done
 
-say "starting the nested shell (log: $logs/shell.log)"
+# The default window is 1600x900 physical pixels, which a 2x host shows as
+# 800x450: too small for the task centre, which drops a card that does not
+# fit. Ask for 1280x800 logical at the host's scale (GNOME reports it; others
+# get scale 1) unless the caller chose a size.
+if ((headless)); then
+    export TILO_HEADLESS_SIZE=${TILO_HEADLESS_SIZE:-1280x800}
+elif [[ -z ${TILO_WINIT_SIZE:-} ]]; then
+    host_scale=$(busctl --user --json=short call org.gnome.Mutter.DisplayConfig \
+        /org/gnome/Mutter/DisplayConfig org.gnome.Mutter.DisplayConfig GetCurrentState \
+        2>/dev/null | jq -r '[.data[2][] | select(.[4]) | .[2]][0] // empty' 2>/dev/null) || true
+    export TILO_WINIT_SIZE=$(awk -v s="${host_scale:-1}" \
+        'BEGIN { if (s + 0 <= 0) s = 1; printf "%dx%d", 1280 * s, 800 * s }')
+fi
+
+if ((headless)); then
+    backend=(--backend headless)
+    display_env=(-u WAYLAND_DISPLAY -u DISPLAY)
+    say "starting the shell headless at ${TILO_HEADLESS_SIZE} (log: $logs/shell.log)"
+else
+    backend=(--backend winit)
+    display_env=(-u DISPLAY "WAYLAND_DISPLAY=$host_display")
+    say "starting the nested shell at ${TILO_WINIT_SIZE} (log: $logs/shell.log)"
+fi
 cat >&2 <<EOF
     drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control actions list
 EOF
-WAYLAND_DISPLAY=$host_display TILO_TEST_CONTROL=$control setsid dbus-run-session -- \
-    "$bin/shell" --backend winit "${shell_args[@]}" > "$logs/shell.log" 2>&1 &
+join_env=()
+[[ -n $join_file ]] && join_env=("TILO_SHELL_JOIN_INVITATION_FILE=$join_file")
+env "${display_env[@]}" TILO_TEST_CONTROL="$control" "${join_env[@]}" setsid dbus-run-session -- \
+    "$bin/shell" "${backend[@]}" "${shell_args[@]}" > "$logs/shell.log" 2>&1 &
 shell_pid=$!
 children+=("$shell_pid")
+
+# Note once the boot join committed the Home workspace's native room.
+confirm_native() {
+    local dump tries=600
+    while ((tries--)); do
+        kill -0 "$shell_pid" 2>/dev/null || return 0
+        dump=$("$bin/tilo-control" state-dump 2>/dev/null) || dump='{}'
+        if jq -e '.workspace_tree as $t | (($t.workspaces // [])[] | select(.id == $t.active) | .room | tostring)
+                as $room | ($t.native_authority.rooms // {}) | has($room)' <<<"$dump" >/dev/null; then
+            rm -f "$join_file"
+            touch "$native_marker"
+            echo "the Home workspace is native"
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo "the Home workspace did not become native; see governor.log and shell.log"
+    return 1
+}
+if [[ -n $join_file ]]; then
+    TILO_TEST_CONTROL=$control confirm_native > "$logs/native.log" 2>&1 &
+fi
 status=0
 wait "$shell_pid" || status=$?
 exit "$status"
