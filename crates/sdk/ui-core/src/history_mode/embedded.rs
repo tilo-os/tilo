@@ -115,6 +115,34 @@ pub(crate) fn needs_refresh(
     });
     needed
 }
+/// One walk for a frame that changes nothing History reads: `None` when any
+/// surface is not at rest (`HistoryHost::at_rest`), otherwise whether any needs a
+/// refresh ([`needs_refresh`]). While every surface rests, entry capture,
+/// review service, focus return, control return and focus denial have
+/// nothing to do, so such a frame skips their walks.
+pub(crate) fn surfaces_at_rest(
+    root: &dyn Widget,
+    doc: &automerge::AutoCommit,
+    fallback_width: f64,
+) -> Option<bool> {
+    let mut resting = true;
+    let mut needed = false;
+    crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
+        if !resting || !history.at_rest() {
+            resting = false;
+            return;
+        }
+        let width = if history.get_rect().width() > 0.0 {
+            history.get_rect().width()
+        } else {
+            fallback_width
+        };
+        needed |= history.validate_root(live).is_err()
+            || !history.sync_status_matches(None)
+            || history.needs_refresh(doc, width);
+    });
+    resting.then_some(needed)
+}
 pub(crate) fn capture_entries(root: &mut dyn Widget, doc: &automerge::AutoCommit) {
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
         if history.captures_input() {
