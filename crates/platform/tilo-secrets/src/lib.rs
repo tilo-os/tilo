@@ -54,6 +54,8 @@ mod caps;
 pub mod conformance;
 #[cfg(any(target_os = "windows", test))]
 mod credential;
+#[cfg(target_os = "linux")]
+mod device_proof;
 #[cfg(unix)]
 mod files;
 #[cfg(target_os = "linux")]
@@ -66,6 +68,11 @@ pub mod web;
 mod windows;
 
 pub use caps::{Availability, Feature, Unsupported, availability, available};
+/// A process that holds the device identity proves it to
+/// `tilo-secret-service`, which cannot read a non-dumpable process's
+/// executable (see the module docs of `device_proof`).
+#[cfg(target_os = "linux")]
+pub use device_proof::{arm as arm_device_proof, prove as prove_device_caller};
 
 /// Secret bytes: wiped from memory on drop and never printed by `Debug`.
 #[derive(Clone, PartialEq, Eq)]
