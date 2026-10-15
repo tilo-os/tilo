@@ -442,6 +442,10 @@ fn an_agent_reads_its_artwork_through_the_canvass_views() {
     let look = effect(&agent, "look").expect("and its look");
     assert_eq!(look.kind, OperationKind::View);
     assert!(
+        tilo_agent_participant::planner::readable(&look),
+        "a look runs as a read while a task is planned: {look:?}"
+    );
+    assert!(
         agent
             .survey()
             .iter()
@@ -487,6 +491,11 @@ fn an_agent_reads_its_artwork_through_the_canvass_views() {
     let value = looked.value.clone().unwrap();
     assert_eq!(value["content"], kept.as_str(), "{value}");
     assert!(value["width"].as_f64().is_some_and(|width| width > 0.0));
+    assert_eq!(
+        tilo_agent_participant::planner::rendered_picture(&looked).as_deref(),
+        Some(kept.as_str()),
+        "the picture it rendered, for a planning model to be shown"
+    );
     let seen =
         tilo_agent_participant::planner::observation(CANVAS, &look.address, &looked).unwrap();
     assert!(seen.contains(kept.as_str()), "{seen}");

@@ -1017,7 +1017,14 @@ impl ui::tilo_resource::Effect for ViewOp {
                     OperationKind::Effect
                 },
                 row: false,
-                answers: if matches!(declared.id, "look" | "export" | "find-area") {
+                // A look renders in the background yet answers with its
+                // picture, so a planner may run it as a read and be shown it.
+                answers: if declared.id == "look" {
+                    ui::tilo_resource::Answers::Later {
+                        cancellable: false,
+                        returns: true,
+                    }
+                } else if matches!(declared.id, "export" | "find-area") {
                     ui::tilo_resource::Answers::Later {
                         cancellable: false,
                         returns: false,
