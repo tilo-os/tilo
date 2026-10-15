@@ -865,14 +865,18 @@ impl PeerSyncOverlay {
         } else {
             "peer-sync-title-workspace-invite"
         });
-        let title = text_renderer.elide_to_width(&title, title_size, f32_of_f64(m.avail));
-        text_renderer.draw_text(
+        let title = text_renderer.elide_to_width_style(
+            &title,
+            f32_of_f64(m.avail),
+            &theme.text(TextRole::Body),
+        );
+        text_renderer.draw_style(
             scene,
             &title,
-            title_size,
             colors.text_primary,
             transform.pre_translate((rect.x0 + pad, y).into()),
             None,
+            &theme.text(TextRole::Body),
         );
         y += f64::from(title_size) + f64::from(tokens.spacing.s3);
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
@@ -903,16 +907,18 @@ impl PeerSyncOverlay {
             y = self.draw_pending_invitations(&mut ctx, &m, y);
         }
         if let Some(status) = self.state.status.as_deref() {
-            let status = ctx
-                .text
-                .elide_to_width(status, body_size, f32_of_f64(m.avail));
-            ctx.text.draw_text(
+            let status = ctx.text.elide_to_width_style(
+                status,
+                f32_of_f64(m.avail),
+                &theme.text(TextRole::Caption),
+            );
+            ctx.text.draw_style(
                 ctx.scene,
                 &status,
-                body_size,
                 colors.text_primary,
                 transform.pre_translate((rect.x0 + pad, y).into()),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
         ctx.scene.pop_layer();
@@ -942,14 +948,18 @@ impl PeerSyncOverlay {
         let total = self.state.pending_invitations.len();
         let end = self.pending_offset.saturating_add(3).min(total);
         let heading = pending_heading(self.pending_offset, end, total);
-        let heading = text.elide_to_width(&heading, body, f32_of_f64(m.avail));
-        text.draw_text(
+        let heading = text.elide_to_width_style(
+            &heading,
+            f32_of_f64(m.avail),
+            &theme.text(TextRole::Caption),
+        );
+        text.draw_style(
             scene,
             &heading,
-            body,
             colors.text_dim,
             transform.pre_translate((rect.x0 + pad, y).into()),
             None,
+            &theme.text(TextRole::Caption),
         );
         let spacing = &theme.tokens.spacing;
         let (s1, s2) = (f64::from(spacing.s1), f64::from(spacing.s2));
@@ -987,7 +997,10 @@ impl PeerSyncOverlay {
             let copy_label = t("peer-sync-copy");
             let cancel_label = t("peer-sync-cancel");
             let label_w = |text: &mut TextRenderer, label: &str| {
-                f64::from(text.measure(label, body, None).0) + 2.0 * f64::from(spacing.s3)
+                f64::from(
+                    text.measure_style(label, None, &theme.text(TextRole::Caption))
+                        .0,
+                ) + 2.0 * f64::from(spacing.s3)
             };
             let cancel_w = label_w(text, &cancel_label);
             let copy_w = label_w(text, &copy_label);
@@ -996,23 +1009,25 @@ impl PeerSyncOverlay {
             let cancel = Rect::new(row.x1 - s1 - cancel_w, by0, row.x1 - s1, by0 + target);
             let resend = Rect::new(cancel.x0 - s1 - copy_w, by0, cancel.x0 - s1, by0 + target);
             let text_w = f32_of_f64((resend.x0 - row.x0 - s2 - s2).max(0.0));
-            let shown_name = text.elide_to_width(&invite.name, body, text_w);
-            let shown_detail = text.elide_to_width(&detail, body, text_w);
-            text.draw_text(
+            let shown_name =
+                text.elide_to_width_style(&invite.name, text_w, &theme.text(TextRole::Caption));
+            let shown_detail =
+                text.elide_to_width_style(&detail, text_w, &theme.text(TextRole::Caption));
+            text.draw_style(
                 scene,
                 &shown_name,
-                body,
                 colors.text_primary,
                 transform.pre_translate((row.x0 + s2, row.y0 + s1).into()),
                 None,
+                &theme.text(TextRole::Caption),
             );
-            text.draw_text(
+            text.draw_style(
                 scene,
                 &shown_detail,
-                body,
                 colors.text_dim,
                 transform.pre_translate((row.x0 + s2, row.y1 - s1 - f64::from(body)).into()),
                 None,
+                &theme.text(TextRole::Caption),
             );
             for (label, button, button_rect) in [
                 (copy_label, Button::Resend(invite.id), resend),
@@ -1022,7 +1037,6 @@ impl PeerSyncOverlay {
                     &mut PaintCtx::new(scene, transform, text, theme),
                     button_rect,
                     label.as_str(),
-                    body,
                 );
                 self.button_rects.push((button, button_rect));
                 self.button_labels.push(DrawnLabel {
@@ -1038,7 +1052,7 @@ impl PeerSyncOverlay {
 
     /// A pill button inside a pending-invitation row: its lift and its
     /// centred label.
-    fn draw_row_button(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, size: f32) {
+    fn draw_row_button(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
         let (scene, transform, text, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
@@ -1049,11 +1063,10 @@ impl PeerSyncOverlay {
             rect.height() / 2.0,
             rest_floor(theme),
         );
-        let (width, height) = text.measure(label, size, None);
-        text.draw_text(
+        let (width, height) = text.measure_style(label, None, &theme.text(TextRole::Caption));
+        text.draw_style(
             scene,
             label,
-            size,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -1063,6 +1076,7 @@ impl PeerSyncOverlay {
                     .into(),
             ),
             None,
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -1100,16 +1114,18 @@ impl PeerSyncOverlay {
             rect, pad, body, ..
         } = *m;
         let colors = &ctx.theme.tokens.colors;
-        let heading =
-            ctx.text
-                .elide_to_width(&t("peer-sync-recipient-heading"), body, f32_of_f64(m.avail));
-        ctx.text.draw_text(
+        let heading = ctx.text.elide_to_width_style(
+            &t("peer-sync-recipient-heading"),
+            f32_of_f64(m.avail),
+            &ctx.theme.text(TextRole::Caption),
+        );
+        ctx.text.draw_style(
             ctx.scene,
             &heading,
-            body,
             colors.text_dim,
             ctx.transform.pre_translate((rect.x0 + pad, y).into()),
             None,
+            &ctx.theme.text(TextRole::Caption),
         );
         let spacing = &ctx.theme.tokens.spacing;
         let (s1, s2, s3) = (
@@ -1136,7 +1152,6 @@ impl PeerSyncOverlay {
                 (person.name.as_str(), Some(person.verification.as_str())),
                 selected,
                 Button::SelectKnown(index),
-                body,
             );
             y = choice.y1 + s1;
         }
@@ -1147,7 +1162,6 @@ impl PeerSyncOverlay {
             (t("peer-sync-recipient-new").as_str(), None),
             self.state.invite_recipient_path == InviteRecipientPath::New,
             Button::SelectNewRecipient,
-            body,
         );
         choice.y1 + s3
     }
@@ -1157,16 +1171,18 @@ impl PeerSyncOverlay {
             rect, pad, body, ..
         } = *m;
         let colors = &ctx.theme.tokens.colors;
-        let heading =
-            ctx.text
-                .elide_to_width(&t("peer-sync-role-heading"), body, f32_of_f64(m.avail));
-        ctx.text.draw_text(
+        let heading = ctx.text.elide_to_width_style(
+            &t("peer-sync-role-heading"),
+            f32_of_f64(m.avail),
+            &ctx.theme.text(TextRole::Caption),
+        );
+        ctx.text.draw_style(
             ctx.scene,
             &heading,
-            body,
             colors.text_dim,
             ctx.transform.pre_translate((rect.x0 + pad, y).into()),
             None,
+            &ctx.theme.text(TextRole::Caption),
         );
         let spacing = &ctx.theme.tokens.spacing;
         let choice_h = f64::from(ctx.theme.tokens.metrics.min_pointer_target);
@@ -1188,7 +1204,6 @@ impl PeerSyncOverlay {
                 (label.as_str(), None),
                 self.state.invite_role == role,
                 Button::SelectRole(role),
-                body,
             );
         }
         y + choice_h
@@ -1246,25 +1261,30 @@ impl PeerSyncOverlay {
             } else {
                 colors.text_primary
             };
-            let shown = text.elide_to_width(line, body, f32_of_f64(avail));
-            text.draw_text(
+            let shown =
+                text.elide_to_width_style(line, f32_of_f64(avail), &theme.text(TextRole::Caption));
+            text.draw_style(
                 scene,
                 &shown,
-                body,
                 color,
                 transform.pre_translate((rect.x0 + pad, y).into()),
                 None,
+                &theme.text(TextRole::Caption),
             );
             y += f64::from(body) + f64::from(theme.tokens.spacing.s2);
         }
-        let note = text.elide_to_width(&t("peer-sync-review-note"), body, f32_of_f64(avail));
-        text.draw_text(
+        let note = text.elide_to_width_style(
+            &t("peer-sync-review-note"),
+            f32_of_f64(avail),
+            &theme.text(TextRole::Caption),
+        );
+        text.draw_style(
             scene,
             &note,
-            body,
             colors.text_dim,
             transform.pre_translate((rect.x0 + pad, y + f64::from(theme.tokens.spacing.s1)).into()),
             None,
+            &theme.text(TextRole::Caption),
         );
         y + f64::from(body) + f64::from(theme.tokens.spacing.s2)
     }
@@ -1276,7 +1296,6 @@ impl PeerSyncOverlay {
         (label, detail): (&str, Option<&str>),
         selected: bool,
         button: Button,
-        body: f32,
     ) {
         let (scene, transform, text, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
@@ -1307,37 +1326,44 @@ impl PeerSyncOverlay {
         if let Some(detail) = detail {
             // A row: the label on the leading inset, the detail ending on
             // the trailing one, each elided against the room the other left.
-            let (detail_w, _) = text.measure(detail, body, None);
+            let (detail_w, _) = text.measure_style(detail, None, &theme.text(TextRole::Caption));
             let detail_w = f64::from(detail_w).min(room / 2.0);
-            let shown =
-                text.elide_to_width(label, body, f32_of_f64((room - detail_w - inset).max(0.0)));
-            let detail = text.elide_to_width(detail, body, f32_of_f64(detail_w));
-            let (_, height) = text.measure(&shown, body, None);
+            let shown = text.elide_to_width_style(
+                label,
+                f32_of_f64((room - detail_w - inset).max(0.0)),
+                &theme.text(TextRole::Caption),
+            );
+            let detail = text.elide_to_width_style(
+                detail,
+                f32_of_f64(detail_w),
+                &theme.text(TextRole::Caption),
+            );
+            let (_, height) = text.measure_style(&shown, None, &theme.text(TextRole::Caption));
             let ty = rect.center().y - f64::from(height) / 2.0;
-            text.draw_text(
+            text.draw_style(
                 scene,
                 &shown,
-                body,
                 colors.text_primary,
                 transform.pre_translate((rect.x0 + inset, ty).into()),
                 None,
+                &theme.text(TextRole::Caption),
             );
-            let (dw, _) = text.measure(&detail, body, None);
-            text.draw_text(
+            let (dw, _) = text.measure_style(&detail, None, &theme.text(TextRole::Caption));
+            text.draw_style(
                 scene,
                 &detail,
-                body,
                 colors.text_dim,
                 transform.pre_translate((rect.x1 - inset - f64::from(dw), ty).into()),
                 None,
+                &theme.text(TextRole::Caption),
             );
         } else {
-            let shown = text.elide_to_width(label, body, f32_of_f64(room));
-            let (width, height) = text.measure(&shown, body, None);
-            text.draw_text(
+            let shown =
+                text.elide_to_width_style(label, f32_of_f64(room), &theme.text(TextRole::Caption));
+            let (width, height) = text.measure_style(&shown, None, &theme.text(TextRole::Caption));
+            text.draw_style(
                 scene,
                 &shown,
-                body,
                 colors.text_primary,
                 transform.pre_translate(
                     (
@@ -1347,6 +1373,7 @@ impl PeerSyncOverlay {
                         .into(),
                 ),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
         self.button_rects.push((button, rect));
@@ -1494,8 +1521,6 @@ struct SheetMetrics {
     name: f32,
 }
 
-/// A footer button's face: a Large shared `Button`, the primary role for
-/// the step's main action.
 /// The pending list's heading, with the page it shows when it pages.
 fn pending_heading(offset: usize, end: usize, total: usize) -> String {
     if total > 3 {
@@ -1512,6 +1537,8 @@ fn pending_heading(offset: usize, end: usize, total: usize) -> String {
     }
 }
 
+/// A footer button's face: a Large shared `Button`, the primary role for
+/// the step's main action.
 fn button_face(at: Rect, label: &str, primary: bool) -> ui::widget::ButtonFace<'_> {
     let face = ui::widget::ButtonFace::new(at, label).control_size(ui::widget::ControlSize::Large);
     if primary {
@@ -1680,29 +1707,29 @@ fn draw_naming(
         pad,
         avail,
         body,
-        name,
+        ..
     } = *m;
     let (scene, transform, text, theme) =
         (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let colors = &theme.tokens.colors;
     let spacing = &theme.tokens.spacing;
     let (s2, s3) = (f64::from(spacing.s2), f64::from(spacing.s3));
-    let label = text.elide_to_width(
+    let label = text.elide_to_width_style(
         &t(if recipient_path == InviteRecipientPath::Known {
             "peer-sync-selected-person"
         } else {
             "peer-sync-name-new-person"
         }),
-        body,
         f32_of_f64(avail),
+        &theme.text(TextRole::Caption),
     );
-    text.draw_text(
+    text.draw_style(
         scene,
         &label,
-        body,
         colors.text_dim,
         transform.pre_translate((rect.x0 + pad, y).into()),
         None,
+        &theme.text(TextRole::Caption),
     );
     y += f64::from(body) + s2;
     let field_h = f64::from(theme.tokens.metrics.min_pointer_target) + f64::from(spacing.s1);
@@ -1716,8 +1743,12 @@ fn draw_naming(
         None,
         &rr,
     );
-    let shown = text.elide_to_width(typed, name, f32_of_f64((avail - 2.0 * s3 - s2).max(0.0)));
-    let (tw, th) = text.measure(&shown, name, None);
+    let shown = text.elide_to_width_style(
+        typed,
+        f32_of_f64((avail - 2.0 * s3 - s2).max(0.0)),
+        &theme.text(TextRole::Caption),
+    );
+    let (tw, th) = text.measure_style(&shown, None, &theme.text(TextRole::Caption));
     let ty = f64::midpoint(field.y0, field.y1) - f64::from(th) / 2.0;
     let caret_w = 1.5;
     // The caret sits on the text origin; an empty field shows its placeholder
@@ -1729,14 +1760,13 @@ fn draw_naming(
         } else {
             0.0
         };
-    text.draw_text(
+    text.draw_style(
         scene,
         &if typed.is_empty() {
             t("peer-sync-name-placeholder")
         } else {
             shown.clone()
         },
-        name,
         if typed.is_empty() {
             colors.text_dim
         } else {
@@ -1744,6 +1774,7 @@ fn draw_naming(
         },
         transform.pre_translate((text_x, ty).into()),
         None,
+        &theme.text(TextRole::Caption),
     );
     let caret_x = field.x0
         + s3
@@ -1761,14 +1792,15 @@ fn draw_naming(
     );
     y = field.y1 + s3;
     let identity = naming_identity_note(recipient, recipient_path);
-    let note = text.elide_to_width(&identity, body, f32_of_f64(avail));
-    text.draw_text(
+    let note =
+        text.elide_to_width_style(&identity, f32_of_f64(avail), &theme.text(TextRole::Caption));
+    text.draw_style(
         scene,
         &note,
-        body,
         colors.text_dim,
         transform.pre_translate((rect.x0 + pad, y).into()),
         None,
+        &theme.text(TextRole::Caption),
     );
     y + f64::from(body) + s2
 }
@@ -1854,11 +1886,10 @@ fn draw_receiving(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64, typed: &
             ],
         )
     };
-    let line = text.elide_to_width(&line, name, f32_of_f64(avail));
-    text.draw_text(
+    let line = text.elide_to_width_style(&line, f32_of_f64(avail), &theme.text(TextRole::Caption));
+    text.draw_style(
         scene,
         &line,
-        name,
         if typed.is_empty() {
             colors.text_dim
         } else {
@@ -1866,18 +1897,22 @@ fn draw_receiving(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64, typed: &
         },
         transform.pre_translate((rect.x0 + pad, y).into()),
         None,
+        &theme.text(TextRole::Caption),
     );
     y += f64::from(name) + 8.0;
     if !typed.is_empty() {
-        let incomplete =
-            text.elide_to_width(&t("peer-sync-token-incomplete"), body, f32_of_f64(avail));
-        text.draw_text(
+        let incomplete = text.elide_to_width_style(
+            &t("peer-sync-token-incomplete"),
+            f32_of_f64(avail),
+            &theme.text(TextRole::Caption),
+        );
+        text.draw_style(
             scene,
             &incomplete,
-            body,
             colors.text_dim,
             transform.pre_translate((rect.x0 + pad, y).into()),
             None,
+            &theme.text(TextRole::Caption),
         );
         y += f64::from(body) + 8.0;
     }
@@ -1921,23 +1956,25 @@ fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: 
     let x = center.x + 30.0;
     let ns = theme.tokens.typography.size(TextRole::Caption).max(12.0);
     let ss = theme.tokens.typography.size(TextRole::Caption).max(10.0);
-    let who = text.elide_to_width(who, ns, f32_of_f64(rect.x1 - x));
-    text.draw_text(
+    let who =
+        text.elide_to_width_style(who, f32_of_f64(rect.x1 - x), &theme.text(TextRole::Caption));
+    text.draw_style(
         scene,
         &who,
-        ns,
         colors.text_primary,
         transform.pre_translate((x, rect.y0 + 2.0).into()),
         None,
+        &theme.text(TextRole::Caption),
     );
-    let sub = text.elide_to_width(sub, ss, f32_of_f64(rect.x1 - x));
-    text.draw_text(
+    let sub =
+        text.elide_to_width_style(sub, f32_of_f64(rect.x1 - x), &theme.text(TextRole::Caption));
+    text.draw_style(
         scene,
         &sub,
-        ss,
         colors.text_dim,
         transform.pre_translate((x, rect.y0 + 2.0 + f64::from(ns) + 6.0).into()),
         None,
+        &theme.text(TextRole::Caption),
     );
     rect.y0 + 2.0 + f64::from(ns) + 6.0 + f64::from(ss)
 }
@@ -1946,8 +1983,7 @@ fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
     let (scene, transform, text, theme) =
         (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let colors = &theme.tokens.colors;
-    let size = theme.tokens.typography.size(TextRole::Heading).max(15.0);
-    let (_, fh) = text.measure(code, size, None);
+    let (_, fh) = text.measure_style(code, None, &theme.text(TextRole::Heading));
     let (inset_x, inset_y) = (
         f64::from(theme.tokens.spacing.s3),
         f64::from(theme.tokens.spacing.s2),
@@ -1965,13 +2001,13 @@ fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
         None,
         &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.control)),
     );
-    text.draw_text(
+    text.draw_style(
         scene,
         code,
-        size,
         colors.text_primary,
         transform.pre_translate((field.x0 + inset_x, field.y0 + inset_y).into()),
         None,
+        &theme.text(TextRole::Heading),
     );
     field.y1
 }
