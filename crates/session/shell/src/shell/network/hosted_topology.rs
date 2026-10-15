@@ -420,8 +420,9 @@ mod tests {
         );
     }
 
-    /// A relay forwards a browser's input (wheel, a paste, a close among
-    /// it) in its wire vocabulary; each must be what this session decodes.
+    /// A relay forwards a browser's input (wheel, a paste, a close, text its
+    /// input method committed among it) in its wire vocabulary; each must be
+    /// what this session decodes.
     #[test]
     fn viewer_input_from_a_relay_decodes_as_remote_input() {
         use crate::network::streaming::InputEvent as Session;
@@ -454,6 +455,14 @@ mod tests {
                 },
             ),
             (Session::Close, Wire::Close),
+            (
+                Session::Text {
+                    text: "日本".into(),
+                },
+                Wire::Text {
+                    text: "日本".into(),
+                },
+            ),
         ];
         for (session, wire) in pairs {
             assert_eq!(
@@ -462,6 +471,11 @@ mod tests {
                 "{session:?}"
             );
         }
+        assert_eq!(
+            tilo_relay_protocol::legacy_window::MAX_TEXT_BYTES,
+            crate::network::input_firewall::MAX_REMOTE_TEXT_BYTES,
+            "a relay forwards no text this session's firewall refuses"
+        );
     }
 
     #[test]

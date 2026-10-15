@@ -794,9 +794,37 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         .0,
         204
     );
+    // Text an input method committed on the member's page; text the
+    // session's input firewall would refuse never leaves the relay.
+    for text in [String::new(), "x".repeat(wire::MAX_TEXT_BYTES + 1)] {
+        assert_eq!(
+            post(
+                addr,
+                wire::INPUT_ROUTE,
+                Some(token),
+                input(vec![wire::InputEvent::Text { text }])
+            )
+            .await
+            .0,
+            400
+        );
+    }
+    assert_eq!(
+        post(
+            addr,
+            wire::INPUT_ROUTE,
+            Some(token),
+            input(vec![wire::InputEvent::Text {
+                text: "日本".into()
+            }])
+        )
+        .await
+        .0,
+        204
+    );
     let delivered = tilo_test_env::within("directed native input", async {
         let mut delivered = Vec::new();
-        while delivered.len() < 2 {
+        while delivered.len() < 3 {
             if let Some(Envelope::Presence { payload, .. }) = owner_native.recv().await {
                 let presence = crate::AttributedPresence::decode(&payload).unwrap();
                 if let Ok(NeighbourMsg::RemoteInput { surface, event, .. }) =
@@ -815,7 +843,10 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         delivered,
         [
             wire::InputEvent::PointerAxis { dx: 0.0, dy: 1.0 },
-            wire::InputEvent::PointerEnter { surface: 7 }
+            wire::InputEvent::PointerEnter { surface: 7 },
+            wire::InputEvent::Text {
+                text: "日本".into()
+            }
         ]
     );
     // The other native member must never receive private keyboard/input payloads.

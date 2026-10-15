@@ -13,7 +13,12 @@
  *
  * A member the host lets drive the window (it probes once per stream) sends
  * pointer, wheel, keys and pasted text on its canvas to the host, which
- * forwards them to the session; anyone else's canvas takes no input.
+ * forwards them to the session; anyone else's canvas takes no input. The
+ * keyboard of a window it drives is a visually hidden text area beside the
+ * canvas (a canvas is not editable, so no input method composes on it):
+ * plain keys go out as keys, and what an input method, dictation or an emoji
+ * picker commits there goes out once as text, never as the keys that
+ * composed it.
  *
  * A stream whose codec is `tilo-paint` is a page the session's browser
  * shares as a display list (`tilo_paint_stream::wire`): its reassembled
@@ -90,6 +95,9 @@ const INPUT_SEND_BATCH = MAX_INPUT_EVENTS / 2;
 const INPUT_EVENTS_PER_SECOND = 80;
 /** Pasted text one event carries (`legacy_window::MAX_CLIPBOARD_BYTES`). */
 const MAX_CLIPBOARD_BYTES = 64 * 1024;
+/** Committed text one event carries (`legacy_window::MAX_TEXT_BYTES`, the
+ * session's `MAX_REMOTE_TEXT_BYTES`): longer text the session would refuse. */
+export const MAX_TEXT_BYTES = 4096;
 /** Pixels one wheel line scrolls. */
 const LINE_PIXELS = 40;
 const HEX16 = /^[0-9a-f]{16}$/;
@@ -401,6 +409,7 @@ export function createLegacyWindows({
     try { entry.unsubscribe(); } catch {}
     entry.decoder?.close();
     entry.canvas?.remove();
+    entry.keyboard?.remove();
   }
   function addStream(publisher, stream) {
     const key = streamKey(publisher, stream);
@@ -427,8 +436,17 @@ export function createLegacyWindows({
     canvas.width = stream.width;
     canvas.height = stream.height;
     canvas.style.cssText = 'position:absolute;left:0;top:0;display:none;object-fit:contain;background:#000;transform-origin:0 0;pointer-events:none;outline:none';
-    layer.append(canvas);
-    const entry = {publisher, stream, canvas, context: null, reassembler: createReassembler(), visible: false, rect: '', control: false,
+    // The window's keyboard: where an input method composes for it.
+    const keyboard = doc.createElement('textarea');
+    keyboard.className = 'tilo-legacy-window-keyboard';
+    keyboard.dataset.key = key;
+    keyboard.setAttribute?.('aria-label', windowTitle(stream.app));
+    keyboard.autocomplete = 'off';
+    keyboard.autocapitalize = 'off';
+    keyboard.spellcheck = false;
+    keyboard.style.cssText = 'position:absolute;left:0;top:0;width:2px;height:20px;padding:0;margin:0;border:0;resize:none;overflow:hidden;opacity:0;pointer-events:none;outline:none;transform-origin:0 0';
+    layer.append(canvas, keyboard);
+    const entry = {publisher, stream, canvas, keyboard, context: null, reassembler: createReassembler(), visible: false, rect: '', control: false,
       stalledAt: undefined, lastChunkAt: now()};
     entry.decoder = createStreamDecoder({
       VideoDecoder, EncodedVideoChunk,
@@ -526,18 +544,28 @@ export function createLegacyWindows({
     entry.keys.clear();
     entry.buttons.clear();
     entry.pasteKey = false;
+    entry.composing = false;
+    if (entry.keyboard) entry.keyboard.value = '';
     if (!entry.flushing) void flushInput(entry);
   }
   /** Keys typed on the page go to `entry`'s window. */
   function takeKeyboard(entry) {
-    entry.canvas.focus?.({preventScroll: true});
+    entry.keyboard.focus?.({preventScroll: true});
     if (!entry.focused) { entry.focused = true; queueInput(entry, {KeyboardFocus: {surface: 0, focused: true}}); }
   }
+  /** Text an input method committed for the window that holds the keyboard:
+   * one `Text`, refused here when the session would refuse it. */
+  function commitText(entry, text) {
+    if (typeof text !== 'string' || !text || !entry.focused) return;
+    if (new TextEncoder().encode(text).byteLength > MAX_TEXT_BYTES) return;
+    queueInput(entry, {Text: {text}});
+  }
   function bindInput(entry) {
-    const {canvas} = entry;
+    const {canvas, keyboard} = entry;
     entry.input = [];
     entry.focused = false;
     entry.pasteKey = false;
+    entry.composing = false;
     entry.keys = new Set();
     entry.buttons = new Set();
     canvas.tabIndex = -1;
@@ -549,6 +577,7 @@ export function createLegacyWindows({
       return at;
     };
     const on = (type, handler, options) => canvas.addEventListener?.(type, handler, options);
+    const onKeyboard = (type, handler) => keyboard.addEventListener?.(type, handler);
     on('pointerenter', event => { queueInput(entry, {PointerEnter: {surface: target}}); motion(event); });
     on('pointermove', motion);
     on('pointerleave', () => queueInput(entry, {PointerLeave: {surface: target}}));
@@ -609,9 +638,15 @@ export function createLegacyWindows({
       }
     };
     const key = pressed => event => {
+      // An input method's own keystrokes compose; what it commits arrives
+      // once as text (`compositionend`), so they never reach the window.
+      if (entry.composing || event.isComposing || event.keyCode === 229 || event.key === 'Process') return;
       const keysym = evdevKey(event.code, {mac});
       if (!entry.control || keysym === null) return;
       if (pressed && event.repeat && !entry.keys.has(keysym)) return;
+      // A release whose press the window never got (the key that ended a
+      // composition) stays here.
+      if (!pressed && !entry.keys.has(keysym) && !MODIFIERS.has(keysym)) return;
       if (!MODIFIERS.has(keysym)) syncModifiers(event);
       // The window repeats a held key only as the browser does: one more
       // press of it. Modifiers do not repeat.
@@ -631,9 +666,27 @@ export function createLegacyWindows({
       if (pressed) entry.keys.add(keysym); else entry.keys.delete(keysym);
       queueInput(entry, {Key: {keysym, pressed, modifiers: 0}});
     };
-    on('keydown', key(true));
-    on('keyup', key(false));
-    on('paste', event => {
+    onKeyboard('keydown', key(true));
+    onKeyboard('keyup', key(false));
+    onKeyboard('compositionstart', () => { if (entry.control) entry.composing = true; });
+    onKeyboard('compositionend', event => {
+      const composed = entry.composing;
+      entry.composing = false;
+      keyboard.value = '';
+      if (composed) commitText(entry, event.data);
+    });
+    // Text committed without a composition (an emoji picker, dictation, a
+    // character no key here maps): plain keys are forwarded and their own
+    // insertion cancelled, so what reaches this is not a key already sent.
+    onKeyboard('beforeinput', event => {
+      if (!entry.control || entry.composing || event.isComposing || event.inputType === 'insertCompositionText') return;
+      event.preventDefault();
+      if (event.inputType === 'insertText' || event.inputType === 'insertReplacementText') {
+        commitText(entry, event.data ?? event.dataTransfer?.getData?.('text/plain'));
+      }
+    });
+    onKeyboard('input', () => { if (!entry.composing) keyboard.value = ''; });
+    onKeyboard('paste', event => {
       if (!entry.control) return;
       event.preventDefault();
       const pasted = event.clipboardData?.getData?.('text/plain') ?? '';
@@ -644,7 +697,7 @@ export function createLegacyWindows({
         queueInput(entry, {Key: {keysym: LETTERS.V, pressed: false, modifiers: 0}});
       }
     });
-    on('blur', () => releaseInput(entry));
+    onKeyboard('blur', () => releaseInput(entry));
   }
 
   // ---- Frames -----------------------------------------------------------------
@@ -737,7 +790,7 @@ export function createLegacyWindows({
       const rect = byKey.get(key)?.rect;
       if (!rect) {
         followDesktopFocus(entry, false);
-        if (entry.visible) { releaseInput(entry); entry.canvas.blur?.(); entry.canvas.style.display = 'none'; entry.visible = false; }
+        if (entry.visible) { releaseInput(entry); entry.keyboard.blur?.(); entry.canvas.style.display = 'none'; entry.visible = false; }
         continue;
       }
       stats.placed++;
@@ -748,6 +801,8 @@ export function createLegacyWindows({
         entry.canvas.style.width = `${(x1 - x0).toFixed(1)}px`;
         entry.canvas.style.height = `${(y1 - y0).toFixed(1)}px`;
         entry.canvas.style.transform = `translate3d(${x0.toFixed(1)}px,${y0.toFixed(1)}px,0)`;
+        // An input method shows its candidates beside the window.
+        entry.keyboard.style.transform = entry.canvas.style.transform;
       }
       const events = entry.control ? 'auto' : 'none';
       if (entry.canvas.style.pointerEvents !== events) entry.canvas.style.pointerEvents = events;
@@ -761,7 +816,7 @@ export function createLegacyWindows({
     if (focus === Boolean(entry.desktopFocus)) return;
     entry.desktopFocus = focus;
     if (focus) takeKeyboard(entry);
-    else if (doc.activeElement === entry.canvas) { try { focusDesktop(); } catch (error) { report(error); } }
+    else if (doc.activeElement === entry.keyboard) { try { focusDesktop(); } catch (error) { report(error); } }
   }
   /** Ask the source of each window the person closed to close it. */
   function closeDismissed() {

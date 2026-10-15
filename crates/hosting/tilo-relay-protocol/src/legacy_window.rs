@@ -68,6 +68,10 @@ pub const INPUT_ROUTE: &str = "/live/legacy-input";
 pub const MAX_INPUT_EVENTS: usize = 64;
 /// Largest pasted text one event carries.
 pub const MAX_CLIPBOARD_BYTES: usize = 64 * 1024;
+/// Largest committed input-method text one event carries: the session's
+/// `MAX_REMOTE_TEXT_BYTES`, so the host never forwards text its input
+/// firewall refuses.
+pub const MAX_TEXT_BYTES: usize = 4096;
 /// Route (below [`crate::web::API_PREFIX`]) a member says what it decodes on.
 pub const CODECS_ROUTE: &str = "/live/legacy-codecs";
 /// Labels one [`CodecsRequest`] may carry.
@@ -137,6 +141,14 @@ pub enum InputEvent {
     /// The viewer closed the window: the session asks it to close, as a
     /// person's close of its tab does.
     Close,
+    /// Text the viewer's input method committed (a composed character, a
+    /// dictated phrase, an emoji): the session delivers it into the focused
+    /// field the way an input method does, not as key presses. Appended
+    /// after [`Self::Close`] because postcard encodes the variant index.
+    Text {
+        /// Non-empty, at most [`MAX_TEXT_BYTES`].
+        text: String,
+    },
 }
 
 impl InputEvent {
@@ -156,6 +168,7 @@ impl InputEvent {
             Self::PointerMotion { x, y } => x.is_finite() && y.is_finite(),
             Self::PointerAxis { dx, dy } => dx.is_finite() && dy.is_finite(),
             Self::ClipboardText { text } => text.len() <= MAX_CLIPBOARD_BYTES,
+            Self::Text { text } => !text.is_empty() && text.len() <= MAX_TEXT_BYTES,
             _ => true,
         }
     }
@@ -699,7 +712,7 @@ mod tests {
     /// variants it has share these encodings (`shell::network::streaming`).
     #[test]
     fn input_events_keep_the_sessions_encoding() {
-        let cases: [(InputEvent, &str); 4] = [
+        let cases: [(InputEvent, &str); 6] = [
             (
                 InputEvent::PointerMotion { x: 1.5, y: 2.0 },
                 "00000000000000f83f0000000000000040",
@@ -725,6 +738,14 @@ mod tests {
                     focused: true,
                 },
                 "050701",
+            ),
+            (InputEvent::Close, "08"),
+            // The session's `Text` is its tenth variant, after `Close`.
+            (
+                InputEvent::Text {
+                    text: "日本".into(),
+                },
+                "0906e697a5e69cac",
             ),
         ];
         for (event, bytes) in cases {
@@ -755,6 +776,15 @@ mod tests {
             }])
             .valid()
         );
+        assert!(
+            request(vec![InputEvent::Text {
+                text: "é".repeat(MAX_TEXT_BYTES / 2)
+            }])
+            .valid()
+        );
+        for text in [String::new(), "x".repeat(MAX_TEXT_BYTES + 1)] {
+            assert!(!request(vec![InputEvent::Text { text }]).valid());
+        }
         assert!(
             !request(vec![
                 InputEvent::PointerLeave { surface: 1 };
