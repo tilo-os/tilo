@@ -246,6 +246,13 @@ pub enum Action {
         app_id: &'static str,
         label: &'static str,
     },
+    /// The install [`Action::HoldInstallPlace`] stands for has fetched
+    /// `received` of `total` bytes.
+    InstallBytes {
+        app_id: &'static str,
+        received: u64,
+        total: u64,
+    },
     /// Let real time pass, then step one frame: for states keyed to how
     /// long something has taken, which frame steps alone do not advance.
     WaitWall(u64),
@@ -747,7 +754,7 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
     match action {
         Action::HoldLaunchPlace { app_id, label } => {
             driver.with_chrome(|st: &mut ChromeState| {
-                let placement = shell::shell::placement::placement_for_launch_targeted(
+                let placement = shell::shell::placement::placement_for_target(
                     &st.tree(),
                     st.strip_viewport(),
                     st.open_target,
@@ -771,6 +778,15 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
                 );
                 st.bump();
             });
+            return;
+        }
+        Action::InstallBytes {
+            app_id,
+            received,
+            total,
+        } => {
+            shell::shell::peer_windows::show_install_bytes_for_shots(app_id, *received, *total);
+            driver.step_frames(1);
             return;
         }
         Action::WaitWall(ms) => {
@@ -2094,7 +2110,8 @@ fn build_scenarios() -> Vec<Scenario> {
             name: "opening_card",
             description: "An app asked for holds its place with the moving opening card from the \
                           first frame, says so when the start runs long, and says what it is \
-                          doing while its app is still being fetched from the registry.",
+                          doing while its app is still being fetched from the registry, with \
+                          how much has arrived once the download reports it.",
             actions: vec![
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),
@@ -2116,6 +2133,16 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(20),
                 Action::Relayout,
                 Action::Snapshot("opening-installing"),
+                Action::WaitWall(5_500),
+                Action::Relayout,
+                Action::Snapshot("opening-installing-slow"),
+                Action::InstallBytes {
+                    app_id: "so.tilo.slides",
+                    received: 4_200_000,
+                    total: 18_000_000,
+                },
+                Action::Relayout,
+                Action::Snapshot("opening-installing-progress"),
             ],
         },
         Scenario {

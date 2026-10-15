@@ -513,14 +513,11 @@ fn try_to_ui_tile_for_tab(
         } if note == peer_windows::OPENING
             || tab.is_some_and(crate::shell::peer_windows::installing) =>
         {
-            UiTile::App(Box::new(opening_card::OpeningCard::new(
-                label,
-                if note == peer_windows::OPENING {
-                    ""
-                } else {
-                    note
-                },
-            )))
+            let wait = match tab.and_then(crate::shell::peer_windows::installing_package) {
+                Some((package_id, app)) => opening_card::Wait::Installing { package_id, app },
+                None => opening_card::Wait::Opening,
+            };
+            UiTile::App(Box::new(opening_card::OpeningCard::new(label, wait)))
         }
         // A legacy window runs only on its host; until a stream of it is
         // attached here, the tab says where it is.
@@ -561,12 +558,12 @@ fn try_to_ui_tile_for_tab(
         ShellTile::LocalApp { label, note, .. }
             if note.is_empty() || note == peer_windows::OPENING =>
         {
-            let status = if note.is_empty() {
-                crate::shell::i18n::t("shell-window-restoring")
+            let wait = if note.is_empty() {
+                opening_card::Wait::Restoring
             } else {
-                String::new()
+                opening_card::Wait::Opening
             };
-            UiTile::App(Box::new(opening_card::OpeningCard::new(label, &status)))
+            UiTile::App(Box::new(opening_card::OpeningCard::new(label, wait)))
         }
         ShellTile::PeerWindow { label, note, .. } | ShellTile::LocalApp { label, note, .. } => {
             UiTile::Notice {

@@ -3142,7 +3142,9 @@ pub use scroll_region::ScrollRegion;
 pub use scrollbar::BarFade;
 pub mod panic_scope;
 mod tile_host;
-pub use tile_host::{AppKind, OpeningCardText, TileContent, TileHost, paint_opening_card};
+pub use tile_host::{
+    AppKind, OpeningCardText, TileContent, TileHost, opening_card_spinner, paint_opening_card,
+};
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{

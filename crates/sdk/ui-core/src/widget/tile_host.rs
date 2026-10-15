@@ -3034,6 +3034,12 @@ fn draw_opening_card(
     );
 }
 
+/// The moving indicator [`paint_opening_card`] draws, at the tile's size.
+#[must_use]
+pub fn opening_card_spinner() -> Spinner {
+    Spinner::with_size(OPENING_SPINNER_PX_F32)
+}
+
 /// What the opening card says: the app's name, and a line under the
 /// indicator when the wait has something worth saying — an install under
 /// way, or a start taking longer than it should. An empty `status` draws
@@ -3045,7 +3051,8 @@ pub struct OpeningCardText<'a> {
     pub status: &'a str,
 }
 
-/// The opening card, for a place held before any window exists.
+/// The opening card, for a place held before any window exists. Returns
+/// where its last line ends, for a caller adding something under it.
 pub fn paint_opening_card(
     scene: &mut Scene,
     transform: Affine,
@@ -3055,7 +3062,7 @@ pub fn paint_opening_card(
     rect: Rect,
     text: OpeningCardText<'_>,
     spinner: &mut Spinner,
-) {
+) -> f64 {
     let OpeningCardText { name, status } = text;
     scene.fill(
         vello::peniko::Fill::NonZero,
@@ -3092,22 +3099,21 @@ pub fn paint_opening_card(
         top + OPENING_SPINNER_PX,
     ));
     Widget::draw(spinner, scene, transform, tr, theme, presence);
+    let mut below = top + OPENING_SPINNER_PX + OPENING_SPINNER_GAP;
     if !status.is_empty() {
         let style = theme.text(TextRole::Body);
-        let (tw, _) = tr.measure_style(status, None, &style);
+        let (tw, th) = tr.measure_style(status, None, &style);
         tr.draw_style(
             scene,
             status,
             theme.on_content().ink_dim,
-            translated(
-                transform,
-                cx - f64::from(tw) / 2.0,
-                top + OPENING_SPINNER_PX + OPENING_SPINNER_GAP,
-            ),
+            translated(transform, cx - f64::from(tw) / 2.0, below),
             None,
             &style,
         );
+        below += f64::from(th);
     }
+    below
 }
 
 /// One function so the two callers (`Stub`, `Notice`) can't drift apart —
