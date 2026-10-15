@@ -1,12 +1,21 @@
 //! Storage overview. It accounts bytes here; partitioning and backup workflows
 //! remain in their specialist tools, opened with typed contextual intents.
 //! Reclaiming space is a [`StorageEffect`] the [`StorageModel`] runs.
+//!
+//! What each device holds of the person's workspaces, and what of it is
+//! only there, is [`residency`]: this device's storage summary is the
+//! `storage-summary` effect, which another of the person's devices asks
+//! for too.
+
+mod residency;
+
+pub use residency::{DeviceResidency, Fleet};
 
 use desktop_policy::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
 use os_actions::{BackupsRoute, DisksRoute, ToolIntent};
 use runtime_fs::storage::{
-    CachePolicy, DEFAULT_STORAGE_SOCKET, EvictionReport, EvictionSelection, StorageClient,
-    SyncStorageSnapshot,
+    CachePolicy, DEFAULT_STORAGE_SOCKET, EvictionReport, EvictionSelection, ResidencySummary,
+    StorageClient, SyncStorageSnapshot,
 };
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected};
@@ -104,6 +113,28 @@ pub enum StorageEffect {
         #[param("The space to keep", choices = CACHE_SIZES.iter().copied())]
         size: String,
     },
+    /// What this device holds of each workspace.
+    ///
+    /// Answers, per workspace, the bytes kept here by choice, also held by
+    /// another device, held only here, and cache. Names no file.
+    #[effect(job, returns, idempotent, kind = "read")]
+    StorageSummary,
+    /// Free a workspace's cache.
+    ///
+    /// Drops what this device fetched from another one; it downloads again
+    /// when opened.
+    #[effect(job, returns)]
+    FreeCache {
+        #[param("The workspace, as the storage summary names it")]
+        workspace: String,
+    },
+    /// Keep a whole workspace on this device, or stop keeping it.
+    #[effect(job, idempotent)]
+    KeepHere {
+        #[param("The workspace, as the storage summary names it")]
+        workspace: String,
+        keep: bool,
+    },
 }
 
 /// Answer `effect` on the area's model.
@@ -144,7 +175,7 @@ impl StorageArea {
             let model = if self.cx.reaches_devices() {
                 StorageModel::new(self.cx.clone())
             } else {
-                StorageModel::with_roots(
+                let mut model = StorageModel::with_roots(
                     self.cx.clone(),
                     StorageRoots {
                         app_payloads: None,
@@ -152,7 +183,17 @@ impl StorageArea {
                         app_cache: None,
                         sync_replica: None,
                     },
-                )
+                );
+                // A capture shows its stand-in devices.
+                for device in self
+                    .cx
+                    .scene()
+                    .map(|scene| scene.storage_devices.clone())
+                    .unwrap_or_default()
+                {
+                    model.fleet.adopt(device);
+                }
+                model
             };
             std::rc::Rc::new(std::cell::RefCell::new(model))
         })
@@ -175,13 +216,65 @@ pub struct StorageModel {
     sync_message: Option<String>,
     sync_busy: bool,
     sync_result: Option<std::sync::mpsc::Receiver<Result<EvictionReport, String>>>,
-    snapshot_result: Option<std::sync::mpsc::Receiver<Result<SyncStorageSnapshot, String>>>,
+    snapshot_result: Option<std::sync::mpsc::Receiver<SyncRead>>,
     /// The daemon's cache policy, once asked; `None` while unknown.
     cache_policy: Option<CachePolicy>,
     /// The policy being read, or changed by the effect named.
     policy_result: Option<PolicyAnswer>,
+    /// What each of the person's devices holds of their workspaces.
+    fleet: Fleet,
+    /// The residency effect running against the storage service, and how
+    /// it ends.
+    residency_job: Option<(
+        &'static str,
+        std::sync::mpsc::Receiver<Result<String, String>>,
+    )>,
+    /// Asked for this device's summary, answered once the next read ends.
+    summary_waiting: bool,
     replies: Replies,
     changed: bool,
+}
+
+/// One read of the storage service: the synced-file accounting, and this
+/// device's storage summary from a service that answers it.
+struct SyncRead {
+    snapshot: Result<SyncStorageSnapshot, String>,
+    residency: Option<DeviceResidency>,
+}
+
+impl SyncRead {
+    fn now() -> Self {
+        let mut client = match StorageClient::connect(DEFAULT_STORAGE_SOCKET) {
+            Ok(client) => client,
+            Err(error) => {
+                return Self {
+                    snapshot: Err(error.to_string()),
+                    residency: None,
+                };
+            }
+        };
+        let snapshot = client.snapshot().map_err(|error| error.to_string());
+        // A service that predates the summary closes the connection.
+        let residency = client.residency().ok().map(|summary| {
+            let (key, label) = crate::device_fleet::list()
+                .ok()
+                .and_then(|devices| devices.into_iter().find(|device| device.current))
+                .map_or_else(
+                    || (String::new(), String::new()),
+                    |device| (hex::encode(device.key), device.label),
+                );
+            DeviceResidency {
+                key,
+                label,
+                current: true,
+                summary,
+            }
+        });
+        Self {
+            snapshot,
+            residency,
+        }
+    }
 }
 
 impl StorageModel {
@@ -212,6 +305,9 @@ impl StorageModel {
             snapshot_result: None,
             cache_policy: None,
             policy_result: None,
+            fleet: Fleet::default(),
+            residency_job: None,
+            summary_waiting: false,
             replies: Replies::default(),
             changed: false,
         }
@@ -220,10 +316,7 @@ impl StorageModel {
     fn refresh_sync(&mut self) {
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
-                .and_then(|mut client| client.snapshot())
-                .map_err(|error| error.to_string());
-            let _ = sender.send(result);
+            let _ = sender.send(SyncRead::now());
         });
         if self.sync_snapshot.is_none() {
             self.sync_message = Some(t("settings-storage-loading"));
@@ -298,7 +391,91 @@ impl StorageModel {
                 }),
                 Err(error) => self.replies.finish(id, Err(error)),
             },
+            StorageEffect::StorageSummary => self.summarize(),
+            StorageEffect::FreeCache { workspace } => {
+                let workspace = workspace.clone();
+                self.run_residency_job(id, move |client| {
+                    client.free_cache(&workspace).map(|freed| {
+                        t_args(
+                            "settings-storage-cache-freed",
+                            &[
+                                ("size", ui::format::bytes_si(freed.freed_bytes).into()),
+                                ("files", ArgValue::Number(freed.files as f64)),
+                            ],
+                        )
+                    })
+                });
+            }
+            StorageEffect::KeepHere { workspace, keep } => {
+                let (workspace, keep) = (workspace.clone(), *keep);
+                self.run_residency_job(id, move |client| {
+                    client.keep_here(&workspace, keep).map(|()| {
+                        t(if keep {
+                            "settings-storage-now-kept"
+                        } else {
+                            "settings-storage-no-longer-kept"
+                        })
+                    })
+                });
+            }
         }
+    }
+
+    /// Answer this device's storage summary: from the next read of the
+    /// storage service, or, in a capture, its stand-in.
+    fn summarize(&mut self) {
+        if !self.cx.reaches_devices() {
+            let summary = self
+                .fleet
+                .this_device()
+                .map(|device| device.summary.clone())
+                .unwrap_or_default();
+            self.answer_summary(&summary);
+            return;
+        }
+        self.summary_waiting = true;
+        if self.snapshot_result.is_none() {
+            self.refresh_sync();
+        }
+    }
+
+    fn answer_summary(&mut self, summary: &ResidencySummary) {
+        self.summary_waiting = false;
+        match serde_json::to_value(summary) {
+            Ok(value) => self
+                .replies
+                .answer(StorageEffect::STORAGE_SUMMARY.id, value),
+            Err(error) => self
+                .replies
+                .fail(StorageEffect::STORAGE_SUMMARY.id, error.to_string()),
+        }
+    }
+
+    /// Run `job` against the storage service off the UI thread, one at a
+    /// time; the effect `id` is told how it ends, and the figures are read
+    /// again.
+    fn run_residency_job(
+        &mut self,
+        id: &'static str,
+        job: impl FnOnce(&mut StorageClient) -> std::io::Result<String> + Send + 'static,
+    ) {
+        if self.residency_job.is_some() {
+            self.replies.fail(id, t("settings-storage-residency-busy"));
+            return;
+        }
+        if !self.cx.reaches_devices() {
+            self.replies
+                .fail(id, t("settings-storage-accounting-unavailable"));
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+                .and_then(|mut client| job(&mut client))
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+        self.residency_job = Some((id, receiver));
     }
 
     fn clean_up_caches(&mut self) {
@@ -356,14 +533,20 @@ impl StorageModel {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        crate::widgets::cards(vec![
-            self.overview_card(),
+        let mut sections = vec![self.overview_card()];
+        sections.extend(residency::cards(
+            &self.cx,
+            &self.fleet,
+            self.residency_job.is_some(),
+        ));
+        sections.extend([
             self.synced_card(),
             self.cache_card(),
             self.apps_card(),
             self.cleanup_card(),
             self.tools_card(),
-        ])
+        ]);
+        crate::widgets::cards(sections)
     }
 
     fn overview_card(&self) -> SettingsSection {
@@ -612,29 +795,43 @@ impl PaneModel for StorageModel {
     }
 
     fn poll(&mut self) -> bool {
-        let waiting = (self.snapshot_result.is_some(), self.sync_result.is_some());
+        let waiting = (
+            self.snapshot_result.is_some(),
+            self.sync_result.is_some(),
+            self.residency_job.is_some(),
+        );
         if let Some(receiver) = &self.snapshot_result {
             match receiver.try_recv() {
-                Ok(Ok(snapshot)) => {
-                    self.sync_snapshot = Some(snapshot);
+                Ok(read) => {
                     self.snapshot_result = None;
-                    if self.sync_message.as_deref() == Some(t("settings-storage-loading").as_str())
-                    {
-                        self.sync_message = None;
-                    }
-                }
-                Ok(Err(error)) => {
-                    self.sync_snapshot = None;
-                    self.snapshot_result = None;
-                    self.sync_message = Some(t_args(
-                        "settings-storage-service-unavailable",
-                        &[("error", error.into())],
-                    ));
+                    self.take_read(read);
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.sync_snapshot = None;
                     self.snapshot_result = None;
                     self.sync_message = Some(t("settings-storage-service-ended"));
+                    if self.summary_waiting {
+                        self.summary_waiting = false;
+                        self.replies.fail(
+                            StorageEffect::STORAGE_SUMMARY.id,
+                            t("settings-storage-service-ended"),
+                        );
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some((id, receiver)) = &self.residency_job {
+            let id = *id;
+            match receiver.try_recv() {
+                Ok(result) => {
+                    self.residency_job = None;
+                    self.replies.finish(id, result);
+                    self.refresh_sync();
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.residency_job = None;
+                    self.replies.fail(id, t("settings-storage-service-ended"));
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -700,6 +897,7 @@ impl PaneModel for StorageModel {
         let policy_changed = self.poll_policy();
         let finished = (waiting.0 && self.snapshot_result.is_none())
             || (waiting.1 && self.sync_result.is_none())
+            || (waiting.2 && self.residency_job.is_none())
             || policy_changed;
         std::mem::take(&mut self.changed) || finished
     }
@@ -709,7 +907,10 @@ impl PaneModel for StorageModel {
     }
 
     fn busy(&self) -> bool {
-        self.sync_busy || self.snapshot_result.is_some() || self.policy_result.is_some()
+        self.sync_busy
+            || self.snapshot_result.is_some()
+            || self.policy_result.is_some()
+            || self.residency_job.is_some()
     }
 }
 
@@ -756,6 +957,42 @@ impl StorageModel {
         }
         true
     }
+
+    /// Take in a finished read of the storage service.
+    fn take_read(&mut self, read: SyncRead) {
+        match read.snapshot {
+            Ok(snapshot) => {
+                self.sync_snapshot = Some(snapshot);
+                if self.sync_message.as_deref() == Some(t("settings-storage-loading").as_str()) {
+                    self.sync_message = None;
+                }
+            }
+            Err(error) => {
+                self.sync_snapshot = None;
+                self.sync_message = Some(t_args(
+                    "settings-storage-service-unavailable",
+                    &[("error", error.into())],
+                ));
+            }
+        }
+        match read.residency {
+            Some(device) => {
+                let summary = device.summary.clone();
+                self.fleet.adopt(device);
+                if self.summary_waiting {
+                    self.answer_summary(&summary);
+                }
+            }
+            None if self.summary_waiting => {
+                self.summary_waiting = false;
+                self.replies.fail(
+                    StorageEffect::STORAGE_SUMMARY.id,
+                    t("settings-storage-accounting-unavailable"),
+                );
+            }
+            None => {}
+        }
+    }
 }
 
 fn reclaimable_selections(snapshot: &SyncStorageSnapshot) -> Vec<EvictionSelection> {
@@ -770,6 +1007,83 @@ fn reclaimable_selections(snapshot: &SyncStorageSnapshot) -> Vec<EvictionSelecti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each device's card names its workspaces and what of them no other
+    /// device holds; only this device's rows offer to free its cache and
+    /// keep a workspace here.
+    #[test]
+    fn the_pane_shows_what_only_one_device_holds() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let mut pane = StorageModel::with_roots(
+            cx,
+            StorageRoots {
+                app_payloads: None,
+                room_data: None,
+                app_cache: None,
+                sync_replica: None,
+            },
+        );
+        for device in crate::scenarios::storage_fixture() {
+            pane.fleet.adopt(device);
+        }
+        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        let says = |needle: &str| text.iter().any(|line| line.contains(needle));
+        let at_risk = t_args(
+            "settings-storage-only-here-mark",
+            &[("size", ui::format::bytes_si(48_000_000).into())],
+        );
+        assert!(
+            says(&t_args(
+                "settings-storage-this-device",
+                &[("device", "Laptop".into())]
+            )),
+            "{text:#?}"
+        );
+        assert!(says("Home server") && says("Desktop"), "{text:#?}");
+        assert!(says(&at_risk), "{text:#?}");
+        assert_eq!(
+            text.iter().filter(|line| line.contains(&at_risk)).count(),
+            1,
+            "only the laptop holds work no other device has: {text:#?}"
+        );
+        let free = t_args(
+            "settings-storage-free-cache",
+            &[("size", ui::format::bytes_si(1_260_000_000).into())],
+        );
+        assert!(says(&free), "{text:#?}");
+        assert_eq!(
+            text.iter()
+                .filter(|line| line.contains(&t("settings-storage-keep-here"))
+                    || line.contains(&t("settings-storage-stop-keeping")))
+                .count(),
+            2,
+            "one keep control per workspace of this device, none for the others: {text:#?}"
+        );
+    }
+
+    /// The summary another device asks for carries counts per workspace and
+    /// no file name.
+    #[test]
+    fn the_storage_summary_names_no_file() {
+        let summary = &crate::scenarios::storage_fixture()[0].summary;
+        let value = serde_json::to_value(summary).unwrap();
+        let workspaces = value["workspaces"].as_array().unwrap();
+        assert_eq!(workspaces.len(), 2);
+        for workspace in workspaces {
+            let mut keys: Vec<_> = workspace.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            assert_eq!(keys, ["kept_here", "split", "workspace"]);
+            assert!(
+                workspace["split"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .all(serde_json::Value::is_u64),
+                "only counts: {workspace}"
+            );
+        }
+    }
     /// Only real roots are reported and only authority-approved files are reclaimed.
     #[test]
     fn storage_pane_reports_real_roots_and_reclaims_only_approved_files() {

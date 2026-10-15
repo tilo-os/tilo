@@ -3944,16 +3944,11 @@ impl QuickFS {
             .ok()
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the policy update and persisted availability projection form one atomic state transition"
-    )]
     fn set_pin_policy(&self, ino: u64, policy: AvailabilityPolicy) -> Result<(), i32> {
         self.check_access(ino, Access::Read)?;
         let registry = self.availability.as_ref().ok_or(libc::ENOTSUP)?;
-        let (record_id, mut ancestry) = {
+        let mut ancestry = {
             let mut ns = self.ns();
-            let record_id = ns.record_id_for(ino).ok_or(ENOENT)?;
             let mut ancestry = Vec::new();
             let mut cursor = Some(ino);
             while let Some(current_ino) = cursor {
@@ -3969,29 +3964,14 @@ impl QuickFS {
                 ancestry.push((current_id, kind, parent));
                 cursor = parent_ino;
             }
-            (record_id, ancestry)
+            ancestry
         };
-        {
-            let mut registry = registry.lock_recover();
-            ancestry.reverse();
-            for (id, kind, parent) in ancestry {
-                let mut record = registry
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_else(|| RecordAvailability::new(id, kind));
-                record.kind = kind;
-                record.parent = parent;
-                if id == record_id {
-                    record.policy = policy;
-                }
-                registry.put(record).map_err(|_| EIO)?;
-            }
-            if policy == AvailabilityPolicy::Automatic {
-                registry
-                    .clear_automatic_transfer_subtree(record_id)
-                    .map_err(|_| EIO)?;
-            }
-        }
+        // From the workspace root down to the record itself.
+        ancestry.reverse();
+        registry
+            .lock_recover()
+            .set_policy_along(&ancestry, policy)
+            .map_err(|_| EIO)?;
         if let Some(worker) = &self.pinned_hydration {
             worker
                 .wake
