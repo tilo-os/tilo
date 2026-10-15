@@ -2,15 +2,15 @@
 //! one device runs on another of its person's devices when the relay places
 //! it there, hydrating its inputs from the invoker's workspace content and
 //! returning its outputs by digest, and returns exactly what running it
-//! locally returns.
+//! locally returns. A device whose own replica already holds the inputs
+//! runs the job on them once the invoker proves it holds the same bytes.
 
 #![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until the test ends"
 )]
 use std::collections::BTreeSet;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use launcher::capture::{CaptureCancellation, CapturedRunOutput, CapturedTermination};
 use thumbnail::batch::{ENTRYPOINT, PACKAGE, thumbnail_batch};
@@ -26,9 +26,9 @@ use tilo_relay::offload::{
 use tilo_relay::{
     ComputeClient, ComputeEnvelope, ComputeJobBinding, ComputeJobPhase, ComputeOutputSource,
     ComputeResultUpdate, ComputeSandbox, ComputeSandboxInvocation, ComputeStatusUpdate,
-    ComputeWorker, ComputeWorkerAdvertisement, Envelope, FileComputeContentStore,
-    PowerAvailability, RelayClient, WorkerEnvironments, run_compute_assignment,
-    serve_worker_stream_with,
+    ComputeWorker, ComputeWorkerAdvertisement, Envelope, FileComputeContentStore, HeldContent,
+    InputStaging, InputTransfer, PowerAvailability, RelayClient, WorkerEnvironments,
+    run_compute_assignment, serve_worker_stream_with,
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -183,9 +183,16 @@ async fn compute_session(
 
 type Executor = ComputeWorker<FileComputeContentStore, FixtureCatalogue, ThumbnailSandbox>;
 
+/// How the worker stages the next job's inputs, and how each job's were
+/// staged.
+struct Staging {
+    next: Mutex<InputStaging>,
+    staged: Mutex<Vec<InputTransfer>>,
+}
+
 /// Run every job routed to `worker`, as the production worker does: report
 /// it running, hydrate and execute it, report its result.
-async fn run_jobs(mut worker: ComputeClient, executor: Arc<Executor>, inputs: PathBuf) {
+async fn run_jobs(mut worker: ComputeClient, executor: Arc<Executor>, staging: Arc<Staging>) {
     while let Ok(delivery) = worker.receive().await {
         worker.acknowledge(&delivery).await.unwrap();
         let ComputeEnvelope::Request { spec } = delivery.envelope else {
@@ -208,14 +215,16 @@ async fn run_jobs(mut worker: ComputeClient, executor: Arc<Executor>, inputs: Pa
             })
             .await
             .unwrap();
+        let next = staging.next.lock().unwrap().clone();
         let assignment = run_compute_assignment(
             Arc::clone(&executor),
             worker.connection(),
             spec,
-            inputs.clone(),
+            next,
             CaptureCancellation::default(),
         )
         .await;
+        staging.staged.lock().unwrap().push(assignment.transfer);
         worker
             .send(&ComputeEnvelope::Result {
                 result: ComputeResultUpdate {
@@ -387,10 +396,14 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
             });
         }
     });
+    let staging = Arc::new(Staging {
+        next: Mutex::new(InputStaging::from(root.path().join("hydrated"))),
+        staged: Mutex::default(),
+    });
     let jobs = tokio::spawn(run_jobs(
         desktop_compute,
         Arc::clone(&executor),
-        root.path().join("hydrated"),
+        Arc::clone(&staging),
     ));
 
     // Now the relay places the job on the desktop: it runs there, and the
@@ -424,10 +437,55 @@ async fn an_offloadable_action_runs_on_the_placed_device_and_returns_the_local_o
     let times = offloader.wall_times();
     assert!(times.iter().any(|time| time.device == laptop_key));
     assert!(times.iter().any(|time| time.device == desktop_key));
+    let fetched = *staging.staged.lock().unwrap().last().unwrap();
+    assert_eq!(fetched.bytes, u64::try_from(input_bytes).unwrap());
+    assert_eq!(fetched.held, 0);
+
+    // The desktop's own replica of the workspace already holds the
+    // photographs (it is the home server that keeps their originals): the
+    // laptop proves it holds them too, names their file versions, and no
+    // input byte moves.
+    let desktop_store = Arc::new(fs::store::ContentStore::memory());
+    for bytes in &photographs {
+        desktop_store.write_content(bytes).await.unwrap().unwrap();
+    }
+    let desktop_content = WorkspaceContent::new(desktop_store, tokio::runtime::Handle::current());
+    let held: Arc<dyn HeldContent> = Arc::new(desktop_content);
+    staging.next.lock().unwrap().held = Some(held);
+    let preseeded = tilo_test_env::within(
+        "the offloaded run on held inputs",
+        offloader.invoke(
+            OffloadJob {
+                workspace_id: WORKSPACE,
+                action: &action,
+                inputs: manifests.clone(),
+            },
+            Arc::clone(&local),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(preseeded.ran_on, RanOn::Worker(desktop_key));
+    assert_eq!(
+        preseeded.output, here.output,
+        "the same output, whichever copy it ran on"
+    );
+    let from_held = *staging.staged.lock().unwrap().last().unwrap();
+    assert_eq!(
+        (from_held.inputs, from_held.bytes),
+        (0, 0),
+        "held inputs move no bytes"
+    );
+    assert_eq!(
+        (from_held.held, from_held.held_bytes),
+        (IMAGES, u64::try_from(input_bytes).unwrap())
+    );
     eprintln!(
         "offloadable action ({IMAGES} images, {input_bytes} input bytes): \
-         local {:?}, offloaded {:?} (single host: both devices share its cores)",
-        here.elapsed, there.elapsed,
+         local {:?}, offloaded {:?} (inputs staged in {:?}), \
+         offloaded to a worker already holding them {:?} (staged in {:?}) \
+         (single host: both devices share its cores)",
+        here.elapsed, there.elapsed, fetched.elapsed, preseeded.elapsed, from_held.elapsed,
     );
 
     // An input that is not an image fails the batch on the worker, and the

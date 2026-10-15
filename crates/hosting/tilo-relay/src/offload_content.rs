@@ -22,6 +22,12 @@
 //!
 //! Every read is re-checked: a bound file whose bytes no longer hash to the
 //! bound digest is refused, never substituted.
+//!
+//! - **Inputs a worker already holds.** The same content on a *worker*
+//!   device is [`HeldContent`]: when the invoker proves it holds an input,
+//!   it names the file version as the proof's locator
+//!   ([`ComputeContentStore::locator`]), and a worker whose own replica has
+//!   that version whole runs the job on it instead of fetching the bytes.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -29,7 +35,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use fs::store::ContentStore;
 use thiserror::Error;
 
-use crate::compute::ComputeContentStore;
+use crate::compute::{ComputeContentStore, HeldContent};
 
 /// Why a workspace file could not be bound as a job input.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -152,16 +158,31 @@ impl WorkspaceContent {
 
 /// The whole of file version `manifest`, from `store`, checked against it.
 async fn read_version(store: &ContentStore, manifest: [u8; 32]) -> Result<Vec<u8>, BindError> {
+    read_version_within(store, manifest, u64::MAX)
+        .await?
+        .ok_or(BindError::NotLocal)
+}
+
+/// [`read_version`], or `Ok(None)` without reading when the version is
+/// longer than `max_bytes`.
+async fn read_version_within(
+    store: &ContentStore,
+    manifest: [u8; 32],
+    max_bytes: u64,
+) -> Result<Option<Vec<u8>>, BindError> {
     let decoded = store
         .manifest(manifest.into())
         .await
         .ok_or(BindError::UnknownManifest)?;
+    if decoded.total_len() > max_bytes {
+        return Ok(None);
+    }
     let bytes = store
         .read_local(manifest.into(), &decoded, 0..decoded.total_len())
         .await
         .ok_or(BindError::NotLocal)?;
     if decoded.verify(&bytes) {
-        Ok(bytes)
+        Ok(Some(bytes))
     } else {
         Err(BindError::Integrity)
     }
@@ -177,6 +198,37 @@ impl ComputeContentStore for WorkspaceContent {
         let this = self.clone();
         let bytes = bytes.to_vec();
         self.block(async move { this.store(digest, &bytes).await.map(|_| ()) })?
+    }
+
+    fn locator(&self, digest: [u8; 32]) -> Option<[u8; 32]> {
+        self.manifest_of(digest)
+    }
+}
+
+impl HeldContent for WorkspaceContent {
+    fn held(
+        &self,
+        digest: [u8; 32],
+        locator: Option<[u8; 32]>,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let Some(manifest) = locator.or_else(|| self.manifest_of(digest)) else {
+            return Ok(None);
+        };
+        let store = Arc::clone(&self.store);
+        let read =
+            self.block(async move { read_version_within(&store, manifest, max_bytes).await })?;
+        match read {
+            // A version this replica lacks, or holds only in part, is simply
+            // not held: the input is fetched instead.
+            Err(BindError::UnknownManifest | BindError::NotLocal) => Ok(None),
+            Err(BindError::Integrity) => Err(BindError::Integrity.to_string()),
+            Ok(bytes) => Ok(bytes.filter(|bytes| blake3::hash(bytes).as_bytes() == &digest)),
+        }
+    }
+
+    fn locates(&self) -> bool {
+        true
     }
 }
 

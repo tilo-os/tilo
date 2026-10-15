@@ -114,9 +114,30 @@ before sending, the relay while forwarding, the asker on receipt. A refusal
 carries a stable code, so a job whose input its requester cannot produce
 fails promptly as `input_unavailable` (`input_integrity`, `input_too_large`
 and `input_timeout` likewise) rather than hanging. The requester has to be
-online while its job hydrates; a job whose inputs already live on the worker
-still travels from the requester, which is the price of never widening what
-a worker reads.
+online while its job hydrates.
+
+An input the worker already holds does not travel. Before fetching one, the
+worker sends a fresh random challenge through the relay
+(`StreamOpen::ComputeContentProof`, under the same input rule), and the
+requester answers `blake3::keyed_hash(nonce, bytes)` over its own copy, plus
+a locator hint (for workspace content, the file version's manifest hash).
+The worker stages its own copy only when that copy hashes to the digest and
+reproduces the proof; otherwise it fetches as above. Possession is the
+requester's permission (it reads its content under its own access), so a
+job still runs only on bytes its invoker can produce: knowing a digest, or a
+worker happening to hold the bytes, grants nothing. The requester still reads
+its copy to prove it; the upload is what is saved. The worker's sources are
+`HeldContent`: its retained outputs (a job chained on an earlier output runs
+without the requester sending it back) and, where the worker keeps a replica
+of the workspace, that replica's file versions (`WorkspaceContent`).
+`InputTransfer` reports fetched and held inputs separately; the
+`offloadable_action` and `compute_content` relay tests print both timings.
+On a shared CI runner (requester, relay and worker on one host), offloading
+the 12-photo thumbnail batch (129 MB) took 5.9–9.3 s with its inputs fetched
+from the requester (3.1–5.0 s of staging) and 3.3–5.3 s to a worker whose
+replica already held them (0.55–1.2 s of staging, no input bytes sent). A
+1 MiB input staged in 42–54 ms fetched against 17–34 ms proven; a 15 MiB one
+in 879 ms against 185 ms.
 
 ### Offloadable actions
 

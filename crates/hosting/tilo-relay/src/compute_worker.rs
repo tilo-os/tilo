@@ -7,9 +7,13 @@
 //! stale durable capability.
 //!
 //! A routed job's inputs are hydrated from its requester through the relay
-//! into a private per-job directory ([`hydrate_job_inputs`]), and its
-//! outputs are retained for that requester to fetch by digest
-//! ([`ComputeOutputSource`]) for [`OUTPUT_RETENTION`].
+//! into a private per-job directory ([`hydrate_job_inputs`]) — or, for an
+//! input this worker already holds and the requester proves it holds too,
+//! from the worker's own copy, with no bytes moving — and its outputs are
+//! retained for that requester to fetch by digest ([`ComputeOutputSource`])
+//! for [`OUTPUT_RETENTION`]. Retained outputs are themselves held content:
+//! a job chained on an earlier job's output runs without the requester
+//! sending it back.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
@@ -28,11 +32,13 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::compute::{
     ComputeContentStore, ComputeExecutionError, ComputeJobPhase, ComputeJobResult, ComputeJobSpec,
-    ComputeOutputSource, ComputePackageCatalogue, ComputeSandbox, ComputeWorker,
+    ComputeOutputSource, ComputePackageCatalogue, ComputeSandbox, ComputeWorker, HeldContent,
     InstalledComputeCatalogue, LauncherComputeSandbox, MAX_COMPUTE_INPUT_BYTES,
     OUTPUT_INDEX_SUFFIX,
 };
-use crate::compute_content::{ContentFetchError, answer_content, fetch_job_content};
+use crate::compute_content::{
+    ContentFetchError, answer_content, content_proof, fetch_job_content, prove_job_input,
+};
 use crate::compute_session::{ComputeClient, ComputeDelivery, ComputeSessionError};
 use crate::compute_transport::{
     COMPUTE_TRANSPORT_SCHEMA_VERSION, ComputeEnvelope, ComputeJobBinding, ComputeResultUpdate,
@@ -154,6 +160,26 @@ impl ComputeContentStore for FileComputeContentStore {
             return self.get(digest).map(|_| ());
         }
         tilo_files::native::atomic::write(&path, bytes).map_err(|error| error.to_string())
+    }
+}
+
+impl HeldContent for FileComputeContentStore {
+    fn held(
+        &self,
+        digest: [u8; 32],
+        _locator: Option<[u8; 32]>,
+        max_bytes: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let len = match fs::symlink_metadata(self.path_for(digest)) {
+            Ok(metadata) if metadata.is_file() => metadata.len(),
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        if len > max_bytes {
+            return Ok(None);
+        }
+        self.get(digest)
     }
 }
 
@@ -288,6 +314,11 @@ where
         return Ok(());
     };
     match open {
+        // Proofs are a requester's to give, for the inputs of jobs it
+        // submitted; a worker proves nothing of what it retains.
+        WorkerStreamOpen::ComputeContentProof { .. } => {
+            crate::compute_content::refuse_proof(send, "not_authorised").await
+        }
         WorkerStreamOpen::ComputeContent {
             version,
             workspace_id,
@@ -379,6 +410,9 @@ pub async fn run_production_compute_worker(
     let data_home = launcher::appdir::host_data_home()
         .ok_or_else(|| ComputeWorkerError::Health("launcher has no trusted data home".into()))?;
     let content = FileComputeContentStore::open(config.state_root.join("content"))?;
+    // The outputs this worker retains are content it holds: a job chained
+    // on one runs without its requester sending it back.
+    let held: Arc<dyn HeldContent> = Arc::new(content.clone());
     let advertisement = server_advertisement(&config, &health, 0);
     let executor = Arc::new(ComputeWorker::new(
         advertisement,
@@ -436,7 +470,7 @@ pub async fn run_production_compute_worker(
                     &mut client,
                     &config,
                     &health,
-                    &executor,
+                    (&executor, &held),
                     &completed_tx,
                     &mut active,
                     delivery,
@@ -556,15 +590,38 @@ struct CompletedJob {
     log_tail: Vec<u8>,
 }
 
-/// The content a worker fetched to run one job.
+/// The content a worker staged to run one job, by where it came from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InputTransfer {
-    /// Distinct input digests fetched.
+    /// Distinct input digests fetched from the requester.
     pub inputs: usize,
-    /// Their bytes.
+    /// Their bytes: what crossed the network.
     pub bytes: u64,
-    /// Time spent fetching them.
+    /// Distinct input digests this worker already held, used once the
+    /// requester proved it holds the same bytes: nothing was sent.
+    pub held: usize,
+    /// Their bytes.
+    pub held_bytes: u64,
+    /// Time spent staging them all, proofs included.
     pub elapsed: Duration,
+}
+
+/// Where a worker stages a job's inputs: a private per-job directory under
+/// `root`, from content it already holds (`held`) where the requester
+/// proves it may, and from the requester otherwise.
+#[derive(Clone)]
+pub struct InputStaging {
+    /// Parent of the per-job directories.
+    pub root: PathBuf,
+    /// Content this worker already holds, if any.
+    pub held: Option<Arc<dyn HeldContent>>,
+}
+
+impl From<PathBuf> for InputStaging {
+    /// Staging that fetches every input from the requester.
+    fn from(root: PathBuf) -> Self {
+        Self { root, held: None }
+    }
 }
 
 /// A job's inputs could not be hydrated.
@@ -590,14 +647,19 @@ impl InputFailure {
     }
 }
 
-/// Fetch every input `spec` names, once each, into the private per-job
+/// Stage every input `spec` names, once each, into the private per-job
 /// `store`, over the worker's authenticated compute `connection`.
 ///
-/// Each digest is asked for through the relay, which serves it from the
-/// job's requester ([`crate::compute_content`]): the worker hydrates
-/// exactly what the job lists and nothing its invoker could not read
-/// itself. The total is bounded by [`MAX_COMPUTE_INPUT_BYTES`] and the
-/// job's memory limit, and the whole fetch by the job's lifetime.
+/// An input this worker already holds (`held`) is staged from its own copy
+/// when the job's requester proves, through the relay, that it holds the
+/// same bytes ([`prove_job_input`]): the copy must hash to the digest *and*
+/// match the proof under a fresh challenge, so a worker never runs a job on
+/// content its invoker could not produce, and nothing is sent. Every other
+/// input is asked for through the relay, which serves it from the job's
+/// requester ([`crate::compute_content`]). Either way the worker stages
+/// exactly what the job lists. The total is bounded by
+/// [`MAX_COMPUTE_INPUT_BYTES`] and the job's memory limit, and the whole
+/// staging by the job's lifetime.
 ///
 /// # Errors
 ///
@@ -608,15 +670,35 @@ pub async fn hydrate_job_inputs(
     connection: &iroh::endpoint::Connection,
     spec: &ComputeJobSpec,
     store: &dyn ComputeContentStore,
+    held: Option<&Arc<dyn HeldContent>>,
 ) -> Result<InputTransfer, (&'static str, String)> {
     let started = std::time::Instant::now();
     let budget = MAX_COMPUTE_INPUT_BYTES.min(spec.limits.memory_bytes);
     let lifetime = Duration::from_millis(spec.expires_at_ms.saturating_sub(unix_now_ms()));
     let unique = spec.inputs.iter().copied().collect::<BTreeSet<_>>();
-    let fetch_all = async {
+    let stage_all = async {
         let mut transfer = InputTransfer::default();
-        for digest in unique {
-            let remaining = budget.saturating_sub(transfer.bytes);
+        let mut staged = BTreeSet::new();
+        if let Some(held) = held {
+            for (digest, bytes) in proven_held(connection, spec, &unique, held, budget).await {
+                let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+                if transfer.held_bytes.saturating_add(len) > budget {
+                    // Over the bound together; the fetch below refuses it.
+                    continue;
+                }
+                store.put(digest, &bytes).map_err(|detail| InputFailure {
+                    code: "staging",
+                    detail,
+                })?;
+                staged.insert(digest);
+                transfer.held = transfer.held.saturating_add(1);
+                transfer.held_bytes = transfer.held_bytes.saturating_add(len);
+            }
+        }
+        for digest in unique.difference(&staged).copied() {
+            let remaining = budget
+                .saturating_sub(transfer.held_bytes)
+                .saturating_sub(transfer.bytes);
             let bytes = fetch_job_content(
                 connection,
                 spec.workspace_id,
@@ -637,7 +719,7 @@ pub async fn hydrate_job_inputs(
         }
         Ok::<_, InputFailure>(transfer)
     };
-    match tokio::time::timeout(lifetime, fetch_all).await {
+    match tokio::time::timeout(lifetime, stage_all).await {
         Ok(Ok(mut transfer)) => {
             transfer.elapsed = started.elapsed();
             Ok(transfer)
@@ -648,6 +730,88 @@ pub async fn hydrate_job_inputs(
             "inputs did not arrive within the job's lifetime".into(),
         )),
     }
+}
+
+/// The inputs of `spec` among `digests` that `held` has a copy of and the
+/// job's requester proved it holds too, each at most `max_bytes`. Every
+/// input is tried at once; one that is not held, not proven, or does not
+/// match is left out and fetched instead.
+async fn proven_held(
+    connection: &iroh::endpoint::Connection,
+    spec: &ComputeJobSpec,
+    digests: &BTreeSet<[u8; 32]>,
+    held: &Arc<dyn HeldContent>,
+    max_bytes: u64,
+) -> Vec<([u8; 32], Vec<u8>)> {
+    let mut proving = tokio::task::JoinSet::new();
+    for &digest in digests {
+        let connection = connection.clone();
+        let held = Arc::clone(held);
+        let job = (spec.workspace_id, spec.job_id);
+        proving.spawn(async move {
+            let proven = proven_copy(&connection, job, digest, held, max_bytes).await;
+            proven.map(|bytes| (digest, bytes))
+        });
+    }
+    let mut proven = Vec::new();
+    while let Some(joined) = proving.join_next().await {
+        if let Ok(Some(copy)) = joined {
+            proven.push(copy);
+        }
+    }
+    proven
+}
+
+/// Read what `held` has as `digest` (by `locator` when given), off the
+/// runtime; a read failure counts as not held.
+async fn read_held(
+    held: Arc<dyn HeldContent>,
+    digest: [u8; 32],
+    locator: Option<[u8; 32]>,
+    max_bytes: u64,
+) -> Option<Vec<u8>> {
+    tokio::task::spawn_blocking(move || held.held(digest, locator, max_bytes))
+        .await
+        .unwrap_or_else(|_| Err("held content read panicked".into()))
+        .inspect_err(|error| tracing::debug!(%error, "held compute input unreadable"))
+        .ok()
+        .flatten()
+}
+
+/// This worker's copy of input `digest` of `job`, when `held` has one and
+/// the requester proves it holds the same bytes; `None` otherwise.
+async fn proven_copy(
+    connection: &iroh::endpoint::Connection,
+    job: (u64, [u8; 16]),
+    digest: [u8; 32],
+    held: Arc<dyn HeldContent>,
+    max_bytes: u64,
+) -> Option<Vec<u8>> {
+    // Look by digest first: a store that cannot locate by hint has nothing
+    // to prove when it has nothing under the digest, so a miss costs no
+    // round trip.
+    let mut copy = read_held(Arc::clone(&held), digest, None, max_bytes).await;
+    if copy.is_none() && !held.locates() {
+        return None;
+    }
+    let mut nonce = [0_u8; 32];
+    rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
+    let (proof, locator) = match prove_job_input(connection, job, digest, nonce).await {
+        Ok(answer) => answer,
+        Err(error) => {
+            tracing::debug!(%error, input = %hex::encode(digest), "input not proven; fetching it");
+            return None;
+        }
+    };
+    if copy.is_none() {
+        copy = read_held(held, digest, Some(locator?), max_bytes).await;
+    }
+    // blake3's `Hash` compares in constant time.
+    copy.filter(|bytes| {
+        blake3::hash(bytes).as_bytes() == &digest
+            && blake3::Hash::from_bytes(content_proof(&nonce, bytes))
+                == blake3::Hash::from_bytes(proof)
+    })
 }
 
 /// What running one assignment produced: the terminal phase and log the
@@ -663,7 +827,7 @@ pub struct ComputeAssignment {
 }
 
 /// Run one routed job end to end on `executor`: hydrate its inputs into a
-/// private directory under `inputs_root` ([`hydrate_job_inputs`]), execute
+/// private directory under the `staging` root ([`hydrate_job_inputs`]), execute
 /// it in the package sandbox, and return what to report. Outputs stay in
 /// the executor's store, retrievable by the job's requester through
 /// [`ComputeOutputSource`]; the hydrated inputs are removed when the job
@@ -672,7 +836,7 @@ pub async fn run_compute_assignment<C, P, S>(
     executor: Arc<ComputeWorker<C, P, S>>,
     connection: iroh::endpoint::Connection,
     spec: ComputeJobSpec,
-    inputs_root: PathBuf,
+    staging: impl Into<InputStaging>,
     cancellation: CaptureCancellation,
 ) -> ComputeAssignment
 where
@@ -685,7 +849,8 @@ where
         log_tail: bounded_log(detail.into_bytes()),
         transfer,
     };
-    let job_inputs = inputs_root.join(hex::encode(spec.job_id));
+    let InputStaging { root, held } = staging.into();
+    let job_inputs = root.join(hex::encode(spec.job_id));
     let _remove_inputs = RemoveOnDrop(job_inputs.clone());
     let (inputs, transfer): (Box<dyn ComputeContentStore>, InputTransfer) = if spec
         .inputs
@@ -697,7 +862,7 @@ where
             Ok(store) => store,
             Err(error) => return failed("staging", error.to_string(), InputTransfer::default()),
         };
-        match hydrate_job_inputs(&connection, &spec, &store).await {
+        match hydrate_job_inputs(&connection, &spec, &store, held.as_ref()).await {
             Ok(transfer) => (Box::new(store), transfer),
             Err((code, detail)) => return failed(code, detail, InputTransfer::default()),
         }
@@ -816,13 +981,15 @@ pub fn prune_retained_outputs(
     Ok(())
 }
 
+/// The executor a production worker runs jobs on.
+type ProductionExecutor =
+    ComputeWorker<FileComputeContentStore, InstalledComputeCatalogue, LauncherComputeSandbox>;
+
 async fn handle_delivery(
     client: &mut ComputeClient,
     config: &ProductionComputeWorkerConfig,
     health: &WorkerHealth,
-    executor: &Arc<
-        ComputeWorker<FileComputeContentStore, InstalledComputeCatalogue, LauncherComputeSandbox>,
-    >,
+    (executor, held): (&Arc<ProductionExecutor>, &Arc<dyn HeldContent>),
     completed: &tokio::sync::mpsc::Sender<CompletedJob>,
     active: &mut ActiveJobs,
     delivery: ComputeDelivery,
@@ -877,16 +1044,20 @@ async fn handle_delivery(
             let spec = spec.clone();
             let completed = completed.clone();
             let connection = client.connection();
-            let inputs_root = config.state_root.join("inputs");
+            let staging = InputStaging {
+                root: config.state_root.join("inputs"),
+                held: Some(Arc::clone(held)),
+            };
             tokio::spawn(async move {
                 let job = hex::encode(spec.job_id);
                 let assignment =
-                    run_compute_assignment(executor, connection, spec, inputs_root, cancellation)
-                        .await;
+                    run_compute_assignment(executor, connection, spec, staging, cancellation).await;
                 tracing::debug!(
                     %job,
                     inputs = assignment.transfer.inputs,
                     input_bytes = assignment.transfer.bytes,
+                    held_inputs = assignment.transfer.held,
+                    held_bytes = assignment.transfer.held_bytes,
                     hydration_ms = assignment.transfer.elapsed.as_millis(),
                     "compute job finished"
                 );
