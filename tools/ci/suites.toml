@@ -170,8 +170,6 @@ suites = [
   "os/tests/test_image_cohort_archives.py",
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
-  "os/tests/test_install_dev_ssh.py",
-  "os/tests/test_install_handoff_copy.py",
   "os/tests/test_installed_development_disk.py",
   "os/tests/test_loop_partition_nodes.py",
   "os/tests/test_installer_bootc_helper.py",
@@ -216,7 +214,6 @@ suites = [
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
-  "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_probe_kvm.py",
   "os/tests/test_windows_dualboot_preflight.py",
@@ -785,6 +782,16 @@ inputs = [
   "os/components.toml",
 ]
 readers = ["crates/system/staging-reclaim/tests/reclaim.rs"]
+
+[[cargo]]
+package = "tilo-install-helpers"
+# The helpers' tests check how the installer backend calls them.
+inputs = ["os/usr/libexec/tilo-install"]
+readers = [
+  "crates/system/install-helpers/tests/handoff_copy.rs",
+  "crates/system/install-helpers/tests/dev_ssh.rs",
+  "crates/system/install-helpers/tests/bootc_copy_cache.rs",
+]
 
 [[cargo]]
 package = "greeter"

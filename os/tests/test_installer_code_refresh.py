@@ -253,7 +253,7 @@ class Guest(unittest.TestCase):
         import os
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); state = root / 'state'; state.mkdir(mode=0o700)
-            files = {'usr/libexec/tilo-install': b'first', 'usr/libexec/tilo-install-dev-ssh.py': b'second'}
+            files = {'usr/libexec/tilo-install': b'first', 'usr/libexec/tilo-boot-mount-contract': b'second'}
             for relative in files:
                 path = root / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'old')
             previous = {'sha256':'b'*64, 'state':'applied'}
@@ -261,7 +261,7 @@ class Guest(unittest.TestCase):
             calls = []
             def command(*argv):
                 calls.append(argv)
-                if argv[:2] == ('mount', '--bind') and argv[-1].endswith('tilo-install-dev-ssh.py'):
+                if argv[:2] == ('mount', '--bind') and argv[-1].endswith('tilo-boot-mount-contract'):
                     raise ValueError('simulated mount failure')
                 return ''
             descriptor = os.open(state / 'lock', os.O_CREAT | os.O_RDWR, 0o600)

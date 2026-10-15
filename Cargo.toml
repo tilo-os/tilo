@@ -353,6 +353,7 @@ members = [
     "crates/system/host-fs",
     "crates/system/host-info",
     "crates/system/image-policy-check",
+    "crates/system/install-helpers",
     "crates/system/libvirt-domain",
     "crates/system/messaging-protocol",
     "crates/system/os-actions",

@@ -557,6 +557,23 @@ files = [
   { from = "tilo-staging-reclaim", to = "/usr/libexec/tilo-staging-reclaim", mode = "0755" },
 ]
 
+# The installer backend (tilo-install) copies the setup handoff into the
+# installed system, applies a dev self-install's owner SSH keys and, in an
+# opted-in VM, reuses its bootc export with these. The installer image inherits
+# them from here; a swap takes effect at the next install.
+[[component]]
+name = "install-helpers"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-install-helpers"]
+bins = ["tilo-install-handoff-copy", "tilo-install-dev-ssh", "tilo-vm-bootc-copy-cache"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-install-handoff-copy", to = "/usr/libexec/tilo-install-handoff-copy", mode = "0755" },
+  { from = "tilo-install-dev-ssh", to = "/usr/libexec/tilo-install-dev-ssh", mode = "0755" },
+  { from = "tilo-vm-bootc-copy-cache", to = "/usr/libexec/tilo-vm-bootc-copy-cache", mode = "0755" },
+]
+
 # Downloaded, Tilo-signed system extensions: tilo-extension-activate.service at
 # boot, tilo-extension@VERB:ID.service on demand, the refresh timer and the
 # NetworkManager hook all start it; a swap takes effect at its next start.
