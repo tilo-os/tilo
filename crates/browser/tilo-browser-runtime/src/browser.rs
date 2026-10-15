@@ -163,7 +163,7 @@ impl Config {
             .as_ref()
             .map(crate::host_services::ModelConfig::connect)
             .transpose()
-            .map(|models| models.unwrap_or_default())
+            .map(Option::unwrap_or_default)
             .map_err(error)
     }
     fn author(&self) -> String {

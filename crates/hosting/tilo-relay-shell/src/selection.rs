@@ -54,6 +54,7 @@ mod shell_proof_tests;
 pub mod tail_cache;
 use selected::SelectedGc;
 pub use selected::SelectedRead;
+#[cfg(any(test, feature = "test-support"))]
 use tilo_lock::MutexRecover as _;
 #[cfg(test)]
 mod tests;
