@@ -775,8 +775,16 @@ pointer controls and overlays fit one model, and how each transition moves, is
 
 The winit backend exposes a single output sized to the winit window. The DRM
 backend enumerates every seat GPU and connector via udev, configures the saved
-or preferred mode, and drives every enabled connector across all retained
-cards.
+mode, and drives every enabled connector across all retained cards.
+
+**Default mode.** Without a saved mode (Settings, or the `display.refresh-rate`
+action) a connector runs at its native resolution, the size of its PREFERRED
+mode, at the fastest progressive rate it offers there
+(`backend::drm::devices::select_mode`). Panels flag their 60 Hz timing
+PREFERRED and list 90 or 120 Hz beside it, so the flagged mode alone would cap
+a fast panel at 60 Hz. A faster rate at a different resolution never wins. The
+frame clock paces to the chosen mode's exact timing, and with adaptive sync
+that rate is the ceiling.
 
 **Hotplug.** Every udev edge re-probes the connectors and reconciles against what is live (`backend::drm::hotplug`): new connectors are modeset, gone ones torn down, re-moded ones rebuilt keeping their id. Configured `x/y`, rotation and mirror topology is reapplied after every change; connectors without saved placement fall back to a gap-free side-by-side layout. The pointer is projected back onto the nearest live output rectangle, never merely into the arrangement's bounding box. Windows are *not* pinned to an output — the shell places groups across whatever displays it is told about — so re-pushing the display geometry re-homes whatever was on the display that went away. Each card is held open on the loop thread for the whole session because libseat refuses a second `open` of the same node. Only startup and udev edges force-probe connectors: a forced probe of every connector, slow on DP-MST docks, runs on the input thread. A display settings change (`display`, `display_transaction`, `display_profiles`) and capability publication re-apply intent to the connectors the last probe found.
 
