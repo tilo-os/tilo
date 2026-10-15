@@ -20,7 +20,12 @@ file is never replaced.
 Callers are never identified by a name they supply. The service reads the
 bus peer's process: a Flatpak (cgroup scope and `.flatpak-info` agreeing), a
 root-owned executable under `/usr` (`binary:<path>`), or anything else
-(`local-process:<path>`). Interpreters are never `binary:`. Sandboxed Tilo
+(`local-process:<path>`). Interpreters are never `binary:`. A process that
+loaded the device key (the compositor) is non-dumpable, and the kernel
+refuses its executable to the service; such a caller first proves on its
+connection that it holds the device key (`so.tilo.Secrets1.CallerChallenge`
+and `ProveCaller`) and names its executable, which then stands in for the one
+the kernel will not show, for that connection only. Sandboxed Tilo
 apps reach secrets through the portal, where the compositor vouches for them
 (`sandbox:<package id>`). Items belong to the identity that made them; items
 imported from GNOME Keyring are readable by system identities only. Every

@@ -18558,6 +18558,7 @@ dependencies = [
  "tilo-paths",
  "tilo-seal",
  "tilo-secret-vault",
+ "tilo-secrets",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",

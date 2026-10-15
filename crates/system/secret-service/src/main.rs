@@ -141,7 +141,8 @@ async fn serve(identity_root: Option<std::path::PathBuf>) -> Result<(), String> 
     Ok(())
 }
 
-/// A session belongs to the bus name that opened it; it ends with it.
+/// A session, a challenge and a proof belong to the bus name that made
+/// them; they end with it.
 async fn forget_departed_sessions(connection: zbus::Connection, core: Arc<Core>) {
     use futures_util::StreamExt as _;
     let Ok(bus) = zbus::fdo::DBusProxy::new(&connection).await else {
@@ -153,7 +154,7 @@ async fn forget_departed_sessions(connection: zbus::Connection, core: Arc<Core>)
     while let Some(change) = changes.next().await {
         let Ok(args) = change.args() else { continue };
         if args.new_owner().is_none() && args.name().as_str().starts_with(':') {
-            core.drop_sessions_of(args.name().as_str());
+            core.forget_departed(args.name().as_str());
         }
     }
 }

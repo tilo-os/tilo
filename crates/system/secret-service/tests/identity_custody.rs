@@ -52,7 +52,15 @@ struct Bus {
 impl Bus {
     fn start() -> Self {
         let root = tempfile::tempdir().unwrap();
-        for directory in ["run", "home", "data", "device-a", "device-b", "identities"] {
+        for directory in [
+            "run",
+            "home",
+            "data",
+            "device-a",
+            "device-b",
+            "device-other",
+            "identities",
+        ] {
             let path = root.path().join(directory);
             std::fs::create_dir(&path).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -129,14 +137,23 @@ impl Bus {
     /// Serve the person's store with the device identity under `device`.
     fn start_service(&mut self, device: &str) {
         assert!(self.service.is_none(), "a service is already running");
-        let service = self
-            .command(SERVICE)
+        let mut command = self.command(SERVICE);
+        command
             .args(["serve", "--identity-root"])
             .arg(self.path(device))
-            .stdout(Stdio::null())
-            .spawn()
-            .expect("the service binary starts");
-        self.service = Some(service);
+            .stdout(Stdio::null());
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt as _;
+            // SAFETY: the hook makes only async-signal-safe system calls.
+            unsafe { command.pre_exec(drop_capabilities) };
+        }
+        self.service = Some(command.spawn().expect("the service binary starts"));
+        self.wait_for_owner();
+    }
+
+    /// Until something on the bus owns the Secret Service's name.
+    fn wait_for_owner(&self) {
         let deadline = Instant::now() + Duration::from_secs(20);
         while !self.owned() {
             assert!(
@@ -395,4 +412,353 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     assert_stored_key_signs(&keyring, 2);
 
     drop(env);
+}
+
+// ---- Callers the store cannot examine -------------------------------------
+//
+// Loading the device key makes a process non-dumpable, and the kernel then
+// refuses its `/proc/<pid>/exe` to the store. The compositor is such a
+// process. These tests run the production client code in child processes of
+// this test binary (`custody_child`), so only a child turns non-dumpable.
+
+/// Which client a child process of this test is, and what it is given.
+#[cfg(target_os = "linux")]
+const CHILD: &str = "TILO_CUSTODY_CHILD";
+#[cfg(target_os = "linux")]
+const CHILD_DEVICE: &str = "TILO_CUSTODY_DEVICE";
+#[cfg(target_os = "linux")]
+const CHILD_IDENTITIES: &str = "TILO_CUSTODY_IDENTITIES";
+#[cfg(target_os = "linux")]
+const CHILD_RUN: &str = "TILO_CUSTODY_RUN";
+#[cfg(target_os = "linux")]
+const CHILD_TEST: &str = "custody_child";
+
+/// Run without capabilities, as the service's unit does
+/// (`CapabilityBoundingSet=`). A CI container's root that kept
+/// `CAP_SYS_PTRACE` could otherwise read the very link the kernel refuses a
+/// person's own processes, and the refusals below would observe nothing.
+#[cfg(target_os = "linux")]
+fn drop_capabilities() -> std::io::Result<()> {
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    for capability in 0..64 {
+        // SAFETY: scalar arguments only. Without CAP_SETPCAP (any process
+        // but root) or past the last capability this fails harmlessly:
+        // there is then nothing in the bounding set to drop.
+        unsafe { libc::prctl(libc::PR_CAPBSET_DROP, capability, 0, 0, 0) };
+    }
+    let header = Header {
+        version: 0x2008_0522,
+        pid: 0,
+    };
+    let none = [Data {
+        effective: 0,
+        permitted: 0,
+        inheritable: 0,
+    }; 2];
+    // SAFETY: capset(2) reads one version-3 header and two data words, both
+    // alive for the call.
+    if unsafe { libc::syscall(libc::SYS_capset, &raw const header, none.as_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn dumpable() -> bool {
+    // SAFETY: PR_GET_DUMPABLE takes no pointers.
+    unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) == 1 }
+}
+
+/// Turn non-dumpable without holding any device key.
+#[cfg(target_os = "linux")]
+fn turn_non_dumpable() {
+    // SAFETY: PR_SET_DUMPABLE takes scalar arguments only.
+    assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }, 0);
+}
+
+/// Read the device key under `root` as the compositor does at startup,
+/// which leaves this process non-dumpable.
+#[cfg(target_os = "linux")]
+fn load_device_key_like_the_compositor(root: &Path) {
+    tilo_user_identity::persist::load_or_create_device_key(
+        &tilo_user_identity::persist::IdentityPaths::under(root),
+    )
+    .unwrap();
+    assert!(
+        !dumpable(),
+        "loading the device key left the process dumpable"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn child_env(name: &str) -> PathBuf {
+    PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name} is not set")))
+}
+
+/// Wait until `path` exists.
+#[cfg(target_os = "linux")]
+fn wait_for_file(path: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "{} never appeared",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn block_on<T>(work: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(work)
+}
+
+#[cfg(target_os = "linux")]
+async fn sandbox_secret(connection: &zbus::Connection) -> zbus::Result<Vec<u8>> {
+    let store = zbus::Proxy::new(connection, NAME, "/so/tilo/Secrets1", "so.tilo.Secrets1").await?;
+    store
+        .call("SandboxSecret", &("so.tilo.notes", Vec::<u8>::new()))
+        .await
+}
+
+#[cfg(target_os = "linux")]
+async fn session_connection() -> zbus::Connection {
+    zbus::Connection::session().await.unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn assert_access_denied<T: std::fmt::Debug>(answer: zbus::Result<T>) {
+    match answer {
+        Err(zbus::Error::MethodError(name, _, _))
+            if name.as_str() == "org.freedesktop.Secret.Error.AccessDenied" => {}
+        other => panic!("expected the store to refuse, got {other:?}"),
+    }
+}
+
+/// The store's library served in-process with this test binary as the
+/// portal host, which no spawned `tilo-secret-service` can be given: the
+/// management interface's refusal and admission of a caller the kernel
+/// will not show are then observable without the compositor's own binary.
+#[cfg(target_os = "linux")]
+fn serve_with_this_binary_as_portal_host() {
+    use std::sync::Arc;
+    use tilo_secret_service::app::AppId;
+    use tilo_secret_service::service::{BUS_NAME, BusResolver, Core, Managers, publish};
+    use tilo_secret_service::store::{DeviceIdentityKey, Store};
+    drop_capabilities().unwrap();
+    let device = child_env(CHILD_DEVICE);
+    let run = child_env(CHILD_RUN);
+    let paths = tilo_user_identity::persist::IdentityPaths::under(&device);
+    tilo_user_identity::persist::load_or_create_device_key(&paths).unwrap();
+    // SAFETY: geteuid takes no arguments and cannot fail.
+    let uid = unsafe { libc::geteuid() };
+    let keys = DeviceIdentityKey::new(paths, run.join("salt"), &uid.to_string());
+    let store = Arc::new(Store::new(run.join("vault.tseal"), Box::new(keys)));
+    assert!(store.locked().is_none(), "the store did not open");
+    let exe = std::fs::read_link("/proc/self/exe").unwrap();
+    let host = AppId::parse(&format!("local-process:{}", exe.display())).unwrap();
+    block_on(async move {
+        let connection = zbus::Connection::session().await.unwrap();
+        let core = Core::new(
+            store,
+            Arc::new(BusResolver::new(connection.clone(), uid)),
+            Managers {
+                settings: Vec::new(),
+                portal: vec![host],
+            },
+        );
+        publish(&connection, &core).await.unwrap();
+        connection.request_name(BUS_NAME).await.unwrap();
+        std::future::pending::<()>().await;
+    });
+}
+
+/// A child process of this test binary: one client the tests below name by
+/// `CHILD`. Run as an ordinary test it is no child and has nothing to do.
+#[cfg(target_os = "linux")]
+#[test]
+fn custody_child() {
+    let Some(role) = std::env::var_os(CHILD) else {
+        return;
+    };
+    match role.to_string_lossy().as_ref() {
+        // Non-dumpable without the device key: the store cannot examine it,
+        // and it has nothing to prove with.
+        "unproven-import" => {
+            turn_non_dumpable();
+            runtime_identity::import_identity(
+                &child_env(CHILD_IDENTITIES),
+                "unproven",
+                &legacy_record("U", 4),
+            )
+            .unwrap();
+        }
+        // Non-dumpable after reading another machine's device key: its proof
+        // is refused.
+        "other-device-import" => {
+            load_device_key_like_the_compositor(&child_env(CHILD_DEVICE));
+            runtime_identity::import_identity(
+                &child_env(CHILD_IDENTITIES),
+                "other-device",
+                &legacy_record("O", 5),
+            )
+            .unwrap();
+        }
+        // The compositor's case: non-dumpable because it read this machine's
+        // device key. It stores and reads its identity key in the store, and
+        // keeps reading it after the store restarts under it.
+        "device-import" => {
+            load_device_key_like_the_compositor(&child_env(CHILD_DEVICE));
+            let record = runtime_identity::import_identity(
+                &child_env(CHILD_IDENTITIES),
+                "device",
+                &legacy_record("D", 6),
+            )
+            .unwrap();
+            assert_launch_signs(&record, 6);
+            let run = child_env(CHILD_RUN);
+            std::fs::write(run.join("child-imported"), b"").unwrap();
+            wait_for_file(&run.join("service-restarted"));
+            assert_launch_signs(&record, 6);
+            assert!(!dumpable(), "the client turned dumpable again");
+        }
+        "serve" => serve_with_this_binary_as_portal_host(),
+        "manager-unproven" => block_on(async {
+            turn_non_dumpable();
+            let connection = session_connection().await;
+            let proved = tilo_secrets::prove_device_caller(&connection).await;
+            assert!(!proved.unwrap(), "proved without a key");
+            assert_access_denied(sandbox_secret(&connection).await);
+        }),
+        "manager-other-device" => block_on(async {
+            load_device_key_like_the_compositor(&child_env(CHILD_DEVICE));
+            let connection = session_connection().await;
+            assert_access_denied(tilo_secrets::prove_device_caller(&connection).await);
+            assert_access_denied(sandbox_secret(&connection).await);
+        }),
+        "manager-device" => block_on(async {
+            load_device_key_like_the_compositor(&child_env(CHILD_DEVICE));
+            let connection = session_connection().await;
+            // Refused until this connection proves the device identity, as
+            // the compositor's portal backend first meets it.
+            assert_access_denied(sandbox_secret(&connection).await);
+            let proved = tilo_secrets::prove_device_caller(&connection).await;
+            assert!(proved.unwrap(), "the proof was not made");
+            let secret = sandbox_secret(&connection).await.unwrap();
+            assert_eq!(secret.len(), 32);
+            // The proof holds for the connection: no second one is needed.
+            assert_eq!(sandbox_secret(&connection).await.unwrap(), secret);
+            // It names that connection only: another one proves on its own.
+            let other = session_connection().await;
+            assert_access_denied(sandbox_secret(&other).await);
+            assert!(!dumpable(), "the client turned dumpable again");
+        }),
+        other => panic!("unknown custody child {other}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Bus {
+    /// Start this test binary again as the child `role`.
+    fn child(&self, role: &str, device: &str) -> Child {
+        self.command(std::env::current_exe().unwrap())
+            .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
+            .env(CHILD, role)
+            .env(CHILD_DEVICE, self.path(device))
+            .env(CHILD_IDENTITIES, self.path("identities"))
+            .env(CHILD_RUN, self.path("run"))
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("this test binary starts again as a child")
+    }
+
+    /// Run the child `role` to its end; it asserts its own part.
+    fn run_child(&self, role: &str, device: &str) {
+        let status = self.child(role, device).wait().unwrap();
+        assert!(status.success(), "custody child {role} failed: {status}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_client_holding_the_device_key_keeps_its_identity_key_out_of_files_though_the_store_cannot_examine_it()
+ {
+    let mut bus = Bus::start();
+    let identities = bus.path("identities");
+    bus.start_service("device-a");
+    assert_eq!(bus.status(), "open");
+
+    // 1. Non-dumpable with no device key: the store cannot examine the
+    //    client and refuses it, and the key goes to the private file as
+    //    before. This is also what shows the store really cannot read the
+    //    child's executable here: had it read it, the key would be in the
+    //    store.
+    bus.run_child("unproven-import", "device-a");
+    assert_record_names(&identities.join("unproven.json"), "broker-file-v1", 4);
+    assert_private_key_file(&identities, 4);
+
+    // 2. Non-dumpable after reading another device's key: the proof is
+    //    refused, and the key goes to the file.
+    bus.run_child("other-device-import", "device-other");
+    assert_record_names(&identities.join("other-device.json"), "broker-file-v1", 5);
+    assert_private_key_file(&identities, 5);
+
+    // 3. Non-dumpable after reading this device's key, as the compositor
+    //    is: the store holds the key, and no file does.
+    let mut child = bus.child("device-import", "device-a");
+    wait_for_file(&bus.path("run/child-imported"));
+    assert_record_names(&identities.join("device.json"), "secret-service-v1", 6);
+    assert_eq!(
+        protection(&identities, "device"),
+        KeyProtection::SecretService
+    );
+    assert!(
+        !key_file(&identities, 6).exists(),
+        "a key the Secret Service holds was also written to a file"
+    );
+
+    // 4. The store restarts under the still-running client and forgets
+    //    every proof: the client proves again and reads its key.
+    bus.stop_service();
+    bus.start_service("device-a");
+    std::fs::write(bus.path("run/service-restarted"), b"").unwrap();
+    let status = child.wait().unwrap();
+    assert!(
+        status.success(),
+        "custody child device-import failed: {status}"
+    );
+    assert!(!key_file(&identities, 6).exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_non_dumpable_portal_host_reaches_the_management_interface_only_by_proof() {
+    let bus = Bus::start();
+    let mut service = bus.child("serve", "device-a");
+    bus.wait_for_owner();
+    for (role, device) in [
+        ("manager-unproven", "device-a"),
+        ("manager-other-device", "device-other"),
+        ("manager-device", "device-a"),
+    ] {
+        bus.run_child(role, device);
+    }
+    let _ = service.kill();
+    let _ = service.wait();
 }
