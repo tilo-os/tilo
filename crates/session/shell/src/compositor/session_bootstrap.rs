@@ -198,11 +198,11 @@ fn bind_session_collab_broker(
         return Err(BrokerStartFailure::SocketTaken);
     }
 
-    match crate::shell::collab_broker::spawn_native(
-        capnp_path.clone(),
-        &peer_sync.cloned(),
-        membership,
-    ) {
+    let network = peer_sync.cloned();
+    let spawned =
+        crate::shell::collab_broker::spawn_native(capnp_path.clone(), &network, membership);
+    drop(network);
+    match spawned {
         Ok(handle) => {
             tracing::info!(
                 "collab: typed broker listening on {} — peer_sync={}",
