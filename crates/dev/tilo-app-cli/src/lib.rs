@@ -6902,8 +6902,8 @@ type DevChooser = ();
 /// in, as its shell publishes it; `None` outside a session.
 #[cfg(target_os = "linux")]
 fn session_room() -> Option<String> {
-    let runtime = tilo_paths::xdg::runtime_dir()?;
-    let room = std::fs::read_to_string(runtime.join("tilo-session").join("workspace-id")).ok()?;
+    let session = tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    let room = std::fs::read_to_string(session.join(tilo_paths::login::WORKSPACE_ID_FILE)).ok()?;
     let room = room.trim();
     (!room.is_empty()).then(|| room.to_owned())
 }

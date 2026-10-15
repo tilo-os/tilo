@@ -2851,17 +2851,13 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
 }
 
-/// File inside the session directory naming the room of the workspace in
-/// front: the room a command started now (an app run from a terminal, or by
-/// `tilo-app dev`) joins, as an app the shell starts joins the room it names
-/// with the launcher's `--workspace-id`.
-pub const WORKSPACE_ID_FILE: &str = "workspace-id";
-
-/// [`WORKSPACE_ID_FILE`] beside the published Wayland display, written off
+/// [`tilo_paths::login::WORKSPACE_ID_FILE`] beside the published Wayland display, written off
 /// this thread; `None` where the display has no place.
 fn published_room() -> Option<crate::compositor::published_room::PublishedRoom> {
     let display = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
-    crate::compositor::published_room::PublishedRoom::at(display.with_file_name(WORKSPACE_ID_FILE))
+    crate::compositor::published_room::PublishedRoom::at(
+        display.with_file_name(tilo_paths::login::WORKSPACE_ID_FILE),
+    )
 }
 
 /// Env var naming the compositor's privileged Wayland socket, exported to
