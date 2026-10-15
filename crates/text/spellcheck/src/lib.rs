@@ -118,8 +118,16 @@ pub fn spans(dict: &Dictionary, text: &str) -> Vec<(usize, usize)> {
 /// English uses the embedded dictionary (its expanded forms plus a
 /// conversational overlay), so it works in hermetic builds too. Other
 /// languages use the system's Hunspell dictionary for that language, checked
-/// in-process with its affix rules; without one, nothing is flagged.
+/// in-process with its affix rules; without one, nothing is flagged. Nothing
+/// is flagged either while the dictionaries' code is still to come (the
+/// `lazy-dictionaries` feature).
 pub fn spans_for_language(language: &str, text: &str) -> Vec<(usize, usize)> {
+    loading::dictionaries().map_or_else(Vec::new, |dictionaries| {
+        (dictionaries.spans)(language, text)
+    })
+}
+
+fn dictionary_spans(language: &str, text: &str) -> Vec<(usize, usize)> {
     if is_english(language) {
         return spans(shared_english(), text);
     }
@@ -150,11 +158,18 @@ pub fn spans_for_language(language: &str, text: &str) -> Vec<(usize, usize)> {
 }
 
 /// Corrections for one word, best first: the embedded edit-distance
-/// suggester for English, the system Hunspell dictionary otherwise.
+/// suggester for English, the system Hunspell dictionary otherwise. None
+/// while the dictionaries' code is still to come.
 pub fn suggestions_for_language(language: &str, word: &str, max: usize) -> Vec<String> {
     if word.is_empty() || max == 0 {
         return Vec::new();
     }
+    loading::dictionaries().map_or_else(Vec::new, |dictionaries| {
+        (dictionaries.suggestions)(language, word, max)
+    })
+}
+
+fn dictionary_suggestions(language: &str, word: &str, max: usize) -> Vec<String> {
     if is_english(language) {
         return suggest(shared_english(), word, max);
     }
@@ -235,17 +250,23 @@ pub fn probable_correction(language: &str, word: &str) -> Option<String> {
     if let Some(candidate) = known {
         return Some(match_word_case(word, candidate));
     }
-    if spans_for_language(language, word).is_empty() {
+    (loading::dictionaries()?.correction)(language, word, &lower)
+}
+
+/// [`probable_correction`] past the curated list: an adjacent
+/// transposition the dictionary agrees on.
+fn dictionary_correction(language: &str, word: &str, lower: &str) -> Option<String> {
+    if dictionary_spans(language, word).is_empty() {
         return None;
     }
     if is_english(language) {
-        let candidate = unique_adjacent_transposition(shared_english(), &lower)?;
+        let candidate = unique_adjacent_transposition(shared_english(), lower)?;
         return Some(match_word_case(word, &candidate));
     }
-    let candidate = suggestions_for_language(language, word, 1)
+    let candidate = dictionary_suggestions(language, word, 1)
         .into_iter()
         .next()
-        .filter(|candidate| is_adjacent_transposition(&lower, &candidate.to_lowercase()))?;
+        .filter(|candidate| is_adjacent_transposition(lower, &candidate.to_lowercase()))?;
     Some(match_word_case(word, &candidate))
 }
 
@@ -320,6 +341,109 @@ fn match_word_case(original: &str, correction: &str) -> String {
     }
     correction.to_string()
 }
+
+/// The checks that need a language's dictionary: the embedded English
+/// list and the system's Hunspell dictionaries.
+#[derive(Clone, Copy)]
+pub struct Dictionaries {
+    spans: fn(&str, &str) -> Vec<(usize, usize)>,
+    suggestions: fn(&str, &str, usize) -> Vec<String>,
+    correction: fn(&str, &str, &str) -> Option<String>,
+}
+
+/// Hands over [`Dictionaries`], for [`install_dictionaries`].
+pub type MakeDictionaries = fn() -> Dictionaries;
+
+/// The dictionaries this crate checks with.
+#[must_use]
+pub fn builtin_dictionaries() -> Dictionaries {
+    Dictionaries {
+        spans: dictionary_spans,
+        suggestions: dictionary_suggestions,
+        correction: dictionary_correction,
+    }
+}
+
+#[cfg(not(feature = "lazy-dictionaries"))]
+mod loading {
+    use super::Dictionaries;
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the lazy-dictionaries build has none until they are fetched"
+    )]
+    pub(crate) fn dictionaries() -> Option<Dictionaries> {
+        Some(super::builtin_dictionaries())
+    }
+
+    /// How many times the dictionaries arrived: never, as they were always
+    /// there.
+    #[must_use]
+    pub fn dictionaries_generation() -> u64 {
+        0
+    }
+}
+
+/// The dictionaries are fetched the first time something checks spelling:
+/// the program hands over a loader ([`defer_dictionaries`]) that fetches
+/// their code and passes back [`builtin_dictionaries`]
+/// ([`install_dictionaries`]). Until then nothing is flagged or suggested;
+/// a field checks again once [`dictionaries_generation`] moved.
+#[cfg(feature = "lazy-dictionaries")]
+mod loading {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    use super::{Dictionaries, MakeDictionaries};
+
+    static DICTIONARIES: OnceLock<Dictionaries> = OnceLock::new();
+    static LOAD: OnceLock<fn()> = OnceLock::new();
+    static REQUESTED: AtomicBool = AtomicBool::new(false);
+    static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    /// The dictionaries, or `None` while their code is still to come (and
+    /// then fetched).
+    pub(crate) fn dictionaries() -> Option<Dictionaries> {
+        let dictionaries = DICTIONARIES.get().copied();
+        if dictionaries.is_none() && !REQUESTED.swap(true, Ordering::AcqRel) {
+            match LOAD.get() {
+                Some(load) => load(),
+                None => REQUESTED.store(false, Ordering::Release),
+            }
+        }
+        dictionaries
+    }
+
+    /// Bumped when the dictionaries arrive: a field that checked before
+    /// checks again once this moved.
+    #[must_use]
+    pub fn dictionaries_generation() -> u64 {
+        GENERATION.load(Ordering::Acquire)
+    }
+
+    /// How the program fetches the dictionaries' code: `load` starts the
+    /// fetch and, once the code is in, calls [`install_dictionaries`] (or
+    /// [`dictionaries_load_failed`]).
+    pub fn defer_dictionaries(load: fn()) {
+        let _ = LOAD.set(load);
+    }
+
+    /// The dictionaries' code is in: spelling is checked from now on.
+    pub fn install_dictionaries(make: MakeDictionaries) {
+        if DICTIONARIES.set(make()).is_ok() {
+            GENERATION.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// The fetch failed: the next check fetches again.
+    pub fn dictionaries_load_failed() {
+        REQUESTED.store(false, Ordering::Release);
+    }
+}
+
+pub use loading::dictionaries_generation;
+#[cfg(feature = "lazy-dictionaries")]
+pub use loading::{defer_dictionaries, dictionaries_load_failed, install_dictionaries};
 
 fn shared_english() -> &'static Dictionary {
     static DICTIONARY: OnceLock<Dictionary> = OnceLock::new();

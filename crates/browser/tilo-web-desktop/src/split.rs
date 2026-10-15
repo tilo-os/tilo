@@ -1,4 +1,5 @@
-//! Apps loaded when they first open, and the Activity pane (`crate::activity`).
+//! Apps loaded when they first open, the Activity pane (`crate::activity`),
+//! and framework code loaded when first used (`crate::lazy`).
 //!
 //! `build.sh` splits the linked module with tools/web/wasm-split: what only
 //! one app's `definition()` reaches moves into that app's own module, which

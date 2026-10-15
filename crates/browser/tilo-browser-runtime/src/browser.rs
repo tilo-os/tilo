@@ -68,6 +68,29 @@ pub(crate) fn wake_desktops() {
     });
 }
 
+/// Code fetched on first use arrived (search, spelling, hyphenation): lay
+/// out and draw every mount again, so that what it changes shows. Runs from
+/// the loader's promise, outside any mount; a mount that is busy anyway
+/// gets a frame through the event loop.
+pub(crate) fn refresh_mounts() {
+    let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
+    for id in ids {
+        let refreshed = with_mount(id, |m| {
+            m.frame.relayout();
+            m.pending = true;
+            m.window.request_redraw();
+            Ok(())
+        });
+        if refreshed.is_err() {
+            LOOP.with_borrow(|proxy| {
+                if let Some(proxy) = proxy {
+                    let _ = proxy.send_event(id);
+                }
+            });
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Config {

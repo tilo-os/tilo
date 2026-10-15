@@ -424,6 +424,7 @@ palette-result-count = { $count ->
 palette-empty = Nothing to show
 palette-no-results = No results for “{ $query }”
 palette-no-results-hint = Try fewer words, or widen the scope
+palette-searching = Searching…
 
 # Calendar section headings in the workspace activity timeline.
 day-yesterday = Yesterday
