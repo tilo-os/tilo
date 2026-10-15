@@ -4,9 +4,10 @@ name: Browser / authentication
 # images ship: crates/hosting/tilo-room-service/dev/auth-e2e.mjs starts them
 # with dev/run.py and drives headless Chrome through a person's first visit,
 # reloads, tabs, a damaged link, a stolen invitation, a host that forgot its
-# room and a stale link. Before it, dev/limits-e2e.py checks the persistent
-# room's enabled limits and what it keeps across a restart over plain HTTP.
-# Release binaries with the image workflow's flags,
+# room, a stale link, a membership the host pruned after an absence and a
+# person the room's moderator removed. Before it, dev/limits-e2e.py checks
+# the persistent room's enabled limits and what it keeps across a restart
+# over plain HTTP. Release binaries with the image workflow's flags,
 # so they come from the same compiler cache. Nightly and on demand; pull
 # requests run it only when the check itself changes.
 on:
