@@ -539,15 +539,17 @@ async function openPage(browser, {name, url, params, viewport, page: options, re
   const page = await attachPage(browser, viewport, options);
   page.name = name;
   await page.send('Page.navigate', {url: `${url}?${new URLSearchParams(params)}`});
-  // The desktop's first frame: SwiftShader compiles its pipelines first.
-  await until(page, 'globalThis.harnessReady || globalThis.harnessError', 240_000, `the ${name} page's desktop did not mount`)
+  // The desktop's first frame: SwiftShader compiles its pipelines first, on a
+  // GPU process other pages may be keeping busy (`mountMs`).
+  const mountMs = options.mountMs ?? 240_000, opened = Date.now();
+  await until(page, 'globalThis.harnessReady || globalThis.harnessError', mountMs, `the ${name} page's desktop did not mount`)
     .catch(async error => {
       throw new Invalid(`${error.message} (stuck ${await page.evaluate('globalThis.harnessStage ?? null', 10_000).catch(() => 'unanswered')}; `
         + `page console: ${page.console.slice(-10).join(' | ')}; page errors: ${page.errors.slice(0, 3).join(' | ')})`);
     });
   const error = await page.evaluate('globalThis.harnessError ?? null');
   if (error) throw new Invalid(`the ${name} page did not connect: ${error}`);
-  await until(page, "globalThis.tiloMount?.canvas?.parentElement?.dataset.phase === 'presented'", 240_000,
+  await until(page, "globalThis.tiloMount?.canvas?.parentElement?.dataset.phase === 'presented'", mountMs,
     `the ${name} page's desktop presented no frame`);
   await until(page, "Boolean(document.querySelector('.tilo-legacy-windows'))", 60_000,
     `the ${name} page's desktop opened no legacy-window layer (no live plane)`);
@@ -555,6 +557,7 @@ async function openPage(browser, {name, url, params, viewport, page: options, re
     `the ${name} page's live plane did not come up`).catch(async error => {
     throw new Invalid(`${error.message}: ${await page.evaluate(LIVE).catch(() => 'unavailable')}; page console: ${page.console.slice(-15).join(' | ')}; host log: ${relay.lines.slice(-30).join('\n').slice(-4000)}`);
   });
+  console.error(`the ${name} page presented its desktop, live, in ${Math.round((Date.now() - opened) / 1000)} s`);
   return page;
 }
 
@@ -723,7 +726,8 @@ async function main() {
     const acceptance = await runAcceptance({
       browser, main: page, w1: {source, session, stop}, pagesOrigin: pages.origin, viewport: options.viewport, room, live: LIVE,
       openPage: (name, params, {block = false, context = false} = {}) => (async () => open(name, params,
-        {viewport: {width: 640, height: 400, deviceScaleFactor: 1}, window: true, block, context: context ? await browser.context() : undefined}))(),
+        {viewport: {width: 640, height: 400, deviceScaleFactor: 1}, window: true, block, context: context ? await browser.context() : undefined,
+          mountMs: 600_000}))(),
       startSession, readSent,
     });
     for (const extra of acceptance.children) { extra.source.process.stdin.end(); await extra.exited().catch(() => {}); }
