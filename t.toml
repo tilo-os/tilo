@@ -979,26 +979,36 @@ cost = "heavy"
 default = false
 
 # ---------------------------------------------------------------------------
-# macOS (.forgejo/workflows/dev-runtime-macos.yml, dev-apps-macos.yml). They run
-# on the Mac itself, outside the project's image, which in t means `privileged`:
-# the macOS worker has to carry the `privileged` label to take them.
+# macOS, on t's Mac (`requires = ["os=macos"]`), where checks run on the host without the
+# project's image. The per-user runtime (`tilo-runtime`) is the Tilo host on stock macOS, and
+# every app that runs there (tools/ci/macos_apps.py reads the manifests) must keep building and
+# passing its tests there, which no Linux check observes. One Mac serves all of them: the runtime
+# is checked on every head of main, the SDK and the apps, which take it over an hour, nightly.
+# None holds a secret.
 
 [[check]]
 name = "runtime-macos"
 requires = ["os=macos", "arch=arm64"]
-privileged = true
 run = "cargo check -p tilo-runtime --all-targets --locked"
 inputs = ["crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
 cost = "minutes"
+on = ["main"]
 default = false
 
+# The generated template outside the repository taken from `new` to a signed macOS .tapp waiting
+# in a loopback registry's review queue, with the SDK as a git dependency on this commit;
+# Calculator and Notes as ad-hoc-signed .app bundles rendered offscreen; and a packaged .app zip
+# with its signing descriptor (Developer ID signing and notarization are release steps).
 [[check]]
 name = "sdk-macos"
 requires = ["os=macos", "arch=arm64"]
-privileged = true
 run = """
+set -eu
+python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TMPDIR/font-artifacts"
+export TILO_FONT_ASSET_CACHE="$TMPDIR/font-artifacts" TILO_FONT_ASSETS_OFFLINE=1
 cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
 bin=${CARGO_TARGET_DIR:-$PWD/target}/debug
+rustup target add wasm32-unknown-unknown
 TILO_SDK_SOURCE=git cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture
 for app in calculator notes; do
   bundle=$("$bin/tilo-app" build --target macos "apps/$app" | tail -n 1)
@@ -1011,22 +1021,28 @@ done
 test -s "$TMPDIR/Calculator-macos.zip"
 test -s "$TMPDIR/Calculator-macos.zip.json"
 """
-inputs = ["apps/**", "crates/**", "vendor/**", "tools/sdk/**", "Cargo.toml", "Cargo.lock"]
+inputs = ["apps/**", "crates/**", "vendor/**", "tools/sdk/**", "tools/font-catalog.py", "Cargo.toml", "Cargo.lock"]
+# The template takes the SDK from this commit's repository (`--sdk-git file://…`).
+git = true
 cost = "heavy"
+on = ["schedule:17 1 * * *"]
 default = false
 
 [[check]]
 name = "apps-macos"
 requires = ["os=macos", "arch=arm64"]
-privileged = true
 run = """
+set -eu
+python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TMPDIR/font-artifacts"
+export TILO_FONT_ASSET_CACHE="$TMPDIR/font-artifacts" TILO_FONT_ASSETS_OFFLINE=1
 packages=$(python3 tools/ci/macos_apps.py)
 cargo build --locked $packages
 cargo nextest run --locked --profile ci --no-fail-fast $packages
 cargo test --locked --no-fail-fast --doc $packages
 """
-inputs = ["apps/**", "crates/**", "vendor/**", "tools/ci/macos_apps.py", ".config/nextest.toml", "Cargo.toml", "Cargo.lock"]
+inputs = ["apps/**", "crates/**", "vendor/**", "tools/ci/macos_apps.py", "tools/font-catalog.py", ".config/nextest.toml", "Cargo.toml", "Cargo.lock"]
 cost = "heavy"
+on = ["schedule:17 1 * * *"]
 default = false
 
 # ---------------------------------------------------------------------------
@@ -1267,3 +1283,82 @@ needs = ["image-ci-fast", "image-ci-control"]
 outputs = ["/target/publish/ci-fast/receipt.json", "/target/publish/ci-control/receipt.json"]
 id_token = ["registry.tilo.so"]
 on = ["main"]
+
+# ---------------------------------------------------------------------------
+# The local model catalog (crates/agent/local-model-service/RELEASE.md), published by hand from
+# stable: `t dispatch publish-model-catalog --ref stable` builds the compiler, signs the reviewed
+# catalog (which must reproduce the checked-in one) and uploads it; `t dispatch
+# review-speech-catalog --ref stable` signs the speech candidate for review (`t outputs
+# review-speech-catalog`). The compiler is built without credentials; only the signing checks
+# hold TILO_MODEL_CATALOG_SIGNING_KEY and only the publishing one the package token. Forgejo's
+# generic package registry does not take t's identity tokens, so that one is a stored secret.
+[[check]]
+name = "model-catalog-compiler"
+run = "bash tools/release/local-model-catalog.sh compiler /target/model-catalog/bin"
+inputs = ["tools/release/local-model-catalog.sh", "tools/ci/publish/lib.sh", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/model-catalog/bin/tilo-model-catalog"]
+cost = "minutes"
+default = false
+
+[[check]]
+name = "sign-model-catalog"
+run = "bash tools/release/local-model-catalog.sh sign /target/model-catalog/bin/tilo-model-catalog /target/model-catalog/signed"
+inputs = ["tools/release/local-model-catalog.sh", "tools/release/prepare_speech_catalog.py", "tools/ci/publish/lib.sh", "dist/local-models/**", "os/usr/share/tilo/system-extensions/local-model-*.json"]
+needs = ["model-catalog-compiler"]
+outputs = ["/target/model-catalog/signed/catalog.json", "/target/model-catalog/signed/keys.json"]
+secrets = ["TILO_MODEL_CATALOG_SIGNING_KEY"]
+on = ["dispatch"]
+
+[[check]]
+name = "publish-model-catalog"
+run = "bash tools/release/local-model-catalog.sh publish /target/model-catalog/signed"
+inputs = ["tools/release/local-model-catalog.sh", "tools/release/prepare_speech_catalog.py", "tools/release/publish_speech_artifacts.py", "tools/ci/publish/lib.sh", "dist/local-models/**", "os/usr/share/tilo/system-extensions/local-model-*.json"]
+needs = ["sign-model-catalog"]
+secrets = ["REGISTRY_TOKEN"]
+on = ["dispatch"]
+
+[[check]]
+name = "review-speech-catalog"
+run = "bash tools/release/local-model-catalog.sh review /target/model-catalog/bin/tilo-model-catalog /target/model-catalog/review"
+inputs = ["tools/release/local-model-catalog.sh", "tools/release/prepare_speech_catalog.py", "tools/ci/publish/lib.sh", "dist/local-models/**", "os/usr/share/tilo/system-extensions/local-model-keys.json"]
+needs = ["model-catalog-compiler"]
+outputs = ["/target/model-catalog/review/*"]
+secrets = ["TILO_MODEL_CATALOG_SIGNING_KEY"]
+on = ["dispatch"]
+
+# ---------------------------------------------------------------------------
+# Tilo Cloud promotion (tools/release/cloud_promotion.py; crates/hosting/tilo-room-service/
+# README.md). Production pins the room service and web entry by digest in the infra repository;
+# nothing here deploys. `cloud-drift` reports every Monday which revision each service runs and
+# how far main is ahead (`t log cloud-drift`). `t dispatch cloud-promotion --ref stable` plans a
+# promotion of both images from one released commit (`--input revision=<commit>`, default the
+# newest with both), and with INFRA_PROMOTION_TOKEN opens the pull request on the infra
+# repository through its API (`--input open_pull_request=false` only plans). Promotions are
+# batched by hand: each web entry deploy makes open tabs offer a reload.
+[[check]]
+name = "cloud-drift"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+run = "mkdir -p /target/cloud-promotion && python3 tools/release/cloud_promotion.py drift --json /target/cloud-promotion/drift.json"
+inputs = ["tools/release/cloud_promotion.py"]
+outputs = ["/target/cloud-promotion/drift.json"]
+# Counts and lists main's commits since the deployed revision.
+git = true
+# It observes production and the registry, which change without this repository changing.
+cache = false
+on = ["schedule:0 7 * * 1"]
+default = false
+
+[[check]]
+name = "cloud-promotion"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+run = "bash tools/release/cloud-promotion.sh /target/cloud-promotion/promotion"
+inputs = ["tools/release/cloud_promotion.py", "tools/release/cloud-promotion.sh"]
+outputs = ["/target/cloud-promotion/promotion/*"]
+git = true
+cache = false
+secrets = ["INFRA_PROMOTION_TOKEN"]
+on = ["dispatch"]
+
+[check.dispatch_inputs]
+revision = ""
+open_pull_request = "true"
