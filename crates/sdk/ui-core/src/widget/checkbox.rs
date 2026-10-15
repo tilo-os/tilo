@@ -89,6 +89,13 @@ pub struct Checkbox {
 type Painted = (bool, bool, bool, bool, u64);
 
 impl Checkbox {
+    /// Box this widget in the SDK so thin apps reuse its shared implementation.
+    /// This keeps the widget's vtable instantiation out of the app.
+    #[must_use]
+    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+        Box::new(self)
+    }
+
     pub fn new(_id: &str, on_toggle_path: &str) -> Self {
         Self::with_control(BoolControl::new(on_toggle_path, None))
     }

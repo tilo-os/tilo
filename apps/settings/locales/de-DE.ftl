@@ -2546,7 +2546,5 @@ accounts-status-mail-granted = Verbunden · noch nicht synchronisiert
 accounts-mail-not-synced = Mail-Zugriff gewährt. Noch keine erste Synchronisierung.
 accounts-remove-files = Dateien entfernen
 accounts-disconnect-mail = Mail trennen
-accounts-service-files = Dateien
-accounts-service-mail = Mail
 accounts-service-action = { $action } — { $service }
 accounts-mail-configured = E-Mail · { $identity }

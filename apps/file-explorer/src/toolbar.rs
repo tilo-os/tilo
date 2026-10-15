@@ -221,11 +221,10 @@ impl Controls {
         let sink = self.sink.clone();
         // The glyph alone is ambiguous; the tooltip labels it on hover and
         // doubles as the button's accessible name.
-        Box::new(
-            Button::icon_only(id, icon, tip)
-                .with_enabled(enabled)
-                .on_effect(move || push(&sink, cmd.clone())),
-        )
+        Button::icon_only(id, icon, tip)
+            .with_enabled(enabled)
+            .on_effect(move || push(&sink, cmd.clone()))
+            .into_widget()
     }
 
     fn build_left(&self, compact: bool) -> Vec<Box<dyn Widget>> {
@@ -270,7 +269,7 @@ impl Controls {
                 ViewMode::List => 0,
                 ViewMode::Grid => 1,
             };
-            out.push(Box::new(
+            out.push(
                 ToggleGroup::new(
                     vec![
                         Segment::new(t("files-view-list")),
@@ -285,18 +284,20 @@ impl Controls {
                         ViewMode::Grid
                     };
                     push(&view_sink, FileCommand::SetView(mode));
-                }),
-            ));
+                })
+                .into_widget(),
+            );
 
             // Grid mode has no clickable column header, so it gets a labelled
             // Sort menu button. List mode sorts by clicking a header.
             if view_mode == ViewMode::Grid {
                 let sink = self.sink.clone();
-                out.push(Box::new(
+                out.push(
                     Button::new("files.sort_menu", &t("files-sort-by"))
                         .with_icon(Icon::ArrowUpDown)
-                        .on_effect(move || push(&sink, FileCommand::OpenSortMenu)),
-                ));
+                        .on_effect(move || push(&sink, FileCommand::OpenSortMenu))
+                        .into_widget(),
+                );
             }
         }
 
@@ -312,9 +313,13 @@ impl Controls {
             } else {
                 Button::new("files.archive.extract", &extract_label).with_icon(Icon::Download)
             };
-            out.push(Box::new(button.on_effect(move || {
-                push(&sink, FileCommand::ExtractCurrentArchive);
-            })));
+            out.push(
+                button
+                    .on_effect(move || {
+                        push(&sink, FileCommand::ExtractCurrentArchive);
+                    })
+                    .into_widget(),
+            );
         }
 
         // Archive browsing is read-only and already has a direct Extract
@@ -324,14 +329,15 @@ impl Controls {
             // Overflow: the labelled View-options menu (new folder/file, show
             // hidden, terminal). Every action it reveals is spelled out.
             let sink = self.sink.clone();
-            out.push(Box::new(
+            out.push(
                 Button::icon_only(
                     "files.view_menu",
                     Icon::MoreHorizontal,
                     &t("files-view-options"),
                 )
-                .on_effect(move || push(&sink, FileCommand::OpenViewMenu)),
-            ));
+                .on_effect(move || push(&sink, FileCommand::OpenViewMenu))
+                .into_widget(),
+            );
         }
         out
     }

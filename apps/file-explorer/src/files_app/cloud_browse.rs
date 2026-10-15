@@ -354,7 +354,7 @@ impl FileExplorerWidget {
                 .as_ref()
                 .map_or_else(|| account.clone(), |folder| format!("{account} / {folder}"));
             self.nav
-                .set_content_header_leading(Some(Box::new(ui::widget::Text::new(&title))));
+                .set_content_header_leading(Some(ui::widget::Text::new(&title).into_widget()));
             self.nav.set_content_header("", vec![]);
             self.cloud.header_shown = true;
         } else if self.cloud.header_shown {
@@ -369,26 +369,24 @@ impl FileExplorerWidget {
 
     fn cloud_button(&self, id: &str, label: &str, effect: FilesEffect) -> Box<dyn Widget> {
         let sink = self.cmds.clone();
-        Box::new(
-            Button::new(id, label)
-                .on_effect(move || crate::command::push(&sink, FileCommand::Cloud(effect.clone()))),
-        )
+        Button::new(id, label)
+            .on_effect(move || crate::command::push(&sink, FileCommand::Cloud(effect.clone())))
+            .into_widget()
     }
 
     fn cloud_checkbox(&self, entry: &ImportEntry) -> Box<dyn Widget> {
         let checked = ui::LocalState::new(self.cloud.selected.contains(&entry.id));
         let sink = self.cmds.clone();
         let id = entry.id.clone();
-        Box::new(
-            ui::widget::Checkbox::from_state(&checked)
-                .with_label(&entry.name)
-                .on_change(move |_| {
-                    crate::command::push(
-                        &sink,
-                        FileCommand::Cloud(FilesEffect::SelectCloud { entry: id.clone() }),
-                    );
-                }),
-        )
+        ui::widget::Checkbox::from_state(&checked)
+            .with_label(&entry.name)
+            .on_change(move |_| {
+                crate::command::push(
+                    &sink,
+                    FileCommand::Cloud(FilesEffect::SelectCloud { entry: id.clone() }),
+                );
+            })
+            .into_widget()
     }
 
     fn cloud_entries(&self, mut body: Column) -> Column {
@@ -411,12 +409,12 @@ impl FileExplorerWidget {
             parts.dedup();
             let message = parts.join(": ");
             if seen.insert(message.clone()) {
-                body = body.push(Box::new(Text::new(&message)));
+                body = body.push(Text::new(&message).into_widget());
             }
         }
 
         if self.cloud.pending.is_some() {
-            body = body.push(Box::new(Text::new(&t("files-cloud-loading"))));
+            body = body.push(Text::new(&t("files-cloud-loading")).into_widget());
         }
         for entry in &self.cloud.entries {
             body = body.push(self.cloud_checkbox(entry));
@@ -429,7 +427,7 @@ impl FileExplorerWidget {
                     Some("pptx") => "files-cloud-converted-slides",
                     _ => "files-cloud-converted",
                 };
-                body = body.push(Box::new(Text::new(&t(hint))));
+                body = body.push(Text::new(&t(hint)).into_widget());
             }
             if entry.kind == ImportKind::Folder {
                 body = body.push(self.cloud_button(
@@ -453,8 +451,8 @@ impl FileExplorerWidget {
             .remote_account(&self.cloud.account)
             .map_or_else(|| t("files-cloud-title"), |a| a.label);
         body = body
-            .push(Box::new(Text::new(&label).with_role(TextRole::Title)))
-            .push(Box::new(Text::new(&t("files-cloud-independent"))))
+            .push(Text::new(&label).with_role(TextRole::Title).into_widget())
+            .push(Text::new(&t("files-cloud-independent")).into_widget())
             .push(self.cloud_button(
                 "files.cloud.root",
                 &t("files-cloud-root"),
@@ -477,37 +475,42 @@ impl FileExplorerWidget {
             FilesEffect::ImportCloud { folder: None },
         ));
         if !self.cloud.progress.phase.is_empty() {
-            body = body.push(Box::new(Text::new(&t_args(
-                "files-cloud-progress",
-                &[
-                    arg(
-                        "phase",
-                        t(match self.cloud.progress.phase.as_str() {
-                            "enumerating" => "files-cloud-enumerating",
-                            "exporting" => "files-cloud-exporting",
-                            "copying" | "transferring" => "files-cloud-copying",
-                            "done" => "files-cloud-done",
-                            "cancelled" => "files-cloud-cancelled",
-                            "failed" => "files-cloud-failed",
-                            _ => "files-cloud-preparing",
-                        }),
-                    ),
-                    arg(
-                        "count",
-                        i64::try_from(self.cloud.progress.completed).unwrap_or(i64::MAX),
-                    ),
-                    arg(
-                        "bytes",
-                        i64::try_from(self.cloud.progress.bytes).unwrap_or(i64::MAX),
-                    ),
-                ],
-            ))));
+            body = body.push(
+                Text::new(&t_args(
+                    "files-cloud-progress",
+                    &[
+                        arg(
+                            "phase",
+                            t(match self.cloud.progress.phase.as_str() {
+                                "enumerating" => "files-cloud-enumerating",
+                                "exporting" => "files-cloud-exporting",
+                                "copying" | "transferring" => "files-cloud-copying",
+                                "done" => "files-cloud-done",
+                                "cancelled" => "files-cloud-cancelled",
+                                "failed" => "files-cloud-failed",
+                                _ => "files-cloud-preparing",
+                            }),
+                        ),
+                        arg(
+                            "count",
+                            i64::try_from(self.cloud.progress.completed).unwrap_or(i64::MAX),
+                        ),
+                        arg(
+                            "bytes",
+                            i64::try_from(self.cloud.progress.bytes).unwrap_or(i64::MAX),
+                        ),
+                    ],
+                ))
+                .into_widget(),
+            );
         }
         if self.cloud_import_pending() {
             body = body
-                .push(Box::new(
-                    ui::widget::ProgressBar::indeterminate().with_label(t("files-cloud-title")),
-                ))
+                .push(
+                    ui::widget::ProgressBar::indeterminate()
+                        .with_label(t("files-cloud-title"))
+                        .into_widget(),
+                )
                 .push(self.cloud_button(
                     "files.cloud.cancel",
                     &t("files-cloud-cancel"),
@@ -531,11 +534,10 @@ impl FileExplorerWidget {
                 FilesEffect::RevealCloud,
             ));
         }
-        Box::new(
-            Scrollable::new(ScrollAxis::Vertical)
-                .fill_parent_height()
-                .with_child(Box::new(body)),
-        )
+        Scrollable::new(ScrollAxis::Vertical)
+            .fill_parent_height()
+            .with_child(body.into_widget())
+            .into_widget()
     }
 
     pub(super) fn cloud_resources(&self) -> Vec<Resource> {

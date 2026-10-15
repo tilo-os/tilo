@@ -218,7 +218,9 @@ fn oauth_completed(
             .unwrap_or(&email);
         let mut account = accounts::Account::new(accounts::AccountId::from(mail_id), "email");
         account.display_name = email;
-        account.set_config(&config);
+        account.config = config
+            .to_value()
+            .map_err(|error| CustodyError::Storage(error.to_string()))?;
         Some(account)
     } else {
         None

@@ -1256,9 +1256,8 @@ impl AccountsPane {
             .get(&accounts::AccountId::from(view.id.clone()))
             .is_some_and(|account| {
                 account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
-                    && account
-                        .config_as::<AccountConfig>()
-                        .is_some_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
+                    && AccountConfig::from_value(account.config.clone())
+                        .is_ok_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
             })
         {
             self.import_review.status = Some(t("accounts-import-oauth-step"));
@@ -1321,9 +1320,8 @@ impl AccountsPane {
         if let Some(account) = stored.as_ref()
             && account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
         {
-            if account
-                .config_as::<AccountConfig>()
-                .is_some_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
+            if AccountConfig::from_value(account.config.clone())
+                .is_ok_and(|config| config.auth == accounts::email::AuthMethod::OAuth)
             {
                 self.import_review.status = Some(t("accounts-import-oauth-step"));
                 self.changed = true;
@@ -1334,7 +1332,7 @@ impl AccountsPane {
         }
         if let Some(account) = stored.as_ref()
             && account.type_id.as_str() == "email"
-            && account.config_as::<AccountConfig>().is_some_and(|config| {
+            && AccountConfig::from_value(account.config.clone()).is_ok_and(|config| {
                 config.auth == accounts::email::AuthMethod::OAuth
                     && config.imap_host == "imap.gmail.com"
             })
@@ -2112,9 +2110,8 @@ impl AccountsPane {
             (None, None) => accounts::Account::new(id.clone(), expected_type),
         };
         if stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE {
-            let config = stored
-                .config_as::<AccountConfig>()
-                .ok_or_else(|| t("accounts-import-malformed"))?;
+            let config = AccountConfig::from_value(stored.config.clone())
+                .map_err(|_| t("accounts-import-malformed"))?;
             if config.auth == accounts::email::AuthMethod::OAuth {
                 return Err(t("accounts-import-oauth-step"));
             }
@@ -2139,7 +2136,9 @@ impl AccountsPane {
                 config.autofill_from_email();
                 merge_config(
                     &mut stored.config,
-                    serde_json::to_value(config).map_err(|_| "could not prepare email settings")?,
+                    config
+                        .to_value()
+                        .map_err(|_| "could not prepare email settings")?,
                 );
             }
             AccountKind::Mail => merge_config(

@@ -307,6 +307,15 @@ fn strictly_ascending(records: &[RecordIndexEntryV1]) -> bool {
 }
 
 impl RecordIndexProjectionV1 {
+    /// Decode JSON through the shared protocol implementation. Callers still
+    /// check their transport bounds and the expected authority generation.
+    ///
+    /// # Errors
+    /// Returns the schema error for malformed JSON.
+    pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(bytes)
+    }
+
     /// Validate the bounded, canonical record-index projection.
     ///
     /// # Errors
@@ -335,6 +344,15 @@ impl RecordIndexProjectionV1 {
 }
 
 impl RecordIndexManifestV2 {
+    /// Decode JSON through the shared protocol implementation. Callers still
+    /// check their transport bounds and the expected authority generation.
+    ///
+    /// # Errors
+    /// Returns the schema error for malformed JSON.
+    pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(bytes)
+    }
+
     /// # Errors
     ///
     /// Returns an error when a peer-supplied manifest violates the bounded
@@ -352,6 +370,15 @@ impl RecordIndexManifestV2 {
 }
 
 impl RecordIndexPageV2 {
+    /// Decode JSON through the shared protocol implementation. Callers still
+    /// check their transport bounds and the expected authority generation.
+    ///
+    /// # Errors
+    /// Returns the schema error for malformed JSON.
+    pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(bytes)
+    }
+
     /// # Errors
     ///
     /// Returns an error when a peer-supplied page exceeds its bounds or could
@@ -384,6 +411,15 @@ impl RecordIndexPageV2 {
 }
 
 impl RecordIndexExactV2 {
+    /// Decode JSON through the shared protocol implementation. Callers still
+    /// check their transport bounds and the expected authority generation.
+    ///
+    /// # Errors
+    /// Returns the schema error for malformed JSON.
+    pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(bytes)
+    }
+
     /// # Errors
     ///
     /// Returns an error when an exact authority projection is malformed.
@@ -399,6 +435,15 @@ impl RecordIndexExactV2 {
 }
 
 impl RecordIndexManifestV3 {
+    /// Decode JSON through the shared protocol implementation. Callers still
+    /// check their transport bounds and the expected authority generation.
+    ///
+    /// # Errors
+    /// Returns the schema error for malformed JSON.
+    pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(bytes)
+    }
+
     /// # Errors
     ///
     /// Returns an error when an opaque authority manifest is malformed.
@@ -415,6 +460,15 @@ impl RecordIndexManifestV3 {
 }
 
 impl RecordIndexPageV3 {
+    /// Decode JSON through the shared protocol implementation. Callers still
+    /// check their transport bounds and the expected authority generation.
+    ///
+    /// # Errors
+    /// Returns the schema error for malformed JSON.
+    pub fn from_json(bytes: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(bytes)
+    }
+
     /// # Errors
     ///
     /// Returns an error when an opaque authority page is malformed.
@@ -787,6 +841,81 @@ impl HistoryProjectionV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_record_index_decoders_keep_the_wire_schema() {
+        let record = RecordIndexEntryV1 {
+            record_id: FileRecordId(Uuid::from_u128(7)),
+            path: "/Documents/report.txt".into(),
+            is_dir: false,
+        };
+        let revision = "a".repeat(64);
+        macro_rules! round_trip {
+            ($ty:ty, $value:expr) => {{
+                let expected = $value;
+                let bytes = serde_json::to_vec(&expected).unwrap();
+                assert_eq!(<$ty>::from_json(&bytes).unwrap(), expected);
+                assert!(<$ty>::from_json(b"{}").is_err());
+                assert!(<$ty>::from_json(b"not JSON").is_err());
+                let mut unknown = serde_json::to_value(&expected).unwrap();
+                unknown["unknown"] = serde_json::Value::Bool(true);
+                assert!(<$ty>::from_json(&serde_json::to_vec(&unknown).unwrap()).is_err());
+            }};
+        }
+        round_trip!(
+            RecordIndexProjectionV1,
+            RecordIndexProjectionV1 {
+                schema_version: 1,
+                truncated: true,
+                records: vec![record.clone()],
+            }
+        );
+        round_trip!(
+            RecordIndexManifestV2,
+            RecordIndexManifestV2 {
+                schema_version: 2,
+                revision: revision.clone(),
+                records: 1,
+                page_entries: RECORD_INDEX_PAGE_ENTRIES,
+            }
+        );
+        round_trip!(
+            RecordIndexPageV2,
+            RecordIndexPageV2 {
+                schema_version: 2,
+                revision: revision.clone(),
+                offset: 0,
+                next_offset: Some(RECORD_INDEX_PAGE_ENTRIES),
+                records: vec![record.clone()],
+            }
+        );
+        round_trip!(
+            RecordIndexExactV2,
+            RecordIndexExactV2 {
+                schema_version: 2,
+                revision: revision.clone(),
+                record: record.clone(),
+            }
+        );
+        round_trip!(
+            RecordIndexManifestV3,
+            RecordIndexManifestV3 {
+                schema_version: 3,
+                revision: revision.clone(),
+                initial_cursor: Uuid::from_u128(11).to_string(),
+                page_entries: RECORD_INDEX_PAGE_ENTRIES,
+            }
+        );
+        round_trip!(
+            RecordIndexPageV3,
+            RecordIndexPageV3 {
+                schema_version: 3,
+                revision,
+                next_cursor: Some(Uuid::from_u128(13).to_string()),
+                records: vec![record],
+            }
+        );
+    }
 
     fn availability_json(replicas: &serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({

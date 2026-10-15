@@ -38,6 +38,18 @@ fn mailboxes() -> Vec<NavSection> {
     ]
 }
 
+#[test]
+fn sdk_boxing_preserves_navigation_identity_and_selection() {
+    let mut widget = NavList::new(mailboxes()).selected("work").into_widget();
+    let list = widget
+        .as_any_mut()
+        .unwrap()
+        .downcast_mut::<NavList>()
+        .unwrap();
+    assert_eq!(list.selected_id().as_deref(), Some("work"));
+    assert_eq!(widget.name(), "NavList");
+}
+
 fn harness(list: NavList, theme: Theme) -> FrameHarness {
     let mut h = FrameHarness::for_root(State::new(), list, (280, 360), theme);
     h.relayout_at((280, 360)).expect("layout");

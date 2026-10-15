@@ -2545,7 +2545,5 @@ accounts-status-mail-granted = Connected · not synced yet
 accounts-mail-not-synced = Mail access granted. No first sync yet.
 accounts-remove-files = Remove Files
 accounts-disconnect-mail = Disconnect Mail
-accounts-service-files = Files
-accounts-service-mail = Mail
 accounts-service-action = { $action } — { $service }
 accounts-mail-configured = Mail · { $identity }
