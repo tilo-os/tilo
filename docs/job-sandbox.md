@@ -230,9 +230,18 @@ reserve for the worker. kubelet sets `memory.oom.group` on the container's
 cgroup. A pod-level OOM therefore kills the worker and every job at once, and
 must never happen. Capping `jobs/` below the pod limit makes the kernel choose
 an OOM victim among the jobs instead. `memory.min` on `worker/` keeps the worker
-from being reclaimed into a stall. The provider also refuses to create a job
-whose `memory.max` would take the sum of running jobs past the budget, so a
-scheduler that overcommits learns it at once.
+from being reclaimed into a stall.
+
+A job's `memory.max` may be above what the scheduler reserved for it: t gives
+each job twice its reservation, at least 2 GiB more, so a build that briefly
+needs more than it usually does gets it from what other jobs leave unused,
+instead of failing. The budget therefore bounds reservations, not limits. The
+provider refuses to create a job whose reservation (`Limits::memory_reserved`,
+else its `memory.max`) would take the sum of running jobs' reservations past
+the budget, so a scheduler that overcommits learns it at once. Overruns are
+bounded twice: `jobs/memory.max` keeps all jobs together below the pod's
+limit, and the worker's guard stops the job furthest past its reservation when
+the node runs short, before the kernel has to pick a victim.
 
 At the end of a job the library reads `cpu.stat`, `memory.peak`, `io.stat` and
 `memory.events`. `oom_group_kill` tells "killed for memory" from a crash. Then
@@ -323,9 +332,9 @@ ancestor of the source and target cgroups, and that the target is inside the
 caller's cgroup namespace. The chown in `init` grants exactly that for the
 caller's own pod, and nothing outside it. The broker refuses a job name with a
 `/`, a peer that isn't in a pod cgroup, and a `quota` on a descriptor that isn't
-a directory. It never runs anything the caller names. Limits a caller sets are
-capped by its pod's budget, so a compromised worker gains no more than its pod
-already had.
+a directory. It never runs anything the caller names. Reservations a caller
+sets are capped by its pod's budget, and every job sits under its pod's
+`jobs/`, so a compromised worker gains no more than its pod already had.
 
 ## Node pools
 
