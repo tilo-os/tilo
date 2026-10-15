@@ -37,6 +37,12 @@
 # `inputs` saying what they read. A [[cargo-exempt]] entry names a reading file
 # whose read CI never runs, with the reason.
 
+# The archive smoke remains a prerequisite of t's image publication. Its
+# required hermetic contract runs the real shell with a stub archive runner.
+[[covered]]
+suite = "os/tests/ci_fast_images.sh"
+by = "os/tests/test_ci_fast_images.py"
+
 [[covered]]
 suite = "os/tests/image_size_budget.py"
 by = "os/tests/test_image_size_budget.py"
@@ -232,8 +238,9 @@ suites = [
 
 [[group]]
 name = "os-workflows"
-inputs = ["os/", ".forgejo/workflows/"]
+inputs = ["os/", ".forgejo/workflows/", "t.toml", "tools/ci/publish/"]
 suites = [
+  "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-relay/test-contract.sh",
   "os/containers/tilo-agent-host/test-contract.sh",
   "os/tests/rpm_snapshot_invariants.sh",
@@ -471,12 +478,16 @@ inputs = [
   "crates/session/shell/examples/redraw_bench.rs",
   # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
   "tools/web/chrome.mjs",
+  # scripts/perf/native_stream_qualification.mjs reads the frame numbers its
+  # session example draws.
+  "crates/hosting/tilo-relay/examples/legacy_stream_source.rs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
   # default collection.
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
   "scripts/perf/browser_qualification.test.mjs",
+  "scripts/perf/native_stream_qualification.test.mjs",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_latency_bench_test.py",
   "scripts/perf/device_notes_latency_test.py",
@@ -582,6 +593,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/workspace-actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/json-text.test.mjs",
   "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs",

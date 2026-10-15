@@ -18089,6 +18089,7 @@ dependencies = [
  "tilo-files",
  "tilo-fs",
  "tilo-identity-host",
+ "tilo-media",
  "tilo-moderation",
  "tilo-moq",
  "tilo-net",
