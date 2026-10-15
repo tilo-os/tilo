@@ -897,6 +897,14 @@ Every control call has a hard deadline of its own, and a call that outlives it
 says whether the loop was frozen or still turning (slow). The same report is
 written to the compositor's stderr.
 
+Each heartbeat is also a whole main-loop turn, which costs the loop the same
+whether or not anything changed. Twenty a second read 16-31% of a core on CI
+from a desktop that used none, so the scenario's closing idle check holds the
+monitor's pings (`Desktop::without_heartbeats`) while it measures, then asks for
+a heartbeat at once, so a loop that froze meanwhile still fails. Every run
+prints its idle reading by thread, with what woke the loop and what it painted
+(`TILO_PAINT_STATS`) in the window.
+
 Seat state is a second line of defence in a debug build. Smithay holds the
 seat's pointer and keyboard lock while it delivers an event, and calls
 `SeatHandler::focus_changed` and `cursor_image` under it, so a handler that

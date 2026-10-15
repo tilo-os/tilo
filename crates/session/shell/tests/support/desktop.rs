@@ -71,6 +71,8 @@ struct Watch {
     /// the main thread's stack: slow, reported, not a hang.
     jank: Mutex<Vec<String>>,
     stop: AtomicBool,
+    /// Ask for no heartbeats while set ([`Desktop::without_heartbeats`]).
+    hold: AtomicBool,
 }
 
 /// A started compositor.
@@ -84,6 +86,18 @@ pub struct Desktop {
     watch: Arc<Watch>,
     monitor: Option<std::thread::JoinHandle<()>>,
     last_call: Mutex<String>,
+}
+
+/// What a compositor left alone did over a window ([`Desktop::idle`]).
+pub struct Idle {
+    /// The share of one core the whole process used, threads that exited
+    /// in the window included.
+    pub share: f64,
+    /// The same window by thread name: CPU, wakeups and preemptions.
+    pub threads: tilo_test_env::idle::Wakeups,
+    /// What the compositor printed in the window (with `TILO_PAINT_STATS`,
+    /// what woke its loop and what it painted).
+    pub log: Vec<String>,
 }
 
 /// A Wayland client process and what it has written to stdout.
@@ -178,6 +192,9 @@ impl Desktop {
             .env("TILO_LOCK_TEST_PASSWORD", UNLOCK_PASSWORD)
             .env("TILO_HEADLESS_SIZE", format!("{}x{}", size.0, size.1))
             .env("RUST_LOG", "warn,tilo::shortcut=info,tilo::workspace=info")
+            // Every two seconds, what woke the main loop and what it painted:
+            // the idle check prints the lines from its window.
+            .env("TILO_PAINT_STATS", "1")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .stdout(Stdio::piped())
@@ -605,13 +622,38 @@ impl Desktop {
         ticks.saturating_mul(10)
     }
 
-    /// The share of one core the compositor used over `window` of doing nothing.
+    /// What the compositor did over `window` of doing nothing.
     #[track_caller]
-    pub fn idle_cpu_share(&self, window: Duration) -> f64 {
+    pub fn idle(&self, window: Duration) -> Idle {
+        let pid = self.child.lock().map_or(0, |child| child.id());
+        let threads_before = tilo_test_env::idle::sample_process(pid).unwrap_or_default();
+        let log_from = self.log.lock().map_or(0, |lines| lines.len());
+        let started = Instant::now();
         let before = self.compositor_cpu_ms();
         self.pause(window);
         let used = self.compositor_cpu_ms().saturating_sub(before);
-        f64::from(u32::try_from(used).unwrap_or(u32::MAX)) / (window.as_secs_f64() * 1000.0)
+        let elapsed = started.elapsed();
+        let threads_after = tilo_test_env::idle::sample_process(pid).unwrap_or_default();
+        Idle {
+            share: f64::from(u32::try_from(used).unwrap_or(u32::MAX))
+                / (window.as_secs_f64() * 1000.0),
+            threads: tilo_test_env::idle::Wakeups::between(threads_before, threads_after, elapsed),
+            log: self
+                .log
+                .lock()
+                .map(|lines| lines.get(log_from..).unwrap_or_default().to_vec())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Run `f` with the heartbeat monitor holding its pings, so only the
+    /// desktop itself wakes the main loop. A loop that stalled meanwhile is
+    /// reported by the first heartbeat after it.
+    pub fn without_heartbeats<T>(&self, f: impl FnOnce() -> T) -> T {
+        self.watch.hold.store(true, Ordering::Relaxed);
+        let out = f();
+        self.watch.hold.store(false, Ordering::Relaxed);
+        out
     }
 
     /// Main-loop iterations that ran long while working, with stacks.
@@ -719,6 +761,10 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
             };
             let mut reader = BufReader::new(stream);
             while !watch.stop.load(Ordering::Relaxed) {
+                if watch.hold.load(Ordering::Relaxed) {
+                    std::thread::sleep(POLL);
+                    continue;
+                }
                 let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
                 if writer.write_all(request.as_bytes()).is_err() {
                     return;
