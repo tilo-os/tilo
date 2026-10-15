@@ -952,6 +952,36 @@ mod tests {
         registered.expect("the write's own save publishes the revision");
     }
 
+    /// A saved window reopens while the frame holds the tree for writing, so
+    /// its launch captures the policy revision on the thread that holds it.
+    /// That used to wait for a read lock its own thread held and stop the
+    /// compositor. The launch now captures the revision the write publishes
+    /// when it is released, and the publication it waits for arrives.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_launch_inside_a_tree_write_captures_the_revision_that_write_publishes() {
+        let _turn = serial();
+        let previous = lock(&POLICY_SOURCE).take();
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
+        let room = tree.read().desktop.workspaces[0].room;
+        follow_tree(&tree);
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let guard = tree.write();
+            let captured = captured_revision();
+            drop(guard);
+            let _ = done.send(captured);
+        });
+        let captured = finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a launch inside a tree write must not wait on that write")
+            .expect("the tree is the policy source");
+        let published = await_published(room, captured);
+        lock(&PUBLISHED).rooms.remove(&room);
+        *lock(&POLICY_SOURCE) = previous;
+        published.expect("releasing the write publishes the revision the launch captured");
+    }
+
     /// The save that would publish the revision fails (its directory cannot
     /// exist). The launch waiting on it ends at once with that save's error,
     /// not after the writer's no-progress window and not as a withdrawal.

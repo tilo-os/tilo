@@ -1411,6 +1411,111 @@ mod tests {
         assert_eq!(task.audit.len(), 1, "no synthetic start audit was added");
     }
 
+    /// Records each dispatch and whether the test held the tree for it.
+    #[derive(Default)]
+    struct DispatchHost {
+        tree_held: Rc<Cell<bool>>,
+        dispatched: RefCell<Vec<(String, String, bool)>>,
+        refusal: Option<String>,
+    }
+    impl ActivityHost for DispatchHost {
+        fn local_user(&self) -> String {
+            "ada".into()
+        }
+        fn mutations_available(&self) -> bool {
+            true
+        }
+        fn all_workspaces_available(&self) -> bool {
+            true
+        }
+        fn agent_is_live(&self, _room: &str, _agent: &str) -> bool {
+            true
+        }
+        fn dispatch_task(&self, room: &str, task: &str) -> Result<(), String> {
+            self.dispatched
+                .borrow_mut()
+                .push((room.into(), task.into(), self.tree_held.get()));
+            self.refusal.clone().map_or(Ok(()), Err)
+        }
+    }
+
+    fn launchable_task(host: Rc<DispatchHost>) -> (WorkspaceTree, RoomActivityPane, String) {
+        let (mut tree, workspace, _) = busy_room();
+        let task_id = tree
+            .create_workspace_task(
+                workspace,
+                "Prepare screenshots",
+                "ada",
+                Some("studio-agent".into()),
+                WorkspaceTaskRoute::RulesOnly,
+                None,
+            )
+            .expect("task is created");
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(host);
+        pane.set_view(ActivityView::Tasks);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+        pane.selected_task = Some(task_id.clone());
+        (tree, pane, task_id)
+    }
+
+    /// The broker that runs a task checks the room's authority against the
+    /// workspace tree. The shell holds that tree for writing while the pane
+    /// handles the click, so dispatching from inside the handler stopped the
+    /// compositor. Launch now only asks; the dispatch runs once the caller
+    /// has let go of the tree.
+    #[test]
+    fn launching_a_task_dispatches_only_after_the_tree_is_released() {
+        let host = Rc::new(DispatchHost::default());
+        let (mut tree, mut pane, task_id) = launchable_task(Rc::clone(&host));
+        let task = pane
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .cloned()
+            .expect("task is projected");
+        assert!(pane.task_actions_for(&task).contains(&TaskAction::Launch));
+
+        host.tree_held.set(true);
+        let outcome = pane.apply_task_action(TaskAction::Launch, &mut tree);
+        host.tree_held.set(false);
+
+        assert!(
+            host.dispatched.borrow().is_empty(),
+            "nothing dispatched while the tree is held"
+        );
+        let request = outcome.dispatch_task.expect("Launch asks for a dispatch");
+        assert_eq!(request.task_id, task_id);
+        assert_eq!(request.assigned_agent.as_deref(), Some("studio-agent"));
+        assert!(outcome.handled);
+        assert!(pane.dispatch_task(request), "the live agent took the run");
+        assert_eq!(
+            host.dispatched.borrow().as_slice(),
+            [(pane.task_room.clone(), task_id, false)]
+        );
+    }
+
+    #[test]
+    fn a_refused_dispatch_offers_the_agent_start_again_with_its_reason() {
+        let host = Rc::new(DispatchHost {
+            refusal: Some("the assigned agent is not live and task-capable".into()),
+            ..DispatchHost::default()
+        });
+        let (mut tree, mut pane, _) = launchable_task(Rc::clone(&host));
+        let request = pane
+            .apply_task_action(TaskAction::Launch, &mut tree)
+            .dispatch_task
+            .expect("Launch asks for a dispatch");
+        let room = request.room.clone();
+
+        assert!(!pane.dispatch_task(request));
+        assert!(matches!(
+            pane.agent_startup.get(&(room, "studio-agent".into())),
+            Some(AgentStartup::Failed { detail }) if detail.contains("not live")
+        ));
+    }
+
     #[test]
     fn offline_agent_start_is_deduplicated_and_failure_becomes_retry() {
         let (mut tree, workspace, _) = busy_room();
