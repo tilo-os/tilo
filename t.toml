@@ -1537,3 +1537,31 @@ needs = ["image-release-tools"]
 outputs = ["/target/publish/release-tools/index/receipt.json"]
 id_token = ["registry.tilo.so"]
 on = ["main"]
+
+# The app registry server (crates/packaging/registry-server): x86_64 only, like the cluster it
+# runs in. Rust compiles inside the Containerfile; the image is tested before main publishes it
+# and the GitOps repository pins the receipt's digest.
+[[check]]
+name = "image-registry-server"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = """
+assets=$TMPDIR/github-assets
+TILO_GITHUB_ASSET_CACHE=$assets TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
+bash tools/ci/publish/oci-build.sh . crates/packaging/registry-server/container/Containerfile /target/publish/registry-server --platform linux/amd64 --build-context github-assets=$assets
+bash crates/packaging/registry-server/container/test-image.sh /target/publish/registry-server/image.oci.tar
+"""
+inputs = ["tools/ci/publish/**", "crates/packaging/registry-server/container/**", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", ".containerignore", ".cargo/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates/packaging/registry-types/**", "crates/packaging/app-registry/**", "crates/packaging/tilo-app-package/**", "crates/collab/collab-types/**", "crates/collab/threshold-identity/**", "crates/system/tilo-native-certs/**", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/doc/tilo-automerge/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/system/advisory-lock/**", "crates/system/content/**", "crates/workspace-hack/**", "vendor/automerge/**", "vendor/iroh/**", "vendor/netwatch/**", "vendor/wayland-backend/**", "vendor/genawaiter-proc-macro/**", "crates/packaging/registry-server/**"]
+outputs = ["/target/publish/registry-server/image.oci.tar", "/target/publish/registry-server/digest"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "publish-registry-server"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-registry-server /target/publish/registry-server 'sha-{commit}'"
+inputs = ["tools/ci/publish/**"]
+needs = ["image-registry-server"]
+outputs = ["/target/publish/registry-server/receipt.json"]
+id_token = ["registry.tilo.so"]
+on = ["main"]
