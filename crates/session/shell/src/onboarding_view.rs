@@ -5239,7 +5239,7 @@ mod tests {
 
             let mut document = AutoCommit::new();
             press(&view, &mut document, KEY_TOUR_NEXT);
-            view.sync(&document, &automerge::ROOT);
+            sync_journaled(&mut view, &document);
             assert_eq!(view.tour_page, Some(TourPage::Collaborate));
             assert_eq!(
                 load_progress(directory.path()).expect("updated tour journal"),
