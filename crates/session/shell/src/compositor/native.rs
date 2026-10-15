@@ -9689,6 +9689,7 @@ pub fn run() {
     }
     state.output_management.set_wake(Arc::clone(&session_wake));
     crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
+    crate::app_icons::set_wake(Arc::clone(&session_wake));
     crate::shell::install_component_wake(Arc::clone(&session_wake));
     // An invocation a control client waits on wakes the loop when it is
     // admitted or its job changes, not on the next unrelated wake.
@@ -12179,6 +12180,11 @@ pub fn run() {
         // deciding whether to paint — drains a hosted terminal's PTY;
         // returns true when changed, itself a paint reason. Drain the
         // network actor into the replica: peer changes fold in before this frame's pump reads them, bumping the revision to repaint.
+        // Artwork the chrome asked for arrived from the icon resolver's
+        // thread: build the chrome again so tabs and rows show it.
+        if crate::app_icons::take_arrived() {
+            crate::shell::tab_binding::note_tab_artwork_changed(&mut tree_handle.write());
+        }
         let pump_bookkeeping_done = Instant::now();
         let pump_network_started = pump_bookkeeping_done;
         if let Some(net) = peer_sync.as_ref() {
