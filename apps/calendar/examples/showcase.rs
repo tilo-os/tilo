@@ -53,13 +53,6 @@ fn target(
         .ok_or_else(|| format!("missing control: {name}"))?
         .center())
 }
-fn reveal_month(app: &mut TestApp<CalendarShell>) {
-    app.harness()
-        .send(&ui::synthetic_input::cursor_moved(210.0, 540.0));
-    app.harness()
-        .send(&ui::synthetic_input::mouse_wheel(0.0, -1000.0));
-    app.harness().relayout();
-}
 fn min_jerk(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
     t * t * t * (10.0 + t * (-15.0 + 6.0 * t))
@@ -105,9 +98,15 @@ fn pointer(scene: &mut vello::Scene, p: Point) {
 fn movie(out: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     let theme = Theme::dark().with_ui_scale(1.5);
     let mut app = capture("agenda", Theme::dark())?;
-    reveal_month(&mut app);
+    let event = target(&mut app, "Open event Design review")?;
+    app.harness().click_at(event.x, event.y);
+    app.harness().relayout();
+    if app.surface_mut::<CalendarApp>().selected_event().is_none() {
+        return Err("event click did not open the inspector".into());
+    }
     app.harness().render_png(&out.join("showcase.png"));
     let event = target(&mut app, "Open event Design review")?;
+    let notes = target(&mut app, "Attached notes")?;
     let check = target(&mut app, "Mark task Prepare quarterly report complete")?;
     let task_id = app
         .state()
@@ -119,37 +118,17 @@ fn movie(out: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     let frames = out.join("frames");
     std::fs::create_dir_all(&frames)?;
     let mut renderer = ui::offscreen::OffscreenRenderer::new(1440, 810);
-    let mut done = Point::ZERO;
-    let quiet = Point::new(1250.0, 550.0);
+    let quiet = Point::new(1250.0, 720.0);
     for i in 0..210 {
         let p = match i {
             0..=30 => reach(Point::new(1120.0, 460.0), event, f64::from(i) / 30.0, -65.0),
-            31..=59 => reach(event, quiet, (f64::from(i) - 31.0) / 28.0, 35.0),
-            60..=69 => quiet,
-            70..=108 => reach(quiet, done, (f64::from(i) - 70.0) / 38.0, -60.0),
-            109..=155 => reach(done, check, (f64::from(i) - 109.0) / 46.0, 65.0),
-            _ => reach(
-                check,
-                Point::new(1040.0, 705.0),
-                (f64::from(i) - 156.0) / 44.0,
-                -35.0,
-            ),
+            31..=70 => reach(event, notes, (f64::from(i) - 31.0) / 39.0, 35.0),
+            71..=100 => notes,
+            101..=155 => reach(notes, check, (f64::from(i) - 101.0) / 54.0, -65.0),
+            _ => reach(check, quiet, (f64::from(i) - 156.0) / 44.0, -35.0),
         };
         app.harness()
             .send(&ui::synthetic_input::cursor_moved(p.x, p.y));
-        if i == 30 {
-            app.harness().click_at(event.x, event.y);
-            if app.surface_mut::<CalendarApp>().selected_event().is_none() {
-                return Err("event click did not open the inspector".into());
-            }
-            done = target(&mut app, "Done")?;
-        }
-        if i == 108 {
-            app.harness().click_at(done.x, done.y);
-            if app.surface_mut::<CalendarApp>().selected_event().is_some() {
-                return Err("Done did not close the inspector".into());
-            }
-        }
         if i == 155 {
             app.harness().click_at(check.x, check.y);
         }
@@ -170,9 +149,12 @@ fn movie(out: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("checkbox did not durably complete the task".into());
     }
+    if app.surface_mut::<CalendarApp>().selected_event().is_none() {
+        return Err("task completion closed the event inspector".into());
+    }
     std::fs::write(
         out.join("gesture.txt"),
-        "210 native frames at 60fps: opened Design review with attached notes, closed inspector, durably completed Prepare quarterly report. Pointer uses min_jerk quadratic arcs.\n",
+        "210 native frames at 60fps: Design review and attached rich notes remain open while Prepare quarterly report is durably completed. Pointer uses min_jerk quadratic arcs.\n",
     )?;
     // Encode these native frames with the ffmpeg command in showcase.md.
     // Keeping encoding separate also supports captures on remote builders.

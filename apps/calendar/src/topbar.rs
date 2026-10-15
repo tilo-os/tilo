@@ -2,7 +2,8 @@
 //!
 //! The calendar's band of the window's one header row: the sidebar toggle
 //! (while the sidebar is hidden), previous / next and Today, the period
-//! title, the platform search button, the view switcher and New event. The component owns its geometry,
+//! title, the view switcher, platform search, New event and shared History.
+//! The component owns its geometry,
 //! the responsive decisions (the New event label folds to its icon, then the
 //! view switcher moves into the sidebar) and its pointer hit map;
 //! `CalendarApp` applies the [`Action`] values emitted here.
@@ -56,6 +57,7 @@ pub(crate) struct Topbar {
     view_rect: Rect,
     geometry: Geometry,
     hits: Vec<(Rect, Action)>,
+    pub(crate) history: ui::widget::HistoryOpener,
 }
 
 impl Topbar {
@@ -65,6 +67,7 @@ impl Topbar {
             view_rect: Rect::ZERO,
             geometry: Geometry::default(),
             hits: Vec::new(),
+            history: ui::widget::HistoryOpener::new(),
         }
     }
 
@@ -97,8 +100,27 @@ impl Topbar {
         self.view_rect = Rect::new(content.x0, self.rect.y1, content.x1, content.y1);
         let variants = period_title_variants(view, anchor);
         self.geometry = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-            solve(self.rect, show_toggle, view, &variants, text, theme)
+            let mut band = self.rect;
+            if self.history.is_shown() {
+                band.x1 = self.history_rect(theme).x0 - f64::from(theme.tokens.spacing.s2);
+            }
+            solve(band, show_toggle, view, &variants, text, theme)
         });
+    }
+
+    pub(crate) fn history_rect(&self, theme: &Theme) -> Rect {
+        if !self.history.is_shown() {
+            return Rect::ZERO;
+        }
+        let side = ControlSize::Regular.height(theme);
+        let edge = f64::from(theme.tokens.spacing.s3);
+        let y = self.rect.center().y;
+        Rect::new(
+            self.rect.x1 - edge - side,
+            y - side / 2.0,
+            self.rect.x1 - edge,
+            y + side / 2.0,
+        )
     }
 
     /// Whether the view switcher has room in the header; when not, the
@@ -137,6 +159,8 @@ impl Topbar {
             theme.tokens.colors.surfaces.content,
         );
 
+        self.history
+            .paint(scene, transform, text, theme, self.history_rect(theme));
         self.draw_navigation(
             &mut PaintCtx::new(scene, transform, text, theme),
             view,
@@ -345,6 +369,7 @@ fn solve(
     let steps = [
         (false, true, false),
         (true, true, false),
+        (true, true, true),
         (false, false, false),
         (true, false, false),
         (true, false, true),
@@ -393,7 +418,8 @@ fn solve(
 
     let new_w = if new_icon { square } else { new_label_w };
     let new_event = control(band.x1 - edge - new_w, new_w);
-    let mut x1 = new_event.x0 - sibling;
+    let search = control(new_event.x0 - related - square, square);
+    let mut x1 = search.x0 - sibling;
     let segments = if switcher {
         let strip = Rect::new(
             x1 - switcher_w,
@@ -408,9 +434,6 @@ fn solve(
     } else {
         Vec::new()
     };
-    let search = control(x1 - square, square);
-    let title_x1 = search.x0 - sibling;
-
     Geometry {
         toggle,
         previous,
@@ -418,7 +441,7 @@ fn solve(
         today,
         today_icon_only: today_icon,
         title_x0,
-        title_x1: title_x1.max(title_x0),
+        title_x1: x1.max(title_x0),
         segments,
         search,
         new_event,

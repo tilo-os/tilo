@@ -97,7 +97,7 @@ impl AgendaView {
 
     pub(crate) fn layout(&mut self, area: Rect, source: &AgendaSource<'_>, theme: &Theme) {
         let height = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-            content_height(source, text, theme)
+            content_height(source, compact_tasks(area, theme), text, theme)
         });
         self.scroll.set_viewport_rect(area);
         self.scroll
@@ -183,7 +183,7 @@ impl AgendaView {
                     y = row.y1;
                 }
                 Item::Task(task) => {
-                    let face = task_face(task, source, theme);
+                    let face = task_face(task, source, theme, compact_tasks(area, theme));
                     let h = face.height(ctx.text, theme);
                     let row = Rect::new(x0 - bleed, y, x1 + bleed, y + h);
                     if row.y1 > area.y0 && row.y0 < area.y1 {
@@ -270,18 +270,34 @@ fn event_face<'a>(event: &'a Event, time: &'a str, theme: &Theme) -> ListRowFace
 
 /// A task row: its checkbox leads and completes it; its project's colour
 /// follows the title as a swatch mark.
-fn task_face<'a>(task: &'a Task, source: &AgendaSource<'_>, theme: &Theme) -> ListRowFace<'a> {
+fn compact_tasks(area: Rect, theme: &Theme) -> bool {
+    Metrics::of(theme).column(area, theme).width() < 480.0 * theme.responsive_scale()
+}
+
+fn task_face<'a>(
+    task: &'a Task,
+    source: &AgendaSource<'_>,
+    theme: &Theme,
+    compact: bool,
+) -> ListRowFace<'a> {
     let mut face =
         ListRowFace::new(&task.title).leading(RowLeading::Checkbox { checked: task.done });
     if let Some(project) = task.project.and_then(|id| source.model.project(id)) {
         face = face.swatch_mark(project.color.color(theme));
     }
-    if task.done {
-        face.meta("Done")
+    let status = if task.done {
+        Some("Done")
     } else if task.priority == Priority::None {
-        face
+        None
     } else {
-        face.meta(task.priority.label())
+        Some(task.priority.label())
+    };
+    match status {
+        // The inspector narrows the agenda. Put metadata beneath the title
+        // instead of spending the title\'s readable width on priority text.
+        Some(status) if compact => face.secondary(status),
+        Some(status) => face.meta(status),
+        None => face,
     }
 }
 
@@ -399,7 +415,12 @@ fn visible_events_on<'a>(
 }
 
 /// The list's full height: what [`AgendaView::draw`] paints, top to bottom.
-fn content_height(source: &AgendaSource<'_>, text: &mut TextRenderer, theme: &Theme) -> f64 {
+fn content_height(
+    source: &AgendaSource<'_>,
+    compact: bool,
+    text: &mut TextRenderer,
+    theme: &Theme,
+) -> f64 {
     let m = Metrics::of(theme);
     let items = source.items();
     if items.is_empty() {
@@ -417,7 +438,7 @@ fn content_height(source: &AgendaSource<'_>, text: &mut TextRenderer, theme: &Th
                 let time = event_time(event);
                 event_face(event, &time, theme).height(text, theme)
             }
-            Item::Task(task) => task_face(task, source, theme).height(text, theme),
+            Item::Task(task) => task_face(task, source, theme, compact).height(text, theme),
         };
     }
     height
@@ -488,8 +509,8 @@ mod tests {
                 ..Calendar::default()
             };
             let hidden = HashSet::new();
-            let h1 = content_height(&source(&one, anchor, &hidden), &mut text, &theme);
-            let h2 = content_height(&source(&two, anchor, &hidden), &mut text, &theme);
+            let h1 = content_height(&source(&one, anchor, &hidden), false, &mut text, &theme);
+            let h2 = content_height(&source(&two, anchor, &hidden), false, &mut text, &theme);
             assert!(h1 > 0.0);
             assert!(h2 > h1, "a second row grows the list");
         }
@@ -502,11 +523,16 @@ mod tests {
             };
             let hidden = HashSet::from(["hidden".to_string()]);
             assert_eq!(
-                content_height(&source(&model, anchor, &hidden), &mut text, &theme),
+                content_height(&source(&model, anchor, &hidden), false, &mut text, &theme),
                 0.0
             );
             assert!(
-                content_height(&source(&model, anchor, &HashSet::new()), &mut text, &theme) > 0.0
+                content_height(
+                    &source(&model, anchor, &HashSet::new()),
+                    false,
+                    &mut text,
+                    &theme
+                ) > 0.0
             );
         }
         // Case `selected_calendar_filters_events_without_overriding_visibility`.
@@ -621,6 +647,60 @@ mod tests {
     }
 
     #[test]
+    fn narrow_agenda_moves_priority_below_the_task_title_and_measures_that_row() {
+        let anchor = date(1);
+        let model = Calendar {
+            tasks: vec![Task {
+                id: Uuid::new_v4(),
+                title: "Prepare quarterly report".into(),
+                due: Some(anchor),
+                priority: Priority::High,
+                done: false,
+                project: None,
+                parent: None,
+            }]
+            .into(),
+            ..Calendar::default()
+        };
+        let hidden = HashSet::new();
+        let source = source(&model, anchor, &hidden);
+        let theme = Theme::dark().with_ui_scale(1.5);
+        let narrow = Rect::new(420.0, 84.0, 900.0, 810.0);
+        assert!(compact_tasks(narrow, &theme));
+        let mut text = TextRenderer::new();
+        let compact = content_height(&source, true, &mut text, &theme);
+        let regular = content_height(&source, false, &mut text, &theme);
+        assert!(
+            compact > regular,
+            "secondary metadata contributes to scroll extent"
+        );
+        let mut agenda = AgendaView::new();
+        agenda.layout(narrow, &source, &theme);
+        let mut scene = vello::Scene::new();
+        let hits = agenda.draw(
+            &mut PaintCtx::new(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+            ),
+            narrow,
+            &source,
+            anchor,
+            Point::ZERO,
+        );
+        let row = hits
+            .iter()
+            .find(|(_, action)| matches!(action, AgendaAction::OpenTask(_)))
+            .unwrap()
+            .0;
+        assert_eq!(
+            row.height(),
+            task_face(&model.tasks[0], &source, &theme, true).height(&mut text, &theme)
+        );
+    }
+
+    #[test]
     fn larger_text_grows_the_list() {
         let anchor = date(1);
         let model = Calendar {
@@ -629,9 +709,15 @@ mod tests {
         };
         let hidden = HashSet::new();
         let mut text = TextRenderer::new();
-        let one = content_height(&source(&model, anchor, &hidden), &mut text, &Theme::dark());
+        let one = content_height(
+            &source(&model, anchor, &hidden),
+            false,
+            &mut text,
+            &Theme::dark(),
+        );
         let two = content_height(
             &source(&model, anchor, &hidden),
+            false,
             &mut text,
             &Theme::dark().with_text_scale(2.0),
         );

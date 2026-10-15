@@ -79,6 +79,11 @@ mod accessibility_tests;
 mod editor;
 #[cfg(test)]
 mod editor_tests;
+#[cfg(test)]
+mod header_tests;
+mod inspector;
+#[cfg(test)]
+mod inspector_tests;
 mod month_view;
 mod sidebar_scroll;
 mod sidebar_view;
@@ -124,6 +129,8 @@ enum Action {
     PickDate(NaiveDate),
     OpenDay(NaiveDate),
     OpenEvent(Id),
+    /// Show every editable event field from the compact inspector.
+    EditEvent,
     ToggleTask(Id),
     List(ListSel),
     /// Put the sidebar's task list away, back to the month navigator.
@@ -238,6 +245,7 @@ pub struct CalendarApp {
     list_sel: Option<ListSel>,
     selection: Option<Sel>,
     detail_open: bool,
+    inspector: inspector::EventInspector,
 
     /// `CalDAV` accounts + their calendars as this person shows them: the
     /// accounts Settings configured on this device ([`Self::configured`])
@@ -277,8 +285,8 @@ pub struct CalendarApp {
     choices: Choices,
     /// Cached form field geometry (see [`FormRects`]).
     form: FormRects,
-    /// The modal sheet the editor is presented in, laid out against the
-    /// window; `None` while no editor is open.
+    /// The full editor's modal sheet, laid out against the window; `None`
+    /// while closed or while the selected event uses its docked inspector.
     modal: Option<ModalLayout>,
     /// Height of the notes editor's content at its last layout, so the sheet
     /// grows with the notes.
@@ -324,7 +332,7 @@ pub struct CalendarApp {
     /// The region right of a docked sidebar (or the whole window under a
     /// drawer) holding the header and the calendar view.
     content_rect: Rect,
-    /// The editor sheet's card while it is open.
+    /// The full editor's card or the docked event inspector while open.
     detail_rect: Rect,
     notes_origin: Point,
     notes_w: f64,
@@ -451,6 +459,7 @@ impl CalendarApp {
             list_sel: None,
             selection,
             detail_open,
+            inspector: inspector::EventInspector::default(),
             accounts: accounts.clone(),
             device_accounts: std::rc::Rc::new(std::cell::RefCell::new(accounts.clone())),
             configured: accounts,
@@ -584,6 +593,7 @@ impl CalendarApp {
             .map(|event| event.id);
         if let Some(id) = event {
             self.select_event(id);
+            self.inspector.requested = false;
         }
     }
 
@@ -1393,6 +1403,9 @@ impl CalendarApp {
     // --- mutations -------------------------------------------------------
 
     fn select_event(&mut self, id: Id) {
+        self.blur_editor();
+        self.choices.close_all();
+        self.inspector.requested = true;
         self.selection = Some(Sel::Event(id));
         self.detail_scroll_y = 0.0;
         self.open_detail();
@@ -1408,6 +1421,7 @@ impl CalendarApp {
     }
 
     fn select_task(&mut self, id: Id) {
+        self.inspector.requested = false;
         self.selection = Some(Sel::Task(id));
         self.detail_scroll_y = 0.0;
         self.open_detail();
@@ -1607,6 +1621,7 @@ impl CalendarApp {
         self.model.events.push(ev);
         self.model.events.settle();
         self.select_event(id);
+        self.inspector.requested = false;
         self.title_input.set_text("");
         self.location_input.set_text("");
         self.invite_input.set_text("");
@@ -1704,7 +1719,7 @@ impl CalendarApp {
     /// overlay sidebar) currently owns pointer input.
     fn calendar_content_interactive(&self) -> bool {
         self.content_rect.area() > 0.0
-            && !(self.detail_open && self.detail_rect.area() > 0.0)
+            && !self.detail_is_modal()
             && !(matches!(self.sidebar.mode(), SidebarMode::Overlay) && self.sidebar.is_open())
     }
 
@@ -2456,8 +2471,15 @@ impl CalendarApp {
         let content_x0 = self.sidebar.layout(r, &theme);
         self.content_rect = Rect::new(content_x0, r.y0, r.x1, r.y1);
         let show_toggle = !self.sidebar.visible() || self.sidebar.mode() == SidebarMode::Overlay;
+        // Header navigation spans the window, not just the area beside
+        // the sidebar. Only its two leading controls reserve space.
+        let header_x0 = if show_toggle {
+            r.x0
+        } else {
+            self.sidebar.menu_rect(&theme).x1 + f64::from(theme.tokens.spacing.s2)
+        };
         self.topbar.layout(
-            self.content_rect,
+            Rect::new(header_x0, r.y0, r.x1, r.y1),
             show_toggle,
             self.view,
             self.anchor,
@@ -2614,7 +2636,7 @@ impl CalendarApp {
     }
 
     fn segmented_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
-        if self.detail_open || self.sidebar_menu.is_open() {
+        if self.detail_is_modal() || self.sidebar_menu.is_open() {
             return (Vec::new(), Vec::new());
         }
         let sidebar = self.sidebar.rect();
@@ -2676,6 +2698,7 @@ impl CalendarApp {
                 self.view = View::Day;
             }
             Action::OpenEvent(id) => self.select_event(id),
+            Action::EditEvent => self.edit_selected_event(),
             Action::OpenTask(id) => self.select_task(id),
             Action::NewTask | Action::FocusTaskEntry => self.start_new_task(),
             Action::ToggleTask(id) => self.toggle_task(id, doc),
@@ -2916,6 +2939,12 @@ impl CalendarApp {
                     AccessState::new().focusable(true).expanded(expanded),
                 )
             }
+            Action::EditEvent => (
+                "calendar.event:edit".into(),
+                crate::resource::t("calendar-inspector-edit"),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
             Action::CloseDetail => (
                 "calendar.back".into(),
                 "Done".into(),
@@ -3181,7 +3210,12 @@ impl CalendarApp {
     // ====================================================================
 
     fn view_rect(&self) -> Rect {
-        self.topbar.view_rect()
+        let mut rect = self.topbar.view_rect();
+        rect.x0 = self.content_rect.x0;
+        if let Some(inspector) = self.inspector_rect() {
+            rect.x1 = inspector.x0;
+        }
+        rect
     }
 
     // ── week / day timeline geometry + hit-testing ──────────────────────
@@ -3350,7 +3384,7 @@ impl CalendarApp {
         };
 
         let editor_active = self.detail_open && self.detail_rect.area() > 0.0;
-        let form_active = editor_active && matches!(self.selection, Some(Sel::Event(_)));
+        let form_active = editor_active && self.event_form_active();
         let field_focused = self.title_input.is_focused()
             || self.location_input.is_focused()
             || self.invite_input.is_focused()
@@ -3612,6 +3646,7 @@ impl CalendarApp {
         }
         // Clicks inside the notes region go to the editor (focus + caret).
         if in_notes {
+            self.tasks.set_entry_focus(false);
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
@@ -3648,6 +3683,9 @@ impl CalendarApp {
             self.dirty = true;
             return *input.handled;
         }
+        if !self.event_form_active() {
+            return false;
+        }
         if self.title_input.is_focused() {
             self.title_input
                 .handle_event(input.event, &mut input.event_ctx());
@@ -3667,6 +3705,42 @@ impl CalendarApp {
             self.dirty = true;
             return *input.handled;
         }
+        false
+    }
+}
+
+impl CalendarApp {
+    /// Window controls share overlay ownership with the calendar beneath them.
+    fn handle_window_controls(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        if self.calendar_content_interactive()
+            && !self.sidebar_menu.is_open()
+            && self.topbar.history.handle_event(
+                event,
+                self.topbar.history_rect(&self.layout_theme),
+                ctx.scale_factor,
+            )
+        {
+            *ctx.handled = true;
+            self.dirty = true;
+            return true;
+        }
+
+        // The sidebar's overflow menu owns input while it is open.
+        if self.sidebar_menu.is_open() {
+            Widget::handle_event(&mut self.sidebar_menu, event, ctx);
+            match self.sidebar_menu.take_selection() {
+                Some(0) => self.apply_action(Action::Export, &mut ctx.state),
+                Some(1) => self.apply_action(Action::Import, &mut ctx.state),
+                _ => {}
+            }
+            self.dirty = true;
+            return true;
+        }
+
         false
     }
 }
@@ -3698,7 +3772,10 @@ enum Open<'a> {
 }
 
 impl Widget for CalendarApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::widget::WindowHeader
+    );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.sidebar_scroll.sync(state, path);
@@ -3988,9 +4065,18 @@ impl Widget for CalendarApp {
     // event, scaling, modifiers, CRDT handle+path, two out-params, and the
     // node's own identity/layout).
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // Track the pointer in logical coordinates.
+        // Track the pointer even while another input owns keyboard focus.
+        // Notes must see motion before a focused task entry can consume it,
+        // otherwise a subsequent press lands using the editor's stale cursor.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = ctx.logical(position);
+            if self.detail_open
+                && self.notes_region().contains(self.last_mouse)
+                && let Some(n) = self.editor_node
+            {
+                self.notes_editor
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            }
             self.dirty = true;
         }
 
@@ -4001,21 +4087,13 @@ impl Widget for CalendarApp {
             return;
         }
 
-        // The sidebar's overflow menu owns input while it is open.
-        if self.sidebar_menu.is_open() {
-            Widget::handle_event(&mut self.sidebar_menu, event, ctx);
-            match self.sidebar_menu.take_selection() {
-                Some(0) => self.apply_action(Action::Export, &mut ctx.state),
-                Some(1) => self.apply_action(Action::Import, &mut ctx.state),
-                _ => {}
-            }
-            self.dirty = true;
+        if self.handle_window_controls(event, ctx) {
             return;
         }
 
         // The notes editor is only live while the editor sheet is open.
         let editor_active = self.detail_open && self.detail_rect.area() > 0.0;
-        let form_active = editor_active && matches!(self.selection, Some(Sel::Event(_)));
+        let form_active = editor_active && self.event_form_active();
         let popover_open = form_active && self.event_popovers.is_open();
         // Bounded to the notes column of the detail card/page so a click below
         // or beside a floating modal isn't swallowed by the editor.
@@ -4037,7 +4115,7 @@ impl Widget for CalendarApp {
             return;
         }
 
-        if editor_active && self.handle_choice_event(event, ctx) {
+        if self.detail_is_modal() && self.handle_choice_event(event, ctx) {
             self.dirty = true;
             return;
         }
@@ -4163,12 +4241,23 @@ impl Widget for CalendarApp {
             .with_name("Calendar")
             .with_bounds(self.rect)
             .with_children(controls);
-        if self.detail_open {
-            if let Some(notes) = self.notes_editor.accessibility() {
-                root.children.push(notes);
-            }
-        } else {
+        if let Some(inspector) = self.inspector_accessibility() {
+            root.children.push(inspector);
+        } else if self.detail_open
+            && let Some(notes) = self.notes_editor.accessibility()
+        {
+            root.children.push(notes);
+        }
+        if !self.detail_is_modal() {
             root.children.extend(self.task_list_access_nodes());
+        }
+        if !self.detail_is_modal()
+            && let Some(history) = self
+                .topbar
+                .history
+                .accessibility(self.topbar.history_rect(&self.layout_theme))
+        {
+            root.children.push(history);
         }
         if self.syncing {
             root.children.push(
@@ -4184,7 +4273,7 @@ impl Widget for CalendarApp {
                     .with_live(ui::a11y::Politeness::Polite),
             );
         }
-        if self.detail_open && matches!(self.selection, Some(Sel::Event(_))) {
+        if self.event_form_active() {
             root.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name("Event editor. Changes save automatically."),
@@ -4204,6 +4293,10 @@ impl Widget for CalendarApp {
         state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
+        if !self.detail_is_modal() && self.topbar.history.perform_semantic_action(target, action) {
+            self.dirty = true;
+            return true;
+        }
         if self.detail_open
             && self
                 .notes_editor
@@ -4318,7 +4411,9 @@ impl Widget for CalendarApp {
         self.notes_editor.layout_needs_measure()
     }
 
-    /// While the event/task editor is open it OWNS the keyboard. Reporting the
+    /// While the full event/task editor is open it OWNS the keyboard; the
+    /// docked inspector leaves the host's ordinary focus handling intact.
+    /// Reporting the
     /// editor's box here makes the host [`ui::App`] stand down: it stops running
     /// its built-in Tab focus cycling (which would otherwise cycle to the notes
     /// editor node and never reach the form's own title → location → notes
@@ -4326,7 +4421,7 @@ impl Widget for CalendarApp {
     /// reach the calendar behind it. The form's own `handle_event` still routes
     /// each key/click; this only tells the App to stop competing for input.
     fn modal_capture(&self) -> Option<Rect> {
-        if self.detail_open && self.detail_rect.area() > 0.0 {
+        if self.detail_is_modal() && self.detail_rect.area() > 0.0 {
             Some(self.detail_rect)
         } else {
             None
@@ -4334,8 +4429,18 @@ impl Widget for CalendarApp {
     }
 }
 
+impl ui::widget::WindowHeader for CalendarApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        self.topbar.history.set_control(control);
+        self.dirty = true;
+    }
+}
+
 impl ui::widget::controls::ActionControls for CalendarApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(history) = self.topbar.history.take() {
+            return Some(history);
+        }
         if let Some(search) = self.search_opener.take() {
             return Some(search);
         }

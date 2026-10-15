@@ -1,7 +1,8 @@
 //! The sidebar's contents: the smart lists and projects as navigation rows
 //! (a project led by its colour), each calendar account's calendars as
 //! checked navigation rows in their colours that show or hide their events,
-//! the selected list's open tasks, and the month navigator at the bottom.
+//! the selected list's open tasks in Tasks view. Calendar views keep the
+//! month navigator first, followed only by calendar visibility controls.
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Fill;
@@ -50,7 +51,7 @@ impl Column<'_> {
 
 impl CalendarApp {
     pub(super) fn sidebar_controls(&self) -> &[(Rect, Action)] {
-        if self.sidebar.visible() && !self.detail_open {
+        if self.sidebar.visible() && !self.detail_is_modal() {
             &self.sidebar_semantic_hits
         } else {
             &[]
@@ -68,7 +69,7 @@ impl CalendarApp {
 
         if !self.sidebar.visible()
             || *ctx.handled
-            || (self.detail_open && self.detail_rect.area() > 0.0)
+            || (self.detail_is_modal() && self.detail_rect.area() > 0.0)
         {
             return false;
         }
@@ -137,15 +138,16 @@ impl CalendarApp {
             ctx.transform,
             &content,
         );
-        self.draw_sidebar_lists(&mut ctx, &mut column);
-        self.draw_sidebar_calendars(&mut ctx, &mut column);
-        if let Some(list) = self.list_sel {
-            self.draw_sidebar_tasks(&mut ctx, &mut column, list);
+        if self.view == crate::model::View::Tasks {
+            self.draw_sidebar_lists(&mut ctx, &mut column);
+            if let Some(list) = self.list_sel {
+                self.draw_sidebar_tasks(&mut ctx, &mut column, list);
+            }
         }
-        // Keep the month at the bottom when everything fits, otherwise in
-        // the flow after all navigation and tasks. Nothing is omitted.
-        let picker = self.mini_month_rect(content, column.y, offset, &chrome.theme);
+        let picker = self.mini_month_rect(content, column.y, &chrome.theme);
         self.draw_sidebar_month(&mut ctx, &mut column, picker);
+        column.y = picker.y1 + f64::from(chrome.theme.tokens.spacing.s3);
+        self.draw_sidebar_calendars(&mut ctx, &mut column);
         ctx.scene.pop_layer();
         self.sidebar_scroll.draw_bar(&mut ctx);
         self.sidebar_semantic_hits = hits.iter().chain(&column.hits).cloned().collect();
@@ -163,19 +165,25 @@ impl CalendarApp {
     fn sidebar_content_height(&self, width: f64, theme: &Theme) -> f64 {
         let row_h = nav_row_height(theme);
         let section_h = nav_section_height(theme, false);
-        let mut height = 4.0 * row_h;
-        if !self.model.projects.is_empty() {
-            height += section_h + self.model.projects.len() as f64 * row_h;
+        let mut height = 0.0;
+        if self.view == crate::model::View::Tasks {
+            height += 4.0 * row_h;
+            if !self.model.projects.is_empty() {
+                height += section_h + self.model.projects.len() as f64 * row_h;
+            }
+            if let Some(list) = self.list_sel {
+                height +=
+                    section_h + self.model.tasks_for(&list, self.today).len().max(1) as f64 * row_h;
+            }
+        }
+        if !self.accounts.accounts.is_empty() {
+            height += section_h;
         }
         for account in &self.accounts.accounts {
             height += section_h;
             if !account.collapsed {
                 height += account.calendars.len() as f64 * row_h;
             }
-        }
-        if let Some(list) = self.list_sel {
-            height +=
-                section_h + self.model.tasks_for(&list, self.today).len().max(1) as f64 * row_h;
         }
         let inset = f64::from(theme.tokens.spacing.s3);
         height
@@ -185,12 +193,12 @@ impl CalendarApp {
                 .intrinsic_height((width - 2.0 * inset).max(0.0))
     }
 
-    /// Month follows the complete body, never overlapping calendars or tasks.
-    fn mini_month_rect(&self, content: Rect, y: f64, offset: f64, theme: &Theme) -> Rect {
+    /// The month leads the calendar flow, with its natural measured height.
+    fn mini_month_rect(&self, content: Rect, y: f64, theme: &Theme) -> Rect {
         let inset = f64::from(theme.tokens.spacing.s3);
         let width = (content.width() - 2.0 * inset).max(0.0);
         let height = self.mini_month.intrinsic_height(width);
-        let top = (y + inset).max(content.y1 - offset - inset - height);
+        let top = y + inset;
         Rect::new(
             content.x0 + inset,
             top,
@@ -271,6 +279,17 @@ impl CalendarApp {
     fn draw_sidebar_calendars(&self, ctx: &mut PaintCtx<'_>, column: &mut Column<'_>) {
         let theme = column.theme;
         let row_h = nav_row_height(theme);
+        if !self.accounts.accounts.is_empty() {
+            let band = column.row(nav_section_height(theme, false));
+            chrome::paint_nav_section(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+                &NavSectionFace::new(band, &crate::resource::t("calendar-calendars-heading")),
+            );
+            column.y = band.y1;
+        }
         for account in &self.accounts.accounts {
             let band = column.row(nav_section_height(theme, false));
             let face = NavSectionFace::new(band, account.label())

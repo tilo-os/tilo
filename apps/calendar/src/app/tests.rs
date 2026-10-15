@@ -150,6 +150,7 @@ fn task_completion_toggles_by_checkbox_and_label() {
         // (a machine full of remote calendars still lists tasks in the
         // agenda/day views — the rail is the space-permitting extra).
         app.accounts = AccountStore::default();
+        app.view = View::Tasks;
         app.list_sel = Some(ListSel::Today);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
         app.relayout();
@@ -1640,6 +1641,7 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
     // Case `accessibility_exposes_sidebar_lists_and_calendar_visibility_controls`.
     {
         let mut app = CalendarApp::new_demo();
+        app.view = View::Tasks;
         let mut state = demo_document(&app);
         present(&mut app, &mut state, &automerge::ROOT);
         app.rect = Rect::new(0.0, 0.0, 1_280.0, 800.0);

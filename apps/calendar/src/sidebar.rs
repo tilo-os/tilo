@@ -160,13 +160,13 @@ impl Sidebar {
         Self::header_control(band, band.x0 + f64::from(theme.tokens.spacing.s3), theme)
     }
 
-    /// The overflow menu button at the trailing end of the sidebar header.
+    /// Keep sidebar controls together, leaving the rest of the single
+    /// window header for period navigation and the view switcher.
     pub(crate) fn menu_rect(&self, theme: &Theme) -> Rect {
         let band = self.header(theme);
-        let side = f64::from(theme.tokens.metrics.min_pointer_target);
         Self::header_control(
             band,
-            band.x1 - f64::from(theme.tokens.spacing.s3) - side,
+            self.toggle_rect(theme).x1 + f64::from(theme.tokens.spacing.s2),
             theme,
         )
     }
@@ -194,7 +194,23 @@ impl Sidebar {
             // The panel swallows presses that land between its rows.
             hits.push((self.rect(), Action::Guard));
         }
+        // A docked panel starts below the unified header. Painting the full
+        // column here would cover the period controls that now span it.
+        if self.mode() == Mode::Persistent {
+            let mut body = self.rect();
+            body.y0 = self.header(theme).y1;
+            ctx.scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                ctx.transform,
+                &body,
+            );
+        }
         let local = self.drawer.paint_panel(ctx.scene, ctx.transform, theme);
+        if self.mode() == Mode::Persistent {
+            ctx.scene.pop_layer();
+        }
 
         let toggle = self.toggle_rect(&local);
         self.drawer.draw_toggle(

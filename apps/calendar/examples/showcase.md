@@ -26,15 +26,17 @@ only the review stills. The example generates no network traffic.
 
 - `showcase.png`: 1440×810, `Theme::dark().with_ui_scale(1.5)`, agenda with
   real event rows, task checkboxes, calendar visibility and mini-month. The
-  sidebar is scrolled to its lower content through a normal wheel event.
+  mini-month leads the unscrolled sidebar and Design review is selected,
+  showing its right-hand Event details and Attached notes inspector.
 - `week.png`, `month.png`, `agenda.png`, `tasks.png`, `event_editor.png`,
   `task_detail.png`: the principal views at the same native size and scale.
 - `light.png`: light-theme week view; `narrow.png`: 720×900 scaled editor.
 - `frames/`: 210 independently rendered frames for 60fps, 3.5 seconds.
   A high-contrast arrow follows quadratic curves parameterized by `min_jerk`.
-  Real pointer events open Design review and its attached notes, dismiss the
-  editor and complete Prepare quarterly report. The capture fails unless
-  selection changes and the task is durably marked done. `gesture.txt`
+  Design review and its rich attached notes stay open throughout. Real
+  pointer events complete Prepare quarterly report without dismissing the
+  inspector. The capture fails unless the event remains selected and the
+  task is durably marked done. `gesture.txt`
   records those assertions. No frame interpolation is used.
 
 ## Review findings and fixes
@@ -51,15 +53,23 @@ month in its flow, and clips pointer hits to the viewport. Assistive technology
 retains offscreen controls and can bring them into view. Overlay thumbs remain
 quiet at 6px instead of growing into broad rails.
 
-The view switcher now measures labels and wraps in the sidebar when the header
-cannot fit it. Header titles clip before neighboring controls. Agenda and task
-rows share a readable measure, aligned metadata and bounded nested indentation.
+One unified window header hosts period navigation, all five view buttons,
+platform search, New event and the shared History opener. It spans the window
+rather than stopping at the sidebar edge. Only genuinely narrow windows move
+the switcher into the drawer. The mini-month leads the sidebar, followed by
+Calendars; task lists and projects remain available in Tasks view. Overflow
+still scrolls on short windows or with many calendars.
+
+Selecting an existing event on desktop docks a compact inspector to the right,
+with its attached rich notes immediately visible. The agenda and task checkboxes
+remain live beside it. Edit event opens every field of the full editor; narrow
+windows and new drafts retain that modal editor.
 
 Hand-positioned inputs and attached notes adopt scaled text sizes, including
 empty-field prompts. Wide editors place notes beside the form; narrow editors
 retain the stacked flow. A scrolling form ends between complete rows, and its
 modal semantics exclude the background. Notes actions route to their editor.
 
-Verification: `cargo test --locked -p calendar` (117 tests, none skipped),
+Verification: `cargo test --locked -p calendar`,
 `cargo clippy --locked -p calendar`, and all-target Clippy. Stills and decoded
 video frames at 0, 1, 2 and 3 seconds were opened for visual inspection.

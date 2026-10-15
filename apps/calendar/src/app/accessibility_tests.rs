@@ -7,7 +7,7 @@ fn offscreen_calendar_navigation_can_be_revealed_without_pointer_input() {
     let mut app = CalendarApp::new_demo();
     app.detail_open = false;
     app.layout_theme = Theme::dark().with_ui_scale(1.5);
-    app.rect = Rect::new(0.0, 0.0, 1440.0, 810.0);
+    app.rect = Rect::new(0.0, 0.0, 1440.0, 500.0);
     app.relayout();
     let paint = |app: &mut CalendarApp| {
         app.draw_sidebar(&mut PaintCtx::new(

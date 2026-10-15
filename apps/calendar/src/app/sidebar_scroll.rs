@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn mini_month_remains_reachable_with_calendars_and_a_selected_task_list() {
+    fn final_calendars_remain_reachable_below_task_navigation() {
         use super::super::{Action, CalendarApp};
         use crate::model::ListSel;
         use ui::synthetic_input::{cursor_moved, mouse_wheel};
@@ -158,8 +158,9 @@ mod tests {
         let theme = Theme::dark().with_ui_scale(1.5);
         let mut app = CalendarApp::new_demo();
         app.detail_open = false;
+        app.view = crate::model::View::Tasks;
         app.list_sel = Some(ListSel::Today);
-        app.rect = Rect::new(0.0, 0.0, 1440.0, 810.0);
+        app.rect = Rect::new(0.0, 0.0, 1440.0, 500.0);
         app.layout_theme = theme.clone();
         app.relayout();
         let mut text = ui::text_render::TextRenderer::new();
@@ -173,11 +174,19 @@ mod tests {
             ))
         };
         let before = paint(&mut app, &mut text);
-        assert!(
-            !before
-                .iter()
-                .any(|(_, action)| matches!(action, Action::MiniMonth(_)))
-        );
+        let final_calendar = app
+            .accounts
+            .accounts
+            .last()
+            .unwrap()
+            .calendars
+            .last()
+            .unwrap()
+            .id
+            .clone();
+        assert!(!before.iter().any(|(_, action)| {
+            matches!(action, Action::SetCalendarVisible { id, .. } if *id == final_calendar)
+        }));
         assert!(!app.accounts.accounts.is_empty());
         assert!(!app.model.tasks_for(&ListSel::Today, app.today).is_empty());
         let body = app.sidebar_scroll.scroll.get_rect();
@@ -185,11 +194,9 @@ mod tests {
         assert!(dispatch(&mut app, &mouse_wheel(0.0, -1000.0)));
         let after = paint(&mut app, &mut text);
         assert!(app.sidebar_scroll.offset_y() > 0.0);
-        assert!(
-            after
-                .iter()
-                .any(|(_, action)| matches!(action, Action::MiniMonth(_)))
-        );
+        assert!(after.iter().any(|(_, action)| {
+            matches!(action, Action::SetCalendarVisible { id, .. } if *id == final_calendar)
+        }));
     }
 
     #[test]

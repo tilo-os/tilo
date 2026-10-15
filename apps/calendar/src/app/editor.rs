@@ -479,6 +479,9 @@ impl CalendarApp {
     /// The part of the sheet's body the notes editor takes, where a press
     /// goes to the editor.
     pub(super) fn notes_region(&self) -> Rect {
+        if let Some(notes) = self.inspector_notes_region() {
+            return notes;
+        }
         self.modal.as_ref().map_or(Rect::ZERO, |modal| {
             Rect::new(
                 self.notes_origin.x,
@@ -492,6 +495,10 @@ impl CalendarApp {
     /// Width of the sheet's body (the form and the notes column) in the
     /// current window and theme.
     pub(super) fn detail_body_w(&self) -> f64 {
+        if let Some(rect) = self.inspector_rect() {
+            return (rect.width() - 2.0 * f64::from(self.layout_theme.tokens.spacing.rhythm.group))
+                .max(0.0);
+        }
         let width = self.sheet_body_w();
         Self::notes_column(width, &self.layout_theme)
             .map_or(width, |(left, gap)| width - left - gap)
@@ -519,6 +526,11 @@ impl CalendarApp {
             self.detail_rect = Rect::ZERO;
             self.form = FormRects::default();
             self.notes_origin = Point::new(-10000.0, -10000.0);
+            return;
+        }
+        if let Some(rect) = self.inspector_rect() {
+            self.layout_inspector(rect);
+            self.place_form_widgets();
             return;
         }
         let theme = self.layout_theme.clone();
@@ -600,7 +612,7 @@ impl CalendarApp {
     /// parking the ones the current sheet does not show.
     fn place_form_widgets(&mut self) {
         let parked = Rect::new(-10000.0, -10000.0, -9900.0, -9900.0);
-        let editing_event = matches!(self.selection, Some(Sel::Event(_)));
+        let editing_event = self.event_form_active();
         let window = self.rect;
         let f = self.form.clone();
         if editing_event {
@@ -608,6 +620,10 @@ impl CalendarApp {
             self.location_input.apply_layout_external(f.location);
             self.invite_input.apply_layout_external(f.invite);
         } else {
+            self.title_input.set_focus(false);
+            self.location_input.set_focus(false);
+            self.invite_input.set_focus(false);
+            self.event_popovers.close();
             self.title_input.apply_layout_external(parked);
             self.location_input.apply_layout_external(parked);
             self.invite_input.apply_layout_external(parked);
@@ -956,6 +972,21 @@ impl CalendarApp {
 
     /// Paint the sheet in the top layer and append its hit targets.
     pub(super) fn draw_sheet(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.inspector_rect().is_some() {
+            self.draw_inspector(scene, t, text, theme, presence);
+            return;
+        }
+        self.draw_modal_sheet(scene, t, text, theme, presence);
+    }
+
+    fn draw_modal_sheet(
         &mut self,
         scene: &mut Scene,
         t: Affine,

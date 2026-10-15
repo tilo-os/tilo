@@ -877,7 +877,9 @@ mod tasks_screen {
             named(&mut app, "Tasks view").is_some(),
             "the bar's Tasks tab is not the task list"
         );
+        activate(&mut app, "Tasks view");
         activate(&mut app, "Show tasks in Today");
+        activate(&mut app, "Month view");
 
         app.call("show-tasks", serde_json::json!({}))
             .expect("show-tasks");
@@ -927,8 +929,8 @@ mod tasks_screen {
     #[test]
     fn the_tasks_tab_and_show_tasks_reach_the_same_list() {
         let mut by_tab = sample_calendar();
-        activate(&mut by_tab, "Show tasks in Inbox");
         activate(&mut by_tab, "Tasks view");
+        activate(&mut by_tab, "Show tasks in Inbox");
         let mut by_action = sample_calendar();
         by_action
             .call("show-tasks", serde_json::json!({}))
