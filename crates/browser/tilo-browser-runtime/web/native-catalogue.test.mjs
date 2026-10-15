@@ -115,6 +115,7 @@ test('the page removes someone through its own door: the room\'s membership requ
   assert.equal(invokeRoomMembership({membership, room, resource: roomGovernanceResource('r2'), action: 'remove-member', args: {person}}),
     undefined, 'another room\'s governance');
   assert.equal(invoke('invite', {}), undefined, 'a verb the page does not take here');
+  assert.equal(invoke('constructor', {person}), undefined, 'an inherited name is no verb');
   assert.equal(invokeRoomMembership({membership, room: undefined, resource: roomGovernanceResource(undefined),
     action: 'remove-member', args: {person}}), undefined, 'a peer in no room');
   // Removing someone asks first, and is the host's to decide.

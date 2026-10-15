@@ -11,6 +11,8 @@
  * door (`invokeRoomMembership`). */
 const GOVERNANCE_PROVIDER = 'tilo.workspace';
 const MEMBERSHIP = {'remove-member': 'remove', ban: 'ban', unban: 'unban'};
+/** The membership request an action names, if it is one (never an inherited name). */
+const membershipVerb = action => (typeof action === 'string' && Object.hasOwn(MEMBERSHIP, action) ? MEMBERSHIP[action] : undefined);
 /** Taking someone out of the room: run only on the person's confirmation. */
 const DESTRUCTIVE = new Set(['remove-member', 'ban']);
 const SHARE_LINK = 'share-link';
@@ -37,7 +39,7 @@ const refusal = (code, reason) => Promise.reject(new Error(`${code}: ${reason}`)
  * read when the host refused it.
  */
 export function invokeRoomMembership({membership, room, resource, action, args = {}, confirm = false}) {
-  const verb = MEMBERSHIP[action];
+  const verb = membershipVerb(action);
   if (!verb || !room || resource !== roomGovernanceResource(room)) return undefined;
   if (!membership) return refusal('action_unavailable', 'this page holds no membership in the room');
   const person = args?.person;
@@ -99,7 +101,7 @@ export function createNativeCatalogueBridge({take, deliver, actions, membership 
       shareLink(invocation, target, argument);
       return;
     }
-    const verb = MEMBERSHIP[target?.address?.action];
+    const verb = membershipVerb(target?.address?.action);
     if (target?.provider !== GOVERNANCE_PROVIDER || !verb) {
       rejected(invocation, 'Only the room\'s membership actions run from an app here');
       return;
