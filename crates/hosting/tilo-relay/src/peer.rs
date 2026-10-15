@@ -1406,11 +1406,15 @@ mod private_transport_tests {
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let held = owner
-            .submit_sequence_wait(96, 1, move |_, _| async move {
-                let _ = entered_tx.send(());
-                let _ = release_rx.await;
-                Ok(())
-            })
+            .submit_sequence_wait(
+                u32::try_from(crate::persistence::NORMAL_MESSAGES).unwrap(),
+                1,
+                move |_, _| async move {
+                    let _ = entered_tx.send(());
+                    let _ = release_rx.await;
+                    Ok(())
+                },
+            )
             .await
             .unwrap();
         entered_rx.await.unwrap();

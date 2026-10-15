@@ -1274,7 +1274,7 @@ impl Rooms {
             taken
         };
         {
-            let mut stewardship = steward.channels.lock().await;
+            let stewardship = Arc::clone(&steward.channels).lock_owned().await;
             // Taken under the steward: notices that queue while it works
             // start the next pass, which takes all of them at once.
             let waiting = self
@@ -1285,31 +1285,21 @@ impl Rooms {
                 .remove(room)
                 .unwrap_or_default();
             let readers = steward.readers(generation, readers);
-            let mut asked = false;
-            let mut acks = Vec::new();
             let passing = crate::timing::start();
-            let mut requests = 0u64;
-            for (author, notice) in waiting {
-                match notice {
-                    ChannelNoticeKind::Request(request, route) => {
-                        asked = true;
-                        requests = requests.saturating_add(1);
-                        if let Err(error) =
-                            stewardship.request(author, *request, route.as_deref(), &readers)
-                        {
-                            tracing::debug!(room, %error, "channel access request refused");
-                        }
-                    }
-                    ChannelNoticeKind::Ack(ack) => acks.push((author, *ack)),
-                }
-            }
-            crate::timing::event("steward.acks", passing, acks.len() as u64);
-            stewardship.acknowledge(acks);
-            if !asked {
+            let named = room.to_owned();
+            // Verifying requests and the MLS changes admitting them run on a
+            // blocking worker: a crowd's took seconds, and held a runtime
+            // worker (and every task queued on it) the whole time.
+            let (stewardship, admitted) = tokio::task::spawn_blocking(move || {
+                let mut stewardship = stewardship;
+                let admitted = take_notices(&mut stewardship, &named, waiting, &readers, passing);
+                (stewardship, admitted)
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+            let Some((messages, requests)) = admitted? else {
                 return Ok(());
-            }
-            let messages = stewardship.admit_pending(&readers)?;
-            crate::timing::event("steward.admit", passing, requests);
+            };
             // After the channel changes a settle handed over.
             publisher.flushed().await;
             let admissions = self
@@ -1544,6 +1534,45 @@ impl Rooms {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
+}
+
+/// Hand `room`'s `stewardship` the notices `waiting` for it: take each
+/// request, record the acknowledgements, then admit every device asking.
+/// Synchronous MLS work, for a blocking worker. The governance messages to
+/// publish and how many requests they answer; `None` when nobody asked.
+fn take_notices(
+    stewardship: &mut stewardship::Stewardship,
+    room: &str,
+    waiting: Vec<ChannelNotice>,
+    readers: &stewardship::Readers,
+    passing: Option<std::time::Instant>,
+) -> Result<Option<(Vec<neighbour_wire::NeighbourMsg>, u64)>, String> {
+    #[cfg(test)]
+    tests::steward_pass_hook(room);
+    let mut asked = false;
+    let mut acks = Vec::new();
+    let mut requests = 0u64;
+    for (author, notice) in waiting {
+        match notice {
+            ChannelNoticeKind::Request(request, route) => {
+                asked = true;
+                requests = requests.saturating_add(1);
+                if let Err(error) = stewardship.request(author, *request, route.as_deref(), readers)
+                {
+                    tracing::debug!(room, %error, "channel access request refused");
+                }
+            }
+            ChannelNoticeKind::Ack(ack) => acks.push((author, *ack)),
+        }
+    }
+    crate::timing::event("steward.acks", passing, acks.len() as u64);
+    stewardship.acknowledge(acks);
+    if !asked {
+        return Ok(None);
+    }
+    let messages = stewardship.admit_pending(readers)?;
+    crate::timing::event("steward.admit", passing, requests);
+    Ok(Some((messages, requests)))
 }
 
 /// A channel governance message, retained as this relay's own.

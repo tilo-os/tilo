@@ -1687,6 +1687,87 @@ async fn an_owner_capable_node_stewards_the_channels_of_the_rooms_it_governs() {
     asked.shut_down().await;
 }
 
+/// What a test runs inside a room's steward pass, by room.
+type PassHooks = std::sync::Mutex<HashMap<String, Arc<dyn Fn() + Send + Sync>>>;
+
+fn pass_hooks() -> &'static PassHooks {
+    static HOOKS: std::sync::OnceLock<PassHooks> = std::sync::OnceLock::new();
+    HOOKS.get_or_init(PassHooks::default)
+}
+
+/// Run the hook a test installed for `room`'s steward pass, where the pass
+/// does its MLS work.
+pub(crate) fn steward_pass_hook(room: &str) {
+    let hook = pass_hooks().lock().unwrap().get(room).cloned();
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+/// A steward pass's MLS work holds no runtime worker. The pass stalls in
+/// its MLS work until the test, on a runtime with a single worker, lets it
+/// go: run on that worker, the pass would stall the test with it, and give
+/// up waiting unreleased.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "the fixture's Relay::shutdown consumes the relay after the assertions; the suggested later drop would use a moved value"
+    )
+)]
+async fn a_steward_pass_does_its_mls_work_off_the_runtime_workers() {
+    let asked =
+        a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
+            .await;
+    let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
+    let (release, released_rx) = std::sync::mpsc::channel::<()>();
+    let entered_tx = std::sync::Mutex::new(entered_tx);
+    let released_rx = std::sync::Mutex::new(released_rx);
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = Arc::clone(&released);
+    pass_hooks().lock().unwrap().insert(
+        asked.room.clone(),
+        Arc::new(move || {
+            let _ = entered_tx.lock().unwrap().send(());
+            let in_time = released_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .is_ok();
+            observed.store(in_time, std::sync::atomic::Ordering::SeqCst);
+        }),
+    );
+    tilo_test_env::within("the steward pass starts its MLS work", async {
+        while entered.try_recv().is_err() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    // Only this runtime's one worker can get here while the pass stalls.
+    release.send(()).unwrap();
+    let steward = asked.stewardship().await.expect("the node stewards");
+    tilo_test_env::within("the node admits the member to the channel", async {
+        while !steward
+            .channels
+            .lock()
+            .await
+            .members(asked.channel)
+            .is_some_and(|members| members.contains(&asked.member))
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    pass_hooks().lock().unwrap().remove(&asked.room);
+    assert!(
+        released.load(std::sync::atomic::Ordering::SeqCst),
+        "the runtime's worker was free while the pass did its MLS work"
+    );
+    drop(steward);
+    asked.shut_down().await;
+}
+
 /// A decision does not wait for room in its workspace owner's queue. With
 /// the owner stalled on the room's first change and more changes behind it
 /// than its queue holds, every decision still settles and answers, and a

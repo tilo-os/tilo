@@ -1,6 +1,12 @@
 //! Ordered, bounded state work. The owner awaits publication before dequeuing
 //! its successor; callers only wait on receipts and cannot cancel admitted work.
 //!
+//! Commits this host authors itself (room and channel governance) queue in
+//! a lane of their own ([`Lane::Host`]), with their own admission budget,
+//! and the owner takes them ahead of the members' queue: a room's governance
+//! never waits behind a crowd's traffic. Host order (`seq`) is still the
+//! order of owner turns, and so of publication.
+//!
 //! # What a commit guarantees after a crash
 //!
 //! An admitted delta is fanned out to other sessions, and a `Commit` is
@@ -52,8 +58,20 @@ const GLOBAL_MESSAGES: usize = 128;
 const GLOBAL_BYTES: usize = 256 * 1024 * 1024;
 const REPLAY_MESSAGES: usize = crate::store::replay::DEFAULT_REPLAY_TICKETS;
 const REPLAY_BYTES: usize = 64 * 1024;
-const NORMAL_MESSAGES: usize = GLOBAL_MESSAGES - REPLAY_MESSAGES;
-const NORMAL_BYTES: usize = GLOBAL_BYTES - REPLAY_BYTES;
+/// Host-authored commits (room governance, the channel steward's frames)
+/// take their own share of the global totals, so a crowd's member traffic
+/// never holds them back: a steward pass waits for its own commits, and
+/// every member waiting for a channel key waits for that pass.
+const HOST_MESSAGES: usize = 16;
+/// Enough for the largest host checkpoint (a compacted record) as charged.
+const HOST_BYTES: usize = 64 * 1024 * 1024;
+/// Host commits one workspace's owner queues.
+const HOST_QUEUE_MESSAGES: usize = 16;
+/// Host jobs an owner runs in a row while member jobs wait, so a burst of
+/// governance cannot hold a room's members back for long either.
+const HOST_BURST: u32 = 8;
+pub(crate) const NORMAL_MESSAGES: usize = GLOBAL_MESSAGES - REPLAY_MESSAGES - HOST_MESSAGES;
+const NORMAL_BYTES: usize = GLOBAL_BYTES - REPLAY_BYTES - HOST_BYTES;
 const BLOCKING_WORKERS: usize = 4;
 /// The most blocking workers a host with many cores runs at once.
 const MAX_BLOCKING_WORKERS: usize = 16;
@@ -75,6 +93,17 @@ struct NormalJob {
     sequence: u64,
     job: Job,
 }
+
+/// Which of an owner's ordered queues a job is admitted to. Both take their
+/// sequences from one counter, so a capture's prerequisite names a prefix
+/// of both; each is FIFO, and the owner prefers the host's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lane {
+    /// Members' state and every other ordered job.
+    Member,
+    /// Commits this host authors itself ([`HOST_MESSAGES`]).
+    Host,
+}
 struct ReplayJob {
     prerequisite: Option<u64>,
     job: Job,
@@ -88,6 +117,16 @@ fn message_budget() -> &'static Arc<Semaphore> {
 fn byte_budget() -> &'static Arc<Semaphore> {
     static BYTES: OnceLock<Arc<Semaphore>> = OnceLock::new();
     BYTES.get_or_init(|| Arc::new(Semaphore::new(NORMAL_BYTES)))
+}
+
+fn host_message_budget() -> &'static Arc<Semaphore> {
+    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SLOTS.get_or_init(|| Arc::new(Semaphore::new(HOST_MESSAGES)))
+}
+
+fn host_byte_budget() -> &'static Arc<Semaphore> {
+    static BYTES: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    BYTES.get_or_init(|| Arc::new(Semaphore::new(HOST_BYTES)))
 }
 
 fn replay_message_budget() -> &'static Arc<Semaphore> {
@@ -122,6 +161,8 @@ fn detached_replay_budget() -> &'static Arc<Semaphore> {
 struct AdmissionBudgets {
     normal_messages: Arc<Semaphore>,
     normal_bytes: Arc<Semaphore>,
+    host_messages: Arc<Semaphore>,
+    host_bytes: Arc<Semaphore>,
     replay_messages: Arc<Semaphore>,
     replay_bytes: Arc<Semaphore>,
     workers: Arc<Semaphore>,
@@ -132,6 +173,8 @@ impl AdmissionBudgets {
         Self {
             normal_messages: message_budget().clone(),
             normal_bytes: byte_budget().clone(),
+            host_messages: host_message_budget().clone(),
+            host_bytes: host_byte_budget().clone(),
             replay_messages: replay_message_budget().clone(),
             replay_bytes: replay_byte_budget().clone(),
             workers: blocking_budget().clone(),
@@ -144,17 +187,35 @@ impl AdmissionBudgets {
         Self {
             normal_messages: Arc::new(Semaphore::new(NORMAL_MESSAGES)),
             normal_bytes: Arc::new(Semaphore::new(NORMAL_BYTES)),
+            host_messages: Arc::new(Semaphore::new(HOST_MESSAGES)),
+            host_bytes: Arc::new(Semaphore::new(HOST_BYTES)),
             replay_messages: Arc::new(Semaphore::new(REPLAY_MESSAGES)),
             replay_bytes: Arc::new(Semaphore::new(REPLAY_BYTES)),
             workers,
             replay_worker: Arc::new(Semaphore::new(1)),
         }
     }
+
+    /// The message and byte budgets of `lane`.
+    const fn lane(&self, lane: Lane) -> (&Arc<Semaphore>, &Arc<Semaphore>) {
+        match lane {
+            Lane::Member => (&self.normal_messages, &self.normal_bytes),
+            Lane::Host => (&self.host_messages, &self.host_bytes),
+        }
+    }
 }
 
 fn charged_bytes(bytes: usize) -> Result<u32, StoreError> {
+    charged_lane_bytes(Lane::Member, bytes)
+}
+
+fn charged_lane_bytes(lane: Lane, bytes: usize) -> Result<u32, StoreError> {
     let bytes = bytes.max(1);
-    if bytes > NORMAL_BYTES {
+    let capacity = match lane {
+        Lane::Member => NORMAL_BYTES,
+        Lane::Host => HOST_BYTES,
+    };
+    if bytes > capacity {
         return Err(error("state byte backpressure"));
     }
     u32::try_from(bytes).map_err(|_| error("state byte backpressure"))
@@ -172,6 +233,7 @@ fn next_normal_job(sequence: &AtomicU64) -> Result<u64, StoreError> {
 #[derive(Clone)]
 pub(crate) struct Persistence {
     tx: mpsc::Sender<NormalJob>,
+    host_tx: mpsc::Sender<NormalJob>,
     replay_tx: mpsc::Sender<ReplayJob>,
     normal_sequence: Arc<AtomicU64>,
     admission: Arc<tokio::sync::Mutex<()>>,
@@ -325,6 +387,7 @@ fn start(
     budgets: AdmissionBudgets,
 ) -> Persistence {
     let (tx, rx) = mpsc::channel::<NormalJob>(QUEUE_MESSAGES);
+    let (host_tx, host_rx) = mpsc::channel::<NormalJob>(HOST_QUEUE_MESSAGES);
     let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(REPLAY_MESSAGES);
     let normal_sequence = Arc::new(AtomicU64::new(0));
     let admission = Arc::new(tokio::sync::Mutex::new(()));
@@ -339,9 +402,10 @@ fn start(
         workers: budgets.workers.clone(),
         replay_worker: budgets.replay_worker.clone(),
     }));
-    tokio::spawn(run_owner(rx, replay_rx, state));
+    tokio::spawn(run_owner_lanes(Lanes::new(rx, host_rx), replay_rx, state));
     let handle = Persistence {
         tx,
+        host_tx,
         replay_tx,
         normal_sequence,
         admission,
@@ -415,12 +479,132 @@ fn note_idle_turn(state: &Mutex<State>) {
         .or_insert(1);
 }
 
+/// An owner's two ordered queues ([`Lane`]): the host's first, but never
+/// more than [`HOST_BURST`] host jobs in a row while a member job waits.
+struct Lanes {
+    member: mpsc::Receiver<NormalJob>,
+    host: mpsc::Receiver<NormalJob>,
+    member_open: bool,
+    host_open: bool,
+    /// Host jobs taken since the last member job.
+    host_run: u32,
+}
+
+impl Lanes {
+    const fn new(member: mpsc::Receiver<NormalJob>, host: mpsc::Receiver<NormalJob>) -> Self {
+        Self {
+            member,
+            host,
+            member_open: true,
+            host_open: true,
+            host_run: 0,
+        }
+    }
+
+    const fn open(&self) -> bool {
+        self.member_open || self.host_open
+    }
+
+    fn take(&mut self, lane: Lane, job: NormalJob) -> NormalJob {
+        match lane {
+            Lane::Host => self.host_run = self.host_run.saturating_add(1),
+            Lane::Member => self.host_run = 0,
+        }
+        job
+    }
+
+    fn try_lane(&mut self, lane: Lane) -> Option<NormalJob> {
+        let (rx, open) = match lane {
+            Lane::Member => (&mut self.member, &mut self.member_open),
+            Lane::Host => (&mut self.host, &mut self.host_open),
+        };
+        if !*open {
+            return None;
+        }
+        match rx.try_recv() {
+            Ok(job) => Some(self.take(lane, job)),
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                *open = false;
+                None
+            }
+            Err(mpsc::error::TryRecvError::Empty) => None,
+        }
+    }
+
+    /// The next queued job, without waiting.
+    fn try_next(&mut self) -> Option<NormalJob> {
+        let order = if self.host_run < HOST_BURST {
+            [Lane::Host, Lane::Member]
+        } else {
+            [Lane::Member, Lane::Host]
+        };
+        order.into_iter().find_map(|lane| self.try_lane(lane))
+    }
+
+    /// The next job, waiting for one; `None` once both queues are closed
+    /// and drained. Cancel-safe: a job is only taken when this returns it.
+    async fn next(&mut self) -> Option<NormalJob> {
+        if let Some(job) = self.try_next() {
+            return Some(job);
+        }
+        loop {
+            if !self.open() {
+                return None;
+            }
+            let (lane, job) = tokio::select! {
+                biased;
+                job = self.host.recv(), if self.host_open => (Lane::Host, job),
+                job = self.member.recv(), if self.member_open => (Lane::Member, job),
+            };
+            match job {
+                Some(job) => return Some(self.take(lane, job)),
+                None if lane == Lane::Host => self.host_open = false,
+                None => self.member_open = false,
+            }
+        }
+    }
+}
+
+/// The highest normal job sequence every one at or below which is done.
+/// The lanes complete out of sequence order, so a capture's prerequisite
+/// (every normal job admitted before it) is this watermark, never the
+/// highest sequence done.
+#[derive(Default)]
+struct Completed {
+    watermark: u64,
+    /// Done above a gap, until the gap closes: at most what both queues hold.
+    above: std::collections::BTreeSet<u64>,
+}
+
+impl Completed {
+    fn done(&mut self, sequence: u64) {
+        if sequence <= self.watermark {
+            return;
+        }
+        self.above.insert(sequence);
+        while self.above.remove(&(self.watermark.saturating_add(1))) {
+            self.watermark = self.watermark.saturating_add(1);
+        }
+    }
+}
+
+/// [`run_owner_lanes`] with no host commits, as tests drive an owner.
+#[cfg(test)]
+async fn run_owner(
+    rx: mpsc::Receiver<NormalJob>,
+    replay_rx: mpsc::Receiver<ReplayJob>,
+    state: Arc<Mutex<State>>,
+) {
+    let (_, host_rx) = mpsc::channel(1);
+    run_owner_lanes(Lanes::new(rx, host_rx), replay_rx, state).await;
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
 )]
-async fn run_owner(
-    mut rx: mpsc::Receiver<NormalJob>,
+async fn run_owner_lanes(
+    mut lanes: Lanes,
     mut replay_rx: mpsc::Receiver<ReplayJob>,
     state: Arc<Mutex<State>>,
 ) {
@@ -482,9 +666,8 @@ async fn run_owner(
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut reclaiming = false;
     let mut prefer_normal = false;
-    let mut normal_open = true;
     let mut replay_open = true;
-    let mut completed_normal = 0u64;
+    let mut completed = Completed::default();
     let mut pending_replay = None;
     loop {
         enum Work {
@@ -501,7 +684,7 @@ async fn run_owner(
                 Err(mpsc::error::TryRecvError::Empty) => {}
             }
         }
-        if !normal_open && !replay_open && pending_replay.is_none() {
+        if !lanes.open() && !replay_open && pending_replay.is_none() {
             break;
         }
         // A first shell basis may depend on normal jobs already queued when the
@@ -510,7 +693,7 @@ async fn run_owner(
         let mut waiting_prerequisite = pending_replay
             .as_ref()
             .and_then(|job| job.prerequisite)
-            .is_some_and(|required| required > completed_normal);
+            .is_some_and(|required| required > completed.watermark);
         if waiting_prerequisite {
             let shared = state.clone();
             let has_basis = blocking(workers.clone(), move || {
@@ -528,41 +711,33 @@ async fn run_owner(
                 waiting_prerequisite = false;
             }
         }
-        let work = if waiting_prerequisite && normal_open {
-            if let Some(job) = rx.recv().await {
+        let work = if waiting_prerequisite && lanes.open() {
+            lanes.next().await.map_or(Work::Idle, Work::Normal)
+        } else if prefer_normal && lanes.open() {
+            if let Some(job) = lanes.try_next() {
                 Work::Normal(job)
+            } else if let Some(job) = pending_replay.take() {
+                Work::Replay(job)
+            } else if !lanes.open() && !replay_open {
+                // Both lanes closed as they were looked at, and nothing else
+                // can wake the owner for work: drain and end.
+                Work::Closed
             } else {
-                normal_open = false;
-                Work::Idle
-            }
-        } else if prefer_normal && normal_open {
-            match rx.try_recv() {
-                Ok(job) => Work::Normal(job),
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    normal_open = false;
-                    Work::Idle
-                }
-                Err(mpsc::error::TryRecvError::Empty) => {
-                    if let Some(job) = pending_replay.take() {
-                        Work::Replay(job)
-                    } else {
-                        tokio::select! {
-                            biased;
-                            job = rx.recv(), if normal_open => if let Some(job) = job { Work::Normal(job) } else { normal_open = false; Work::Idle },
-                            job = replay_rx.recv(), if replay_open => if let Some(job) = job { Work::QueueReplay(job) } else { replay_open = false; Work::Idle },
-                            () = reclaim_wake.notified(), if !reclaiming => Work::Idle,
-                            _ = idle.tick(), if reclaiming => Work::Idle,
-                        }
-                    }
+                tokio::select! {
+                    biased;
+                    job = lanes.next(), if lanes.open() => job.map_or(Work::Idle, Work::Normal),
+                    job = replay_rx.recv(), if replay_open => if let Some(job) = job { Work::QueueReplay(job) } else { replay_open = false; Work::Idle },
+                    () = reclaim_wake.notified(), if !reclaiming => Work::Idle,
+                    _ = idle.tick(), if reclaiming => Work::Idle,
                 }
             }
         } else if let Some(job) = pending_replay.take() {
             Work::Replay(job)
-        } else if normal_open || replay_open {
+        } else if lanes.open() || replay_open {
             tokio::select! {
                 biased;
                 job = replay_rx.recv(), if replay_open => if let Some(job) = job { Work::QueueReplay(job) } else { replay_open = false; Work::Idle },
-                job = rx.recv(), if normal_open => if let Some(job) = job { Work::Normal(job) } else { normal_open = false; Work::Idle },
+                job = lanes.next(), if lanes.open() => job.map_or(Work::Idle, Work::Normal),
                 () = reclaim_wake.notified(), if !reclaiming => Work::Idle,
                 _ = idle.tick(), if reclaiming => Work::Idle,
             }
@@ -572,7 +747,7 @@ async fn run_owner(
         match work {
             Work::Normal(job) => {
                 (job.job)(state.clone()).await;
-                completed_normal = completed_normal.max(job.sequence);
+                completed.done(job.sequence);
                 prefer_normal = false;
             }
             Work::Replay(job) => {
@@ -911,10 +1086,6 @@ impl Persistence {
 
     /// Durable state and replay apply capacity-driven backpressure instead of
     /// turning a healthy replay burst into a connection error.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the admission permits move into the job; the lint does not see the move"
-    )]
     pub(crate) async fn submit_resumable_wait<P, PF, T, F, C, CF>(
         &self,
         bytes: usize,
@@ -930,17 +1101,41 @@ impl Persistence {
         C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
         CF: Future<Output = Result<T, StoreError>> + Send + 'static,
     {
-        let byte_count = charged_bytes(bytes)?;
-        let slot = self
-            .budgets
-            .normal_messages
+        self.submit_lane_wait(Lane::Member, bytes, preparation, operation, completion)
+            .await
+    }
+
+    /// [`Self::submit_resumable_wait`] on `lane`: a host commit waits only
+    /// for the host's budgets and queue, and its owner takes it ahead of
+    /// the members' ([`Lanes`]).
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the admission permits move into the job; the lint does not see the move"
+    )]
+    pub(crate) async fn submit_lane_wait<P, PF, T, F, C, CF>(
+        &self,
+        lane: Lane,
+        bytes: usize,
+        preparation: PF,
+        operation: F,
+        completion: C,
+    ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError>
+    where
+        P: Send + 'static,
+        PF: Future<Output = Result<P, StoreError>> + Send + 'static,
+        T: Send + 'static,
+        F: FnMut(&mut State, &mut Option<P>) -> Result<Step<T>, StoreError> + Send + 'static,
+        C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
+        CF: Future<Output = Result<T, StoreError>> + Send + 'static,
+    {
+        let byte_count = charged_lane_bytes(lane, bytes)?;
+        let (messages, byte_budget) = self.budgets.lane(lane);
+        let slot = messages
             .clone()
             .acquire_owned()
             .await
             .map_err(|_| error("state persistence unavailable"))?;
-        let bytes = self
-            .budgets
-            .normal_bytes
+        let bytes = byte_budget
             .clone()
             .acquire_many_owned(byte_count)
             .await
@@ -949,13 +1144,19 @@ impl Persistence {
             slot,
             bytes,
             byte_count,
-            NORMAL_STEPS,
+            match lane {
+                Lane::Member => NORMAL_STEPS,
+                Lane::Host => HOST_STEPS,
+            },
             preparation,
             operation,
             completion,
         );
-        let permit = self
-            .tx
+        let queue = match lane {
+            Lane::Member => &self.tx,
+            Lane::Host => &self.host_tx,
+        };
+        let permit = queue
             .reserve()
             .await
             .map_err(|_| error("state persistence unavailable"))?;
@@ -1127,6 +1328,12 @@ const NORMAL_STEPS: JobSteps = JobSteps {
     prepare: "owner.normal.prepare",
     persist: "owner.normal.persist",
     complete: "owner.normal.complete",
+};
+const HOST_STEPS: JobSteps = JobSteps {
+    queue: "owner.host.queue",
+    prepare: "owner.host.prepare",
+    persist: "owner.host.persist",
+    complete: "owner.host.complete",
 };
 const REPLAY_STEPS: JobSteps = JobSteps {
     queue: "owner.replay.queue",
@@ -1302,6 +1509,7 @@ mod tests {
         let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
         let owner = Persistence {
             tx,
+            host_tx: mpsc::channel(1).0,
             replay_tx,
             normal_sequence: Arc::new(AtomicU64::new(0)),
             admission: Arc::new(tokio::sync::Mutex::new(())),
@@ -1661,16 +1869,12 @@ mod tests {
 
     #[tokio::test]
     async fn replay_reserve_remains_available_when_normal_budgets_are_saturated() {
-        assert_eq!(NORMAL_MESSAGES + REPLAY_MESSAGES, GLOBAL_MESSAGES);
-        assert_eq!(NORMAL_BYTES + REPLAY_BYTES, GLOBAL_BYTES);
-        let budgets = AdmissionBudgets {
-            normal_messages: Arc::new(Semaphore::new(NORMAL_MESSAGES)),
-            normal_bytes: Arc::new(Semaphore::new(NORMAL_BYTES)),
-            replay_messages: Arc::new(Semaphore::new(REPLAY_MESSAGES)),
-            replay_bytes: Arc::new(Semaphore::new(REPLAY_BYTES)),
-            workers: isolated_test_workers(),
-            replay_worker: Arc::new(Semaphore::new(1)),
-        };
+        assert_eq!(
+            NORMAL_MESSAGES + HOST_MESSAGES + REPLAY_MESSAGES,
+            GLOBAL_MESSAGES
+        );
+        assert_eq!(NORMAL_BYTES + HOST_BYTES + REPLAY_BYTES, GLOBAL_BYTES);
+        let budgets = AdmissionBudgets::isolated(isolated_test_workers());
         let _normal_message_hold = budgets
             .normal_messages
             .clone()
@@ -1689,6 +1893,7 @@ mod tests {
         let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
         let owner = Persistence {
             tx: normal_tx,
+            host_tx: mpsc::channel(1).0,
             replay_tx,
             normal_sequence: Arc::new(AtomicU64::new(0)),
             admission: Arc::new(tokio::sync::Mutex::new(())),
@@ -1846,6 +2051,203 @@ mod tests {
         assert_eq!(*order.lock().unwrap(), ["normal-basis", "replay-capture"]);
     }
 
+    /// An owner whose store is bound to a shell authority but holds no
+    /// basis yet, so a first capture waits for its prerequisite.
+    fn unbased_state(root: &std::path::Path) -> Arc<Mutex<State>> {
+        let authority = tilo_relay_shell::selection::fixtures::producer_authority(
+            &tilo_relay_shell::selection::fixtures::producer_metadata(),
+        );
+        let workspace = crate::room_workspace_id(authority.room()).unwrap();
+        let mut store = WorkspaceStore::open(root, workspace, false).unwrap();
+        store.bind_shell_authority(authority).unwrap();
+        Arc::new(Mutex::new(State {
+            store,
+            doc: None,
+            sequence: None,
+            reserved: 0,
+            replays: replay::Replays::default(),
+            retention_scratch: None,
+            retention_candidates: Vec::new(),
+            workers: isolated_test_workers(),
+            replay_worker: Arc::new(Semaphore::new(1)),
+        }))
+    }
+
+    /// Host commits go ahead of the member jobs queued before them, at most
+    /// [`HOST_BURST`] in a row while a member job waits; each lane keeps
+    /// its own order.
+    #[tokio::test]
+    async fn host_jobs_overtake_queued_member_jobs_a_burst_at_a_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state(tmp.path());
+        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
+        let (host_tx, host_rx) = mpsc::channel::<NormalJob>(16);
+        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let host_jobs = HOST_BURST + 1;
+        let labels = (0..host_jobs)
+            .map(|index| &*format!("host-{index}").leak())
+            .collect::<Vec<&'static str>>();
+        for (sequence, label) in [(1, "member-1"), (2, "member-2")] {
+            normal_tx
+                .send(NormalJob {
+                    sequence,
+                    job: record_job(order.clone(), label),
+                })
+                .await
+                .unwrap();
+        }
+        for (index, label) in labels.iter().enumerate() {
+            host_tx
+                .send(NormalJob {
+                    sequence: 3 + index as u64,
+                    job: record_job(order.clone(), label),
+                })
+                .await
+                .unwrap();
+        }
+        drop((normal_tx, host_tx, replay_tx));
+        Box::pin(run_owner_lanes(
+            Lanes::new(normal_rx, host_rx),
+            replay_rx,
+            state,
+        ))
+        .await;
+        let burst = usize::try_from(HOST_BURST).unwrap();
+        let mut expected = labels[..burst].to_vec();
+        expected.extend(["member-1", labels[burst], "member-2"]);
+        assert_eq!(*order.lock().unwrap(), expected);
+    }
+
+    /// A capture's prerequisite is every normal job admitted before it, on
+    /// either lane: a later host commit that completes first does not let
+    /// the capture past a member job still queued below it.
+    #[tokio::test]
+    async fn a_capture_prerequisite_waits_for_every_earlier_job_of_either_lane() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = unbased_state(tmp.path());
+        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
+        let (host_tx, host_rx) = mpsc::channel::<NormalJob>(8);
+        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        normal_tx
+            .send(NormalJob {
+                sequence: 1,
+                job: record_job(order.clone(), "member-1"),
+            })
+            .await
+            .unwrap();
+        host_tx
+            .send(NormalJob {
+                sequence: 2,
+                job: record_job(order.clone(), "host-2"),
+            })
+            .await
+            .unwrap();
+        replay_tx
+            .send(ReplayJob {
+                prerequisite: Some(2),
+                job: record_job(order.clone(), "capture"),
+            })
+            .await
+            .unwrap();
+        host_tx
+            .send(NormalJob {
+                sequence: 3,
+                job: record_job(order.clone(), "host-3"),
+            })
+            .await
+            .unwrap();
+        drop((normal_tx, host_tx, replay_tx));
+        Box::pin(run_owner_lanes(
+            Lanes::new(normal_rx, host_rx),
+            replay_rx,
+            state,
+        ))
+        .await;
+        assert_eq!(
+            *order.lock().unwrap(),
+            ["host-2", "host-3", "member-1", "capture"]
+        );
+    }
+
+    #[test]
+    fn the_completed_watermark_only_moves_over_a_contiguous_prefix() {
+        let mut completed = Completed::default();
+        completed.done(2);
+        completed.done(4);
+        assert_eq!(completed.watermark, 0, "sequence 1 is not done");
+        completed.done(1);
+        assert_eq!(completed.watermark, 2);
+        completed.done(3);
+        assert_eq!(completed.watermark, 4);
+        assert!(completed.above.is_empty());
+        completed.done(4);
+        assert_eq!(
+            completed.watermark, 4,
+            "a sequence done twice changes nothing"
+        );
+    }
+
+    /// A host commit is admitted while the members' normal budget is
+    /// exhausted, and runs before the member jobs queued ahead of it.
+    #[tokio::test]
+    async fn host_admission_has_its_own_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let budgets = AdmissionBudgets::isolated(isolated_test_workers());
+        let _members_full = budgets
+            .normal_messages
+            .clone()
+            .acquire_many_owned(u32::try_from(NORMAL_MESSAGES).unwrap())
+            .await
+            .unwrap();
+        let state = state(tmp.path());
+        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
+        let (host_tx, host_rx) = mpsc::channel::<NormalJob>(8);
+        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        let owner = Persistence {
+            tx: normal_tx,
+            host_tx,
+            replay_tx,
+            normal_sequence: Arc::new(AtomicU64::new(0)),
+            admission: Arc::new(tokio::sync::Mutex::new(())),
+            budgets,
+            admission_hook: None,
+            replay_admission_hook: None,
+        };
+        let running = tokio::spawn(run_owner_lanes(
+            Lanes::new(normal_rx, host_rx),
+            replay_rx,
+            state,
+        ));
+        assert!(
+            owner
+                .submit_resumable(
+                    1,
+                    async { Ok(()) },
+                    |_, _| Ok(Step::Done(())),
+                    |result| async { result },
+                )
+                .is_err(),
+            "the members' budget is exhausted"
+        );
+        let host = tilo_test_env::within(
+            "a host commit is admitted past the members' exhausted budget",
+            owner.submit_lane_wait(
+                Lane::Host,
+                1,
+                async { Ok(()) },
+                |_, _| Ok(Step::Done(7)),
+                |result| async { result },
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(receipt(host).await.unwrap(), 7);
+        drop(owner);
+        running.await.unwrap();
+    }
+
     #[tokio::test]
     async fn first_basis_capture_waits_only_for_its_fixed_normal_watermark() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1945,6 +2347,7 @@ mod tests {
         };
         let owner = Persistence {
             tx: normal_tx,
+            host_tx: mpsc::channel(1).0,
             replay_tx,
             normal_sequence: Arc::new(AtomicU64::new(0)),
             admission: Arc::new(tokio::sync::Mutex::new(())),
