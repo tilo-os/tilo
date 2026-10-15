@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use channel_crypto::{ChannelSteward, VaultKey};
 use collab_types::{
@@ -129,7 +130,9 @@ pub(super) struct Steward {
     /// beside the channels. Apart from the channels too: readers are read
     /// with them before the channels are taken.
     routes: std::sync::Mutex<Routes>,
-    pub(super) channels: tokio::sync::Mutex<Stewardship>,
+    /// Shared so a pass can take it to a blocking worker: its MLS work held
+    /// a runtime worker for seconds when a crowd asked at once.
+    pub(super) channels: Arc<tokio::sync::Mutex<Stewardship>>,
 }
 
 /// The routes a room's steward knows, and where it keeps them.
@@ -145,7 +148,7 @@ impl Steward {
         Self {
             readers: std::sync::Mutex::new(None),
             routes: std::sync::Mutex::new(routes),
-            channels: tokio::sync::Mutex::new(channels),
+            channels: Arc::new(tokio::sync::Mutex::new(channels)),
         }
     }
 

@@ -408,7 +408,15 @@ pub(super) async fn enqueue_state_inner(
     let durable_sequence = durable.clone();
     let operation_trace = admission_trace.clone();
     let completion_trace = admission_trace.clone();
-    let completion = Box::pin(owner.submit_resumable_wait(
+    // What this host authors itself (room and channel governance) has a
+    // lane of its own, so it never waits behind a crowd's member traffic.
+    let lane = if source.is_none() {
+        crate::persistence::Lane::Host
+    } else {
+        crate::persistence::Lane::Member
+    };
+    let completion = Box::pin(owner.submit_lane_wait(
+        lane,
         charge,
         async move {
             let runtime = crate::workspace_io::fresh_membership(&prepare_workspace).await?;
