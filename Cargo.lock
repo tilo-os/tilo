@@ -14468,6 +14468,7 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-thumbnail",
+ "tilo-tray-host",
  "tilo-tts",
  "tilo-ui",
  "tilo-unlock-protocol",
@@ -18649,6 +18650,20 @@ dependencies = [
  "tilo-pdf",
  "workspace-hack",
  "zip",
+]
+
+[[package]]
+name = "tilo-tray-host"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde_json",
+ "tilo-clock",
+ "tilo-copy-lint",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]

@@ -49,6 +49,7 @@ crates = [
     "tilo-callstream",
     "tilo-polkit-agent",
     "tilo-relay-shell",
+    "tilo-tray-host",
 ]
 
 # What an extracted crate may reach anyway, and why.
@@ -230,3 +231,4 @@ grandfathered = [
 ]
 
 [shell_dependencies.added]
+"tilo-tray-host" = "The status-notifier tray host carved out of the shell; the shell serves its watcher, paints its items and supplies the named-icon rasteriser."

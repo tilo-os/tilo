@@ -328,6 +328,9 @@ tokio-util.workspace = true
 # The session's polkit authentication agent; the shell supplies the sheet it
 # asks in (`polkit_agent`).
 tilo-polkit-agent = { path = "../polkit-agent" }
+# The session's status-notifier tray host; the shell supplies the icon
+# rasteriser for named icons (`tray`).
+tilo-tray-host = { path = "../tray-host" }
 # capnp-rpc speaks futures-io; `io` supplies its buffered reader/writer.
 futures-util = { workspace = true, features = ["io"] }
 # The shell re-serialises signed op envelopes and presence keys onto

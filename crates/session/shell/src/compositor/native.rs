@@ -3826,7 +3826,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             "search_scope": format!("{:?}", chrome.search_scope),
             "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
-            "tray": crate::tray::Tray::global().state_json(),
+            "tray": crate::tray::global().state_json(),
             // Each tab pill's artwork: `toplevel:` when the window set its
             // own, `theme:` for its application's icon.
             "tab_icons": tab_icons_json(&chrome.tree()),
@@ -9947,22 +9947,22 @@ pub fn run() {
     // the action registry. Held for the session; a second watcher already on
     // the bus (a nested session) leaves this one off.
     let tray_handle: Option<
-        crate::session_runtime::Registration<crate::tray::watcher::WatcherHandle>,
+        crate::session_runtime::Registration<tilo_tray_host::watcher::WatcherHandle>,
     > = notif_runtime.map(|rt| {
         crate::session_runtime::Registration::start(
             rt.handle(),
             "tray",
             async move {
-                crate::tray::watcher::serve(
+                tilo_tray_host::watcher::serve(
                     zbus::connection::Builder::session()?,
-                    std::sync::Arc::clone(crate::tray::Tray::global()),
+                    std::sync::Arc::clone(crate::tray::global()),
                 )
                 .await
             },
             |_| {
                 tracing::info!(
                     "tray: serving {} on session bus",
-                    crate::tray::WATCHER_BUS_NAME
+                    tilo_tray_host::WATCHER_BUS_NAME
                 );
             },
         )

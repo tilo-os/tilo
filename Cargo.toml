@@ -318,6 +318,7 @@ members = [
     "crates/session/polkit-agent",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
+    "crates/session/tray-host",
 
     # System
     "crates/system/account-custody",
