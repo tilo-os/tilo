@@ -3727,7 +3727,7 @@ impl Widget for OnboardingView {
             };
             match progress_stage {
                 Some(progress) if !self.tour_only => {
-                    self.journal_then(JournalChange::Store(progress), AfterJournal::Tour(next))
+                    self.journal_then(JournalChange::Store(progress), AfterJournal::Tour(next));
                 }
                 _ => self.tour_page = next,
             }
@@ -3749,7 +3749,7 @@ impl Widget for OnboardingView {
             };
             match progress_stage {
                 Some(progress) if !self.tour_only => {
-                    self.journal_then(JournalChange::Store(progress), AfterJournal::Tour(next))
+                    self.journal_then(JournalChange::Store(progress), AfterJournal::Tour(next));
                 }
                 _ => self.tour_page = next,
             }
@@ -5157,7 +5157,7 @@ mod tests {
 
                 assert_eq!(view.tour_page, Some(page));
                 press(&view, &mut document, KEY_TOUR_SKIP);
-                view.sync(&document, &automerge::ROOT);
+                sync_journaled(&mut view, &document);
 
                 assert!(view.finished(), "Skip tour must work from {page:?}");
                 assert!(
