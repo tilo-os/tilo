@@ -7,7 +7,8 @@ use super::{
     ReplayPendingTarget, ReplayPendingWork, RoomOperation, SelectedPublication, SessionLease,
     SharedWorkspace, StateCommit, StateDelivery, StateSource, Step, StoreError, WorkLimit,
     captured_live_current, gated_checkpoint_channel, live_audience, mpsc,
-    retention_publication_kind, room_access, trace_native_publication,
+    retention_publication_kind, room_access, steward_audience, steward_only_delta,
+    trace_native_publication,
 };
 
 pub(super) async fn enqueue_state(
@@ -376,6 +377,9 @@ pub(super) async fn enqueue_state_inner(
     let payloads = runtime.store.payloads().clone();
     let store = runtime.store.clone();
     drop(runtime);
+    // What only a channel's steward reads goes to the room's governor alone
+    // when this relay governs the room (`steward_audience`).
+    let steward_only = steward_only_delta(&*payloads, delta);
     let owner = crate::persistence::handle(workspace).await;
     let continuity_evidence = source.as_ref().and_then(|source| {
         crate::store::continuity::Evidence::authenticated(&*payloads, &envelope, &source.peer)
@@ -441,6 +445,9 @@ pub(super) async fn enqueue_state_inner(
             }
             // Include admitted cross-user live members; explicit device membership is
             // not the only signed-room authority supported by subscriptions.
+            // A change only the steward reads reaches no other session, live
+            // or through a catch-up.
+            let steward = steward_audience(&runtime, steward_only);
             let sessions = runtime
                 .subscribers
                 .iter()
@@ -448,6 +455,7 @@ pub(super) async fn enqueue_state_inner(
                     **key != author
                         && !(role == crate::auth::PeerRole::PeerRelay
                             && sub.role == crate::auth::PeerRole::PeerRelay)
+                        && steward.as_ref().is_none_or(|steward| steward.contains(*key))
                 })
                 .map(|(key, sub)| (*key, sub.tx.clone()))
                 .collect::<Vec<_>>();
@@ -750,7 +758,7 @@ pub(super) async fn enqueue_state_inner(
                     let payloads = &**runtime.store.payloads();
                     let checkpoint_channel =
                         gated_checkpoint_channel(payloads, &envelope, source.as_ref());
-                    let audience = live_audience(payloads, &envelope);
+                    let audience = live_audience(&runtime, &envelope);
                     // Presence the author sent after this delta was held for
                     // it and goes out with it; from here on nothing waits.
                     if let Envelope::Delta { author_device_public_key, .. } = &*envelope {

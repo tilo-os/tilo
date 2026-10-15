@@ -670,7 +670,7 @@ pub(super) async fn publish_checkpoint_commit(
         }
         let payloads = &**runtime.store.payloads();
         let checkpoint_channel = gated_checkpoint_channel(payloads, &envelope, Some(source));
-        let audience = live_audience(payloads, &envelope);
+        let audience = live_audience(&runtime, &envelope);
         for (recipient, original) in &commit.sessions {
             if recovering
                 && !captured_live_current(&commit.session_lives, &runtime, recipient, original)
