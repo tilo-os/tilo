@@ -18080,6 +18080,7 @@ dependencies = [
 name = "tilo-relay-client"
 version = "0.1.0"
 dependencies = [
+ "collab-types",
  "ed25519-dalek 3.0.0",
  "iroh",
  "iroh-base",
