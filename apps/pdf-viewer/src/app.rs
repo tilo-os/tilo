@@ -6013,7 +6013,9 @@ impl PdfApp {
                 index,
                 page,
             } => self.go_to_search_result(query, *whole_word, *case_sensitive, *index, *page),
-            PdfEffect::Open { .. } | PdfEffect::SaveAs { .. } => return false,
+            PdfEffect::ReadText { .. } | PdfEffect::Open { .. } | PdfEffect::SaveAs { .. } => {
+                return false;
+            }
         }
         true
     }

@@ -46,6 +46,7 @@ pub mod adopt;
 pub mod app;
 pub mod doc;
 pub mod model;
+pub mod reading;
 pub mod render;
 pub mod resource;
 pub mod search;

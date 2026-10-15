@@ -169,6 +169,23 @@ pub enum PdfEffect {
         #[param("1-based page")]
         page: usize,
     },
+    /// Read text
+    ///
+    /// The PDF's text, page by page in the reader's order, each page as
+    /// {page, text}: at most 10 pages and 4000 characters a read, a longer
+    /// page cut where they end. Answers pageCount and the file's name,
+    /// title and author too. To read on, pass the answer's next page and
+    /// offset; next is null at the end. A scanned page without a text
+    /// layer reads empty.
+    #[effect(view, returns, idempotent, programmatic)]
+    ReadText {
+        #[param("First page to read, from 1 (default 1)")]
+        page: Option<usize>,
+        #[param("How many pages, 1 to 10 (default: as many as fit)")]
+        pages: Option<usize>,
+        #[param("Characters of the first page to skip, from a previous answer's next (default 0)")]
+        offset: Option<usize>,
+    },
     /// Open PDF
     ///
     /// Opens a PDF on its own markup record, in this window.
@@ -1800,6 +1817,55 @@ pub(crate) fn declarations() -> Vec<ui::tilo_resource::ActionDecl<crate::resourc
         )
         .describe("Sign a page with a typed signature dated today."),
     ]
+}
+
+/// The record's opening of a PDF kept as content (an attachment, a shared
+/// file, an export), pinned as the document its markup is made against.
+/// `pinned` is the document the record holds already: a record marks up
+/// one PDF, so another is refused rather than silently ignored.
+pub(crate) fn import_pdf_content(
+    pinned: Option<&crate::resource::PinnedSource>,
+) -> ui::tilo_resource::ActionDecl<crate::resource::PdfViewer> {
+    use ui::tilo_resource::ActionDecl;
+    let pinned = pinned.map(|source| (source.hash.clone(), source.name.clone()));
+    ActionDecl::new(
+        "import-pdf-content",
+        "Open PDF from content",
+        vec![
+            ActionParam::required(
+                "content",
+                ParamType::Text,
+                "The PDF's content address, `tilo.content:<hash>` (an attachment, a shared \
+                 file, an export)",
+            ),
+            ActionParam::optional(
+                "name",
+                ParamType::Text,
+                "The file's name, e.g. report.pdf, shown as the document's label",
+            ),
+        ],
+        move |args, _| {
+            let (hash, bytes) = crate::reading::content_bytes(args.text("content").unwrap_or(""))?;
+            match &pinned {
+                Some((held, _)) if *held == hash => {}
+                Some((_, name)) => {
+                    let name = if name.is_empty() { "another PDF" } else { name };
+                    return Err(format!(
+                        "this record already holds {name}: open the PDF in a new record"
+                    ));
+                }
+                None => {}
+            }
+            crate::reading::open(&bytes).map_err(|error| format!("content `{hash}` is {error}"))?;
+            let name = args.text("name").map_or("", str::trim);
+            let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            Ok(pin_source_action(&hash, len, name))
+        },
+    )
+    .describe(
+        "Open a PDF kept as content in this record, so read-text reads its pages and \
+         markup is made on it. A record holds one PDF.",
+    )
 }
 
 /// The open document's live rows: its outline (a bounded first page) and

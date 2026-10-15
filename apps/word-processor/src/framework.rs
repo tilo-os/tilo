@@ -143,6 +143,7 @@ impl Resource for Document {
             )
             .describe("Set the four page margins, in pixels."),
         );
+        decls.push(import_docx_content());
         decls
     }
 
@@ -170,6 +171,44 @@ impl Resource for Document {
             .chain([crate::actions::insert_image_spec(state)])
             .collect()
     }
+}
+
+/// The document's import of a `.docx` kept as content: an attachment, a
+/// shared file, an export. Its pictures are kept in the window's content
+/// store, as a file opened with them is.
+fn import_docx_content() -> ActionDecl<Document> {
+    ActionDecl::new(
+        "import-docx-content",
+        "Open Word document from content",
+        vec![ActionParam::required(
+            "content",
+            ParamType::Text,
+            "The document's content address, `tilo.content:<hash>` (an attachment, a shared \
+             file, an export): a .docx",
+        )],
+        |args, _| {
+            let address = args.text("content").map_or("", str::trim);
+            let hash = tilo_actions::content_hash(address)
+                .unwrap_or(address)
+                .to_ascii_lowercase();
+            if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(format!(
+                    "`{address}` names no content: give `tilo.content:<hash>`"
+                ));
+            }
+            let content = ui::tilo_resource::content::current()
+                .ok_or("this window keeps no content to read the document from")?;
+            let bytes = content
+                .read(&hash)
+                .ok_or_else(|| format!("content `{hash}` is not available on this machine"))?;
+            crate::import_action(&bytes, crate::WpFormat::Docx, &content)
+                .map_err(|error| format!("content `{hash}` is not a Word document: {error}"))
+        },
+    )
+    .describe(
+        "Make this document the .docx kept as content: its text, headings, lists, tables and \
+         pictures, replacing what the document held. Then read-text reads it.",
+    )
 }
 
 /// The import of the file `input` names, as one action.
@@ -569,6 +608,69 @@ mod tests {
             .find(|action| action.id == "read-text")
             .expect("read-text is on the published document");
         assert_eq!(read.kind, tilo_actions::OperationKind::Effect);
+    }
+
+    #[test]
+    fn an_agent_opens_a_docx_the_room_holds_and_reads_its_text() {
+        let mut writer = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+        writer
+            .call(
+                "write-markdown",
+                serde_json::json!({"markdown": "# Lamp inventory\n\nThe hall lamp is lit."}),
+            )
+            .unwrap();
+        writer.settle();
+        let output = writer
+            .effect(&super::WordProcessorEffect::ExportContent {
+                format: "docx".into(),
+            })
+            .unwrap();
+        let address = output.resources[0].clone();
+        let hash = tilo_actions::content_hash(&address).unwrap().to_owned();
+        let docx = writer.content().read(&hash).unwrap();
+
+        let mut reader = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+        reader
+            .call(
+                "append-paragraph",
+                serde_json::json!({"text": "Written before the import"}),
+            )
+            .unwrap();
+        assert_eq!(reader.content().put(&docx).unwrap(), hash);
+        reader
+            .call(
+                "import-docx-content",
+                serde_json::json!({"content": address}),
+            )
+            .expect("the .docx is imported from content");
+        reader.settle();
+        let read = reader
+            .call("read-text", serde_json::json!({}))
+            .unwrap()
+            .expect("read-text answers")
+            .to_string();
+        assert!(read.contains("# Lamp inventory"), "{read}");
+        assert!(read.contains("The hall lamp is lit."), "{read}");
+        assert!(
+            !read.contains("Written before the import"),
+            "the import replaces what the document held: {read}"
+        );
+
+        let text = reader.content().put(b"not a docx").unwrap();
+        let refused = reader
+            .call("import-docx-content", serde_json::json!({"content": text}))
+            .unwrap_err();
+        assert!(
+            refused.to_string().contains("is not a Word document"),
+            "{refused}"
+        );
+        let missing = reader
+            .call(
+                "import-docx-content",
+                serde_json::json!({"content": format!("tilo.content:{}", "0".repeat(64))}),
+            )
+            .unwrap_err();
+        assert!(missing.to_string().contains("not available"), "{missing}");
     }
 
     /// The running Writer with three paragraphs, a picture in its content
