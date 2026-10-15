@@ -28,7 +28,7 @@ if mountpoint -q "$where"; then
   printf 'tilo-esp-mount: %s is already a mount point; leaving it\n' "$where" >&2
   exit 0
 fi
-[ -d "$where" ] || die "$where does not exist (the installer makes it on /boot)"
+[ -d "$where" ] || die "$where does not exist (on an installed system the installer makes /boot/efi on TILO_BOOT)"
 [ -e "$dev" ] || die "the boot loader's ESP $dev is not present"
 
 install -d -m 0700 "$stage_root"
