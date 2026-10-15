@@ -55,6 +55,7 @@ use crate::eviction::{EvictionMode, EvictionQueue, EvictionRequestId, EvictionRe
 use crate::hydration::Hydrator;
 use crate::namespace::{InodeQuery, InodeView, Namespace};
 use crate::smart::Heuristics;
+use crate::smart::history::{AccessHistory, natural_cmp};
 use crate::sync::SyncHandle;
 use fs_protocol::projection::{
     RECORD_INDEX_PAGE_ENTRIES, RECORD_INDEX_V2_VERSION, RecordIndexEntryV1,
@@ -663,6 +664,9 @@ pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
     pub hydrator: Arc<Hydrator>,
     pub heuristics: Arc<Heuristics>,
+    /// Which files this mount opened when: what prediction learns from.
+    /// Local to this device and this workspace, bounded, never persisted.
+    access_history: Mutex<AccessHistory>,
     /// Binary content (images, binary package parts) that documents projected as files refer to.
     document_content: tilo_content::ContentStore,
     /// Broadcasts local CRDT deltas to peers (None when running standalone).
@@ -774,6 +778,7 @@ impl QuickFS {
             namespace,
             hydrator,
             heuristics,
+            access_history: Mutex::new(AccessHistory::new()),
             document_content: tilo_content::ContentStore::memory(),
             sync: None,
             write_buffers: Arc::new(Mutex::new(HashMap::new())),
@@ -4585,16 +4590,28 @@ impl QuickFS {
         )
     }
 
-    /// Pick the next two visible sibling files of the same extension for
-    /// conservative predictive hydration. `visible_entries` is deliberately
-    /// the source: using the raw namespace here would fetch content the mount's
-    /// identity is not authorised to see.
+    /// Hand what an authorised open of `ino` predicts to the predictive
+    /// worker. Runs after the open is answered, so prediction never delays
+    /// it.
+    fn predict_after_open(&self, ino: u64) {
+        let candidates = self.predictive_candidates(ino);
+        self.heuristics.on_open(ino, candidates);
+    }
+
+    /// What an open of `ino` predicts, as `(content id, declared size)`
+    /// pairs to hydrate, and the open recorded in the mount's access
+    /// history: the visible siblings of the same extension ahead of it in
+    /// natural order, as far ahead as the run of in-order opens it
+    /// continues earns, then files opened together with it before.
+    ///
+    /// Siblings come from `visible_entries`, and every co-access partner
+    /// passes the same read check an open does: the raw namespace would
+    /// fetch content the mount's identity is not authorised to see.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the namespace guard protects one ACL-filtered sibling snapshot used for prediction"
     )]
     fn predictive_candidates(&self, ino: u64) -> Vec<(Hash, u64)> {
-        const LOOKAHEAD: usize = 2;
         let (parent, current_name) = {
             let mut ns = self.ns();
             let parent = ns.parent_ino(ino);
@@ -4611,34 +4628,55 @@ impl QuickFS {
         let (Some(parent), Some(current_name)) = (parent, current_name) else {
             return Vec::new();
         };
-        let extension = std::path::Path::new(OsStr::from_bytes(current_name.as_bytes()))
-            .extension()
-            .and_then(OsStr::to_str)
-            .map(str::to_ascii_lowercase);
+        let extension_of = |name: &[u8]| {
+            std::path::Path::new(OsStr::from_bytes(name))
+                .extension()
+                .and_then(OsStr::to_str)
+                .map(str::to_ascii_lowercase)
+        };
+        let extension = extension_of(current_name.as_bytes());
         let Some(entries) = self.visible_entries(parent) else {
             return Vec::new();
         };
-        let Some(position) = entries.iter().position(|(entry, _, _)| *entry == ino) else {
+        if !entries.iter().any(|(entry, _, _)| *entry == ino) {
             return Vec::new();
-        };
-        let ns = self.ns();
-        entries
+        }
+        let mut siblings: Vec<(u64, fs_protocol::FileNameV1)> = entries
             .into_iter()
-            .skip(position.saturating_add(1))
-            .filter(|(_, kind, name)| {
-                *kind == FileType::RegularFile
-                    && std::path::Path::new(OsStr::from_bytes(name.as_bytes()))
-                        .extension()
-                        .and_then(OsStr::to_str)
-                        .map(str::to_ascii_lowercase)
-                        == extension
+            .filter(|(entry, kind, name)| {
+                *entry == ino
+                    || (*kind == FileType::RegularFile
+                        && extension_of(name.as_bytes()) == extension)
             })
-            .filter_map(|(candidate, _, _)| {
-                let hash = ns.hash_for(candidate)?;
-                let size = ns.getattr(candidate)?.size;
-                Some((hash, size))
+            .map(|(entry, _, name)| (entry, name))
+            .collect();
+        siblings.sort_by(|(_, a), (_, b)| natural_cmp(a.as_bytes(), b.as_bytes()));
+        let order: Vec<u64> = siblings.into_iter().map(|(entry, _)| entry).collect();
+        let prediction = {
+            let mut history = self
+                .access_history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            history.record(parent, ino, std::time::Instant::now());
+            history.predict(parent, ino, &order)
+        };
+        let together: Vec<u64> = prediction
+            .together
+            .into_iter()
+            .filter(|partner| self.check_access(*partner, Access::Read).is_ok())
+            .collect();
+        let ns = self.ns();
+        prediction
+            .siblings
+            .into_iter()
+            .chain(together)
+            .filter_map(|candidate| {
+                let attr = ns.getattr(candidate)?;
+                if attr.kind != FileType::RegularFile {
+                    return None;
+                }
+                Some((ns.hash_for(candidate)?, attr.size))
             })
-            .take(LOOKAHEAD)
             .collect()
     }
 
@@ -6378,8 +6416,7 @@ impl Filesystem for QuickFS {
                     if let Some(passthrough) = &self.passthrough {
                         passthrough.hold(handle, id, backing);
                     }
-                    let candidates = self.predictive_candidates(ino.0);
-                    self.heuristics.on_open(ino.0, candidates);
+                    self.predict_after_open(ino.0);
                     return;
                 }
                 Err(error) => {
@@ -6390,8 +6427,7 @@ impl Filesystem for QuickFS {
             }
         }
         reply.opened(FileHandle(handle), cache);
-        let candidates = self.predictive_candidates(ino.0);
-        self.heuristics.on_open(ino.0, candidates);
+        self.predict_after_open(ino.0);
     }
 
     fn read(
@@ -7261,3 +7297,6 @@ mod tests;
 
 #[cfg(test)]
 mod durability_tests;
+
+#[cfg(test)]
+mod prediction_tests;
