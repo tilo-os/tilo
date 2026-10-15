@@ -257,6 +257,10 @@ pub struct EffectDecl {
     /// agent's caret, its Find), so a remote participant may invoke it
     /// without moving anybody else's.
     pub participant: bool,
+    /// Further contract tags, each naming how a host treats the effect
+    /// (`tilo_actions::HOST_RENDER_TAG`: answered by the host's render
+    /// service rather than the app's worker).
+    pub tags: &'static [&'static str],
 }
 
 /// How an effect answers its caller.
@@ -371,6 +375,7 @@ impl EffectDecl {
                 if self.participant {
                     tags.push(tilo_actions::PARTICIPANT_VIEW_TAG.to_owned());
                 }
+                tags.extend(self.tags.iter().map(|tag| (*tag).to_owned()));
                 tags
             },
             ..base

@@ -13,6 +13,13 @@ path = "src/lib.rs"
 name = "video-editor"
 path = "src/main.rs"
 
+# The confined process an agent's host renders a timeline in
+# (`render_helper`): GPU compositing, decode and encode.
+[[bin]]
+name = "tilo-video-render"
+path = "src/bin/tilo_video_render.rs"
+required-features = ["gst", "decode"]
+
 # Media import uses the shared host file chooser (`ui::portal`) in every build;
 # it is independent of the GStreamer decode/export features.
 [dependencies]
@@ -44,6 +51,8 @@ media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 gstreamer-app = { version = "0.24", optional = true }
 # Bin swatches and filmstrip frames come from the shared preview pipeline.
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }
+# The render helper's protocol with an agent's host (`render_helper::proto`).
+wire-frame = { path = "../../crates/system/wire-frame", features = ["postcard"] }
 
 # GStreamer encode/decode tests share a `serial` group because the native
 # encoder is not safe to run concurrently in one process.
@@ -74,10 +83,21 @@ default = ["decode", "gst"]
 decode = ["media/decode", "tilo-thumbnail/video", "dep:gstreamer", "dep:gstreamer-app"]
 # GStreamer encode and mux support. Kept separate so preview-only builds can
 # use `--no-default-features --features decode`.
-gst = ["dep:gstreamer", "dep:gstreamer-app", "media/encode"]
+gst = [
+    "dep:gstreamer",
+    "dep:gstreamer-app",
+    "media/encode",
+    "dep:tilo-sandbox",
+]
 
 [lints]
 workspace = true
+
+# The render helper confines itself and receives its output file as a
+# descriptor, which its host sends (`render_helper`).
+[target.'cfg(unix)'.dependencies]
+tilo-sandbox = { path = "../../crates/platform/tilo-sandbox", optional = true }
+runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

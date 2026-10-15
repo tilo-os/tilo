@@ -1048,6 +1048,7 @@ impl ui::tilo_resource::Effect for ViewOp {
                 programmatic: false,
                 untrusted: false,
                 participant: false,
+                tags: &[],
             })
             .collect()
     }

@@ -5286,7 +5286,12 @@ impl VideoEditorApp {
                 job.cancel();
             }
             // Reads of the project, answered at once by `answer_effect`.
-            VideoEditorEffect::ReadTimeline | VideoEditorEffect::ExportTimelineContent { .. } => {}
+            VideoEditorEffect::ReadTimeline
+            | VideoEditorEffect::ExportTimelineContent { .. }
+            | VideoEditorEffect::ExportVideoContent { .. }
+            | VideoEditorEffect::ExportVideoStatus { .. }
+            | VideoEditorEffect::CancelVideoExport { .. }
+            | VideoEditorEffect::ViewFrameContent { .. } => {}
         }
         Ok(())
     }
@@ -7590,6 +7595,10 @@ impl VideoEditorApp {
             }
             VideoEditorEffect::ExportTimelineContent { format } => {
                 return Self::export_timeline_content(&cx.live().get(), format.as_deref());
+            }
+            render if render.is_host_render() => {
+                let project = cx.live().get();
+                return crate::render_jobs::answer(render, &project, cx);
             }
             VideoEditorEffect::RevealTrack { .. }
             | VideoEditorEffect::RevealClip { .. }

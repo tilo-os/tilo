@@ -64,11 +64,27 @@ pub fn content_address(hash: &str) -> String {
 /// native path (a browser page).
 #[must_use]
 pub fn content_copy(hash: &str) -> Option<PathBuf> {
+    if let Some(root) = CONTENT_ROOT.lock().ok().and_then(|root| root.clone()) {
+        return Some(root.join(hash));
+    }
     let name = tilo_files::VPath::new(&format!("content/{hash}")).ok()?;
     let location = tilo_paths::AppPaths::for_app("so.tilo.video-editor")
         .cache()
         .join(&name);
     location.native_path().ok().map(Path::to_path_buf)
+}
+
+/// Where room content is read from instead of the editor's cache, when set
+/// ([`set_content_root`]).
+static CONTENT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Read room content `hash` as `<root>/<hash>` rather than from the editor's
+/// cache: a render helper is handed the sources it may read in a job
+/// directory of its own, and its confinement lets it read nothing else.
+pub fn set_content_root(root: PathBuf) {
+    if let Ok(mut slot) = CONTENT_ROOT.lock() {
+        *slot = Some(root);
+    }
 }
 
 /// Copy the room content behind every content-addressed source of `media`

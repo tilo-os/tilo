@@ -683,6 +683,82 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
     })
 }
 
+/// How many samples (frames) the first video track of an MP4/MOV holds:
+/// its `stsz` sample count, else the sum of its `stts` runs.
+///
+/// A rendered file is checked by this rather than by its duration alone: a
+/// duration rounds to the timescale, while a missing or doubled frame shows
+/// here exactly. `None` when `data` has no `moov`, no video track or no
+/// sample table (a fragmented file).
+#[must_use]
+pub fn video_sample_count(data: &[u8]) -> Option<u64> {
+    let moov = child(data, *b"moov")?;
+    let trak = iter_boxes(moov).into_iter().find(|b| {
+        &b.typ == b"trak"
+            && descend(b.body, &[b"mdia", b"hdlr"])
+                .and_then(hdlr_type)
+                .as_deref()
+                == Some("vide")
+    })?;
+    let stbl = descend(trak.body, &[b"mdia", b"minf", b"stbl"])?;
+    if let Some(count) = child(stbl, *b"stsz").and_then(|stsz| be_u32(stsz, 8)) {
+        return Some(u64::from(count));
+    }
+    let stts = child(stbl, *b"stts")?;
+    let entries = be_u32(stts, 4)? as usize;
+    let mut samples = 0u64;
+    for entry in 0..entries {
+        let Some(count) = be_u32(stts, 8usize.saturating_add(entry.saturating_mul(8))) else {
+            break;
+        };
+        samples = samples.saturating_add(u64::from(count));
+    }
+    Some(samples)
+}
+
+/// Zero the creation and modification times of an MP4's movie, track and
+/// media headers (`mvhd`, `tkhd`, `mdhd`), returning how many headers it
+/// changed.
+///
+/// A muxer stamps them with the wall clock, which is the only thing that
+/// makes two renders of one timeline differ; zeroed ("unknown" to every
+/// reader), the same render is the same bytes and its content address says
+/// so.
+pub fn zero_mp4_times(data: &mut [u8]) -> usize {
+    let mut fields: Vec<(usize, usize)> = Vec::new();
+    {
+        let base = data.as_ptr() as usize;
+        let at = |body: &[u8]| (body.as_ptr() as usize).saturating_sub(base);
+        if let Some(moov) = child(data, *b"moov") {
+            let mut headers = vec![child(moov, *b"mvhd")];
+            for trak in iter_boxes(moov).into_iter().filter(|b| &b.typ == b"trak") {
+                headers.push(child(trak.body, *b"tkhd"));
+                headers.push(descend(trak.body, &[b"mdia", b"mdhd"]));
+            }
+            for body in headers.into_iter().flatten() {
+                // Version, flags, then the two times: 32-bit in version 0,
+                // 64-bit in version 1.
+                let width = match body.first() {
+                    Some(0) => 4,
+                    Some(1) => 8,
+                    _ => continue,
+                };
+                if body.len() >= 4 + 2 * width {
+                    fields.push((at(body).saturating_add(4), 2 * width));
+                }
+            }
+        }
+    }
+    let mut changed = 0;
+    for (offset, len) in fields {
+        if let Some(times) = data.get_mut(offset..offset.saturating_add(len)) {
+            times.fill(0);
+            changed += 1;
+        }
+    }
+    changed
+}
+
 fn saw_video_recorded(w: u32, h: u32, codec: &str) -> bool {
     w != 0 && h != 0 && codec != "unknown"
 }
@@ -1610,4 +1686,75 @@ mod tests {
     }
 
     // ---- MP3 --------------------------------------------------------------
+    /// A video track whose `stsz` says 120 samples, beside an audio track
+    /// with 188: the count is the picture's, from `stsz`, and a track with
+    /// only `stts` sums its runs.
+    #[test]
+    fn the_video_sample_count_is_the_first_video_tracks_not_the_audios() {
+        fn trak(handler: [u8; 4], table: &[u8]) -> Vec<u8> {
+            let mut hdlr = vec![0u8; 12];
+            hdlr[8..12].copy_from_slice(&handler);
+            let stbl = boxed(*b"stbl", table);
+            let mdia = boxed(
+                *b"mdia",
+                &[boxed(*b"hdlr", &hdlr), boxed(*b"minf", &stbl)].concat(),
+            );
+            boxed(*b"trak", &mdia)
+        }
+        fn stsz(count: u32) -> Vec<u8> {
+            let mut body = vec![0u8; 12];
+            body[8..12].copy_from_slice(&count.to_be_bytes());
+            boxed(*b"stsz", &body)
+        }
+        let mut runs = vec![0u8, 0, 0, 0];
+        runs.extend_from_slice(&2u32.to_be_bytes());
+        for (count, delta) in [(100u32, 512u32), (20, 1024)] {
+            runs.extend_from_slice(&count.to_be_bytes());
+            runs.extend_from_slice(&delta.to_be_bytes());
+        }
+        let file = |traks: Vec<Vec<u8>>| {
+            let mut file = boxed(*b"ftyp", b"isom\0\0\0\0isom");
+            file.extend_from_slice(&boxed(*b"moov", &traks.concat()));
+            file
+        };
+        let both = file(vec![trak(*b"soun", &stsz(188)), trak(*b"vide", &stsz(120))]);
+        assert_eq!(video_sample_count(&both), Some(120));
+        let timed = file(vec![trak(*b"vide", &boxed(*b"stts", &runs))]);
+        assert_eq!(video_sample_count(&timed), Some(120));
+        let silent = file(vec![trak(*b"soun", &stsz(188))]);
+        assert_eq!(video_sample_count(&silent), None, "no video track");
+        assert_eq!(video_sample_count(b"not an mp4"), None);
+    }
+    /// Two muxes of one stream differ only in the wall clock their headers
+    /// carry; zeroed, they are the same bytes, and nothing else moved.
+    #[test]
+    fn zeroing_an_mp4s_times_leaves_only_the_times_changed() {
+        let mut mvhd = vec![0u8; 20];
+        mvhd[4..12].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        mvhd[12..16].copy_from_slice(&1000u32.to_be_bytes());
+        let mut media_header = vec![1u8; 32];
+        media_header[20..24].copy_from_slice(&90_000u32.to_be_bytes());
+        let mut tkhd = vec![0u8; 84];
+        tkhd[4..12].fill(9);
+        let mdia = boxed(*b"mdia", &boxed(*b"mdhd", &media_header));
+        let trak = boxed(*b"trak", &[boxed(*b"tkhd", &tkhd), mdia].concat());
+        let moov = boxed(*b"moov", &[boxed(*b"mvhd", &mvhd), trak].concat());
+        let mut file = boxed(*b"ftyp", b"isom");
+        file.extend_from_slice(&boxed(*b"mdat", b"frames"));
+        file.extend_from_slice(&moov);
+        let before = file.clone();
+        assert_eq!(zero_mp4_times(&mut file), 3, "mvhd, tkhd and mdhd");
+        let changed = (0..file.len()).filter(|i| file[*i] != before[*i]).count();
+        assert_eq!(
+            changed,
+            8 + 8 + 16,
+            "every time byte that was set, nothing else"
+        );
+        assert!(
+            file.windows(4).any(|w| w == 1000u32.to_be_bytes()),
+            "the timescale stays"
+        );
+        assert!(file.windows(4).any(|w| w == 90_000u32.to_be_bytes()));
+        assert_eq!(zero_mp4_times(&mut b"no boxes".to_vec()), 0);
+    }
 }
