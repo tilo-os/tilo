@@ -1077,6 +1077,60 @@ on = ["schedule:17 1 * * *"]
 default = false
 
 # ---------------------------------------------------------------------------
+# Benchmarks, run when asked for.
+
+# What a public room host holds and what one collaborator on it costs: the
+# room-load bench ramps guests and spectators against a host it starts itself,
+# and tools/perf/room_capacity.py derives the per-guest figures and prices them
+# (docs/benchmarks/room-host-capacity-2026-10.md records a run). Built as the
+# room service image builds its relay. A full sweep takes about 45 minutes after
+# the build: `t dispatch perf-room-capacity --input plan=quick` (full, quick, or
+# a regex over the full plan's run names), then `t outputs perf-room-capacity`.
+# The machine description says which node and quota the numbers came from.
+[[check]]
+name = "perf-room-capacity"
+requires = ["arch=x86_64"]
+run = """
+out=/target/perf-room-capacity
+rm -rf "$out"
+mkdir -p "$out"
+cargo build --locked --release -p tilo-room-load --features tilo-relay/agents
+{
+  echo "commit: $(git rev-parse HEAD)"
+  echo "cpu: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
+  echo "cpus: $(nproc)"
+  echo "memory: $(awk '/^MemTotal:/ {printf "%.1f", $2 / 1048576}' /proc/meminfo) GiB"
+  echo "cgroup cpu.max: $(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo unknown)"
+  echo "cgroup memory.max: $(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo unknown)"
+  echo "kernel: $(uname -r)"
+  df -h "${TMPDIR:-/tmp}" /dev/shm | sed 's/^/disk: /'
+} | tee "$out/machine.txt"
+status=0
+python3 tools/perf/room_capacity.py sweep --bin "$CARGO_TARGET_DIR/release/tilo-room-load" \
+  --out "$out/runs" --plan "${T_INPUT_PLAN:-full}" || status=$?
+python3 tools/perf/room_capacity.py summarize "$out/runs" --json "$out/summary.json" --markdown "$out/summary.md"
+cat "$out/summary.md"
+exit "$status"
+"""
+env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
+inputs = ["crates/**", "vendor/**", "apps/**", "tools/perf/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/perf-room-capacity/**"]
+# The commit goes into the machine description.
+git = true
+# A measurement of the node it ran on, never a stored result.
+cache = false
+# The bench's guests and the host share the node; the write-up's runs had 40 CPUs and 36 GiB.
+cpus = 40
+memory = "36G"
+timeout_secs = 9000
+cost = "heavy"
+default = false
+on = ["dispatch"]
+
+[check.dispatch_inputs]
+plan = "full"
+
+# ---------------------------------------------------------------------------
 # Checks for nodes with KVM, a privileged container or 100 GB of disk. Each needs
 # what its workflow prepares and a t check cannot: a writable root (they install
 # QEMU, libvirt or filesystem tools with dnf), and artifacts other workflows

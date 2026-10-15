@@ -150,7 +150,7 @@ see `t.toml`): `check.yml`, `lint.yml`, `app-sdk.yml`, `browser-auth-e2e.yml`, `
 (its live cloud tests use credentials for test servers: secrets on `main` without `nodes`),
 `ci-legacy-apps.yml`, `ci-nightly.yml`, `ci-staging-loop.yml`,
 `ci-weekly-quality.yml`, `ci-development-signing.yml`, `dev-*.yml`, `inspect-rpm-signing.yml`,
-`perf-room-capacity.yml`, `sdk-native-envelope.yml`, `standalone-app.yml`,
+`sdk-native-envelope.yml`, `standalone-app.yml`,
 `wasm-check-qualification.yml`, `web-size-native-envelope.yml`, `resolve-builder.yml`.
 
 ## Identity tokens and secrets
