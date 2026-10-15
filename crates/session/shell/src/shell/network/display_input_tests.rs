@@ -72,7 +72,7 @@ impl Fixture {
     }
 
     fn refresh(&self) {
-        person_layout::refresh(&self.network, ContinuityPolicySnapshot::load());
+        person_layout::refresh(&self.network, ContinuityPolicySnapshot::current());
     }
 
     fn actions(&mut self) -> Vec<PersonalFabricAction> {
@@ -445,7 +445,7 @@ fn spatial_protocol_crosses_certified_ingress_and_publishes_a_bound_ack() {
         );
         for item in received {
             assert!(fixture.network.personal_route_is_current(&item.route));
-            assert!(ContinuityPolicySnapshot::load().permits_action(&item.envelope.action));
+            assert!(ContinuityPolicySnapshot::current().permits_action(&item.envelope.action));
             handle_spatial_action(
                 &fixture.network,
                 &item.route,
@@ -746,7 +746,7 @@ fn spatial_revocation_policy_disable_cleans_target_without_delivery_or_new_autho
     runtime.enforce_policy_for_test(
         &fixture.network,
         &selection,
-        ContinuityPolicySnapshot::load(),
+        ContinuityPolicySnapshot::current(),
     );
     let lease = grant_input_control(&fixture.network, &fixture.controller).unwrap();
     assert_eq!(fixture.grants(), vec![lease.clone()]);
@@ -768,7 +768,7 @@ fn spatial_revocation_policy_disable_cleans_target_without_delivery_or_new_autho
     runtime.enforce_policy_for_test(
         &fixture.network,
         &selection,
-        ContinuityPolicySnapshot::load(),
+        ContinuityPolicySnapshot::current(),
     );
     assert!(fixture.actions().is_empty());
     admit_spatial(&fixture, lease.nonce, spatial_key(32, true));
@@ -859,7 +859,7 @@ fn spatial_controller_withdrawal_retries_terminal_after_policy_off_and_transport
     runtime.enforce_policy_for_test(
         &fixture.network,
         &selection,
-        ContinuityPolicySnapshot::load(),
+        ContinuityPolicySnapshot::current(),
     );
     send_spatial_input_bound(
         &fixture.network,
@@ -880,7 +880,7 @@ fn spatial_controller_withdrawal_retries_terminal_after_policy_off_and_transport
     runtime.enforce_policy_for_test(
         &fixture.network,
         &selection,
-        ContinuityPolicySnapshot::load(),
+        ContinuityPolicySnapshot::current(),
     );
     assert!(
         send_spatial_input_bound(

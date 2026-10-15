@@ -26,7 +26,7 @@ use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use getrandom::{SysRng, rand_core::TryRng as _};
 use serde_json::{Map, Value};
@@ -521,7 +521,7 @@ pub(crate) fn record_nearby_transfer_progress(
     status: PersonalTransferStatus,
 ) {
     // The one transfer lane serves Nearby sends and media handoffs alike.
-    let policy = ContinuityPolicySnapshot::load();
+    let policy = ContinuityPolicySnapshot::current();
     if !policy.permits(ContinuityCapability::FileTransfer)
         && !policy.permits(ContinuityCapability::Media)
     {
@@ -594,7 +594,7 @@ fn admitted_incoming_kind(
     request_id: [u8; 16],
 ) -> Option<crate::shell::nearby_transfer::TransferKind> {
     incoming_transfer_kind(source, request_id, transfer_id)
-        .filter(|kind| ContinuityPolicySnapshot::load().permits(kind.capability()))
+        .filter(|kind| ContinuityPolicySnapshot::current().permits(kind.capability()))
 }
 
 /// Verify and install a finished receive, on the store's thread. What it
@@ -1642,21 +1642,23 @@ pub struct DeviceFabricRuntime {
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
     local_app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
-    policy_cache: Option<ContinuityPolicySnapshot>,
-    policy_store_stamp: Option<SystemTime>,
-    last_policy_store_check: Option<Instant>,
+    /// The policy in the settings `display_refresh` follows, parsed once per
+    /// settings generation: the pump runs on the compositor's loop and must
+    /// not read the settings document.
+    policy_cache: crate::shell::continuity_policy::ContinuityPolicyCache,
 }
 
 impl DeviceFabricRuntime {
-    const POLICY_STORE_POLL_INTERVAL: Duration = Duration::from_millis(750);
-
     pub fn new(network: &ShellNetwork, notification_bridge: NotificationBridge) -> Self {
         crate::shell::device_unlock_runtime::spawn_enrol_socket();
         let counter = network.device_fabric().max_counter();
+        let display_refresh = display_refresh::DisplayRefresh::new(network.loop_waker());
+        let policy_cache =
+            crate::shell::continuity_policy::ContinuityPolicyCache::new(display_refresh.settings());
         Self {
             counter,
             last_sample: None,
-            display_refresh: display_refresh::DisplayRefresh::new(network.loop_waker()),
+            display_refresh,
             last_publish: None,
             published_displays: None,
             local_fingerprint: None,
@@ -1680,9 +1682,7 @@ impl DeviceFabricRuntime {
             inbound_gamepads: BTreeMap::new(),
             local_app_focus: None,
             policy: None,
-            policy_cache: None,
-            policy_store_stamp: None,
-            last_policy_store_check: None,
+            policy_cache,
         }
     }
 
@@ -1730,26 +1730,6 @@ impl DeviceFabricRuntime {
         }
     }
 
-    fn current_policy(&mut self, now: Instant) -> ContinuityPolicySnapshot {
-        if self.policy_cache.is_some() && self.policy_cache_fresh(now) {
-            return self.policy_cache.unwrap_or_default();
-        }
-        self.last_policy_store_check = Some(now);
-        let stamp = settings_store::settings_path()
-            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
-        if self.policy_cache.is_none() || stamp != self.policy_store_stamp {
-            self.policy_cache = Some(ContinuityPolicySnapshot::load());
-            self.policy_store_stamp = stamp;
-        }
-        self.policy_cache.unwrap_or_default()
-    }
-
-    fn policy_cache_fresh(&self, now: Instant) -> bool {
-        self.last_policy_store_check.is_some_and(|checked| {
-            now.saturating_duration_since(checked) < Self::POLICY_STORE_POLL_INTERVAL
-        })
-    }
-
     pub fn set_realtime_adapter(
         &mut self,
         adapter: crate::shell::realtime_session::SharedRealtimeFabricAdapter,
@@ -1790,12 +1770,10 @@ impl DeviceFabricRuntime {
         if changes.resample {
             self.last_sample = None;
         }
-        if changes.policy {
-            // Keep the last enforced policy: teardown compares against it.
-            self.policy_cache = None;
-            self.last_policy_store_check = None;
-        }
-        let policy = self.current_policy(Instant::now());
+        // A continuity change is a new generation of the settings the cache
+        // follows, parsed here; `self.policy` keeps the last enforced policy
+        // for teardown to compare against.
+        let policy = self.policy_cache.current();
         self.enforce_policy(network, selection, policy);
         // Always drain Bluetooth worker completions. Policy teardown removes
         // transaction authority immediately, but an already-running BlueZ
@@ -3166,30 +3144,6 @@ impl DeviceFabricRuntime {
     }
 }
 
-#[cfg(test)]
-mod policy_cache_tests {
-    use super::*;
-
-    fn policy_cache_fresh(last_check: Option<Instant>, now: Instant) -> bool {
-        last_check.is_some_and(|checked| {
-            now.saturating_duration_since(checked) < DeviceFabricRuntime::POLICY_STORE_POLL_INTERVAL
-        })
-    }
-
-    #[test]
-    fn cached_policy_avoids_reloading_within_the_frame_loop_window() {
-        let now = Instant::now();
-        assert!(policy_cache_fresh(
-            Some(now),
-            now + Duration::from_millis(749)
-        ));
-        assert!(!policy_cache_fresh(
-            Some(now),
-            now + Duration::from_millis(750)
-        ));
-    }
-}
-
 fn expire_nearby_consents(network: &ShellNetwork) {
     let expired = nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
@@ -3760,7 +3714,7 @@ fn handle_nearby_drop_action(
 
 /// Whether the continuity switch that governs `kind` is on right now.
 fn transfer_kind_permitted(kind: crate::shell::nearby_transfer::TransferKind) -> bool {
-    ContinuityPolicySnapshot::load().permits(kind.capability())
+    ContinuityPolicySnapshot::current().permits(kind.capability())
 }
 
 /// The kind of the receive this exact sender and request own, if any.
@@ -5988,7 +5942,7 @@ pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> R
         state.progress.remove(&transfer_id);
         state.last_offer.remove(&transfer_id);
     }
-    resume_nearby_transfers(network, ContinuityPolicySnapshot::load());
+    resume_nearby_transfers(network, ContinuityPolicySnapshot::current());
     Ok(())
 }
 
@@ -6008,7 +5962,7 @@ pub struct NearbyTransferRuntimeStatus {
     reason = "one projection maps every transfer phase to its status row"
 )]
 pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRuntimeStatus> {
-    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer) {
+    if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::FileTransfer) {
         return Vec::new();
     }
     expire_nearby_consents(network);
@@ -6365,7 +6319,7 @@ pub fn device_fabric_view(
         LocalMediaOutputView,
     };
 
-    let policy = ContinuityPolicySnapshot::load();
+    let policy = ContinuityPolicySnapshot::current();
     let fabric = network.device_fabric();
     let local_id = network
         .local_device_fabric_identity()
@@ -6979,7 +6933,7 @@ fn grant_input_control_automatic(
         .lock()
         .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
     prune_spatial_leases(network);
-    let policy = ContinuityPolicySnapshot::load();
+    let policy = ContinuityPolicySnapshot::current();
     let view = person_layout::current(network);
     if !display_auto_leases::wanted_controllers(network, view.as_deref(), policy)
         .contains(controller)
@@ -8036,7 +7990,7 @@ fn local_device_kind() -> DeviceKind {
 }
 
 fn require_continuity(capability: ContinuityCapability) -> Result<(), String> {
-    ContinuityPolicySnapshot::load()
+    ContinuityPolicySnapshot::current()
         .permits(capability)
         .then_some(())
         .ok_or_else(|| crate::shell::i18n::t(continuity_disabled_key(capability)))

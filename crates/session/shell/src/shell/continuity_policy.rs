@@ -37,8 +37,19 @@ impl ContinuityPolicySnapshot {
         }
     }
 
+    /// The committed policy, without reading the settings document once the
+    /// session follows its live settings ([`follow`]): then it is one atomic
+    /// load unless the settings changed, so the compositor's loop and a check
+    /// per fabric message may ask. Before that (startup, tools, tests that
+    /// install no live settings) it reads the document as it always did.
     #[must_use]
-    pub fn load() -> Self {
+    pub fn current() -> Self {
+        FOLLOWED.current(Self::load)
+    }
+
+    /// Read and parse the settings document: a file read when no host source
+    /// is installed. Never on the compositor's loop; see [`Self::current`].
+    fn load() -> Self {
         Self::from_document(&settings_store::load())
     }
 
@@ -218,10 +229,98 @@ impl ContinuityPolicyCache {
     }
 }
 
+/// The live settings the whole process reads its policy from, once the
+/// session follows them.
+static FOLLOWED: FollowedPolicy = FollowedPolicy::new();
+
+/// Read the continuity policy from `settings` from now on: every
+/// [`ContinuityPolicySnapshot::current`] (fabric message checks on the
+/// compositor's loop, broker requests, Quick Settings actions) then parses
+/// it once per settings generation instead of reading the document on each
+/// call. The settings watch behind `settings` is what invalidates it.
+pub fn follow(settings: &settings_store::live::LiveSettings) {
+    FOLLOWED.follow(settings);
+}
+
+/// A policy cache that may not be followed yet.
+struct FollowedPolicy(std::sync::Mutex<Option<ContinuityPolicyCache>>);
+
+impl FollowedPolicy {
+    const fn new() -> Self {
+        Self(std::sync::Mutex::new(None))
+    }
+
+    fn follow(&self, settings: &settings_store::live::LiveSettings) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(ContinuityPolicyCache::new(settings));
+    }
+
+    /// The followed policy, or `unfollowed()` while nothing is followed.
+    fn current(
+        &self,
+        unfollowed: impl FnOnce() -> ContinuityPolicySnapshot,
+    ) -> ContinuityPolicySnapshot {
+        let followed = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+            .map(ContinuityPolicyCache::current);
+        followed.unwrap_or_else(unfollowed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Fabric messages check the policy on the compositor's loop, one check
+    /// per message. Once followed, those checks never read the settings
+    /// document; a change still reaches them through the settings watch.
+    #[test]
+    fn a_followed_policy_is_read_without_the_settings_document() {
+        use settings_store::SettingsSource as _;
+        let followed = FollowedPolicy::new();
+        let reads = std::cell::Cell::new(0_usize);
+        let unfollowed = || {
+            reads.set(reads.get().saturating_add(1));
+            ContinuityPolicySnapshot::default()
+        };
+        let _ = followed.current(unfollowed);
+        assert_eq!(reads.get(), 1, "unfollowed, the document is read");
+
+        let source = std::sync::Arc::new(settings_store::HostDocument::new(Map::new(), |_| Ok(())));
+        let settings = settings_store::live::LiveSettings::start_from(source.clone(), || {});
+        followed.follow(&settings);
+        for _ in 0..1000 {
+            assert!(
+                !followed
+                    .current(unfollowed)
+                    .permits(ContinuityCapability::FileTransfer)
+            );
+        }
+        assert_eq!(reads.get(), 1, "followed, a check reads no document");
+
+        let seen = settings.generation();
+        source
+            .update_section(
+                "continuity",
+                document(&json!({"enabled": true, "file_transfer": true})),
+            )
+            .unwrap();
+        let _ = settings.wait_for_change(seen, tilo_test_env::hang_bound());
+        assert!(
+            followed
+                .current(unfollowed)
+                .permits(ContinuityCapability::FileTransfer),
+            "the settings watch carries a change to the next check"
+        );
+        assert_eq!(reads.get(), 1);
+    }
 
     #[test]
     fn the_cached_policy_follows_each_settings_generation() {
