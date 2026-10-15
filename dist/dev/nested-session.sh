@@ -30,7 +30,7 @@
 # 1280x800 output (TILO_HEADLESS_SIZE overrides it) only when tilo-control
 # asks for a snapshot.
 #
-# Re-running rebuilds through rcargo (incremental on the builder) and repackages
+# Re-running rebuilds through $CARGO (incremental on the builder) and repackages
 # only apps whose binary, manifest or surface changed. A changed shared runtime
 # repackages every app, since apps link its exact build.
 set -euo pipefail
@@ -64,7 +64,13 @@ while (($#)); do
     esac
 done
 
-for tool in rcargo jq bwrap dbus-run-session readelf python3 sha256sum; do
+if ((build)); then
+    # Builds go through a remote cargo drop-in that mirrors the named artifacts
+    # back with --fetch PATH; name it in $CARGO.
+    remote_cargo=${CARGO:?set CARGO to a remote cargo drop-in that accepts --fetch PATH, or pass --no-build}
+    command -v "$remote_cargo" >/dev/null || die "$remote_cargo (from CARGO) is required on PATH"
+fi
+for tool in jq bwrap dbus-run-session readelf python3 sha256sum; do
     command -v "$tool" >/dev/null || die "$tool is required on PATH"
 done
 host_runtime=${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset}
@@ -121,11 +127,11 @@ host_bins=(shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
 # identity and serve the control socket, and lets the launcher and installer
 # take the runtime and trust inputs from this state directory. Never ship it.
 if ((build)); then
-    say "building host binaries (rcargo, profile $profile, dev-overrides)"
+    say "building host binaries ($remote_cargo, profile $profile, dev-overrides)"
     fetch=()
     for name in "${host_bins[@]}"; do fetch+=(--fetch "$profile/$name"); done
     fetch+=(--fetch "$profile/examples/packaged_native_governor")
-    (cd "$repo_root" && rcargo "${fetch[@]}" build --locked --profile "$profile" "${profile_config[@]}" \
+    (cd "$repo_root" && "$remote_cargo" "${fetch[@]}" build --locked --profile "$profile" "${profile_config[@]}" \
         -p shell --bin shell --example packaged_native_governor --features shell/dev-overrides \
         -p launcher --bin tilo-launcher --features launcher/dev-overrides \
         -p install --bin tilo-install \
@@ -148,12 +154,12 @@ mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
 mapfile -t engines < <(for manifest in "$repo_root"/crates/runtime/engines/*/Cargo.toml; do
     sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1; done)
 if ((build)); then
-    say "building ${#packages[@]} thin app(s) against the default collection's runtime (rcargo)"
+    say "building ${#packages[@]} thin app(s) against the default collection's runtime ($remote_cargo)"
     # build-thin-apps.sh owns the Cargo graph; route its one Cargo call through
-    # rcargo and mirror back only what packaging reads, not the whole target.
-    wrapper=$state/cargo-via-rcargo
+    # $CARGO and mirror back only what packaging reads, not the whole target.
+    wrapper=$state/cargo-via-remote
     {
-        printf '#!/usr/bin/env bash\nexec rcargo'
+        printf '#!/usr/bin/env bash\nexec %q' "$remote_cargo"
         printf ' --fetch %q' thin-app/libruntime_dylib.so
         jq -r '.catalog[].binary' "$plan" | while read -r name; do printf ' --fetch %q' "thin-app/$name"; done
         for engine in "${engines[@]}"; do
