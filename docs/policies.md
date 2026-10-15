@@ -30,6 +30,7 @@ the pull request that needs it, with the reason written next to the entry:
 | A Clippy lint | `#[allow(clippy::…, reason = "…")]` on the narrowest item. `too_many_arguments` has no exception. |
 | A non-text or non-LF file | `tools/policy/source_content_exceptions.json`, admitted only unchanged after it lands |
 | A ratcheted count (UI tokens, app portability, resource/action contract, widget writes, document engine) | the baseline beside the check; counts only fall |
+| A shell layer edge or shell dependency | `tools/policy/shell_layers_baseline.toml`, with its reason; the lists only shrink |
 | A size budget | one raise file per change under `tools/perf/*-size-budget/raises/` |
 | A licence, advisory or dependency source | `deny.toml`, with a comment saying why |
 | An interpreter script in the OS image | a reasoned line in `tools/policy/image_interpreter_baseline.txt`; the list only shrinks |
@@ -104,6 +105,7 @@ can change without editing its callers.
 | Apps keep record content in the store their host lends them. | Check: [`check_app_content_store.py`](../tools/policy/check_app_content_store.py) |
 | Apps compose `ui` text widgets; shaping and glyph emission stay private to `ui`. | Check: [`check_app_text_contract.py`](../tools/policy/check_app_text_contract.py) |
 | The shared desktop crates reach no compositor, transport or host stack. | Check: [`check_desktop_model_dependencies.py`](../tools/policy/check_desktop_model_dependencies.py) |
+| Shell layers: the shell's service modules (workspace model, persistence, collaboration broker, network bridge, identity broker, runtime host) reach no compositor, chrome, launcher, overlay or renderer code; crates carved out of the shell depend on neither the shell nor the toolkit or a renderer; no new crate depends on the shell, and the shell gains no dependency unnoticed. Rendering and state stay decoupled, and each extraction from the shell has no new edge to undo first. | Check: [`check_shell_layers.py`](../tools/policy/check_shell_layers.py) (ratchet), reading `use` trees and `Cargo.toml` only. The [baseline](../tools/policy/shell_layers_baseline.toml) only shrinks: a removed edge or dependency fails until its line goes (`--write-baseline` drops it). A new shell dependency is a reasoned `[shell_dependencies.added]` entry; a new extracted crate is a line in `[extracted]` |
 | The shared app runtime carries no OS internals and no unused crates. | Check: [`check_runtime_dylib_surface.py`](../tools/policy/check_runtime_dylib_surface.py) |
 | Crates the browser builds for wasm32 name `workspace-hack` only for native targets. | Check: [`check_wasm_workspace_hack.py`](../tools/policy/check_wasm_workspace_hack.py) |
 | `os/components.toml` is the single list of binaries in the image; image builders copy exactly what they compile. | Check: [`check_component_manifest.py`](../tools/policy/check_component_manifest.py), [`check_image_builder_inputs.py`](../tools/policy/check_image_builder_inputs.py) |
