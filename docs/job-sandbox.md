@@ -186,6 +186,19 @@ allow-list breaks whenever glibc adds a syscall.
 reaches only the job's own processes, because pid 1 is non-dumpable and every
 capability is gone.
 
+**The nested profile** (`CiProfile::Nested`, selected with
+`JobSpec::allow_nested_sandboxes`) is for tests that start sandboxes of their
+own, such as bubblewrap or `unshare`. It allows new namespaces of every kind
+and the mount calls. In a nested user namespace the job holds `CAP_NET_ADMIN`
+over its own network namespace, so `socket(AF_NETLINK, …)` with
+`NETLINK_NETFILTER` or `NETLINK_XFRM` stays refused, checked by argument.
+`NETLINK_ROUTE` stays allowed, because bubblewrap brings up `lo` with it.
+`setns`, `bpf`, io_uring, the keyrings, `userfaultfd`, `perf_event_open`,
+kexec and modules stay refused too. Such a job runs without Landlock, which
+refuses every mount to a process it confines. t selects the profile per check
+with `nested_sandboxes`, and runs those checks as uid 1000 inside the job, so
+bubblewrap creates its namespaces as for any unprivileged user.
+
 **The privileged profile** (`CiProfile::Privileged`) keeps everything above
 except the namespace and mount rules. It exists for checks that genuinely need
 rootful podman, buildah's chroot isolation, loop devices or KVM. Those run only
