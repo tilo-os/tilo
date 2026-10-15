@@ -1403,8 +1403,11 @@ mmap-written). [R9]
 
 **Implemented:** the content store's file area is the one bounded cache.
 Its entries carry a retention class: fetched content is *cached* and is
-evicted least recently used first once cached resident bytes exceed the
-budget (a quarter of the area's filesystem by default); content this device
+evicted once cached resident bytes exceed the budget (a quarter of the
+area's filesystem by default): first what a host acknowledged holding with
+a replica receipt for the current version, outside the eight most recently
+used entries (the file being read and those predicted next), then the
+rest, least recently used first within each; content this device
 may be the only holder of (what it authored) is *local-only*, and "Keep
 offline" hydration makes an entry *pinned*; neither is ever evicted by the
 budget. Explicit eviction through the queue above removes area entries by
