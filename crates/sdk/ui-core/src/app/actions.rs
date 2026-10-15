@@ -3470,7 +3470,12 @@ impl App {
         {
             if on_behalf_of.is_none()
                 && target.binding.enter().is_ok()
-                && self.take_search_invocation(&intent, Some(&target.binding))
+                && (self.take_history_invocation(
+                    &intent,
+                    Some(crate::history_mode::HistoryOwner::component(
+                        target.binding.clone(),
+                    )),
+                ) || self.take_search_invocation(&intent, Some(&target.binding)))
             {
                 dispatched = dispatched.saturating_add(1);
                 continue;

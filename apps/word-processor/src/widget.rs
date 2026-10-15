@@ -80,6 +80,8 @@ mod participants;
 pub(crate) use participants::note_participant_outcome;
 #[cfg(test)]
 mod participant_tests;
+#[cfg(test)]
+mod polish_tests;
 mod proofing;
 mod semantic_geometry;
 mod text_runs;
@@ -1525,6 +1527,9 @@ impl WordProcessorWidget {
             outline_drawer: ui::widget::SidebarDrawer::new()
                 .left()
                 .closed()
+                // An outline is a short list of headings, not a library:
+                // start at the shared compact width and leave room to write.
+                .docked_width(f64::from(ui::tokens::Metrics::BASE.sidebar_min_width))
                 .breakpoint(OUTLINE_DOCKS_FROM),
             inspector_drawer: ui::widget::SidebarDrawer::new()
                 .right()
@@ -6375,7 +6380,7 @@ impl WordProcessorWidget {
         let available = column.width();
         let mobile_page = available < 600.0;
         let accessible_page = self.text_scale > 1.01;
-        let page_right = self.page_area_right(theme, column, mobile_page || accessible_page);
+        let page_right = self.page_area_right(theme, column, mobile_page);
         if self.view.auto_fit_page {
             // Phone-sized tiles use a responsive editing sheet instead of
             // shrinking an entire Letter page until its body copy is 7 px.
@@ -6449,7 +6454,7 @@ impl WordProcessorWidget {
         // window just shows more or less of it and centers it.
         let (page_w, m) = responsive_page_geometry(
             canvas_left,
-            canvas_right,
+            page_right,
             self.text_scale,
             self.margins,
             mobile_page,
@@ -6516,6 +6521,15 @@ impl WordProcessorWidget {
             return column.x1;
         }
         let reserve = ReviewOverlay::column_reserve(theme);
+        // A reflowed sheet can share the canvas with review cards, but not
+        // when doing so would leave less than a readable paragraph column.
+        if self.text_scale > 1.01 {
+            return if column.width() - reserve >= 320.0 * self.text_scale {
+                column.x1 - reserve
+            } else {
+                column.x1
+            };
+        }
         let zoom = if self.view.auto_fit_page {
             ((column.width() - 32.0) / MAX_PAGE_W).clamp(ZOOM_MIN, 1.0)
         } else {
@@ -8531,6 +8545,15 @@ impl WordProcessorWidget {
         presence: &PresenceCtx,
     ) {
         let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
+        // This pass runs after the paper clip is popped. All ephemeral
+        // presence, not just action-driven highlights, belongs to the canvas.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &canvas_clip,
+        );
         // A peer's just-typed run glows in their colour, fading; drawn first so it
         // sits under the selection and caret rather than competing with them.
         for (user, spans) in self.remote_typing_overlays(presence, ui::time::now()) {
@@ -8584,16 +8607,6 @@ impl WordProcessorWidget {
             if rects.is_empty() {
                 continue;
             }
-            // This pass runs after the page layer was popped. Clip semantic
-            // highlights and their labels explicitly so they cannot reach
-            // the toolbar, other panes, or the surrounding host chrome.
-            scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                Affine::IDENTITY,
-                &canvas_clip,
-            );
             let user = UserId(interaction.actor.id.clone());
             for rect in &rects {
                 presence.draw_peer_selection(scene, theme, ctf, &user, *rect);
@@ -8609,19 +8622,23 @@ impl WordProcessorWidget {
                     3.0,
                 );
             }
-            scene.pop_layer();
         }
+        // Names are UI, not document text: page zoom must not magnify
+        // the already-scaled label a second time.
+        let page_to_window = self.zoom.transform(Affine::IDENTITY);
+        let window_transform = ctf * page_to_window.inverse();
         for c in &remote_carets {
             presence.draw_peer_caret_labeled(
                 scene,
                 theme,
                 text_renderer,
-                ctf,
+                window_transform,
                 &c.user,
                 &c.label,
-                c.rect,
+                page_to_window.transform_rect_bbox(c.rect),
             );
         }
+        scene.pop_layer();
     }
 }
 
@@ -9908,7 +9925,8 @@ impl Widget for WordProcessorWidget {
         dyn ui::undo::LocalUndo,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::widget::WindowHeader
     );
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
@@ -10146,7 +10164,10 @@ impl Widget for WordProcessorWidget {
         self.chrome = ChromeColors::for_theme(theme);
         self.paper_theme = theme.on_ground(self.chrome.paper);
         self.desk_theme = theme.clone();
-        self.text_scale = f64::from(theme.text_scale.clamp(0.75, 2.0));
+        // Document sizes are authored points, not theme text roles. Apply
+        // both accessibility knobs before fitting the sheet, otherwise UI
+        // scaling enlarges the chrome while making the writing look smaller.
+        self.text_scale = f64::from(theme.text_scale.clamp(0.75, 2.0) * theme.ui_scale);
         let full = self.rect;
         let fg = self.draw_frame_chrome(scene, transform, text_renderer, theme, full);
 
@@ -12721,9 +12742,9 @@ impl WordProcessorWidget {
     }
 
     /// The toolbar's commands for this frame, grouped: New; bold, italic
-    /// and underline; type and colour; the rarer character formats;
-    /// insertion (the table group turns into
-    /// table editing inside a cell); then, at the trailing edge, the view
+    /// and underline; type and colour; insertion (the table group turns into
+    /// table editing inside a cell); the rarer character formats;
+    /// then, at the trailing edge, the view
     /// toggles. Commands that do not fit go to the toolbar's More menu.
     fn toolbar_entries(&self) -> Vec<ToolEntry> {
         let mut entries = vec![
@@ -12751,22 +12772,6 @@ impl WordProcessorWidget {
             ToolEntry::command(ToolAction::TextColorPalette, t("toolbar-text-color")),
             ToolEntry::command(ToolAction::HighlightPalette, t("toolbar-highlight")),
             ToolEntry::Separator,
-            ToolEntry::toggle(
-                ToolAction::Strike,
-                t("toolbar-strikethrough"),
-                self.mark_active_in_selection("strike"),
-            ),
-            ToolEntry::toggle(
-                ToolAction::Super,
-                t("toolbar-superscript"),
-                self.mark_active_in_selection("super"),
-            ),
-            ToolEntry::toggle(
-                ToolAction::Sub,
-                t("toolbar-subscript"),
-                self.mark_active_in_selection("sub"),
-            ),
-            ToolEntry::Separator,
         ];
         if !self.selection_blocks_cached().is_empty() {
             entries.push(ToolEntry::command(ToolAction::Hyperlink, t("toolbar-link")));
@@ -12788,6 +12793,24 @@ impl WordProcessorWidget {
         entries.extend([
             ToolEntry::command(ToolAction::InsertImage, t("toolbar-image")),
             ToolEntry::command(ToolAction::InsertToc, t("toolbar-toc")),
+            ToolEntry::Separator,
+            // Keep insertion ahead of specialist character formats so a
+            // scaled or narrow toolbar puts the latter in More first.
+            ToolEntry::toggle(
+                ToolAction::Strike,
+                t("toolbar-strikethrough"),
+                self.mark_active_in_selection("strike"),
+            ),
+            ToolEntry::toggle(
+                ToolAction::Super,
+                t("toolbar-superscript"),
+                self.mark_active_in_selection("super"),
+            ),
+            ToolEntry::toggle(
+                ToolAction::Sub,
+                t("toolbar-subscript"),
+                self.mark_active_in_selection("sub"),
+            ),
             ToolEntry::Spacer,
             ToolEntry::toggle(
                 ToolAction::ToggleRuler,

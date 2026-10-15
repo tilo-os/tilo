@@ -141,7 +141,10 @@ impl ReviewOverlay {
     /// The narrowest and the preferred width of the margin column.
     pub(super) fn column_widths(theme: &Theme) -> (f64, f64) {
         let wanted = f64::from(theme.tokens.metrics.sidebar_min_width);
-        (wanted * 0.75, wanted)
+        // The card footer has two labelled actions. Squeezing the column
+        // below the shared sidebar minimum truncates Resolve at larger UI
+        // scales, so reserve the same readable width that we prefer to paint.
+        (wanted, wanted)
     }
 
     /// The room the margin column takes beside the page: the column at its

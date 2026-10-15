@@ -7104,6 +7104,17 @@ impl FrameHarness {
             .map(|(target, intent)| (target, intent, None))
             .chain(bound.pending)
         {
+            if on_behalf_of.is_none()
+                && target.binding.enter().is_ok()
+                && self.take_history_invocation(
+                    &intent,
+                    Some(crate::history_mode::HistoryOwner::component(
+                        target.binding.clone(),
+                    )),
+                )
+            {
+                continue;
+            }
             if on_behalf_of.is_none() && self.take_search_invocation(&intent) {
                 continue;
             }
