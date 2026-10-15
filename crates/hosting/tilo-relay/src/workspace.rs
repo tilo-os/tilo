@@ -112,6 +112,10 @@ pub struct WorkspaceRuntime {
     /// `membership`; keeping this separate from `admitted_users` prevents an
     /// ungoverned sibling device under the same root from joining.
     pub governed_user_roots: HashSet<[u8; 32]>,
+    /// Who may watch this room read-only without being one of its members,
+    /// when its host lets visitors watch it. Read only through
+    /// [`crate::room_access::decide`].
+    pub(crate) spectators: Option<crate::room_access::Spectators>,
     pub(crate) checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
@@ -384,6 +388,7 @@ impl WorkspaceRuntime {
             admission,
             admitted_users: HashSet::new(),
             governed_user_roots,
+            spectators: None,
             checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),

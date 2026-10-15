@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withDisplayName} from './peer.mjs';
+import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const SEALED = 0x53;
@@ -218,6 +218,46 @@ test('a page holding the root certifies itself, with no pairing code, and renews
   assert.equal(runtime.calls.certify.length, 2, 'one about to expire is issued anew');
   await renewed.dispose();
   await assert.rejects(connect(options(runtime, store, {userPublicKey: 'cc'.repeat(32), identity})), TypeError);
+});
+
+test('a watching page sees the members live and sends nothing of its own', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers, watching: true}));
+  assert.equal(runtime.peer.config.watching, true, 'the session asks no channel for access');
+  assert.equal(peer.voice, undefined, 'a watching page joins no call');
+  await until(() => peer.live.state === 'live', 'the live layer');
+  const [session] = liveCarriers.connects;
+  assert.deepEqual(session.options.directions, {publish: false, subscribe: true});
+
+  const presence = [];
+  peer.live.onPresence(value => presence.push(value.publisher));
+  session.memberWatcher(OTHER, true);
+  session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: Date.now(), focus: null, pointer: [1, 2], selection: null, drag: null}), performance.now());
+  await until(() => presence.length, 'a member\'s cursor');
+
+  peer.live.publishPresence({pointer: [5, 6]});
+  const record = {app: 'so.tilo.notes', record: 'note-1'};
+  assert.equal(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'x'}]), false);
+  peer.live.endPreview(record);
+  peer.setDisplayName('Visitor');
+  runtime.peer.here = async () => { throw new Error('a watching page posted /here'); };
+  assert.deepEqual(await peer.here(null, [{id: '01', action: 'Edited', resource: 'Note', app: 'Notes', at_ms: 1}]), []);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.deepEqual(session.presence, []);
+  assert.deepEqual(session.ops, []);
+  assert.deepEqual(session.closedOps, []);
+  await peer.dispose();
+});
+
+test('a member page publishes on the live plane and keeps its call', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  assert.equal(runtime.peer.config.watching, false);
+  await until(() => peer.live.state === 'live', 'the live layer');
+  assert.deepEqual(liveCarriers.connects[0].options.directions, {publish: true, subscribe: true});
+  await peer.dispose();
 });
 
 test('the live layer joins over the carrier with the session grant and interpolates members', async () => {
@@ -1144,8 +1184,8 @@ test('every disposal caller observes storage release failure', async () => {
 
 test('the peer starts from the certificate text, keeping nanosecond timestamps exact', () => {
   const certified = '{"cert":{"issued_at_ns":1791962530023125779,"expires_at_ns":1792048930023125779},"hostCert":{"issued_at_ns":1}}';
-  const started = withDisplayName(certified, 'Ada');
+  const started = withStartFields(certified, {displayName: 'Ada'});
   assert.ok(started.includes('1791962530023125779') && started.includes('1792048930023125779'));
   assert.equal(JSON.parse(started).displayName, 'Ada');
-  assert.equal(withDisplayName(certified, undefined), certified);
+  assert.equal(withStartFields(certified, {displayName: undefined}), certified);
 });

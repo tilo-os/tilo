@@ -220,6 +220,7 @@ test('a spectator certifies an in-memory device key and connects without a perso
   assert.equal(connected.origin, 'https://rooms.example');
   assert.equal(connected.room, 'ROOM');
   assert.equal(connected.userPublicKey, '5e'.repeat(32));
+  assert.equal(connected.watching, true, 'the page only watches');
   assert.equal(Array.from(connected.custody.publicKey, b => b.toString(16).padStart(2, '0')).join(''), devicePublicKey);
   assert.equal(connected.deviceCertificate, `{"cert":${certificate},"hostCert":{"device_public_key":[${Array(32).fill(9).join(',')}]}}`);
   assert.match(connected.deviceCertificate, /"issued_at_ns":1791962530023125779[,}]/);

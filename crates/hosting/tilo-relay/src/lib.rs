@@ -212,6 +212,8 @@ pub use mesh::{
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
+#[cfg(not(target_arch = "wasm32"))]
+pub use room_access::Spectators;
 pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};
 

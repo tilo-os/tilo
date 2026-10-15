@@ -171,6 +171,7 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
             cert,
             host_cert: shared.host_cert.clone(),
             revocations: RevocationList::new(),
+            watching: false,
         },
         Arc::new(key),
         Arc::new(MemoryPeerStore::default()),

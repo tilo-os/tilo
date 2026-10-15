@@ -1281,6 +1281,35 @@ impl Relay {
             .await
     }
 
+    /// Let visitors watch `workspace_id` read-only as `spectators`: every
+    /// device the spectator root certified reads the room's state and
+    /// writes nothing, up to `spectators.seats` subscribed at once (see
+    /// [`crate::room_access`]). The spectator person must be a member of the
+    /// room, which is also what lets its devices through the handshake.
+    ///
+    /// # Errors
+    ///
+    /// The room is not open on this relay.
+    pub async fn admit_spectators(
+        &self,
+        workspace_id: u64,
+        spectators: crate::room_access::Spectators,
+    ) -> Result<(), RelayError> {
+        let workspace = self
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned()
+            .ok_or_else(|| {
+                RelayError::GovernedAccess(format!("room {workspace_id} is not open here"))
+            })?;
+        workspace.lock().await.spectators = Some(spectators);
+        // Live subscriptions are audited again: fewer seats end the extra.
+        crate::authority_epoch::bump();
+        Ok(())
+    }
+
     fn governed_access_writer(&self) -> GovernedAccessWriter {
         GovernedAccessWriter {
             workspaces: self.workspaces.clone(),
