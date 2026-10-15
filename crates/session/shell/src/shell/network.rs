@@ -31,6 +31,10 @@ mod personal_device_peers;
 #[cfg(test)]
 mod reachability_tests;
 mod record_content;
+#[cfg(test)]
+mod tick_bench;
+#[cfg(test)]
+mod tick_off_loop_tests;
 pub(crate) use native_enrollment::NativeOwnerStatus;
 pub use record_content::InboundRecordContent;
 #[cfg(test)]
@@ -935,7 +939,22 @@ struct RoomPush {
     /// Each room's document heads as last announced (or first seen, which
     /// announces nothing: a peer that lacks older history pulls it).
     announced: std::collections::HashMap<RoomId, Vec<automerge::ChangeHash>>,
+    /// The tree's write generation right after the last full projection.
+    /// Projection reads nothing but the tree, and every tree write bumps the
+    /// generation, so while it holds there is nothing to project.
+    projected_generation: Option<u64>,
+    /// The generation right after a check that found no trigger moved:
+    /// until it changes, only the fallback projection has anything to do.
+    checked_generation: Option<u64>,
+    /// When a tick found the tree held by another thread: the push runs
+    /// again at [`ROOM_PUSH_RETRY`] rather than waiting for the lock.
+    retry_at: Option<std::time::Instant>,
 }
+
+/// How soon a room push that found the tree held by another thread tries
+/// again: about a frame, so a change still goes out promptly, while the
+/// loop never waits on that thread's write.
+const ROOM_PUSH_RETRY: std::time::Duration = std::time::Duration::from_millis(8);
 /// Keep transport bursts from monopolizing the compositor thread. The actor's
 /// channel is bounded, so leaving events queued simply applies backpressure
 /// until the next frame instead of losing ordering or data.
@@ -4747,7 +4766,16 @@ impl ShellNetwork {
                 }
             });
         }
-        if let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) {
+        // Asked on every boundary of every tick while the switch is off: only
+        // staged offers need the tree for writing. A write that removed
+        // nothing would still wait for any thread holding the tree, and wake
+        // every reader that watches its generation.
+        if let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone())
+            && {
+                let tree = tree.read();
+                !tree.continuation_tabs.is_empty() || !tree.continuation_rooms.is_empty()
+            }
+        {
             let mut tree = tree.write();
             tree.reconcile_continuation_tabs(&std::collections::BTreeSet::new());
             tree.reconcile_continuation_rooms(&std::collections::BTreeSet::new());
@@ -6310,7 +6338,10 @@ impl ShellNetwork {
     /// rename within one network round trip instead of at their next pull.
     /// At most one message per room per tick. Cheap when idle: rooms are
     /// projected only when the desktop document, the peer-merge epoch or the
-    /// external revision moved, or [`ROOM_PUSH_FALLBACK_INTERVAL`] passed.
+    /// external revision moved, or [`ROOM_PUSH_FALLBACK_INTERVAL`] passed,
+    /// and never while the tree is unwritten since the last projection.
+    /// Runs on the compositor's loop, so it never waits for the tree: held
+    /// by another thread, the push retries at [`Self::next_deadline`].
     /// A batch that landed from a peer is re-announced once, which reaches
     /// a member that missed the original; the echo changes nothing for
     /// those that already hold it, so it does not repeat.
@@ -6322,18 +6353,37 @@ impl ShellNetwork {
             return;
         };
         let now = std::time::Instant::now();
+        let generation = handle.generation();
+        let due = push
+            .last_full
+            .is_none_or(|last| now.duration_since(last) >= ROOM_PUSH_FALLBACK_INTERVAL);
+        if push.projected_generation == Some(generation)
+            || (!due && push.checked_generation == Some(generation))
+        {
+            push.retry_at = None;
+            return;
+        }
+        // Projecting writes the room documents. Another thread holding the
+        // tree (a worker, the portal, a protocol callback) would hold the
+        // loop for as long as it keeps it; the push runs again shortly
+        // instead ([`Self::next_deadline`]).
+        let Some(mut tree) = handle.try_write() else {
+            push.retry_at = Some(now.checked_add(ROOM_PUSH_RETRY).unwrap_or(now));
+            return;
+        };
+        push.retry_at = None;
+        // This guard's release is the next bump; a later one is a write
+        // made after this projection.
+        let projected = handle.generation().wrapping_add(1);
         let mut outgoing = Vec::new();
-        let mut tree = handle.write();
         let trigger = (
             tree.current_heads(),
             tree.desktop.room_epoch,
             tree.desktop.external_revision,
         );
-        let due = push
-            .last_full
-            .is_none_or(|last| now.duration_since(last) >= ROOM_PUSH_FALLBACK_INTERVAL);
         let moved = push.trigger.as_ref() != Some(&trigger);
         if !moved && !due {
+            push.checked_generation = Some(projected);
             return;
         }
         if moved {
@@ -6343,6 +6393,7 @@ impl ShellNetwork {
         }
         push.trigger = Some(trigger);
         push.last_full = Some(now);
+        push.projected_generation = Some(projected);
         let rooms = tree.rooms();
         push.announced.retain(|room, _| rooms.contains(room));
         for room in rooms {
@@ -6404,6 +6455,13 @@ impl ShellNetwork {
     /// admission's remainder ran here.
     pub fn frame_tick(&self) {
         self.tick_with(Admission::OffLoop);
+    }
+
+    /// When [`Self::frame_tick`] must run again though nothing wakes the
+    /// loop: a room push that found the tree held by another thread retries
+    /// then.
+    pub fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.room_push.lock().ok().and_then(|push| push.retry_at)
     }
 
     fn tick_with(&self, admission: Admission) {
@@ -9685,7 +9743,7 @@ mod tests {
         );
     }
 
-    fn personal_continuity_network_for_test(
+    pub(super) fn personal_continuity_network_for_test(
         user_public_key: [u8; 32],
     ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
         let (mut net, commands) =

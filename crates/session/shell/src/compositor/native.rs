@@ -13985,6 +13985,12 @@ pub fn run() {
                 ),
                 ("text-commit", state.text_commit_deadline()),
                 (
+                    "network-retry",
+                    peer_sync
+                        .as_ref()
+                        .and_then(|network| network.next_deadline()),
+                ),
+                (
                     "dictation-service",
                     state.dictation_service_deadline(park_now),
                 ),
