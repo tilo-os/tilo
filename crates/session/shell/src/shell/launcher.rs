@@ -2863,38 +2863,53 @@ fn execute_workspace_agent(
     .map_err(|error| LaunchError::IdentityUnavailable {
         detail: error.to_string(),
     })?;
-    let command = build_workspace_agent_command(
+    // Companions first, and named to the agent, so it plans its first run
+    // only once their actions are published instead of without them.
+    let companions =
+        start_agent_companions(&launcher_bin, workspace.room, identity_path.as_deref());
+    let mut command = build_workspace_agent_command(
         &app,
         &launcher_bin,
         workspace.room,
         identity_path.as_deref(),
         agent_id,
     );
+    for companion in companions {
+        command
+            .args
+            .extend(["--companion".into(), companion.into()]);
+    }
     if let Err(detail) = spawn_detached(app.clone(), command, None) {
         return Err(LaunchError::AgentLaunchWorkerUnavailable { detail });
     }
-    start_agent_companions(&launcher_bin, workspace.room, identity_path.as_deref());
     Ok(app)
 }
 
-/// Start the [`AGENT_COMPANION_PACKAGE_IDS`] not already running in `room`.
+/// Start the [`AGENT_COMPANION_PACKAGE_IDS`] not already running in `room`,
+/// and answer the companions running there now: started, or already up.
 /// A companion that is missing, malformed or fails to start costs the agent
 /// its actions, not its launch, so failures are logged and skipped.
 #[cfg(target_os = "linux")]
-fn start_agent_companions(launcher_bin: &Path, room: RoomId, identity_path: Option<&Path>) {
+fn start_agent_companions(
+    launcher_bin: &Path,
+    room: RoomId,
+    identity_path: Option<&Path>,
+) -> Vec<&'static str> {
     let apps = match installed_apps() {
         Ok(apps) => apps,
         Err(error) => {
             tracing::warn!(%error, "cannot list installed apps for the agent's companions");
-            return;
+            return Vec::new();
         }
     };
     let room_id = room.to_string();
+    let mut running = Vec::new();
     for package_id in AGENT_COMPANION_PACKAGE_IDS {
         let Some(app) = apps.iter().find(|app| app.package_id == *package_id) else {
             continue;
         };
         if verified_workspaces_for_app(package_id).contains(&room_id) {
+            running.push(*package_id);
             continue;
         }
         match is_headless_collab_service(app) {
@@ -2912,10 +2927,14 @@ fn start_agent_companions(launcher_bin: &Path, room: RoomId, identity_path: Opti
             }
         }
         let command = build_agent_companion_command(app, launcher_bin, room, identity_path);
-        if let Err(detail) = spawn_detached(app.clone(), command, None) {
-            tracing::warn!(package_id, %detail, "could not start the agent companion");
+        match spawn_detached(app.clone(), command, None) {
+            Ok(()) => running.push(*package_id),
+            Err(detail) => {
+                tracing::warn!(package_id, %detail, "could not start the agent companion");
+            }
         }
     }
+    running
 }
 
 /// [`launch`], additionally asking the app to open `document`. Grant the

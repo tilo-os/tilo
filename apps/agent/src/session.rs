@@ -220,6 +220,9 @@ pub struct Config {
     /// The agent's content store, created once when it starts: content an
     /// operation produced is read from here by the operation consuming it.
     pub content: tilo_content::ContentStore,
+    /// Applications started beside the agent whose actions its first run
+    /// waits for ([`Session::await_companions`]).
+    pub companions: Vec<String>,
 }
 
 pub struct Session {
@@ -237,6 +240,9 @@ pub struct Session {
     /// task loop surveys.
     broker_surfaces: Vec<ui::collaboration::BrokerActionSurface>,
     next_broker_request: u64,
+    /// The companions not yet seen in the catalogue, until the first run
+    /// waited for them; empty afterwards.
+    awaiting_companions: Vec<String>,
     /// Bumped whenever the broker republishes its catalogue.
     broker_revision: u64,
     /// The task catalogue survey for [`Self::broker_revision`], shared by
@@ -310,6 +316,7 @@ impl Session {
             "joined the room; waiting for the document"
         );
         let is_managed = managed.is_some();
+        let cfg_companions = cfg.companions.clone();
         let chooser = match managed {
             Some(selection) => {
                 let chooser = Chooser::with_provider(true, cfg.model_timeout, selection);
@@ -331,6 +338,7 @@ impl Session {
             broker_surfaces: Vec::new(),
             next_broker_request: 1,
             memory: agent_loop::Memory::default(),
+            awaiting_companions: cfg_companions,
             broker_revision: 0,
             catalogue_cache: None,
             turn: None,
@@ -1360,6 +1368,7 @@ mod tests {
                             ui::permissions::KindSet::READ_UNDOABLE,
                         ),
                         content: tilo_content::ContentStore::memory(),
+                        companions: Vec::new(),
                     },
                     link,
                     chooser: Chooser::new(false, Duration::ZERO),
@@ -1369,6 +1378,7 @@ mod tests {
                     broker_surfaces: Vec::new(),
                     next_broker_request: 1,
                     memory: agent_loop::Memory::default(),
+                    awaiting_companions: Vec::new(),
                     broker_revision: 0,
                     catalogue_cache: None,
                     turn: None,
