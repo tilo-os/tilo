@@ -467,6 +467,14 @@ pub enum CiProfile {
     /// and only on nodes that run nothing else: [`CI_DENIES`] minus the
     /// namespace and mount calls ([`CI_PRIVILEGED_ALLOWS`]).
     Privileged,
+    /// For tests that start sandboxes of their own (bubblewrap, `unshare`):
+    /// [`CI_DENIES`] minus the mount calls, and new namespaces of every
+    /// kind. In a nested user namespace a job holds capabilities over its
+    /// own network namespace, so the netlink families of the kernel's
+    /// largest network attack surface stay refused: netfilter (nftables)
+    /// and XFRM ([`CI_NESTED_NETLINK_DENIES`]). `NETLINK_ROUTE` stays, as
+    /// bubblewrap brings up `lo` with it. `setns` stays refused.
+    Nested,
 }
 
 /// Syscalls every CI job is refused with `EPERM`.
@@ -529,6 +537,28 @@ pub const CI_PRIVILEGED_ALLOWS: &[libc::c_long] = &[
     libc::SYS_setns,
 ];
 
+/// What [`CiProfile::Nested`] takes out of [`CI_DENIES`]: a nested sandbox
+/// builds its root with mounts, inside a mount namespace it owns.
+#[cfg(target_os = "linux")]
+pub const CI_NESTED_ALLOWS: &[libc::c_long] = &[
+    libc::SYS_mount,
+    libc::SYS_umount2,
+    libc::SYS_pivot_root,
+    libc::SYS_fsopen,
+    libc::SYS_fsconfig,
+    libc::SYS_fsmount,
+    libc::SYS_fspick,
+    libc::SYS_move_mount,
+    libc::SYS_mount_setattr,
+    libc::SYS_open_tree,
+];
+
+/// Netlink protocols a [`CiProfile::Nested`] job may not open a socket of:
+/// netfilter (nftables, the CVE-2024-1086 class) and XFRM (IPsec state).
+#[cfg(target_os = "linux")]
+pub const CI_NESTED_NETLINK_DENIES: &[u64] =
+    &[libc::NETLINK_NETFILTER as u64, libc::NETLINK_XFRM as u64];
+
 /// `personality(2)` personas a CI job may still select: the query
 /// (`0xffffffff`) and plain `PER_LINUX`. Everything else —
 /// `ADDR_NO_RANDOMIZE`, `READ_IMPLIES_EXEC` — weakens exploit mitigations.
@@ -547,6 +577,9 @@ pub fn ci_rules(profile: CiProfile) -> Result<BTreeMap<i64, Vec<SeccompRule>>, S
         if profile == CiProfile::Privileged && CI_PRIVILEGED_ALLOWS.contains(nr) {
             continue;
         }
+        if profile == CiProfile::Nested && CI_NESTED_ALLOWS.contains(nr) {
+            continue;
+        }
         rules.insert(*nr, Vec::new());
     }
     // One rule whose conditions are ANDed: refused unless the persona is one
@@ -556,6 +589,25 @@ pub fn ci_rules(profile: CiProfile) -> Result<BTreeMap<i64, Vec<SeccompRule>>, S
         .map(|p| SeccompCondition::new(0, SeccompCmpArgLen::Dword, SeccompCmpOp::Ne, *p))
         .collect::<Result<Vec<_>, BackendError>>()?;
     rules.insert(libc::SYS_personality, vec![SeccompRule::new(persona)?]);
+    if profile == CiProfile::Nested {
+        // socket(AF_NETLINK, *, protocol): one rule per protocol, each the
+        // AND of the family and the protocol.
+        let netlink = CI_NESTED_NETLINK_DENIES
+            .iter()
+            .map(|protocol| {
+                SeccompRule::new(vec![
+                    SeccompCondition::new(
+                        0,
+                        SeccompCmpArgLen::Dword,
+                        SeccompCmpOp::Eq,
+                        libc::AF_NETLINK as u64,
+                    )?,
+                    SeccompCondition::new(2, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, *protocol)?,
+                ])
+            })
+            .collect::<Result<Vec<_>, BackendError>>()?;
+        rules.insert(libc::SYS_socket, netlink);
+    }
     if profile == CiProfile::Standard {
         // No new namespace: in a fresh user namespace a job would hold every
         // capability over a fresh network namespace, which is how the
@@ -1136,6 +1188,34 @@ mod tests {
         assert_eq!(
             privileged, 0,
             "20 = setns did not reach the kernel, 21 = bpf was allowed"
+        );
+
+        let nested = under_ci(CiProfile::Nested, || {
+            // SAFETY: socket calls whose descriptors are closed at once.
+            unsafe {
+                let route = libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, libc::NETLINK_ROUTE);
+                if route < 0 {
+                    return 30;
+                }
+                libc::close(route);
+                for protocol in [libc::NETLINK_NETFILTER, libc::NETLINK_XFRM] {
+                    let s = libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, protocol);
+                    if errno_of(libc::c_long::from(s)) != libc::EPERM {
+                        return 31;
+                    }
+                }
+                if errno_of(libc::syscall(libc::SYS_bpf, -1_i64, 0_i64, 0_i64)) != libc::EPERM
+                    || errno_of(libc::syscall(libc::SYS_setns, -1_i64, 0_i64)) != libc::EPERM
+                {
+                    return 33;
+                }
+            }
+            0
+        });
+        assert_eq!(
+            nested, 0,
+            "30 = NETLINK_ROUTE was refused, 31 = netfilter or XFRM netlink was allowed, \
+             33 = bpf or setns was allowed"
         );
     }
 

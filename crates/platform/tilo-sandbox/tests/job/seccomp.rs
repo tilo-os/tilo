@@ -57,6 +57,49 @@ fn mount_is_refused() {
 }
 
 #[test]
+fn only_a_job_allowed_nested_sandboxes_starts_one_and_netfilter_stays_closed() {
+    needs_sandbox!();
+    // What bubblewrap and `unshare` do: a user namespace of their own, and
+    // mounts in it.
+    let nest = "unshare --user --map-root-user --mount --net sh -c 'mount -t tmpfs none /tmp && echo nested' 2>&1; echo done";
+    let (status, out) = run(|s| shell(s, nest));
+    assert!(status.success() && out.contains("done"), "{out}");
+    assert!(
+        !out.contains("nested"),
+        "a standard job started a sandbox: {out}"
+    );
+
+    let (status, out) = run(|s| {
+        shell(s, nest);
+        s.allow_nested_sandboxes();
+    });
+    assert!(status.success() && out.contains("nested"), "{out}");
+
+    // Holding CAP_NET_ADMIN over its own network namespace, a nested
+    // sandbox still can't reach nftables or XFRM; route netlink works.
+    let probe = r#"unshare --user --map-root-user --net python3 -c '
+import socket
+for name, proto in (("route", 0), ("netfilter", 12), ("xfrm", 6)):
+    try:
+        socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, proto).close(); print(name, "opened")
+    except OSError as e:
+        print(name, e.strerror)
+'"#;
+    let (status, out) = run(|s| {
+        shell(s, probe);
+        s.allow_nested_sandboxes();
+    });
+    if out.contains("python3: not found") || out.contains("No such file") {
+        eprintln!("skipped the netlink probe: no python3 in the host root: {out}");
+        return;
+    }
+    assert!(status.success(), "{out}");
+    assert!(out.contains("route opened"), "{out}");
+    assert!(out.contains("netfilter Operation not permitted"), "{out}");
+    assert!(out.contains("xfrm Operation not permitted"), "{out}");
+}
+
+#[test]
 fn ordinary_build_syscalls_still_work() {
     needs_sandbox!();
     // Threads, fork, pipes, file I/O: the filter must leave all of it alone,

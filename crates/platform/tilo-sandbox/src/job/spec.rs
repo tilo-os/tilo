@@ -69,6 +69,20 @@ impl JobSpec {
         self.mounts.push(mount);
         self
     }
+
+    /// Let the job start sandboxes of its own, as tests that run
+    /// bubblewrap or `unshare` do: the nested seccomp profile
+    /// ([`CiProfile::Nested`]), which allows new namespaces and mounts in
+    /// them but still refuses netfilter and XFRM netlink, bpf, io_uring,
+    /// the keyrings, userfaultfd and perf; and no Landlock, which refuses
+    /// every mount to a process it confines, in any namespace. The job
+    /// itself still holds no capability: what it mounts, it mounts in a
+    /// user namespace it creates.
+    pub fn allow_nested_sandboxes(&mut self) -> &mut Self {
+        self.seccomp = Seccomp::Ci(CiProfile::Nested);
+        self.landlock = Landlock::Off;
+        self
+    }
 }
 
 /// `PATH` when the job names none.
