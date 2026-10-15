@@ -492,8 +492,14 @@ impl FileExplorerWidget {
                             _ => "files-cloud-preparing",
                         }),
                     ),
-                    arg("count", self.cloud.progress.completed as i64),
-                    arg("bytes", self.cloud.progress.bytes as i64),
+                    arg(
+                        "count",
+                        i64::try_from(self.cloud.progress.completed).unwrap_or(i64::MAX),
+                    ),
+                    arg(
+                        "bytes",
+                        i64::try_from(self.cloud.progress.bytes).unwrap_or(i64::MAX),
+                    ),
                 ],
             ))));
         }
