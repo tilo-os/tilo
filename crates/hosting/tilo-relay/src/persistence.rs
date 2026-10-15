@@ -745,6 +745,7 @@ async fn run_owner_lanes(
         // One retained transaction can leave at most one known scratch
         // root. Finish its disposal before another mutation can create one.
         let root = state.lock_recover().retention_scratch.take();
+        let disposing = crate::timing::start();
         if let Some(root) = root {
             let mut discard = None;
             loop {
@@ -782,6 +783,8 @@ async fn run_owner_lanes(
                 }
             }
         }
+        crate::timing::window("owner.scratch_disposal", disposing);
+        let disposing = crate::timing::start();
         let candidates = std::mem::take(&mut state.lock_recover().retention_candidates);
         for (lineage, staged) in candidates {
             let mut discard = None;
@@ -820,6 +823,8 @@ async fn run_owner_lanes(
         // Generations retention replaced while a capture still had to pin
         // them, collected once no capture does. A failed collection is
         // left to the lineage's next commit, which collects all of them.
+        crate::timing::window("owner.stage_disposal", disposing);
+        let collecting = crate::timing::start();
         let deferred = state.lock_recover().store.deferred_collections();
         for lineage in deferred {
             let mut collect = None;
@@ -853,6 +858,7 @@ async fn run_owner_lanes(
                 }
             }
         }
+        crate::timing::window("owner.deferred_collection", collecting);
         // An entry still in use needs no turn: its ticket's drop wakes the
         // owner. So does an entry whose session or connection ended, since
         // that session drops its ticket as it ends.
@@ -1426,11 +1432,15 @@ pub(crate) async fn blocking<T: Send + 'static>(
     workers: Arc<Semaphore>,
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, StoreError> {
+    let waiting = crate::timing::start();
     let permit = workers
         .acquire_owned()
         .await
         .map_err(|e| error(e.to_string()))?;
+    crate::timing::window("blocking.worker_wait", waiting);
+    let dispatched = crate::timing::start();
     tokio::task::spawn_blocking(move || {
+        crate::timing::window("blocking.dispatch", dispatched);
         let _permit = permit;
         operation()
     })

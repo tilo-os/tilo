@@ -966,10 +966,6 @@ impl RetainBuild {
         self.phase = RetainPhase::Scan(fs::read_dir(&self.active)?);
         Ok(())
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-    )]
     /// One quantum of retention; done with what to publish.
     ///
     /// # Errors
@@ -978,6 +974,28 @@ impl RetainBuild {
     /// shell selection fails; [`Self::publication_on_error`] then says what
     /// may already be visible.
     pub fn step(
+        &mut self,
+        limit: super::bounded::WorkLimit,
+    ) -> Result<super::bounded::Step<super::shell_selection::RetainOutcome>, StoreError> {
+        // Where a commit's turn goes, by the phase each quantum began in
+        // (`crate::timing`).
+        let phase = match self.phase {
+            RetainPhase::Scan(_) => "retain.scan",
+            RetainPhase::Indexed => "retain.indexed",
+            RetainPhase::Sort => "retain.sort",
+            RetainPhase::Inspect(_) => "retain.inspect",
+            RetainPhase::Stage(_) => "retain.stage",
+            RetainPhase::Commit => "retain.commit",
+            RetainPhase::Collect(_) => "retain.collect",
+            RetainPhase::Done => "retain.publish",
+        };
+        crate::timing::windowed(phase, || self.step_phase(limit))
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
+    )]
+    fn step_phase(
         &mut self,
         limit: super::bounded::WorkLimit,
     ) -> Result<super::bounded::Step<super::shell_selection::RetainOutcome>, StoreError> {
