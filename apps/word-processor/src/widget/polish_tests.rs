@@ -4,12 +4,20 @@ use super::*;
 use ui::headless::Framed;
 
 fn document(theme: &Theme) -> Framed<WordProcessorWidget> {
+    imported_document(
+        b"# A considered document\n\nA paragraph with enough words to wrap while retaining readable type.\n\n| Item | Detail |\n| --- | --- |\n| Writing | Room to think |\n",
+        theme,
+    )
+}
+
+fn imported_document(markdown: &[u8], theme: &Theme) -> Framed<WordProcessorWidget> {
     let mut state = crate::initialized_state();
     let action = crate::import_action(
-        b"# A considered document\n\nA paragraph with enough words to wrap while retaining readable type.\n\n| Item | Detail |\n| --- | --- |\n| Writing | Room to think |\n",
+        markdown,
         WpFormat::Markdown,
         &tilo_content::ContentStore::memory(),
-    ).unwrap();
+    )
+    .unwrap();
     crate::model::apply(&mut state.doc, &action).unwrap();
     let c = crate::model::open(&state.doc).unwrap();
     let blocks = tilo_doc::model::materialize(&state.doc, &c).blocks;
@@ -68,6 +76,76 @@ fn ui_scaling_keeps_the_document_readable_beside_outline_and_review() {
                     rect.y0 >= canvas.y1 && rect.y1 <= 810.0,
                     "status controls remain wholly below the writing canvas"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn showcase_document_keeps_its_rich_content_on_one_page() {
+    let framed = imported_document(
+        include_bytes!("../../examples/showcase.md"),
+        &Theme::dark().with_ui_scale(1.5),
+    );
+    assert!(framed.laid.len() > 10);
+    assert!(framed.laid.iter().all(|block| block.page == 0));
+    assert!(framed.laid.iter().any(|block| block.kind == "cell"));
+    assert!(
+        framed
+            .laid
+            .iter()
+            .any(|block| block.text.starts_with("A thoughtful draft"))
+    );
+}
+
+#[test]
+fn scrollbar_is_six_output_pixels_and_uses_content_space_at_every_scale() {
+    let mut renderer = ui::offscreen::OffscreenRenderer::new(200, 200);
+    for theme in [Theme::dark(), Theme::light()] {
+        for scale in [1.0, 1.5, 2.0] {
+            for output_scale in [1.0, 2.0] {
+                let mut wp = WordProcessorWidget::detached();
+                wp.desk_theme = theme.clone().with_ui_scale(scale);
+                wp.scroll_viewport = 100.0;
+                wp.max_scroll = 100.0;
+                let transform = Affine::scale(output_scale);
+                let canvas = Rect::new(0.0, 0.0, 200.0 / output_scale, 200.0 / output_scale);
+                for offset in [0.0, 100.0] {
+                    wp.scroll_y = offset;
+                    let mut scene = Scene::new();
+                    wp.draw_scrollbar(&mut scene, transform, canvas);
+                    let pixels = renderer.render(&scene, Color::TRANSPARENT);
+                    let painted: Vec<_> = pixels
+                        .chunks_exact(4)
+                        .enumerate()
+                        .filter(|(_, pixel)| pixel[3] > 0)
+                        .map(|(index, _)| (index % 200, index / 200))
+                        .collect();
+                    let left = painted.iter().map(|(x, _)| *x).min().unwrap();
+                    let right = painted.iter().map(|(x, _)| *x).max().unwrap();
+                    let top = painted.iter().map(|(_, y)| *y).min().unwrap();
+                    let bottom = painted.iter().map(|(_, y)| *y).max().unwrap();
+                    assert_eq!(right - left + 1, 6, "thumb must not fill the gutter");
+                    assert_eq!((left, right), (191, 196));
+                    // Half the content is visible, independent of output/page scale.
+                    assert_eq!(
+                        (top, bottom),
+                        if offset == 0.0 { (3, 99) } else { (100, 196) }
+                    );
+                }
+                for overflow in [0.0, ui::widget::scrollbar::FIT_EPS] {
+                    wp.max_scroll = overflow;
+                    wp.scroll_y = 0.0;
+                    let mut scene = Scene::new();
+                    wp.draw_scrollbar(&mut scene, transform, canvas);
+                    assert!(
+                        renderer
+                            .render(&scene, Color::TRANSPARENT)
+                            .chunks_exact(4)
+                            .all(|pixel| pixel[3] == 0),
+                        "a fitting document has no scrollbar"
+                    );
+                }
             }
         }
     }

@@ -11,7 +11,7 @@ use ui::permissions::UserId;
 use ui::tilo_resource::Invoke;
 use word_processor::{WpFormat, effects::WordProcessorEffect, framework::WordProcessorApp};
 
-const DOCUMENT: &str = "# Room to think\n\nGood ideas need room to breathe. Bring **clear thinking** and shared context to every draft.\n\n## Write with intention\n\nKeep decisions close to the words.\n\n| Detail | Intention |\n| --- | --- |\n| A considered canvas | Room for the work |\n| Comments in context | Less back and forth |\n\n> Keep it simple. Make room for good ideas.\n";
+const DOCUMENT: &str = include_str!("showcase.md");
 
 fn presence(app: &mut HeadlessApp<WordProcessorApp>, block: &str, offset: usize) {
     let key = ResourceSelection::Item(block.to_owned())
@@ -117,7 +117,7 @@ fn cursor(t: f64) -> (f64, f64) {
     // A cubic path with zero velocity and acceleration at both ends.
     (
         a.powi(3) * 1030.0 + 3.0 * a * a * s * 1010.0 + 3.0 * a * s * s * 720.0 + s.powi(3) * 895.0,
-        a.powi(3) * 122.0 + 3.0 * a * a * s * 290.0 + 3.0 * a * s * s * 400.0 + s.powi(3) * 532.0,
+        a.powi(3) * 122.0 + 3.0 * a * a * s * 290.0 + 3.0 * a * s * s * 400.0 + s.powi(3) * 568.0,
     )
 }
 

@@ -8512,22 +8512,35 @@ impl WordProcessorWidget {
     /// The scrollbar thumb (right edge), shown only when the content
     /// overflows the canvas.
     fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, canvas: Rect) {
-        if self.max_scroll > 0.0 {
-            let gutter = f64::from(self.desk_theme.tokens.metrics.scrollbar_gutter);
-            let track = Rect::new(canvas.x1 - gutter, canvas.y0, canvas.x1, canvas.y1);
-            ui::widget::Scrollbar::vertical().draw(
-                scene,
-                transform,
-                track,
-                ui::widget::scrollbar::ScrollMetrics::new(
-                    canvas.height() + self.max_scroll,
-                    canvas.height(),
-                    self.scroll_y,
-                ),
-                &self.desk_theme,
-                false,
-            );
+        let metrics = ui::widget::scrollbar::ScrollMetrics::new(
+            self.scroll_viewport + self.max_scroll,
+            self.scroll_viewport,
+            self.scroll_y,
+        );
+        if !metrics.overflows() {
+            return;
         }
+        // The gutter is reserved space, not the painted thumb. Keep this quiet
+        // indicator in output pixels so neither UI scale nor page zoom widens it.
+        let canvas = transform.transform_rect_bbox(canvas);
+        let thickness = f64::from(self.desk_theme.tokens.metrics.scroll_thumb)
+            / f64::from(self.desk_theme.ui_scale)
+            * 0.75;
+        let inset = thickness / 2.0;
+        let track = Rect::new(
+            canvas.x1 - inset - thickness,
+            canvas.y0 + inset,
+            canvas.x1 - inset,
+            canvas.y1 - inset,
+        );
+        ui::widget::Scrollbar::vertical().draw(
+            scene,
+            Affine::IDENTITY,
+            track,
+            metrics,
+            &self.desk_theme,
+            false,
+        );
     }
 
     /// Remote collaborators' carets + selections, resolved by the single
