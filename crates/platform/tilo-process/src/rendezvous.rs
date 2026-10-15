@@ -159,17 +159,20 @@ impl Write for &Connection {
 
 impl Read for Connection {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&*self).read(buf)
+        let mut shared: &Self = self;
+        shared.read(buf)
     }
 }
 
 impl Write for Connection {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        (&*self).write(buf)
+        let mut shared: &Self = self;
+        shared.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        (&*self).flush()
+        let mut shared: &Self = self;
+        shared.flush()
     }
 }
 

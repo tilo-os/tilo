@@ -89,13 +89,13 @@ aggregate requires the job exactly when the selector does.
 
 When the selection includes a browser crate (one built on `wasm-bindgen`; the
 web core depends on the toolkit and every app of its collection, so every
-change to the SDK crates beneath them), a separate `wasm` job type-checks the
-selected browser crates for `wasm32-unknown-unknown` with `-D warnings`, then
-runs `tools/ci/check-wasm.sh`: each wasm32 build with the packages and
-features its build script uses (the web desktop with every web app, the page
-runtime, the registry verifier), code the per-crate check does not compile. Native jobs compile neither code gated to wasm32 nor the browser's
-view of modules gated away from it. It is a type check, not a build: linking
-needs wasm-bindgen and binaryen. The aggregate requires the job exactly when
+change to the SDK crates beneath them), a separate `wasm` job runs `tools/ci/check-wasm.sh`: clippy with
+`-D warnings` over the selected browser crates for `wasm32-unknown-unknown`,
+then over each wasm32 build with the packages and features its build script
+uses (the web desktop with every web app, the page runtime, the image compute
+worker), code the per-crate lint does not compile. Native jobs compile neither
+code gated to wasm32 nor the browser's view of modules gated away from it. It
+is a lint, not a build: linking needs wasm-bindgen and binaryen. The aggregate requires the job exactly when
 the selector does.
 
 Vendored crates that carry Tilo patches (`VENDORED_TEST_CRATES` in

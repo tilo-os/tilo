@@ -498,7 +498,9 @@ impl Tiles {
         Ok(store)
     }
 
-    fn component(&mut self, tab: &Tab) -> Result<AppComponent, String> {
+    /// The app `tab` shows once it can be built here, or the line the
+    /// window shows instead.
+    fn ready_app<'t>(&self, tab: &'t Tab) -> Result<&'t str, String> {
         if let TileContent::PeerWindow { label, .. } = &tab.tile {
             // The page draws the stream over this window's content.
             return Err(if self.shared.peer_windows.borrow().contains_key(&tab.id) {
@@ -521,6 +523,11 @@ impl Tiles {
             self.shared.waiting.borrow_mut().insert(tab.id);
             return Err(format!("Opening {}…", tab.title));
         }
+        Ok(app_id)
+    }
+
+    fn component(&mut self, tab: &Tab) -> Result<AppComponent, String> {
+        let app_id = self.ready_app(tab)?;
         let definition = application(app_id)
             .ok_or_else(|| format!("{app_id} is not available in the browser"))?;
         let unbound = self.shared.unbound.borrow_mut().remove(&tab.id);

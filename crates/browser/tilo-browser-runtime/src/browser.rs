@@ -96,6 +96,10 @@ pub(crate) fn refresh_mounts() {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent switches the page passes in its JSON config"
+)]
 struct Config {
     /// One application to mount on its own; absent (or `desktop`) mounts
     /// the session desktop.
@@ -129,7 +133,7 @@ struct Config {
     /// changing without a focus or structure change.
     #[serde(default)]
     semantics_window_ms: Option<u64>,
-    /// Render within WebKit's GPU memory: a smaller canvas backing store and
+    /// Render within `WebKit`'s GPU memory: a smaller canvas backing store and
     /// scratch budget (`SurfaceCaps::CONSERVATIVE`).
     #[serde(default)]
     conservative_gpu: bool,
@@ -168,7 +172,7 @@ struct Request {
 /// The page's one WebGPU device and vello renderer, shared by every mount.
 ///
 /// A device per mount cost every opened workspace a second adapter, device
-/// and full pipeline compilation while the first stayed resident. In WebKit
+/// and full pipeline compilation while the first stayed resident. In `WebKit`
 /// each device holds ~140 MB of its own and compiling vello's pipelines
 /// peaks near 200 MB, under a GPU-process limit (600 MB) that Safari's other
 /// tabs share.
@@ -223,6 +227,7 @@ fn release_gpu(id: u64, gpu: Gpu) {
             }
         });
     }
+    drop(gpu);
 }
 
 struct GpuSetup {
@@ -243,6 +248,10 @@ struct SemanticPresentationTarget {
     action: String,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent per-mount flags, each read on its own"
+)]
 struct Mount {
     metrics: RefCell<crate::frame_metrics::FrameMetrics>,
     /// Which statuses carry the semantics tree: unchanged trees are omitted,
@@ -469,7 +478,7 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
 
 fn admit_runtime() -> Result<(), JsValue> {
     SERVICING
-        .with(|servicing| crate::mount_service_custody::reject_reentry(servicing))
+        .with(crate::mount_service_custody::reject_reentry)
         .map_err(|_| error("the runtime is busy (an owned mount callback)"))
 }
 fn with_mount<R>(
@@ -673,7 +682,7 @@ impl Runner {
                             |event| match event {
                                 DeferredEvent::User(id) => self.user_event(event_loop, id),
                                 DeferredEvent::Window(id, event) => {
-                                    self.window_event(event_loop, id, event)
+                                    self.window_event(event_loop, id, event);
                                 }
                             },
                         )
@@ -1040,12 +1049,14 @@ fn present_desktop(
             about: config.about.clone(),
         },
         Rc::clone(&requests),
-        Rc::clone(&here),
-        shared.clone(),
-        room,
-        Arc::new(move || {
-            let _ = wake.send_event(id);
-        }),
+        crate::shell::ChromeSources {
+            here: Rc::clone(&here),
+            shared: shared.clone(),
+            room,
+            wake: Arc::new(move || {
+                let _ = wake.send_event(id);
+            }),
+        },
     );
     Ok(Presentation {
         root: Root::Desktop(Box::new(shell)),
@@ -1413,7 +1424,7 @@ impl GpuStep {
 /// before it fails, naming the step graphics start-up is stuck on, so the
 /// page says it stopped and offers to try again instead of waiting in
 /// silence. A first frame takes about 2 s on a GPU and 15-35 s under a
-/// software rasteriser (SwiftShader in CI).
+/// software rasteriser (`SwiftShader` in CI).
 const FIRST_FRAME_BOUND_MS: u32 = 60_000;
 /// How often [`watch_first_frame`] looks.
 const FIRST_FRAME_TICK_MS: u32 = 1_000;
@@ -1436,7 +1447,7 @@ async fn sleep_ms(ms: u32) {
 /// error once it has been visible for [`FIRST_FRAME_BOUND_MS`] without a
 /// frame. Time hidden (a background tab draws nothing) does not count.
 async fn watch_first_frame(id: u64) {
-    let mut visible_ms = 0;
+    let mut visible_ms: u32 = 0;
     let mut said = None;
     loop {
         sleep_ms(FIRST_FRAME_TICK_MS).await;
@@ -1462,7 +1473,7 @@ async fn watch_first_frame(id: u64) {
             if m.hidden || m.viewport.suspended() {
                 return Ok(true);
             }
-            visible_ms += FIRST_FRAME_TICK_MS;
+            visible_ms = visible_ms.saturating_add(FIRST_FRAME_TICK_MS);
             if visible_ms < FIRST_FRAME_BOUND_MS {
                 return Ok(true);
             }
@@ -1593,6 +1604,10 @@ async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> 
 
 /// The shared device and renderer, created with the first surface (or taken
 /// from `prepare_gpu`).
+#[expect(
+    clippy::await_holding_refcell_ref,
+    reason = "other mounts only try_borrow the device and skip a frame meanwhile"
+)]
 async fn shared_gpu(
     window: &Arc<Window>,
     size: Viewport,

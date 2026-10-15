@@ -336,22 +336,14 @@ cost = "minutes"
 [[check]]
 name = "android"
 requires = ["arch=x86_64"]
-run = """
-packages=$(python3 tools/ci/package_sets.py android)
-for target in aarch64-linux-android x86_64-linux-android; do
-  cargo clippy --locked $packages --examples --features android --target "$target" -- -D warnings -A clippy::missing_const_for_thread_local
-done
-"""
-inputs = ["apps/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/ci/package_sets.py", "tools/ci/affected_packages.py"]
+run = "bash tools/ci/clippy-android.sh"
+inputs = ["apps/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/ci/package_sets.py", "tools/ci/affected_packages.py", "tools/ci/clippy-android.sh"]
 cost = "minutes"
 
 # Browser crates and their cfg(wasm32) code, then the browser's own wasm32 builds.
 [[check]]
 name = "wasm"
-run = """
-cargo check --locked $(python3 tools/ci/package_sets.py browser) --target wasm32-unknown-unknown
-bash tools/ci/check-wasm.sh
-"""
+run = "bash tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)"
 env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
 inputs = ["apps/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/ci/package_sets.py", "tools/ci/affected_packages.py", "tools/ci/check-wasm.sh"]
 cost = "minutes"

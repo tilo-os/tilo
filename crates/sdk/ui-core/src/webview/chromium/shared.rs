@@ -303,10 +303,10 @@ pub(super) fn claim(profile: &Path) -> Result<Role, String> {
     })
 }
 
-fn handshake(connection: &Connection) -> io::Result<()> {
+fn handshake(mut connection: &Connection) -> io::Result<()> {
     connection.set_read_timeout(Some(Duration::from_secs(10)))?;
     // Unbuffered, so nothing after the greeting is consumed here.
-    match protocol::read_packet(&mut &*connection)? {
+    match protocol::read_packet(&mut connection)? {
         Some(protocol::Packet::Json(value))
             if value.get("event").and_then(Value::as_str) == Some("shared_hello") => {}
         _ => {
@@ -403,9 +403,9 @@ fn accept_loop(server: &Weak<Server>) {
     }
 }
 
-fn refuse(connection: &Connection, why: &str) {
+fn refuse(mut connection: &Connection, why: &str) {
     let _ = protocol::write_json(
-        &mut &*connection,
+        &mut connection,
         &json!({"event":"shared_refused","error":why}),
     );
 }

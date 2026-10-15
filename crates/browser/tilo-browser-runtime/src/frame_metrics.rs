@@ -40,7 +40,8 @@ impl FrameMetrics {
         }
         for widget in requesters {
             if self.measured_by.len() < LIMIT || self.measured_by.contains_key(&widget) {
-                *self.measured_by.entry(widget).or_default() += 1;
+                let count = self.measured_by.entry(widget).or_default();
+                *count = count.saturating_add(1);
             }
         }
     }
@@ -64,7 +65,8 @@ impl FrameMetrics {
         }
         for reason in reasons {
             if self.requesters.len() < LIMIT || self.requesters.contains_key(&reason) {
-                *self.requesters.entry(reason).or_default() += 1;
+                let count = self.requesters.entry(reason).or_default();
+                *count = count.saturating_add(1);
             }
         }
     }
