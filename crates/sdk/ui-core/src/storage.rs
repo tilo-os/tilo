@@ -918,12 +918,11 @@ mod tests {
             }
             values
         });
-        let playback = match name {
-            Some(_) => Value::Object(values),
-            None => {
-                assert_eq!(values["other"]["kept"], 1);
-                values["playback"].clone()
-            }
+        let playback = if name.is_some() {
+            Value::Object(values)
+        } else {
+            assert_eq!(values["other"]["kept"], 1);
+            values["playback"].clone()
         };
         assert_eq!(
             playback["autoplay"], false,

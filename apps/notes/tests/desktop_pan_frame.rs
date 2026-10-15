@@ -170,7 +170,10 @@ fn assert_pan_frames(harness: &mut FrameHarness, handle: &DesktopHandle) {
     // host tick (no interaction since the last frame left one pending), no
     // sync of any window, no undo publication and so no resource discovery.
     assert_eq!(
-        harness.quiet_frames() - quiet,
+        harness
+            .quiet_frames()
+            .checked_sub(quiet)
+            .expect("quiet frame count never decreases"),
         u64::try_from(frames).unwrap(),
         "every pan frame was quiet: {rows:?}"
     );
@@ -180,7 +183,10 @@ fn assert_pan_frames(harness: &mut FrameHarness, handle: &DesktopHandle) {
     // nothing either reads has moved since. Each such question walks a
     // whole app.
     assert_eq!(
-        harness.settled_history_frames() - settled,
+        harness
+            .settled_history_frames()
+            .checked_sub(settled)
+            .expect("settled history frame count never decreases"),
         u64::try_from(frames).unwrap(),
         "every pan frame took its History answer from the frame before: {rows:?}"
     );
@@ -248,7 +254,9 @@ fn ending_a_pan_gesture_still_syncs_the_notes_windows() {
                 .expect("a pan schedules its end even without further input");
             assert!(deadline > ui::time::now(), "the gesture has not ended");
             ui::time::testing::with_monotonic_time(
-                deadline - ui::time::Duration::from_nanos(1),
+                deadline
+                    .checked_sub(ui::time::Duration::from_nanos(1))
+                    .expect("the gesture deadline is at least one nanosecond"),
                 || {
                     let quiet = harness.quiet_frames();
                     let (_, rows) = observe(|| harness.poll_frame().unwrap());
@@ -284,8 +292,8 @@ fn ending_a_pan_gesture_still_syncs_the_notes_windows() {
             }
             if !next_wheel {
                 assert_eq!(
-                    pan_offset(&handle),
-                    offset,
+                    pan_offset(&handle).to_bits(),
+                    offset.to_bits(),
                     "focus does not reframe the strip"
                 );
                 assert!(
