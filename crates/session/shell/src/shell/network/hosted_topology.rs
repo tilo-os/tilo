@@ -89,10 +89,11 @@ impl ShellNetwork {
     /// The peers a headless session's viewers watch `room` through: its
     /// workspace hosts, and the device governing the room, which forwards
     /// a controlling viewer's input as its own. Each is shared every legacy
-    /// window of the room's workspace while the session is watched.
+    /// window of the room's workspace while the session is watched. Called
+    /// every tick, so it reads the governor only from an owner already open.
     pub fn viewer_hosts(&self, room: RoomId) -> std::collections::HashSet<u64> {
         let mut hosts = self.workspace_hosts(room_topic_id(room));
-        if let Ok(owner) = self.native_owner()
+        if let Some(owner) = self.opened_native_owner()
             && let Ok(governor) = owner.with_current(room, |view| {
                 Ok((
                     view.device().device_public_key,
@@ -152,7 +153,7 @@ impl ShellNetwork {
         if salt == 0 {
             return;
         }
-        let Ok(owner) = self.native_owner() else {
+        let Some(owner) = self.opened_native_owner() else {
             return;
         };
         let mut settled = self
