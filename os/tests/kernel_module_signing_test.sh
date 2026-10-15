@@ -6,7 +6,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf -- "$work"' EXIT
 
-crypto="${TILO_CRYPTO_BIN:-$repo/target/debug/tilo-crypto}"
+crypto="${TILO_CRYPTO_BIN:-${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-crypto}"
 if [ ! -x "$crypto" ]; then
   cargo build --manifest-path "$repo/Cargo.toml" -p tilo-crypto
 fi
