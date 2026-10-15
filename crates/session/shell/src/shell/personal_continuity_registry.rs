@@ -650,7 +650,7 @@ pub fn global_registry() -> Arc<Mutex<ContinuationRegistry>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1263,7 +1263,7 @@ mod tests {
 
     /// An app store holding at most `app`, declaring `schema` when given.
     /// Callers hold `process_env`.
-    fn app_store(
+    pub(crate) fn app_store(
         app: &str,
         schema: Option<&str>,
         required: &str,
