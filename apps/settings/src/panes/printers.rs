@@ -464,16 +464,16 @@ impl PrintersModel {
         let (tx, rx) = channel::channel();
         self.refresh_rx = Some(rx);
 
-        if let Err(error) = std::thread::Builder::new()
-            .name("tilo-printer-status".into())
-            .spawn(move || {
+        if let Err(error) = crate::device_read::thread(
+            "tilo-printer-status",
+            Box::new(move || {
                 let _ = tx.send(PrinterSnapshot {
                     printers: service.queues(),
                     jobs: service.jobs(),
                     scanners: service.scanners(),
                 });
-            })
-        {
+            }),
+        ) {
             self.refresh_rx = None;
 
             self.error = Some(t_args(
@@ -491,12 +491,12 @@ impl PrintersModel {
         let (tx, rx) = channel::channel();
         self.discover_rx = Some(rx);
 
-        if let Err(error) = std::thread::Builder::new()
-            .name("tilo-printer-discovery".into())
-            .spawn(move || {
+        if let Err(error) = crate::device_read::thread(
+            "tilo-printer-discovery",
+            Box::new(move || {
                 let _ = tx.send(service.discover());
-            })
-        {
+            }),
+        ) {
             self.discover_rx = None;
 
             self.error = Some(t_args(

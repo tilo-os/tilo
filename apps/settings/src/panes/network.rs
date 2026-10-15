@@ -1385,15 +1385,16 @@ impl NetworkModel {
         let service = Arc::clone(&self.service);
         let initial = !self.loaded;
         let wake = ui::WakeHandle::new();
-        let started = std::thread::Builder::new()
-            .name("settings-network-read".into())
-            .spawn(move || {
+        let started = crate::device_read::thread(
+            "settings-network-read",
+            Box::new(move || {
                 if sender.send(service.snapshot(initial)).is_ok() {
                     wake.wake();
                 }
-            });
+            }),
+        );
         match started {
-            Ok(_) => self.snapshot = Some(receiver),
+            Ok(()) => self.snapshot = Some(receiver),
             Err(error) => self.notice = Some(format!("{}: {error}", t("net-notice-unavailable"))),
         }
         self.changed = true;

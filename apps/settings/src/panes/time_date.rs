@@ -197,39 +197,68 @@ const MAP_ASPECT: f32 = 2.2;
 /// describes the coastlines the cities sit on.
 const WORLD_LAND: &str = include_str!("../../data/world-land.b64");
 
-/// The bytes of standard, padded base64 `text`; line breaks are skipped.
-fn decode_base64(text: &str) -> Vec<u8> {
-    let value = |c: u8| match c {
+/// The value of base64 digit `c`, or `None` for padding and line breaks.
+const fn sextet(c: u8) -> Option<u8> {
+    match c {
         b'A'..=b'Z' => Some(c.wrapping_sub(b'A')),
         b'a'..=b'z' => Some(c.wrapping_sub(b'a').wrapping_add(26)),
         b'0'..=b'9' => Some(c.wrapping_sub(b'0').wrapping_add(52)),
         b'+' => Some(62),
         b'/' => Some(63),
         _ => None,
-    };
-    let sextets: Vec<u8> = text.bytes().filter_map(value).collect();
-    let mut bytes = Vec::with_capacity(sextets.len());
-    for quad in sextets.chunks(4) {
-        let bits = quad
-            .iter()
-            .zip([18_u32, 12, 6, 0])
-            .fold(0_u32, |bits, (&sextet, shift)| {
-                bits | (u32::from(sextet) << shift)
-            });
-        let [_, b0, b1, b2] = bits.to_be_bytes();
-        let whole = [b0, b1, b2];
-        bytes.extend_from_slice(whole.get(..quad.len().saturating_sub(1)).unwrap_or(&whole));
     }
-    bytes
 }
+
+/// How many bytes standard, padded base64 `text` holds.
+const fn decoded_len(mut text: &[u8]) -> usize {
+    let mut digits = 0_usize;
+    while let [c, rest @ ..] = text {
+        if sextet(*c).is_some() {
+            digits = digits.wrapping_add(1);
+        }
+        text = rest;
+    }
+    digits.wrapping_mul(3) / 4
+}
+
+/// The `N` bytes of standard, padded base64 `text`; line breaks are
+/// skipped. Evaluated while compiling, so the app carries the bytes, not
+/// their base64 text and a decoder.
+const fn decode_base64<const N: usize>(mut text: &[u8]) -> [u8; N] {
+    let mut out = [0_u8; N];
+    let mut slots: &mut [u8] = &mut out;
+    let mut bits = 0_u32;
+    let mut held = 0_u32;
+    while let [c, rest @ ..] = text {
+        text = rest;
+        let Some(value) = sextet(*c) else {
+            continue;
+        };
+        bits = bits.wrapping_shl(6) | u32::from_le_bytes([value, 0, 0, 0]);
+        held = held.wrapping_add(6);
+        if held >= 8 {
+            held = held.wrapping_sub(8);
+            let [byte, ..] = bits.wrapping_shr(held).to_le_bytes();
+            bits &= 1_u32.wrapping_shl(held).wrapping_sub(1);
+            if let [slot, tail @ ..] = slots {
+                *slot = byte;
+                slots = tail;
+            }
+        }
+    }
+    out
+}
+
+/// [`WORLD_LAND`]'s bytes.
+static WORLD_LAND_BYTES: [u8; decoded_len(WORLD_LAND.as_bytes())] =
+    decode_base64(WORLD_LAND.as_bytes());
 
 /// Walk [`WORLD_LAND`]: each ring is a little-endian `u16` point count, its
 /// first point as two `i16` (longitude, latitude) in tenths of a degree,
 /// then one `i8` pair per further point, the step from the point before.
 /// `visit` gets each point in degrees and whether it starts a ring.
 fn walk_world_land(mut visit: impl FnMut(f64, f64, bool)) {
-    let decoded = decode_base64(WORLD_LAND);
-    let mut bytes = decoded.as_slice();
+    let mut bytes = WORLD_LAND_BYTES.as_slice();
     while let [n0, n1, x0, x1, y0, y1, rest @ ..] = bytes {
         let count = usize::from(u16::from_le_bytes([*n0, *n1]));
         let mut longitude = i32::from(i16::from_le_bytes([*x0, *x1]));
