@@ -26,6 +26,7 @@ mod native_ingress;
 mod native_replay_budget_tests;
 #[cfg(test)]
 mod paired_continuity_tests;
+mod peer_sync_worker;
 mod personal_device_peers;
 #[cfg(test)]
 mod reachability_tests;
@@ -1358,6 +1359,7 @@ fn write_pending_invitations(path: &Path, bytes: &[u8]) {
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     native_admission: native_admission::State,
+    peer_sync_worker: peer_sync_worker::State,
     hosted_topology: hosted_topology::State,
     relay_rooms: relay_rooms::State,
     record_content: record_content::State,
@@ -2094,6 +2096,7 @@ impl ShellNetwork {
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
             native_admission: native_admission::State::default(),
+            peer_sync_worker: peer_sync_worker::State::default(),
             hosted_topology: hosted_topology::State::default(),
             relay_rooms: relay_rooms::State::default(),
             record_content: record_content::State::default(),
@@ -6413,7 +6416,10 @@ impl ShellNetwork {
         self.reconcile_personal_workspaces();
         self.refresh_home_peer_hosts_periodically();
         self.apply_published_home_peers();
-        self.finish_shared_rooms();
+        match admission {
+            Admission::InPlace => self.finish_shared_rooms(),
+            Admission::OffLoop => self.finish_shared_rooms_off_loop(),
+        }
         self.live_keepalive();
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
@@ -8189,6 +8195,7 @@ pub(crate) fn shell_network_for_test(
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
         native_admission: native_admission::State::default(),
+        peer_sync_worker: peer_sync_worker::State::default(),
         hosted_topology: hosted_topology::State::default(),
         relay_rooms: relay_rooms::State::default(),
         record_content: record_content::State::default(),

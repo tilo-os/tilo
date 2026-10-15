@@ -1819,6 +1819,7 @@ peer-sync-resend-failed = Could not resend: { $error }
 peer-sync-invite-canceled = Invite canceled
 peer-sync-cancel-failed = Could not cancel: { $error }
 peer-sync-unexpected-response = Unexpected collaboration response
+peer-sync-working = Working…
 peer-sync-using-verified-identity = Using verified identity · { $verification }
 peer-sync-ask-for-identity = Ask them to send their Tilo identity, then paste it here.
 peer-sync-name-required = Say who this invite is for

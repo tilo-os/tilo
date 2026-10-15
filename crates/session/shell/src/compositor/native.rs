@@ -417,7 +417,6 @@ use crate::compositor::test_control::{
     parse_request, serialise_response,
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
-use crate::shell::overlay_host::PeerSyncRequest;
 
 /// The lock surface hides the complete desktop tree.  Its background widgets
 /// may legitimately keep animating (an opening app, a video, a closing
@@ -7391,9 +7390,6 @@ fn priority_route(
     }
 }
 
-/// How long an invite minted from the palette stays valid.
-const INVITE_EXPIRY_SECONDS: u64 = 3600;
-
 fn active_physical_gamepad_binding(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
@@ -7883,75 +7879,12 @@ fn install_session_peer_sync(
         ));
     });
     install_legacy_streams(state, &net);
-    let bridge_net = Arc::clone(&net);
-    frame_builder
-        .host_mut()
-        .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
-            let active = tree_handle.read().desktop.active;
-            match req {
-                PeerSyncRequest::PrepareInvitation => Ok(bridge_net.prepare_invitation()),
-                PeerSyncRequest::ExportIdentity => bridge_net
-                    .person_identity_card(active)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::IssueInviteFor {
-                    name,
-                    role,
-                    recipient_user_public_key,
-                } => bridge_net
-                    .issue_invite_bound_with_role(
-                        active,
-                        INVITE_EXPIRY_SECONDS,
-                        &name,
-                        recipient_user_public_key,
-                        role,
-                    )
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::IssueInvitation(terms) => bridge_net
-                    .issue_invitation(active, &terms)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::AcceptInvite(token) => {
-                    bridge_net.accept_peer_invitation(active, &token)
-                }
-                PeerSyncRequest::PollEnrollment(id) => bridge_net.poll_enrollment(id),
-                PeerSyncRequest::CancelEnrollment(id) => bridge_net.cancel_enrollment(id),
-                PeerSyncRequest::ListPendingInvitations => {
-                    let room = tree_handle
-                        .read()
-                        .desktop
-                        .active_workspace()
-                        .map(|workspace| workspace.room)
-                        .ok_or_else(|| "no active workspace".to_string())?;
-                    Ok(
-                        crate::shell::overlay_host::PeerSyncResponse::PendingInvitations(
-                            bridge_net
-                                .pending_invitations(room)
-                                .into_iter()
-                                .map(|invite| {
-                                    crate::shell::overlay_host::PendingInvitationSummary {
-                                        id: invite.id,
-                                        name: invite.name,
-                                        role: invite.role,
-                                        expiry_unix_seconds: invite.expiry_unix_seconds,
-                                    }
-                                })
-                                .collect(),
-                        ),
-                    )
-                }
-                PeerSyncRequest::ResendInvitation(id) => bridge_net
-                    .resend_invitation(&id)
-                    .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                PeerSyncRequest::CancelInvitation(id) => {
-                    if bridge_net.cancel_invitation(&id) {
-                        Ok(crate::shell::overlay_host::PeerSyncResponse::Message(
-                            "canceled".into(),
-                        ))
-                    } else {
-                        Err("invitation is no longer pending".into())
-                    }
-                }
-            }
-        }));
+    // Invitations, redemptions and enrollments wait on relays and the
+    // disk: chrome's requests run on the network's worker, never here.
+    net.start_peer_sync_worker();
+    frame_builder.host_mut().set_peer_sync_worker(
+        crate::shell::overlay_host::PeerSyncWorker::for_network(&net),
+    );
     net
 }
 
