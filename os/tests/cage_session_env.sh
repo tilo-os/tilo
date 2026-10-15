@@ -19,6 +19,7 @@ mkdir -p "$work/bin"
 cat >"$work/bin/cage" <<'EOF'
 #!/bin/sh
 printf 'args=%s\n' "$*"
+printf 'umask=%s\n' "$(umask)"
 for name in WLR_RENDERER WLR_DRM_NO_ATOMIC WLR_NO_HARDWARE_CURSORS TILO_STARTUP_METRICS_PATH; do
   eval "value=\${$name-unset}"
   printf '%s=%s\n' "$name" "$value"
@@ -94,6 +95,10 @@ grep -Eq "^d +$default_dir +0755 +greetd +greetd " "$repo/os/usr/lib/tmpfiles.d/
 out="$(run TILO_STARTUP_METRICS_PATH=/tmp/diagnostic.json)"
 grep -qx 'TILO_STARTUP_METRICS_PATH=/tmp/diagnostic.json' <<<"$out" \
   && ok "an explicit startup record path is kept" || bad "the wrapper replaced an explicit record path: $out"
+out="$(umask 0077; run)"
+grep -qx 'umask=0022' <<<"$out" \
+  && ok "the record stays readable to the health check under a strict session umask" \
+  || bad "the greeter's record would be private to it: $out"
 out="$(program=/usr/bin/tilo-installer run_program)"
 grep -qx 'TILO_STARTUP_METRICS_PATH=unset' <<<"$out" \
   && ok "the installer does not write the greeter's record" || bad "the installer was given the greeter's record: $out"
