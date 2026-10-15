@@ -2132,3 +2132,427 @@ async fn agents_in_a_room_share_its_chat_record_and_see_each_others_channels() {
     ana.close();
     host.relay.shutdown().await;
 }
+
+/// An agent granted `apps` that takes its tasks as written steps, as a
+/// scenario's agents do, admitted to the room on `host`, with `content` as
+/// its store.
+async fn written_agent(
+    root: &ed25519_dalek::SigningKey,
+    host: &support::TestHost,
+    host_device: &support::Device,
+    (id, name): (&str, &str),
+    apps: &[&str],
+    content: tilo_content::ContentStore,
+) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
+    let device = enrol(
+        root,
+        &format!("Agent: {name}"),
+        CertificationPolicy::agent().ceiling,
+    );
+    let now = tilo_clock::unix_now_ns();
+    let delegation = AgentDelegation::sign(
+        root,
+        device.cert.device_public_key,
+        id,
+        name,
+        [0x0f, 0x4c, 0x5c],
+        AgentScope {
+            rooms: vec![ROOM.into()],
+            apps: apps.iter().map(|app| (*app).to_owned()).collect(),
+            may_confirm: false,
+        },
+        now,
+        now + 3_600_000_000_000,
+    )
+    .unwrap();
+    host.relay.register_agent(delegation.clone()).unwrap();
+    let control = AgentControl::new(delegation.clone());
+    let mut agent = AgentParticipant::start(
+        ParticipantConfig {
+            host: host.iroh(),
+            host_cert: host_device.cert.clone(),
+            room: ROOM.into(),
+            content,
+        },
+        AgentIdentity {
+            key: device.key.clone(),
+            cert: device.cert,
+            delegation,
+        },
+        control.clone(),
+        catalogue(),
+        Box::new(DirectPlanner),
+    )
+    .unwrap();
+    wait_for("the agent to be admitted", || {
+        agent.pump();
+        let waiting = control.status() == AgentStatus::Waiting;
+        async move { waiting.then_some(()) }
+    })
+    .await;
+    (agent, control)
+}
+
+/// Give each of `agents` its task (`tasks`, written steps) at once and
+/// pump them all until every task ended: their ends, in order.
+async fn run_together(
+    agents: &mut [(&mut AgentParticipant, &AgentControl)],
+    tasks: &[String],
+) -> Vec<tilo_relay_protocol::agents::AgentTask> {
+    let ids: Vec<String> = agents
+        .iter()
+        .zip(tasks)
+        .map(|((_, control), task)| control.message(task).unwrap())
+        .collect();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        for (agent, _) in agents.iter_mut() {
+            agent.pump();
+        }
+        let ended: Vec<Option<tilo_relay_protocol::agents::AgentTask>> = agents
+            .iter()
+            .zip(&ids)
+            .map(|((_, control), id)| {
+                control
+                    .info()
+                    .tasks
+                    .into_iter()
+                    .find(|info| info.id == *id)
+                    .filter(|info| !matches!(info.state, TaskState::Queued | TaskState::Running))
+            })
+            .collect();
+        if ended.iter().all(Option::is_some) {
+            return ended.into_iter().flatten().collect();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the tasks did not end: {ended:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Pump `agents` for half a second, so what each published reaches the
+/// others.
+async fn settle(agents: &mut [&mut AgentParticipant]) {
+    let until = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < until {
+        for agent in agents.iter_mut() {
+            agent.pump();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// The records of `app` `agent` has seen and not opened.
+fn known_of(agent: &AgentParticipant, app: &str) -> Vec<DocumentRoute> {
+    agent
+        .known_records()
+        .into_iter()
+        .filter(|route| route.app_id == app)
+        .collect()
+}
+
+/// A task of written steps, one per `(app, resource, action, arguments)`,
+/// naming no record.
+fn written(steps: &[(&str, &str, &str, serde_json::Value)]) -> String {
+    serde_json::Value::Array(
+        steps
+            .iter()
+            .map(|(app, resource, action, arguments)| {
+                serde_json::json!({
+                    "app": app, "resource": resource, "action": action, "arguments": arguments,
+                })
+            })
+            .collect(),
+    )
+    .to_string()
+}
+
+/// Assert every step of `task` completed.
+fn completed(task: &tilo_relay_protocol::agents::AgentTask) {
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    assert!(!task.steps.is_empty(), "{task:?}");
+    for step in &task.steps {
+        assert_eq!(step.state, TaskState::Completed, "{step:?} of {task:?}");
+    }
+}
+
+/// The casework flow: Ops imports the claims workbook (written steps
+/// naming no record) into the workbook the host opened for its task,
+/// leaving no blank one beside it; Cass's later written `set-cells` on the
+/// imported `Cases` sheet, naming no record, lands in that workbook rather
+/// than in a new, blank one ("no sheet Cases"), and Ops's export holds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_later_agents_step_naming_no_record_lands_in_the_workbook_another_agent_imported() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let ops_content = tilo_content::ContentStore::memory();
+    let (mut ops, ops_control) = written_agent(
+        &root,
+        &host,
+        &host_device,
+        ("ops", "Ops"),
+        &[SHEETS],
+        ops_content.clone(),
+    )
+    .await;
+    let (mut cass, cass_control) = written_agent(
+        &root,
+        &host,
+        &host_device,
+        ("cass", "Cass"),
+        &[SHEETS],
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+
+    let text = |raw: &str| {
+        Some(sheets::xlsx::ImportedCell {
+            raw: raw.to_owned(),
+            format: sheets::model::CellFormat::General,
+            formula: None,
+            bold: false,
+        })
+    };
+    let admin = sheets::xlsx::xlsx_bytes(&[sheets::xlsx::SheetTable {
+        name: "Cases".into(),
+        hidden: false,
+        rows: vec![
+            vec![text("Case"), text("Name"), text("Status")],
+            vec![text("HM-48213"), text("Lena Hoffmann"), text("Open")],
+        ],
+    }])
+    .unwrap();
+    let hash = ops_content.put(&admin).unwrap();
+    let import = written(&[(
+        SHEETS,
+        "sheets.workbook",
+        "import-xlsx-content",
+        serde_json::json!({ "content": format!("tilo.content:{hash}"), "title": "Claims admin" }),
+    )]);
+    let [imported] = run_together(&mut [(&mut ops, &ops_control)], &[import])
+        .await
+        .try_into()
+        .unwrap();
+    completed(&imported);
+
+    wait_for("Cass to see Ops's workbook", || {
+        ops.pump();
+        cass.pump();
+        let seen = !known_of(&cass, SHEETS).is_empty();
+        async move { seen.then_some(()) }
+    })
+    .await;
+    settle(&mut [&mut ops, &mut cass]).await;
+    let [workbook] = known_of(&cass, SHEETS).try_into().unwrap_or_else(|known| {
+        panic!("the import went into the workbook the host opened for it, no blank one: {known:?}")
+    });
+
+    let decide = written(&[(
+        SHEETS,
+        "sheets.workbook",
+        "set-cells",
+        serde_json::json!({ "sheet": "Cases", "start": "C2", "rows": [["Approved"]] }),
+    )]);
+    let [decided] = run_together(&mut [(&mut cass, &cass_control)], &[decide])
+        .await
+        .try_into()
+        .unwrap();
+    completed(&decided);
+    assert!(
+        cass.app(&workbook).is_some(),
+        "Cass wrote in Ops's workbook"
+    );
+    settle(&mut [&mut ops, &mut cass]).await;
+    assert_eq!(
+        known_of(&ops, SHEETS),
+        Vec::<DocumentRoute>::new(),
+        "Cass made no workbook of her own"
+    );
+
+    let export = written(&[(
+        SHEETS,
+        "sheets.workbook",
+        "export-xlsx-content",
+        serde_json::json!({}),
+    )]);
+    let [exported] = run_together(&mut [(&mut ops, &ops_control)], &[export])
+        .await
+        .try_into()
+        .unwrap();
+    completed(&exported);
+    let [address] = exported.steps[0].content.as_slice() else {
+        panic!("one exported workbook: {exported:?}");
+    };
+    let bytes = ops_content
+        .read(tilo_actions::content_hash(address).unwrap())
+        .unwrap();
+    let tables = sheets::xlsx::parse_xlsx(&bytes).unwrap();
+    let claims = tables
+        .iter()
+        .find(|table| table.name == "Cases")
+        .expect("the export holds the imported sheet");
+    let status = claims.rows[1][2].as_ref().map(|cell| cell.raw.as_str());
+    assert_eq!(
+        status,
+        Some("Approved"),
+        "Cass's decision is in Ops's workbook"
+    );
+
+    ops.close();
+    cass.close();
+    host.relay.shutdown().await;
+}
+
+/// The visa-form flow: Fay imports a letter (`import-docx-content`, naming
+/// no record) while Eve writes the evidence document (`write-markdown`,
+/// naming none). Each lands in the document the host opened for its task,
+/// so neither replaces the other's and no blank document is left over; a
+/// second import of Fay's, once both documents hold content, opens a new
+/// document rather than replacing either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_import_and_another_agents_writing_each_keep_their_own_document() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let fay_content = tilo_content::ContentStore::memory();
+    let (mut fay, fay_control) = written_agent(
+        &root,
+        &host,
+        &host_device,
+        ("fay", "Fay"),
+        &[WRITER],
+        fay_content.clone(),
+    )
+    .await;
+    let (mut eve, eve_control) = written_agent(
+        &root,
+        &host,
+        &host_device,
+        ("eve", "Eve"),
+        &[WRITER],
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+
+    // The letter, written and exported in a document never published.
+    let maker = tilo_agent_participant::ConfinedReplica::open(
+        &catalogue(),
+        WRITER,
+        ROOM,
+        "maker",
+        true,
+        Seed::New,
+    )
+    .unwrap()
+    .with_content(fay_content.clone());
+    maker
+        .invoke(
+            &ActionAddress::new("tilo.rich-text", "write-markdown"),
+            serde_json::json!({ "markdown": "# Employer letter\n\nThe post is permanent." })
+                .as_object()
+                .unwrap(),
+            false,
+        )
+        .unwrap();
+    let letter = maker
+        .invoke(
+            &ActionAddress::new("tilo.rich-text", "export-content"),
+            serde_json::json!({ "format": "docx" }).as_object().unwrap(),
+            false,
+        )
+        .unwrap()
+        .resources
+        .first()
+        .cloned()
+        .expect("the letter is exported");
+    let import = written(&[(
+        WRITER,
+        "tilo.rich-text",
+        "import-docx-content",
+        serde_json::json!({ "content": letter }),
+    )]);
+    let evidence = written(&[(
+        WRITER,
+        "tilo.rich-text",
+        "write-markdown",
+        serde_json::json!({ "markdown": "# Evidence upload\n\n## Identity" }),
+    )]);
+    // Both have stopped waiting for the room to settle: each plans its
+    // task at once, before the other's document arrives.
+    settle(&mut [&mut fay, &mut eve]).await;
+    let [imported, wrote] = run_together(
+        &mut [(&mut fay, &fay_control), (&mut eve, &eve_control)],
+        &[import.clone(), evidence],
+    )
+    .await
+    .try_into()
+    .unwrap();
+    completed(&imported);
+    completed(&wrote);
+
+    wait_for("each to see the other's document", || {
+        fay.pump();
+        eve.pump();
+        let seen = !known_of(&fay, WRITER).is_empty() && !known_of(&eve, WRITER).is_empty();
+        async move { seen.then_some(()) }
+    })
+    .await;
+    settle(&mut [&mut fay, &mut eve]).await;
+    let [eves] = known_of(&fay, WRITER)
+        .try_into()
+        .unwrap_or_else(|known| panic!("Eve wrote in one document: {known:?}"));
+    let [fays] = known_of(&eve, WRITER).try_into().unwrap_or_else(|known| {
+        panic!("Fay imported into the document the host opened for her, no blank one: {known:?}")
+    });
+    let holds = |agent: &mut AgentParticipant, route: &DocumentRoute| {
+        agent.open(WRITER, Some(&route.record)).unwrap();
+        body(agent.app(route).unwrap())
+    };
+    let fay_holds = holds(&mut eve, &fays);
+    assert!(fay_holds.contains("Employer letter"), "{fay_holds}");
+    assert!(!fay_holds.contains("Evidence upload"), "{fay_holds}");
+    let eve_holds = holds(&mut fay, &eves);
+    assert!(eve_holds.contains("Evidence upload"), "{eve_holds}");
+    assert!(!eve_holds.contains("Employer letter"), "{eve_holds}");
+
+    // Both documents hold content now: Fay's second import opens a new one.
+    let [again] = run_together(&mut [(&mut fay, &fay_control)], &[import])
+        .await
+        .try_into()
+        .unwrap();
+    completed(&again);
+    settle(&mut [&mut fay, &mut eve]).await;
+    assert_eq!(
+        known_of(&eve, WRITER).len(),
+        1,
+        "the second import is in a third document"
+    );
+    let eve_holds = body(eve.app(&fays).unwrap());
+    assert!(!eve_holds.contains("Evidence upload"), "{eve_holds}");
+    let eve_holds = body(fay.app(&eves).unwrap());
+    assert!(eve_holds.contains("Evidence upload"), "{eve_holds}");
+    assert!(!eve_holds.contains("Employer letter"), "{eve_holds}");
+
+    fay.close();
+    eve.close();
+    host.relay.shutdown().await;
+}

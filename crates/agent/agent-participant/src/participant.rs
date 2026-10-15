@@ -25,6 +25,8 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use automerge::ReadDoc as _;
+
 use crate::apps::{AppCatalogue, Seed};
 use crate::control::{AgentControl, AgentIdentity};
 use crate::planner::{
@@ -719,29 +721,45 @@ impl Running {
     }
 
     /// The record a step naming none acts on, among `open`, the records
-    /// the agent has open: the latest of its app the task opened new, else
-    /// (unless it imports) the latest of its app the task acted on, else
-    /// any open. `None` opens a new record. An import replaces what a
-    /// document holds, so one naming no record never lands in a record
-    /// another person or task is writing, only in one this task made.
+    /// the agent has open, `blank` saying which of them hold only what a
+    /// new record starts with. An import replaces what a document holds, so
+    /// one naming no record goes only to a blank record this task made (the
+    /// one the host opened for it): never one another person or task is
+    /// writing, nor one the task already filled. Other steps act on the
+    /// latest of their app the task made, else the latest it acted on, else
+    /// one open, written ones first. `None` opens a new record.
     fn record_for<'a>(
         &self,
         step: &Step,
         open: impl IntoIterator<Item = &'a DocumentRoute>,
+        blank: impl Fn(&DocumentRoute) -> bool,
     ) -> Option<DocumentRoute> {
         let of_app = |route: &&DocumentRoute| route.app_id == step.app;
-        if let Some(made) = self.made.iter().rev().find(of_app) {
-            return Some(made.clone());
-        }
         if imports(step) {
-            return None;
+            return self
+                .made
+                .iter()
+                .rev()
+                .filter(of_app)
+                .find(|route| blank(route))
+                .cloned();
         }
-        self.touched
-            .iter()
-            .rev()
-            .find(of_app)
-            .or_else(|| open.into_iter().find(of_app))
-            .cloned()
+        if let Some(route) = self.made.iter().rev().find(of_app) {
+            return Some(route.clone());
+        }
+        if let Some(route) = self.touched.iter().rev().find(of_app) {
+            return Some(route.clone());
+        }
+        let open: Vec<&DocumentRoute> = open.into_iter().filter(of_app).collect();
+        open.iter()
+            .find(|route| !blank(route))
+            .or_else(|| open.first())
+            .map(|route| (*route).clone())
+    }
+
+    /// Whether `route` is a record this task made or acted on.
+    fn holds(&self, route: &DocumentRoute) -> bool {
+        self.made.contains(route) || self.touched.contains(route)
     }
 
     /// The content a placeholder in a step of `app` stands for: the latest
@@ -1208,6 +1226,13 @@ pub struct AgentParticipant {
     /// that is never published: the operations a plan may name before the
     /// app is open ([`PlanContext::previews`]).
     previews: BTreeMap<String, Vec<ActionDescriptor>>,
+    /// How many changes a new record of each app holds (its genesis), read
+    /// from its preview: a record holding no more is blank
+    /// ([`Self::blank`]).
+    genesis_changes: BTreeMap<String, u64>,
+    /// The records the host opened new for the current task before its
+    /// plan ran ([`Self::open_new`]), until its run takes them as made.
+    task_made: Vec<DocumentRoute>,
     /// The host admitted the room; everything it replayed has arrived.
     ready: bool,
     /// When the room last delivered a record the agent had not seen, since
@@ -1353,6 +1378,8 @@ impl AgentParticipant {
             presence_at_ms: 0,
             running: None,
             previews: BTreeMap::new(),
+            genesis_changes: BTreeMap::new(),
+            task_made: Vec::new(),
             ready: false,
             settling: None,
             finishing: None,
@@ -1741,6 +1768,7 @@ impl AgentParticipant {
         self.end_keys_wait();
         self.previous_touched = std::mem::take(&mut self.task_touched);
         self.task_read.clear();
+        self.task_made.clear();
         // What arrived before the task began is in the room it is planned on.
         self.news.clear();
         self.news_from.clear();
@@ -1919,6 +1947,7 @@ impl AgentParticipant {
         match steps {
             Ok(steps) if !continues => {
                 let mut running = Running::new(task, text, steps, read);
+                running.made = std::mem::take(&mut self.task_made);
                 running.by_model = by_model;
                 running.looked_at(rendered);
                 self.running = Some(running);
@@ -1926,6 +1955,7 @@ impl AgentParticipant {
             }
             Ok(steps) => {
                 if let Some(running) = self.running.as_mut().filter(|_| running_it) {
+                    running.made.append(&mut self.task_made);
                     running.by_model |= by_model;
                     for (app, seen) in read {
                         running.observe(app, seen);
@@ -2421,18 +2451,51 @@ impl AgentParticipant {
     }
 
     /// The record `step`, which names none, acts on
-    /// ([`Running::record_for`]): one open, or a new one the task made.
+    /// ([`Running::record_for`]): one open, else (unless it imports) the
+    /// room's only record of its app that holds anything, else a new one
+    /// the task made. A blank record the agent merely holds gives way to
+    /// that written one: it is what another agent filled (the workbook it
+    /// imported), where a new record would hold none of it.
     fn unnamed_record(&mut self, step: &Step) -> Result<DocumentRoute, String> {
-        let found = self.running.as_ref().map_or_else(
-            || {
-                self.apps
-                    .keys()
-                    .find(|route| route.app_id == step.app)
-                    .cloned()
-            },
-            |running| running.record_for(step, self.apps.keys()),
-        );
-        if let Some(route) = found.filter(|route| self.apps.contains_key(route)) {
+        let open: Vec<DocumentRoute> = self
+            .apps
+            .keys()
+            .filter(|route| route.app_id == step.app)
+            .cloned()
+            .collect();
+        let blank: Vec<DocumentRoute> = open
+            .iter()
+            .filter(|route| self.blank(route))
+            .cloned()
+            .collect();
+        let found = match self.running.as_ref() {
+            Some(running) => running.record_for(step, &open, |route| blank.contains(route)),
+            None => open
+                .iter()
+                .find(|route| !blank.contains(route))
+                .or_else(|| open.first())
+                .cloned(),
+        };
+        let found = found.filter(|route| self.apps.contains_key(route));
+        let holds_nothing = found.as_ref().is_none_or(|route| {
+            blank.contains(route)
+                && !self
+                    .running
+                    .as_ref()
+                    .is_some_and(|running| running.holds(route))
+        });
+        if holds_nothing && !imports(step) {
+            let known: Vec<DocumentRoute> = self
+                .unopened
+                .routes()
+                .into_iter()
+                .filter(|route| route.app_id == step.app)
+                .collect();
+            if let Some(written) = self.only_written(known) {
+                return self.open(&step.app, Some(&written.record));
+            }
+        }
+        if let Some(route) = found {
             return Ok(route);
         }
         let route = self.open(&step.app, None)?;
@@ -2442,6 +2505,39 @@ impl AgentParticipant {
             running.made.push(route.clone());
         }
         Ok(route)
+    }
+
+    /// The one of `routes`, records of one app the agent has not opened,
+    /// that holds anything, when exactly one does.
+    fn only_written(&mut self, routes: Vec<DocumentRoute>) -> Option<DocumentRoute> {
+        let mut written = routes.into_iter().filter(|route| !self.blank(route));
+        match (written.next(), written.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    }
+
+    /// Whether the record at `route` (open, or seen and not opened) holds
+    /// only what a new record of its app starts with: nobody changed it
+    /// since its genesis. Not known (the app could not be previewed, the
+    /// record not read) is not blank.
+    fn blank(&mut self, route: &DocumentRoute) -> bool {
+        let Some(genesis) = self.genesis_changes(&route.app_id) else {
+            return false;
+        };
+        let changes = match self.apps.get(route) {
+            Some(app) => app.read(|doc| doc.stats().num_changes),
+            None => self.unopened.changes(route),
+        };
+        changes.is_some_and(|changes| changes <= genesis)
+    }
+
+    /// How many changes a new record of `app` holds ([`Self::preview`]).
+    fn genesis_changes(&mut self, app: &str) -> Option<u64> {
+        if !self.genesis_changes.contains_key(app) {
+            self.preview(app)?;
+        }
+        self.genesis_changes.get(app).copied()
     }
 
     /// Commit whatever the open records changed since the last commit.
@@ -2672,6 +2768,9 @@ impl AgentParticipant {
                     if let Err(error) = self.peer.open_route(route.clone()) {
                         tracing::warn!(%error, "agent: keys for a new record were not asked for");
                     }
+                    // The task's to fill: an import naming no record goes
+                    // here rather than into a second, new one.
+                    self.task_made.push(route.clone());
                     made.push(route);
                 }
                 Err(error) => tracing::warn!(%error, app, "agent: a new record did not open"),
@@ -2714,7 +2813,9 @@ impl AgentParticipant {
             named.push(route);
         }
         // A task about an app the room has one record of means that one,
-        // titled or not (a spreadsheet has no title to name it by).
+        // titled or not (a spreadsheet has no title to name it by). A blank
+        // record (one another task opened new and has not filled yet) is
+        // not counted: it holds nothing the task could mean.
         for app in apps {
             if !crate::model::task_names_app(task, app)
                 || named.iter().any(|route| route.app_id == *app)
@@ -2722,9 +2823,15 @@ impl AgentParticipant {
             {
                 continue;
             }
-            let mut records = known.iter().filter(|(route, _)| route.app_id == *app);
-            if let (Some((only, _)), None) = (records.next(), records.next()) {
-                named.push(only);
+            let routes: Vec<DocumentRoute> = known
+                .iter()
+                .filter(|(route, _)| route.app_id == *app)
+                .map(|(route, _)| route.clone())
+                .collect();
+            if let Some(only) = self.only_written(routes)
+                && let Some((route, _)) = known.iter().find(|(route, _)| *route == only)
+            {
+                named.push(route);
             }
         }
         let mut opened = Vec::new();
@@ -2790,7 +2897,12 @@ impl AgentParticipant {
             Seed::New,
         );
         let descriptors = match record {
-            Ok(record) => record.survey_with_effects(),
+            Ok(record) => {
+                if let Some(changes) = record.read(|doc| doc.stats().num_changes) {
+                    self.genesis_changes.insert(app.to_owned(), changes);
+                }
+                record.survey_with_effects()
+            }
             Err(error) => {
                 tracing::warn!(%error, %app, "agent: an app could not be previewed");
                 return None;
@@ -4311,29 +4423,61 @@ mod tests {
     }
 
     /// An import naming no record never lands in a document another agent
-    /// is writing that this task only opened: it goes to a record the task
-    /// made, or a new one. Other steps naming no record act on the record
-    /// the task made or acted on, else any open; a video project's
+    /// is writing that this task only opened, nor in one the task already
+    /// filled: only in a blank record the task made, else a new one. Other
+    /// steps naming no record act on the record the task made or acted on,
+    /// else an open one that holds something; a video project's
     /// `import-content` adds media and is not an import.
     #[test]
-    fn an_import_naming_no_record_goes_to_a_record_the_task_made() {
+    fn an_import_naming_no_record_goes_only_to_a_blank_record_the_task_made() {
         let writer = "so.tilo.word-processor";
         let theirs = message_route(writer, "eve-evidence");
         let other = message_route(writer, "older");
         let import = invoke(writer, "word-processor.document", "import-docx-content");
         let append = invoke(writer, "word-processor.document", "append-paragraph");
+        let none_blank = |_: &DocumentRoute| false;
         let mut running = Running::new("t1".into(), "x".into(), Vec::new(), Vec::new());
         running.touched.push(theirs.clone());
         let open = [other.clone(), theirs.clone()];
-        assert_eq!(running.record_for(&import, &open), None, "a new record");
-        assert_eq!(running.record_for(&append, &open), Some(theirs));
+        assert_eq!(
+            running.record_for(&import, &open, none_blank),
+            None,
+            "a new record"
+        );
+        assert_eq!(
+            running.record_for(&append, &open, none_blank),
+            Some(theirs.clone())
+        );
         let fresh = Running::new("t2".into(), "x".into(), Vec::new(), Vec::new());
-        assert_eq!(fresh.record_for(&append, &open), Some(other));
+        assert_eq!(
+            fresh.record_for(&append, &open, none_blank),
+            Some(other.clone())
+        );
+        let other_blank = |route: &DocumentRoute| *route == other;
+        assert_eq!(
+            fresh.record_for(&append, &open, other_blank),
+            Some(theirs.clone()),
+            "a written record before a blank one"
+        );
 
         let mine = message_route(writer, "mine");
+        let mine_blank = |route: &DocumentRoute| *route == mine;
         running.made.push(mine.clone());
-        assert_eq!(running.record_for(&import, &open), Some(mine.clone()));
-        assert_eq!(running.record_for(&append, &open), Some(mine));
+        assert_eq!(
+            running.record_for(&import, &open, mine_blank),
+            Some(mine.clone()),
+            "the blank record the host opened for the task"
+        );
+        assert_eq!(
+            running.record_for(&import, &open, none_blank),
+            None,
+            "the task's record holds content: a new one"
+        );
+        assert_eq!(
+            running.record_for(&append, &open, none_blank),
+            Some(mine.clone())
+        );
+        assert!(running.holds(&mine) && running.holds(&theirs) && !running.holds(&other));
 
         assert!(imports(&import));
         assert!(imports(&invoke(

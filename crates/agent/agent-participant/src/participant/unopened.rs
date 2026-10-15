@@ -344,6 +344,9 @@ pub(super) struct Unopened {
     /// ([`Self::open_text`]), as this holds what the participant reads of
     /// its records.
     texts: HashMap<DocumentRoute, (Stamp, Arc<str>)>,
+    /// How many changes each record held when last asked
+    /// ([`Self::changes`]), and when it had last changed then.
+    counts: HashMap<DocumentRoute, (u64, u64)>,
     changes_seen: u64,
 }
 
@@ -364,6 +367,7 @@ impl Unopened {
             arrived: HashMap::new(),
             titles: HashMap::new(),
             texts: HashMap::new(),
+            counts: HashMap::new(),
             changes_seen: 0,
         }
     }
@@ -507,6 +511,29 @@ impl Unopened {
         })
     }
 
+    /// How many changes the unopened record at `route` holds, counted once
+    /// per change of it: whether anyone wrote in it since its genesis.
+    /// `None` for the shared desktop, a record the room does not have, or
+    /// one whose changes wait for the isolate.
+    pub(super) fn changes(&mut self, route: &DocumentRoute) -> Option<u64> {
+        let changed = self.arrived.get(route).copied().unwrap_or(0);
+        if let Some((at, count)) = self.counts.get(route)
+            && *at == changed
+        {
+            return Some(*count);
+        }
+        let doc = match self.held.get_mut(route)?.document() {
+            Ok(doc) => doc,
+            Err(reason) => {
+                tracing::warn!(%reason, "agent: a record's changes wait for the isolate");
+                return None;
+            }
+        };
+        let count = doc.stats().num_changes;
+        self.counts.insert(route.clone(), (changed, count));
+        Some(count)
+    }
+
     /// Drop the texts of records `keep` no longer holds.
     pub(super) fn keep_texts(&mut self, keep: impl Fn(&DocumentRoute) -> bool) {
         self.texts.retain(|route, _| keep(route));
@@ -521,6 +548,7 @@ impl Unopened {
     /// Stop holding `route`: its replica holds it now.
     pub(super) fn forget(&mut self, route: &DocumentRoute) {
         self.titles.remove(route);
+        self.counts.remove(route);
         if *route == self.desktop_route {
             self.desktop = None;
         } else {
