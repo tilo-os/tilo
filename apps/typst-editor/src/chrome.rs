@@ -45,7 +45,7 @@ pub enum Command {
 
 type Queue = Rc<RefCell<Vec<Command>>>;
 
-/// Compiler status shared by the header and bottom status controls.
+/// Compiler status shown only in the bottom status controls.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Diagnostics {
     errors: usize,
@@ -149,13 +149,17 @@ fn build_toolbar(
     actions: Option<&ui::framework::Actions<crate::resource::Workspace>>,
 ) -> Toolbar {
     let mut toolbar = Toolbar::new(Orientation::Horizontal);
-    let status_id = |name: &str| {
-        if export {
-            format!("typst.{name}")
-        } else {
-            format!("typst.status.{name}")
-        }
-    };
+    if export {
+        // Only the primary output belongs in the header. Diagnostics and
+        // compile timing have one home, in the persistent bottom status bar.
+        return toolbar
+            .push_spacer()
+            .push_button("Export PDF", command(queue, Command::ExportPdf))
+            .with_optional_action(actions.and_then(|actions| {
+                actions.effect(&crate::actions::TypstEffect::ExportPdf { path: None })
+            }));
+    }
+    let status_id = |name: &str| format!("typst.status.{name}");
     // Hosted controls never fold into More: the diagnostics stay visible even
     // when secondary commands overflow in a narrow window.
     if status.errors + status.warnings == 0 {
@@ -240,16 +244,6 @@ fn build_toolbar(
         .with_optional_action(
             actions.and_then(|actions| actions.effect(&crate::actions::TypstEffect::Problems)),
         );
-    if export {
-        // Formatting, file operations and zoom remain in the action palette
-        // and keyboard map; only the primary output belongs in the bar.
-        toolbar = toolbar
-            .push_spacer()
-            .push_button("Export PDF", command(queue, Command::ExportPdf))
-            .with_optional_action(actions.and_then(|actions| {
-                actions.effect(&crate::actions::TypstEffect::ExportPdf { path: None })
-            }));
-    }
     toolbar
 }
 
@@ -454,8 +448,7 @@ impl Chrome {
             self.compact = compact;
             self.rebuild_status();
         }
-        // Measure the non-overflowing pills first. The filename gives way
-        // before diagnostics; timing and export can use the More chip.
+        // Reserve the primary output control before fitting the filename.
         let overflow_open = self.toolbar.is_overflow_open() || self.reopen_overflow;
         self.toolbar.lay_out_in(self.toolbar.get_rect(), tr, theme);
         let toolbar_min = self
@@ -664,6 +657,17 @@ impl Chrome {
 impl Chrome {
     /// The toolbar's accessibility nodes, flattened.
     fn toolbar_nodes(&self) -> Vec<ui::a11y::AccessNode> {
+        Self::nodes(&self.toolbar)
+    }
+
+    fn bottom_status_names(&self) -> Vec<String> {
+        Self::nodes(&self.bottom_status)
+            .into_iter()
+            .filter_map(|node| node.name)
+            .collect()
+    }
+
+    fn nodes(toolbar: &Toolbar) -> Vec<ui::a11y::AccessNode> {
         fn flatten(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
             for child in node.children.clone() {
                 flatten(child, out);
@@ -679,7 +683,7 @@ impl Chrome {
             }
         }
         let mut out = Vec::new();
-        visit(&self.toolbar, &mut out);
+        visit(toolbar, &mut out);
         out
     }
 
@@ -707,7 +711,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn diagnostics_are_always_visible_with_separate_severities_and_timing() {
+    fn diagnostics_and_timing_only_appear_in_the_footer() {
         let mut chrome = Chrome::new();
         let mut text = TextRenderer::new();
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
@@ -721,7 +725,13 @@ mod tests {
                     &mut text,
                     &theme,
                 );
-                let names = chrome.toolbar_names();
+                assert_eq!(chrome.toolbar_names(), vec!["Export PDF"]);
+                chrome.place_status(
+                    Some(Rect::new(0.0, 100.0, 1400.0, 150.0)),
+                    &mut text,
+                    &theme,
+                );
+                let names = chrome.bottom_status_names();
                 assert_eq!(
                     names.iter().any(|name| name == "No problems"),
                     errors + warnings == 0
@@ -744,15 +754,18 @@ mod tests {
                     "Compilation failed"
                 };
                 assert!(names.iter().any(|name| name == timing), "{names:?}");
-                for node in chrome.toolbar_nodes().into_iter().filter(|node| {
-                    node.name.as_deref() == Some("No problems")
-                        || node.name.as_ref().is_some_and(|name| {
-                            name.ends_with("error")
-                                || name.ends_with("errors")
-                                || name.ends_with("warning")
-                                || name.ends_with("warnings")
-                        })
-                }) {
+                for node in Chrome::nodes(&chrome.bottom_status)
+                    .into_iter()
+                    .filter(|node| {
+                        node.name.as_deref() == Some("No problems")
+                            || node.name.as_ref().is_some_and(|name| {
+                                name.ends_with("error")
+                                    || name.ends_with("errors")
+                                    || name.ends_with("warning")
+                                    || name.ends_with("warnings")
+                            })
+                    })
+                {
                     assert_eq!(node.role, ui::a11y::Role::Button);
                     assert!(
                         node.bounds
@@ -781,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn top_and_bottom_status_use_the_existing_problems_command() {
+    fn footer_status_uses_the_existing_problems_command() {
         let mut chrome = Chrome::new();
         let mut text = TextRenderer::new();
         let theme = Theme::dark();
@@ -808,8 +821,8 @@ mod tests {
                 &theme,
             );
             for id in ids {
-                assert!(activate_status(&mut chrome.toolbar, id));
-                assert_eq!(chrome.take(), vec![Command::ToggleProblems]);
+                assert!(!activate_status(&mut chrome.toolbar, id));
+                assert!(chrome.take().is_empty());
                 let bottom_id = id.replace("typst.", "typst.status.");
                 assert!(activate_status(&mut chrome.bottom_status, &bottom_id));
                 assert_eq!(chrome.take(), vec![Command::ToggleProblems]);
@@ -821,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_headers_keep_diagnostics_visible_before_secondary_commands() {
+    fn narrow_headers_only_offer_export_and_view_controls() {
         let mut chrome = Chrome::new();
         let mut text = TextRenderer::new();
         let theme = Theme::dark();
@@ -837,7 +850,6 @@ mod tests {
                 false,
             );
             chrome.place(bar, true, 1, &mut text, &theme);
-            assert!(chrome.toolbar_chip().is_some());
             for child in chrome.toolbar.children() {
                 let rect = child.get_rect();
                 assert!(
@@ -847,13 +859,9 @@ mod tests {
                 assert!(rect.x0 >= chrome.view.get_rect().x1, "{rect:?}");
             }
             let names = chrome.toolbar_names();
-            for wanted in if errors == 0 {
-                vec!["No problems"]
-            } else {
-                vec!["2 errors", "1 warning"]
-            } {
-                assert!(names.iter().any(|name| name == wanted), "{names:?}");
-            }
+            assert!(!names.iter().any(|name| name.contains("error")
+                || name.contains("warning")
+                || name == "No problems"));
         }
     }
 
@@ -890,7 +898,12 @@ mod tests {
             &mut text,
             &Theme::dark(),
         );
-        let names = chrome.toolbar_names();
+        chrome.place_status(
+            Some(Rect::new(0.0, 100.0, 1400.0, 150.0)),
+            &mut text,
+            &Theme::dark(),
+        );
+        let names = chrome.bottom_status_names();
         assert!(names.iter().any(|name| name == "Compiling…"));
         assert!(!names.iter().any(|name| name.starts_with("Compiled in")));
     }

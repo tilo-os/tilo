@@ -152,6 +152,9 @@ pub struct PreviewPane {
     /// compile failed, so we keep the last good render and flag it as stale
     /// rather than blanking the pane and losing the reader's place.
     stale: bool,
+    /// Completion typing can briefly invalidate syntax without invalidating
+    /// the last good page. Suppress only feedback, not the retained pages.
+    feedback_suppressed: bool,
 }
 
 impl Default for PreviewPane {
@@ -182,6 +185,7 @@ impl Default for PreviewPane {
             banner_h: 0.0,
             thumb_label_h: 0.0,
             stale: false,
+            feedback_suppressed: false,
         }
     }
 }
@@ -338,6 +342,18 @@ impl PreviewPane {
         self.stale = stale;
     }
 
+    pub fn suppress_feedback(&mut self, suppressed: bool) {
+        self.feedback_suppressed = suppressed;
+    }
+
+    pub(crate) fn feedback_suppressed(&self) -> bool {
+        self.feedback_suppressed
+    }
+
+    fn show_stale_banner(&self) -> bool {
+        self.stale && !self.feedback_suppressed
+    }
+
     /// Whether the on-screen pages are from an earlier, superseded compile.
     pub fn is_stale(&self) -> bool {
         self.stale
@@ -406,7 +422,7 @@ impl PreviewPane {
         } else {
             self.rect.x0
         };
-        let y0 = if self.stale && !self.images.is_empty() {
+        let y0 = if self.show_stale_banner() && !self.images.is_empty() {
             (self.rect.y0 + self.banner_h).min(self.rect.y1)
         } else {
             self.rect.y0
@@ -956,7 +972,7 @@ impl PreviewPane {
         }
         // The banner and the number labels are measured here, where the text
         // renderer is; a change re-fits the viewport beside them.
-        let banner_h = if self.stale {
+        let banner_h = if self.show_stale_banner() {
             f64::from(theme.tokens.metrics.panel_row_height)
         } else {
             0.0
@@ -975,7 +991,7 @@ impl PreviewPane {
         if self.has_thumbs() {
             self.draw_thumbs(scene, transform, tr, theme);
         }
-        if self.stale {
+        if self.show_stale_banner() {
             self.draw_stale_banner(scene, transform, tr, theme);
         }
     }

@@ -2352,6 +2352,18 @@ impl TextInput {
         gutter
     }
 
+    /// Dedicated marker lane entirely before the leftmost line-number digit.
+    /// Its size follows the code font, not the surrounding UI control scale.
+    pub(crate) fn gutter_marker_rect(&self, theme: &Theme, byte: usize) -> Rect {
+        let lane = GUTTER_PAD_L * self.gutter_text_scale;
+        let diameter = lane * 0.6;
+        let caret = self.caret_rect(theme, byte);
+        Rect::from_center_size(
+            (self.rect.x0 + lane / 2.0, caret.center().y),
+            (diameter, diameter),
+        )
+    }
+
     fn draw_gutter_line_numbers(
         &self,
         scene: &mut Scene,

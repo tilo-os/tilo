@@ -787,12 +787,9 @@ impl CodeEditor {
                 paint_diagnostic_underline(scene, transform, x0, x1, row.y1 - 1.0, color);
             }
             if gutter > 0.0 {
-                let caret = self.inner.caret_rect(theme, start);
-                let d_px = f64::from(theme.tokens.spacing.s2) * 0.75;
-                let centre = Point::new(
-                    rect.x0 + f64::from(theme.tokens.spacing.s1) + d_px / 2.0,
-                    caret.center().y,
-                );
+                let marker = self.inner.gutter_marker_rect(theme, start);
+                let d_px = marker.width();
+                let centre = marker.center();
                 if rect.contains(centre) {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
@@ -1436,6 +1433,33 @@ mod tests {
         shift_arrow_extends_selection_word_wise();
         goto_line_moves_the_caret_to_the_line_start();
         accessibility_reports_a_multiline_text_input();
+    }
+
+    #[test]
+    fn diagnostic_markers_stay_in_the_lane_before_line_number_digits() {
+        let source = (1..=125).map(|_| "x\n").collect::<String>();
+        for ui_scale in [1.0, 1.5, 2.0] {
+            for text_scale in [0.64, 1.0, 2.0] {
+                let theme = Theme::dark()
+                    .with_ui_scale(ui_scale)
+                    .with_text_scale(text_scale);
+                let mut editor = CodeEditor::local().with_initial_value(&source);
+                let mut tr = TextRenderer::new();
+                lay_out_and_draw(&mut editor, &theme, &mut tr, 400.0);
+                let marker = editor.inner.gutter_marker_rect(&theme, 48);
+                let mut style = theme.text(crate::tokens::TextRole::Code);
+                style.size = editor.inner.shaped_font_size_for_test().unwrap();
+                let number_width = f64::from(tr.measure_style("126", None, &style).0);
+                let digits_x = editor.inner.get_rect().x0 + editor.gutter_width()
+                    - 12.0 * f64::from(text_scale)
+                    - number_width;
+                assert!(marker.x0 >= editor.inner.get_rect().x0);
+                assert!(
+                    marker.x1 < digits_x,
+                    "{marker:?}, digits start at {digits_x}"
+                );
+            }
+        }
     }
 
     #[test]

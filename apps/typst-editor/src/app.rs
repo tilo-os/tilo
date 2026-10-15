@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────┐
-//! │ [sidebar] document   [diagnostics]        Export PDF      │
+//! │ [sidebar] document                        Export PDF      │
 //! ├───────────────────────────┬──────────────────────────────┤
 //! │ source editor             │      rendered preview         │
 //! │ (code, line numbers,      │  (scrollable pages + thumbs)  │
@@ -201,6 +201,9 @@ pub struct TypstApp {
     err_count: usize,
     warn_count: usize,
     elapsed_ms: u128,
+    /// Latest output held during a completion typing burst. Keep the previous
+    /// valid page until acceptance, dismissal or an idle deadline.
+    deferred_output: Option<CompileOutput>,
     heading_positions: Vec<compile::HeadingPosition>,
     pending_heading: Option<usize>,
     /// Whether the current width put us in the single-pane compact layout.
@@ -302,6 +305,7 @@ impl TypstApp {
             err_count: 0,
             warn_count: 0,
             elapsed_ms: 0,
+            deferred_output: None,
             heading_positions: Vec::new(),
             pending_heading: None,
             compact: false,
@@ -503,6 +507,7 @@ impl TypstApp {
             return;
         };
         if let Some(res) = w.poll()
+            && !w.in_flight()
             && res.seq >= self.applied_seq
         {
             self.applied_seq = res.seq;
@@ -511,6 +516,11 @@ impl TypstApp {
     }
 
     fn apply_output(&mut self, out: CompileOutput) {
+        if self.editor.completing_actively() && !self.compile_feedback {
+            self.deferred_output = Some(out);
+            return;
+        }
+        self.deferred_output = None;
         self.elapsed_ms = out.elapsed_ms;
         self.err_count = out.error_count();
         self.warn_count = out.warning_count();
@@ -552,6 +562,9 @@ impl TypstApp {
     /// Compile `source` on the worker, or here when no worker could start
     /// (the browser has no threads for it).
     fn request_compile(&mut self, source: &str) {
+        // A held failure belongs to the previous source, never an accepted
+        // completion or a subsequent edit.
+        self.deferred_output = None;
         let (name, main_source) = self.compilation_main(source);
         let files = self.project_snapshot();
         if let Some(w) = self.worker.as_mut() {
@@ -599,6 +612,7 @@ impl TypstApp {
     fn force_recompile(&mut self) {
         let src = self.source_cache.clone();
         self.request_compile(&src);
+        self.editor.dismiss_completions();
         self.compile_feedback = true;
     }
 
@@ -1089,11 +1103,13 @@ impl TypstApp {
 
         let name = self.current_name();
         let names = [name.as_str()];
+        let quiet = self.editor.completing_actively();
+        self.preview.suppress_feedback(quiet);
         self.chrome.set_diagnostics(
-            self.err_count,
-            self.warn_count,
+            if quiet { 0 } else { self.err_count },
+            if quiet { 0 } else { self.warn_count },
             self.elapsed_ms,
-            self.compiling(),
+            self.compiling() || (quiet && (self.err_count > 0 || self.deferred_output.is_some())),
         );
         self.navigation.set_caret_line(self.caret_line_col().0);
         self.chrome.sync(
@@ -1348,6 +1364,11 @@ impl Widget for TypstApp {
         // this very frame (draw runs on animation frames even when sync
         // doesn't).
         self.pump_worker();
+        if !self.editor.completing_actively()
+            && let Some(out) = self.deferred_output.take()
+        {
+            self.apply_output(out);
+        }
         // Measure the chrome in this frame's theme and text scale; a change
         // re-fits the panes now, so this very frame paints coherently.
         self.refresh_frame(tr, theme);
@@ -1368,8 +1389,12 @@ impl Widget for TypstApp {
 
         if self.editor_rect.area() > 0.0 {
             self.editor.focused = self.editor.widget().is_focused();
-            self.editor
-                .draw(scene, t, tr, theme, self.diagnostics.diags(), presence);
+            let diags = if self.editor.completing_actively() {
+                &[][..]
+            } else {
+                self.diagnostics.diags()
+            };
+            self.editor.draw(scene, t, tr, theme, diags, presence);
         }
         if self.preview_rect.area() > 0.0 {
             self.preview
@@ -1626,8 +1651,14 @@ impl Widget for TypstApp {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
+        let feedback =
+            (self.deferred_output.is_some() || self.preview.feedback_suppressed()).then(|| {
+                self.editor
+                    .completion_feedback_deadline()
+                    .unwrap_or_else(ui::time::now)
+            });
         if self.io.is_none() && self.pending_resource_io.is_none() && !self.compiling() {
-            return None;
+            return feedback;
         }
         // Poll completed work independently of animation preferences. Repeated
         // queries retain the same deadline until sync consumes it.
@@ -1637,7 +1668,7 @@ impl Widget for TypstApp {
                 .unwrap_or_else(ui::time::now)
         });
         self.background_poll_deadline.set(Some(deadline));
-        Some(deadline)
+        Some(feedback.map_or(deadline, |feedback| feedback.min(deadline)))
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2165,12 +2196,73 @@ mod tests {
         let mut app = completion_fixture("$  $", 2);
         app.harness().type_text("al");
         app.settle();
-        assert!(visible_completion(&mut app, "alpha α"));
+        assert!(visible_completion(&mut app, "alpha"));
         app.harness().key("Tab");
         app.settle();
         let file = crate::resource::sample_id(DEFAULT_INDEX);
         assert_eq!(app.state().file(&file).unwrap().source, "$ alpha $");
-        assert!(!visible_completion(&mut app, "alpha α"));
+        assert!(!visible_completion(&mut app, "alpha"));
+    }
+
+    #[test]
+    fn completion_typing_holds_failed_feedback_until_pause_or_dismissal() {
+        for finish in ["pause", "Escape", "Tab"] {
+            let mut app = completion_fixture("$  $", 2);
+            app.with_widget(|surface: &mut TypstApp| {
+                // Exercise the synchronous fallback deterministically, without
+                // depending on background worker scheduling.
+                surface.worker = None;
+                let out = compile::compile_source(&surface.parts, "$  $", 1.0);
+                assert!(out.ok);
+                surface.apply_output(out);
+            })
+            .unwrap();
+            let epoch = ui::time::now();
+            ui::time::testing::with_monotonic_time(epoch, || {
+                app.harness().type_text("a");
+                app.settle();
+                app.with_widget(|surface: &mut TypstApp| {
+                    assert!(
+                        surface.deferred_output.as_ref().unwrap().ok,
+                        "even a valid single-letter prefix must not replace the previous page"
+                    );
+                    assert!(!surface.preview.is_stale());
+                })
+                .unwrap();
+                app.harness().type_text("l");
+                app.settle();
+                app.with_widget(|surface: &mut TypstApp| {
+                    assert!(!surface.deferred_output.as_ref().unwrap().ok);
+                    assert!(surface.editor.completing_actively());
+                    assert!(surface.deferred_output.is_some());
+                    assert_eq!(surface.err_count, 0);
+                    assert!(!surface.preview.is_stale());
+                    assert!(surface.preview.page_count() > 0);
+                    assert!(surface.next_wake_deadline().is_some());
+                })
+                .unwrap();
+                if finish != "pause" {
+                    app.harness().key(finish);
+                    app.settle();
+                }
+            });
+            let later = epoch
+                .checked_add(ui::time::Duration::from_millis(950))
+                .unwrap();
+            ui::time::testing::with_monotonic_time(later, || {
+                app.harness().relayout();
+                app.with_widget(|surface: &mut TypstApp| {
+                    assert!(!surface.editor.completing_actively());
+                    assert!(surface.deferred_output.is_none());
+                    assert_eq!(surface.err_count > 0, finish != "Tab");
+                    assert_eq!(surface.preview.is_stale(), finish != "Tab");
+                    if finish != "Tab" {
+                        assert!(!surface.diagnostics.diags().is_empty());
+                    }
+                })
+                .unwrap();
+            });
+        }
     }
 
     #[test]
@@ -2178,13 +2270,13 @@ mod tests {
         let mut app = completion_fixture("", 0);
         app.harness().type_text("#s");
         app.settle();
-        assert!(visible_completion(&mut app, "set "));
+        assert!(visible_completion(&mut app, "set"));
         app.harness().key("Escape");
         app.settle();
-        assert!(!visible_completion(&mut app, "set "));
+        assert!(!visible_completion(&mut app, "set"));
         app.harness().type_text("e");
         app.settle();
-        assert!(visible_completion(&mut app, "set "));
+        assert!(visible_completion(&mut app, "set"));
         app.harness().key("Enter");
         app.settle();
         let file = crate::resource::sample_id(DEFAULT_INDEX);

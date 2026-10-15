@@ -216,9 +216,34 @@ const CODE: &[Builtin] = &[
 
 const MATH: &[Builtin] = &[
     ("integral", "integral", "Integral", Some("∫")),
+    (
+        "integral.double",
+        "integral.double",
+        "Double integral",
+        Some("∬"),
+    ),
+    (
+        "integral.triple",
+        "integral.triple",
+        "Triple integral",
+        Some("∭"),
+    ),
+    (
+        "integral.cont",
+        "integral.cont",
+        "Contour integral",
+        Some("∮"),
+    ),
     ("sum", "sum", "Summation", Some("∑")),
     ("tau", "tau", "Greek tau", Some("τ")),
     ("alpha", "alpha", "Greek alpha", Some("α")),
+    ("alpha.bold", "bold(alpha)", "Bold alpha", Some("𝛂")),
+    (
+        "alpha.upright",
+        "upright(alpha)",
+        "Upright alpha",
+        Some("α"),
+    ),
     ("beta", "beta", "Greek beta", Some("β")),
     ("gamma", "gamma", "Greek gamma", Some("γ")),
     ("delta", "delta", "Greek delta", Some("δ")),
@@ -231,6 +256,7 @@ const MATH: &[Builtin] = &[
     ("leq", "lt.eq", "Less than or equal", Some("≤")),
     ("geq", "gt.eq", "Greater than or equal", Some("≥")),
     ("infty", "infinity", "Infinity", Some("∞")),
+    ("infinity", "infinity", "Infinity", Some("∞")),
     ("partial", "partial", "Partial differential", Some("∂")),
     ("sqrt", "sqrt(x)", "Square root", Some("√")),
     ("frac", "frac(1, 2)", "Fraction", Some("½")),
@@ -582,6 +608,20 @@ mod tests {
     }
 
     #[test]
+    fn common_prefixes_have_multiple_real_math_choices() {
+        let parts = crate::compile::WorldParts::new();
+        for prefix in ["a", "al", "in", "int"] {
+            let session = at_end(&format!("$ {prefix}"));
+            assert!(session.items.len() >= 3, "{prefix}: {session:?}");
+            for item in &session.items {
+                let out =
+                    crate::compile::compile_source(&parts, &format!("$ {} $", item.insert), 1.0);
+                assert!(out.ok, "{}: {:?}", item.insert, out.diagnostics);
+            }
+        }
+    }
+
+    #[test]
     fn math_context_glyphs_and_typst_aliases() {
         let session = at_end("$ ");
         assert_eq!((session.start, session.end), (2, 2));
@@ -628,7 +668,14 @@ mod tests {
         let source = "$ alphabeta $";
         let session = complete(source, 5, &Workspace::default()).unwrap();
         assert_eq!(source.get(session.start..session.end), Some("alphabeta"));
-        assert_eq!(session.items.len(), 1);
+        assert_eq!(
+            session
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "alpha.bold", "alpha.upright"]
+        );
     }
 
     #[test]

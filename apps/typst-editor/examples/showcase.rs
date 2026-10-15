@@ -124,12 +124,12 @@ fn capture(
                 positioned = true;
             }
             // One real keystroke every 150 ms, followed by a long enough hold
-            // to read the production popup's alpha name, glyph and Math badge.
+            // to read the production completion list's names and glyphs.
             let just_typed = typing.peek().is_some_and(|(at, _)| frame >= *at);
             if just_typed && let Some((_, character)) = typing.next() {
                 app.harness().type_text(character);
             }
-            let just_accepted = !accepted && frame >= 144;
+            let just_accepted = !accepted && frame >= 126;
             if just_accepted {
                 accept_completion(app, &file, &expected)?;
                 accepted = true;
@@ -212,7 +212,7 @@ fn accept_completion(
     file: &ui::tilo_resource::Id,
     expected: &str,
 ) -> std::io::Result<()> {
-    let choice = "alpha α — Greek alpha · Math";
+    let choice = "alpha";
     if !completion_visible(app, choice) {
         return Err(std::io::Error::other(
             "typing did not expose the real math completion popup",

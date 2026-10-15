@@ -107,6 +107,7 @@ pub struct SourceEditor {
     /// Only a local edit may trigger suggestions, never shaping, sync or navigation.
     completion_edit: Option<(String, usize)>,
     completion_pointer: Option<Point>,
+    completion_edited_at: Option<ui::time::Instant>,
 }
 
 impl SourceEditor {
@@ -130,6 +131,7 @@ impl SourceEditor {
             dismissed_completion: None,
             completion_edit: None,
             completion_pointer: None,
+            completion_edited_at: None,
         }
     }
 }
@@ -376,24 +378,40 @@ impl SourceEditor {
             self.dismiss_completions();
             return;
         };
+        // Retain the complete result set for keyboard/wheel navigation; the
+        // shared menu viewport shows at most five compact rows at a time.
         let items = session
             .items
             .iter()
-            .map(|item| {
-                let glyph = item.glyph.as_deref().unwrap_or("");
-                let label = if matches!(item.badge.as_str(), "fn" | "kw") {
-                    format!("{} [{}] — {}", item.label, item.badge, item.detail)
-                } else {
-                    format!("{} {glyph} — {} · {}", item.label, item.detail, item.badge)
-                };
-                MenuItem::selection(label)
-            })
+            .map(|item| MenuItem::selection(&item.label))
+            .collect();
+        let details = session
+            .items
+            .iter()
+            .map(|item| item.glyph.clone().unwrap_or_else(|| item.detail.clone()))
             .collect();
         self.completion_menu.set_items(items);
+        self.completion_menu.set_completion_details(details);
+        self.completion_edited_at = Some(ui::time::now());
         self.completion_menu.open_anchored(Rect::ZERO, self.rect);
         self.completion_menu.focus_first_action();
         self.completion = Some(session);
         self.completion_snapshot = Some(snapshot);
+    }
+
+    /// Feedback is quiet only during an active completion typing burst. A
+    /// real error becomes visible after a pause, even if the menu stays open.
+    pub fn completion_feedback_deadline(&self) -> Option<ui::time::Instant> {
+        self.completion_menu
+            .is_open()
+            .then_some(self.completion_edited_at)
+            .flatten()?
+            .checked_add(ui::time::Duration::from_millis(900))
+    }
+
+    pub fn completing_actively(&self) -> bool {
+        self.completion_feedback_deadline()
+            .is_some_and(|deadline| ui::time::now() < deadline)
     }
 
     pub fn dismiss_completions(&mut self) {
@@ -479,6 +497,17 @@ impl SourceEditor {
         let over_menu = self
             .completion_pointer
             .is_some_and(|point| self.completion_menu.get_rect().contains(point));
+        // Moving over the document is not a change of the keyboard's
+        // selected completion. Ordinary context menus clear hover on exit;
+        // this non-modal list must keep its highlighted choice while typing.
+        if !over_menu
+            && matches!(
+                event,
+                WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. }
+            )
+        {
+            return pending;
+        }
         if !over_menu
             && matches!(
                 event,
@@ -693,27 +722,13 @@ impl SourceEditor {
             let anchor = self.control().caret_rect(theme, self.caret());
             if clip.contains(anchor.center()) {
                 let window = presence.viewport.get().unwrap_or(rect);
-                let row = f64::from(theme.tokens.metrics.menu_row_height).max(f64::from(
-                    theme.text(TextRole::Body).line_height_px() + theme.tokens.spacing.s2,
-                ));
-                // Keep suggestions below the caret whenever two rows fit;
-                // near the window bottom the shared menu flips above instead.
-                let popup = if window.y1 - anchor.y1 >= row * 2.0 {
-                    Rect::new(
-                        window.x0,
-                        anchor.y0,
-                        window.x1,
-                        window.y1.min(anchor.y1 + row * 6.0),
-                    )
-                } else {
-                    Rect::new(
-                        window.x0,
-                        window.y0.max(anchor.y0 - row * 6.0),
-                        window.x1,
-                        anchor.y1,
-                    )
-                };
-                self.completion_menu.reanchor(anchor, popup);
+                // A point anchor uses the caret's leading edge and places
+                // the panel exactly four logical pixels below its line.
+                // The shared completion profile limits the viewport to five
+                // rows, scrolling further choices and flipping at the bottom.
+                let below = anchor.y1 + 4.0;
+                let anchor = Rect::new(anchor.x0, below, anchor.x0, below);
+                self.completion_menu.reanchor(anchor, window);
                 self.completion_menu.layout_within(tr, theme);
             } else {
                 self.dismiss_completions();
@@ -1171,6 +1186,53 @@ mod tests {
         ));
         assert_eq!(source(&doc), "#table(columns: 2, [], [])");
         assert!(!editor.completion_menu.is_open());
+    }
+
+    #[test]
+    fn completion_list_is_compact_caret_anchored_and_limited_to_five_rows() {
+        for theme in [
+            Theme::dark(),
+            Theme::light().with_ui_scale(1.5),
+            Theme::dark().with_text_scale(2.0),
+        ] {
+            let (mut doc, mut editor) = showing("$  $");
+            editor.attach(ui::framework::testing::detached_dispatcher("author"));
+            editor.set_rect(Rect::new(30.0, 40.0, 900.0, 700.0));
+            editor.set_caret(2);
+            type_source(&mut editor, &mut doc, "a");
+            let mut tr = TextRenderer::new();
+            editor.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &[],
+                &PresenceCtx::empty(),
+            );
+            let caret = editor.control().caret_rect(&theme, editor.caret());
+            let popup = editor.completion_menu.get_rect();
+            assert!((popup.x0 - caret.x0).abs() < 0.1, "{popup:?} {caret:?}");
+            assert!(
+                (popup.y0 - caret.y1 - 4.0).abs() < 0.1,
+                "{popup:?} {caret:?}"
+            );
+            assert_eq!(editor.completion_menu.hovered(), Some(0));
+            assert!(editor.completion_menu.items().len() >= 3);
+            let row = editor.completion_menu.item_rect(0).unwrap();
+            assert!(row.height() >= 28.0 * f64::from(theme.ui_scale));
+            assert!(popup.height() <= row.height() * 5.0 + 8.1);
+            assert!(popup.width() <= 360.0 * f64::from(theme.ui_scale));
+            completion_event(
+                &mut editor,
+                &mut doc,
+                &ui::synthetic_input::cursor_moved(1200.0, 300.0),
+            );
+            assert_eq!(
+                editor.completion_menu.hovered(),
+                Some(0),
+                "the keyboard selection survives pointer movement over the preview"
+            );
+        }
     }
 
     #[test]

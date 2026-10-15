@@ -279,6 +279,9 @@ pub struct ContextMenu {
     platform: PlatformConventions,
     /// The trailing column (shortcuts, chevrons) from the last measure.
     trailing_width: f64,
+    /// IDE completion presentation: compact monospace names and a dim
+    /// right-aligned glyph or signature, retaining shared menu semantics.
+    completion_details: Option<Vec<String>>,
 }
 
 impl Default for ContextMenu {
@@ -313,6 +316,7 @@ impl ContextMenu {
             submenu_focused: false,
             platform: PlatformConventions::default(),
             trailing_width: 0.0,
+            completion_details: None,
         }
     }
 
@@ -331,6 +335,13 @@ impl ContextMenu {
             self.hovered = None;
         }
         self.layout_at_position();
+    }
+
+    /// Present these rows as a compact IDE completion list. Details correspond
+    /// to the current items; all pointer, keyboard and accessible activation
+    /// continues to use the ordinary menu rows.
+    pub fn set_completion_details(&mut self, details: Vec<String>) {
+        self.completion_details = Some(details);
     }
 
     /// Line the menu up with its anchor's trailing edge (a menu from a
@@ -473,7 +484,11 @@ impl ContextMenu {
 
     pub fn layout_within(&mut self, text: &mut TextRenderer, theme: &Theme) {
         self.set_text_scale(theme.text_scale);
-        let style = theme.text(TextRole::Body);
+        let style = theme.text(if self.completion_details.is_some() {
+            TextRole::Code
+        } else {
+            TextRole::Body
+        });
         let mut width: f64 = 0.0;
         let mut height: f64 = 0.0;
         let has_leading_gutter = self.has_leading_gutter();
@@ -502,6 +517,22 @@ impl ContextMenu {
             if item.submenu_items().is_some() {
                 trailing = trailing.max(f64::from(theme.tokens.metrics.icon_sm));
             }
+        }
+        if let Some(details) = &self.completion_details {
+            let scale = f64::from(theme.ui_scale);
+            let detail_style = theme.text(TextRole::Caption);
+            trailing = details
+                .iter()
+                .map(|detail| f64::from(text.measure_style(detail, None, &detail_style).0))
+                .fold(0.0, f64::max)
+                .min(200.0 * scale);
+            self.trailing_width = trailing + f64::from(theme.tokens.spacing.s4);
+            self.measured_width = (width + self.trailing_width + 2.0 * label_inset(theme))
+                .clamp(220.0 * scale, 360.0 * scale);
+            self.row_height = (28.0 * scale).max(height + f64::from(theme.tokens.spacing.s2));
+            self.layout_at_position();
+            self.ensure_hover_visible();
+            return;
         }
         // The shortcut column stands `s6` clear of the longest label.
         self.trailing_width = if trailing > 0.0 {
@@ -620,7 +651,12 @@ impl ContextMenu {
             // window's edges (`floating_surface::viewport_margin`, the `s2`
             // step), popovers and menus alike. A window too small for the
             // menu and its air gives up the air first, on that axis only.
-            let full = self.content_height() + PADDING * 2.0;
+            let rows = if self.completion_details.is_some() {
+                self.content_height().min(self.row_height * 5.0)
+            } else {
+                self.content_height()
+            };
+            let full = rows + PADDING * 2.0;
             let margin_x = PADDING
                 .min((viewport.width() - self.measured_width) / 2.0)
                 .max(0.0);
@@ -1228,7 +1264,9 @@ impl Widget for ContextMenu {
             .filter(|item| matches!(item, MenuItem::Action { .. }))
             .count()
             == 1;
-        let panel_radius = if single_row {
+        let panel_radius = if self.completion_details.is_some() {
+            6.0 * f64::from(theme.ui_scale)
+        } else if single_row {
             floating_surface::single_row_radius(theme)
         } else {
             floating_surface::radius(theme)
@@ -1241,7 +1279,11 @@ impl Widget for ContextMenu {
         // text-scaled size through the renderer's own multiplier, so its
         // glyphs came out at 4× on a 200 % setting while its rows were
         // measured at 2×.
-        let style = theme.text(TextRole::Body);
+        let style = theme.text(if self.completion_details.is_some() {
+            TextRole::Code
+        } else {
+            TextRole::Body
+        });
         let label_x = self.rect.x0 + label_inset(theme);
         // HIG §9.5: a separator inside a Panel is inset `spacing.s3` from
         // the panel edge, never running into the corner radius.
@@ -1355,7 +1397,31 @@ impl Widget for ContextMenu {
                     // The trailing column: a nested menu's chevron, or the
                     // shortcut in secondary ink.
                     let trailing_x1 = self.rect.x1 - label_inset(theme);
-                    if submenu.is_some() {
+                    if let Some(detail) = self
+                        .completion_details
+                        .as_ref()
+                        .and_then(|details| details.get(idx))
+                    {
+                        let detail_style = theme.text(TextRole::Caption);
+                        let detail = text_renderer.elide_to_width_style(
+                            detail,
+                            (self.trailing_width - f64::from(theme.tokens.spacing.s4)).max(1.0)
+                                as f32,
+                            &detail_style,
+                        );
+                        let (w, h) = text_renderer.measure_style(&detail, None, &detail_style);
+                        text_renderer.draw_style(
+                            scene,
+                            &detail,
+                            theme.tokens.colors.text_dim,
+                            transform.pre_translate(Vec2::new(
+                                trailing_x1 - f64::from(w),
+                                y + (row_height - f64::from(h)) / 2.0,
+                            )),
+                            None,
+                            &detail_style,
+                        );
+                    } else if submenu.is_some() {
                         let size = f64::from(theme.tokens.metrics.icon_sm);
                         draw_icon(
                             scene,
