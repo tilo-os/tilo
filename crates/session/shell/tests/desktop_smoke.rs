@@ -6,9 +6,9 @@
 //! existed, as one slow job among many, and its failure was a timeout like any
 //! other. This is the gate that cannot be mistaken for flakiness: it is part of
 //! the shell test target every change to the compositor already builds, it
-//! takes seconds once built, and a main loop that stops turning fails it
-//! within half a second, naming every thread and where it waits
-//! (`support::desktop`).
+//! checks ordered acknowledgements and production work. Unfinished operations
+//! fail at the existing watchdog bounds with thread diagnostics; heartbeat
+//! latency alone never fails the scenario (`support::desktop`).
 //!
 //! The scenario restores a session with several windows (in-process Tilo apps
 //! and Wayland clients), then moves the pointer over every window, edge, corner
@@ -422,7 +422,7 @@ fn run(desktop: &Desktop, pressure: Option<Pressure>) {
     // native_idle_work_tests and Files' unanswered-snapshot hosted-pump test.
     desktop.assert_loop_turns();
     for slow in desktop.jank() {
-        eprintln!("[desktop-smoke] SLOW (not hung): {slow}");
+        eprintln!("[desktop-smoke] heartbeat diagnostic (not a verdict): {slow}");
     }
 }
 

@@ -54,8 +54,8 @@ priority = 90
 
 # The desktop smoke gate: one at a time, so the load variant's busy threads
 # never starve the quiet one, and a hang bound of two minutes, since a healthy
-# run takes well under one. A frozen compositor is reported by the test itself
-# within half a second; this only bounds a test that cannot even do that.
+# run takes well under one. This watchdog bounds nonprogress, independently
+# of diagnostic heartbeat latency; completed work has no latency gate.
 [[profile.default.overrides]]
 filter = 'binary(it) and test(desktop_smoke::)'
 test-group = "desktop-smoke"

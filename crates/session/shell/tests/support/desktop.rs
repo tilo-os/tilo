@@ -1,19 +1,9 @@
-//! A real headless compositor, driven over its control socket, with its
-//! liveness as an assertion.
+//! A real headless compositor driven over its control socket.
 //!
-//! Two things make this different from the other compositor fixtures:
-//!
-//! * A monitor thread asks the compositor, on its liveness socket
-//!   (`shell::compositor::liveness`), to acknowledge a main-loop wake every
-//!   [`POLL`]. The socket is answered off the main loop, so it still answers
-//!   when the loop is deadlocked. A wake not acknowledged within
-//!   [`HEARTBEAT_BUDGET`] is a stall: the next thing the test does, or the
-//!   call it is waiting in, fails at once with every thread's backtrace.
-//! * Every control call has a hard deadline, and a call that runs out of it
-//!   says whether the loop was stalled (a hang) or still turning (slow).
-//!
-//! A test therefore never ends in a bare "timed out" for a compositor that
-//! froze.
+//! Ordered acknowledgements and production state decide success. The background
+//! heartbeat monitor records latency and stacks for diagnostics only: neither CPU
+//! use nor time without a heartbeat proves a deadlock or spin. Unfinished work is
+//! bounded by the existing call deadlines and test-runner watchdog.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -30,17 +20,8 @@ use shell::compositor::liveness::{Answer, render};
 use threshold_identity::ThresholdIdentity;
 use tilo_identity_ceremony::IdentityRecord;
 
-/// How long the compositor's main loop may go without acknowledging a wake
-/// before the desktop counts as frozen. A user sees a freeze at a fraction of
-/// this.
+/// Diagnostic heartbeat sampling budget, never a smoke pass/fail threshold.
 pub const HEARTBEAT_BUDGET: Duration = Duration::from_millis(500);
-
-/// How long the main loop may keep *working* without returning to its loop.
-/// Over [`HEARTBEAT_BUDGET`] but under this it is slow, which is reported
-/// ([`Desktop::jank`]); over this it is spinning, which fails. A loop that is
-/// *blocked* (waiting on a lock, a descriptor, a child) fails at the budget:
-/// work finishes, a deadlock does not.
-pub const BUSY_LIMIT: Duration = Duration::from_secs(5);
 
 /// How often the monitor asks for a heartbeat.
 const POLL: Duration = Duration::from_millis(50);
@@ -61,14 +42,13 @@ fn next_id() -> u64 {
 /// What the monitor saw.
 #[derive(Default)]
 struct Watch {
-    /// The first stall, rendered: set once, never cleared.
-    stall: Mutex<Option<String>>,
+    /// A monitor protocol/transport failure, not a latency observation.
+    failure: Mutex<Option<String>>,
     /// The slowest heartbeat acknowledged, in microseconds.
     worst_latency_us: AtomicU64,
     /// Heartbeats acknowledged.
     beats: AtomicU64,
-    /// Iterations that ran past the budget while working (not blocked), with
-    /// the main thread's stack: slow, reported, not a hang.
+    /// Recent missed heartbeat budgets with stacks; diagnostic only.
     jank: Mutex<Vec<String>>,
     stop: AtomicBool,
 }
@@ -232,15 +212,14 @@ impl Desktop {
             .expect("the public socket has a name")
     }
 
-    /// Fail now if the main loop has stalled, with the report.
+    /// Fail on compositor exit or a broken observation channel, never latency.
     #[track_caller]
     pub fn check(&self) {
-        let stall = self.watch.stall.lock().ok().and_then(|stall| stall.clone());
-        if let Some(report) = stall {
+        let failure = self.watch.failure.lock().ok().and_then(|v| v.clone());
+        if let Some(report) = failure {
             let last = self.last_call.lock().map(|c| c.clone()).unwrap_or_default();
             panic!(
-                "DESKTOP FROZE: the compositor's main loop stalled.\n\
-                 It did not acknowledge a wake within {HEARTBEAT_BUDGET:?} (or, working, within {BUSY_LIMIT:?}). Last control call: {last}\n\
+                "desktop monitor failed. Last control call: {last}\n\
                  {report}\n--- compositor log tail ---\n{}",
                 self.recent_log(40)
             );
@@ -303,34 +282,26 @@ impl Desktop {
             if reply.last() == Some(&b'\n') {
                 break;
             }
-            // A frozen loop is reported by the monitor within its budget:
-            // fail as that, with the stacks, rather than waiting this out.
+            // The monitor adds diagnostics, not a separate latency verdict.
             self.check();
             if started.elapsed() >= deadline {
                 self.hung_call(op, request, deadline);
             }
         }
+        self.check();
         serde_json::from_slice(&reply)
             .unwrap_or_else(|e| panic!("the reply to {op} was not JSON ({e}): {reply:?}"))
     }
 
-    /// A call that outlived its deadline: give the monitor time to name a
-    /// stall, and otherwise report slowness, with the threads either way.
+    /// An unfinished call at its existing watchdog bound, with diagnostics.
     #[track_caller]
     fn hung_call(&self, op: &str, request: &Value, deadline: Duration) -> ! {
-        let grace = Instant::now()
-            .checked_add(HEARTBEAT_BUDGET.saturating_mul(8))
-            .unwrap_or_else(Instant::now);
-        while Instant::now() < grace {
-            self.check();
-            std::thread::sleep(POLL);
-        }
         let threads = self
             .liveness_threads()
             .unwrap_or_else(|e| format!("(no thread dump: {e})"));
         panic!(
-            "control call {op} did not answer within {deadline:?} although the main loop \
-             kept acknowledging wakes (slowest {:?}): the call is slow, not the loop frozen.\n\
+            "control call {op} remains unfinished at its {deadline:?} watchdog bound.\n\
+             Slowest observed heartbeat: {:?}. This does not classify the cause.\n\
              Request: {request}\n{threads}\n--- compositor log tail ---\n{}",
             Duration::from_micros(self.watch.worst_latency_us.load(Ordering::Relaxed)),
             self.recent_log(40)
@@ -639,7 +610,7 @@ impl Desktop {
             .unwrap_or_default()
     }
 
-    /// Main-loop iterations that ran long while working, with stacks.
+    /// Missed heartbeat budgets, with stacks. These never decide success.
     pub fn jank(&self) -> Vec<String> {
         self.watch
             .jank
@@ -652,6 +623,7 @@ impl Desktop {
     /// decides success; socket deadlines diagnose a hang, not performance.
     #[track_caller]
     pub fn assert_loop_turns(&self) {
+        self.check();
         let stream = UnixStream::connect(shell::compositor::liveness::socket_path(&self.control))
             .expect("connect to liveness socket");
         stream.set_read_timeout(Some(CALL_DEADLINE)).unwrap();
@@ -670,17 +642,10 @@ impl Desktop {
                 )
             });
             let answer: Answer = serde_json::from_str(&line).expect("liveness reply");
-            let Answer::Acknowledged { ticks } = answer else {
-                panic!(
-                    "main loop did not acknowledge the forced wake: {}",
-                    render(&answer)
-                );
-            };
-            if let Some(before) = previous {
-                assert!(ticks > before, "a second forced wake must advance the loop");
-            }
+            let ticks = ordered_acknowledgement(&answer, previous);
             previous = Some(ticks);
         }
+        self.check();
     }
 
     fn wait_until_serving(&self) {
@@ -743,134 +708,100 @@ impl Drop for Desktop {
 /// The password the compositor accepts to unlock (it stands in for PAM).
 pub const UNLOCK_PASSWORD: &str = "correct-horse-battery";
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the monitor thread is one heartbeat loop with its stall reporting inline"
-)]
+fn ordered_acknowledgement(answer: &Answer, previous: Option<u64>) -> u64 {
+    let Answer::Acknowledged { ticks } = answer else {
+        panic!(
+            "main loop did not acknowledge the forced wake: {}",
+            render(answer)
+        );
+    };
+    if let Some(before) = previous {
+        assert!(
+            *ticks > before,
+            "a second forced wake must advance the loop"
+        );
+    }
+    *ticks
+}
+
 fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("heartbeat-monitor".into())
         .spawn(move || {
-            let Ok(stream) = UnixStream::connect(&liveness) else {
-                if let Ok(mut stall) = watch.stall.lock() {
-                    *stall = Some(format!(
-                        "the liveness socket {} cannot be reached",
-                        liveness.display()
-                    ));
-                }
-                return;
-            };
-            let budget = u64::try_from(HEARTBEAT_BUDGET.as_millis()).unwrap_or(500);
-            // The compositor answers within the budget, then spends up to two
-            // seconds collecting stacks; allow for both.
-            let _ = stream.set_read_timeout(Some(
-                HEARTBEAT_BUDGET.saturating_add(Duration::from_secs(10)),
-            ));
-            let Ok(mut writer) = stream.try_clone() else {
-                return;
-            };
-            let mut reader = BufReader::new(stream);
-            while !watch.stop.load(Ordering::Relaxed) {
-                let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
-                if writer.write_all(request.as_bytes()).is_err() {
-                    return;
-                }
-                let mut line = String::new();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                    // The compositor went away; `check` reports its exit.
-                    return;
-                }
-                let mut answer = serde_json::from_str::<Answer>(&line);
-                // A stall whose main thread was still computing is slow work:
-                // note it with its stack, then hold the loop to the busy limit.
-                if let Ok(Answer::Stalled {
-                    budget_ms,
-                    main_thread_cpu_ms,
-                    main_thread_starved_ms,
-                    threads,
-                    ..
-                }) = &answer
-                    && answer.as_ref().is_ok_and(Answer::stalled_but_working)
-                {
-                    let main = threads.first().map_or("", |t| t.backtrace.as_str());
-                    let top: Vec<&str> = main
-                        .lines()
-                        .filter(|l| !l.contains(" at "))
-                        .take(14)
-                        .collect();
-                    if let Ok(mut jank) = watch.jank.lock() {
-                        jank.push(format!(
-                            "main loop slow for over {budget_ms} ms ({main_thread_cpu_ms} ms CPU, \
-                             {main_thread_starved_ms} ms waiting for a core):\n{}",
-                            top.join("\n")
-                        ));
-                    }
-                    // Keep asking: it still working is fine, its turning blocked
-                    // (a lock, I/O) fails at once, and working past the limit is
-                    // a spin.
-                    let mut waited = HEARTBEAT_BUDGET;
-                    while waited < BUSY_LIMIT {
-                        let request = format!("{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}\n");
-                        if writer.write_all(request.as_bytes()).is_err() {
-                            return;
-                        }
-                        line.clear();
-                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                            return;
-                        }
-                        answer = serde_json::from_str::<Answer>(&line);
-                        if let Ok(Answer::Stalled { threads, .. }) = &answer
-                            && let Ok(mut jank) = watch.jank.lock()
-                        {
-                            let main = threads.first().map_or("", |t| t.backtrace.as_str());
-                            let top: Vec<&str> = main
-                                .lines()
-                                .filter(|l| !l.contains(" at "))
-                                .take(14)
-                                .collect();
-                            jank.push(format!(
-                                "  ... still busy {waited:?} in:\n{}",
-                                top.join("\n")
-                            ));
-                        }
-                        let still_working = answer.as_ref().is_ok_and(Answer::stalled_but_working);
-                        if !still_working {
-                            break;
-                        }
-                        waited = waited.saturating_add(HEARTBEAT_BUDGET);
-                    }
-                }
-                match answer {
-                    Ok(Answer::Alive { latency_ms, .. }) => {
-                        watch.beats.fetch_add(1, Ordering::Relaxed);
-                        let micros =
-                            u64::try_from(Duration::from_secs_f64(latency_ms / 1000.0).as_micros())
-                                .unwrap_or(u64::MAX);
-                        watch.worst_latency_us.fetch_max(micros, Ordering::Relaxed);
-                    }
-                    Ok(stalled @ Answer::Stalled { .. }) => {
-                        if let Ok(mut stall) = watch.stall.lock() {
-                            *stall = Some(render(&stalled));
-                        }
-                        return;
-                    }
-                    Ok(other) => {
-                        if let Ok(mut stall) = watch.stall.lock() {
-                            *stall = Some(format!("unexpected liveness answer: {other:?}"));
-                        }
-                        return;
-                    }
-                    Err(e) => {
-                        if let Ok(mut stall) = watch.stall.lock() {
-                            *stall = Some(format!("unreadable liveness answer ({e}): {line}"));
-                        }
-                        return;
-                    }
-                }
-                std::thread::sleep(POLL);
+            let result = UnixStream::connect(&liveness)
+                .map_err(|error| error.to_string())
+                .and_then(|stream| monitor_stream(stream, &watch));
+            if let Err(error) = result
+                && !watch.stop.load(Ordering::Relaxed)
+                && let Ok(mut failure) = watch.failure.lock()
+            {
+                *failure = Some(error);
             }
         })
         .expect("start the heartbeat monitor")
+}
+
+fn monitor_stream(stream: UnixStream, watch: &Watch) -> Result<(), String> {
+    let budget = u64::try_from(HEARTBEAT_BUDGET.as_millis()).unwrap_or(500);
+    // Read slices allow shutdown even if a diagnostic reply is unfinished.
+    // They must never turn latency into a failure.
+    stream
+        .set_read_timeout(Some(POLL))
+        .map_err(|error| error.to_string())?;
+    let mut writer = stream.try_clone().map_err(|error| error.to_string())?;
+    let mut reader = BufReader::new(stream);
+    while !watch.stop.load(Ordering::Relaxed) {
+        writeln!(writer, "{{\"op\":\"heartbeat\",\"budget_ms\":{budget}}}")
+            .map_err(|error| error.to_string())?;
+        let mut line = String::new();
+        loop {
+            if watch.stop.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            match reader.read_line(&mut line) {
+                Ok(0) => return Err("liveness socket closed".into()),
+                Ok(_) if line.ends_with('\n') => break,
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        let answer = serde_json::from_str::<Answer>(&line).map_err(|error| error.to_string())?;
+        observe_heartbeat(watch, answer)?;
+        std::thread::sleep(POLL);
+    }
+    Ok(())
+}
+
+fn observe_heartbeat(watch: &Watch, answer: Answer) -> Result<(), String> {
+    match answer {
+        Answer::Alive { latency_ms, .. } => {
+            watch.beats.fetch_add(1, Ordering::Relaxed);
+            let micros = Duration::try_from_secs_f64(latency_ms / 1000.0)
+                .map_err(|error| error.to_string())?
+                .as_micros();
+            watch
+                .worst_latency_us
+                .fetch_max(u64::try_from(micros).unwrap_or(u64::MAX), Ordering::Relaxed);
+        }
+        stalled @ Answer::Stalled { .. } => {
+            if let Ok(mut jank) = watch.jank.lock() {
+                // Bound diagnostics for a genuinely nonprogressing loop.
+                if jank.len() == 32 {
+                    jank.remove(0);
+                }
+                jank.push(render(&stalled));
+            }
+        }
+        other => return Err(format!("unexpected liveness answer: {other:?}")),
+    }
+    Ok(())
 }
 
 /// Drain the compositor's stdout and stderr on threads (unread output blocks
@@ -1027,5 +958,72 @@ impl Drop for Pressure {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod monitor_tests {
+    use super::*;
+
+    #[test]
+    fn finite_busy_and_blocked_work_are_diagnostic_until_the_ordered_ack() {
+        let (monitor, mut server) = UnixStream::pair().unwrap();
+        let watch = Arc::new(Watch::default());
+        let observing = Arc::clone(&watch);
+        let worker = std::thread::spawn(move || monitor_stream(monitor, &observing));
+        let mut requests = BufReader::new(server.try_clone().unwrap());
+        // Controlled replies, no elapsed-time wait: more than the former five
+        // second busy limit, then a finite blocking operation such as sync_all.
+        // Neither CPU accounting nor a missed budget establishes nonprogress.
+        for cpu in [500; 12].into_iter().chain([0, 0]) {
+            let mut request = String::new();
+            requests.read_line(&mut request).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&request).unwrap()["op"],
+                "heartbeat"
+            );
+            let answer = Answer::Stalled {
+                budget_ms: 500,
+                ticks: 1,
+                main_thread_cpu_ms: cpu,
+                main_thread_starved_ms: 0,
+                threads: Vec::new(),
+            };
+            writeln!(server, "{}", serde_json::to_string(&answer).unwrap()).unwrap();
+        }
+        let mut request = String::new();
+        requests.read_line(&mut request).unwrap();
+        let alive = Answer::Alive {
+            ticks: 2,
+            latency_ms: 6000.0,
+        };
+        writeln!(server, "{}", serde_json::to_string(&alive).unwrap()).unwrap();
+        request.clear();
+        // The next request proves that Alive was consumed by the real monitor.
+        requests.read_line(&mut request).unwrap();
+        watch.stop.store(true, Ordering::Relaxed);
+        worker.join().unwrap().unwrap();
+        assert!(watch.failure.lock().unwrap().is_none());
+        assert_eq!(watch.jank.lock().unwrap().len(), 14);
+        assert_eq!(watch.beats.load(Ordering::Relaxed), 1);
+        assert_eq!(watch.worst_latency_us.load(Ordering::Relaxed), 6_000_000);
+        assert_eq!(
+            ordered_acknowledgement(&Answer::Acknowledged { ticks: 3 }, Some(2)),
+            3
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a second forced wake must advance the loop")]
+    fn an_ack_without_progress_fails_the_production_invariant() {
+        ordered_acknowledgement(&Answer::Acknowledged { ticks: 7 }, Some(7));
+    }
+
+    #[test]
+    fn an_unobservable_monitor_does_not_succeed() {
+        let (monitor, server) = UnixStream::pair().unwrap();
+        drop(server);
+        assert!(monitor_stream(monitor, &Watch::default()).is_err());
+        assert!(observe_heartbeat(&Watch::default(), Answer::Err("bad request".into())).is_err());
     }
 }

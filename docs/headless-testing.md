@@ -890,6 +890,9 @@ acknowledgement count advances. This is a condition-variable rendezvous: unlike
 work. It does not require a background monitor sample to have arrived by then.
 The existing socket watchdog diagnoses an unfinished rendezvous with thread
 stacks; no CPU or elapsed-time measurement decides whether an ack succeeds.
+Duplicate acknowledgement counts fail the ordered-progress invariant. A lost
+wake that never answers remains subject to the unchanged socket and nextest
+watchdogs, including the silent burst with its monitor stopped.
 
 ```bash
 cargo nextest run --locked -p shell --test it -E 'test(desktop_smoke::)' --no-capture
@@ -913,13 +916,18 @@ printf '{"op":"threads"}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
 ```
 
 A heartbeat asks the loop, through a calloop ping source, to acknowledge a
-wake. One it does not acknowledge within the budget is a stall, and the answer
-carries every thread's state, kernel wait channel and backtrace. The harness
-(`tests/support/desktop.rs`) polls it every 50 ms from a monitor thread and fails
-the test within the budget, whichever call it is blocked in, with that report.
-Every control call has a hard deadline of its own, and a call that outlives it
-says whether the loop was frozen or still turning (slow). The same report is
-written to the compositor's stderr.
+wake. One it does not acknowledge within the budget returns `Stalled`, with
+every thread's state, kernel wait channel and backtrace. This is a diagnostic
+observation, not evidence of deadlock or spin: finite computation, scheduler
+starvation and blocking storage I/O can all exceed that budget. The harness
+(`tests/support/desktop.rs`) samples every 50 ms and retains recent reports;
+neither repeated `Stalled` replies nor CPU accounting fail the smoke. Even an
+unfinished diagnostic reply is not a verdict. Broken transport or malformed
+replies still fail rather than silently losing observation.
+Every control call retains its existing unfinished-operation deadline, and
+nextest retains its two-minute smoke watchdog. These bounds detect nonprogress,
+not a latency regression in completed work. There is no separate busy limit.
+The compositor also writes heartbeat observations to stderr.
 
 Seat state is a second line of defence in a debug build. Smithay holds the
 seat's pointer and keyboard lock while it delivers an event, and calls
