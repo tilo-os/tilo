@@ -393,15 +393,15 @@ impl Session {
                 }
                 Some(CollabEvent::Invocation {
                     id,
+                    invocation,
                     resource,
                     action,
                     argument,
                     actor,
                     context,
-                    ..
                 }) => {
                     let update = transforms.start(
-                        id,
+                        crate::transform::Directed { id, invocation },
                         &resource,
                         &action,
                         argument.as_deref(),
