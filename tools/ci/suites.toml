@@ -176,7 +176,6 @@ suites = [
   "os/tests/test_installer_bootc_helper.py",
   "os/tests/test_installer_cmdline_projection.py",
   "os/tests/test_installer_firstboot_runtime.py",
-  "os/tests/test_installer_offline_target.py",
   "os/tests/test_installer_dev_target_uki.py",
   "os/tests/test_installer_code_refresh.py",
   "os/tests/test_installer_overlay.py",
@@ -786,12 +785,15 @@ readers = ["crates/system/staging-reclaim/tests/reclaim.rs"]
 
 [[cargo]]
 package = "tilo-install-helpers"
-# The helpers' tests check how the installer backend calls them.
-inputs = ["os/usr/libexec/tilo-install"]
+# The helpers' tests check how the installer backend and its guided
+# partitioner call them.
+inputs = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition"]
 readers = [
   "crates/system/install-helpers/tests/handoff_copy.rs",
   "crates/system/install-helpers/tests/dev_ssh.rs",
   "crates/system/install-helpers/tests/bootc_copy_cache.rs",
+  "crates/system/install-helpers/tests/offline_target.rs",
+  "crates/system/install-helpers/tests/staging_handoff.rs",
 ]
 
 [[cargo]]

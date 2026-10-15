@@ -100,7 +100,7 @@ LOCAL_IMG="localhost/bootc"
 # The block-level half of an encrypted install (partitioning, LUKS2, factor
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${TILO_DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
-STAGING_HANDOFF="${TILO_STAGING_HANDOFF:-/usr/libexec/tilo-staging-handoff}"
+STAGING_HANDOFF=/usr/libexec/tilo-staging-handoff
 # The room store volume the storage daemon's native data plane serves from.
 STORE_VOLUME="${TILO_STORE_VOLUME:-/usr/libexec/tilo-store-volume}"
 GUIDED_PARTITION="${TILO_GUIDED_PARTITION:-/usr/libexec/tilo-guided-partition}"
@@ -1122,7 +1122,7 @@ use_encrypted_copy_scratch() {
 copy_booted_image() {
   if [ "$OFFLINE_TARGET" -ne 0 ]; then
     step "Importing the selected offline Tilo target"
-    LOCAL_IMG="$(python3 /usr/libexec/tilo-installer-offline-target.py import)" \
+    LOCAL_IMG="$(/usr/libexec/tilo-installer-offline-target import)" \
       || die "offline target import or embedded update origin failed"
     [[ "$LOCAL_IMG" =~ ^(sha256:)?[0-9a-f]{64}$ ]] \
       || die "offline target did not resolve to an immutable image ID"
@@ -1162,7 +1162,7 @@ copy_booted_image() {
 OFFLINE_TARGET=0
 if [ -e /var/lib/tilo-installer/target-oci ] \
     || [ -L /var/lib/tilo-installer/target-oci ]; then
-  python3 /usr/libexec/tilo-installer-offline-target.py verify >/dev/null \
+  /usr/libexec/tilo-installer-offline-target verify >/dev/null \
     || die "preloaded signed target failed verification"
   offline_origin="$(python3 -c 'import json; print(json.load(open("/run/tilo-installer/offline-target.json"))["update_origin"])')"
   # The live medium may be generic so it can boot QEMU virt, while the signed

@@ -12,7 +12,4 @@ os/usr/libexec/tilo-installer-code-protocol.py  # installer, dev VMs only: named
 os/usr/libexec/tilo-installer-code-refresh.py  # installer, dev VMs only: refreshes allowlisted helpers
 os/usr/libexec/tilo-installer-code-target-probe.py  # installer, CI VMs only: probes the original boot inputs
 os/usr/libexec/tilo-installer-dev-target-uki.py  # installer, CI development targets only: unsigned target UKI
-os/usr/libexec/tilo-installer-offline-target.py  # installer: authenticates and imports the signed offline target
-os/usr/libexec/tilo-installer-target-transport.py  # installer: checks and stages one immutable CI target
-os/usr/libexec/tilo-staging-handoff  # installer: live side of USB-free installation
 os/usr/libexec/tilo-vm-install-proof.py  # installer, VMs only: binds a VM install to its medium and deployment

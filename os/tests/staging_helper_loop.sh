@@ -23,7 +23,13 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-handoff_helper="$repo/os/usr/libexec/tilo-staging-handoff"
+# The installer's handoff guard is compiled (crates/system/install-helpers);
+# its fixture example takes the firmware variables and the ESP from the
+# environment, and decodes a Boot#### variable as the installer does.
+cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-install-helpers \
+  --example staging-handoff-fixture \
+  || { echo 'FAIL  cannot build the staging handoff fixture' >&2; exit 1; }
+handoff_helper="${CARGO_TARGET_DIR:-$repo/target}/debug/examples/staging-handoff-fixture"
 fixture_manifest="$repo/os/tests/fixtures/internal-bundle-v2.json"
 
 fail() { echo "FAIL  $*" >&2; exit 1; }
@@ -302,7 +308,7 @@ open(sys.argv[1] + '/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f',
     b'\x06\x00\x00\x00' + (sys.argv[2].upper() + '\0').encode('utf-16-le'))
 PY
 TILO_STAGING_EFIVARS="$detect_vars" TILO_STAGING_ESP_DIR="$esp_copy" \
-  python3 "$handoff_helper" detect --out "$tmp/detected.json" --error "$tmp/detect-error.txt" \
+  "$handoff_helper" detect --out "$tmp/detected.json" --error "$tmp/detect-error.txt" \
   || fail 'tilo-staging-handoff detect crashed'
 [ -s "$tmp/detected.json" ] || fail "installer rejected the handoff: $(cat "$tmp/detect-error.txt" 2>/dev/null)"
 python3 - "$tmp/detected.json" "$work/request.json" "$loop" <<'PY' || fail 'handoff does not match the staged plan'
@@ -321,17 +327,15 @@ PY
 owned="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["owned_boot_entry"])' "$tmp/detected.json")"
 ok "installer's detect accepts the handoff (owned entry Boot$owned)"
 
-python3 - "$handoff_helper" "$efivars" "$owned" "$esp_uuid" "$loader" "$tmp/staged.json" <<'PY' || fail 'owned boot entry or BootNext is wrong'
-import importlib.machinery, importlib.util, json, struct, sys
-path, efivars, owned, esp_uuid, loader, staged = sys.argv[1:]
-loader_spec = importlib.machinery.SourceFileLoader('handoff', path)
-spec = importlib.util.spec_from_loader('handoff', loader_spec)
-handoff = importlib.util.module_from_spec(spec)
-loader_spec.exec_module(handoff)
+decoded="$("$handoff_helper" decode-load-option "$efivars/Boot$owned-8be4df61-93ca-11d2-aa0d-00e098032b8c")" \
+  || fail 'installer decoder could not read the owned boot entry'
+python3 - "$decoded" "$efivars" "$owned" "$esp_uuid" "$loader" "$tmp/staged.json" <<'PY' || fail 'owned boot entry or BootNext is wrong'
+import json, struct, sys
+decoded, efivars, owned, esp_uuid, loader, staged = sys.argv[1:]
 g = '8be4df61-93ca-11d2-aa0d-00e098032b8c'
 raw = open('%s/Boot%s-%s' % (efivars, owned, g), 'rb').read()
 assert raw[:4] == b'\x07\x00\x00\x00', raw[:4]
-option = handoff.decode_load_option(raw[4:])
+option = json.loads(decoded)
 assert option is not None, 'installer decoder rejected the load option'
 part = [p for p in json.load(open(staged))['partitiontable']['partitions'] if p['uuid'].lower() == esp_uuid][0]
 digits = part['node'][len(part['node'].rstrip('0123456789')):]
