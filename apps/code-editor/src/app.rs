@@ -2848,10 +2848,24 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
     Some((line, start_col, end_col))
 }
 
+impl ui::presence::capability::PublishesPresence for CodeApp {
+    /// The editor's selection in the open file, placed by the file's id in
+    /// the project, so an agent's `replace-range` edits exactly that text.
+    fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
+        let node = self.bound_node?;
+        Some(
+            self.editor
+                .shared_selection_in(&self.buffer_key(node))?
+                .in_kind("code_editor.project"),
+        )
+    }
+}
+
 impl Widget for CodeApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
-        dyn ui::widget::Continuable
+        dyn ui::widget::Continuable,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {

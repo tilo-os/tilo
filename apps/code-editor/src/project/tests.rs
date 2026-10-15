@@ -489,3 +489,55 @@ fn replacing_a_files_text_keeps_a_collaborators_typing() {
         .is_err()
     );
 }
+
+/// A range a person selected is replaced exactly, in characters, and the
+/// rest of the file stays; a caret inserts; a place outside the text or on a
+/// folder is refused.
+#[test]
+fn a_selected_range_is_replaced_exactly() {
+    let mut project = Replica::<Project>::new();
+    let id = file(&mut project, "main.rs", None, "let grüße = late();\n");
+    let src = folder(&mut project, "src", None);
+    let replace = |project: &mut Replica<Project>, at: tilo_resource::Place, text: &str| {
+        apply(
+            project,
+            Project::REPLACE_RANGE.with(project::ReplaceRange {
+                at,
+                text: text.into(),
+            }),
+        )
+    };
+    replace(
+        &mut project,
+        tilo_resource::Place::Range {
+            item: id.to_string(),
+            start: 12,
+            end: 16,
+        },
+        "early",
+    )
+    .unwrap();
+    assert_eq!(text(&project, &id), "let grüße = early();\n");
+    replace(
+        &mut project,
+        tilo_resource::Place::Caret {
+            item: id.to_string(),
+            at: 0,
+        },
+        "// greet\n",
+    )
+    .unwrap();
+    assert_eq!(text(&project, &id), "// greet\nlet grüße = early();\n");
+    let outside = tilo_resource::Place::Range {
+        item: id.to_string(),
+        start: 10,
+        end: 999,
+    };
+    assert!(replace(&mut project, outside, "x").is_err());
+    let folder = tilo_resource::Place::Caret {
+        item: src.to_string(),
+        at: 0,
+    };
+    assert!(replace(&mut project, folder, "x").is_err());
+    assert_eq!(text(&project, &id), "// greet\nlet grüße = early();\n");
+}
