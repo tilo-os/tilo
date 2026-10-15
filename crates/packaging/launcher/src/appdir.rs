@@ -294,9 +294,6 @@ pub enum SessionBind {
     /// first: a write landing in the app's own directory instead would be
     /// lost to the session.
     Writable,
-    /// A directory Settings writes when it exists on the host, bound
-    /// read-write; nothing when it does not.
-    WritableIfPresent,
     /// A file Settings reads, bound read-only when it exists. A file bind
     /// holds the inode it found, so a host replacing the file later is seen
     /// by the next launch.
@@ -304,7 +301,9 @@ pub enum SessionBind {
 }
 
 /// The parts of `~/.config/tilo` Settings reaches, by path under that root,
-/// and nothing else of it: not the trust and revocation lists, the app
+/// and nothing else of it: not the identity store (records, root secrets,
+/// the active selector, device fleets — the host administers them behind
+/// its `tilo.identity` actions), the trust and revocation lists, the app
 /// registries, the session's settings records, or a file added there later.
 ///
 /// - `session/`: the settings document (`settings_store::SESSION_DIR`). Its
@@ -312,17 +311,12 @@ pub enum SessionBind {
 ///   the directory holds nothing else.
 /// - `accounts/`: the account stores and their credential vault, which
 ///   Settings is the custodian of (Accounts pane, sign-in, refresh).
-/// - `identity/`: the identity store, which the Users pane's activate,
-///   protect and remove and the device fleet's revocation still edit
-///   in-process. These move behind the host's actions, and then this bind
-///   goes.
 /// - `state.json`, `continuity-provenance.json`: the workspace tree and the
 ///   roamed-settings provenance the shell writes, which the Permissions and
 ///   Devices panes show. Read-only: the workspace tree records every grant.
 pub const SESSION_SETTINGS_BINDS: &[(&str, SessionBind)] = &[
     ("session", SessionBind::Writable),
     ("accounts", SessionBind::Writable),
-    ("identity", SessionBind::WritableIfPresent),
     ("state.json", SessionBind::ReadOnly),
     ("continuity-provenance.json", SessionBind::ReadOnly),
 ];
@@ -336,7 +330,6 @@ pub fn push_session_settings_bind(argv: &mut Vec<String>, host_tilo_config: &Pat
     for (relative, bind) in SESSION_SETTINGS_BINDS {
         let flag = match bind {
             SessionBind::Writable => "--bind",
-            SessionBind::WritableIfPresent => "--bind-try",
             SessionBind::ReadOnly => "--ro-bind-try",
         };
         argv.push(flag.to_string());
@@ -508,9 +501,6 @@ mod tests {
                     "--bind",
                     "/home/ada/.config/tilo/accounts",
                     "/run/tilo/app/.config/tilo/accounts",
-                    "--bind-try",
-                    "/home/ada/.config/tilo/identity",
-                    "/run/tilo/app/.config/tilo/identity",
                     "--ro-bind-try",
                     "/home/ada/.config/tilo/state.json",
                     "/run/tilo/app/.config/tilo/state.json",
@@ -525,6 +515,10 @@ mod tests {
             assert!(
                 !argv.iter().any(|arg| arg == "/home/ada/.config/tilo"),
                 "the configuration root itself is never bound: {argv:?}"
+            );
+            assert!(
+                !argv.iter().any(|arg| arg.contains("/identity")),
+                "the identity store is the host's, never Settings': {argv:?}"
             );
             assert!(SANDBOX_SESSION_SETTINGS.starts_with(SANDBOX_SESSION_CONFIG));
         }

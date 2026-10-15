@@ -711,7 +711,13 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     let state = host.join("state.json");
     let settings = host.join("session/settings.json");
     let accounts = host.join("accounts/store.json");
+    let root_secret = host.join("identity/secrets/0123abcd.key");
+    let active = host.join("identity/active");
+    let identity_record = host.join("identity/primary.json");
     for (path, contents) in [
+        (&root_secret, "root secret"),
+        (&active, "primary"),
+        (&identity_record, r#"{"schema_version":2}"#),
         (&attestors, "# trusted attestors"),
         (&revoked, "# revoked keys"),
         (&registries, "# registries"),
@@ -760,6 +766,26 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     assert_eq!(
         std::fs::read_to_string(&attestors).expect("attestors"),
         "# trusted attestors"
+    );
+
+    // Phase `the_identity_store_is_not_there`: the root secret, the active
+    // selector and the records are the host's, administered behind its
+    // identity actions.
+    for private in [
+        "identity/secrets/0123abcd.key",
+        "identity/active",
+        "identity/primary.json",
+    ] {
+        let line = run(&["read", &format!("{config}/{private}")]);
+        assert!(
+            line.starts_with("ERR "),
+            "{private} must not reach the Settings sandbox: {line}"
+        );
+    }
+    let listing = run(&["readdir", &format!("{config}/identity")]);
+    assert!(
+        listing.starts_with("ERR "),
+        "the identity store must not be listable from Settings: {listing}"
     );
 
     // Phase `the_workspace_tree_reads_and_refuses_writes`.
@@ -819,6 +845,9 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
         (&revoked, "# revoked keys"),
         (&registries, "# registries"),
         (&record, r#"{"person":true}"#),
+        (&root_secret, "root secret"),
+        (&active, "primary"),
+        (&identity_record, r#"{"schema_version":2}"#),
     ] {
         assert_eq!(std::fs::read_to_string(path).expect("unchanged"), contents);
     }
