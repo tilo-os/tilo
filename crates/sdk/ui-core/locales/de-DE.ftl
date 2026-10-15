@@ -530,3 +530,6 @@ author-bot-details = { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-linked = Mit { $person } auf Tilo verknüpft
 author-persona-suffix = { $name } · { $service }
+
+# Context menu entry: ask the desktop agent about what is selected here.
+ask-agent-about-selection = Agent fragen…

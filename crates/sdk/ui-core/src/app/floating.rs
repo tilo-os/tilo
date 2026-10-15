@@ -70,6 +70,8 @@ pub(super) struct FloatingRuntime {
     pub auxiliary_capture_frames: HashMap<String, AuxiliaryCaptureFrames>,
     /// The shell was told this app can stream its page.
     pub paint_capable_sent: bool,
+    /// The shell was told this app answers selection requests.
+    pub selection_capable_sent: bool,
     /// Outside a Tilo session, "close this tab" closes this window.
     pub close_window_requested: bool,
 }
@@ -124,6 +126,7 @@ impl FloatingRuntime {
             submitted_action_markers: std::collections::VecDeque::new(),
             auxiliary_capture_frames: HashMap::new(),
             paint_capable_sent: false,
+            selection_capable_sent: false,
             close_window_requested: false,
         }
     }
@@ -412,6 +415,10 @@ impl App {
             self.apply_unhosted_tab_request(request);
             changed = true;
         }
+        // No desktop agent to ask: offer no entry, and drop what was asked
+        // while the connection went away.
+        crate::shared_selection::set_agent_host_available(false);
+        let _ = crate::shared_selection::take_agent_requests();
         while let Some(request) = self.root_widget.take_floating_surface_request() {
             let message =
                 crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request.id };
@@ -502,6 +509,19 @@ impl App {
         let instance = crate::shell_tabs::launch_instance();
         for request in crate::shell_tabs::take_requests() {
             client.send(&tab_request_message(request, instance))?;
+            *changed = true;
+        }
+        if !self.floating.selection_capable_sent {
+            client
+                .send(&crate::floating_surface::FloatingSurfaceClientMessage::SelectionCapable)?;
+            self.floating.selection_capable_sent = true;
+            crate::shared_selection::set_agent_host_available(true);
+        }
+        for selection in crate::shared_selection::take_agent_requests() {
+            let selection = self.selection_for_agent(selection);
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent { selection },
+            )?;
             *changed = true;
         }
         while let Some(mode) = self.root_widget.take_capture_studio_request() {
@@ -801,6 +821,18 @@ impl App {
                 FloatingSurfaceHostMessage::PaintStop => {
                     crate::webview::paint::set_share_watched(false);
                 }
+                FloatingSurfaceHostMessage::ShareSelection => {
+                    let selection = self.selection_for_agent(
+                        crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
+                    );
+                    if let Some(client) = &mut self.floating.client {
+                        let _ = client.send(
+                            &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent {
+                                selection,
+                            },
+                        );
+                    }
+                }
                 FloatingSurfaceHostMessage::DesktopBounds { bounds } => {
                     match crate::floating_surface::protocol_rect(*bounds) {
                         Ok(bounds) => self.root_widget.set_floating_surface_bounds(bounds),
@@ -934,6 +966,23 @@ fn tab_request_message(
 }
 
 impl App {
+    /// `selection` in the resource this app publishes, when the widget that
+    /// holds it did not name one.
+    #[cfg(feature = "native")]
+    fn selection_for_agent(
+        &self,
+        selection: Option<crate::shared_selection::SharedSelection>,
+    ) -> Option<crate::shared_selection::SharedSelection> {
+        let mut selection = selection?;
+        if selection.resource.is_none() {
+            selection.resolve_resource(&crate::resources::resources(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+            ));
+        }
+        Some(selection)
+    }
+
     /// Without a desktop tab model, another instance is another window of
     /// this app, and closing this tab closes this window.
     #[cfg(feature = "native")]

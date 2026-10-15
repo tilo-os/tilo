@@ -86,7 +86,7 @@ impl SelectionPlace {
             return Err("a selection place item contains control characters".into());
         }
         match (self.at, self.start, self.end) {
-            (None, None, None) | (Some(_), None, None) => Ok(()),
+            (None | Some(_), None, None) => Ok(()),
             (None, Some(start), Some(end)) if start <= end => Ok(()),
             _ => Err("a selection place is an item, a caret or an ordered range".into()),
         }
@@ -229,7 +229,7 @@ pub fn excerpt_of(text: &str) -> Option<String> {
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'));
     let mut excerpt: String = kept.by_ref().take(MAX_EXCERPT_CHARS).collect();
     let mut cut = kept.next().is_some();
-    while excerpt.len() > MAX_EXCERPT_BYTES - '…'.len_utf8() {
+    while excerpt.len() > MAX_EXCERPT_BYTES.saturating_sub('…'.len_utf8()) {
         excerpt.pop();
         cut = true;
     }
