@@ -1191,3 +1191,218 @@ fn a_map_is_stored_as_a_btree_map_is() {
         <BTreeMap<String, String> as Model>::SHAPE
     );
 }
+
+thread_local! {
+    static COMPARED: Cell<usize> = const { Cell::new(0) };
+    static SERIALISED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Text that counts how often it is compared and turned into JSON.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Compared(pub String);
+
+impl tilo_resource::Settable for Compared {}
+
+impl Model for Compared {
+    tilo_resource::leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        SERIALISED.with(|serialised| serialised.set(serialised.get() + 1));
+        self.0.to_json()
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        String::from_json(value).map(Self)
+    }
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        String::load(doc, value, id).map(Self)
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::default())
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        self.0.store(doc, slot)
+    }
+    fn stores_as(&self, before: &Self) -> bool {
+        COMPARED.with(|compared| compared.set(compared.get() + 1));
+        self == before
+    }
+}
+
+/// What `run` returned, and how often a [`Compared`] was compared and
+/// turned into JSON while it ran.
+fn counted<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
+    let compared = || COMPARED.with(Cell::get);
+    let serialised = || SERIALISED.with(Cell::get);
+    let (was_compared, was_serialised) = (compared(), serialised());
+    let out = run();
+    (
+        out,
+        compared() - was_compared,
+        serialised() - was_serialised,
+    )
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Shot {
+    pub id: String,
+    pub opacity: f64,
+    pub label: Compared,
+}
+
+impl Identified for Shot {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Cut {
+    pub title: String,
+    pub shots: Keyed<Shot>,
+    pub stack: Ordered<Shot>,
+}
+
+fn cut(shots: usize) -> Cut {
+    let shots: Vec<Shot> = (0..shots)
+        .map(|at| Shot {
+            id: format!("s{at:04}"),
+            opacity: 1.0,
+            label: Compared(format!("shot {at}")),
+        })
+        .collect();
+    Cut {
+        title: "cut".into(),
+        shots: shots.clone().into(),
+        stack: shots.into(),
+    }
+}
+
+fn edits_of(before: &Cut, after: &Cut) -> Vec<tilo_resource::Edit<Cut>> {
+    tilo_resource::Path::<Cut, Cut>::root().edits(before, after)
+}
+
+/// The same items, held apart from every other copy: compared item by item.
+fn apart(cut: &Cut) -> Cut {
+    Cut {
+        title: cut.title.clone(),
+        shots: cut.shots.to_vec().into(),
+        stack: cut.stack.to_vec().into(),
+    }
+}
+
+#[test]
+fn a_one_item_edit_of_a_local_copy_compares_only_that_item() {
+    let before = cut(300);
+    let mut after = before.clone();
+    let id = Id::from_raw("s0150");
+    after.shots.find_mut(&id).unwrap().opacity = 0.5;
+    after.stack.find_mut(&id).unwrap().label = Compared("changed".into());
+    let (edits, compared, serialised) = counted(|| edits_of(&before, &after));
+    assert!(
+        compared <= 4,
+        "{compared} labels of 600 compared for a change to one item of each list"
+    );
+    assert!(
+        serialised <= 2,
+        "{serialised} labels turned into JSON: only the changed one may be"
+    );
+    let paths = Cut::paths();
+    assert_eq!(
+        edits,
+        [
+            paths.shots.item(&id).opacity.set(0.5),
+            paths.stack.item(&id).label.set(Compared("changed".into())),
+        ],
+    );
+    assert_eq!(edits, edits_of(&apart(&before), &apart(&after)));
+
+    // A copy nothing changed shares its items: nothing is compared.
+    let (edits, compared, serialised) = counted(|| edits_of(&before, &before.clone()));
+    assert!(edits.is_empty());
+    assert_eq!((compared, serialised), (0, 0));
+}
+
+#[test]
+fn items_changed_in_place_are_compared_without_serialising_the_others() {
+    let before = cut(300);
+    let mut after = before.clone();
+    for shot in &mut after.shots {
+        if shot.id == "s0150" {
+            shot.opacity = 0.5;
+        }
+    }
+    let (edits, compared, serialised) = counted(|| edits_of(&before, &after));
+    assert_eq!(
+        edits,
+        [Cut::paths()
+            .shots
+            .item(&Id::from_raw("s0150"))
+            .opacity
+            .set(0.5)]
+    );
+    assert!(compared <= 300, "{compared} labels compared for 300 shots");
+    assert_eq!(serialised, 0, "unchanged labels are compared in memory");
+}
+
+#[test]
+fn the_edits_of_a_local_copy_match_comparing_every_item() {
+    for seed in 0..60 {
+        let mut rng = Lcg(seed);
+        // Made here, not cloned: once a copy of it changes, `before` is the
+        // only holder of its items, and changing it changes them in place.
+        let mut before = cut(40);
+        if seed % 2 == 0 {
+            // Sorted, so its ids are known and kept beside the items.
+            before.shots.settle();
+        }
+        let mut after = before.clone();
+        for step in 0..rng.next(8) {
+            let id = Id::from_raw(format!("s{:04}", rng.next(40)));
+            match rng.next(7) {
+                0 | 1 => {
+                    if let Some(shot) = after.shots.find_mut(&id) {
+                        shot.opacity = f64::from(u32::try_from(step).unwrap());
+                    }
+                }
+                2 => {
+                    if let Some(shot) = after.shots.find_mut(&id) {
+                        shot.label = Compared(format!("step {step}"));
+                    }
+                }
+                3 => {
+                    // An id changed in place: the item left, another came.
+                    if let Some(shot) = after.shots.find_mut(&id) {
+                        shot.id = format!("s{:04}", rng.next(60));
+                    }
+                }
+                4 => {
+                    if let Some(shot) = before.shots.find_mut(&id) {
+                        shot.label = Compared(format!("before {step}"));
+                    }
+                }
+                5 => {
+                    if let Some(shot) = after.stack.find_mut(&id) {
+                        shot.opacity = 0.25;
+                    }
+                }
+                _ => {
+                    // A copy held across a change: the change copies again.
+                    let held = after.clone();
+                    if let Some(shot) = after.shots.find_mut(&id) {
+                        shot.opacity = 0.75;
+                    }
+                    drop(held);
+                }
+            }
+        }
+        assert_eq!(
+            edits_of(&before, &after),
+            edits_of(&apart(&before), &apart(&after)),
+            "seed {seed}"
+        );
+        // Items whose ids changed in place are found by their new ids.
+        for shot in &after.shots {
+            let first = after.shots.iter().position(|other| other.id == shot.id);
+            assert_eq!(after.shots.position_of(&shot.id()), first, "seed {seed}");
+        }
+    }
+}
