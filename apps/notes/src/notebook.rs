@@ -712,10 +712,6 @@ impl Notebook {
     /// read. A new note is a new entry of the note collection, keyed by its
     /// id; edits only touch fields of notes that exist, and a new tag is an
     /// entry of the tag collection, which is no note.
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "the resource's answer hook: some actions answer nothing"
-    )]
     fn created_page(
         doc: &tilo_resource::Doc,
         action: &str,

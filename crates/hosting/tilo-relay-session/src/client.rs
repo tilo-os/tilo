@@ -2196,10 +2196,6 @@ mod scheduling_tests {
 /// the wire for pointer presence, and when.
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "the assertions add fixed durations to a paused clock"
-)]
 mod pointer_pacing_writer_tests {
     use super::*;
     use crate::coedit::POINTER_GAP;
