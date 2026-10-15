@@ -2653,6 +2653,13 @@ impl Widget for SlidesApp {
 
     ui::rect_geometry!();
 
+    /// The editor fills its node and lays its canvas out itself: there is
+    /// never a size for the layout solver to measure, so a frame that only
+    /// moves the window (a strip pan) solves none.
+    fn layout_needs_measure(&self) -> bool {
+        false
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,

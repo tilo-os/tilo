@@ -38,10 +38,9 @@ use crate::sidebar;
 use ui::tokens::Metrics;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
-use ui::widget::{Column, Container, NavPane, NavShell, Scrollable, Widget};
+use ui::widget::{Container, NavPane, NavShell, Scrollable, Widget};
 use ui::widget::{NavMode, SearchField};
 use ui::{AppKind, AppWidget, IconDescriptor};
-const MEASURE: f32 = ui::tokens::Metrics::BASE.panel_width_sheet;
 
 /// One scroller's offset, shared with every scroller rebuilt in its place.
 type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
@@ -256,7 +255,7 @@ impl SettingsApp {
     /// narrow list screen that row is the checked one, and choosing it must
     /// show its content rather than do nothing.
     pub fn select(&mut self, category: Category) {
-        if category != Category::MouseKeyboard {
+        if category != Category::Keyboard {
             self.keyboard_map_input.clear();
         }
         if self.selected != category {
@@ -320,22 +319,14 @@ impl SettingsApp {
     /// point) and on narrow screens (where the shell's back arrow returns to
     /// the Settings list).
     fn build_content(&self) -> Box<dyn Widget> {
-        let body = self.build_pane_body();
-        let gutter = ui::tokens::Spacing::BASE.s6;
-        let inner = Column::new()
-            .with_no_padding()
-            .with_horizontal_padding(gutter, gutter)
-            .with_vertical_padding(gutter)
-            .with_intrinsic_height()
-            .push(body);
-        // Forms are more legible as a column on large displays: a trailing
-        // control stays near its label.
-        let measure = (MEASURE + 2.0 * gutter) * self.shell_text_scale;
+        // The toolkit's page frame: one readable column on the leading edge
+        // with the page gutter around it, so a wide window leaves its extra
+        // room beside the form rather than around a narrow floating column.
         let content: Box<dyn Widget> = Box::new(
             Container::new()
-                .with_no_padding()
-                .with_centered_max_width(measure)
-                .with_child(Box::new(inner)),
+                .readable()
+                .with_inset(ui::tokens::Rhythm::Group)
+                .with_child(self.build_pane_body()),
         );
         let offset = std::rc::Rc::clone(
             self.pane_scroll
@@ -576,8 +567,13 @@ impl SettingsApp {
             Category::Displays => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.displays.model(),
             ))),
-            Category::MouseKeyboard => Box::new(
+            Category::Keyboard | Category::Pointing | Category::Spelling => Box::new(
                 panes::mouse_keyboard::MouseKeyboardPane::new(self.cx.clone(), &self.input)
+                    .with_page(match self.selected {
+                        Category::Pointing => panes::mouse_keyboard::InputPage::Pointing,
+                        Category::Spelling => panes::mouse_keyboard::InputPage::Spelling,
+                        _ => panes::mouse_keyboard::InputPage::Keyboard,
+                    })
                     .with_map_input(self.keyboard_map_input.clone())
                     .with_map_cache(self.keyboard_map_cache.clone()),
             ),
@@ -697,7 +693,7 @@ impl SettingsApp {
             }
             widget.children().into_iter().find_map(mounted_map)
         }
-        if self.selected == Category::MouseKeyboard
+        if self.selected == Category::Keyboard
             && let Some(map) = mounted_map(self)
         {
             return map.inspection_snapshot();
@@ -852,10 +848,11 @@ impl Widget for SettingsApp {
             if let Some(field) = self.shell.as_mut().and_then(NavShell::filter_mut) {
                 field.set_query(&self.search_query);
             }
-            self.structure_dirty = true;
             // Filtering changes only navigation. Reconstructing the active
             // pane here would discard its transient state and reseed its
-            // document bindings on every search character.
+            // document bindings on every search character, and flagging the
+            // composition dirty would rebuild the whole layout tree for it.
+            // The navigation list is virtualised: it re-measures itself.
             if let Some(nav) = self
                 .shell
                 .as_mut()
@@ -951,7 +948,7 @@ impl Widget for SettingsApp {
             }
             visible
         }
-        let visible = self.selected == Category::MouseKeyboard
+        let visible = self.selected == Category::Keyboard
             && self
                 .shell
                 .as_mut()
@@ -981,7 +978,7 @@ impl Widget for SettingsApp {
                 observe_map(child, event);
             }
         }
-        if self.selected == Category::MouseKeyboard
+        if self.selected == Category::Keyboard
             && let Some(shell) = &mut self.shell
         {
             observe_map(shell, event);
@@ -1539,7 +1536,7 @@ mod tests {
     /// Search queries stay local and reach the field.
     #[test]
     fn search_query_is_local_and_reaches_the_field() {
-        // Case `search_query_is_local_and_flags_rebuild`.
+        // A local query narrows the retained navigation without recomposing the pane.
         {
             use automerge::ReadDoc;
             let config = crate::prefs::test_env::ScratchConfig::new();
@@ -1554,9 +1551,20 @@ mod tests {
             app.sync(&doc, &root);
             assert_eq!(app.search_query(), "night light");
             assert!(
-                app.take_structure_dirty(),
-                "a new query must flag a rebuild so the filtered sidebar recomposes"
+                !app.take_structure_dirty(),
+                "a new query filters navigation in place without rebuilding the pane"
             );
+            let nav = app
+                .shell
+                .as_mut()
+                .and_then(NavShell::sidebar_mut::<ui::widget::NavList>)
+                .expect("the actual sidebar is mounted");
+            assert_eq!(nav.filter(), "night light");
+            let filtered = nav.visible_item_ids();
+            nav.set_filter("");
+            assert!(nav.visible_item_ids().len() > filtered.len());
+            nav.set_filter("night light");
+            assert_eq!(nav.visible_item_ids(), filtered);
             // Re-syncing the same query is a no-op (no spurious rebuild).
             app.sync(&doc, &root);
             assert!(!app.take_structure_dirty());

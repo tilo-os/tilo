@@ -14,7 +14,8 @@
 //! existing replication streams a device requests, which services a device
 //! offers, and the advertisement a compute worker is admitted against. Hosts
 //! are chosen by configuration (workspace bindings, home-peer registration);
-//! nothing here ranks candidate servers.
+//! the worker a compute job runs on is chosen among advertisements by
+//! [`crate::placement`].
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -75,7 +75,7 @@ impl Dispatch<XdgActivationTokenV1, XdgActivationTokenData, WinitState> for XdgA
                 if let Some(attention_requested) = fence.upgrade() {
                     attention_requested.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
-            },
+            }
             XdgActivationTokenData::Obtain((window_id, serial)) => {
                 state.events_sink.push_window_event(
                     crate::event::WindowEvent::ActivationTokenDone {
@@ -84,7 +84,7 @@ impl Dispatch<XdgActivationTokenV1, XdgActivationTokenData, WinitState> for XdgA
                     },
                     *window_id,
                 );
-            },
+            }
         }
 
         proxy.destroy();

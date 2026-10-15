@@ -14,15 +14,15 @@ bindings_sha256 = "fbc87391fdc3fa7b199ca99edabd60b7694ad94e5a4a7989943203f121a25
 path = "crates/packaging/app-host"
 src_prefix = "schema"
 schemas = ["schema/app-host.capnp"]
-schema_sha256 = "a03f3c74844783214fffcaf069dff7debecf8fbb8149d816cef1be0504966d36"
-bindings_sha256 = "0ffeb143d0f4a8d7dc6f63df694f1b181c7866705d89a7c9d829aff70751953e"
+schema_sha256 = "0ae9e78e3090021f6ecdcefae1ea0d6bc0cd6d5b3533d275562ada7153003ac6"
+bindings_sha256 = "312235fc7f6dec5e5ce3ef0e38edf3d33930729e395828e74b489c89ab1b6202"
 
 [[crate]]
 path = "crates/runtime/runtime-collab"
 src_prefix = "schema"
 schemas = ["schema/collab.capnp"]
-schema_sha256 = "e4c41790b2a6de2ee9408a7fef79c070bd4f3823bb669a663e20769c050c4566"
-bindings_sha256 = "2665d4fb6358bee79f4f8f93ea1076eacb46078757f12ec7ecf7abd54edb605a"
+schema_sha256 = "2ec42a810988ae4f62ba9ecc32145f6bb9c7e31d6fa5a9b96ee4a530ef4c334b"
+bindings_sha256 = "ba8972a84b2bf432f15a54293812573f0b0649f09f7226ffeac974764b7de355"
 
 [[crate]]
 path = "crates/runtime/runtime-fs"

@@ -38,6 +38,7 @@ pub mod process_binding;
 pub mod request_rendezvous;
 pub mod retained_replacement;
 pub mod retained_role;
+pub mod runtime_request;
 pub mod service_socket;
 pub mod tools;
 
@@ -55,8 +56,6 @@ use std::os::fd::{FromRawFd, OwnedFd};
 #[cfg(not(unix))]
 pub type RawFd = i32;
 
-#[cfg(feature = "rpc")]
-use capnp::capability::Promise;
 #[cfg(feature = "rpc")]
 use capnp_rpc::twoparty;
 #[cfg(feature = "rpc")]
@@ -354,11 +353,6 @@ where
     Ok(client.bootstrap::<C>())
 }
 
-#[cfg(feature = "rpc")]
-/// `Promise` made return-friendly for `Result<_, capnp::Error>`, so wrappers
-/// can write `let p: Promise<_, _> = ...` without importing capnp.
-pub type RpcPromise<T> = Promise<T, capnp::Error>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,6 +418,33 @@ mod tests {
 
 #[cfg(unix)]
 pub mod fd_transport;
+
+/// A child forked between a descriptor's creation and its `exec` holds a copy of
+/// that descriptor until the `exec` closes it (every descriptor here is
+/// close-on-exec), so a test that waits for the last copy of one to close can
+/// find a sibling test's child still holding it. Tests that spawn a child hold
+/// the shared side of this lock for the spawn ([`spawning`]); tests that watch
+/// for a leaked descriptor hold the exclusive side ([`no_spawns`]), so no
+/// child is in that window while they look.
+#[cfg(test)]
+static CHILD_SPAWNS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// Held by a test while it spawns a child process.
+#[cfg(test)]
+pub(crate) fn spawning() -> std::sync::RwLockReadGuard<'static, ()> {
+    CHILD_SPAWNS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Held by a test that checks a descriptor was closed, so that no sibling test
+/// has a child between its fork and its exec meanwhile.
+#[cfg(test)]
+pub(crate) fn no_spawns() -> std::sync::RwLockWriteGuard<'static, ()> {
+    CHILD_SPAWNS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 pub mod editor;
 

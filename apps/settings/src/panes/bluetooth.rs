@@ -15,7 +15,7 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::i18n::ArgValue;
 use ui::tilo_resource::{self, ActionRef, Effect};
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Toggle, Widget};
+use ui::widget::{Button, Row, TextInput, Toggle, Widget};
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::PaneCx;
@@ -23,7 +23,9 @@ use crate::i18n::{t, t_args};
 use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, caption, card_with_action, error_caption, rows, value_row};
+use crate::widgets::{
+    Item, card_with_action, error_caption, note, row, rows, setting_row_described, value_row,
+};
 
 fn token(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).replace('.', "_")
@@ -702,8 +704,8 @@ impl BluetoothModel {
         }
     }
 
-    fn device_detail_rows(&self, d: &DeviceInfo) -> Vec<El> {
-        let mut block: Vec<El> = Vec::new();
+    fn device_detail_rows(&self, d: &DeviceInfo) -> Vec<Item> {
+        let mut block: Vec<Item> = Vec::new();
         block.push(value_row(&t("settings-bluetooth-address"), &d.address));
         if let Some(rssi) = d.rssi {
             block.push(value_row(
@@ -726,16 +728,17 @@ impl BluetoothModel {
                             .map(move |trusted: bool| (path.clone(), trusted)),
                     ),
             );
-            block.push(caption(&t("settings-bluetooth-trust-caption")));
+            block.push(note(&t("settings-bluetooth-trust-caption")));
             let alias = self.aliases.get(&d.path).cloned().unwrap_or_default();
-            block.push(Box::new(
+            // A name field has no label of its own: a free row, not a labelled one.
+            block.push(row(Box::new(
                 TextInput::local()
                     .with_id(&format!("bluetooth.alias.{}", token(&d.path)))
                     .with_external_buffer(Arc::clone(&alias))
                     .with_placeholder(&d.name),
-            ));
+            )));
             let path = d.path.clone();
-            block.push(Box::new(
+            block.push(row(Box::new(
                 Row::new()
                     .push(Box::new(self.cx.bind(
                         Button::new(
@@ -760,39 +763,32 @@ impl BluetoothModel {
                         BluetoothEffect::ForgetDevice {
                             device: d.path.clone(),
                         },
-                    )))
-                    .push(Box::new(Spacer::new())),
-            ));
+                    ))),
+            )));
         }
         if d.icon.starts_with("audio-") {
-            block.push(caption(&t("settings-bluetooth-audio-caption")));
+            block.push(note(&t("settings-bluetooth-audio-caption")));
         }
         block
     }
 
-    fn device_row(&self, d: &DeviceInfo) -> El {
+    fn device_row(&self, d: &DeviceInfo) -> Vec<Item> {
         let (label, primary) = self.primary_action(d);
-        let top = Row::new()
-            .push(Box::new(Text::new(&d.name).with_role(ui::TextRole::Body)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(self.cx.bind_invocation(
+        let mut items = vec![setting_row_described(
+            &d.name,
+            &Self::device_status_line(d),
+            Box::new(self.cx.bind_invocation(
                 Button::new(
                     &format!("settings.bluetooth.primary.{}", token(&d.path)),
                     &label,
                 ),
                 primary,
-            )));
-        let status = Self::device_status_line(d);
-        let mut block: Vec<El> = vec![Box::new(top), caption(&status)];
+            )),
+        )];
         if d.paired {
-            block.extend(self.device_detail_rows(d));
+            items.extend(self.device_detail_rows(d));
         }
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(rows(block)),
-        )
+        items
     }
 
     /// The pane of a device without an adapter: the card, its switch off
@@ -808,7 +804,7 @@ impl BluetoothModel {
                     effect(BluetoothEffect::SET_BLUETOOTH),
                 ),
             ),
-            rows(vec![caption(&t("settings-bluetooth-no-adapter"))]),
+            rows(vec![note(&t("settings-bluetooth-no-adapter"))]),
         )])
     }
 
@@ -822,7 +818,7 @@ impl BluetoothModel {
             "settings-bluetooth-find"
         });
         let refresh = t("settings-bluetooth-refresh");
-        let mut body: Vec<El> = vec![Box::new(
+        let mut body: Vec<Item> = vec![row(Box::new(
             Row::new()
                 .push(Box::new(self.cx.bind_invocation(
                     Button::new("settings.bluetooth.scan", &scan),
@@ -831,21 +827,20 @@ impl BluetoothModel {
                 .push(Box::new(self.cx.bind_invocation(
                     Button::new("settings.bluetooth.refresh", &refresh),
                     BluetoothEffect::RefreshBluetooth,
-                )))
-                .push(Box::new(Spacer::new())),
-        )];
+                ))),
+        ))];
         if let Some(notice) = &self.notice {
-            body.push(caption(notice));
+            body.push(note(notice));
         }
         if let Some(error) = &self.read_error {
-            body.push(error_caption(&t_args(
+            body.push(row(error_caption(&t_args(
                 "settings-bluetooth-read-error",
                 &[("error", error.as_str().into())],
-            )));
+            ))));
         } else {
-            body.extend(self.devices.iter().map(|d| self.device_row(d)));
+            body.extend(self.devices.iter().flat_map(|d| self.device_row(d)));
             if self.devices.is_empty() {
-                body.push(caption(&t(if self.scanning {
+                body.push(note(&t(if self.scanning {
                     "settings-bluetooth-looking"
                 } else {
                     "settings-bluetooth-empty"

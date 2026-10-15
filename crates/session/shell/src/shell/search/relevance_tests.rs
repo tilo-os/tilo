@@ -2,8 +2,8 @@
 //! and the real apps.
 //!
 //! The fixture is what a device has: every app under `apps/` read from its
-//! manifest, the shell's actions with the radios present, the settings
-//! pages and the session actions, all behind the
+//! manifest, the shell's actions with the radios present, the typed system
+//! settings, the settings pages and the session actions, all behind the
 //! registry's own ranking and merge.
 //! [`the_palette_finds_what_people_type`] is a table of what a person types
 //! and the row that must lead; [`a_query_against_the_full_index_is_fast`]
@@ -24,7 +24,7 @@ use crate::shell::search::providers::actions::SharedQsDispatcher;
 use crate::shell::search::providers::applications::ApplicationsTestSource;
 use crate::shell::search::providers::{
     ActionsProvider, ApplicationsProvider, SessionActionPolicy, SessionActionsProvider,
-    SettingsPagesProvider,
+    SettingsPagesProvider, SystemSettingsProvider,
 };
 use crate::shell::search::{QueryArgs, SearchRegistry, SearchResult};
 
@@ -122,6 +122,7 @@ impl Palette {
             QsActionAvailability::all(),
         ));
         registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(qs)));
+        registry.register(Rc::new(SystemSettingsProvider::new()));
         registry.register(Rc::new(SettingsPagesProvider::new()));
         let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
         policy.set_user_switching(true);
@@ -392,9 +393,9 @@ fn typos_actions_pages_and_session() -> Vec<(&'static str, Expect)> {
         ("flugmodus", action("quick-settings.airplane-mode.toggle")),
         // Settings pages: by name and by what is on them.
         ("bluetooth", page("page:bluetooth")),
-        ("keyboard layout", page("page:mouse_keyboard")),
-        ("tastatur", page("page:mouse_keyboard")),
-        ("touchpad", page("page:mouse_keyboard")),
+        ("keyboard layout", page("page:keyboard")),
+        ("tastatur", page("page:keyboard")),
+        ("touchpad", page("page:pointing")),
         ("night light", page("page:displays")),
         ("time zone", page("page:time_date")),
         ("zeitzone", page("page:time_date")),

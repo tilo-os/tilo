@@ -32,8 +32,9 @@ use package_store::InstalledPackage;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::ServerAdvertisement;
 use crate::mesh::DeviceKey;
-use crate::{ComputeAccelerator, ServerAdvertisement};
+use crate::placement::ComputeRequirements;
 
 pub const COMPUTE_JOB_SCHEMA_VERSION: u16 = 1;
 pub const MAX_COMPUTE_JOB_LIFETIME_MS: u64 = 5 * 60 * 1_000;
@@ -138,20 +139,24 @@ pub fn admit_compute_job(
     now_ms: u64,
 ) -> Result<(), ComputeError> {
     spec.validate_for(worker.device, now_ms)?;
-    if !worker.online
-        || !worker.role.can_serve()
-        || !worker.services.compute
-        || !worker.workspaces.contains(&spec.workspace_id)
-        || !worker.apps.contains(&spec.app_id)
-        || (spec.limits.gpu && !worker.accelerators.contains(&ComputeAccelerator::Gpu))
-        || worker.assignment_capacity == 0
-        || worker.active_assignments >= worker.assignment_capacity
-        || worker.energy_saver
-        || worker.power.is_critically_constrained()
-    {
+    if worker.compute_ineligibility(&spec.requirements()).is_some() {
         return Err(ComputeError::WorkerUnavailable);
     }
     Ok(())
+}
+
+impl ComputeJobSpec {
+    /// What this job needs from its worker: the terms both placement and
+    /// admission decide eligibility by.
+    #[must_use]
+    pub fn requirements(&self) -> ComputeRequirements<'_> {
+        ComputeRequirements {
+            requester: self.requester,
+            workspace_id: self.workspace_id,
+            app_id: &self.app_id,
+            gpu: self.limits.gpu,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1104,7 +1109,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::{DeviceRole, PowerAvailability, ServiceCapabilities};
+    use crate::{ComputeAccelerator, DeviceRole, PowerAvailability, ServiceCapabilities};
     use ed25519_dalek::{Signer, SigningKey};
     use tilo_app_package::blobs::{BlobHash, Collection};
     use tilo_app_package::signed::SignedRoot;

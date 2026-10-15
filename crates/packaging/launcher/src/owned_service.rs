@@ -661,9 +661,11 @@ impl ServiceEndpoint {
             .open(parent)?;
         let socket = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd())).join(name);
         let metadata = std::fs::symlink_metadata(&socket)?;
+        // Retained and target workers can run as an admitted UID distinct from
+        // the controller's; privacy is checked against that exact worker owner.
         if !metadata.file_type().is_socket()
             || metadata.uid() != self.expected_uid
-            || metadata.mode() & 0o077 != 0
+            || !tilo_files::native::private::is_owner_only(&metadata)
         {
             return Err(io::ErrorKind::PermissionDenied.into());
         }

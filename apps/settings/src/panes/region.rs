@@ -16,7 +16,7 @@ use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 
 use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
-use crate::widgets::{caption, card, rows};
+use crate::widgets::{Item, card, choice_row, note, rows};
 use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
 use ui::clock::TimeStyle;
 
@@ -246,14 +246,12 @@ impl RegionPane {
         let formats = card(
             &t("settings-region-formats-card"),
             rows(vec![
-                Box::new(ui::widget::Field::new(&currency_title, currency).with_trailing_control()),
-                Box::new(ui::widget::Field::new(&date_title, date).with_trailing_control()),
-                Box::new(ui::widget::Field::new(&time_title, time).with_trailing_control()),
-                Box::new(ui::widget::Field::new(&measure_title, units).with_trailing_control()),
-                Box::new(
-                    ui::widget::Field::new(&number_title, number_style).with_trailing_control(),
-                ),
-                Box::new(ui::widget::Field::new(&first_title, first_day).with_trailing_control()),
+                choice_row(&currency_title, Box::new(currency)),
+                choice_row(&date_title, Box::new(date)),
+                choice_row(&time_title, Box::new(time)),
+                choice_row(&measure_title, Box::new(units)),
+                choice_row(&number_title, Box::new(number_style)),
+                choice_row(&first_title, Box::new(first_day)),
             ]),
         );
 
@@ -282,7 +280,7 @@ impl RegionPane {
 
         let explainer = card(
             &t("settings-region-shared-card"),
-            rows(vec![caption(&t("settings-region-shared-body"))]),
+            rows(vec![note(&t("settings-region-shared-body"))]),
         );
 
         crate::widgets::cards(vec![formats, preview, explainer])
@@ -306,7 +304,7 @@ impl Widget for RegionPane {
     }
 }
 
-fn preview_line(label: &str, value: &str) -> crate::widgets::El {
+fn preview_line(label: &str, value: &str) -> Item {
     crate::widgets::value_row(label, value)
 }
 

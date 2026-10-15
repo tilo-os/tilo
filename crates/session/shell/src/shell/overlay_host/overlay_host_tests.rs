@@ -462,6 +462,20 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         };
 
         ShellOverlayHost::open_room_activity_target(&chrome, &target);
+        // The open is queued off the compositor thread: its refusal arrives
+        // as a launch event that the host settles on its next drain.
+        let mut host =
+            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while chrome.borrow().notifications().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the queued refusal never reached the host"
+            );
+            if !host.drain_launch_events() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
 
         assert!(
             crate::shell::launcher::placement_for_toplevel(app_id, 91_001).is_none(),
@@ -1698,8 +1712,9 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         ));
         assert_eq!(
             h.host.file_picker().map(ui::widget::FilePicker::filename),
-            Some("beforex"),
-            "the Save name field owns text input before capture opens"
+            Some("x"),
+            "the Save name field owns text input before capture opens (typing replaces \
+             the preset name, which opens selected)"
         );
 
         assert!(pump(
@@ -1728,7 +1743,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         ));
         assert_eq!(
             h.host.file_picker().map(ui::widget::FilePicker::filename),
-            Some("beforexy"),
+            Some("xy"),
             "after capture closes, the exact prior Save field must regain keyboard input"
         );
     }
@@ -1929,6 +1944,7 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
         scope: Some(crate::portal::PickerScope {
             initial_dir: folder.path().to_path_buf(),
             roots: vec![folder.path().to_path_buf()],
+            home: None,
         }),
         reply,
     });
@@ -3792,6 +3808,27 @@ fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
             .1
             .is_none()
     );
+}
+
+#[test]
+fn a_slow_host_update_names_the_step_that_took_the_time() {
+    let mut steps = UpdateSteps::start();
+    steps.mark("peer-sync");
+    steps.steps[0].1 = Duration::from_millis(3);
+    steps.mark("search-index");
+    steps.steps[1].1 = Duration::from_millis(900);
+    assert!(
+        steps
+            .report(SLOW_HOST_UPDATE.saturating_sub(Duration::from_millis(1)))
+            .is_none(),
+        "an update inside the budget is not reported"
+    );
+    let line = steps
+        .report(Duration::from_millis(903))
+        .expect("an update past the budget is reported");
+    assert!(line.starts_with("SLOW-HOST-UPDATE total=903ms ("), "{line}");
+    assert!(line.contains("search-index=900ms"), "{line}");
+    assert!(line.contains("peer-sync=3ms"), "{line}");
 }
 
 /// Exercise the real catalogue callback and widget action-host/reducer, never

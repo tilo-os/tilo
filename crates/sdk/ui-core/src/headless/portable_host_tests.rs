@@ -787,25 +787,25 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
     frame.verify_retained_geometry().unwrap();
 }
 
+/// A resize re-solves the retained tree against the new size; only a widget
+/// that composes from its allocation is composed again. Either way the result
+/// is what a fresh composition at that size gives.
 #[test]
-fn viewport_change_rebuilds_and_matches_a_fresh_composition() {
+fn viewport_change_re_solves_and_matches_a_fresh_composition() {
     let mut frame = frame(Box::new(target_and_other()));
     let ids = frame.layout_node_ids();
     frame.resize((360, 200)).unwrap();
     assert!(
-        frame.last_relayout().rebuilt,
-        "a viewport change recomposes"
+        !frame.last_relayout().rebuilt && frame.last_relayout().measured,
+        "a viewport change re-solves the retained tree"
     );
-    // Node ids restart on a fresh tree, so identical ids do not prove
-    // retention on their own; the stats do.
-    assert_eq!(frame.layout_node_ids().len(), ids.len());
-    let rebuilt = frame.layout_node_ids();
+    assert_eq!(frame.layout_node_ids(), ids, "the tree was kept");
+    frame.verify_retained_geometry().unwrap();
+
+    frame.set_full_relayout(Some(true));
     frame.relayout();
-    assert!(
-        !frame.last_relayout().rebuilt,
-        "the following frame retains the new tree"
-    );
-    assert_eq!(frame.layout_node_ids(), rebuilt);
+    frame.set_full_relayout(None);
+    assert!(frame.last_relayout().rebuilt);
     frame.verify_retained_geometry().unwrap();
 }
 

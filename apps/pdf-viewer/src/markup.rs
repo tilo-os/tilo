@@ -60,8 +60,6 @@ pub struct ImportedPage {
 }
 
 impl ImportedPage {
-    pub const MAX_HASH_LEN: usize = 128;
-
     pub fn valid(&self) -> bool {
         self.hash.len() == 64
             && self.hash.bytes().all(|byte| byte.is_ascii_hexdigit())

@@ -143,19 +143,14 @@ pub fn component_driver(component: AppComponent) -> ui::headless::FrameHarness {
     driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
     driver
 }
+/// Invoke `action` of `resource`, which takes no arguments.
 pub fn invoke(
     driver: &mut ui::headless::FrameHarness,
     instance: u64,
     resource: impl Into<String>,
     action: impl Into<String>,
-    value: Option<&str>,
 ) {
-    let arguments = value.map_or_else(serde_json::Map::new, |value| {
-        serde_json::json!({"value": value})
-            .as_object()
-            .unwrap()
-            .clone()
-    });
+    let arguments = serde_json::Map::new();
     driver
         .invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {

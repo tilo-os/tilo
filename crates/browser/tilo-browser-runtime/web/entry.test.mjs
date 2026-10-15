@@ -209,6 +209,35 @@ test('the desktop gets the entry’s About links, no host pill on the person’s
   page.router.stop?.();
 });
 
+test('a room mount keeps Invite alongside host, About, presence and title forwarding', async () => {
+  const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+  const about = {source: 'https://example.org/source'};
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  let mounted;
+  let invited = 0;
+  const peer = {room: 'ROOM', whenReady: async () => {}, mountDesktop: async (_element, options) => { mounted = options; return {navigation}; }};
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}), document: {title: 'Tilo'},
+    location: {href: 'https://rooms.example/open/', hash: ''},
+    history: {replaceState() {}, pushState() {}}, addEventListener() {}, removeEventListener() {},
+  };
+  const statuses = [];
+  const page = await boot({mode: 'desktop', window, diagnostics: {onStatus: status => statuses.push(status)}, deps: {
+    loadRuntime: async () => ({formatLink: () => 'https://rooms.example/open/#/ROOM'}),
+    fetch: async () => ({ok: true, json: async () => ({home, about})}),
+    enterViaHost: async () => peer, onInvite: () => { invited += 1; },
+  }});
+  mounted.onInvite();
+  assert.equal(invited, 1);
+  assert.equal(mounted.host, 'rooms.example');
+  assert.deepEqual(mounted.about, about);
+  assert.equal(mounted.presenceUrl, 'https://rooms.example/presence');
+  mounted.onStatus({workspaceName: 'Commons'});
+  assert.equal(window.document.title, 'Tilo · Commons');
+  assert.deepEqual(statuses, [{workspaceName: 'Commons'}]);
+  page.router.stop();
+});
+
 test('a bare entry under a home workspace asks the host’s door while the runtime still loads', async () => {
   const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const order = [];

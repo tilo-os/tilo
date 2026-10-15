@@ -974,6 +974,12 @@ impl Widget for Chip {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
+    /// A settled pill keeps its footprint until its label or type changes
+    /// (which forget it), so only then is there anything to measure.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO || self.footprint.is_none()
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,
