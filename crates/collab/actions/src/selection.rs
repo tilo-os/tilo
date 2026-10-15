@@ -107,6 +107,7 @@ pub struct SelectionAnchor {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SelectionAnchorWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     place: Option<SelectionPlace>,

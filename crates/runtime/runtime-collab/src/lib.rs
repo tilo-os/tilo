@@ -2517,6 +2517,11 @@ pub struct TaskRunEnvelope {
     /// Private full instruction. Older senders omit it and use `title`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
+    /// What the person had selected in the task's resource when they asked:
+    /// the place to act at and a short excerpt. The resource itself is the
+    /// action context's. Older senders omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<tilo_actions::SelectionAnchor>,
     pub run_id: u64,
     pub lease: String,
     pub planning: TaskRunPlanning,

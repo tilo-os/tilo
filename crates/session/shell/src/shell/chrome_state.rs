@@ -2970,6 +2970,7 @@ impl ChromeState {
             kind: "notification".to_string(),
             label: notification.title.clone(),
             agent_request: None,
+            anchor: None,
         };
         let room = self
             .tree()

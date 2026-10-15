@@ -202,6 +202,16 @@ pub enum WorkspaceTaskCommand {
         sequence: u64,
         message: String,
     },
+    /// [`Self::QueueInstruction`] about one resource, usually with what the
+    /// person had selected in it. Appended to preserve existing postcard
+    /// indices.
+    QueueInstructionOn {
+        title: String,
+        instruction: String,
+        assigned_agent: String,
+        route: WorkspaceTaskRoute,
+        resource: Box<WorkspaceTaskResource>,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -210,6 +220,7 @@ impl WorkspaceTaskCommand {
         match self {
             Self::Queue { assigned_agent, .. }
             | Self::QueueInstruction { assigned_agent, .. }
+            | Self::QueueInstructionOn { assigned_agent, .. }
             | Self::StartRun {
                 agent_id: assigned_agent,
                 ..
@@ -325,7 +336,8 @@ fn dispatch(
             dispatch_budget(tasks, controls, context, command)
         }
         command @ (WorkspaceTaskCommand::Queue { .. }
-        | WorkspaceTaskCommand::QueueInstruction { .. }) => {
+        | WorkspaceTaskCommand::QueueInstruction { .. }
+        | WorkspaceTaskCommand::QueueInstructionOn { .. }) => {
             dispatch_queue(tasks, controls, context, command)
         }
         command @ (WorkspaceTaskCommand::ApproveRun { .. }
@@ -439,6 +451,25 @@ fn dispatch_queue(
             None,
             Some(instruction.as_str()),
         ),
+        WorkspaceTaskCommand::QueueInstructionOn {
+            title,
+            instruction,
+            assigned_agent,
+            route,
+            resource,
+        } => {
+            validate_manual_resource(resource)?;
+            queue(
+                tasks,
+                controls,
+                context,
+                title,
+                assigned_agent,
+                *route,
+                Some(resource.as_ref().clone()),
+                Some(instruction.as_str()),
+            )
+        }
         _ => Err("not a queue command".into()),
     }
 }
@@ -646,6 +677,9 @@ pub fn validate_manual_resource(resource: &WorkspaceTaskResource) -> Result<(), 
         || resource.agent_request.is_some()
     {
         return Err("manual attachment is not an ordinary application resource".into());
+    }
+    if let Some(anchor) = &resource.anchor {
+        anchor.validate()?;
     }
     Ok(())
 }
@@ -1997,6 +2031,7 @@ mod tests {
                     instruction: "Prepare the complete release notes".into(),
                     invocation: serde_json::from_value(serde_json::json!(parent)).unwrap(),
                 }),
+                anchor: None,
             }));
         }
         let first = run(&mut doc, 1, 7, &person(), &command).unwrap();
@@ -2391,5 +2426,78 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn selected_resource(anchor: Option<tilo_actions::SelectionAnchor>) -> WorkspaceTaskResource {
+        WorkspaceTaskResource {
+            app_id: Some("so.tilo.word-processor".into()),
+            app_label: Some("Writer".into()),
+            id: "doc:proposal".into(),
+            kind: "word-processor.document".into(),
+            label: "Proposal".into(),
+            agent_request: None,
+            anchor,
+        }
+    }
+
+    #[test]
+    fn an_instruction_about_a_selection_keeps_its_place_and_wire_position() {
+        let anchor = tilo_actions::SelectionAnchor::of_text("the opening sentence")
+            .at(tilo_actions::SelectionPlace::range("block-2", 0, 20));
+        let command = WorkspaceTaskCommand::QueueInstructionOn {
+            title: "Tighten this".into(),
+            instruction: "Tighten this sentence".into(),
+            assigned_agent: "scribe".into(),
+            route: WorkspaceTaskRoute::Model,
+            resource: Box::new(selected_resource(Some(anchor.clone()))),
+        };
+        let encoded = postcard::to_allocvec(&command).unwrap();
+        assert_eq!(
+            encoded[0], 16,
+            "the new command stays appended after every established wire variant"
+        );
+        let decoded = postcard::from_bytes::<WorkspaceTaskCommand>(&encoded).unwrap();
+        let WorkspaceTaskCommand::QueueInstructionOn { resource, .. } = &decoded else {
+            panic!("decoded another command")
+        };
+        assert_eq!(resource.anchor.as_ref(), Some(&anchor));
+
+        let mut doc = AutoCommit::new();
+        let applied = run(&mut doc, 81, 81, &person(), &command).unwrap();
+        let WorkspaceTaskMutationResult::Queued { task_id } = applied.result else {
+            panic!("queue result")
+        };
+        let current = snapshot(&doc).unwrap();
+        let task = current
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .unwrap();
+        assert_eq!(task.selection_anchor(), Some(&anchor));
+        assert_eq!(
+            current.controls[&task_id].instruction.as_deref(),
+            Some("Tighten this sentence")
+        );
+    }
+
+    #[test]
+    fn an_instruction_about_a_selection_refuses_carriers_and_oversized_anchors() {
+        let mut forged = selected_resource(Some(tilo_actions::SelectionAnchor {
+            excerpt: Some("x".repeat(tilo_actions::MAX_EXCERPT_BYTES + 1)),
+            ..tilo_actions::SelectionAnchor::default()
+        }));
+        let queue = |resource: WorkspaceTaskResource| WorkspaceTaskCommand::QueueInstructionOn {
+            title: "Tighten this".into(),
+            instruction: "Tighten this sentence".into(),
+            assigned_agent: "scribe".into(),
+            route: WorkspaceTaskRoute::Model,
+            resource: Box::new(resource),
+        };
+        let mut doc = AutoCommit::new();
+        assert!(run(&mut doc, 82, 82, &person(), &queue(forged.clone())).is_err());
+        forged.anchor = None;
+        forged.id = "file:///etc/passwd".into();
+        assert!(run(&mut doc, 83, 83, &person(), &queue(forged)).is_err());
+        assert!(run(&mut doc, 84, 84, &agent(), &queue(selected_resource(None))).is_err());
     }
 }

@@ -72,6 +72,10 @@ struct ResourceInput {
     id: String,
     kind: String,
     label: String,
+    /// What the person had selected in the resource, for the agent to act
+    /// at. Context only: it widens no permission.
+    #[serde(default)]
+    anchor: Option<tilo_actions::SelectionAnchor>,
 }
 
 fn resource(encoded: &str) -> Result<WorkspaceTaskResource, String> {
@@ -86,6 +90,9 @@ fn resource(encoded: &str) -> Result<WorkspaceTaskResource, String> {
         kind: input.kind,
         label: input.label,
         agent_request: None,
+        anchor: input
+            .anchor
+            .and_then(tilo_actions::SelectionAnchor::non_empty),
     };
     validate_manual_resource(&value)?;
     Ok(value)
@@ -149,6 +156,8 @@ fn queue_instruction_command(
         instruction: String,
         assigned_agent: String,
         planning: String,
+        #[serde(default)]
+        resource_json: Option<String>,
     }
     let input: Input =
         serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
@@ -157,11 +166,20 @@ fn queue_instruction_command(
         "rules_only" => WorkspaceTaskRoute::RulesOnly,
         _ => return Err("managed task planning must be model or rules_only".into()),
     };
-    Ok(WorkspaceTaskCommand::QueueInstruction {
-        title: input.title,
-        instruction: input.instruction,
-        assigned_agent: input.assigned_agent,
-        route,
+    Ok(match input.resource_json.as_deref() {
+        Some(encoded) => WorkspaceTaskCommand::QueueInstructionOn {
+            title: input.title,
+            instruction: input.instruction,
+            assigned_agent: input.assigned_agent,
+            route,
+            resource: Box::new(resource(encoded)?),
+        },
+        None => WorkspaceTaskCommand::QueueInstruction {
+            title: input.title,
+            instruction: input.instruction,
+            assigned_agent: input.assigned_agent,
+            route,
+        },
     })
 }
 
@@ -359,7 +377,7 @@ fn queue_action(workspace_label: &str) -> PublishedAction {
             ActionParam::optional(
                 "resource_json",
                 ParamType::Text,
-                "Ordinary resource JSON: app_id, app_label, id, kind, label; grants no authority",
+                "Ordinary resource JSON: app_id, app_label, id, kind, label, and an optional anchor (place, interaction, excerpt) naming what the person selected in it; grants no authority",
             ),
         ],
         false,
@@ -511,7 +529,7 @@ fn create_manual_task_action(workspace_label: &str) -> PublishedAction {
             ActionParam::optional(
                 "resource_json",
                 ParamType::Text,
-                "Ordinary resource JSON: app_id, app_label, id, kind, label; grants no authority",
+                "Ordinary resource JSON: app_id, app_label, id, kind, label, and an optional anchor (place, interaction, excerpt) naming what the person selected in it; grants no authority",
             ),
         ],
         false,
@@ -556,6 +574,11 @@ fn queue_instruction_action() -> PublishedAction {
                 "planning",
                 ParamType::Text,
                 "model or rules_only; never manual",
+            ),
+            ActionParam::optional(
+                "resource_json",
+                ParamType::Text,
+                "The resource the task is about, as JSON: app_id, app_label, id, kind, label, and an optional anchor (place, interaction, excerpt) naming what the person selected in it; grants no authority",
             ),
         ],
         false,

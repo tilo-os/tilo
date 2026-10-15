@@ -20,6 +20,7 @@ use crate::wire::Link;
 mod agent_loop;
 mod native_task;
 mod outstanding;
+mod selection_prompt;
 
 /// How long a task waits for the broker's pushed action catalogue.
 const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
@@ -1255,6 +1256,7 @@ mod tests {
             task_id: "task:review".into(),
             title: "Review draft".into(),
             instruction: None,
+            anchor: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::RulesOnly,
