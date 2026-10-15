@@ -2006,17 +2006,17 @@ mod tests {
         // another entry nor changing that job may spend the host's consent.
         let mut changed_account = op.clone();
         let FileOp::CloudImport { account, .. } = &mut changed_account else {
-            unreachable!()
+            panic!("the admitted job must be a cloud import")
         };
         *account = "another-private-account".into();
         let mut changed_entries = op.clone();
         let FileOp::CloudImport { entries, .. } = &mut changed_entries else {
-            unreachable!()
+            panic!("the admitted job must be a cloud import")
         };
         entries[0].id = "another-private-document".into();
         let mut changed_job = op.clone();
         let FileOp::CloudImport { job_id, .. } = &mut changed_job else {
-            unreachable!()
+            panic!("the admitted job must be a cloud import")
         };
         *job_id = uuid::Uuid::new_v4().to_string();
         let admitted_id = app
