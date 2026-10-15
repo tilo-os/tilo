@@ -411,6 +411,18 @@ impl Replica {
     }
 }
 
+/// The record a durable route's wire name names: the inverse of
+/// [`Replica::wire_record`]. The room's own record (Chat's) travels with an
+/// empty name, which is no record id, so it is read back as the
+/// package-primary custody key rather than refused.
+pub(crate) fn record_of_wire(wire: &str) -> Option<RecordId> {
+    if wire.is_empty() {
+        Some(RecordId::package_primary())
+    } else {
+        RecordId::parse(wire)
+    }
+}
+
 /// Device name a record created here is seeded on.
 const DEVICE: &str = "agent";
 

@@ -2557,7 +2557,8 @@ impl AgentParticipant {
     }
 
     /// Open `app_id` on `record` (a record the room already has), or on a
-    /// new record it publishes. Returns the record's route.
+    /// new record it publishes; an app that keeps one record per room opens
+    /// that one either way. Returns the record's route.
     ///
     /// # Errors
     ///
@@ -2571,22 +2572,35 @@ impl AgentParticipant {
             cluster_id: self.room.clone(),
             record: record.to_owned(),
         };
+        // An app that keeps one record per room (Chat) has one route, named
+        // empty: asked for a new record, the agent joins the room's own once
+        // the room has it, so every agent sees what the others wrote there.
+        let room_record = self
+            .catalogue
+            .get(app_id)
+            .is_some_and(ui::application::ApplicationDefinition::keeps_room_record);
+        let record = record.or_else(|| room_record.then_some(""));
         let (seed, seeded) = match record {
             Some(record) => {
                 let route = route(record);
                 if self.apps.contains_key(&route) {
                     return Ok(route);
                 }
-                let saved = self
-                    .unopened
-                    .seed(&route)
-                    .ok_or_else(|| format!("the room has no record {record} of {app_id} yet"))??;
-                let seed = Seed::Existing {
-                    record: ui::record::RecordId::parse(record)
-                        .ok_or_else(|| format!("{record} is not a record id"))?,
-                    changes: vec![saved],
-                };
-                (seed, Some(route))
+                match self.unopened.seed(&route) {
+                    Some(saved) => {
+                        let seed = Seed::Existing {
+                            record: crate::apps::record_of_wire(record)
+                                .ok_or_else(|| format!("{record} is not a record id"))?,
+                            changes: vec![saved?],
+                        };
+                        (seed, Some(route))
+                    }
+                    // Nobody has written the room's record yet: its genesis
+                    // is the same on every member, so this one converges
+                    // with whoever makes it too.
+                    None if room_record && record.is_empty() => (Seed::New, None),
+                    None => return Err(format!("the room has no record {record} of {app_id} yet")),
+                }
             }
             None => (Seed::New, None),
         };

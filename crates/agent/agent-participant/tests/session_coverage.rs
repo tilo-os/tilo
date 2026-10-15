@@ -1876,3 +1876,244 @@ async fn a_task_waits_for_a_code_another_agent_delivers_then_goes_on() {
     waiter.close();
     host.relay.shutdown().await;
 }
+
+const CHAT: &str = "so.tilo.chat";
+
+/// A planner that writes its steps as a scenario does, naming no record:
+/// it posts in the channel `logins` and exports it. Messages arriving while
+/// the task is planned (the room's Chat still coming in) re-plan the rest,
+/// which is planned again; any other re-plan plans nothing. Every plan
+/// asked is kept.
+struct PostsInLogins {
+    asked: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl tilo_agent_participant::Planner for PostsInLogins {
+    fn plan(
+        &mut self,
+        task: &str,
+        context: &tilo_agent_participant::PlanContext,
+    ) -> Result<Vec<tilo_agent_participant::Step>, String> {
+        self.asked.lock().unwrap().push(task.to_owned());
+        if context.request.is_some() && !task.contains("Plan the rest of the request again") {
+            return Ok(Vec::new());
+        }
+        let step = |action: &str, arguments: serde_json::Value| tilo_agent_participant::Step {
+            app: CHAT.into(),
+            record: None,
+            action: StepAction::Invoke {
+                address: ActionAddress::new("chat.channel:logins", action),
+                arguments: arguments.as_object().unwrap().clone(),
+            },
+            carries: false,
+        };
+        Ok(vec![
+            step("post", serde_json::json!({ "value": "LR-2041 signed in" })),
+            step("export-content", serde_json::json!({ "format": "json" })),
+        ])
+    }
+}
+
+/// Chat keeps one record per room, on a route with no record id. An agent
+/// that makes a channel there and delivers a message in it, and another
+/// agent whose written steps name no record, share that record: the second
+/// joins the room's Chat rather than starting one of its own, so it posts
+/// in the channel and its export holds the first agent's message, and the
+/// first agent sees the post.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agents_in_a_room_share_its_chat_record_and_see_each_others_channels() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let now = tilo_clock::unix_now_ns();
+    let start = |id: &str,
+                 name: &str,
+                 content: tilo_content::ContentStore,
+                 planner: Box<dyn tilo_agent_participant::Planner>| {
+        let device = enrol(
+            &root,
+            &format!("Agent: {name}"),
+            CertificationPolicy::agent().ceiling,
+        );
+        let delegation = AgentDelegation::sign(
+            &root,
+            device.cert.device_public_key,
+            id,
+            name,
+            [0x0f, 0x4c, 0x5c],
+            AgentScope {
+                rooms: vec![ROOM.into()],
+                apps: vec![CHAT.into()],
+                may_confirm: false,
+            },
+            now,
+            now + 3_600_000_000_000,
+        )
+        .unwrap();
+        host.relay.register_agent(delegation.clone()).unwrap();
+        let control = AgentControl::new(delegation.clone());
+        let agent = AgentParticipant::start(
+            ParticipantConfig {
+                host: host.iroh(),
+                host_cert: host_device.cert.clone(),
+                room: ROOM.into(),
+                content,
+            },
+            AgentIdentity {
+                key: device.key.clone(),
+                cert: device.cert,
+                delegation,
+            },
+            control.clone(),
+            catalogue(),
+            planner,
+        )
+        .unwrap();
+        (agent, control)
+    };
+    let ops_content = tilo_content::ContentStore::memory();
+    let ana_content = tilo_content::ContentStore::memory();
+    let asked = std::sync::Arc::default();
+    let (mut ops, ops_control) = start("ops", "Ops", ops_content.clone(), Box::new(DirectPlanner));
+    wait_for("Ops to be admitted", || {
+        ops.pump();
+        let admitted = ops_control.status() == AgentStatus::Waiting;
+        async move { admitted.then_some(()) }
+    })
+    .await;
+
+    let chat = ops.open(CHAT, None).unwrap();
+    assert_eq!(
+        chat.record, "",
+        "the room's Chat travels on its room-level route"
+    );
+    let new_channel = ops
+        .survey(&chat)
+        .into_iter()
+        .find(|descriptor| descriptor.address.action == "new-channel")
+        .expect("the room's workspace makes channels")
+        .address;
+    let made = ops
+        .invoke(
+            &chat,
+            &new_channel,
+            serde_json::json!({ "value": "logins", "id": "logins" })
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap()
+        .and_then(|output| output.value)
+        .unwrap();
+    assert_eq!(made["channel"], "chat.channel:logins", "{made}");
+    let rule = "Never paste a code here: enter it in the workbook and say so.";
+    ops.invoke(
+        &chat,
+        &ActionAddress::new("chat.channel:logins", "deliver-message"),
+        serde_json::json!({ "author": "Mara Lind (IT)", "body": rule, "ts": "2026-10-14T08:00:00Z" })
+            .as_object()
+            .unwrap(),
+    )
+    .unwrap();
+    // Ana joins once the channel is made, so she is handed the room's Chat
+    // as it stands when she is admitted: changes arriving while her task
+    // runs would be news, re-planned instead of her written steps.
+    let (mut ana, ana_control) = start(
+        "ana",
+        "Ana",
+        ana_content.clone(),
+        Box::new(PostsInLogins {
+            asked: std::sync::Arc::clone(&asked),
+        }),
+    );
+    wait_for("Ana to be admitted and see the room's Chat", || {
+        ops.pump();
+        ana.pump();
+        let seen =
+            ana_control.status() == AgentStatus::Waiting && ana.known_records().contains(&chat);
+        async move { seen.then_some(()) }
+    })
+    .await;
+
+    let task = ana_control
+        .message("Say in logins that LR-2041 signed in, then keep a copy")
+        .unwrap();
+    let ended = |control: &AgentControl| {
+        control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|info| info.id == task)
+            .filter(|info| !matches!(info.state, TaskState::Queued | TaskState::Running))
+    };
+    ana.run_until(Some(Instant::now() + Duration::from_secs(30)), |_| {
+        ended(&ana_control).is_some()
+    });
+    let info = ended(&ana_control).expect("the task ended");
+    assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    let planned = asked.lock().unwrap().clone();
+    assert!(
+        info.steps.iter().any(|step| step.action == "post"),
+        "{info:?}, planned: {planned:?}"
+    );
+    for step in &info.steps {
+        assert_eq!(
+            step.state,
+            TaskState::Completed,
+            "{step:?}, planned: {planned:?}"
+        );
+    }
+    let Some(export) = info
+        .steps
+        .last()
+        .filter(|step| step.action == "export-content")
+    else {
+        panic!("the task ends exporting the channel: {info:?}, planned: {planned:?}");
+    };
+    let [exported] = export.content.as_slice() else {
+        panic!("one exported file: {export:?}");
+    };
+    let exported = String::from_utf8(
+        ana_content
+            .read(tilo_actions::content_hash(exported).unwrap())
+            .expect("Ana keeps what she exported"),
+    )
+    .unwrap();
+    assert!(exported.contains(rule), "{exported}");
+    assert!(exported.contains("LR-2041 signed in"), "{exported}");
+
+    // Ops's replica of the same record takes Ana's post in.
+    let export_content = ActionAddress::new("chat.channel:logins", "export-content");
+    wait_for("Ops to see Ana's post", || {
+        ops.pump();
+        ana.pump();
+        let output = ops
+            .invoke(
+                &chat,
+                &export_content,
+                serde_json::json!({ "format": "json" }).as_object().unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        let [address] = output.resources.as_slice() else {
+            panic!("one exported file: {output:?}");
+        };
+        let text = ops_content
+            .read(tilo_actions::content_hash(address).unwrap())
+            .map(|bytes| String::from_utf8(bytes).unwrap())
+            .unwrap_or_default();
+        async move { text.contains("LR-2041 signed in").then_some(()) }
+    })
+    .await;
+
+    ops.close();
+    ana.close();
+    host.relay.shutdown().await;
+}
