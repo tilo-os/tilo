@@ -24084,7 +24084,7 @@ impl ShellOverlayHost {
         card: &tilo_desktop::overview::RoomCard,
         name_size: f32,
     ) {
-        use ui::widget::{ChipFace, ChipLead, ChipStyle, Tone};
+        use ui::widget::{ChipFace, ChipLead, ChipStyle};
 
         let (scene, transform, text_renderer, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
@@ -24110,8 +24110,9 @@ impl ShellOverlayHost {
             ground,
         );
 
-        // "You are here" states which of these rooms you are in: a chip
-        // tinted with your own colour, the colour your presence has.
+        // "You are here" states which of these rooms you are in: a quiet
+        // neutral chip. Your colour is for the focus ring, the caret and
+        // your presence among others (HIG 9.4), not for a label.
         let chip_h = m.chip_h;
         let here_label = t("overview-you-are-here");
         let chip_w =
@@ -24147,7 +24148,7 @@ impl ShellOverlayHost {
             ),
             &here_label,
         )
-        .style(ChipStyle::Tinted(Tone::Presence(colors.you)))
+        .style(ChipStyle::Neutral)
         .paint(scene, transform, text_renderer, theme);
 
         let access = tilo_desktop::overview::room_access_label(card);
