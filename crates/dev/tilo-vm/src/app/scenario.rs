@@ -43,7 +43,10 @@ enum FirstBootSurface {
 fn is_identity_setup(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
     text.contains("tilo identity setup")
-        && (text.contains("create your local")
+        // The first step (shell onboarding-intro-title / onboarding-choice-existing).
+        && (text.contains("set up your tilo identity")
+            || text.contains("use my existing tilo identity")
+            || text.contains("create your local")
             || text.contains("connect an existing identity")
             || text.contains("back up your tilo identity")
             || text.contains("your identity is ready"))
@@ -1868,6 +1871,12 @@ mod tests {
         assert!(super::is_identity_setup(
             "Tilo identity setup\nCreate your local identity"
         ));
+        // Tesseract's reading of the first step on an installed target.
+        assert!(super::is_identity_setup(
+            "Tilo identity setup Step1of5\n\nSet up your Tilo identity\n\n\
+             Use my existing Tilo identity >\n4 Create anew identity >"
+        ));
+        assert!(!super::is_identity_setup("Set up your Tilo identity"));
         assert!(!super::is_identity_setup(
             "Fedora Linux 44\nscenario-tilo login:"
         ));
