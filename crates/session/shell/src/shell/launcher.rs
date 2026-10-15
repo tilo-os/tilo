@@ -2425,6 +2425,9 @@ fn build_launch_command_for(
         uri,
     } = *extras;
     let application_creation = original_application_creation(app);
+    if application_creation.is_none() {
+        note_missing_creation_evidence(app);
+    }
     register_signed_surface(app);
     let mut args = vec![
         "run".to_string(),
@@ -2568,6 +2571,69 @@ fn original_application_creation(
     cached_creation_evidence(key, || {
         verify_original_application_creation(app, &installed, &manifest)
     })
+}
+
+/// Why `app`'s launch carries no creation evidence: the first link of
+/// [`original_application_creation`] that does not hold. Diagnostic only;
+/// it decides nothing.
+fn creation_evidence_gap(app: &InstalledApp) -> String {
+    let installed = match package_store::find_installed(&app.package_id) {
+        Ok(Some(installed)) => installed,
+        Ok(None) => return "the package store holds no installed copy".into(),
+        Err(error) => return format!("the package store cannot be read: {error}"),
+    };
+    if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
+        return format!(
+            "the launched copy ({}, {}) is not the installed one ({}, {})",
+            app.manifest_path.display(),
+            app.payload_root.display(),
+            installed.manifest_path.display(),
+            installed.payload_root.display()
+        );
+    }
+    let Ok(manifest) = std::fs::read(&app.manifest_path) else {
+        return "the installed manifest cannot be read".into();
+    };
+    let dir = package_store::integrity::record_dir(&installed);
+    let record =
+        match package_store::integrity::read_record(&dir, &installed.id, &installed.package_id_hex)
+        {
+            Ok(record) => record,
+            Err(error) => return format!("the signed record in {} fails: {error}", dir.display()),
+        };
+    if manifest != record.manifest_bytes {
+        return "the installed manifest differs from the signed one".into();
+    }
+    let declared = std::str::from_utf8(&record.manifest_bytes)
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(text).ok())
+        .and_then(|manifest| {
+            manifest
+                .get("resources")?
+                .get("kinds")?
+                .as_array()
+                .map(Vec::len)
+        });
+    match declared {
+        None => "the signed manifest declares no resource kinds".into(),
+        Some(kinds) => format!("the signed manifest's {kinds} resource kinds do not verify"),
+    }
+}
+
+/// Log once per package and session why its launches carry no creation
+/// evidence: such an app cannot create its record in a committed workspace.
+fn note_missing_creation_evidence(app: &InstalledApp) {
+    static NOTED: LazyLock<Mutex<std::collections::HashSet<String>>> =
+        LazyLock::new(Mutex::default);
+    if !lock(&NOTED).insert(app.package_id.clone()) {
+        return;
+    }
+    tracing::error!(
+        target: "tilo::app_launch",
+        package_id = %app.package_id,
+        reason = %creation_evidence_gap(app),
+        "launch carries no original-package creation evidence"
+    );
 }
 
 /// `verify`'s evidence for `key`, verified once while it holds.

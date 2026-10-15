@@ -31,6 +31,8 @@ mod authority;
 mod collaboration;
 mod content;
 pub use content::RoomContent;
+mod member_records;
+pub use member_records::PreparedRecord;
 mod pages;
 #[cfg(feature = "web")]
 mod spectator_keys;
@@ -68,9 +70,10 @@ pub use tilo_relay_session::rooms::{
     ActionInvitation, CLAIM_TOPOLOGY_NAMESPACE, CREATE_ROOM, CancelInvitationRequest, CreatedRoom,
     ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest,
     HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssueInvitationRequest, IssuedInvitation,
-    LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND, PendingInvitation,
-    RECORD_EFFECT_RECEIPT, ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError,
-    RoomCommand, RoomListing, RoomReply, RoomSummary, SetMemberRoleRequest, member_resource,
+    LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD,
+    PendingInvitation, RECORD_EFFECT_RECEIPT, ROOM_ADMIN_ALPN, RemoveMemberRequest,
+    RoomAdminClient, RoomAdminError, RoomCommand, RoomListing, RoomReply, RoomSummary,
+    SetMemberRoleRequest, member_resource,
 };
 
 use crate::peer::WorkspaceRegistry;
