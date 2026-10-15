@@ -6433,16 +6433,15 @@ impl Widget for VideoEditorApp {
         self.pump_preview_decode();
     }
 
-    /// Work a still capture can wait for: an import still being read, and
-    /// (with real decoding) an auto-placed import whose decoded frame has
-    /// not reached the canvas yet.
+    /// Finite work a still capture must await: imports, thumbnails,
+    /// waveforms, and an auto-placed import's decoded preview frame.
     fn has_pending_visual_work(&self) -> bool {
         let importing = self.import_rx.is_some() || !self.pending_imports.is_empty();
         #[cfg(feature = "decode")]
         let prerolling = self.media_pipeline.auto_place_imports && self.preview_awaits_frame();
         #[cfg(not(feature = "decode"))]
         let prerolling = false;
-        importing || prerolling
+        importing || prerolling || self.thumbnails.has_pending() || self.waveforms.has_pending()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -8360,8 +8359,7 @@ impl VideoEditorApp {
 
     /// The project button: which project is open, whether it has been written
     /// to a file, and the way to open or save one — the toolkit's own button
-    /// face, with the unsaved dot as a corner mark rather than part of the
-    /// label.
+    /// face, with the unsaved dot centred beside the label.
     fn draw_project_button(
         &self,
         scene: &mut Scene,
@@ -8393,9 +8391,9 @@ impl VideoEditorApp {
         Button::paint(scene, tf, tr, theme, &face);
 
         if self.project_is_dirty() {
-            // A dot on the corner, ringed in the ground it stands on so it
-            // reads as a mark on the button rather than a speck in it.
-            let ctr = Point::new(rect.x1 - S1, rect.y0 + S1);
+            // Keep the file-state mark on the label's centreline, not
+            // floating above a plain button with no visible corner.
+            let ctr = Point::new(rect.x1 - S1, rect.center().y);
             scene.fill(
                 Fill::NonZero,
                 tf,

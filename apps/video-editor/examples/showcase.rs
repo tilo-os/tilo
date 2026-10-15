@@ -204,6 +204,11 @@ fn main() -> anyhow::Result<()> {
         app.harness().relayout();
     }
     app.harness().click_at(500.0, 650.0);
+    anyhow::ensure!(
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_secs(30)),
+        "capture did not finish loading preview, thumbnails and waveforms"
+    );
     app.harness()
         .render_png(&out.join("video-editor-showcase.png"));
     anyhow::ensure!(

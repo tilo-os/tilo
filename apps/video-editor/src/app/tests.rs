@@ -6431,6 +6431,86 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
     }
 }
 
+#[test]
+fn resting_chrome_omits_placeholders_and_centres_the_unsaved_mark() {
+    for theme in [Theme::dark(), Theme::light()] {
+        let theme = theme.with_ui_scale(1.5);
+        let (mut app, _) = app_and_doc();
+        app.project.name = "A walk outside".into();
+        for track in &mut app.project.tracks {
+            track.gain_db = 0.0;
+            track.pan = 0.0;
+        }
+        app.build_layout(&mut TaffyTree::new(), &theme, &mut HashMap::new());
+        let resting = render_pixels(&mut app, 1440, 810, &theme);
+        let r = app.regions();
+        let uniform = |rect| {
+            let pixels = crop(&resting, 1440, rect);
+            assert!(!pixels.is_empty(), "the readout must be visible");
+            assert!(
+                pixels.chunks_exact(4).all(|p| p == &pixels[..4]),
+                "a resting readout should be blank, not a redundant label or dash"
+            );
+        };
+        let lanes = app.lane_rects(&r);
+        for (_, _, lane) in &lanes {
+            let head = app.track_head_layout(VideoEditorApp::track_head_rect(&r, lane));
+            if head.kind.y1 < r.timeline.y1 {
+                uniform(head.kind);
+            }
+        }
+        let master =
+            chrome_layout::master_strip(VideoEditorApp::master_strip_rect(&r), app.chrome_scale());
+        let peak = Rect::new(
+            master.readout.center().x,
+            master.readout.y0,
+            master.readout.x1,
+            master.readout.y1,
+        );
+        uniform(peak);
+
+        assert!(app.project_is_dirty());
+        app.saved_heads = Some(app.doc_heads.clone());
+        let saved = render_pixels(&mut app, 1440, 810, &theme);
+        let mark = Point::new(r.project_btn.x1 - S1, r.project_btn.center().y);
+        let centre = Rect::new(mark.x - S2, mark.y - S2, mark.x + S2, mark.y + S2);
+        assert_ne!(crop(&resting, 1440, centre), crop(&saved, 1440, centre));
+        let corner = Rect::new(
+            centre.x0,
+            r.project_btn.y0,
+            centre.x1,
+            r.project_btn.y0 + S3,
+        );
+        assert_eq!(crop(&resting, 1440, corner), crop(&saved, 1440, corner));
+
+        // Removing resting copy must not remove actual mix measurements.
+        let (tid, _, lane) = lanes
+            .iter()
+            .find(|(_, kind, _)| *kind == TrackKind::Audio)
+            .expect("sample has an audio lane");
+        app.project
+            .tracks
+            .iter_mut()
+            .find(|t| t.id == *tid)
+            .expect("audio track")
+            .gain_db = 6.0;
+        app.stage_mix_block(
+            0.0,
+            &crate::audio::MixReport {
+                master: crate::audio::BlockMeter { peak: [0.6, 0.5] },
+                tracks: Vec::new(),
+            },
+        );
+        let measured = render_pixels(&mut app, 1440, 810, &theme);
+        let head = app.track_head_layout(VideoEditorApp::track_head_rect(&r, lane));
+        assert_ne!(
+            crop(&resting, 1440, head.kind),
+            crop(&measured, 1440, head.kind)
+        );
+        assert_ne!(crop(&resting, 1440, peak), crop(&measured, 1440, peak));
+    }
+}
+
 /// Rasterise one frame of `app` at `w`×`h` in `theme` and hand back RGBA.
 /// The real GPU path the app ships on — a machine that cannot rasterise
 /// cannot observe this property, so `new` panicking there is the correct

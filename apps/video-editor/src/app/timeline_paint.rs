@@ -72,13 +72,10 @@ impl VideoEditorApp {
             ui::widget::BadgeFace::new(flag, &words)
                 .style(ui::widget::ChipStyle::Tinted(ui::widget::Tone::Danger))
                 .paint(scene, tf, tr, theme);
-        } else {
-            // The peak-hold, or an honest blank. "-∞" would say the mix is
-            // silent; nothing has been measured, which is a different claim.
-            let words = self
-                .mix
-                .hold_db()
-                .map_or_else(|| "—".to_string(), |db| format!("{db:.1} dB"));
+        } else if let Some(db) = self.mix.hold_db() {
+            // Leave an unmeasured peak blank, rather than making a dash
+            // look like an unexplained control beside the Mix label.
+            let words = format!("{db:.1} dB");
             let w = text_width(tr, &words, &numeric);
             text(
                 scene,
@@ -330,11 +327,11 @@ impl VideoEditorApp {
         // one row of the timeline.
         let stripe = c.lift_on(ground, 0.5);
         let head_radius = f64::from(theme.tokens.radii.item);
-        for (tid, kind, lane) in &lanes {
+        for (tid, _, lane) in &lanes {
             let stripe_rect = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
             fill_rect(scene, tf, stripe_rect, stripe);
             // The head: the same lift a step clear of its lane stripe, with
-            // its name, toggles, kind line and meter on the measured bands of
+            // its name, toggles, mix readout and meter on the measured bands of
             // `chrome_layout::track_head` — the same bands the hit-test reads.
             let header = VideoEditorApp::track_head_rect(r, lane);
             let head = self.track_head_layout(header);
@@ -356,9 +353,9 @@ impl VideoEditorApp {
                 head.name.x0,
                 name_y,
             );
-            // What the lane is — or, once its fader has moved off unity or
-            // centre, where the fader is. The reading belongs *here*, on the
-            // lane, rather than only in a panel: a lane at +6 dB that says so
+            // Once its fader has moved off unity or centre, show where it
+            // is. The reading belongs on the lane, not only in a panel:
+            // a lane at +6 dB that says so
             // nowhere is how a mix ends up loud for a reason nobody can find.
             let line = match track.filter(|t| t.mix_is_set()) {
                 Some(t) if t.gain_db.abs() > 1e-9 && t.pan.abs() > 1e-9 => {
@@ -366,8 +363,7 @@ impl VideoEditorApp {
                 }
                 Some(t) if t.gain_db.abs() > 1e-9 => t.gain_words(),
                 Some(t) => t.pan_words(),
-                None if *kind == TrackKind::Video => "Video".to_string(),
-                None => "Audio".to_string(),
+                None => String::new(),
             };
             let kind_style = caption(theme).numeric();
             let line = elide_at(&line, head.kind.width() as f32, &kind_style, tr);
