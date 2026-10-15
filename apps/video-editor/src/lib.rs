@@ -21,6 +21,10 @@
 //!     export render through, so they cannot disagree.
 //!   * [`audio`]   — which clips are audible at an instant, and the mix.
 //!   * [`export`]  — export presets + the (GStreamer-gated) render pipeline.
+//!   * [`timeline`] — the timeline as JSON a caller with no screen reads
+//!     and checks (`read-timeline`, `export-timeline-content`).
+//!   * [`placement`] — building a cut by name: room content into the bin,
+//!     a source onto a track, a clip moved.
 //!   * [`shot`]    — the fingerprint that proves two runs of a `--shots`
 //!     scenario describe one picture.
 //!   * [`presence`] — who else is in the edit: the presence keys for the
@@ -62,6 +66,7 @@ pub(crate) mod layout;
 pub mod media;
 pub mod model;
 pub mod param;
+pub mod placement;
 pub mod portal;
 pub mod presence;
 pub mod preview;
@@ -72,6 +77,7 @@ pub mod search;
 pub mod shot;
 pub mod thumbnail;
 pub mod timecode;
+pub mod timeline;
 pub mod waveform;
 
 pub use app::VideoEditorApp;

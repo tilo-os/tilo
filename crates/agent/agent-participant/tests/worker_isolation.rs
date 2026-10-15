@@ -798,3 +798,199 @@ fn an_agents_document_operation_answers_with_what_the_app_says_it_did() {
         "{outline}"
     );
 }
+
+const VIDEO: &str = "so.tilo.video-editor";
+
+/// An ISOBMFF box.
+fn mp4_box(kind: [u8; 4], payload: &[u8]) -> Vec<u8> {
+    let mut out = u32::try_from(payload.len() + 8)
+        .unwrap()
+        .to_be_bytes()
+        .to_vec();
+    out.extend_from_slice(&kind);
+    out.extend_from_slice(payload);
+    out
+}
+
+/// The header of a `width`×`height` H.264 MP4 lasting `millis`
+/// milliseconds at 25 frames a second, with no frames: what a container
+/// probe reads.
+#[allow(
+    clippy::similar_names,
+    reason = "each binding is named after the box it holds"
+)]
+fn mp4(millis: u32, width: u32, height: u32) -> Vec<u8> {
+    let mut mvhd = vec![0u8; 100];
+    mvhd[12..16].copy_from_slice(&1000u32.to_be_bytes());
+    mvhd[16..20].copy_from_slice(&millis.to_be_bytes());
+    let mut tkhd = vec![0u8; 84];
+    tkhd[76..80].copy_from_slice(&(width << 16).to_be_bytes());
+    tkhd[80..84].copy_from_slice(&(height << 16).to_be_bytes());
+    let mut mdhd = vec![0u8; 24];
+    mdhd[12..16].copy_from_slice(&25_000u32.to_be_bytes());
+    mdhd[16..20].copy_from_slice(&(millis * 25).to_be_bytes());
+    let mut hdlr = vec![0u8; 24];
+    hdlr[8..12].copy_from_slice(b"vide");
+    let mut stsd = vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 16];
+    stsd.extend_from_slice(b"avc1");
+    let mut stts = vec![0, 0, 0, 0, 0, 0, 0, 1];
+    stts.extend_from_slice(&(millis / 40).to_be_bytes());
+    stts.extend_from_slice(&1000u32.to_be_bytes());
+    let stbl = mp4_box(
+        *b"stbl",
+        &[mp4_box(*b"stsd", &stsd), mp4_box(*b"stts", &stts)].concat(),
+    );
+    let mdia = mp4_box(
+        *b"mdia",
+        &[
+            mp4_box(*b"mdhd", &mdhd),
+            mp4_box(*b"hdlr", &hdlr),
+            mp4_box(*b"minf", &stbl),
+        ]
+        .concat(),
+    );
+    let trak = mp4_box(*b"trak", &[mp4_box(*b"tkhd", &tkhd), mdia].concat());
+    let moov = mp4_box(*b"moov", &[mp4_box(*b"mvhd", &mvhd), trak].concat());
+    [
+        mp4_box(*b"ftyp", b"isom\0\0\0\0isomavc1"),
+        moov,
+        mp4_box(*b"mdat", &[]),
+    ]
+    .concat()
+}
+
+/// The clips of the track named `name` in a timeline as `read-timeline`
+/// answers it.
+fn clips_on<'a>(timeline: &'a serde_json::Value, name: &str) -> &'a Vec<serde_json::Value> {
+    timeline["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|track| track["name"] == name)
+        .unwrap_or_else(|| panic!("a track {name}: {timeline}"))["clips"]
+        .as_array()
+        .unwrap()
+}
+
+/// An agent builds a cut from footage the room holds — imported by its
+/// content address, placed as two clips and a title, one clip moved — and
+/// exports the timeline as JSON content a reviewer can check, all in its
+/// confined worker with no decoder.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cut, built step by step, each step checked"
+)]
+fn an_agent_cuts_room_footage_into_a_timeline_and_exports_it_as_content() {
+    let room = ContentStore::memory();
+    let footage = room.put(&mp4(4_000, 64, 48)).unwrap();
+    let editor = new_record(VIDEO, &room);
+    let run = |action: &str, value: serde_json::Value| {
+        let descriptor = operation(&editor, action);
+        assert!(!device_only(&descriptor), "{action} is offered to agents");
+        editor
+            .invoke(&descriptor.address, &arguments(value), false)
+            .unwrap_or_else(|error| panic!("{action}: {error:?}"))
+    };
+
+    let imported = run(
+        "import-content",
+        serde_json::json!({
+            "content": tilo_actions::content_resource(&footage).unwrap(),
+            "name": "harbour.mp4",
+        }),
+    );
+    let media = imported.value.expect("the import answers its source");
+    assert_eq!(media["media"]["name"], "harbour.mp4", "{media}");
+    assert_eq!(media["media"]["duration"], 4.0, "read from mvhd: {media}");
+    assert_eq!(media["media"]["width"], 64, "{media}");
+    assert_eq!(
+        media["media"]["content"],
+        format!("tilo.content:{footage}"),
+        "the source names the room's content"
+    );
+    assert!(editor.take_mutation().unwrap().is_some());
+
+    let first = run(
+        "add-clip",
+        serde_json::json!({"media": "harbour.mp4", "in": 0.0, "out": 1.5}),
+    )
+    .value
+    .expect("add-clip answers the clip");
+    let first_id = first["clip"].as_str().unwrap().to_owned();
+    assert_eq!(first["track"], "V1", "{first}");
+    let second = run(
+        "add-clip",
+        serde_json::json!({"media": media["media"]["id"], "in": 2.0, "out": 4.0}),
+    )
+    .value
+    .unwrap();
+    let second_id = second["clip"].as_str().unwrap().to_owned();
+    assert_eq!(second["start"], 1.5, "appended after the first: {second}");
+
+    run("add-title", serde_json::json!({"text": "Harbour at dawn"}));
+    run(
+        "add-clip",
+        serde_json::json!({"media": "Harbour at dawn", "track": "V2", "at": 0.5, "out": 3.0}),
+    );
+    let moved = run(
+        "move-clip",
+        serde_json::json!({"clip": second_id, "start": 5.0}),
+    )
+    .value
+    .unwrap();
+    assert_eq!(moved["moved"][0]["start"], 5.0, "{moved}");
+    assert!(editor.take_mutation().unwrap().is_some());
+
+    let read = operation(&editor, "read-timeline");
+    assert_eq!(read.kind, OperationKind::View);
+    let timeline = editor
+        .invoke(&read.address, &serde_json::Map::new(), false)
+        .expect("read-timeline runs for the agent")
+        .value
+        .expect("it answers the timeline");
+
+    let export = operation(&editor, "export-timeline-content");
+    assert_eq!(export.kind, OperationKind::Effect);
+    assert!(!device_only(&export));
+    let output = editor
+        .invoke(
+            &export.address,
+            &arguments(serde_json::json!({"format": "json"})),
+            false,
+        )
+        .expect("the timeline is exported");
+    let exported: serde_json::Value = serde_json::from_slice(&produced(&room, &output)).unwrap();
+    assert_eq!(
+        exported, timeline,
+        "the export is what read-timeline answers"
+    );
+    assert!(
+        editor.take_mutation().unwrap().is_none(),
+        "reading and exporting change nothing"
+    );
+
+    let picture = clips_on(&exported, "V1");
+    assert_eq!(picture.len(), 2, "{exported}");
+    assert_eq!(picture[0]["id"], first_id.as_str());
+    assert_eq!(picture[0]["start"], 0.0, "{exported}");
+    assert_eq!(picture[0]["in"], 0.0);
+    assert_eq!(picture[0]["out"], 1.5);
+    assert_eq!(picture[1]["id"], second_id.as_str());
+    assert_eq!(picture[1]["start"], 5.0, "moved: {exported}");
+    assert_eq!(picture[1]["duration"], 2.0);
+    assert_eq!(picture[1]["in"], 2.0);
+    assert_eq!(picture[1]["name"], "harbour.mp4");
+    let titles = clips_on(&exported, "V2");
+    assert_eq!(titles.len(), 1);
+    assert_eq!(titles[0]["title"], "Harbour at dawn");
+    assert_eq!(titles[0]["start"], 0.5);
+    assert_eq!(titles[0]["end"], 3.5);
+    assert_eq!(exported["project"]["duration"], 7.0);
+    let bin = exported["media"].as_array().unwrap();
+    assert!(
+        bin.iter()
+            .any(|item| item["content"] == format!("tilo.content:{footage}").as_str()),
+        "{exported}"
+    );
+}

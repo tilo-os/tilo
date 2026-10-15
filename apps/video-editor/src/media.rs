@@ -44,6 +44,71 @@ pub const MEDIA_PREFIX: &str = "media";
 /// its contents (a browser page has no paths to store).
 pub const KEPT_PREFIX: &str = "tilo-kept";
 
+/// The hash of the room content a media `path` names, when it is a content
+/// address (`tilo.content:<hash>`): a source imported from what the room
+/// holds rather than from a file, its bytes kept by the room's content store.
+#[must_use]
+pub fn content_hash(path: &str) -> Option<&str> {
+    tilo_actions::content_hash(path.trim())
+        .filter(|hash| hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// The media path naming room content `hash`.
+#[must_use]
+pub fn content_address(hash: &str) -> String {
+    tilo_actions::content_resource(hash).unwrap_or_else(|| format!("tilo.content:{hash}"))
+}
+
+/// Where this device keeps its copy of room content `hash` for the decoder:
+/// `content/<hash>` in the editor's cache. `None` where the cache has no
+/// native path (a browser page).
+#[must_use]
+pub fn content_copy(hash: &str) -> Option<PathBuf> {
+    let name = tilo_files::VPath::new(&format!("content/{hash}")).ok()?;
+    let location = tilo_paths::AppPaths::for_app("so.tilo.video-editor")
+        .cache()
+        .join(&name);
+    location.native_path().ok().map(Path::to_path_buf)
+}
+
+/// Copy the room content behind every content-addressed source of `media`
+/// out of `store` into this device's cache ([`content_copy`]), once each, so
+/// the decoder reads it like any local file. Best effort, off the window's
+/// thread; a source whose copy is not there yet stays projected.
+#[cfg(any(feature = "decode", feature = "gst"))]
+pub fn hydrate_content<'a>(
+    store: &ui::framework::content::ContentStore,
+    media: impl IntoIterator<Item = &'a crate::model::MediaItem>,
+) {
+    static ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    for item in media {
+        let Some(hash) = content_hash(&item.path) else {
+            continue;
+        };
+        let Some(copy) = content_copy(hash) else {
+            continue;
+        };
+        if copy.exists() || !store.has(hash) {
+            continue;
+        }
+        let Ok(mut asked) = ASKED.lock() else {
+            return;
+        };
+        if asked.iter().any(|seen| seen == hash) {
+            continue;
+        }
+        asked.push(hash.to_owned());
+        let (store, hash) = (store.clone(), hash.to_owned());
+        drop(ui::rt::app().spawn_pinned(move || async move {
+            if let Some(bytes) = store.read(&hash)
+                && let Err(error) = crate::files::write(&copy, &bytes)
+            {
+                tracing::warn!(%hash, %error, "video editor: the room's media could not be copied");
+            }
+        }));
+    }
+}
+
 /// Whether a media reference's *content* is available locally yet. The CRDT
 /// always carries the reference (so the clip can be laid out, trimmed and
 /// drawn from metadata); the bytes are a separate, lazily-hydrated concern.
@@ -148,6 +213,10 @@ fn sample_media() -> Option<PathBuf> {
 /// bytes are hydrated.
 ///
 /// Resolution order:
+///   - **Room content** — a content address (`tilo.content:<hash>`) is this
+///     device's copy of that content in the editor's cache
+///     ([`content_copy`]), local once the editor has copied it out of the
+///     room's content store (`hydrate_content`, in a decoding build).
 ///   0. **Absolute path** — a `path` that is already absolute (an imported
 ///      local file, or a path already under the mount) is used verbatim. This
 ///      is how a portal-imported file outside the workspace reaches the decoder.
@@ -171,6 +240,20 @@ fn sample_media() -> Option<PathBuf> {
 /// otherwise. The editor never panics on a missing file — a projected
 /// reference is a normal, drawable state.
 pub fn resolve(path: &str) -> MediaSource {
+    // A source the room holds: this device's copy of it, once it has one
+    // (see `hydrate_content`).
+    if let Some(hash) = content_hash(path) {
+        let abs_path = content_copy(hash).unwrap_or_else(|| PathBuf::from(path));
+        let hydration = if abs_path.exists() {
+            Hydration::Local
+        } else {
+            Hydration::Projected
+        };
+        return MediaSource {
+            abs_path,
+            hydration,
+        };
+    }
     // 0. Absolute path: an imported local file, or an already-absolute mount
     //    path. Use it directly — never re-root it under the workspace.
     let raw = Path::new(path);
@@ -252,6 +335,30 @@ pub fn workspace_path(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_content_address_resolves_to_this_devices_copy_of_the_rooms_content() {
+        let hash = "0f".repeat(32);
+        let address = content_address(&hash);
+        assert_eq!(address, format!("tilo.content:{hash}"));
+        assert_eq!(content_hash(&address), Some(hash.as_str()));
+        assert_eq!(content_hash("tilo.content:not-a-hash"), None);
+        assert_eq!(content_hash("media/Drone.mov"), None);
+        let source = resolve(&address);
+        assert_eq!(
+            source.hydration,
+            Hydration::Projected,
+            "nothing copied yet: {source:?}"
+        );
+        assert!(
+            source.abs_path.ends_with(&hash),
+            "the copy is named by its hash: {source:?}"
+        );
+        assert!(
+            !source.abs_path.starts_with(WORKSPACE_ROOT),
+            "room content is not a workspace path: {source:?}"
+        );
+    }
 
     #[test]
     #[serial_test::serial(video_editor_media_env)]
