@@ -1536,7 +1536,7 @@ impl ActionPalette {
         let Ok(encoded) = flattened.action.build_json(arguments) else {
             return false;
         };
-        let mut context = ActionContext::for_resource(
+        let mut context = flattened.action.history_context(
             flattened.resource_id.as_str(),
             &flattened.resource_kind,
             &flattened.resource_label,
@@ -1861,7 +1861,7 @@ impl ActionPalette {
         if !fa.action.contract.availability.is_available() {
             return None;
         }
-        let mut context = ActionContext::for_resource(
+        let mut context = fa.action.history_context(
             fa.resource_id.as_str(),
             &fa.resource_kind,
             &fa.resource_label,

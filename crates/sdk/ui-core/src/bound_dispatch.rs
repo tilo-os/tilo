@@ -1986,12 +1986,8 @@ impl OrdinaryConfirmation {
             return Err(Self::stale());
         }
         let resources = resources_for_control_target(root, doc, &target, &address)?;
-        let (resource, _) = unique_control_spec(&resources, &address)?;
-        let context = tilo_actions::ActionContext::for_resource(
-            resource.id.as_str(),
-            &resource.kind,
-            &resource.label,
-        );
+        let (resource, spec) = unique_control_spec(&resources, &address)?;
+        let context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
         let snapshot = Self::snapshot(
             &resources,
             &address,
@@ -2556,11 +2552,8 @@ pub(crate) fn execute_resource_operation(
                 "Deferred action locus differs from its declaration".into(),
             ));
         }
-        let mut context = tilo_actions::ActionContext::for_resource(
-            resource.id.as_str(),
-            &resource.kind,
-            &resource.label,
-        );
+        let mut context =
+            spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }

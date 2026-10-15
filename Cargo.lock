@@ -9772,6 +9772,7 @@ dependencies = [
  "base64",
  "blake3",
  "chrono",
+ "collab-types",
  "image",
  "runtime-dylib",
  "serde",

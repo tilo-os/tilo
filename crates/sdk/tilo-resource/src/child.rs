@@ -65,6 +65,7 @@ fn rewrap<C: Resource, R: Resource>(
             spec.rewrapped(R::ACTION_TYPE, move |encoded| {
                 wrap_encoded::<C, R>(&encoded, wrap.as_ref())
             })
+            .applied_as(R::KIND, R::LABEL)
         })
         .collect();
     resource.children = std::mem::take(&mut resource.children)
@@ -250,6 +251,7 @@ fn as_field_edits(
             spec.rewrapped(vocabulary.action_type, move |encoded| {
                 field_edits(vocabulary, ops, &path, &encoded)
             })
+            .applied_as(vocabulary.kind, vocabulary.label)
         })
         .collect();
     resource.children = std::mem::take(&mut resource.children)

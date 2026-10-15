@@ -803,6 +803,11 @@ impl InvocationBuilder {
     }
 }
 
+/// The facet naming the nested resource an action was addressed through,
+/// when history names the enclosing resource whose action it is
+/// ([`ActionSpec::history_context`]).
+pub const NESTED_RESOURCE_FACET: &str = "part";
+
 /// One action a resource exports to the palette.
 #[derive(Clone)]
 pub struct ActionSpec {
@@ -844,6 +849,10 @@ pub struct ActionSpec {
     /// generic edit, a group) rather than being a verb of its own. See
     /// [`ActionSpec::carrying`].
     carrier: bool,
+    /// The kind and label of the enclosing resource whose action this one
+    /// applies as, for a nested resource's action. See
+    /// [`ActionSpec::applied_as`].
+    applied_as: Option<(String, String)>,
 }
 
 /// Classifies the risk of one invocation from its bound arguments.
@@ -863,6 +872,39 @@ struct TypedActionSeed {
 }
 
 impl ActionSpec {
+    /// Mark this action as applied as the enclosing resource of kind `kind`
+    /// (labelled `label`): a nested resource (a note's rich-text body)
+    /// publishes its document actions re-encoded as the record's field
+    /// edit, so the record's surface, permissions and history decide them.
+    #[must_use]
+    pub fn applied_as(mut self, kind: impl Into<String>, label: impl Into<String>) -> Self {
+        if self.kind == OperationKind::Document {
+            self.applied_as = Some((kind.into(), label.into()));
+        }
+        self
+    }
+
+    /// The history entry of invoking this action on the resource `id`, of
+    /// kind `kind` and labelled `label`. It names that resource, of the kind
+    /// whose action the value is: for a nested resource's action, the
+    /// enclosing resource's kind and label, with the nested resource kept as
+    /// a [`NESTED_RESOURCE_FACET`] facet. Naming the nested kind made the
+    /// change claim a kind its app's surface does not describe, so every
+    /// receiver held it and the signer refused it.
+    #[must_use]
+    pub fn history_context(&self, id: &str, kind: &str, label: &str) -> crate::ActionContext {
+        match &self.applied_as {
+            Some((owner_kind, owner_label)) => {
+                let mut context = crate::ActionContext::for_resource(id, owner_kind, owner_label);
+                context
+                    .facets
+                    .push(crate::ActionFacet::new(NESTED_RESOURCE_FACET, label));
+                context
+            }
+            None => crate::ActionContext::for_resource(id, kind, label),
+        }
+    }
+
     /// Borrow the actual fixed encoding used by the typed invocation builder.
     /// `None` means the builder is opaque, even if its palette input is Immediate.
     /// This is comparison data, never permission to invoke an action.
@@ -1011,6 +1053,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         }
     }
 
@@ -1051,6 +1094,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         })
     }
 
@@ -1085,6 +1129,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         }
     }
 
@@ -1137,6 +1182,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         }
     }
 
@@ -1202,6 +1248,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         })
     }
 
@@ -1249,6 +1296,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         }
     }
 
@@ -1350,6 +1398,7 @@ impl ActionSpec {
             need_of: None,
             continuation_resolver: None,
             carrier: false,
+            applied_as: None,
         }
     }
 
@@ -2388,6 +2437,50 @@ mod tests {
         assert_eq!(any.contract.opened_extensions().count(), 0);
         let iso = action("import-iso");
         assert!(!iso.contract.opens_path());
+    }
+}
+
+#[cfg(test)]
+mod history_context_tests {
+    use super::*;
+
+    fn spec() -> ActionSpec {
+        ActionSpec::immediate_encoded(
+            "set-block-text",
+            "Set block text",
+            ExecutionLocus::default(),
+            EncodedAction {
+                type_id: "notes.notebook".into(),
+                payload: Vec::new(),
+            },
+        )
+    }
+
+    /// A nested resource's action is the enclosing record's field edit, so
+    /// its history names the record's kind, which the change's claim is
+    /// decided by, and keeps the body it was addressed through as a facet.
+    #[test]
+    fn a_nested_action_is_named_as_the_resource_whose_action_it_is() {
+        let id = "notes.notebook/pages/p1/body";
+        let own = spec().history_context(id, "tilo.rich-text", "Body");
+        let own_resource = own.resource.expect("a resource");
+        assert_eq!(own_resource.kind, "tilo.rich-text");
+        assert!(own.facets.is_empty());
+
+        let nested = spec()
+            .applied_as("notes.notebook", "Notebook")
+            .history_context(id, "tilo.rich-text", "Body");
+        let resource = nested.resource.expect("a resource");
+        assert_eq!(
+            resource.id, id,
+            "still the resource it was addressed through"
+        );
+        assert_eq!(resource.kind, "notes.notebook");
+        assert_eq!(resource.label, "Notebook");
+        assert_eq!(
+            nested.facets,
+            [crate::ActionFacet::new(NESTED_RESOURCE_FACET, "Body")]
+        );
     }
 }
 

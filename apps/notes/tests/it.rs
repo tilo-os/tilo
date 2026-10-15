@@ -67,6 +67,8 @@ mod sidebar_collab_growth;
 mod sidebar_dnd;
 #[path = "slash_menu_focus.rs"]
 mod slash_menu_focus;
+#[path = "surface_receipts.rs"]
+mod surface_receipts;
 #[path = "tab_nesting.rs"]
 mod tab_nesting;
 #[path = "tree_operations.rs"]

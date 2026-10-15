@@ -815,12 +815,9 @@ fn execute_owned(
                         "Decoded action is not ClientLocal",
                     ));
                 }
-                let mut context = tilo_actions::ActionContext::for_resource(
-                    resource.id.as_str(),
-                    &resource.kind,
-                    &resource.label,
-                )
-                .with_app(&app, &app);
+                let mut context = spec
+                    .history_context(resource.id.as_str(), &resource.kind, &resource.label)
+                    .with_app(&app, &app);
                 if let Some(ambient) = input.ambient {
                     context = context.enriched_by(ambient);
                 }
