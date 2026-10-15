@@ -136,18 +136,21 @@ impl Bus {
 
     /// Serve the person's store with the device identity under `device`.
     fn start_service(&mut self, device: &str) {
-        assert!(self.service.is_none(), "a service is already running");
+        let command = self.service_command(device);
+        self.spawn_service(command);
+    }
+
+    fn service_command(&self, device: &str) -> Command {
         let mut command = self.command(SERVICE);
         command
             .args(["serve", "--identity-root"])
             .arg(self.path(device))
             .stdout(Stdio::null());
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::process::CommandExt as _;
-            // SAFETY: the hook makes only async-signal-safe system calls.
-            unsafe { command.pre_exec(drop_capabilities) };
-        }
+        command
+    }
+
+    fn spawn_service(&mut self, mut command: Command) {
+        assert!(self.service.is_none(), "a service is already running");
         self.service = Some(command.spawn().expect("the service binary starts"));
         self.wait_for_owner();
     }
@@ -434,9 +437,13 @@ const CHILD_RUN: &str = "TILO_CUSTODY_RUN";
 const CHILD_TEST: &str = "custody_child";
 
 /// Run without capabilities, as the service's unit does
-/// (`CapabilityBoundingSet=`). A CI container's root that kept
-/// `CAP_SYS_PTRACE` could otherwise read the very link the kernel refuses a
-/// person's own processes, and the refusals below would observe nothing.
+/// (`CapabilityBoundingSet=`) and as a person's session processes do. Used
+/// as a `pre_exec` hook, so the whole process starts without them even when
+/// the test runs as root: a CI container's root that kept `CAP_SYS_PTRACE`
+/// could otherwise read the very link the kernel refuses a person's own
+/// processes, and a store without capabilities may not examine a process
+/// that holds some, whatever its dumpability. Either would make the
+/// refusals below observe something else.
 #[cfg(target_os = "linux")]
 fn drop_capabilities() -> std::io::Result<()> {
     #[repr(C)]
@@ -561,7 +568,6 @@ fn serve_with_this_binary_as_portal_host() {
     use tilo_secret_service::app::AppId;
     use tilo_secret_service::service::{BUS_NAME, BusResolver, Core, Managers, publish};
     use tilo_secret_service::store::{DeviceIdentityKey, Store};
-    drop_capabilities().unwrap();
     let device = child_env(CHILD_DEVICE);
     let run = child_env(CHILD_RUN);
     let paths = tilo_user_identity::persist::IdentityPaths::under(&device);
@@ -598,6 +604,17 @@ fn custody_child() {
         return;
     };
     match &*role.to_string_lossy() {
+        // The control: dumpable, so the store examines it by its executable
+        // and keeps its key. A refusal of the others is then theirs alone.
+        "dumpable-import" => {
+            assert!(dumpable(), "the control child is not dumpable");
+            runtime_identity::import_identity(
+                &child_env(CHILD_IDENTITIES),
+                "dumpable",
+                &legacy_record("C", 7),
+            )
+            .unwrap();
+        }
         // Non-dumpable without the device key: the store cannot examine it,
         // and it has nothing to prove with.
         "unproven-import" => {
@@ -639,6 +656,15 @@ fn custody_child() {
             assert!(!dumpable(), "the client turned dumpable again");
         }
         "serve" => serve_with_this_binary_as_portal_host(),
+        // The control: dumpable, so the store names it by its executable,
+        // the portal host's, and answers without a proof.
+        "manager-dumpable" => block_on(async {
+            assert!(dumpable(), "the control child is not dumpable");
+            let connection = session_connection().await;
+            let proved = tilo_secrets::prove_device_caller(&connection).await;
+            assert!(!proved.unwrap(), "a dumpable client proved");
+            assert_eq!(sandbox_secret(&connection).await.unwrap().len(), 32);
+        }),
         "manager-unproven" => block_on(async {
             turn_non_dumpable();
             let connection = session_connection().await;
@@ -677,15 +703,30 @@ fn custody_child() {
 impl Bus {
     /// Start this test binary again as the child `role`.
     fn child(&self, role: &str, device: &str) -> Child {
-        self.command(std::env::current_exe().unwrap())
+        use std::os::unix::process::CommandExt as _;
+        let mut command = self.command(std::env::current_exe().unwrap());
+        command
             .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
             .env(CHILD, role)
             .env(CHILD_DEVICE, self.path(device))
             .env(CHILD_IDENTITIES, self.path("identities"))
             .env(CHILD_RUN, self.path("run"))
-            .stdout(Stdio::null())
+            .stdout(Stdio::null());
+        // SAFETY: the hook makes only async-signal-safe system calls.
+        unsafe { command.pre_exec(drop_capabilities) };
+        command
             .spawn()
             .expect("this test binary starts again as a child")
+    }
+
+    /// Serve the store with the device identity under `device`, without
+    /// capabilities, as its unit runs it.
+    fn start_service_without_capabilities(&mut self, device: &str) {
+        use std::os::unix::process::CommandExt as _;
+        let mut command = self.service_command(device);
+        // SAFETY: the hook makes only async-signal-safe system calls.
+        unsafe { command.pre_exec(drop_capabilities) };
+        self.spawn_service(command);
     }
 
     /// Run the child `role` to its end; it asserts its own part.
@@ -701,14 +742,21 @@ fn a_client_holding_the_device_key_keeps_its_identity_key_out_of_files_though_th
  {
     let mut bus = Bus::start();
     let identities = bus.path("identities");
-    bus.start_service("device-a");
+    bus.start_service_without_capabilities("device-a");
     assert_eq!(bus.status(), "open");
+
+    // 0. The control: a dumpable client is examined and its key kept in the
+    //    store. Every refusal below is therefore the kernel refusing a
+    //    non-dumpable process, nothing else about these children.
+    bus.run_child("dumpable-import", "device-a");
+    assert_record_names(&identities.join("dumpable.json"), "secret-service-v1", 7);
+    assert!(!key_file(&identities, 7).exists());
 
     // 1. Non-dumpable with no device key: the store cannot examine the
     //    client and refuses it, and the key goes to the private file as
-    //    before. This is also what shows the store really cannot read the
-    //    child's executable here: had it read it, the key would be in the
-    //    store.
+    //    before. With the control above, this is what shows the store
+    //    really cannot read a non-dumpable child's executable here: had it
+    //    read it, the key would be in the store.
     bus.run_child("unproven-import", "device-a");
     assert_record_names(&identities.join("unproven.json"), "broker-file-v1", 4);
     assert_private_key_file(&identities, 4);
@@ -736,7 +784,7 @@ fn a_client_holding_the_device_key_keeps_its_identity_key_out_of_files_though_th
     // 4. The store restarts under the still-running client and forgets
     //    every proof: the client proves again and reads its key.
     bus.stop_service();
-    bus.start_service("device-a");
+    bus.start_service_without_capabilities("device-a");
     std::fs::write(bus.path("run/service-restarted"), b"").unwrap();
     let status = child.wait().unwrap();
     assert!(
@@ -753,6 +801,7 @@ fn a_non_dumpable_portal_host_reaches_the_management_interface_only_by_proof() {
     let mut service = bus.child("serve", "device-a");
     bus.wait_for_owner();
     for (role, device) in [
+        ("manager-dumpable", "device-a"),
         ("manager-unproven", "device-a"),
         ("manager-other-device", "device-other"),
         ("manager-device", "device-a"),
