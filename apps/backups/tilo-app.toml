@@ -27,6 +27,9 @@ aarch64 = "aarch64"
 required = ["files.paths"]
 optional = ["app-files", "threads"]
 
+[resources]
+kinds = ["backups.workspace"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

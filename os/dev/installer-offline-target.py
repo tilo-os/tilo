@@ -3,7 +3,7 @@
 import importlib.util
 from pathlib import Path
 
-source = Path(__file__).resolve().parents[1] / "usr/libexec/tilo-installer-target-transport.py"
+source = Path(__file__).with_name("installer-target-transport.py")
 spec = importlib.util.spec_from_file_location("tilo_installer_target_transport", source)
 transport = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(transport)

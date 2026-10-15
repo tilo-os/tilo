@@ -10,14 +10,13 @@
 //! rows the surface reports).
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{self, Invoke, Model, resource};
+use ui::tilo_resource::{self, Invoke, Map, Model, resource};
 use ui::widget::Element;
 
 use crate::actions::{self, WindowsEffect};
@@ -35,7 +34,7 @@ pub struct Windows {
     /// Launch routes
     ///
     /// The route each overridden application runs with, by its id.
-    pub routes: BTreeMap<String, Route>,
+    pub routes: Map<Route>,
 }
 
 impl Windows {
@@ -301,7 +300,7 @@ mod tests {
             "the same report changes nothing"
         );
         let overridden = Windows {
-            routes: BTreeMap::from([("adobe-reader".into(), Route::Proton)]),
+            routes: Map::from_iter([("adobe-reader", Route::Proton)]),
         };
         let pending = routes.pending(&overridden);
         assert_eq!(

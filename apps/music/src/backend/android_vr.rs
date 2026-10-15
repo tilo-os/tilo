@@ -160,10 +160,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn player_response_prefers_trusted_m4a_and_fails_closed() {
         // Phase `player_response_prefers_trusted_m4a_audio`.
         {

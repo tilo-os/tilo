@@ -68,6 +68,8 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The governor's per-application open action a hosted room's launches use.
 tilo-desktop = { path = "../desktop" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+# The owner commit service the native workspace owner implements.
+tilo-owner-commit = { path = "../../collab/owner-commit" }
 tilo-automerge-isolate.workspace = true
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).

@@ -9,12 +9,11 @@
 //! Where the reader is — the view, the open book, a selection, an open panel
 //! — is the reader's own view state, staged by `BooksApp::stage`.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use tilo_document::RichText;
 use ui::framework::Fixture;
-use ui::tilo_resource::{Edit, Id, Invoke};
+use ui::tilo_resource::{Edit, Id, Invoke, Map};
 use uuid::Uuid;
 
 use crate::content;
@@ -288,7 +287,7 @@ fn word_end(book: &Book, index: usize, target: usize) -> usize {
 
 /// Progress across the shelf: a couple of books finished, each opened an
 /// hour before the next.
-fn lived_in_progress(shelf: &[Book]) -> BTreeMap<String, Progress> {
+fn lived_in_progress(shelf: &[Book]) -> Map<Progress> {
     const FRACTIONS: [f32; 5] = [0.34, 0.72, 0.08, 0.5, 1.0];
     shelf
         .iter()

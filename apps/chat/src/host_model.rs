@@ -76,10 +76,7 @@ impl HostModel {
 }
 impl ChatApp {
     pub(crate) fn model_message_label(&self, message: &crate::model::Message) -> String {
-        let author = message.appearance.as_ref().map_or_else(
-            || self.user_name(&message.author),
-            |appearance| appearance.name.clone(),
-        );
+        let author = self.message_author_label(message);
         let mut label = format!("{author}: {}", message.text);
         if let Some(stream) = message.work.as_ref().and_then(|work| work.stream.as_ref()) {
             label.push('\n');
@@ -96,6 +93,59 @@ impl ChatApp {
             }
         }
         label
+    }
+
+    /// Stream output keeps the authenticated invoker for custody, but is not
+    /// that person's speech. Appearance supplies only the model's display name.
+    pub(crate) fn is_provider_output(&self, message: &crate::model::Message) -> bool {
+        !message.author.starts_with("bot:")
+            && !message.author.starts_with("agent:")
+            && !message
+                .author
+                .starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
+            && !self.agent_authors.contains_key(&message.author)
+            && message
+                .work
+                .as_ref()
+                .and_then(|work| work.stream.as_ref())
+                .is_some()
+    }
+
+    pub(crate) fn message_author_name(&self, message: &crate::model::Message) -> String {
+        if self.is_provider_output(message) {
+            message
+                .appearance
+                .as_ref()
+                .map(|appearance| appearance.name.as_str())
+                .filter(|name| !name.trim().is_empty())
+                .map_or_else(|| crate::i18n::t("chat-model-author"), str::to_owned)
+        } else {
+            self.user_name(&message.author)
+        }
+    }
+
+    pub(crate) fn message_author_label(&self, message: &crate::model::Message) -> String {
+        let name = self.message_author_name(message);
+        if self.is_provider_output(message) {
+            crate::i18n::t_args(
+                "chat-model-attribution",
+                &[
+                    ("model", name.into()),
+                    ("person", self.user_name(&message.author).into()),
+                ],
+            )
+        } else if message.author.starts_with("bot:") {
+            let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
+            let shown = self
+                .message_author(message, &name, "", None)
+                .label(&members);
+            crate::i18n::t_args(
+                "chat-bot-attribution",
+                &[("name", shown.into()), ("bot", name.into())],
+            )
+        } else {
+            name
+        }
     }
 
     pub(crate) fn model_controls(&self, channel: &str) -> Vec<&'static str> {

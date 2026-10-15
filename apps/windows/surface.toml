@@ -5,6 +5,6 @@ kind = "windows.manager"
 label = "Windows manager"
 version = 1
 fields = [
-  { path = "routes", type = "BTreeMap<String, Route>" },
+  { path = "routes", type = "Map<Route>" },
 ]
 

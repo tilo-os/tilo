@@ -25,6 +25,9 @@ aarch64 = "aarch64"
 required = ["network.http"]
 optional = ["settings"]
 
+[resources]
+kinds = ["weather.locations", "settings.locale"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

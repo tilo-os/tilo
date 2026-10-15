@@ -75,6 +75,18 @@ test('a slow fetch or join says so in plain words instead of a joke', () => {
     'what the page says (waiting for the owner) is said instead');
 });
 
+test('a first frame that is late says so instead of waiting in silence', () => {
+  const arrival = createArrival({lines: {jokes, tips}});
+  arrival.update(loading, 0);
+  arrival.update({arrival: 'draw'}, 2000);
+  assert.ok(arrival.update({arrival: 'draw'}, 11_999).line);
+  const slow = arrival.update({arrival: 'draw'}, 12_000);
+  assert.equal(slow.line, null);
+  assert.equal(slow.note, 'Still starting graphics. Without a graphics card this takes longer.');
+  assert.equal(slow.bar, true);
+  assert.equal(arrival.update({arrival: 'done'}, 12_100).note, null);
+});
+
 test('the bar follows the measured phases, creeps within one, and never runs backwards', () => {
   assert.equal(SEGMENTS.fetch.start, 0);
   assert.ok(Math.abs(SEGMENTS.draw.end - 1) < 1e-9);

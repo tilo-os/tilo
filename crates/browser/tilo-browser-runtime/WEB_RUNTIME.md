@@ -127,6 +127,7 @@ on one. Each page's channel state (`peer.channelDiagnostics()`) is saved as
 ```sh
 # every web/*.test.mjs suite, as CI runs them (tools/ci/suites.toml)
 node --test crates/browser/tilo-browser-runtime/web/*.test.mjs
-# the wasm32 type check CI runs for every change these builds depend on
+# the wasm32 clippy CI runs for every change these builds depend on
+# (CARGO=<any cargo drop-in> runs it through a remote builder or container)
 tools/ci/check-wasm.sh
 ```

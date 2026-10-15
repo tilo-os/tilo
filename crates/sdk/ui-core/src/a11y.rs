@@ -312,6 +312,34 @@ pub struct AccessNode {
     pub children: Vec<AccessNode>,
 }
 
+/// A widget's [`AccessNode`] with its synthetic children shared rather than
+/// owned, from [`Widget::accessibility_shared`](crate::widget::Widget::accessibility_shared).
+///
+/// A widget that keeps its children's nodes between frames (an editor's
+/// paragraphs) hands each over as the very `Arc` it handed over last frame
+/// when that child did not change. The semantic tree then knows the child is
+/// unchanged without copying or comparing it, so a frame that changes one
+/// child costs that child, not the widget's whole subtree.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SharedAccessNode {
+    /// The widget's node. Its own `children` are empty: they are in
+    /// [`Self::children`].
+    pub node: AccessNode,
+    pub children: Vec<std::sync::Arc<AccessNode>>,
+}
+
+impl SharedAccessNode {
+    /// The node as [`Widget::accessibility`](crate::widget::Widget::accessibility)
+    /// answers it, the children copied out where something else still holds
+    /// them.
+    pub fn into_owned(self) -> AccessNode {
+        let Self { mut node, children } = self;
+        node.children
+            .extend(children.into_iter().map(std::sync::Arc::unwrap_or_clone));
+        node
+    }
+}
+
 impl AccessNode {
     pub fn new(role: Role) -> Self {
         Self {

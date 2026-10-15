@@ -10,13 +10,13 @@
 //! unbound until its owner binds the same authority again.
 use super::tail_cache;
 use super::{SelectedRead, Selection};
+use crate::retained_proof::RetentionAuthority;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tilo_peer_state::retained_proof::RetentionAuthority;
 use tilo_relay_store::StoreError;
 use tilo_relay_store::bounded::{Step, WorkLimit, WorkStats};
 use tilo_relay_store::shell::{

@@ -1,6 +1,5 @@
 #![allow(
     clippy::doc_markdown,
-    clippy::useless_conversion,
     reason = "migration stack lint debt is scoped to this target"
 )]
 
@@ -19,10 +18,6 @@
 // full set: a fault there takes the session, or every app with it.
 #![allow(
     clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
 pub mod actions;

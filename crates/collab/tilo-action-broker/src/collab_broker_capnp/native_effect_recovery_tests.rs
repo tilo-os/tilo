@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
-use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+use tilo_owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
 
 struct NativeEffects {
     owner: Arc<tilo_joined_room::NativeWorkspaceOwner>,
@@ -165,7 +165,7 @@ fn prepare(f: &Fixture) -> DurableInvocation {
     receipt.completed_at = 100;
     let request = OwnerCommitRequest {
         room: key.room.clone(),
-        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+        operation: tilo_owner_commit::CommitOperation::EffectReceipt {
             invocation: key.invocation.0,
             redacted: serde_json::to_vec(&receipt).unwrap(),
         },

@@ -1,13 +1,12 @@
 //! Same-barrier native outgoing custody; relay queue acceptance is never an ACK.
 use crate::{NativeCommittedView, NativeWorkspaceOwner, RoomId, enrollment, record};
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
+use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, time::SystemTime};
-use tilo_peer_state::{NeighbourMsg, Reseal, StatePeer};
-use tilo_peer_state::{
-    owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest},
-    transport::Retention,
-};
+use tilo_owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::{Reseal, StatePeer};
 
 mod reservation;
 #[cfg(any(test, feature = "test-support"))]
@@ -106,10 +105,6 @@ impl<'a> NativeOutgoingEntry<'a> {
     pub fn channel(&self) -> [u8; 32] {
         self.0.channel
     }
-    #[allow(
-        clippy::unused_self,
-        reason = "a per-entry accessor; every native outgoing entry is currently a delta"
-    )]
     #[must_use]
     pub fn retention(&self) -> Retention {
         Retention::Delta
@@ -387,7 +382,7 @@ pub(crate) fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), 
     // The one host classifier (`neighbour_wire::retention`), shared with
     // browser peers and the relay. A single-use MLS application message has
     // no retention class and is refused here like any live frame.
-    let (channel, kind) = tilo_peer_state::transport::retention(message, false)
+    let (channel, kind) = neighbour_wire::retention(message, false)
         .ok_or("unsupported native outgoing document payload")?;
     Ok((
         enrollment::ns(envelope.timestamp)?,
@@ -500,7 +495,7 @@ pub(crate) fn replace_governance_checkpoint(
     {
         return Err("native governance checkpoint exceeds outgoing capacity".into());
     }
-    let (channel, retention) = tilo_peer_state::transport::retention(&message, true)
+    let (channel, retention) = neighbour_wire::retention(&message, true)
         .ok_or("unsupported native governance checkpoint")?;
     if retention != Retention::Checkpoint {
         return Err("native governance publication is not a checkpoint".into());
@@ -538,7 +533,7 @@ pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> R
     let bytes = encode(&view.peer.room_message(), MAX_BYTES)?;
     let binding = if matches!(
         existing.binding.target,
-        tilo_peer_state::owner_commit::CommitTarget::NativeCheckpointRoot { .. }
+        tilo_owner_commit::CommitTarget::NativeCheckpointRoot { .. }
     ) {
         crate::checkpoint::binding(
             view.record.room,
@@ -732,14 +727,12 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
     {
         return Err("native governance checkpoint differs from canonical room policy".into());
     }
-    let (channel, retention) = tilo_peer_state::transport::retention(&message, true)
+    let (channel, retention) = neighbour_wire::retention(&message, true)
         .ok_or("unsupported native governance checkpoint")?;
     if retention != Retention::Checkpoint || channel != entry.channel {
         return Err("native governance checkpoint transport mismatch".into());
     }
-    if let tilo_peer_state::owner_commit::CommitTarget::NativeCheckpointRoot { root } =
-        entry.binding.target
-    {
+    if let tilo_owner_commit::CommitTarget::NativeCheckpointRoot { root } = entry.binding.target {
         if view.peer.workspace_checkpoint_root()? != Some(root)
             || entry.binding != crate::checkpoint::binding(view.record.room, root)
         {
@@ -1016,7 +1009,7 @@ mod encoding_tests {
             bytes,
             binding: CommitBinding {
                 room: "room".into(),
-                target: tilo_peer_state::owner_commit::CommitTarget::Document {
+                target: tilo_owner_commit::CommitTarget::Document {
                     app: "so.tilo.code".into(),
                     record: "a".into(),
                 },

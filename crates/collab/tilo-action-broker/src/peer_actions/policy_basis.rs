@@ -1,5 +1,5 @@
 //! Pure policy data, never owner provenance, authorization, or a readiness witness.
-pub use tilo_peer_state::owner_commit::PrivatePolicyBasis;
+pub use tilo_owner_commit::PrivatePolicyBasis;
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -92,7 +92,7 @@ mod tests {
         let basis = PrivatePolicyBasis::from_peer(&a).unwrap();
         assert_eq!(
             basis.revision(),
-            tilo_peer_state::owner_commit::governance_revision(&a).unwrap()
+            tilo_owner_commit::governance_revision(&a).unwrap()
         );
         assert_eq!(basis, PrivatePolicyBasis::from_peer(&b).unwrap());
         assert_eq!(basis.next_expiry_after(0), Some(3));
@@ -121,9 +121,9 @@ mod tests {
             PrivatePolicyBasis::from_peer(&source).unwrap_err(),
             "nonpersistent governed private policy grant"
         );
-        assert!(tilo_peer_state::owner_commit::canonical_owner(&source).is_ok());
+        assert!(tilo_owner_commit::canonical_owner(&source).is_ok());
         assert!(
-            tilo_peer_state::owner_commit::governance_revision(&source).is_ok(),
+            tilo_owner_commit::governance_revision(&source).is_ok(),
             "general revision is not the strict private persistence gate"
         );
         let empty = tilo_peer_state::StatePeer::new(
@@ -139,11 +139,11 @@ mod tests {
             "private policy room unavailable"
         );
         assert_eq!(
-            tilo_peer_state::owner_commit::canonical_owner(&empty).unwrap_err(),
+            tilo_owner_commit::canonical_owner(&empty).unwrap_err(),
             "admitted room missing"
         );
         assert_eq!(
-            tilo_peer_state::owner_commit::governance_revision(&empty).unwrap_err(),
+            tilo_owner_commit::governance_revision(&empty).unwrap_err(),
             "admitted room missing"
         );
     }

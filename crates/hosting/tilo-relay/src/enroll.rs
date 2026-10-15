@@ -1900,10 +1900,6 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
     )
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered pairing exchange; the requester lease is revalidated at every step of it"
-)]
 fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyhow::Result<()> {
     let JoinOptions {
         identity_root,

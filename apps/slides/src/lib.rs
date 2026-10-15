@@ -1,7 +1,6 @@
 #![allow(
     clippy::many_single_char_names,
     clippy::redundant_clone,
-    clippy::similar_names,
     clippy::single_match_else,
     clippy::too_many_lines,
     reason = "migration stack lint debt is scoped to this target"

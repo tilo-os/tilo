@@ -279,6 +279,8 @@ pub(crate) struct ScheduledActionRequest {
 #[cfg(target_os = "linux")]
 struct ScheduledActionController {
     store: std::sync::Weak<Mutex<scheduled::ScheduleStore>>,
+    /// The store's committed snoozes, read without its lock.
+    snoozed: scheduled::SnoozedView,
     changed: crate::idle_wake::IdleWake,
 }
 
@@ -445,9 +447,14 @@ impl NotificationBridge {
         store: &Arc<Mutex<scheduled::ScheduleStore>>,
         changed: crate::idle_wake::IdleWake,
     ) {
+        let snoozed = store
+            .lock()
+            .map(|store| store.snoozed_view())
+            .unwrap_or_default();
         if let Ok(mut inner) = self.inner.lock() {
             inner.schedule_controller = Some(ScheduledActionController {
                 store: Arc::downgrade(store),
+                snoozed,
                 changed,
             });
         }
@@ -472,14 +479,25 @@ impl NotificationBridge {
     pub(crate) fn snoozed_alarms(&self, room: &str) -> Vec<SnoozedAlarm> {
         #[cfg(target_os = "linux")]
         {
-            let store = self.inner.lock().ok().and_then(|inner| {
+            // Called from the compositor's loop. The store's own lock is held
+            // across each commit's disk write, so read the committed view.
+            let snoozed = self.inner.lock().ok().and_then(|inner| {
                 inner
                     .schedule_controller
                     .as_ref()
-                    .and_then(|controller| controller.store.upgrade())
+                    .filter(|controller| controller.store.strong_count() > 0)
+                    .map(|controller| Arc::clone(&controller.snoozed))
             });
-            store
-                .and_then(|store| store.lock().ok().map(|store| store.snoozed_alarms(room)))
+            snoozed
+                .and_then(|snoozed| {
+                    snoozed.lock().ok().map(|alarms| {
+                        alarms
+                            .iter()
+                            .filter(|alarm| alarm.target.room == room)
+                            .cloned()
+                            .collect()
+                    })
+                })
                 .unwrap_or_default()
         }
         #[cfg(not(target_os = "linux"))]

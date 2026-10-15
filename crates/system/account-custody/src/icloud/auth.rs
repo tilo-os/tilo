@@ -153,10 +153,6 @@ impl PendingSignIn {
 
 /// The outcome of [`Authenticator::sign_in`].
 #[derive(Debug)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "short-lived; returned once per sign-in"
-)]
 pub enum SignIn {
     /// Signed in without a second factor (a trusted browser or trust token).
     Complete(StoredSession),

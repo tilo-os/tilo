@@ -1,8 +1,9 @@
 //! The real-owner shell-selection scenario, generated once per test process,
 //! and the helpers the selection, store, peer and persistence tests read it
 //! with. Built only for tests and the `test-support` feature.
+use crate::retained_proof::RetentionAuthority;
 use std::path::{Path, PathBuf};
-use tilo_peer_state::{StatePeer, TransportOrigin, retained_proof::RetentionAuthority};
+use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay_client::coedit::CoeditPayload;
 use tilo_relay_protocol::transport::Envelope;
 

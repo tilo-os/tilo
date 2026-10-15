@@ -52,7 +52,7 @@ impl Serialize for VirtualEntry<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let binding = CommitBinding {
             room: self.room.into(),
-            target: tilo_peer_state::owner_commit::CommitTarget::Document {
+            target: tilo_owner_commit::CommitTarget::Document {
                 app: self.app.into(),
                 record: self.record.into(),
             },

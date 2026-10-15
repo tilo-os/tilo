@@ -18,6 +18,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard", "secrets", "threads"]
 
+[resources]
+kinds = ["publisher.profile"]
+
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

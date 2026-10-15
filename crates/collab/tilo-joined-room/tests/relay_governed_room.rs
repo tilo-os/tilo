@@ -21,13 +21,14 @@ use std::time::SystemTime;
 
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::RoomId;
 use tilo_identity_host::custody::HostIdentity;
 use tilo_joined_room::NativeWorkspaceOwner;
 use tilo_joined_room::session::{Connect, Scope};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::join::{self, MemberRole};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
 use tilo_relay::rooms::IssueInvitationRequest;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
@@ -231,9 +232,9 @@ impl Native {
 }
 
 fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
-    let (channel, kind) = tilo_peer_state::transport::retention(message, false).unwrap();
+    let (channel, kind) = neighbour_wire::retention(message, false).unwrap();
     let body = postcard::to_stdvec(message).unwrap();
-    if kind == tilo_peer_state::transport::Retention::Checkpoint {
+    if kind == neighbour_wire::Retention::Checkpoint {
         session.publish_checkpoint(channel, body)
     } else {
         session.publish_retained_delta(channel, body)

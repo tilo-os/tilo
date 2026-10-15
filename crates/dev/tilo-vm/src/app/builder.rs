@@ -247,10 +247,6 @@ impl App {
             .map(|member| member.layer)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one build-and-stream sequence: provenance, cache probe, upload and receipt stay in order"
-    )]
     fn build_layer_remote_cached(
         &mut self,
         remote: &mut Remote,

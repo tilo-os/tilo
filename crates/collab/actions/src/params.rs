@@ -310,6 +310,32 @@ impl ActionParam {
         self
     }
 
+    /// Make this list parameter a list of content addresses, each one
+    /// content another action produced ([`Self::as_content`]), in order.
+    #[must_use]
+    pub fn as_content_list(mut self) -> Self {
+        self.ty = ParamType::Array;
+        self.schema = Some(std::sync::Arc::new(serde_json::json!({
+            "type": "array",
+            "items": { "type": "string", CONTENT_ANNOTATION: true },
+        })));
+        self
+    }
+
+    /// Whether this parameter takes a list of content
+    /// ([`Self::as_content_list`]).
+    #[must_use]
+    pub fn is_content_list(&self) -> bool {
+        self.ty == ParamType::Array
+            && self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get("items"))
+                .and_then(|items| items.get(CONTENT_ANNOTATION))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    }
+
     /// Whether this parameter takes content another action produced
     /// ([`Self::as_content`]).
     #[must_use]
@@ -877,9 +903,9 @@ const COMPILED_PATTERNS: usize = 64;
 /// `pattern` compiled, from the cache when an earlier argument or schema
 /// already compiled it: every validated value used to compile its schema's
 /// pattern again.
-fn schema_pattern(pattern: &str) -> Result<regex::Regex, regex::Error> {
+fn schema_pattern(pattern: &str) -> Result<regex_lite::Regex, regex_lite::Error> {
     static COMPILED: std::sync::LazyLock<
-        std::sync::Mutex<std::collections::HashMap<String, regex::Regex>>,
+        std::sync::Mutex<std::collections::HashMap<String, regex_lite::Regex>>,
     > = std::sync::LazyLock::new(std::sync::Mutex::default);
     let mut compiled = COMPILED
         .lock()
@@ -887,7 +913,7 @@ fn schema_pattern(pattern: &str) -> Result<regex::Regex, regex::Error> {
     if let Some(expression) = compiled.get(pattern) {
         return Ok(expression.clone());
     }
-    let expression = regex::Regex::new(pattern)?;
+    let expression = regex_lite::Regex::new(pattern)?;
     if compiled.len() >= COMPILED_PATTERNS {
         compiled.clear();
     }

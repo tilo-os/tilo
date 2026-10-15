@@ -51,6 +51,9 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import blank_test_items, code_only, matching  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("shell_layers_baseline.toml")
@@ -150,9 +153,6 @@ MODULE_GROUPS = (
 )
 
 IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
-CFG_TEST = re.compile(
-    r"#\s*\[\s*cfg\s*\(\s*(?:test\s*|all\s*\(\s*test\b[^\]]*)\)\s*\]"
-)
 CFG_TEST_INNER = re.compile(r"^\s*#!\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 INLINE_MOD = re.compile(rf"\bmod\s+({IDENT})\s*\{{")
 USE = re.compile(r"(?<![\w$])use\s")
@@ -161,7 +161,6 @@ INLINE_PATH = re.compile(
     rf"(?<![\w:$])(?:::\s*)?\b({'|'.join(PATH_ROOTS)})\b((?:\s*::\s*{IDENT})*)"
 )
 USE_TOKEN = re.compile(rf"::|[{{}},*]|{IDENT}")
-RAW_STRING = re.compile(r'b?r(#*)"')
 
 
 class BaselineError(Exception):
@@ -176,79 +175,6 @@ class Edge:
 
 
 # --- Reading Rust source -----------------------------------------------------
-
-
-def sanitize(text: str) -> str:
-    """Blank comments and string/char literals, keeping offsets and newlines."""
-    out = list(text)
-    i, n = 0, len(text)
-
-    def blank(start: int, end: int) -> None:
-        for k in range(start, min(end, n)):
-            if out[k] != "\n":
-                out[k] = " "
-
-    while i < n:
-        c = text[i]
-        if text.startswith("//", i):
-            end = text.find("\n", i)
-            end = n if end < 0 else end
-            blank(i, end)
-            i = end
-        elif text.startswith("/*", i):
-            depth, j = 1, i + 2
-            while j < n and depth:
-                if text.startswith("/*", j):
-                    depth, j = depth + 1, j + 2
-                elif text.startswith("*/", j):
-                    depth, j = depth - 1, j + 2
-                else:
-                    j += 1
-            blank(i, j)
-            i = j
-        elif c in "br" and (raw := RAW_STRING.match(text, i)) and (
-            i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_")
-        ):
-            close = '"' + raw.group(1)
-            end = text.find(close, i + raw.end())
-            end = n if end < 0 else end + len(close)
-            blank(i, end)
-            i = end
-        elif c == '"':
-            j = i + 1
-            while j < n and text[j] != '"':
-                j += 2 if text[j] == "\\" else 1
-            blank(i, j + 1)
-            i = j + 1
-        elif c == "'":
-            if text.startswith("'\\", i):
-                end = text.find("'", i + 2)
-                end = n if end < 0 else end + 1
-                blank(i, end)
-                i = end
-            elif i + 2 < n and text[i + 2] == "'":
-                blank(i, i + 3)
-                i += 3
-            else:
-                i += 1  # a lifetime
-        else:
-            i += 1
-    return "".join(out)
-
-
-def matching(text: str, open_at: int) -> int:
-    """Offset just past the bracket that closes the one at ``open_at``."""
-    pairs = {"{": "}", "(": ")", "[": "]"}
-    stack = [pairs[text[open_at]]]
-    i = open_at + 1
-    while i < len(text) and stack:
-        c = text[i]
-        if c in pairs:
-            stack.append(pairs[c])
-        elif c == stack[-1]:
-            stack.pop()
-        i += 1
-    return i
 
 
 def item_end(text: str, start: int) -> int:
@@ -271,19 +197,6 @@ def item_end(text: str, start: int) -> int:
             return matching(text, i)
         i += 1
     return i
-
-
-def strip_test_items(text: str) -> str:
-    """Blank every item behind ``#[cfg(test)]`` or ``#[cfg(all(test, …))]``."""
-    out = list(text)
-    position = 0
-    while match := CFG_TEST.search(text, position):
-        end = item_end(text, match.end())
-        for k in range(match.start(), end):
-            if out[k] != "\n":
-                out[k] = " "
-        position = end
-    return "".join(out)
 
 
 def module_path(relative: str) -> list[str]:
@@ -369,10 +282,10 @@ def use_paths(tree: str) -> list[list[str]]:
 
 def referenced_paths(text: str, relative: str) -> list[tuple[list[str], int]]:
     """Absolute paths referenced in production code, with their offsets."""
-    clean = sanitize(text)
+    clean = code_only(text)
     if CFG_TEST_INNER.match(clean):
         return []
-    source = strip_test_items(clean)
+    source = blank_test_items(clean)
     base = module_path(relative)
     spans = inline_modules(source)
     found: list[tuple[list[str], int]] = []

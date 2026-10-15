@@ -1,8 +1,3 @@
-#![allow(
-    clippy::collapsible_if,
-    reason = "migration stack lint debt is scoped to this target"
-)]
-
 //! Persistence for a Tilo app's Automerge documents, through one seam.
 //!
 //! Every document lives behind a [`durable_store::DurableStore`] key.
@@ -1578,10 +1573,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn saves_and_appends_round_trip_and_survive_interruption() {
         // Phase `round_trip_preserves_content`.
         {
@@ -1767,10 +1758,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn schema_versions_are_stamped_migrated_once_and_newer_documents_refused() {
         // Phase `app_owned_schema_migration_is_durable_and_runs_once`.
         fn app_owned_schema_migration_is_durable_and_runs_once() {
@@ -1955,10 +1942,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn opening_over_existing_state_keeps_persistence() {
         // Phase `opening_twice_against_an_existing_dir_keeps_persistence_enabled`.
         // If the directory create were not idempotent, the second open would fail

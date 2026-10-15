@@ -1,7 +1,7 @@
 //! Six Notes windows in the desktop surface the browser desktop hosts apps
 //! in, panned by coalesced trackpad wheels. A pan moves laid-out windows and
-//! nothing else, so a wheel's own host tick is left to the frame, and the
-//! frame's sweep for undo brackets opens no window's record to find none.
+//! nothing else, so a wheel's own host tick is left to the frame, and that
+//! frame, which nothing new reached, neither ticks, syncs nor publishes.
 
 use crate::component_support::{self, NotebookFixture};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -129,6 +129,7 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
 
     let frames: usize = 60;
     let start = pan_offset(&handle);
+    let quiet = harness.quiet_frames();
     let ((), rows) = observe(|| {
         for index in 0..frames {
             let dx = if (index / 10) % 2 == 0 { -6.0 } else { 6.0 };
@@ -147,15 +148,30 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
         (pan_offset(&handle) - start).abs() < 0.01,
         "every wheel panned the strip"
     );
+    // A pan changes no document, focus or declaration, and a view-only
+    // wheel calls nothing that could: every pan frame is quiet. It runs no
+    // host tick (no interaction since the last frame left one pending), no
+    // sync of any window, no undo publication and so no resource discovery.
     assert_eq!(
-        calls(&rows, "ui.host_tick"),
-        frames,
-        "one host tick per frame, none per view-only wheel: {rows:?}"
+        harness.quiet_frames() - quiet,
+        u64::try_from(frames).unwrap(),
+        "every pan frame was quiet: {rows:?}"
     );
-    // Each window's sync and undo status open its record a few times a
-    // frame; a sweep that opened the record of every bound widget to look
-    // for a bracket would open it once per widget, and each window has
-    // far more widgets than that.
+    for phase in [
+        "ui.host_tick",
+        "ui.frame_sync",
+        "ui.publish_undo_status",
+        "ui.bound_discovery_miss",
+    ] {
+        assert_eq!(
+            calls(&rows, phase),
+            0,
+            "{phase} ran on a pan frame: {rows:?}"
+        );
+    }
+    // Nor is any window's record opened: a sweep that opened the record of
+    // every bound widget to look for a bracket would open it once per
+    // widget, and each window has far more widgets than that.
     let records = calls(&rows, "ui.record_frame");
     let bound = bound_widgets(&harness.inspection().root, false);
     assert!(
@@ -166,6 +182,14 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
         records < frames.saturating_mul(RECORDS_PER_WINDOW * WINDOWS),
         "{records} record admissions over {frames} pan frames: the bracket sweep \
          opened records it found nothing in"
+    );
+
+    // Any change still reaches its own frame: a click into a window syncs
+    // the windows and publishes undo on the frame that shows it.
+    let ((), rows) = observe(|| harness.click_at(300.0, 450.0));
+    assert!(
+        calls(&rows, "ui.frame_sync") > 0 && calls(&rows, "ui.publish_undo_status") > 0,
+        "a click syncs and publishes on its frame: {rows:?}"
     );
 }
 

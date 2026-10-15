@@ -29,6 +29,9 @@ pub(super) struct HeaderTitle {
     rect: Rect,
     /// The title and count the last measure saw; a change needs another.
     measured: Option<(Option<String>, Option<usize>)>,
+    /// The title, count and place the last draw painted; a change needs
+    /// another. `None` until drawn in the current theme.
+    painted: Option<(Option<String>, Option<usize>, Rect)>,
 }
 
 impl HeaderTitle {
@@ -39,6 +42,7 @@ impl HeaderTitle {
             theme: Theme::dark(),
             rect: Rect::ZERO,
             measured: None,
+            painted: None,
         }
     }
 
@@ -56,6 +60,7 @@ impl Widget for HeaderTitle {
     ) -> NodeId {
         self.theme = theme.clone();
         self.measured = None;
+        self.painted = None;
         let style = Style {
             flex_shrink: 1.0,
             min_size: Size::from_lengths(0.0, 0.0),
@@ -98,6 +103,18 @@ impl Widget for HeaderTitle {
 
     fn name(&self) -> &'static str {
         "NavShellTitle"
+    }
+
+    /// A title that shows what it painted needs no frame: a pointer moving
+    /// over the window repaints nothing here.
+    fn needs_redraw(&self) -> bool {
+        self.painted.as_ref().is_none_or(|(title, count, rect)| {
+            *title != self.title || *count != self.count || *rect != self.rect
+        })
+    }
+
+    fn mark_drawn(&mut self) {
+        self.painted = Some((self.title.clone(), self.count, self.rect));
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -325,6 +342,11 @@ impl Widget for MoreActions {
 
     fn name(&self) -> &'static str {
         "NavShellMore"
+    }
+
+    /// Its button's, while it shows, and every frame its menu is open.
+    fn needs_redraw(&self) -> bool {
+        self.menu.is_open() || (self.shown && Widget::needs_redraw(&self.button))
     }
 
     fn get_rect(&self) -> Rect {

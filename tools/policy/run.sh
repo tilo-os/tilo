@@ -44,9 +44,10 @@ run 'Path-filtered package dependency triggers' \
   --check tilo-crypto .forgejo/workflows/ci-development-signing.yml \
   --check tilo-fs .forgejo/workflows/ci-filesystem.yml \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
-  --check registry-server .forgejo/workflows/release-registry-server.yml \
-  --check tilo-runtime .forgejo/workflows/dev-runtime-macos.yml \
-  --check tilo-app-cli .forgejo/workflows/app-sdk.yml
+  --check tilo-relay 't.toml#image-relay' \
+  --check registry-server 't.toml#image-registry-server' \
+  --check tilo-runtime 't.toml#runtime-macos' \
+  --check tilo-app-cli 't.toml#sdk-linux'
 run 'Developer docs pages and links' python3 tools/docs/developer_docs.py check
 run 'Code map is current' python3 tools/docs/codemap.py --check
 run_tests 'Repository policy unit tests' \

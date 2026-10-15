@@ -76,6 +76,12 @@ pub(crate) use presentation::{DrawPast, Presentation, operation_types, with_nati
 pub(crate) struct Presentation;
 
 #[cfg(target_family = "wasm")]
+#[expect(
+    clippy::unused_self,
+    clippy::needless_pass_by_ref_mut,
+    clippy::unnecessary_wraps,
+    reason = "a no-op stand-in with the native presentation's signatures"
+)]
 impl Presentation {
     pub(crate) fn new<R: tilo_resource::Resource>(_: &crate::framework::ViewCx<R>) -> Self {
         Self

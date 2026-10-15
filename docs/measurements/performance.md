@@ -29,7 +29,7 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. Dispatch inputs:
-`kpis` selects groups (`fs`, `footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`, `search`, `hosting`, `browser`); `mode: ab` with `ab_base`,
+`kpis` selects groups (`fs`, `footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`, `search`, `hosting`, `browser`, `stream`); `mode: ab` with `ab_base`,
 `ab_candidate` and `ab_rounds` runs the A/B lane below instead; `accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `synthetic_series` with `synthetic_factor` multiplies a run's values to prove
@@ -80,10 +80,34 @@ The `hosting` group has two jobs: the relay's cost per collaborator-hour
 `adapters.py room-load`), which guards the guests' p99 join and chat delivery
 and the host's peak memory and CPU. The capacity curve behind that point and
 the deployed caps (guests and spectators from 50 to 4000, the caps at once, and
-the price of 100 concurrent guests per node) is **Perf / room host capacity**
-(`perf-room-capacity.yml`, manual dispatch, `tools/perf/room_capacity.py`);
+the price of 100 concurrent guests per node) is the `perf-room-capacity` check
+(`t dispatch perf-room-capacity`, `tools/perf/room_capacity.py`);
 [docs/benchmarks/room-host-capacity-2026-10.md](../benchmarks/room-host-capacity-2026-10.md)
 records a run.
+
+The `stream` group qualifies a native window on the browser desktop:
+`scripts/perf/native_stream_qualification.mjs` runs this commit's host
+(`tilo-relay dev`), a session (tilo-relay's `legacy_stream_source` example: the
+shell's legacy-share protocol and production H.264 encoder over a drawn window
+whose every frame carries its number) and the release desktop bundle in
+headless Chrome, which decodes the stream with WebCodecs. It reads back every
+picture the page draws, so it measures startup to the first picture, capture
+to picture latency, the frame rate, the frames never drawn and click to session
+input latency, and fails any run that shows a corrupt, misnamed or older
+picture, a decoder error, a wrong last frame or a lost press. The runner has no
+GPU, so the nightly numbers are a software encode (30 fps), a software decode
+and a SwiftShader desktop; a hardware qualification adds a hardware encoder,
+decoder and GPU desktop, with the goals enforced:
+
+```bash
+cargo build --release -p tilo-relay --features web,stream-source --bin tilo-relay --example legacy_stream_source
+node scripts/perf/native_stream_qualification.mjs target/qualify --out stream.json \
+  --relay target/release/tilo-relay --source target/release/examples/legacy_stream_source \
+  --renderer gpu --expect-revision "$(git rev-parse HEAD)" --max-load 0.25 --enforce-goals
+```
+
+`--carrier https` takes the live plane over the HTTPS stream fallback instead of
+WebTransport.
 
 The `latency` group is the compositor's side only (headless, no panel).
 Input-to-presentation latency on the reference machines is a weekly,
@@ -140,7 +164,7 @@ fgj workflow run perf-scheduled.yml -R tilo/tilo --hostname code.tilo.so \
 ```
 
 One job per group in `kpis` (`hosting`, `latency`, `render`, `agent`,
-`wakeups`, `fs`, `search`, `browser`; `footprint` is bytes of published artifacts and has no A/B)
+`wakeups`, `fs`, `search`, `browser`; `footprint` is bytes of published artifacts and has no A/B, nor has `stream` yet)
 builds the base and the candidate in one checkout, one after the other, and
 runs that group's existing benchmark on both, alternating, for `ab_rounds`
 rounds on one runner (`tools/perf/ab.py`). Odd rounds run the base first and

@@ -38,7 +38,7 @@ min_delta = 0.0
 # Perf / scheduled (.forgejo/workflows/perf-scheduled.yml): one job per group,
 # selected by its `kpis` input; its `compare` job runs with the default lane.
 [lanes.perf-scheduled]
-groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting", "browser"]
+groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting", "browser", "stream"]
 
 # Dev / VM acceptance (.forgejo/workflows/vm-acceptance.yml): the installed
 # desktop in a KVM guest. Its R04 measures compositor CPU per painted frame on
@@ -1995,3 +1995,67 @@ max = 2.0
 min_delta = 0.5
 baseline_min_runs = 1
 source = "frames an idle desktop of the demo windows presents per second (headless, SwiftShader)"
+
+# A native window on the browser desktop
+# (scripts/perf/native_stream_qualification.mjs): a session's legacy window,
+# encoded by the production real-time encoder with the shell's legacy-share
+# configuration, through `tilo-relay dev`'s legacy-window bridge and live
+# plane, decoded with WebCodecs and drawn by the release desktop bundle in
+# headless Chrome for Testing on the shared `runner` class. The runner has no
+# GPU: the session encodes in software (30 fps, the shell's software ceiling),
+# Chrome decodes in software, and the desktop under the window draws on
+# SwiftShader. So these records are compared only with each other and never
+# quoted as hardware figures; a hardware encoder (60 fps), a hardware decoder
+# and a GPU desktop are a hardware qualification's (--renderer gpu
+# --enforce-goals, docs/measurements/performance.md). Every run is first
+# judged correct (no decoder error, no corrupt, misnamed or older picture, the
+# last frame shown, every press delivered) or it records nothing. SwiftShader
+# compiles the window tile's pipelines when the desktop first draws it, which
+# blocks the page for about 25 s on this runner: startup includes that, and
+# the frame KPIs are timed after a 30 s warm-up (--warm-up 30). The
+# ceilings are the harness's goals: the window's first picture within a second
+# of the session starting its stream (an uninterrupted flow of thought), a
+# frame on screen within 100 ms of its capture at p95, under 1 % of the frames
+# sent after the first picture never drawn, a click reaching the session
+# within 50 ms at p95 (it travels HTTPS, the host and the session's relay
+# connection, all on loopback here), and pictures arriving at the session's
+# software rate. Timing KPIs need three stored runs before comparison, as the
+# browser group's do.
+
+[kpi."stream.startup.first_picture"]
+unit = "ms"
+max = 1000.0
+baseline_min_runs = 3
+source = "the session starting its stream to the window's first picture on the desktop (software encode and decode, SwiftShader desktop)"
+
+[kpi."stream.frame.latency"]
+unit = "ms"
+p95 = 100.0
+baseline_min_runs = 3
+source = "a frame's capture at the session to its picture drawn by the page, per frame (software encode and decode)"
+
+[kpi."stream.frame.interval"]
+unit = "ms"
+p50 = 34.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "between consecutive new pictures the page draws while the window repaints at 30 fps (software encode and decode)"
+
+[kpi."stream.encode.frame"]
+unit = "ms"
+p95 = 33.3
+baseline_min_runs = 3
+source = "the production real-time encoder's time per 1280x720 frame, the shell's legacy-share configuration (software)"
+
+[kpi."stream.input.latency"]
+unit = "ms"
+p95 = 50.0
+baseline_min_runs = 3
+source = "a click on the window in the page to the press arriving at the session, through the host's input route"
+
+[kpi."stream.frame.missed"]
+unit = "percent"
+max = 1.0
+min_delta = 0.5
+baseline_min_runs = 1
+source = "frames sent after the first picture that the page never drew"

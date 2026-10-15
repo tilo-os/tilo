@@ -416,34 +416,11 @@ impl ChatApp {
         name_at: Point,
         max_x: f64,
     ) -> (f64, f64) {
-        let name = self.user_name(&m.author);
-        let color = self.identity_colour(&m.author);
+        let name = self.message_author_name(m);
+        let initiator = self.user_name(&m.author);
         // The avatar the bot showed, once the content store has it.
         let shown = self.shown_avatar(m);
-        let author = if m.author.starts_with("bot:") {
-            Author::Bot {
-                bot_name: &name,
-                // The roster does not name a bot's installer yet; the chip's
-                // details are not shown in Chat so far.
-                installed_by: "",
-                appearance: m.appearance.as_ref(),
-                linked: None,
-                image: shown.as_ref(),
-            }
-        } else if self.agent_authors.contains_key(&m.author) {
-            Author::Agent {
-                name: &name,
-                for_person: None,
-                color,
-            }
-        } else {
-            Author::Person {
-                name: &name,
-                identity: &m.author,
-                avatar: None,
-                color: Some(color),
-            }
-        };
+        let author = self.message_author(m, &name, &initiator, shown.as_ref());
         let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
         let theme = ctx.theme;
         let style = theme.text(TextRole::Body).strong();
@@ -461,6 +438,46 @@ impl ChatApp {
         }
         author.paint(&line, ctx);
         (line.chip.map_or(line.name.x1, |chip| chip.x1), line_h)
+    }
+
+    pub(crate) fn message_author<'a>(
+        &'a self,
+        m: &'a Message,
+        name: &'a str,
+        initiator: &'a str,
+        shown: Option<&'a vello::peniko::ImageData>,
+    ) -> Author<'a> {
+        let color = self.identity_colour(&m.author);
+        if m.author.starts_with("bot:") {
+            Author::Bot {
+                bot_name: name,
+                // The roster does not name a bot's installer yet; the chip's
+                // details are not shown in Chat so far.
+                installed_by: "",
+                appearance: m.appearance.as_ref(),
+                linked: None,
+                image: shown,
+            }
+        } else if self.is_provider_output(m) {
+            Author::Agent {
+                name,
+                for_person: Some(initiator),
+                color,
+            }
+        } else if self.agent_authors.contains_key(&m.author) {
+            Author::Agent {
+                name,
+                for_person: None,
+                color,
+            }
+        } else {
+            Author::Person {
+                name,
+                identity: &m.author,
+                avatar: None,
+                color: Some(color),
+            }
+        }
     }
 
     /// The colour `id` chose (or was given) as theirs: what their avatar,

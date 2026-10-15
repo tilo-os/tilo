@@ -2813,7 +2813,9 @@ impl ChromeState {
         let Some(store) = self.notification_history_store.as_ref() else {
             return;
         };
-        if let Err(error) = store.save(self.notification_log.history()) {
+        // The write's fsyncs run on the state writer: under I/O pressure they
+        // take seconds, and this runs on the compositor's loop.
+        if let Err(error) = store.save_in_background(self.notification_log.history()) {
             tracing::warn!(
                 path = %store.path().display(),
                 "could not save notification history: {error}"

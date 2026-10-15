@@ -74,7 +74,7 @@ impl super::App {
         let trace = self.trace_resource_stage(Stage::InputCarry);
         let view_only_scroll = self.is_view_only_scroll(event);
         let mark = ResourceInputMark {
-            document: crate::widget::settle_mark(&self.state.doc),
+            document: crate::doc::settle_mark(&self.state.doc),
             presentation: crate::widget::resource_presentation_epoch(),
             focused: self.focused_node,
             view_only_scroll,
@@ -159,7 +159,7 @@ impl super::App {
         let unchanged = ((!consumed && self.is_inert_input(event)) || view_only)
             && crate::widget::resource_presentation_epoch() == before.presentation
             && self.focused_node == before.focused
-            && crate::widget::settle_mark(&self.state.doc) == before.document
+            && crate::doc::settle_mark(&self.state.doc) == before.document
             && self.actions.bound_resource_cache.carry_across_input(
                 &before.owners,
                 &crate::bound_dispatch::bound_owner_marks(

@@ -1127,12 +1127,6 @@ impl SlidesApp {
     /// fixed "SLIDES" header and the pinned Add/Dup/Del action row. This is the
     /// rect handed to the shared [`PageSidebar`]'s `begin_frame`; the widget
     /// owns the thumbnail geometry + scrollbar inside it.
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.rail_viewport(...) call site consistent with the \
-                  other rail geometry helpers; converting to an associated function would read \
-                  worse at every call site for no benefit"
-    )]
     fn rail_viewport(&self, rail: Rect) -> Rect {
         self.rail_viewport_of(rail)
     }
@@ -1867,12 +1861,6 @@ impl SlidesApp {
     }
 
     /// The rect the inline title editor occupies in the toolbar.
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.title_input_rect(...) call site consistent with the \
-                  other chrome geometry helpers; converting to an associated function would \
-                  read worse at every call site for no benefit"
-    )]
     fn title_input_rect(&self, chrome: &Chrome) -> Rect {
         let m = &self.chrome_metrics;
         let pad = m.field_pad;

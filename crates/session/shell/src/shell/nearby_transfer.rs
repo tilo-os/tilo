@@ -420,12 +420,180 @@ impl MediaCache {
 }
 
 /// One staging request: the identity and display name an outbox entry gets.
-struct Staging {
+pub(crate) struct Staging {
     id: [u8; 16],
     name: String,
     target: String,
     now_unix_ms: u64,
     media: bool,
+}
+
+impl Staging {
+    /// The file or folder at `source`, named after it, as transfer `id`.
+    ///
+    /// # Errors
+    /// Returns an error when the source's name is not portable.
+    pub(crate) fn for_path(
+        source: &Path,
+        target: String,
+        now_unix_ms: u64,
+        id: [u8; 16],
+    ) -> Result<Self, String> {
+        Self::named(portable_name(source)?, target, now_unix_ms, id, false)
+    }
+
+    /// The regular file behind a media handoff, shown as `name`.
+    ///
+    /// # Errors
+    /// Returns an error when `name` is not portable.
+    pub(crate) fn for_media(
+        name: String,
+        target: String,
+        now_unix_ms: u64,
+        id: [u8; 16],
+    ) -> Result<Self, String> {
+        Self::named(name, target, now_unix_ms, id, true)
+    }
+
+    /// An object staged from an already-open grant capability, named as the
+    /// capability was opened.
+    pub(crate) fn for_secure(
+        source: &SecureNearbySource,
+        target: String,
+        now_unix_ms: u64,
+        id: [u8; 16],
+    ) -> Self {
+        Self {
+            id,
+            name: source.name().to_string(),
+            target,
+            now_unix_ms,
+            media: false,
+        }
+    }
+
+    fn named(
+        name: String,
+        target: String,
+        now_unix_ms: u64,
+        id: [u8; 16],
+        media: bool,
+    ) -> Result<Self, String> {
+        if !super::device_fabric::valid_nearby_file_name(&name) {
+            return Err(crate::shell::i18n::t("nearby-error-name-not-portable"));
+        }
+        Ok(Self {
+            id,
+            name,
+            target,
+            now_unix_ms,
+            media,
+        })
+    }
+}
+
+/// What a staged source is on disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StageShape {
+    /// A regular file of this many bytes.
+    Regular(u64),
+    Folder,
+    /// Anything else, which is never staged.
+    Other,
+}
+
+impl StageShape {
+    fn of(metadata: &fs::Metadata) -> Self {
+        if metadata.file_type().is_file() {
+            Self::Regular(metadata.len())
+        } else if metadata.file_type().is_dir() {
+            Self::Folder
+        } else {
+            Self::Other
+        }
+    }
+
+    /// The shape of `source`, without following a final symlink.
+    ///
+    /// # Errors
+    /// Returns an error when `source` cannot be inspected.
+    pub(crate) fn of_path(source: &Path) -> Result<Self, String> {
+        fs::symlink_metadata(source)
+            .map(|metadata| Self::of(&metadata))
+            .map_err(display)
+    }
+
+    /// The shape of an already-open grant capability.
+    ///
+    /// # Errors
+    /// Returns an error when the capability cannot be inspected.
+    pub(crate) fn of_secure(source: &SecureNearbySource) -> Result<Self, String> {
+        source.metadata().map(|metadata| Self::of(&metadata))
+    }
+}
+
+/// An outgoing object the store admitted and reserved an object path for,
+/// to be written without holding the store: copying, archiving, hashing and
+/// syncing a large source take as long as the source is big, and the store's
+/// thread (and through it every receive) would otherwise wait for them.
+pub(crate) struct ReservedStage {
+    staging: Staging,
+    kind: TransferKind,
+    object: PathBuf,
+}
+
+/// A reserved object whose bytes are written, synced and hashed, ready for
+/// the store to record.
+pub(crate) struct WrittenStage {
+    reserved: ReservedStage,
+    total_bytes: u64,
+    content_hash: [u8; 32],
+}
+
+impl ReservedStage {
+    /// Write the object from the file or folder at `source`.
+    ///
+    /// # Errors
+    /// Returns an error when the source changed or cannot be copied; the
+    /// partial object is removed.
+    pub(crate) fn write_path(self, source: &Path) -> Result<WrittenStage, String> {
+        let object = self.object.clone();
+        let written = match self.kind {
+            TransferKind::FolderArchive => archive_folder(source, &object),
+            TransferKind::File | TransferKind::MediaHandoff => copy_regular(source, &object),
+        };
+        self.hashed(written)
+    }
+
+    /// Write the object from an already-open grant capability.
+    ///
+    /// # Errors
+    /// Returns an error when the source changed or cannot be copied; the
+    /// partial object is removed.
+    pub(crate) fn write_secure(self, source: SecureNearbySource) -> Result<WrittenStage, String> {
+        let object = self.object.clone();
+        let written = match self.kind {
+            TransferKind::FolderArchive => archive_open_folder(&source.into_file(), &object),
+            TransferKind::File | TransferKind::MediaHandoff => {
+                copy_open_regular(source.into_file(), &object)
+            }
+        };
+        self.hashed(written)
+    }
+
+    fn hashed(self, written: Result<(), String>) -> Result<WrittenStage, String> {
+        match written.and_then(|()| hash_file(&self.object)) {
+            Ok((total_bytes, content_hash)) => Ok(WrittenStage {
+                reserved: self,
+                total_bytes,
+                content_hash,
+            }),
+            Err(error) => {
+                let _ = fs::remove_file(&self.object);
+                Err(error)
+            }
+        }
+    }
 }
 
 impl NearbyTransferStore {
@@ -535,17 +703,8 @@ impl NearbyTransferStore {
         now_unix_ms: u64,
         id: [u8; 16],
     ) -> Result<OutboxEntry, String> {
-        let name = portable_name(source)?;
-        self.stage_path(
-            source,
-            Staging {
-                id,
-                name,
-                target,
-                now_unix_ms,
-                media: false,
-            },
-        )
+        let staging = Staging::for_path(source, target, now_unix_ms, id)?;
+        self.stage_path(source, staging)
     }
 
     /// Stage the regular file behind a media handoff under a caller-issued
@@ -562,52 +721,65 @@ impl NearbyTransferStore {
         now_unix_ms: u64,
         id: [u8; 16],
     ) -> Result<OutboxEntry, String> {
-        self.stage_path(
-            source,
-            Staging {
-                id,
-                name,
-                target,
-                now_unix_ms,
-                media: true,
-            },
-        )
+        let staging = Staging::for_media(name, target, now_unix_ms, id)?;
+        self.stage_path(source, staging)
     }
 
     fn stage_path(&mut self, source: &Path, staging: Staging) -> Result<OutboxEntry, String> {
-        let Staging {
-            id,
-            name,
-            target,
-            now_unix_ms,
-            media,
-        } = staging;
-        if !super::device_fabric::valid_nearby_file_name(&name) {
-            return Err(crate::shell::i18n::t("nearby-error-name-not-portable"));
-        }
-        let object = self.reserve_object(id)?;
-        let metadata = fs::symlink_metadata(source).map_err(display)?;
-        let staged = if metadata.file_type().is_file() {
-            self.admit_regular(metadata.len())?;
-            let kind = if media {
-                TransferKind::MediaHandoff
-            } else {
-                TransferKind::File
-            };
-            copy_regular(source, &object).map(|()| kind)
-        } else if media {
-            return Err(crate::shell::i18n::t("nearby-error-not-regular"));
-        } else if metadata.file_type().is_dir() {
-            archive_folder(source, &object).map(|()| TransferKind::FolderArchive)
-        } else {
-            return Err("nearby transfer source must be a regular file or folder".into());
+        let shape = StageShape::of_path(source)?;
+        let written = self.reserve_stage(staging, shape)?.write_path(source)?;
+        self.record_stage(written)
+    }
+
+    /// Admit an outgoing object of `shape` and reserve its object path. The
+    /// caller writes it ([`ReservedStage::write_path`],
+    /// [`ReservedStage::write_secure`]) without holding the store, then
+    /// records it with [`Self::record_stage`].
+    ///
+    /// # Errors
+    /// Returns an error for an in-use ID, a source that is not a regular file
+    /// (or, outside a media handoff, a folder), or quota or free-space
+    /// exhaustion.
+    pub(crate) fn reserve_stage(
+        &self,
+        staging: Staging,
+        shape: StageShape,
+    ) -> Result<ReservedStage, String> {
+        let object = self.reserve_object(staging.id)?;
+        let kind = match shape {
+            StageShape::Regular(len) => {
+                self.admit_regular(len)?;
+                if staging.media {
+                    TransferKind::MediaHandoff
+                } else {
+                    TransferKind::File
+                }
+            }
+            _ if staging.media => return Err(crate::shell::i18n::t("nearby-error-not-regular")),
+            StageShape::Folder => TransferKind::FolderArchive,
+            StageShape::Other => {
+                return Err("nearby transfer source must be a regular file or folder".into());
+            }
         };
-        let staged = staged
-            .and_then(|kind| self.record_outgoing(&object, kind, id, target, name, now_unix_ms));
-        if staged.is_err() {
+        Ok(ReservedStage {
+            staging,
+            kind,
+            object,
+        })
+    }
+
+    /// Record a written object in the outbox, or remove it.
+    ///
+    /// # Errors
+    /// Returns an error when the object no longer fits the queue or cannot
+    /// be persisted; the object is then removed.
+    pub(crate) fn record_stage(&mut self, written: WrittenStage) -> Result<OutboxEntry, String> {
+        let object = written.reserved.object.clone();
+        let recorded = self.record_outgoing(written);
+        if recorded.is_err() {
             let _ = fs::remove_file(&object);
         }
-        staged
+        recorded
     }
 
     /// Stage from an already-open Files grant capability. No app-controlled
@@ -623,23 +795,10 @@ impl NearbyTransferStore {
         now_unix_ms: u64,
         id: [u8; 16],
     ) -> Result<OutboxEntry, String> {
-        let object = self.reserve_object(id)?;
-        let metadata = source.metadata()?;
-        let name = source.name().to_string();
-        let staged = if metadata.is_file() {
-            self.admit_regular(metadata.len())?;
-            copy_open_regular(source.into_file(), &object).map(|()| TransferKind::File)
-        } else if metadata.is_dir() {
-            archive_open_folder(&source.into_file(), &object).map(|()| TransferKind::FolderArchive)
-        } else {
-            return Err("nearby transfer source must be a regular file or folder".into());
-        };
-        let staged = staged
-            .and_then(|kind| self.record_outgoing(&object, kind, id, target, name, now_unix_ms));
-        if staged.is_err() {
-            let _ = fs::remove_file(&object);
-        }
-        staged
+        let shape = StageShape::of_secure(&source)?;
+        let staging = Staging::for_secure(&source, target, now_unix_ms, id);
+        let written = self.reserve_stage(staging, shape)?.write_secure(source)?;
+        self.record_stage(written)
     }
 
     /// The object path for a new outgoing transfer, once the queue has room
@@ -667,18 +826,26 @@ impl NearbyTransferStore {
         self.ensure_free_space(len)
     }
 
-    /// Hashes a staged object and records it in the outbox. The caller
-    /// removes the object when this fails.
-    fn record_outgoing(
-        &mut self,
-        object: &Path,
-        kind: TransferKind,
-        id: [u8; 16],
-        target: String,
-        name: String,
-        now_unix_ms: u64,
-    ) -> Result<OutboxEntry, String> {
-        let (total_bytes, content_hash) = hash_file(object)?;
+    /// Records a written, hashed object in the outbox. The caller removes
+    /// the object when this fails.
+    fn record_outgoing(&mut self, written: WrittenStage) -> Result<OutboxEntry, String> {
+        let WrittenStage {
+            reserved:
+                ReservedStage {
+                    staging:
+                        Staging {
+                            id,
+                            name,
+                            target,
+                            now_unix_ms,
+                            ..
+                        },
+                    kind,
+                    ..
+                },
+            total_bytes,
+            content_hash,
+        } = written;
         if total_bytes == 0 || total_bytes > MAX_TRANSFER_BYTES {
             return Err(crate::shell::i18n::t("nearby-error-too-large"));
         }

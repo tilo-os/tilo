@@ -375,7 +375,7 @@ pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<Chat>> {
             Chat::STREAM_OUTPUT.with(chat::StreamOutput {
                 channel: Id::from_raw("c_crit"),
                 reply: "shot_agent_stream".into(),
-                name: Some("Claude".into()),
+                name: Some(crate::i18n::t("chat-model-author")),
                 event: serde_json::to_value(AgentStreamEvent {
                     run: "shot_run".into(),
                     sequence: index as u64 + 1,

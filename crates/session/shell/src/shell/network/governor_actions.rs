@@ -3,7 +3,7 @@
 //! device says there. The governor decides; this side only asks and waits.
 use super::{NetCmd, ShellNetwork, room_topic_id};
 use crate::network::actor::governor_lane::Request;
-use crate::shell::state::RoomId;
+use crate::shell::{native_workspace_owner::NativeWorkspaceOwner, state::RoomId};
 use tilo_actions::remote::Pending;
 use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, ExactActionRoute};
 use tokio::sync::mpsc;
@@ -283,8 +283,16 @@ impl ShellNetwork {
     }
 
     fn governor_route(&self, room: RoomId) -> Result<GovernorRoute, String> {
-        let owner = self.native_owner()?;
-        self.check_native_custody(&owner, room)?;
+        self.governor_route_of(&self.native_owner()?, room)
+    }
+
+    /// [`Self::governor_route`] as `owner`, already open, admits it.
+    fn governor_route_of(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+    ) -> Result<GovernorRoute, String> {
+        self.check_native_custody(owner, room)?;
         let room_uuid = uuid::Uuid::parse_str(&room.to_string()).map_err(|e| e.to_string())?;
         owner.with_current(room, |view| {
             Ok(GovernorRoute {
@@ -302,6 +310,13 @@ impl ShellNetwork {
     /// and records are created by that governor.
     pub(crate) fn governed_elsewhere(&self, room: RoomId) -> bool {
         self.governor_route(room)
+            .is_ok_and(|route| route.elsewhere())
+    }
+
+    /// [`Self::governed_elsewhere`] as `owner`, already open, admits it:
+    /// for the frame loop, which never opens one.
+    pub(crate) fn governed_elsewhere_by(&self, owner: &NativeWorkspaceOwner, room: RoomId) -> bool {
+        self.governor_route_of(owner, room)
             .is_ok_and(|route| route.elsewhere())
     }
 
@@ -371,14 +386,14 @@ impl ShellNetwork {
         answer
     }
 
-    /// This device's key for `room`, once its custody is current: what
-    /// signs proposals and decisions made there.
-    pub(crate) fn native_signing_key(
+    /// This device's key for `room`, once its custody as `owner` admits it
+    /// is current: what signs proposals and decisions made there.
+    pub(crate) fn native_signing_key_of(
         &self,
+        owner: &NativeWorkspaceOwner,
         room: RoomId,
     ) -> Result<ed25519_dalek::SigningKey, String> {
-        let owner = self.native_owner()?;
-        self.check_native_custody(&owner, room)?;
+        self.check_native_custody(owner, room)?;
         self.host_identity
             .as_ref()
             .map(|identity| identity.device_signing_key.clone())

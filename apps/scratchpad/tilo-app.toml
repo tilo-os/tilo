@@ -18,6 +18,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["files.paths", "app-files"]
 
+[resources]
+kinds = ["scratchpad.note"]
+
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

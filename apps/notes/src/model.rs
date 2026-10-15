@@ -5,11 +5,11 @@
 //! Page and tag ids are the UUIDs their items are stored under, so a link,
 //! a route and a search hit name a note the same way every replica does.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_document::{ChangeCursor, RichTextState};
-use ui::tilo_resource::Bytes;
+use ui::tilo_resource::{Bytes, Map};
 use uuid::Uuid;
 
 use crate::notebook::{Notebook, page_of};
@@ -62,7 +62,7 @@ pub struct WorkspaceData {
 pub struct Workspace {
     pub data: WorkspaceData,
     /// The pictures the notes show, by the digest their bodies name them by.
-    pub images: Rc<BTreeMap<String, Bytes>>,
+    pub images: Map<Bytes>,
     /// What every note says.
     pub bodies: std::sync::Arc<crate::actions::Bodies>,
     /// Where each note's body history stood when `bodies` read it; `None`
@@ -139,11 +139,8 @@ impl Workspace {
         tag_assignments.sort_by_key(|edge| (edge.page, edge.tag));
         tag_assignments.dedup();
         let (bodies, body_cursors, changed) = project_bodies(notebook, &pages, previous);
-        let images = if *previous.images == notebook.images {
-            Rc::clone(&previous.images)
-        } else {
-            Rc::new(notebook.images.clone())
-        };
+        // A pointer per few dozen pictures: the copy shares the notebook's.
+        let images = notebook.images.clone();
         Self {
             data: WorkspaceData {
                 pages,

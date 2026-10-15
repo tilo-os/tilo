@@ -66,10 +66,6 @@ mod imp {
 /// deadlines.
 #[must_use]
 #[inline]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the one sanctioned monotonic clock read"
-)]
 pub fn now() -> Instant {
     #[cfg(any(test, feature = "test-support"))]
     if let Some(at) = testing::monotonic_override() {
@@ -158,10 +154,6 @@ fn frozen_ms() -> u64 {
 /// After [`freeze_wall`] it is that instant, every time.
 #[must_use]
 #[inline]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the one sanctioned wall-clock read"
-)]
 pub fn wall() -> SystemTime {
     match frozen_ms() {
         0 => SystemTime::now(),
@@ -251,6 +243,12 @@ pub fn unix_now_ns() -> u64 {
 /// precedes it.
 pub fn unix_now_i64() -> i64 {
     i64::try_from(unix_now()).unwrap_or(i64::MAX)
+}
+
+/// Milliseconds since the Unix epoch as a signed timestamp; `0` if the clock
+/// precedes it.
+pub fn unix_now_ms_i64() -> i64 {
+    i64::try_from(unix_now_ms()).unwrap_or(i64::MAX)
 }
 
 /// An injectable millisecond time source.

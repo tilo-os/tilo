@@ -722,6 +722,57 @@ impl DrainQueues {
     }
 }
 
+/// Give `service` its call factory, which needs the native owner. The broker
+/// is built on the compositor's loop, which must not wait for the owner's
+/// open, so a factory for an owner still opening is installed from a thread
+/// of its own once the open ends. Until then a call is refused as
+/// unavailable, never placed against a guessed owner.
+fn install_native_media_factory(
+    network: &Arc<ShellNetwork>,
+    service: &super::native_media::NativeMediaService,
+) {
+    fn install(
+        network: &ShellNetwork,
+        service: &super::native_media::NativeMediaService,
+        owner: Result<crate::shell::native_workspace_owner::NativeWorkspaceOwner, String>,
+    ) {
+        let factory = owner.and_then(|owner| {
+            network.runtime_handle().map(|runtime| {
+                crate::network::native_media::Factory::new(
+                    network.cmd_tx.clone(),
+                    owner,
+                    service.capture_broker(),
+                    runtime,
+                )
+            })
+        });
+        match factory {
+            Ok(factory) => {
+                service.install_factory(Arc::new(factory));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "native media factory prerequisites unavailable");
+            }
+        }
+    }
+    match network.native_owner_status() {
+        crate::shell::network::NativeOwnerStatus::Open(owner) => {
+            install(network, service, Ok(owner));
+        }
+        crate::shell::network::NativeOwnerStatus::Opening
+        | crate::shell::network::NativeOwnerStatus::Unavailable => {
+            let network = Arc::clone(network);
+            let service = service.clone();
+            let spawned = std::thread::Builder::new()
+                .name("native-media-factory".into())
+                .spawn(move || install(&network, &service, network.native_owner()));
+            if let Err(error) = spawned {
+                tracing::warn!(%error, "cannot wait for the native owner to install native media");
+            }
+        }
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one ordered broker assembly: vaults, services, media, authority, then network attachment"
@@ -872,24 +923,7 @@ fn spawn_inner(
     });
     if let Some(service) = native_media.as_ref() {
         if let Some(network) = peer_sync {
-            let installed = network.native_owner().and_then(|owner| {
-                network.runtime_handle().map(|runtime| {
-                    crate::network::native_media::Factory::new(
-                        network.cmd_tx.clone(),
-                        owner,
-                        service.capture_broker(),
-                        runtime,
-                    )
-                })
-            });
-            match installed {
-                Ok(factory) => {
-                    service.install_factory(Arc::new(factory));
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "native media factory prerequisites unavailable");
-                }
-            }
+            install_native_media_factory(network, service);
         }
         services.native_media = Some(Arc::new(service.clone()));
     }

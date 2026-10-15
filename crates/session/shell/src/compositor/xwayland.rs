@@ -1131,6 +1131,18 @@ fn has_pending_connection(listener: &UnixListener) -> bool {
     ready > 0 && descriptor.revents & libc::POLLIN != 0
 }
 
+/// Write a fresh authority file for `display` and return its cookie.
+///
+/// This runs under the display registry lock that the compositor loop takes
+/// every tick, often on the loop thread itself, so it must not wait for the
+/// disk. It deliberately does not fsync: the file is valid only while this
+/// session's X server lives, and it sits in the login's runtime directory
+/// (`$XDG_RUNTIME_DIR`, a tmpfs). Readers see it through the page cache as
+/// soon as the write returns, and after a crash it is regenerated with a new
+/// cookie, so durability buys nothing while an fsync under I/O or memory
+/// pressure has frozen the desktop for seconds. Privacy does not depend on
+/// it either: the file is created exclusively with mode 0600 inside a 0700
+/// directory, and no client learns the path before `bind` returns.
 fn write_xauthority(path: &Path, display: u16) -> Result<[u8; 16], String> {
     let cookie = crate::random::bytes::<16>();
     let mut contents = Vec::with_capacity(64);
@@ -1146,7 +1158,6 @@ fn write_xauthority(path: &Path, display: u16) -> Result<[u8; 16], String> {
         .open(path)
         .map_err(|error| format!("creating Xauthority: {error}"))?;
     file.write_all(&contents)
-        .and_then(|()| file.sync_all())
         .map_err(|error| format!("writing Xauthority: {error}"))?;
     Ok(cookie)
 }
@@ -2123,6 +2134,45 @@ mod tests {
                     .any(|window| window == b"MIT-MAGIC-COOKIE-1")
             );
         }
+    }
+
+    /// The compositor loop binds a workspace's X display through
+    /// `session_for`, which writes the display's authority file, and its
+    /// supervisor gives the composing input method every cookie. Nothing on
+    /// those paths may wait for the disk: under I/O or memory pressure an
+    /// fsync there froze input and presentation for seconds.
+    #[test]
+    fn binding_a_display_never_waits_for_the_disk() {
+        // The shared guard proves its filter is in force before the body runs.
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            let mut fixture = fixture();
+            let (session, fresh) = fixture
+                .displays
+                .session_for("room-a")
+                .expect("binding a display must not sync to disk");
+            assert!(fresh);
+            let display = &fixture.displays.workspaces["room-a"];
+            assert_eq!(session.authority, display.authority);
+            let metadata = fs::metadata(&session.authority).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            let runtime = fs::metadata(&fixture.displays.paths.runtime).unwrap();
+            assert_eq!(runtime.permissions().mode() & 0o777, 0o700);
+            let bytes = fs::read(&session.authority).unwrap();
+            assert!(
+                bytes.ends_with(&display.cookie),
+                "the file carries the cookie"
+            );
+
+            let composer = fixture.displays.paths.runtime.join("composer-Xauthority");
+            super::super::xwayland_composer::write_composer_authority(
+                &composer,
+                std::slice::from_ref(&display.authority),
+            )
+            .expect("installing the composer's authority must not sync to disk");
+            let metadata = fs::metadata(&composer).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            assert_eq!(fs::read(&composer).unwrap(), bytes);
+        });
     }
 
     #[test]

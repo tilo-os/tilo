@@ -200,6 +200,29 @@ impl LiveGrants {
             .map(|grant| grant.device)
     }
 
+    /// Per workspace, the browser sessions holding a grant to its live plane
+    /// that is current: unexpired and, when last observed, permitted. Each
+    /// session once, however many grants (its agents') it holds.
+    pub(crate) fn viewers(&self) -> HashMap<u64, Vec<[u8; 32]>> {
+        let now = Instant::now();
+        let mut viewers = HashMap::<u64, Vec<[u8; 32]>>::new();
+        let grants = self
+            .grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for grant in grants.values() {
+            if grant.expires <= now || !grant.permitted.load(Ordering::Acquire) {
+                continue;
+            }
+            let sessions = viewers.entry(grant.workspace_id).or_default();
+            if !sessions.contains(&grant.session) {
+                sessions.push(grant.session);
+            }
+        }
+        drop(grants);
+        viewers
+    }
+
     /// Observe every grant once.
     ///
     /// The relay's room registry is read once, and each room is locked once
@@ -268,10 +291,6 @@ impl LiveGrants {
 /// Whether `peer` may be in `workspace_id`'s live plane now: its
 /// certificate current relay-wide and admitted by the room, see
 /// [`room_access::decide`].
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the guard only lives for the lookup; the value kept is a clone"
-)]
 pub(crate) async fn admitted(
     sessions: &Sessions,
     peer: &AuthenticatedPeer,

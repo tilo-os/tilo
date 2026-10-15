@@ -21,8 +21,8 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::agent_policy;
-use tilo_relay_protocol::delegation::{Delegate, Delegation};
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_join::delegation::{Delegate, Delegation};
 
 use super::{GovernedIdentity, Role, SigningKey, StatePeer, SystemTime, err, now_ns, room};
 
@@ -91,7 +91,7 @@ impl GovernedDelegateRow {
         delegation
             .verify(&cert.user_public_key, now_ns)
             .map_err(|_| DelegateInactive::Delegation)?;
-        let workspace = tilo_relay_protocol::room_workspace_id(room)
+        let workspace = tilo_workspace_join::room_workspace_id(room)
             .map_err(|_| DelegateInactive::OtherRoom)?;
         if !delegation.permits_workspace(workspace) {
             return Err(DelegateInactive::OtherRoom);

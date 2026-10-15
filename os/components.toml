@@ -559,6 +559,35 @@ files = [
   { from = "tilo-staging-reclaim", to = "/usr/libexec/tilo-staging-reclaim", mode = "0755" },
 ]
 
+# The live installer's privileged helpers. tilo-staging-handoff.service runs
+# the USB-free installation guard before greetd; the installer backend
+# (tilo-install) runs the rest: the signed offline target's verification and
+# import, the setup handoff copy, a dev self-install's owner SSH keys and, in
+# a VM, the bootc export cache and the install proof. The installer image
+# inherits them from here; a swap takes effect at the next install.
+[[component]]
+name = "install-helpers"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-install-helpers"]
+bins = [
+  "tilo-install-handoff-copy",
+  "tilo-install-dev-ssh",
+  "tilo-vm-bootc-copy-cache",
+  "tilo-installer-offline-target",
+  "tilo-staging-handoff",
+  "tilo-vm-install-proof",
+]
+layer = "recovery-files"
+files = [
+  { from = "tilo-install-handoff-copy", to = "/usr/libexec/tilo-install-handoff-copy", mode = "0755" },
+  { from = "tilo-install-dev-ssh", to = "/usr/libexec/tilo-install-dev-ssh", mode = "0755" },
+  { from = "tilo-vm-bootc-copy-cache", to = "/usr/libexec/tilo-vm-bootc-copy-cache", mode = "0755" },
+  { from = "tilo-installer-offline-target", to = "/usr/libexec/tilo-installer-offline-target", mode = "0755" },
+  { from = "tilo-staging-handoff", to = "/usr/libexec/tilo-staging-handoff", mode = "0755" },
+  { from = "tilo-vm-install-proof", to = "/usr/libexec/tilo-vm-install-proof", mode = "0755" },
+]
+
 # Downloaded, Tilo-signed system extensions: tilo-extension-activate.service at
 # boot, tilo-extension@VERB:ID.service on demand, the refresh timer and the
 # NetworkManager hook all start it; a swap takes effect at its next start.

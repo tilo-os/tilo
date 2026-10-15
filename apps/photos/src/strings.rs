@@ -139,7 +139,16 @@ mod tests {
     fn every_key_in_the_sources_is_in_the_bundle() {
         let sources = [
             include_str!("app.rs"),
+            include_str!("app/accessibility.rs"),
             include_str!("app/chrome.rs"),
+            include_str!("app/directory_import.rs"),
+            include_str!("app/editors.rs"),
+            include_str!("app/effects.rs"),
+            include_str!("app/jobs.rs"),
+            include_str!("app/navigation.rs"),
+            include_str!("app/paint.rs"),
+            include_str!("app/people.rs"),
+            include_str!("app/widget.rs"),
             include_str!("analysis.rs"),
             include_str!("import.rs"),
             include_str!("lib.rs"),

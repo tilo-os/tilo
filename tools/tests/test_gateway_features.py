@@ -29,7 +29,7 @@ class GatewayFeaturesTests(unittest.TestCase):
         for binary in manifest["bin"]:
             self.assertIn("server", binary["required-features"])
 
-    def test_shard_and_t_wrapper_execute_the_gateway_recipe_without_workspace_features(self):
+    def test_ci_and_t_wrapper_execute_the_gateway_recipe_without_workspace_features(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ci = root / "tools/ci"
@@ -50,6 +50,18 @@ class GatewayFeaturesTests(unittest.TestCase):
                     self.assertEqual(argv[8:], features.arguments([package]))
                     self.assertNotIn("--all-features", argv)
                     self.assertNotIn("--workspace", argv)
+            command = ["cargo", "nextest", "run", "--locked", "-p", "chat",
+                       "--package", "tilo-model-gateway", "-E", "all()"]
+            result = subprocess.run(
+                ["bash", str(ci / "t-nextest.sh"), *command],
+                capture_output=True, text=True, check=True)
+            self.assertEqual(json.loads(result.stdout),
+                             command + features.arguments(["chat", "tilo-model-gateway"]))
+            command = ["cargo", "check", "--locked", "-p", "tilo-model-gateway"]
+            result = subprocess.run(
+                ["bash", str(ci / "t-nextest.sh"), *command],
+                capture_output=True, text=True, check=True)
+            self.assertEqual(json.loads(result.stdout), command)
         workflow = (ROOT / ".forgejo/workflows/check.yml").read_text()
         self.assertIn("bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests "
                       "${{ matrix.test_packages }}", workflow)
@@ -59,6 +71,13 @@ class GatewayFeaturesTests(unittest.TestCase):
         test = next(family for family in config["cargo"] if family["name"] == "test")
         self.assertEqual(test["wrapper"], ["bash", "tools/ci/t-nextest.sh"])
         self.assertIn("tools/ci/package_features.py", test["inputs"])
+
+    def test_os_release_builds_full_gateway_and_stages_http_binary(self):
+        containerfile = (ROOT / "os/Containerfile").read_text()
+        self.assertIn("--features tilo-model-gateway/local-models,"
+                      "tilo-model-gateway/host-backend", containerfile)
+        self.assertIn("--bin tilo-model-gateway --bin tilo-model-http", containerfile)
+        self.assertIn("target/release/tilo-model-http", containerfile)
 
 
 if __name__ == "__main__":

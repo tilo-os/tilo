@@ -53,6 +53,7 @@
  */
 import {AdmissionError} from './admission.mjs';
 import {connectPeer, fitDisplayName, httpsPost, identityProfile, joinWorkspace, NOT_REJOINED, pairDevice} from './peer.mjs';
+import {memberText} from './json-text.mjs';
 
 const MEMBERSHIPS = 'tilo-host-memberships';
 const ADJECTIVES = ['Brave', 'Calm', 'Clever', 'Curious', 'Eager', 'Gentle', 'Happy', 'Jolly', 'Kind', 'Lively', 'Lucky', 'Merry', 'Nimble', 'Quiet', 'Swift', 'Witty'];
@@ -464,13 +465,13 @@ export async function spectate({
     workspace, path: 'spectate', fetch, body: {devicePublicKey: hex(custody.publicKey)},
   });
   runtime ??= await loadRuntime();
-  const {hostCert} = JSON.parse(await runtime.hostInfo(httpsPost(origin, fetch)));
-  // The certificate arrives as JSON text and is passed on as such: its
+  const hostText = await runtime.hostInfo(httpsPost(origin, fetch));
+  // Both certificates are passed on as the JSON text they arrived as: their
   // nanosecond timestamps exceed what a JavaScript number holds exactly, and
-  // a rounded copy no longer matches its signature.
+  // a rounded copy no longer matches its signature (json-text.mjs).
   return connect({
     ...connectOptions, origin, room, runtime, custody, store: memoryStore(), fetch,
     userPublicKey: hex(JSON.parse(certificate).user_public_key), label: 'Spectator', watching: true,
-    deviceCertificate: `{"cert":${certificate},"hostCert":${JSON.stringify(hostCert)}}`,
+    deviceCertificate: `{"cert":${certificate},"hostCert":${memberText(hostText, 'hostCert')}}`,
   });
 }

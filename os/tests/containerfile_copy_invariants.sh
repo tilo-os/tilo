@@ -203,7 +203,17 @@ containerfile="$repo/os/Containerfile"
 # the staging-reclaim component (one new row): it used to reach only the
 # installer image, from the installer's overlay of os/usr, and the installer
 # and the targets it installs now inherit it.
-expected_contract=4ff4b32cc912e6b618758eb82dbe3e35bf9d0e2036adf50c9fd184ebb8777890
+# The installer backend's handoff copy, dev SSH and VM export cache helpers are
+# now compiled. The base image carries them from the install-helpers component
+# (three new rows): they used to reach only the installer image, from the
+# installer's overlay of os/usr, and the installer now inherits them.
+# The signed offline target's verifier and the USB-free installation guard
+# (tilo-staging-handoff) are now compiled too: two more install-helpers rows,
+# from the base image instead of the installer's overlay of os/usr.
+# The VM install proof emitter is compiled too (one more install-helpers row).
+# The gateway's HTTP adapter is installed alongside the socket daemon at
+# /usr/bin/tilo-model-http (one new model-gateway component row).
+expected_contract=75a1dd16deb96592fd4c96b48c9aa86fa9c9094885a778ac5fe00970ee14ad44
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

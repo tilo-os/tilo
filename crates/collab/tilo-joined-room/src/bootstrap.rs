@@ -7,9 +7,10 @@ use std::{
 use tilo_delivery_protocol::{
     auth::Carrier,
     bootstrap,
-    descriptor::{self, DescriptorAuthority, VerifiedDescriptor},
+    descriptor::{self, CommittedWorkspace, DescriptorAuthority, VerifiedDescriptor},
 };
 use tilo_peer_state::join::TransportHint;
+use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 /// One actual owner and continuity retain the exact typed request across HTTP.
 pub struct NativeBootstrap {
@@ -31,10 +32,41 @@ impl NativeBootstrap {
         self.descriptor.origin()
     }
 }
+/// Only the committed view, read under the owner's guard, answers for the
+/// governed workspace a delivery descriptor is checked against.
+impl CommittedWorkspace for NativeCommittedView {
+    fn authority(&self) -> &DeviceCert {
+        self.peer.authority()
+    }
+    fn room(&self) -> &str {
+        self.peer.room()
+    }
+    fn governance_owner(&self) -> Option<String> {
+        self.peer
+            .admitted_room()
+            .and_then(|room| tilo_peer_state::room::governance_of(Some(room)).owner)
+    }
+    fn revocations(&self) -> Vec<RevocationEntry> {
+        self.peer.revocations()
+    }
+    fn has_certificate(&self, device: &DeviceCert) -> bool {
+        self.peer.certificates().contains(device)
+    }
+    fn is_member_device(&self, device: &[u8; 32], now: SystemTime) -> Result<bool, String> {
+        Ok(self
+            .peer
+            .governed_access(now)?
+            .member_devices
+            .contains(device))
+    }
+    fn has_permissions(&self, device: [u8; 32], now: SystemTime) -> bool {
+        self.peer.permissions(device, now).is_ok()
+    }
+}
 impl NativeCommittedView {
     fn descriptor_authority(&self, now: SystemTime) -> Result<DescriptorAuthority<'_>, String> {
         Ok(DescriptorAuthority {
-            peer: &self.peer,
+            peer: self,
             pinned_governor: self.governor(),
             pinned_host: self
                 .host()

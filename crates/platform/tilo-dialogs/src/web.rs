@@ -104,6 +104,10 @@ impl crate::FilePicker for PageFiles {
                 .iter()
                 .flat_map(|f| f.mimetypes().iter().map(String::as_str)),
         );
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "JavaScript numbers carry byte limits exactly up to 2^53"
+        )]
         let limit = request.contents_byte_limit().map(|limit| limit as f64);
         let promise = match pick_files(&accept, request.is_multiple(), limit) {
             Ok(promise) => promise,

@@ -416,6 +416,13 @@ export async function startEntryPage({mode}) {
   const notes = {open: opening, draw: drawing};
   const arrive = step => {
     if (root.arrival === 'done' && step !== 'stopped') return;
+    // The GPU is set up once the host let the page in, while the page
+    // opens the workspace. A page that is refused (or left before it got
+    // in) compiles nothing: the browser does not cancel a torn-down page's
+    // pipeline compiles, and the next page's queue behind them on the same
+    // compile threads. Under a software rasteriser that is a minute of CPU
+    // and held the next page's first frame past 45 s.
+    if (step === 'open' && root.arrival !== 'open') prepareGpu();
     root.arrival = step;
     if (notes[step] && [loading, opening, drawing].includes(status.textContent)) status.textContent = notes[step];
   };
@@ -470,6 +477,9 @@ export async function startEntryPage({mode}) {
       }
       if (!state.phase) return;
       root.phase = state.phase;
+      // What graphics start-up waits on while the first frame is late
+      // (device, pipelines, surface, first-frame), for tests and tools.
+      if (state.gpuStep) root.gpuStep = state.gpuStep;
       if (state.phase === 'presented') arrive('done');
       else if (state.phase === 'gpu-pending') arrive('draw');
       else if (['failed', 'crashed'].includes(state.phase)) arrive('stopped');
@@ -604,8 +614,6 @@ export async function startEntryPage({mode}) {
     rendererCard(unavailable);
     return;
   }
-  // The GPU is set up while the page joins and opens the workspace.
-  prepareGpu();
   try {
     const page = await boot({mode, surface, status, deps, diagnostics, onStep: arrive});
     if (!page) return;

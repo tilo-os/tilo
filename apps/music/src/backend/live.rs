@@ -687,10 +687,6 @@ mod bounded_transport_tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn live_transport_is_bounded_utf8_safe_and_signature_capable() {
         // Phase `native_quickjs_bindings_execute_stream_signature_operations`.
         #[cfg(all(windows, target_arch = "aarch64"))]

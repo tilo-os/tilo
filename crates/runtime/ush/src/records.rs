@@ -220,7 +220,7 @@ impl Records {
             .map_err(|e| RecordError::Store(e.to_string()))?
             .ok_or_else(|| RecordError::Missing(key.to_owned()))?;
         let mut replica = Replica::<Environment>::from_doc(doc).as_author(AUTHOR);
-        replica.set_now_ms(now_ms());
+        replica.set_now_ms(tilo_clock::unix_now_ms_i64());
         // The person asked for this at the shell: that is the confirmation.
         replica
             .apply_confirmed(invoke)
@@ -240,10 +240,6 @@ fn check_key(key: &str) -> Result<(), RecordError> {
     } else {
         Err(RecordError::BadKey(key.to_owned()))
     }
-}
-
-fn now_ms() -> i64 {
-    i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source import is_test_file, line_number  # noqa: E402
+from rust_source import is_test_file, line_number, production_source, skip_string  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,66 +54,6 @@ class Violation:
             "literal; write through a settings_store::Key or SectionWrite, or the "
             "schema's section constant"
         )
-
-
-TEST_ITEM = re.compile(r"#\[(?:cfg\((?:all\()?test\b[^\]]*|test)\]")
-
-
-def blank(text: str, start: int, end: int) -> str:
-    """Replace ``text[start:end]`` with spaces, keeping its newlines."""
-    return text[:start] + re.sub(r"[^\n]", " ", text[start:end]) + text[end:]
-
-
-def item_end(text: str, start: int) -> int:
-    """End of the item starting at ``start``: its ``;`` or its matching ``}``."""
-    depth = 0
-    index = start
-    while index < len(text):
-        char = text[index]
-        if char == '"':
-            index = skip_string(text, index)
-            continue
-        if char == ";" and depth == 0:
-            return index + 1
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return index + 1
-        index += 1
-    return len(text)
-
-
-def production_source(text: str) -> str:
-    """Blank test items (``#[cfg(test)]`` and ``#[test]``) and full-line comments.
-
-    Everything is blanked rather than removed so line numbers stay accurate.
-    """
-    text = re.sub(r"(?m)^[ \t]*//.*$", "", text)
-    while True:
-        marker = TEST_ITEM.search(text)
-        if not marker:
-            return text
-        text = blank(text, marker.start(), item_end(text, marker.end()))
-
-
-def skip_string(text: str, start: int) -> int:
-    """Index just past the string literal opening at ``start``."""
-    raw = re.match(r'b?r(#*)"', text[start:])
-    if raw:
-        closing = '"' + raw.group(1)
-        end = text.find(closing, start + raw.end())
-        return len(text) if end < 0 else end + len(closing)
-    index = text.index('"', start) + 1
-    while index < len(text):
-        if text[index] == "\\":
-            index += 2
-            continue
-        if text[index] == '"':
-            return index + 1
-        index += 1
-    return len(text)
 
 
 def arguments(text: str, open_paren: int) -> list[str]:

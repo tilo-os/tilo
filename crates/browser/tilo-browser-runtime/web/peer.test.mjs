@@ -198,6 +198,36 @@ test('first connect certifies over HTTPS once, shows the pairing code and keeps 
   assert.equal(runtime.peer.disposed, true);
 });
 
+// What a host on a clock with nanosecond resolution issues: 19 significant
+// digits, which a JS number does not hold (json-text.mjs).
+const NANOS = '1792023733547123457';
+const LINUX_CERT = `{"device_public_key":[221],"issued_at_ns":${NANOS},"expires_at_ns":${NANOS}9,"signature":[1]}`;
+
+test('a certificate reaches the session byte for byte, its nanosecond timestamps intact', async () => {
+  const runtime = fakeRuntime();
+  runtime.certifyDevice = async () => `{"cert":${LINUX_CERT},"hostCert":{"issued_at_ns":${NANOS}}}`;
+  const peer = await connect(options(runtime, memoryStore(), {displayName: 'Ada "A"'}));
+  assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
+  assert.ok(runtime.peer.configText.includes(`"hostCert":{"issued_at_ns":${NANOS}}`));
+  assert.equal(runtime.peer.config.displayName, 'Ada "A"');
+  await peer.dispose();
+});
+
+test('a guest certificate from an invitation reaches the session byte for byte', async () => {
+  const runtime = fakeRuntime();
+  runtime.askToJoin = async () => `{"reply":{"kind":"admitted","room":"${ROOM}","workspaceId":"7","name":"Acme","role":"Editor"},"cert":${LINUX_CERT}}`;
+  runtime.hostInfo = async () => `{"hostCert":{"issued_at_ns":${NANOS}},"webtransportPort":443,"certificateSha256":"${'ab'.repeat(32)}"}`;
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
+  const peer = await joinWorkspace({
+    origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, admissionToken: 'token',
+    runtime, custody, store: memoryStore(), storage: null,
+    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); },
+  });
+  assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
+  assert.ok(runtime.peer.configText.includes(`"hostCert":{"issued_at_ns":${NANOS}}`));
+  await peer.dispose();
+});
+
 test('a page holding the root certifies itself, with no pairing code, and renews a certificate about to expire', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
@@ -1106,6 +1136,36 @@ test('an old membership retry cannot replace a rejoined publishers presence subs
   }
 });
 
+
+test('each live grant tells the host what the page decodes; an agent\'s layer does not speak for the page', async () => {
+  const advertised = [];
+  const peerOf = () => ({
+    liveGrant: async () => JSON.stringify({token: '0102', room: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    legacyCodecs: async (room, codecs) => { advertised.push([room, JSON.parse(codecs)]); return true; },
+  });
+  const timers = [];
+  const settings = (carriers, pending = []) => ({
+    endpoint: 'test', carriers, decodable: async () => ['h264', 'vp9'],
+    setTimer: callback => { pending.push(callback); return pending.length; }, clearTimer() {},
+  });
+  const carriers = fakeCarriers();
+  const layer = createLiveLayer(peerOf(), fakeRuntime(), ROOM, settings(carriers, timers));
+  const agentCarriers = fakeCarriers();
+  const agent = createLiveLayer(peerOf(), fakeRuntime(), ROOM, {...settings(agentCarriers), agent: 'summarizer'});
+  try {
+    await until(() => advertised.length === 1, 'the codec advert');
+    assert.deepEqual(advertised, [[ROOM, ['h264', 'vp9']]]);
+    await until(() => agentCarriers.connects[0], 'the agent layer connected');
+    // The grant is renewed: the advert goes with the new one.
+    timers[0]();
+    await until(() => advertised.length === 2, 'the advert with the renewed grant');
+    await settle();
+    assert.equal(advertised.length, 2, 'the agent layer never advertised');
+  } finally {
+    layer.stop();
+    agent.stop();
+  }
+});
 
 test('resource hydration can be cancelled and leaving the peer refuses pending opens', async () => {
   const runtime = fakeRuntime();

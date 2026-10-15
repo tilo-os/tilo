@@ -286,7 +286,8 @@ the boot loader falls back to is still able to unseal.
 They also disagree about strictness, deliberately.
 `rollback_system_is_healthy` here requires `systemctl is-system-running` =
 `running`, because it gates **destroying** the fallback and refusing costs
-nothing. `tilo-boot-health` requires only that the session came up, because it
+nothing. `tilo-boot-health` requires only that the session came up (a greeter
+that presented a frame and held it without greetd restarting), because it
 gates **keeping the current generation**, and the same strictness there would
 fail every boot of every generation over one unrelated broken unit and walk the
 retention window down to nothing.
