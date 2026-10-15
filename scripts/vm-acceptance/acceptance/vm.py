@@ -76,10 +76,8 @@ class TiloVm:
         cmd = [self.binary, *args]
         started = time.monotonic()
         try:
-            # Logs cut to a byte width can end inside a character: decode
-            # them leniently rather than lose the whole check to one byte.
             proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
-                                  errors="replace", timeout=timeout, cwd=cwd)
+                                  timeout=timeout, cwd=cwd)
         except subprocess.TimeoutExpired as exc:
             self._log(cmd, None, time.monotonic() - started, "", str(exc))
             raise VmError(f"timed out after {timeout}s: {shlex.join(args)}") from exc
