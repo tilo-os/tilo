@@ -110,16 +110,18 @@ impl HostAdmission {
     }
 }
 
-/// Fresh-lineage stages written at once, process-wide: each holds a
-/// blocking thread through its barriers.
+/// Checkpoint stages written at once, process-wide: each holds a blocking
+/// thread through its barriers.
 const FRESH_STAGES: usize = 16;
 
 /// Stage `envelope` before its owner turn when it is a checkpoint that may
-/// start its lineage ([`crate::store::WorkspaceStore::stage_fresh_checkpoint`]).
-/// Every newcomer of a room retains such a checkpoint first, its identity
-/// record, and the owner commits one in a single barrier instead of three
-/// rounds of them. `None` when it is not one, or the stage failed: the turn
-/// then retains it as any checkpoint.
+/// start its lineage, or replace the whole of it
+/// ([`crate::store::WorkspaceStore::stage_fresh_checkpoint`]). Every
+/// newcomer of a room retains such a checkpoint first, its identity record,
+/// then its access requests and acknowledgements, each replacing its last;
+/// the owner commits one in a single barrier instead of three rounds of
+/// them. `None` when it is not one, or the stage failed: the turn then
+/// retains it as any checkpoint.
 async fn stage_fresh_checkpoint(
     store: &crate::store::WorkspaceStore,
     envelope: &Envelope,
@@ -146,8 +148,12 @@ async fn stage_fresh_checkpoint_inner(
         return None;
     };
     // Most checkpoints replace an earlier one of their lineage: one stat
-    // tells, before anything is encoded or leaves this task.
-    if store.lineage_has_generation(author_device_public_key, &channel) {
+    // tells, before anything is encoded or leaves this task. Of those, one
+    // that stands alone (a device's next access request, acknowledgement or
+    // certificate) replaces the whole of it, and is staged too.
+    if store.lineage_has_generation(author_device_public_key, &channel)
+        && !standalone_checkpoint(store, &channel, delta)
+    {
         return None;
     }
     let raw = crate::transport::encode(envelope).ok()?;
@@ -170,7 +176,25 @@ async fn stage_fresh_checkpoint_inner(
         .flatten()
 }
 
-/// A staged first checkpoint until its owner turn takes it. A stage no turn
+/// Whether `delta`, a checkpoint on `channel`, is the whole of its route
+/// ([`crate::payloads::Checkpoint::standalone`]).
+fn standalone_checkpoint(
+    store: &crate::store::WorkspaceStore,
+    channel: &[u8; 32],
+    delta: &[u8],
+) -> bool {
+    let Some(crate::coedit::CoeditPayload::Checkpoint { body, .. }) =
+        crate::coedit::CoeditPayload::decode(delta)
+    else {
+        return false;
+    };
+    store
+        .payloads()
+        .checkpoint(channel, &body)
+        .is_some_and(|checkpoint| checkpoint.standalone)
+}
+
+/// A staged checkpoint until its owner turn takes it. A stage no turn
 /// takes (the job failed or was refused before its turn) is discarded when
 /// this drops: its lineage may never commit, and nothing else would.
 struct UntakenStage(Option<crate::store::retained::FreshCheckpoint>);
