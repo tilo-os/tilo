@@ -118,9 +118,12 @@ into an application unless the request asks for that too. A remark is answered t
 - To attach, post or place a file, first invoke the operation that hands it over (its result \
 names `tilo.content:` content), then right after it the operation that takes content; that \
 parameter is filled in from the step before, so give only the others. One file per pair.
-- Sending, publishing and deleting for good need the person's own confirmation, which you \
-cannot give, so those operations are not listed for you. Prepare instead (save a draft, attach \
-its files) and say in your reply that it is ready for them to send.
+- Operations marked needs confirmation (sending, publishing, deleting for good, or anything \
+the person asked to review first) ask the person when you invoke them: your step waits while \
+they confirm, edit or decline it, and its result says which. Invoke one only when the request \
+asks for it, with complete arguments, since the person reviews exactly those; otherwise prepare \
+instead (save a draft, attach its files) and say it is ready. If they decline, do not retry \
+it; continue without it or end, and say so in your reply.
 - The conversation so far, with your own action log, is part of the request: answer \
 questions about what you did or said earlier from it. To undo or change your own earlier \
 work, find it in your action log (the text you wrote is in its arguments), re-read the \
@@ -690,10 +693,8 @@ impl Session {
                 (offer.broker_peer_id.is_some() || offer.broker_provider.is_some())
                     // The agent's own AI transforms are not task steps.
                     && !crate::transform::is_transform_kind(&offer.descriptor.resource_kind)
-                    && matches!(
-                        offer.descriptor.contract.confirmation,
-                        tilo_actions::ConfirmationPolicy::None
-                    )
+                    // An operation needing confirmation is offered too: the
+                    // step pauses until the person answers it.
                     // An operation its application marks deprecated names
                     // its replacement; offer only the replacement.
                     && !offer
@@ -1487,7 +1488,9 @@ impl Session {
         };
         if !matches!(confirmation, ConfirmationEvidence::None) {
             return Err(refused(
-                "an unattended task cannot satisfy an interactive confirmation".into(),
+                "never pass `confirm` or `confirmation_phrase`: invoke the operation without \
+                 them and the person is asked to confirm it"
+                    .into(),
             ));
         }
         let Some(offer) = surface::find(&catalogue.offers, &id).cloned() else {
