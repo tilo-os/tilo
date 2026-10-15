@@ -3964,6 +3964,7 @@ impl QuickFS {
                 ancestry.push((current_id, kind, parent));
                 cursor = parent_ino;
             }
+            drop(ns);
             ancestry
         };
         // From the workspace root down to the record itself.
