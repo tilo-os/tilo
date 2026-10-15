@@ -12,10 +12,10 @@
 //! Set `TILO_LOCK_SHOT_QUICK=1` for the portrait accessibility matrix,
 //! secondary-output composition, and animation phases only.
 
-use crate::support::offscreen::OffscreenRenderer;
 use shell::compositor::lock_screen::{
     LockOutput, LockView, draw_lock_scene, draw_lock_scene_at_time,
 };
+use ui::offscreen::OffscreenRenderer;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::peniko::Color;

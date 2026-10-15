@@ -20,8 +20,7 @@ use ui::TextRole;
 /// ux-bench cannot open on macOS, photographed straight from their paint
 /// paths instead. The same harness `overlay_host` uses for its fixtures.
 #[cfg(test)]
-#[path = "../../tests/support/offscreen.rs"]
-pub(crate) mod review_offscreen;
+pub(crate) use ui::offscreen as review_offscreen;
 
 use ui::text_render::{TextKind, TextRenderer, TextWeight};
 use ui::theme::Theme;

@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use crate::support::offscreen::OffscreenRenderer;
+use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient, Mix};

@@ -15,9 +15,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -28,13 +28,6 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::{
     AppKind, GroupRow, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth,
 };
-
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
-}
 
 fn make_group(id: u64, tabs: &[(u64, &str, AppKind)]) -> WindowGroup {
     let tabs: Vec<(TabDescriptor, TileContent)> = tabs
@@ -124,7 +117,7 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
     {
         fn group_row_visual_journey_distinguishes_all_states() {
             let (w, h) = (960u32, 220u32);
-            let Some(mut renderer) = try_new_renderer(w, h) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping group-row journey");
                 return;
             };
@@ -192,7 +185,7 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
     {
         fn group_row_fresh_render_is_deterministic() {
             let (w, h) = (600u32, 200u32);
-            let Some(mut renderer) = try_new_renderer(w, h) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
                 return;
             };
@@ -228,7 +221,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
     {
         fn group_row_maximized_paints_distinct_pixels_and_fades_siblings() {
             let (w, h) = (960u32, 220u32);
-            let Some(mut renderer) = try_new_renderer(w, h) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping maximize scene");
                 return;
             };
@@ -293,7 +286,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
 
             // Wide enough that all three 600px groups + gaps fit on-screen.
             let (w, h) = (1900u32, 220u32);
-            let Some(mut renderer) = try_new_renderer(w, h) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping reorder shot");
                 return;
             };
