@@ -29,14 +29,24 @@
 //   bound-invite   the same with an invitation the door issued for someone
 //                  else who has not used it yet: refused when redeemed,
 //                  nothing kept
-//   host-reset     the host is set up again (run.py --fresh: a new root, relay
+//   stale-link     the host is set up again (run.py --fresh: a new root, relay
 //                  and room) while the first person's browser keeps what it
-//                  had for the old one: the bare entry is refused, saying the
-//                  host changed, without a join, and the kept membership and
-//                  person stay (the browser's state is pinned to the old host
-//                  and is never handed to the new one)
-//   stale-link     the old room's link after the reset: refused the same way,
-//                  never opened as another room
+//                  had for the old one; the old room's link is refused without
+//                  a join and without offering to join again (that room is
+//                  gone), never opened as another room, the membership kept
+//   host-declined  the bare entry offers to join the new host again; "Not now"
+//                  is refused, saying the host was set up again, without a
+//                  join, and the kept membership and person stay
+//   host-reset     the same offer accepted ("Join again"): one join at the
+//                  door, the desktop presents, and the membership names the
+//                  new room as the same person
+//   host-reload    that tab reloaded: presents again with no new join
+//   kept-apart     what the browser kept for the old host is untouched (every
+//                  row of its namespace as before the reset), and the new
+//                  host's state lives in a namespace of its own, certified by
+//                  the new host: the old state was never reused or handed to it
+//   stale-rejoined the old room's link once joined again: refused without a
+//                  join, the new membership kept
 //
 // Every check runs and is reported (summary.json, summary.md under --out,
 // with each page's console and a screenshot of each failure); the run exits 1
@@ -58,6 +68,10 @@ import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUN_PY = join(HERE, 'run.py');
 const MEMBERSHIPS = 'tilo-host-memberships';
+/** Where a profile keeps its peer (peer.mjs): the namespace it starts in, and
+ * the localStorage map of the namespace each profile moved to since. */
+const PROFILE_DEVICE = 'tilo-browser-device';
+const PROFILE_DEVICES = 'tilo-profile-devices';
 const USAGE = 'usage: auth-e2e.mjs --bundle DIR --relay-bin PATH --room-service-bin PATH --out DIR '
   + '[--expect-revision SHA] [--allow-dev] [--timeout S]';
 /** The states an entry page settles in (`data-entry`, entry-page.mjs). */
@@ -93,6 +107,45 @@ export function membershipFor(memberships, origin) {
   let all;
   try { all = JSON.parse(memberships ?? '{}') ?? {}; } catch { return null; }
   return all[new URL(origin).origin] ?? null;
+}
+
+const hexKey = key => (typeof key === 'string' ? key : Array.from(key ?? [], byte => byte.toString(16).padStart(2, '0')).join(''));
+
+/**
+ * What a browser keeps in each namespace of one profile, from the rows
+ * `KEPT_ROWS` reads (`{device, key, digest, certificate}`): `{[device]:
+ * {rows, digest, hostDevice}}`, where `digest` changes with any row of the
+ * namespace and `hostDevice` (hex) names the host its certificate is from.
+ */
+export function keptNamespaces(rows) {
+  const namespaces = {};
+  const hashes = {};
+  for (const row of [...rows].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))) {
+    const kept = namespaces[row.device] ??= {rows: 0, digest: null, hostDevice: null};
+    (hashes[row.device] ??= createHash('sha256')).update(`${row.key}\u0000${row.digest}\u0000`);
+    kept.rows += 1;
+    if (row.certificate) {
+      try { kept.hostDevice = hexKey(JSON.parse(row.certificate).hostCert?.device_public_key) || null; } catch { /* Not a certificate. */ }
+    }
+  }
+  for (const [device, hash] of Object.entries(hashes)) namespaces[device].digest = hash.digest('hex');
+  return namespaces;
+}
+
+/**
+ * Whether a browser kept its state for a host set up again apart (`before`
+ * and `after` from `keptFor`): the namespace it used for the old host holds
+ * the old host's certificate and every row exactly as before, and the
+ * profile's peer moved to a namespace named after, and certified by, another
+ * host.
+ */
+export function keptApart(before, after) {
+  const old = before?.namespaces?.[before.current];
+  const oldNow = after?.namespaces?.[before?.current];
+  const fresh = after?.namespaces?.[after.current];
+  return Boolean(old?.rows && old.hostDevice && oldNow?.digest === old.digest && oldNow.hostDevice === old.hostDevice
+    && after.current !== before.current && fresh?.hostDevice && fresh.hostDevice !== old.hostDevice
+    && after.current === `${PROFILE_DEVICE}:${fresh.hostDevice}`);
 }
 
 /** The POST /join fetches among `requests` (`{url, method}`) to the door at `api`. */
@@ -217,6 +270,58 @@ async function settle(tab, {relay, timeout}) {
       unfinished: performance.getEntriesByType('resource').filter(r => !r.responseEnd).map(r => r.name).slice(0, 5)},
   }))()`);
 }
+
+// Every storage row a page of this origin keeps for `profile` (IndexedDB,
+// storage-inline.mjs), with a digest of its bytes and the text of the
+// profile's certificates; and the namespace each profile moved to.
+const KEPT_ROWS = profile => `(async () => {
+  const db = await new Promise((done, fail) => {
+    const request = indexedDB.open('tilo-browser-records-v1');
+    request.onupgradeneeded = () => request.transaction.abort();
+    request.onsuccess = () => done(request.result);
+    request.onerror = () => fail(request.error);
+  });
+  const hex = buffer => Array.from(new Uint8Array(buffer), byte => byte.toString(16).padStart(2, '0')).join('');
+  const rows = [];
+  try {
+    const all = await new Promise((done, fail) => {
+      const read = db.transaction('records', 'readonly').objectStore('records').getAll();
+      read.onsuccess = () => done(read.result);
+      read.onerror = () => fail(read.error);
+    });
+    for (const row of all) {
+      if (typeof row?.namespace !== 'string' || typeof row.key !== 'string') continue;
+      let namespace, key;
+      try { namespace = JSON.parse(row.namespace); key = JSON.parse(row.key); } catch { continue; }
+      if (namespace[0] !== ${JSON.stringify(profile)}) continue;
+      const bytes = new Uint8Array(row.bytes ?? []);
+      const certificate = key.package === 'so.tilo.browser-page' && key.record === 'certificate' && bytes.length
+        ? new TextDecoder().decode(bytes) : null;
+      rows.push({device: namespace[1], key: row.key, digest: hex(await crypto.subtle.digest('SHA-256', bytes)), certificate});
+    }
+  } finally { db.close(); }
+  return {rows, devices: JSON.parse(localStorage.getItem(${JSON.stringify(PROFILE_DEVICES)}) ?? '{}')};
+})()`;
+
+/** What `context`'s browser keeps for `profile`, read by a page of the web
+ * origin that does not open Tilo (its health check): `{namespaces, current}`.
+ * A run that cannot read it fails the check that needs it. */
+async function keptFor(browser, context, web, profile) {
+  const probe = await browser.tab({context});
+  try {
+    await probe.navigate(`${web}/healthz`);
+    await probe.waitFor("location.pathname === '/healthz' && document.readyState === 'complete'", {timeout: 30_000});
+    const {rows, devices} = await probe.evaluate(KEPT_ROWS(profile));
+    return {namespaces: keptNamespaces(rows), current: devices[profile] ?? PROFILE_DEVICE};
+  } catch (error) {
+    return {namespaces: {}, current: null, error: error.message};
+  } finally {
+    await probe.close();
+  }
+}
+
+/** Whether the page shows an entry card (an offer waiting for the person). */
+const offering = tab => tab.evaluate("Boolean(document.querySelector('.tilo-entry-card'))").catch(() => false);
 
 /** Marks the current document, so `settle` waits for the next one. */
 const leaving = tab => tab.evaluate('globalThis.__authE2eLeft = true').catch(() => {});
@@ -375,31 +480,82 @@ async function main() {
       .then(response => (response.ok ? response.json() : null)).catch(() => null);
     await redeemElsewhere('bound-invite', issued);
 
-    // host-reset: a new root, relay and room behind the same origin.
+    // What the person's browser kept for the host before it is set up again.
+    const profile = `tilo-identity:${me}@${host}`;
+    const keptBefore = await keptFor(browser, person, web, profile);
+
+    // A new root, relay and room behind the same origin.
     await stack.stop();
     stack = await startStack(options, ports, {fresh: true});
     const changed = /set up again/;
-    const reset = await page(browser, person);
-    const refusedReset = await open(reset, `${web}/`, settleOptions);
-    keepLog('host-reset', reset);
-    check('host-reset', stack.room !== firstRoom && refusedReset.entry === 'refused' && changed.test(refusedReset.status)
-      && joinsTo(reset.requests, api).length === 0 && refusedReset.membership?.userPublicKey === me
-      && refusedReset.membership?.room === firstRoom,
-    {entry: refusedReset.entry, joins: joinsTo(reset.requests, api).length, membership: refusedReset.membership,
-      room: stack.room, status: refusedReset.status, loading: refusedReset.loading});
-    if (refusedReset.entry !== 'refused') await shoot('host-reset', reset);
-    await reset.close();
 
     // stale-link: the old room's link after the reset.
     const stale = await page(browser, person);
     const staleOpened = await open(stale, roomLink(firstRoom), settleOptions);
+    const staleOffered = await offering(stale);
     keepLog('stale-link', stale);
-    check('stale-link', staleOpened.entry === 'refused' && joinsTo(stale.requests, api).length === 0
-      && staleOpened.membership?.userPublicKey === me,
-    {entry: staleOpened.entry, joins: joinsTo(stale.requests, api).length, status: staleOpened.status,
-      membership: staleOpened.membership});
+    check('stale-link', stack.room !== firstRoom && staleOpened.entry === 'refused' && !staleOffered
+      && joinsTo(stale.requests, api).length === 0
+      && staleOpened.membership?.userPublicKey === me && staleOpened.membership?.room === firstRoom,
+    {entry: staleOpened.entry, offered: staleOffered, joins: joinsTo(stale.requests, api).length, status: staleOpened.status,
+      membership: staleOpened.membership, room: stack.room});
     if (staleOpened.entry !== 'refused') await shoot('stale-link', stale);
     await stale.close();
+
+    // host-declined: the bare entry offers to join the new host; not now.
+    const declining = await page(browser, person);
+    await declining.navigate(`${web}/`);
+    const declineOffered = await press(declining, 'Not now', timeout).catch(() => false);
+    const declined = await settle(declining, settleOptions);
+    keepLog('host-declined', declining);
+    check('host-declined', declineOffered && declined.entry === 'refused' && changed.test(declined.status)
+      && joinsTo(declining.requests, api).length === 0 && declined.membership?.userPublicKey === me
+      && declined.membership?.room === firstRoom,
+    {offered: declineOffered, entry: declined.entry, joins: joinsTo(declining.requests, api).length,
+      membership: declined.membership, status: declined.status, loading: declined.loading});
+    if (declined.entry !== 'refused') await shoot('host-declined', declining);
+    await declining.close();
+
+    // host-reset: the same offer, accepted.
+    const reset = await page(browser, person);
+    await reset.navigate(`${web}/`);
+    const resetOffered = await press(reset, 'Join again', timeout).catch(() => false);
+    const rejoined = await settle(reset, settleOptions);
+    keepLog('host-reset', reset);
+    const resetJoins = joinsTo(reset.requests, api);
+    check('host-reset', resetOffered && rejoined.entry === 'open' && rejoined.arrival === 'done'
+      && resetJoins.length === 1 && resetJoins[0].status === 200
+      && rejoined.membership?.userPublicKey === me && rejoined.membership?.room === stack.room
+      && rejoined.hash.includes(`/w/${stack.room}`),
+    {offered: resetOffered, entry: rejoined.entry, arrival: rejoined.arrival, joins: resetJoins.map(j => j.status),
+      membership: rejoined.membership, room: stack.room, hash: rejoined.hash, status: rejoined.status, loading: rejoined.loading});
+    if (rejoined.entry !== 'open') await shoot('host-reset', reset);
+
+    // host-reload: once joined again, a reload makes no join.
+    const beforeReload = reset.requests.length;
+    const reloadedReset = await reload(reset, settleOptions);
+    const reloadJoins = joinsTo(reset.requests.slice(beforeReload), api);
+    check('host-reload', reloadedReset.entry === 'open' && reloadedReset.arrival === 'done' && reloadJoins.length === 0
+      && reloadedReset.membership?.userPublicKey === me && reloadedReset.membership?.room === stack.room,
+    {entry: reloadedReset.entry, arrival: reloadedReset.arrival, joins: reloadJoins.length, membership: reloadedReset.membership,
+      status: reloadedReset.status});
+    if (reloadedReset.entry !== 'open') await shoot('host-reload', reset);
+    await reset.close();
+
+    // kept-apart: the old host's state untouched, the new host's apart.
+    const keptAfter = await keptFor(browser, person, web, profile);
+    check('kept-apart', keptApart(keptBefore, keptAfter), {before: keptBefore, after: keptAfter});
+
+    // stale-rejoined: the old room's link once joined again.
+    const staleAgain = await page(browser, person);
+    const staleAgainOpened = await open(staleAgain, roomLink(firstRoom), settleOptions);
+    keepLog('stale-rejoined', staleAgain);
+    check('stale-rejoined', staleAgainOpened.entry === 'refused' && joinsTo(staleAgain.requests, api).length === 0
+      && staleAgainOpened.membership?.userPublicKey === me && staleAgainOpened.membership?.room === stack.room,
+    {entry: staleAgainOpened.entry, joins: joinsTo(staleAgain.requests, api).length, status: staleAgainOpened.status,
+      membership: staleAgainOpened.membership});
+    if (staleAgainOpened.entry !== 'refused') await shoot('stale-rejoined', staleAgain);
+    await staleAgain.close();
   } finally {
     await browser.close().catch(error => console.error(`closing Chrome: ${error.message}`));
     await stack.stop();

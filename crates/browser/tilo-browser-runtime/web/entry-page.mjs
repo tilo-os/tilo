@@ -20,7 +20,7 @@ import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
-import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, withCustody} from './peer.mjs';
+import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, profileDevice, REJOIN_CHANGED_HOST, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, syncProfile} from './identity-actions.mjs';
@@ -504,7 +504,7 @@ export async function startEntryPage({mode}) {
       if (known?.name && !workspaceName) workspaceName = known.name;
     },
     mountDesktop,
-    enterViaHost: async ({workspace}) => {
+    enterViaHost: async ({workspace, room}) => {
       reportErrors(workspace.admission);
       workspaceName = workspace.name || workspaceName;
       const watch = async () => spectate({workspace, runtime});
@@ -518,7 +518,11 @@ export async function startEntryPage({mode}) {
         const kept = keptMembership(workspace);
         const identity = kept?.paired ? undefined : await browserPerson();
         displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? randomDisplayName();
-        const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode});
+        // A host set up again since this browser joined it: the person may
+        // join it again from the bare entry. A link naming a room of the
+        // previous host stays refused, as that room is gone with it.
+        const confirmRejoin = room ? undefined : () => card(REJOIN_CHANGED_HOST, [['Join again', true], ['Not now', false]]);
+        const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode, confirmRejoin});
         entered = 'joined';
         return peer;
       } catch (error) {
@@ -564,7 +568,7 @@ export async function startEntryPage({mode}) {
       return pairViaHost({origin, room, userPublicKey, workspace, runtime, displayName, label: deviceLabel(),
         onPairingCode: showPairingCode});
     },
-    readAccounts: async origin => readBrowserAccounts({origin, runtime: await loadRuntime()}),
+    readAccounts: async origin => readBrowserAccounts({origin, runtime: await loadRuntime(), currentDevice: profile => profileDevice(profile)}),
     chooseAccount: accounts => card('Open this link as',
       accounts.map(account => [account.displayName || account.userPublicKey.slice(0, 12), account])),
     // A guest ticket: a fresh device of the room's root, certified once the

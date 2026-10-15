@@ -34,7 +34,9 @@ const commons = {name: 'Commons', host: {origin: room.host}, admission: `${room.
 test('a host whose listed workspace has an admission door lets the person in when the browser has no account there', async () => {
   const {calls, deps} = doors({workspaceAt: origin => (origin === room.host ? commons : null)});
   assert.deepEqual(await admit({scope: room, deps}), {peer: {admission: true, room: room.room}});
-  assert.deepEqual(calls, [['readAccounts', room.host], ['enterViaHost', {workspace: commons}]]);
+  // The door is told which room the link names: a host set up again is not
+  // offered to be joined again from a link to a room it no longer has.
+  assert.deepEqual(calls, [['readAccounts', room.host], ['enterViaHost', {workspace: commons, room: room.room}]]);
 });
 
 test('a member of a host with an admission door connects as the member', async () => {
@@ -48,7 +50,7 @@ test('the home workspace, whose room is not known yet, is entered through its ho
   const home = {kind: 'room', host: room.host, room: null};
   const {calls, deps} = doors({workspaceAt: () => commons});
   assert.deepEqual(await admit({scope: home, deps}), {peer: {admission: true, room: room.room}});
-  assert.deepEqual(calls.map(([name]) => name), ['enterViaHost']);
+  assert.deepEqual(calls, [['enterViaHost', {workspace: commons}]], 'the bare entry names no room');
   await assert.rejects(admit({scope: home, deps: doors().deps}), {code: 'no-access'});
 });
 
