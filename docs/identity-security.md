@@ -42,7 +42,10 @@ plant another for Tilo to read; a writable grant holding a symlink on that way
 is bound read-only. The same masking covers the accounts vault key, the
 publisher trust and revocation lists and every other file under
 `$XDG_CONFIG_HOME/tilo`, and a `TILO_SECRETS_DIR` store
-(`crates/packaging/launcher/src/capabilities.rs`). Settings labels it **Private session file + app-scoped
+(`crates/packaging/launcher/src/capabilities.rs`). On macOS the Seatbelt profile
+denies every store outright after every grant, and denies writes to each
+directory and symlink on its way, to the same effect
+(`crates/packaging/launcher-macos/src/policy.rs`). Settings labels it **Private session file + app-scoped
 signing broker**; it is intentionally not described as encrypted or
 hardware-backed.
 

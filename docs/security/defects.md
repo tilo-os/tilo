@@ -1028,7 +1028,12 @@ a writable grant holding a symlink on the store's route is bound read-only. Held
 `room_confinement::a_home_grant_never_reaches_tilos_private_configuration` (live bwrap and
 Landlock: unreadable secret and vault key, unwritable trust files, unmovable `~/.config`, Documents
 grant unchanged) and the plan/argv tests in `capabilities.rs` and `sandbox.rs`. The macOS Seatbelt
-profile does not yet render these masks.
+profile confines the same plan (`launcher_macos::policy::SeatbeltPolicy::resolve`) and, after every
+grant and the chooser's picked-path extension, denies each store outright and every write to each
+directory and symlink its path resolves through, spelled as the disk spells it, so nothing can
+rename an ancestor aside (`SeatbeltPolicy::hidden`/`pinned`). Held by the live `sandbox-exec`
+launches in `crates/packaging/launcher-macos/tests/seatbelt_launch.rs`
+(`a_home_grant_never_reaches_tilos_private_stores` and its symlink and sibling-grant cases).
 
 ## P2-9 — The per-launch identity broker loads the root secret and never uses it
 
