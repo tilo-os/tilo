@@ -165,17 +165,13 @@ do not inherit that change automatically: migrate their callers to this stable
 launcher, rather than relying on prose in an old branch. The normal CI selector
 retains its Cargo-backed default in the Forgejo job environment.
 
-For a clean committed worktree, the explicit CI export workflow provides this
-supported path without local Cargo:
+For a clean worktree whose commit is pushed, t's `source-metadata` check
+provides this supported path without local Cargo:
 
 ```sh
-source_sha=$(git rev-parse HEAD)
-fgj actions workflow run dev-source-metadata.yml -R tilo/tilo \
-  --ref main -f source_sha="$source_sha"
-# After the export run succeeds, replace RUN_NUMBER with that exact run:
-fgj actions run artifacts RUN_NUMBER -R tilo/tilo \
-  --download "current-source-metadata-$source_sha" --output /tmp/source-metadata.zip
-python3 -m zipfile -e /tmp/source-metadata.zip /tmp/source-metadata-export
+t outputs source-metadata   # runs it if needed; writes target/ci/current-source-metadata.json
+mkdir -p /tmp/source-metadata-export
+mv target/ci/current-source-metadata.json /tmp/source-metadata-export/
 python3 tools/ci/current_source_metadata.py validate --root . \
   --input /tmp/source-metadata-export/current-source-metadata.json \
   --output target/ci/current-source-metadata.json
