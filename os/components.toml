@@ -500,6 +500,20 @@ files = [
   { from = "tilo-esp-write", to = "/usr/libexec/tilo-esp-write", mode = "0755" },
 ]
 
+# First-boot account files: tilo-firstboot-user runs the copy beside it, this
+# one or the one a custom installer stages in the target's /etc/tilo, so a swap
+# takes effect at the next account handoff (or install).
+[[component]]
+name = "firstboot-files"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-firstboot-files"]
+bins = ["tilo-firstboot-files"]
+layer = "recovery-files"
+files = [
+  { from = "tilo-firstboot-files", to = "/usr/libexec/tilo-firstboot-files", mode = "0755" },
+]
+
 # Downloaded, Tilo-signed system extensions: tilo-extension-activate.service at
 # boot, tilo-extension@VERB:ID.service on demand, the refresh timer and the
 # NetworkManager hook all start it; a swap takes effect at its next start.

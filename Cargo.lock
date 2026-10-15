@@ -17058,6 +17058,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-firstboot-files"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "rustix 1.1.4",
+ "tempfile",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-font-catalog"
 version = "0.1.0"
 dependencies = [

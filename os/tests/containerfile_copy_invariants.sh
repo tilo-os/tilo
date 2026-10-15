@@ -185,7 +185,10 @@ containerfile="$repo/os/Containerfile"
 # tilo-esp-generator, which mounts the boot loader's ESP at /boot/efi on an
 # installed system, is one intentional payload row with a COPY of its own, and
 # its helper tilo-esp-mount rides the existing recovery-files libexec COPY.
-expected_contract=5af14ec2844f3ff23abc9e642c6682db5bbf611b0455d971d573e1805722cdac
+# The firstboot file helper is now compiled: it arrives from the firstboot-files
+# component as /usr/libexec/tilo-firstboot-files, with the mode it had, instead
+# of from the context as tilo-firstboot-files.py.
+expected_contract=5e4ab2a505786cd3846457ed380e83fa6e9525a91e59aa2dc5e4751aae4d5e32
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

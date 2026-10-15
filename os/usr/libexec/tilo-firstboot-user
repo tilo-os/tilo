@@ -129,7 +129,7 @@ repair_enrolled_device_key() {
 
 # The private intent's random locked shadow value proves transaction ownership.
 TRANSACTION=/etc/tilo/install-user.transaction
-FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files.py"
+FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files"
 retry=0
 lock_value=""
 if [ -e "$TRANSACTION" ] || [ -L "$TRANSACTION" ]; then
@@ -156,7 +156,7 @@ fi
 if [ -z "$lock_value" ]; then
   lock_value="!tilo-firstboot-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
   # Do not replace an unexpected intent; create it before useradd can succeed.
-  printf '%s:%s\n' "$user" "$lock_value" | /usr/bin/python3 -I "$FILES_HELPER" intent "$TRANSACTION"
+  printf '%s:%s\n' "$user" "$lock_value" | "$FILES_HELPER" intent "$TRANSACTION"
 fi
 # Persist both the intent and its directory entry before account creation.
 # A power loss must not leave an account with no durable ownership witness.
@@ -206,7 +206,7 @@ case "$account_home" in
   "/home/$user"|"/var/home/$user") ;;
   *) echo "tilo-firstboot-user: refusing unexpected account home" >&2; exit 1 ;;
 esac
-/usr/bin/python3 -I "$FILES_HELPER" home "$account_home" "$account_uid" "$account_gid" /etc/skel
+"$FILES_HELPER" home "$account_home" "$account_uid" "$account_gid" /etc/skel
 
 repair_enrolled_device_key
 
