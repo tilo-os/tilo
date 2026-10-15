@@ -47,7 +47,7 @@ path = "src/enroll.rs"
 
 [[bin]]
 name = "tilo-home-peer-control"
-path = "src/home_peer_control.rs"
+path = "src/home_peer_control/main.rs"
 
 # A terminal's pty carried to an environment session on a relay; the
 # device's `ush` supervisor runs it for a relay environment target.

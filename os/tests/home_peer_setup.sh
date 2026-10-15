@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-helper="$root/crates/hosting/tilo-relay/src/home_peer_control.rs"
+helper="$root/crates/hosting/tilo-relay/src/home_peer_control/broker.rs"
 enroll="$root/crates/hosting/tilo-relay/src/enroll.rs"
 firstboot="$root/os/usr/libexec/tilo-relay-firstboot"
 policy="$root/os/usr/share/polkit-1/actions/org.tilo.home-peer.policy"
