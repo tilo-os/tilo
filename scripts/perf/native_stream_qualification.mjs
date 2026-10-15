@@ -502,7 +502,8 @@ async function attachPage(browser, viewport, {context, window = false, block = f
   });
   const send = (method, params = {}) => browser.send(method, params, sessionId);
   const evaluate = async (expression, ms = 60_000) => {
-    const reply = await within(send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true}), ms, 'the page');
+    const reply = await within(send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true}), ms,
+      `the ${page.name ?? 'first'} page (${expression.replace(/\s+/g, ' ').slice(0, 120)})`);
     if (reply.error) throw Error(reply.error.message);
     if (reply.result.exceptionDetails) {
       const details = reply.result.exceptionDetails;
@@ -516,7 +517,8 @@ async function attachPage(browser, viewport, {context, window = false, block = f
   await send('Emulation.setFocusEmulationEnabled', {enabled: true});
   if (block) await send('Page.addScriptToEvaluateOnNewDocument', {source: 'globalThis.__tiloBlockWebTransport = true;'});
   await send('Page.addScriptToEvaluateOnNewDocument', {source: PROBE});
-  return {send, evaluate, errors, console: console_};
+  const page = {send, evaluate, errors, console: console_};
+  return page;
 }
 
 /**

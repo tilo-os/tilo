@@ -277,10 +277,13 @@ export async function runAcceptance(ctx) {
   const {main, w1} = ctx;
   const cases = {};
   const open = name => (cases[name] = {failures: []});
+  // Where the cases are, for a run that ends invalid part of the way.
+  const step = what => console.error(`acceptance: ${what}`);
   const prefix1 = `${w1.session.device}:`;
   const lines1 = () => w1.source.lines.length;
 
   // focus ----------------------------------------------------------------------
+  step('focus');
   const focus = open('focus');
   let mark = lines1();
   await typeKey(main, KEYS.a);
@@ -305,10 +308,12 @@ export async function runAcceptance(ctx) {
   if (inputsOf(w1.source.lines, away, mark).some(isKey(KEYS.b.evdev, true))) focus.failures.push('a key typed on the desktop reached the window it had left');
 
   // paste ----------------------------------------------------------------------
+  step('paste');
   const paste = open('paste');
   await ctx.browser.send('Browser.grantPermissions', {origin: ctx.pagesOrigin, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']});
-  paste.clipboard = await main.evaluate(`navigator.clipboard.writeText(${JSON.stringify(PASTED)})
-    .then(() => navigator.clipboard.readText()).then(text => text === ${JSON.stringify(PASTED)} ? 'holds the text' : 'holds other text', error => String(error))`);
+  paste.clipboard = await main.evaluate(`Promise.race([navigator.clipboard.writeText(${JSON.stringify(PASTED)})
+    .then(() => navigator.clipboard.readText()).then(text => text === ${JSON.stringify(PASTED)} ? 'holds the text' : 'holds other text', error => String(error)),
+    new Promise(done => setTimeout(() => done('did not answer within 5 s'), 5000))])`);
   const pastes = await main.evaluate('globalThis.__tiloStream.pastes');
   mark = lines1();
   await main.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', key: 'Control', code: 'ControlLeft', windowsVirtualKeyCode: 17, modifiers: CTRL});
@@ -331,6 +336,7 @@ export async function runAcceptance(ctx) {
   paste.failures.push(...judgePaste(inputsOf(w1.source.lines, mark), PASTED));
 
   // resize: the page ---------------------------------------------------------------
+  step('resize the page');
   const resize = open('resize');
   const before = await main.evaluate(windowAt(prefix1));
   const viewport = {width: Math.round(ctx.viewport.width * 1.25 / 2) * 2, height: Math.round(ctx.viewport.height * 1.2 / 2) * 2, deviceScaleFactor: 1};
@@ -355,6 +361,7 @@ export async function runAcceptance(ctx) {
   }
 
   // the other members ----------------------------------------------------------------
+  step('open the fallback and viewer pages');
   const fallback = open('fallback');
   const viewer = open('viewer');
   const invitation = await main.evaluate(`globalThis.peer.createInvitation({role: 'viewer', expiresIn: 3600})`);
@@ -375,6 +382,7 @@ export async function runAcceptance(ctx) {
   }
 
   // the second window ------------------------------------------------------------------
+  step('the second window');
   const stale = open('stale');
   const recovery = open('recovery');
   const w2 = await ctx.startSession('second', {surface: SECOND.surface, seconds: SECOND.seconds, width: SECOND.width, height: SECOND.height,
@@ -398,6 +406,7 @@ export async function runAcceptance(ctx) {
   if (inputsOf(w1.source.lines, beforeSecond).some(isKey(KEYS.d.evdev, true))) stale.failures.push('a key typed into the newly focused window reached the one it replaced');
 
   // recovery: drop the first page's live plane while the second window streams.
+  step('drop the live plane');
   if ((started.startUs + SECOND.seconds * 1e6 - nowUs()) / 1e6 < 10) throw new Invalid('the second window streamed too briefly to drop its stream under it');
   const lastBefore = await main.evaluate(lastDrawn(prefix2));
   const droppedAt = nowUs();
@@ -411,6 +420,7 @@ export async function runAcceptance(ctx) {
   recovery.resumedMs = resumed ? Math.round((resumed.wallUs - droppedAt) / 1000) : null;
   if (!resumed) recovery.failures.push(`the window did not resume within 30 s of its stream dropping (last frame before it: ${recovery.lastBefore})`);
 
+  step('the second window goes still');
   const stopped = JSON.parse(await w2.source.line(line => { try { return JSON.parse(line).event === 'stopped'; } catch { return false; } },
     (SECOND.seconds + 120) * 1000, 'the end of the second stream'));
   const sent = ctx.readSent(w2.log);
@@ -433,6 +443,7 @@ export async function runAcceptance(ctx) {
   }
 
   // The page on the HTTPS stream drives the window; the viewer may not.
+  step('drive from the fallback page, try from the viewer');
   const surface2 = (await main.evaluate(windowAt(prefix2)))?.key?.split(':')[1] ?? (await watcher.evaluate(windowAt(prefix2)))?.key?.split(':')[1];
   const publisher2 = w2.session.device;
   const ownerSees = await other.evaluate(windowAt(prefix2));
@@ -460,6 +471,7 @@ export async function runAcceptance(ctx) {
   if (leaked.length) viewer.failures.push(`${leaked.length} input events reached the windows while only the viewer gave input: ${JSON.stringify(leaked.slice(0, 3).map(input => input.value))}`);
 
   // stale: the second window closes.
+  step('close the second window');
   const closing2 = lines2();
   w2.source.process.stdin.write('end\n');
   await w2.source.line(line => { try { return JSON.parse(line).event === 'ended'; } catch { return false; } }, 10_000, 'the second window closing');
