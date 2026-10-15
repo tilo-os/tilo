@@ -629,6 +629,17 @@ fn landlock(
     Ok(Some((fd, rules)))
 }
 
+/// Landlock as the job runs it. A job that may start sandboxes of its own
+/// mounts in namespaces it creates, which Landlock refuses to every process
+/// it confines: it runs without.
+fn landlock_mode(spec: &JobSpec) -> Landlock {
+    if spec.seccomp == Seccomp::Ci(crate::job::spec::CiProfile::Nested) {
+        Landlock::Off
+    } else {
+        spec.landlock
+    }
+}
+
 impl Plan {
     pub fn new(spec: &JobSpec) -> Result<Self, SpawnError> {
         let cwd = normal(&spec.cwd, "working directory")?;
@@ -663,7 +674,7 @@ impl Plan {
                     cstr(&kv, "an environment variable")
                 })
                 .collect::<Result<_, _>>()?,
-            landlock: landlock(spec.landlock, rules)?,
+            landlock: landlock(landlock_mode(spec), rules)?,
             seccomp: seccomp_filters(spec.seccomp)?,
             cap_last,
             env_area,
