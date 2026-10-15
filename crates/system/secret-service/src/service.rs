@@ -99,6 +99,7 @@ impl CallerResolver for BusResolver {
         Box::pin(async move {
             let name = zbus::names::BusName::try_from(sender.ok_or(UnknownCaller::Unreadable)?)
                 .map_err(|_| UnknownCaller::Unreadable)?;
+            let proven = self.proven_program(name.as_str());
             let bus = zbus::fdo::DBusProxy::new(&self.connection)
                 .await
                 .map_err(|_| UnknownCaller::Unreadable)?;
@@ -110,7 +111,6 @@ impl CallerResolver for BusResolver {
                 return Err(UnknownCaller::OtherUser);
             }
             let pid = credentials.process_id().ok_or(UnknownCaller::Unreadable)?;
-            let proven = self.proven_program(name.as_str());
             identify_proven_process(&proc_root(), pid, self.uid, proven.as_deref())
         })
     }
