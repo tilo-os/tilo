@@ -1,4 +1,16 @@
 use super::*;
+use std::sync::atomic::Ordering;
+
+use taffy::prelude::Size;
+use ui::a11y::{Action as AccessAction, Politeness};
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::widget::DateIndexIntent;
+use vello::Scene;
+use vello::kurbo::Affine;
+
+use super::jobs::thumbnail_request;
+use crate::timeline_projection::{TimelineGeometry, TimelinePhoto};
 
 /// Present `doc`'s library to `app` as the framework does after a change,
 /// then sync it.
