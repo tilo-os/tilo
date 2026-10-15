@@ -122,6 +122,17 @@ lockfile records are propagated through the old and new locked graphs (which
 cover every feature, target and dependency kind); workspace packages whose own
 record changed or that depend directly on a changed external record are tested,
 and every package the change reaches is checked with its reverse dependencies.
+The lockfile records no dependency kinds, but Cargo locks only the members'
+dev-dependencies, so a third-party edge is always normal or build and a member's
+edge takes its kind from the member's manifest (`cargo metadata --no-deps`). The
+checks therefore follow the path-dependency rule: a member whose normal or build
+dependencies reach a changed record is checked with its reverse dependencies, a
+member reaching it only through dev-dependencies is checked and tested alone, and
+the cargo-hakari package (`workspace-hack`, never named in code) passes nothing on
+to the members that depend on it. A git or patched-path record added or removed,
+or a third-party crate that gains or drops an edge to an unchanged package (it
+may change that package's features for other members), keeps the kind-blind
+propagation.
 In the root manifest, `[workspace] members` edits select the added members and
 the dependants of removed ones, and `[workspace.dependencies]` edits select the
 members using those dependencies. Everything else (lints, profiles, patches,
