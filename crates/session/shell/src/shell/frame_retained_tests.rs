@@ -2223,6 +2223,66 @@ fn a_strip_pan_composited_from_layers_matches_a_full_render_in_every_theme() {
     });
 }
 
+/// Pulling the strip past its start rides the docked wheel in from the
+/// screen edge, and its disc keeps going left of its slot to the edge of the
+/// screen. Composited from layers, the wheel's sprite used to stop at the
+/// slot, so the rubber band showed the disc cut off in a hard vertical edge.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_rubber_band_past_the_strip_start_composited_from_layers_matches_a_full_render() {
+    let desktop = PanDesktop {
+        name: "left overpull",
+        panel: (1280, 720),
+        scale: 1.0,
+        strips: 1,
+    };
+    let size = desktop.panel;
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    let _ambient = DenyAmbientStarts::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let mut frame = pan_fixture(desktop, Theme::dark());
+    frame.set_strip_pan_presenter(false, true);
+    let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
+    let mut layered = gpu_target(size);
+    let mut dense = gpu_target(size);
+    frame.host_mut().update_active_strip_pan(0.0, true);
+    let mut travel = 0.0;
+    let mut composited = 0;
+    for step in 0..12 {
+        travel -= 37.3;
+        frame.host_mut().update_active_strip_pan(travel, false);
+        frame.relayout();
+        let painted = frame.paint_with_damage();
+        let label = format!("left overpull, step {step}");
+        if present(&mut layered, &painted, &label).is_some() {
+            composited += 1;
+        }
+        let shown = layered.read_rgba_for_test();
+        let full = render_whole(&mut dense, &painted.scene, painted.revision, &label);
+        let apart = pixels_apart(&shown, &full, size.0);
+        assert!(
+            apart.len() <= OFFSET_PIXELS,
+            "{label}: {} pixels differ from a full render (first {:?}); the wheel layer \
+             does not hold the disc the rubber band exposes",
+            apart.len(),
+            &apart[..apart.len().min(16)]
+        );
+    }
+    assert!(
+        frame
+            .host()
+            .strip_scroll_offsets()
+            .iter()
+            .any(|&(_, scroll, _)| scroll < -100.0),
+        "fixture: the pan pulled the strip well past its start: {:?}",
+        frame.host().strip_scroll_offsets()
+    );
+    assert!(
+        composited >= 8,
+        "the rubber band came as layers ({composited} of 12)"
+    );
+}
+
 /// A 1920×1080 panel at 150 %: the desktop is laid out at 1280×720 and a
 /// device pixel is two thirds of a layout pixel.
 #[cfg(target_os = "linux")]
