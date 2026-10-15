@@ -1496,15 +1496,17 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
                 replayed_frames = replayed_frames.saturating_add(summary.total_frames);
                 if boundary_done {
                     finish_replay_cleanup(run, &handle, peer, session, private_rx, write).await?;
-                } else if let Some(catchup_handle) =
-                    cut_replay_boundary(run, &handle, peer, session, private_rx, write).await?
-                {
-                    handle = catchup_handle;
-                    written = None;
-                    boundary_done = true;
-                    continue;
+                    return Ok(replayed_frames);
                 }
-                return Ok(replayed_frames);
+                let Some(catchup_handle) =
+                    cut_replay_boundary(run, &handle, peer, session, private_rx, write).await?
+                else {
+                    return Ok(replayed_frames);
+                };
+                handle = catchup_handle;
+                written = None;
+                boundary_done = true;
+                continue;
             }
         }
         written = None;

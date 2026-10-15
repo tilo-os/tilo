@@ -2,7 +2,10 @@
 //! membership checks the session handlers share, and the periodic
 //! subscriber audit that ends a session whose access lapsed.
 
-use super::*;
+use super::{
+    AuthenticatedPeer, Decision, Envelope, PeerError, RoomOperation, SessionCtx, UnavailableReason,
+    mpsc, room_access, unix_now_ns,
+};
 
 /// Membership + revocation re-check for every workspace this peer is
 /// subscribed to, run when [`AccessAudit`] says. Reloads membership
