@@ -606,7 +606,10 @@ workspace the home; without them a bare visit opens the person's own
 desktop. `TILO_WEB_ABOUT_NOTIFY`, `TILO_WEB_ABOUT_SOURCE` and
 `TILO_WEB_ABOUT_COMMUNITY` (https URLs) become `about`, the links the
 About sheet behind the top bar's Tilo mark offers; an unset one is not
-offered. The bundle lives under `v/<content hash>/` and is cached as
+offered. `TILO_WEB_EMBEDDER` (an https origin, optional) names the one
+site that may frame the page as a live preview: the page sends
+`frame-ancestors 'self'` plus that origin, and an embed reports its state
+to it alone; unset, only the page itself frames it. The bundle lives under `v/<content hash>/` and is cached as
 immutable; only the entry pages, `entry.json` and `version.json`
 revalidate. An image serves one version, so a page opened before a deploy
 finds its version's app modules gone the first time it opens an app it had
@@ -621,7 +624,8 @@ homepage's live preview): a workspace whose host has an admission door is
 watched read-only as the host's spectator person
 (`POST <admission>spectate`, a device key in page memory only), so
 scrolling past mints no member; the first click, tap or key press reloads
-the page to join as the person. The embedding page hears
+the page to join as the person. The embedding page, when it is the web
+host's `embedder`, hears
 `{type: 'tilo-embed', state}` (`watching`, `joined`, `full`, `unavailable`, or `unsupported` for a browser without WebGPU, which is told which browsers draw Tilo before any seat is taken).
 
 The web app's entry serves generic static Open Graph tags; unfurlers never

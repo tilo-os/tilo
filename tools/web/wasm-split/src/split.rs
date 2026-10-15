@@ -1,6 +1,7 @@
 // Adapted from wasm-split-cli 0.7.10 (Dioxus, https://github.com/DioxusLabs/dioxus,
 // MIT OR Apache-2.0); see ../PROVENANCE.md for what changed.
 
+use crate::data::{Claimant, DataLayout, DataPlan};
 use anyhow::{Context, Result};
 use itertools::Itertools;
 use rayon::prelude::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
@@ -178,7 +179,14 @@ impl<'a> Splitter<'a> {
             .map(|idx| self.split_module_parts(idx))
             .collect::<Vec<_>>();
 
-        let main = self.emit_main_module()?;
+        // Which static data each module reaches is read from the code it
+        // carries (see data.rs); the main module's is known once it is
+        // pruned.
+        let data_layout = DataLayout::new(self.original)?;
+        let data_refs = data_layout.function_refs(&self.source_module);
+        let data_claimants = self.data_claimants(&chunk_parts, &module_parts);
+
+        let (main, data) = self.emit_main_module(&data_layout, &data_refs, data_claimants)?;
 
         // Each module being emitted holds a parse of its own; run only as
         // many at once as there is memory for.
@@ -197,12 +205,12 @@ impl<'a> Splitter<'a> {
             let chunks = chunk_parts
                 .into_par_iter()
                 .enumerate()
-                .map(|(idx, parts)| self.emit_split_chunk(idx, parts))
+                .map(|(idx, parts)| self.emit_split_chunk(idx, parts, &data))
                 .collect::<Result<Vec<SplitModule>>>();
             let modules = module_parts
                 .into_par_iter()
                 .enumerate()
-                .map(|(idx, parts)| self.emit_split_module(idx, parts))
+                .map(|(idx, parts)| self.emit_split_module(idx, parts, &data))
                 .collect::<Result<Vec<SplitModule>>>();
             (chunks, modules)
         });
@@ -226,7 +234,12 @@ impl<'a> Splitter<'a> {
     ///
     /// Emitting the main module is conceptually pretty simple. Emitting the split modules is more
     /// complex.
-    fn emit_main_module(&mut self) -> Result<SplitModule> {
+    fn emit_main_module(
+        &mut self,
+        data_layout: &DataLayout,
+        data_refs: &HashMap<FunctionId, Vec<u32>>,
+        mut data_claimants: Vec<(Claimant, Vec<FunctionId>)>,
+    ) -> Result<(SplitModule, DataPlan)> {
         tracing::info!("Emitting main bundle split module");
 
         // Perform some analysis of the module before we start messing with it
@@ -255,13 +268,21 @@ impl<'a> Splitter<'a> {
         // 7. Run the garbage collector to remove unused functions
         walrus::passes::gc::run(&mut out);
 
-        Ok(SplitModule {
+        // 8. Leave out the static data only other modules reach: the
+        //    functions left are exactly the code the main module runs
+        data_claimants.push((Claimant::Start, out.funcs.iter().map(|f| f.id()).collect()));
+        let modules = self.split_points.len() + self.chunks.len();
+        let data = data_layout.plan(&out, data_refs, data_claimants, modules);
+        data.apply_to_start(&mut out);
+
+        let main = SplitModule {
             module_name: "main".to_string(),
             component_name: None,
             bytes: out.emit_wasm(),
             relies_on_chunks: Default::default(),
             hash_id: None,
-        })
+        };
+        Ok((main, data))
     }
 
     /// What split module `split_idx` defines, imports and deletes, and the
@@ -322,7 +343,12 @@ impl<'a> Splitter<'a> {
     }
 
     /// Write the contents of the split modules to the output
-    fn emit_split_module(&self, split_idx: usize, parts: SplitParts) -> Result<SplitModule> {
+    fn emit_split_module(
+        &self,
+        split_idx: usize,
+        parts: SplitParts,
+        data: &DataPlan,
+    ) -> Result<SplitModule> {
         let split = self.split_points[split_idx].clone();
         let SplitParts {
             unique_symbols,
@@ -359,8 +385,8 @@ impl<'a> Splitter<'a> {
         // This removes exports, imports, and the start function
         self.prune_split_module(&mut out);
 
-        // Clear away the data segments
-        self.clear_data_segments(&mut out);
+        // Keep only the static data this module owns (see data.rs)
+        data.apply_to_split(&mut out, split_idx);
 
         // Clear out the element segments and then add in the initializers for the shared imports
         self.create_ifunc_initializers(&mut out, &unique_symbols);
@@ -427,7 +453,12 @@ impl<'a> Splitter<'a> {
     }
 
     /// Write a split chunk - this is a chunk with no special functions, just exports + initializers
-    fn emit_split_chunk(&self, idx: usize, parts: SplitParts) -> Result<SplitModule> {
+    fn emit_split_chunk(
+        &self,
+        idx: usize,
+        parts: SplitParts,
+        data: &DataPlan,
+    ) -> Result<SplitModule> {
         tracing::info!("emitting chunk {}", idx);
         let SplitParts {
             unique_symbols,
@@ -454,8 +485,8 @@ impl<'a> Splitter<'a> {
 
         self.prune_split_module(&mut out);
 
-        // Clear away the data segments
-        self.clear_data_segments(&mut out);
+        // Write only the static data this chunk's code alone reaches
+        data.apply_to_split(&mut out, self.split_points.len() + idx);
 
         // Clear out the element segments and then add in the initializers for the shared imports
         self.create_ifunc_initializers(&mut out, &unique_symbols);
@@ -527,6 +558,29 @@ impl<'a> Splitter<'a> {
             .filter(|node| self.shared_symbols.contains(node))
             .chain(symbols_to_delete)
             .copied()
+            .collect()
+    }
+
+    /// The functions whose code each split module and shared chunk
+    /// carries, for placing static data (see data.rs): split module `i` is
+    /// claimant `i`, chunk `i` comes after the split modules.
+    fn data_claimants(
+        &self,
+        chunk_parts: &[SplitParts],
+        module_parts: &[SplitParts],
+    ) -> Vec<(Claimant, Vec<FunctionId>)> {
+        let bodies = |parts: &SplitParts| -> Vec<FunctionId> {
+            parts
+                .bodies
+                .iter()
+                .map(|index| self._ids_to_fns[*index])
+                .collect()
+        };
+        module_parts
+            .iter()
+            .chain(chunk_parts)
+            .enumerate()
+            .map(|(index, parts)| (Claimant::Module(index), bodies(parts)))
             .collect()
     }
 
@@ -717,12 +771,10 @@ impl<'a> Splitter<'a> {
                     out.funcs.delete(id);
                 }
 
-                // Data stays in the main module. The call graph's edges from
-                // code to data reach this module through name matching, and
+                // Static data is placed by data.rs instead: the call
+                // graph's code-to-data edges come through name pairing, and
                 // a data symbol misattributed to a split module was cleared
-                // here while main still read it: wrong results with no trap
-                // (link parsing failed on every host). Moving app data out
-                // would save megabytes, but needs those edges exact first.
+                // here while main still read it (wrong results, no trap).
                 Node::DataSymbol(_) => {}
             }
         }
@@ -937,16 +989,6 @@ impl<'a> Splitter<'a> {
         let mut b = FunctionBuilder::new(&mut out.types, &[], &[]);
         b.name("dummy".into()).func_body().unreachable();
         b.finish(vec![], &mut out.funcs)
-    }
-
-    /// A split module carries no data: the main module keeps all of it (see
-    /// `prune_main_symbols`), and writing a static again when a module loads
-    /// would reset whatever the running program had changed it to.
-    fn clear_data_segments(&self, out: &mut Module) {
-        let data_ids: Vec<_> = out.data.iter().map(|t| t.id()).collect();
-        for data_id in data_ids {
-            out.data.get_mut(data_id).value.clear();
-        }
     }
 
     /// Load the funcref table from the main module. This *should* exist for all modules created by
