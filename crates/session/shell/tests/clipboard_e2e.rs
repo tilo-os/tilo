@@ -1968,7 +1968,7 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
     }
 }
 
-/// Roundtrip completion runs at the backend level, before EventQueue dispatch.
+/// Roundtrip completion runs at the backend level, before `EventQueue` dispatch.
 /// A clipboard worker must not dispatch it on behalf of the application: that
 /// can complete the sync between the application's completion check and poll,
 /// leaving the application asleep on an already-consumed reply.
