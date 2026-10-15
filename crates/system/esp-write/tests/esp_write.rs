@@ -150,23 +150,75 @@ impl Fixture {
         .unwrap();
     }
 
+    /// A split kernel/initrd (Type #1) entry as bootc writes it on a dev
+    /// image: the payload under `bootc_composefs-<directory>/`, the identity
+    /// on the options line.
+    fn type1_entry(&self, directory: &str, name: &str, payload: &str, options: &str) {
+        let path = self.esp.join("loader").join(directory);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(
+            path.join(name),
+            format!(
+                "title Fedora Linux 44 (Forty Four)\n\
+                 linux /EFI/Linux/bootc_composefs-{payload}/vmlinuz\n\
+                 initrd /EFI/Linux/bootc_composefs-{payload}/initrd\n\
+                 options root=UUID=0000 rw {options} tilo.mode=normal\n\
+                 sort-key bootc-fedora-0\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// What `/usr/lib/tilo/image-flavour` says. Absent, as on the sealed
+    /// image, unless a case sets it.
+    fn set_flavour(&self, flavour: &str) {
+        fs::write(self.root.join("image-flavour"), format!("{flavour}\n")).unwrap();
+    }
+
+    /// The loader entries under `directory`, sorted.
+    fn entries_in(&self, directory: &str) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(self.esp.join("loader").join(directory))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
     /// tilo-deployment's `entries` pass, with this helper as its writer.
     fn run_entries(&self, source: Option<&str>, fail_writer: bool) -> Output {
+        self.run_deployment(source, fail_writer, false)
+    }
+
+    /// The `entries` pass followed by the shipped repair-entry derivation.
+    fn run_entries_and_repair(&self) -> Output {
+        self.run_deployment(None, false, true)
+    }
+
+    fn run_deployment(&self, source: Option<&str>, fail_writer: bool, repair: bool) -> Output {
         let text = deployment();
         let helpers = between(&text, "esp_path() {", "# --- listing");
-        let counters = between(
-            &text,
-            "cmd_entries() {",
-            "# Derive the repair-mode boot entry",
-        );
+        let (counters, repair_stub) = if repair {
+            (between(&text, "cmd_entries() {", "case \"${1:-}\" in"), "")
+        } else {
+            (
+                between(
+                    &text,
+                    "cmd_entries() {",
+                    "# Derive the repair-mode boot entry",
+                ),
+                "cmd_repair_entry() { :; }",
+            )
+        };
         let script = format!(
             "{helpers}{counters}
 id() {{ printf '0\\n'; }}
 findmnt() {{ printf '%s\\n' \"$FIXTURE_ROOT_SOURCE\"; }}
 bootctl() {{ printf 'Current Entry: bootc_fedora-44-1.conf\\n'; }}
 die() {{ echo \"$*\" >&2; exit 1; }}
+warn() {{ echo \"WARNING: $*\" >&2; }}
 log() {{ echo \"$*\"; }}
-cmd_repair_entry() {{ :; }}
+{repair_stub}
 cmd_entries
 "
         );
@@ -179,12 +231,14 @@ cmd_entries
             source.map_or_else(|| format!("composefs:{}", "a".repeat(128)), str::to_owned);
         let uki_cmdline = repo().join("os/dev/uki-cmdline.py");
         let plan_dir = self.plan_dir.display().to_string();
+        let flavour = self.root.join("image-flavour").display().to_string();
         self.command(
             "bash",
             &[
                 ("TILO_ESP_PLAN_DIR", &plan_dir),
                 ("TILO_ESP_WRITE_CMD", &writer),
                 ("UKI_CMDLINE", uki_cmdline.to_str().unwrap()),
+                ("IMAGE_FLAVOUR_FILE", &flavour),
                 ("BOOT_TRIES", "3"),
                 ("FIXTURE_ROOT_SOURCE", &root_source),
             ],
@@ -387,6 +441,187 @@ fn non_composefs_keeps_bootloader_selected_entry() {
             .join("loader/entries/bootc_fedora-43-1+3.conf")
             .exists()
     );
+}
+
+#[test]
+fn dev_kernel_initrd_entries_are_counted_by_their_composefs_identity() {
+    let f = Fixture::new();
+    f.set_flavour("dev");
+    let (booted, staged) = ("a".repeat(128), "b".repeat(128));
+    f.type1_entry(
+        "entries",
+        "bootc_fedora-44-1.conf",
+        &booted,
+        &format!("composefs={booted}"),
+    );
+    // bootc reuses an unchanged kernel and initrd from the earlier
+    // deployment's directory, so the directory is not the identity.
+    f.type1_entry(
+        "entries.staged",
+        "bootc_fedora-44-0.conf",
+        &booted,
+        &format!("composefs={staged}"),
+    );
+    f.type1_entry(
+        "entries.staged",
+        "bootc_fedora-44-1.conf",
+        &booted,
+        &format!("composefs={booted}"),
+    );
+    let out = f.run_entries(None, false);
+    assert_ok(&out);
+    assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
+    assert_eq!(
+        f.entries_in("entries.staged"),
+        ["bootc_fedora-44-0+3.conf", "bootc_fedora-44-1.conf"]
+    );
+    // A repeated pass leaves the counted entry and the tries it has spent.
+    let counted = f.esp.join("loader/entries.staged/bootc_fedora-44-0+3.conf");
+    let spent = counted.with_file_name("bootc_fedora-44-0+2-1.conf");
+    fs::rename(&counted, &spent).unwrap();
+    assert_ok(&f.run_entries(None, false));
+    assert_eq!(
+        f.entries_in("entries.staged"),
+        ["bootc_fedora-44-0+2-1.conf", "bootc_fedora-44-1.conf"]
+    );
+}
+
+#[test]
+fn dev_kernel_initrd_entry_for_another_deployment_cannot_prove_the_boot() {
+    let f = Fixture::new();
+    f.set_flavour("dev");
+    let other = "b".repeat(128);
+    f.type1_entry(
+        "entries",
+        "bootc_fedora-44-1.conf",
+        &other,
+        &format!("composefs={other}"),
+    );
+    assert_refused(
+        &f.run_entries(None, false),
+        "no retained entry matches the running deployment",
+    );
+    assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
+}
+
+#[test]
+fn malformed_dev_kernel_initrd_entries_are_refused() {
+    let booted = "a".repeat(128);
+    let one = format!("composefs={booted}");
+    let managed = format!("/EFI/Linux/bootc_composefs-{booted}");
+    let cases = [
+        format!("composefs={booted} composefs={}", "b".repeat(128)),
+        String::new(),
+        "composefs=".to_owned(),
+        format!("composefs={}", "a".repeat(127)),
+        format!("composefs={booted}x"),
+    ];
+    for options in cases {
+        let f = Fixture::new();
+        f.set_flavour("dev");
+        f.type1_entry("entries", "bootc_fedora-44-1.conf", &booted, &options);
+        assert_refused(
+            &f.run_entries(None, false),
+            "not a managed kernel/initrd entry",
+        );
+        assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
+    }
+    let entry = |body: &str| format!("title Tilo\n{body}options root=UUID=0000 {one}\n");
+    let shapes = [
+        // Outside bootc's managed directory, or not its file names.
+        format!("linux /vmlinuz\ninitrd {managed}/initrd\n"),
+        format!("linux /EFI/Linux/other/vmlinuz\ninitrd /EFI/Linux/other/initrd\n"),
+        format!("linux {managed}/../vmlinuz\ninitrd {managed}/initrd\n"),
+        format!("linux {managed}/Image\ninitrd {managed}/initrd\n"),
+        // Kernel and initrd from different deployments.
+        format!(
+            "linux {managed}/vmlinuz\ninitrd /EFI/Linux/bootc_composefs-{}/initrd\n",
+            "b".repeat(128)
+        ),
+        // Missing or repeated payload lines.
+        format!("linux {managed}/vmlinuz\n"),
+        format!("linux {managed}/vmlinuz\ninitrd {managed}/initrd\ninitrd {managed}/initrd\n"),
+        // A split entry that also selects an EFI image is neither shape.
+        format!("linux {managed}/vmlinuz\ninitrd {managed}/initrd\nefi /EFI/Linux/x.efi\n"),
+    ];
+    for body in shapes {
+        let f = Fixture::new();
+        f.set_flavour("dev");
+        let path = f.esp.join("loader/entries/bootc_fedora-44-1.conf");
+        fs::write(&path, entry(&body)).unwrap();
+        assert_refused(
+            &f.run_entries(None, false),
+            "not a managed kernel/initrd entry",
+        );
+        assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
+    }
+}
+
+#[test]
+fn dev_image_keeps_the_managed_uki_checks() {
+    let f = Fixture::new();
+    f.set_flavour("dev");
+    f.make_uki("old.efi", &"a".repeat(128));
+    f.make_uki("new.efi", &"b".repeat(128));
+    f.bootc_entry("entries", "bootc_fedora-44-1.conf", "old.efi");
+    f.bootc_entry("entries.staged", "bootc_fedora-44-1.conf", "new.efi");
+    assert_ok(&f.run_entries(None, false));
+    assert_eq!(f.entries_in("entries.staged"), ["bootc_fedora-44-1+3.conf"]);
+    // A uki line outside bootc's directory is still refused, not read as a
+    // kernel/initrd entry.
+    let f = Fixture::new();
+    f.set_flavour("dev");
+    fs::write(
+        f.esp.join("loader/entries/bootc_fedora-44-1.conf"),
+        "title Tilo\nuki /EFI/tilo/x.efi\n",
+    )
+    .unwrap();
+    assert_refused(&f.run_entries(None, false), "not a managed UKI entry");
+}
+
+#[test]
+fn sealed_image_refuses_kernel_initrd_entries() {
+    let booted = "a".repeat(128);
+    for flavour in [None, Some(""), Some("release"), Some("dev-but-not")] {
+        let f = Fixture::new();
+        if let Some(flavour) = flavour {
+            f.set_flavour(flavour);
+        }
+        f.type1_entry(
+            "entries",
+            "bootc_fedora-44-1.conf",
+            &booted,
+            &format!("composefs={booted}"),
+        );
+        f.type1_entry(
+            "entries.staged",
+            "bootc_fedora-44-1.conf",
+            &booted,
+            &format!("composefs={}", "b".repeat(128)),
+        );
+        assert_refused(&f.run_entries(None, false), "not a managed UKI entry");
+        assert_eq!(f.entries_in("entries.staged"), ["bootc_fedora-44-1.conf"]);
+    }
+}
+
+#[test]
+fn repair_entry_skips_a_deployment_without_a_uki() {
+    let f = Fixture::new();
+    f.set_flavour("dev");
+    let booted = "a".repeat(128);
+    f.type1_entry(
+        "entries",
+        "bootc_fedora-44-1.conf",
+        &booted,
+        &format!("composefs={booted}"),
+    );
+    let out = f.run_entries_and_repair();
+    assert_ok(&out);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("is not a UKI entry"), "{stdout}");
+    assert!(!f.esp.join("EFI/Linux/tilo-repair.efi").exists());
+    assert!(!f.esp.join("EFI/tilo/repair.source").exists());
+    assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
 }
 
 #[test]
