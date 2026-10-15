@@ -1,5 +1,0 @@
-reason = "round 2's Terminal work: the async hosted open, runtime-portal's runtime requests and fd transport, and the inherited control wire; main measured 1,494,528 B on x86_64, round 2's run 108131 measured 1,509,888 B, over the 1,507,328 B budget by 2,560 B; this adds the overage with the ratchet's headroom, as the gate proposed"
-run = 108131
-
-[apps."so.tilo.terminal"]
-x86_64 = 65536
