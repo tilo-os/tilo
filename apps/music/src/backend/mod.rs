@@ -558,10 +558,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn default_backend_is_offline_empty_and_cannot_stream() {
         // Phase `default_backend_is_offline_and_cannot_stream`.
         {

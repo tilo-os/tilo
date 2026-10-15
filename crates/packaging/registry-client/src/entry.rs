@@ -243,10 +243,6 @@ pub fn build_entry_with_objects(
     )
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "registry entry assembly must bind package inspection, target selection, metadata, prior-entry continuity, validation, and signing in one auditable sequence"
-)]
 fn entry_for_checked(
     (tapp_bytes, checked): (&[u8], &Checked),
     url: &str,
