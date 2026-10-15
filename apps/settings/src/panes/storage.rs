@@ -788,11 +788,8 @@ impl PaneModel for StorageModel {
     }
 
     fn poll(&mut self) -> bool {
-        let waiting = (
-            self.snapshot_result.is_some(),
-            self.sync_result.is_some(),
-            self.residency_job.is_some(),
-        );
+        let waiting = (self.snapshot_result.is_some(), self.sync_result.is_some());
+        let residency_finished = self.poll_residency_job();
         if let Some(receiver) = &self.snapshot_result {
             match receiver.try_recv() {
                 Ok(read) => {
@@ -810,21 +807,6 @@ impl PaneModel for StorageModel {
                             t("settings-storage-service-ended"),
                         );
                     }
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
-        if let Some((id, receiver)) = &self.residency_job {
-            let id = *id;
-            match receiver.try_recv() {
-                Ok(result) => {
-                    self.residency_job = None;
-                    self.replies.finish(id, result);
-                    self.refresh_sync();
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.residency_job = None;
-                    self.replies.fail(id, t("settings-storage-service-ended"));
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -890,7 +872,7 @@ impl PaneModel for StorageModel {
         let policy_changed = self.poll_policy();
         let finished = (waiting.0 && self.snapshot_result.is_none())
             || (waiting.1 && self.sync_result.is_none())
-            || (waiting.2 && self.residency_job.is_none())
+            || residency_finished
             || policy_changed;
         std::mem::take(&mut self.changed) || finished
     }
@@ -948,6 +930,26 @@ impl StorageModel {
                 }
             }
         }
+        true
+    }
+
+    /// Take in how the running residency effect ended, if it did; whether
+    /// it did. Its figures are read again.
+    fn poll_residency_job(&mut self) -> bool {
+        let Some((id, receiver)) = &self.residency_job else {
+            return false;
+        };
+        let id = *id;
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(t("settings-storage-service-ended"))
+            }
+        };
+        self.residency_job = None;
+        self.replies.finish(id, result);
+        self.refresh_sync();
         true
     }
 
