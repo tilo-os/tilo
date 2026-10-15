@@ -296,6 +296,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
                 let original: NeighbourMsg = postcard::from_bytes(&original).unwrap();
                 assert!(
                     view.peer()
+                        .outbox()
                         .lookup_retained_local_document(&original, key.verifying_key().to_bytes())
                         .unwrap()
                         .is_some(),
@@ -580,6 +581,7 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
                 let projected: NeighbourMsg = postcard::from_bytes(&frames[0]).unwrap();
                 assert!(
                     view.peer()
+                        .outbox()
                         .lookup_retained_local_document(&projected, key.verifying_key().to_bytes())
                         .unwrap()
                         .is_none()

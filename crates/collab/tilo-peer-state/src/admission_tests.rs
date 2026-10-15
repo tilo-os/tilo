@@ -1960,9 +1960,21 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
         .unwrap();
         let old_bytes = postcard::to_allocvec(&original).unwrap();
         let mut outbox = vec![original.clone()];
-        assert_eq!(client.outbox_status(&outbox, later).blocked_expired, 1);
+        assert_eq!(
+            client
+                .outbox()
+                .outbox_status(&outbox, later)
+                .blocked_expired,
+            1
+        );
         // A reload alone cannot authorize re-signing or turn persistence into sync.
-        assert_eq!(client.reconcile_outbox(&outbox, &b, later).unwrap(), outbox);
+        assert_eq!(
+            client
+                .outbox_mut()
+                .reconcile_outbox(&outbox, &b, later)
+                .unwrap(),
+            outbox
+        );
         for msg in governor.bootstrap_messages(&a, later).unwrap() {
             client
                 .receive_from(
@@ -1972,7 +1984,10 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
                 )
                 .unwrap();
         }
-        outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
+        outbox = client
+            .outbox_mut()
+            .reconcile_outbox(&outbox, &b, later)
+            .unwrap();
         if !delivered {
             assert_eq!(outbox.len(), 2);
             assert_eq!(postcard::to_allocvec(&outbox[0]).unwrap(), old_bytes);
@@ -1987,7 +2002,13 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
             assert_eq!(new.seq, old.seq + 1);
             assert_eq!(old.timestamp, now);
             assert_eq!(new.timestamp, later);
-            assert_eq!(client.outbox_status(&outbox, later).blocked_expired, 0);
+            assert_eq!(
+                client
+                    .outbox()
+                    .outbox_status(&outbox, later)
+                    .blocked_expired,
+                0
+            );
             governor
                 .receive_from(
                     TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
@@ -2023,14 +2044,17 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
                     )
                     .unwrap();
             }
-            outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
+            outbox = client
+                .outbox_mut()
+                .reconcile_outbox(&outbox, &b, later)
+                .unwrap();
         }
         assert!(outbox.is_empty());
         assert_eq!(client.rows(), governor.rows());
         let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
         let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
         assert_eq!(final_doc.text(text).unwrap(), "saved once");
-        assert_eq!(client.outbox_status(&outbox, later).pending, 0);
+        assert_eq!(client.outbox().outbox_status(&outbox, later).pending, 0);
     }
 }
 
@@ -2121,6 +2145,7 @@ fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
         "missing dependencies are not materialized checkpoint coverage"
     );
     let outbox = client
+        .outbox_mut()
         .reconcile_outbox(&[first, second], &b, later)
         .unwrap();
     assert_eq!(outbox.len(), 4);
@@ -2144,6 +2169,7 @@ fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
     }
     assert!(
         client
+            .outbox_mut()
             .reconcile_outbox(&outbox, &b, later)
             .unwrap()
             .is_empty()
@@ -2247,6 +2273,7 @@ fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry()
         client.receive_from(origin, message, reconnect).unwrap();
     }
     let mut outbox = client
+        .outbox_mut()
         .reconcile_outbox(&[first, second.clone()], &b, reconnect)
         .unwrap();
     assert_eq!(outbox.len(), 3);
@@ -2274,7 +2301,10 @@ fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry()
             if outcome.changed {
                 for checkpoint in governor.bootstrap_messages(&a, reconnect).unwrap() {
                     client.receive_from(origin, checkpoint, reconnect).unwrap();
-                    outbox = client.reconcile_outbox(&outbox, &b, reconnect).unwrap();
+                    outbox = client
+                        .outbox_mut()
+                        .reconcile_outbox(&outbox, &b, reconnect)
+                        .unwrap();
                 }
             }
         }
@@ -2295,7 +2325,7 @@ fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry()
     let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
     let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
     assert_eq!(final_doc.text(text).unwrap(), "one two");
-    assert_eq!(client.outbox_status(&outbox, reconnect).pending, 0);
+    assert_eq!(client.outbox().outbox_status(&outbox, reconnect).pending, 0);
 }
 
 #[test]

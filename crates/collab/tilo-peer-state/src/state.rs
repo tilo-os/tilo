@@ -32,6 +32,11 @@ pub use bounded::{
 pub(crate) mod json_resource_tests;
 use backend::{LegacyNative, PeerCore, PeerDocument};
 mod bans;
+mod facades;
+pub use facades::{
+    PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerWorkspace,
+    PeerWorkspaceMut,
+};
 mod bot_members;
 mod delegates;
 pub use bot_members::InstalledBot;
@@ -2050,10 +2055,6 @@ impl StatePeer {
             .map(|report| report.summary)
             .map_err(err)
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the single admission dispatch over every neighbour message kind"
-    )]
     fn receive_with_context(
         &mut self,
         source: [u8; 32],
@@ -2067,125 +2068,12 @@ impl StatePeer {
         }
         match message {
             NeighbourMsg::IdentityHello { cert, revocations } => {
-                if cert.device_public_key != source {
-                    return Err("transport certificate mismatch".into());
-                }
-                if self.core.certificates.get(&source).map(AsRef::as_ref) != Some(cert.as_ref()) {
-                    let admitted = self.core.room_doc.as_ref().and_then(|doc| {
-                        doc.identities()
-                            .get(&hex::encode(source))
-                            .and_then(|identity| identity.as_ref().ok())
-                    });
-                    if admitted.is_none_or(|identity| identity.device_cert != *cert) {
-                        return Err("identity is absent from admitted roster".into());
-                    }
-                }
-                let verified = VerifiedCertificate::new((*cert).clone(), now_ns(now))?;
-                let mut metadata_changed =
-                    self.core.certificates.get(&source).map(AsRef::as_ref) != Some(cert.as_ref());
-                for entry in revocations {
-                    if entry.user_public_key != cert.user_public_key {
-                        return Err("revocation root mismatch".into());
-                    }
-                    if self
-                        .core
-                        .certificates
-                        .get(&entry.revoked_device_public_key)
-                        .is_some_and(|target| target.user_public_key != entry.user_public_key)
-                    {
-                        return Err("revocation cannot cross identity roots".into());
-                    }
-                    metadata_changed |= self.core.revocations.insert(entry).map_err(err)?;
-                }
-                if self.core.revocations.is_revoked(&source) {
-                    return Err("device revoked".into());
-                }
-                self.core.certificates.insert(source, verified);
-                Ok(AdmissionReport::metadata(ReceiveOutcome {
-                    metadata_changed,
-                    ..Default::default()
-                }))
+                self.receive_identity_hello(source, &cert, revocations, now)
             }
             NeighbourMsg::SyncResp {
                 changes,
                 room: received,
-            } => {
-                if received != self.core.room {
-                    return Err("room topic mismatch".into());
-                }
-                let cert = self.certificate(&source, now)?;
-                let person = cert.user_public_key;
-                let foreign = backend::member::foreign(cert, &self.core.authority);
-                // Bootstrap: the invite's authority device supplies the first
-                // governance before any roster exists to resolve it against.
-                if self.core.room_doc.is_some() || source != self.core.authority.device_public_key {
-                    self.role(&source, now)?;
-                }
-                let pinned = hex::encode(self.core.authority.device_public_key);
-                let from = hex::encode(source);
-                // The one room admission the shell's workspace tree runs too.
-                let room::AdmittedRoom { candidate, media } = room::admit_room_changes(
-                    room::RoomAdmission {
-                        before: self.core.room_doc.as_deref(),
-                        room: &self.core.room,
-                        source: room::Writer {
-                            key: &from,
-                            standing: room::Standing::Member { person, foreign },
-                        },
-                        authority: room::AuthorityPin::Device(&pinned),
-                        contents: room::ContentOwnership::Registry,
-                        caps_now: now_secs(now),
-                    },
-                    &changes,
-                )
-                .map_err(err)?;
-                // Receipts this peer admitted earlier stay immutable even once
-                // the room document omits them.
-                let mut receipts = self.core.receipts.clone();
-                room::admit_receipts(&mut receipts, &candidate).map_err(err)?;
-                let changed = self
-                    .core
-                    .room_doc
-                    .as_deref()
-                    .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
-                if let Some(policy) = &media {
-                    self.validate_media_bindings(policy, false)?;
-                }
-                let mut metadata_changed = self.import_governed_certificates(&candidate, now)?;
-                self.core.receipts = receipts;
-                self.core.room_doc = Some(candidate.into());
-                let pending = std::mem::take(&mut self.core.pending);
-                self.core.pending_bytes = 0;
-                let mut applied = changed;
-                let mut rejected = 0usize;
-                let mut settled = Vec::new();
-                for (author, message, replayed) in pending {
-                    match self.receive_with_context(author, message, now, replayed, strict_report) {
-                        Ok(outcome) => {
-                            applied |= outcome.changed;
-                            metadata_changed |= outcome.metadata_changed;
-                            rejected = rejected.saturating_add(outcome.rejected);
-                            settled.extend(outcome.settled);
-                        }
-                        Err(error) => {
-                            if self.core.native_cut_publisher.is_some() {
-                                return Err(error);
-                            }
-                            rejected = rejected.saturating_add(1);
-                        }
-                    }
-                }
-                let mut report = AdmissionReport::metadata(ReceiveOutcome {
-                    changed: applied,
-                    metadata_changed,
-                    incomplete: self.incomplete_reason(),
-                    deferred: !self.core.pending.is_empty(),
-                    rejected,
-                    ..Default::default()
-                });
-                report.settled = settled;
-                Ok(report)
-            }
+            } => self.receive_room_changes(source, &received, &changes, now, strict_report),
             message @ NeighbourMsg::AppDocument { .. } => {
                 if self.core.room_doc.is_none() || !self.core.certificates.contains_key(&source) {
                     let prerequisite = if self.core.room_doc.is_none() {
@@ -2202,6 +2090,140 @@ impl StatePeer {
                 ReceiveOutcome::default(),
             )),
         }
+    }
+    /// Admit the transport device's own certificate and the revocations its
+    /// identity root signed.
+    fn receive_identity_hello(
+        &mut self,
+        source: [u8; 32],
+        cert: &DeviceCert,
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
+        now: SystemTime,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        if cert.device_public_key != source {
+            return Err("transport certificate mismatch".into());
+        }
+        if self.core.certificates.get(&source).map(AsRef::as_ref) != Some(cert) {
+            let admitted = self.core.room_doc.as_ref().and_then(|doc| {
+                doc.identities()
+                    .get(&hex::encode(source))
+                    .and_then(|identity| identity.as_ref().ok())
+            });
+            if admitted.is_none_or(|identity| identity.device_cert != *cert) {
+                return Err("identity is absent from admitted roster".into());
+            }
+        }
+        let verified = VerifiedCertificate::new(cert.clone(), now_ns(now))?;
+        let mut metadata_changed =
+            self.core.certificates.get(&source).map(AsRef::as_ref) != Some(cert);
+        for entry in revocations {
+            if entry.user_public_key != cert.user_public_key {
+                return Err("revocation root mismatch".into());
+            }
+            if self
+                .core
+                .certificates
+                .get(&entry.revoked_device_public_key)
+                .is_some_and(|target| target.user_public_key != entry.user_public_key)
+            {
+                return Err("revocation cannot cross identity roots".into());
+            }
+            metadata_changed |= self.core.revocations.insert(entry).map_err(err)?;
+        }
+        if self.core.revocations.is_revoked(&source) {
+            return Err("device revoked".into());
+        }
+        self.core.certificates.insert(source, verified);
+        Ok(AdmissionReport::metadata(ReceiveOutcome {
+            metadata_changed,
+            ..Default::default()
+        }))
+    }
+    /// Admit governance changes to the room document, then retry every input
+    /// deferred until governance arrived.
+    fn receive_room_changes(
+        &mut self,
+        source: [u8; 32],
+        received: &str,
+        room_changes: &[Vec<u8>],
+        now: SystemTime,
+        strict_report: bool,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        if received != self.core.room {
+            return Err("room topic mismatch".into());
+        }
+        let cert = self.certificate(&source, now)?;
+        let person = cert.user_public_key;
+        let foreign = backend::member::foreign(cert, &self.core.authority);
+        // Bootstrap: the invite's authority device supplies the first
+        // governance before any roster exists to resolve it against.
+        if self.core.room_doc.is_some() || source != self.core.authority.device_public_key {
+            self.role(&source, now)?;
+        }
+        let pinned = hex::encode(self.core.authority.device_public_key);
+        let from = hex::encode(source);
+        // The one room admission the shell's workspace tree runs too.
+        let room::AdmittedRoom { candidate, media } = room::admit_room_changes(
+            room::RoomAdmission {
+                before: self.core.room_doc.as_deref(),
+                room: &self.core.room,
+                source: room::Writer {
+                    key: &from,
+                    standing: room::Standing::Member { person, foreign },
+                },
+                authority: room::AuthorityPin::Device(&pinned),
+                contents: room::ContentOwnership::Registry,
+                caps_now: now_secs(now),
+            },
+            room_changes,
+        )
+        .map_err(err)?;
+        // Receipts this peer admitted earlier stay immutable even once
+        // the room document omits them.
+        let mut receipts = self.core.receipts.clone();
+        room::admit_receipts(&mut receipts, &candidate).map_err(err)?;
+        let changed = self
+            .core
+            .room_doc
+            .as_deref()
+            .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
+        if let Some(policy) = &media {
+            self.validate_media_bindings(policy, false)?;
+        }
+        let mut metadata_changed = self.import_governed_certificates(&candidate, now)?;
+        self.core.receipts = receipts;
+        self.core.room_doc = Some(candidate.into());
+        let pending = std::mem::take(&mut self.core.pending);
+        self.core.pending_bytes = 0;
+        let mut applied = changed;
+        let mut rejected = 0usize;
+        let mut settled = Vec::new();
+        for (author, message, replayed) in pending {
+            match self.receive_with_context(author, message, now, replayed, strict_report) {
+                Ok(outcome) => {
+                    applied |= outcome.changed;
+                    metadata_changed |= outcome.metadata_changed;
+                    rejected = rejected.saturating_add(outcome.rejected);
+                    settled.extend(outcome.settled);
+                }
+                Err(error) => {
+                    if self.core.native_cut_publisher.is_some() {
+                        return Err(error);
+                    }
+                    rejected = rejected.saturating_add(1);
+                }
+            }
+        }
+        let mut report = AdmissionReport::metadata(ReceiveOutcome {
+            changed: applied,
+            metadata_changed,
+            incomplete: self.incomplete_reason(),
+            deferred: !self.core.pending.is_empty(),
+            rejected,
+            ..Default::default()
+        });
+        report.settled = settled;
+        Ok(report)
     }
     /// True only when governance covers this exact route with a checkpoint by
     /// the same author at a strictly greater sequence than `sequence`. Any other

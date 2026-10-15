@@ -263,7 +263,10 @@ pub fn raw_fixture_at(
         calls: BTreeMap::from([(
             [68; 32],
             media::CallV1 {
-                binding: peer.resolve_media_binding(APP, "", "voice").unwrap(),
+                binding: peer
+                    .media()
+                    .resolve_media_binding(APP, "", "voice")
+                    .unwrap(),
                 epoch: 1,
                 phase: media::CallPhaseV1::Active,
                 allowed: media::DirectionsV1 {
@@ -274,7 +277,8 @@ pub fn raw_fixture_at(
             },
         )]),
     };
-    peer.author_media_policy(&policy, &governor_key, now)
+    peer.media_mut()
+        .author_media_policy(&policy, &governor_key, now)
         .unwrap();
     let messages = peer
         .durable_bootstrap_messages(&governor_key, now, 1)

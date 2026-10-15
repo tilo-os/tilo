@@ -3633,6 +3633,7 @@ fn native_app_open_access(
             .permissions(certificate.device_public_key, now)?;
         let administrator = view
             .peer()
+            .workspace()
             .check_workspace_administration(certificate.device_public_key, now)
             .is_ok();
         let exists = view.peer().document(package, "").is_some();

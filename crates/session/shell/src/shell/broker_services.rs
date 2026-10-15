@@ -184,9 +184,11 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             if view.device() != view.governor() || view.governor() != &governor {
                 return Err("checkpoint governor custody changed".into());
             }
-            view.peer().check_checkpoint_writer(&key, now)?;
+            view.peer().workspace().check_checkpoint_writer(&key, now)?;
             if mutation {
-                view.peer().check_checkpoint_namer(caller, now)?;
+                view.peer()
+                    .workspace()
+                    .check_checkpoint_namer(caller, now)?;
             }
             Ok(())
         })?;
@@ -372,7 +374,7 @@ async fn record_receipt_elsewhere(
     else {
         return Err("missing effect receipt operation".into());
     };
-    let expected = tilo_peer_state::StatePeer::validate_workspace_effect_receipt_encoding(
+    let expected = tilo_peer_state::PeerWorkspace::validate_workspace_effect_receipt_encoding(
         *invocation,
         redacted,
     )?;

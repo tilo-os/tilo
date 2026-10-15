@@ -155,6 +155,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
         .with_current(room, |view| {
             assert!(
                 view.peer()
+                    .workspace()
                     .check_workspace_administration(
                         fixture.certificate.device_public_key,
                         fixture.now
