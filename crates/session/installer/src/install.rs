@@ -1278,9 +1278,8 @@ mod tests {
                 ..Default::default()
             },
         );
-        let computer_args: Vec<_> = computer.get_args().collect();
         let server_args: Vec<_> = server.get_args().collect();
-        assert!(!computer_args.contains(&std::ffi::OsStr::new("--purpose")));
+        assert!(!computer.get_args().any(|arg| arg == "--purpose"));
         let purpose = server_args
             .windows(2)
             .find(|pair| pair[0] == "--purpose")

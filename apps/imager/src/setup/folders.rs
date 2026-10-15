@@ -1,12 +1,15 @@
 //! Non-authoritative folder discovery for setup estimates.
 
+#[cfg(not(windows))]
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use ui::time::Duration;
 
-use super::nofollow::{metadata_nofollow, open_directory_nofollow};
+use super::nofollow::{
+    WindowsCopyBlock, metadata_nofollow, open_directory_nofollow, windows_copy_block,
+};
 use cap_std::fs::Dir;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,6 +17,8 @@ pub enum SkipReason {
     SymbolicLink,
     ReadError(String),
     UnsupportedFileType,
+    CloudUnavailable,
+    UnsupportedReparsePoint,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +66,7 @@ fn record_skipped(scan: &mut FolderScan, entry: SkippedEntry) -> Result<(), Stri
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn root_parent_and_name(root: &Path) -> (PathBuf, OsString) {
     match root.file_name() {
         Some(name) => {
@@ -74,6 +80,16 @@ fn root_parent_and_name(root: &Path) -> (PathBuf, OsString) {
     }
 }
 
+#[cfg(windows)]
+fn pin_selected_root(root: &Path) -> Result<fs::File, String> {
+    // Use exactly the copier's grant walk: opening only the selected folder's
+    // parent ambiently would follow an unsupported reparse-point ancestor.
+    let pinned = super::migration::PinnedDirectory::open_absolute(root)
+        .map_err(|error| format!("cannot open selected folder {}: {error}", root.display()))?;
+    pinned.file.try_clone().map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
 fn pin_selected_root(root: &Path) -> Result<fs::File, String> {
     let (parent_path, name) = root_parent_and_name(root);
     let parent =
@@ -238,6 +254,21 @@ pub fn scan_folder_cancellable(root: &Path, cancelled: &AtomicBool) -> Result<Fo
                     continue;
                 }
             };
+            if let Some(block) = windows_copy_block(&metadata) {
+                record_skipped(
+                    &mut scan,
+                    SkippedEntry {
+                        path,
+                        reason: match block {
+                            WindowsCopyBlock::CloudUnavailable => SkipReason::CloudUnavailable,
+                            WindowsCopyBlock::UnsupportedReparsePoint => {
+                                SkipReason::UnsupportedReparsePoint
+                            }
+                        },
+                    },
+                )?;
+                continue;
+            }
             let file_type = metadata.file_type();
             if file_type.is_symlink() {
                 record_skipped(
@@ -365,6 +396,91 @@ mod tests {
             assert_eq!(scan.bytes, 3);
             assert_eq!(fs::metadata(file).unwrap().len(), 18);
         }
+    }
+
+    /// Real Windows metadata adapters and both consumers, not a simulated OS.
+    #[test]
+    #[cfg(windows)]
+    fn windows_offline_entries_are_excluded_and_copy_never_reports_complete() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_OFFLINE, SetFileAttributesW,
+        };
+
+        fn set_attributes(path: &Path, attributes: u32) {
+            let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            // SAFETY: wide is a terminated path and remains live for the call.
+            assert_ne!(unsafe { SetFileAttributesW(wide.as_ptr(), attributes) }, 0);
+        }
+
+        let source = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let local = source.path().join("local");
+        let offline_file = source.path().join("offline-file");
+        let offline_directory = source.path().join("offline-directory");
+        fs::write(&local, b"local").unwrap();
+        fs::write(&offline_file, b"unavailable").unwrap();
+        fs::create_dir(&offline_directory).unwrap();
+        fs::write(offline_directory.join("hidden"), b"not counted").unwrap();
+        set_attributes(&offline_file, FILE_ATTRIBUTE_OFFLINE);
+        set_attributes(&offline_directory, FILE_ATTRIBUTE_OFFLINE);
+
+        let scan = scan_folder(source.path()).unwrap();
+        assert_eq!(scan.file_count, 1);
+        assert_eq!(scan.bytes, 5);
+        assert_eq!(scan.empty_directory_count, 0);
+        assert_eq!(scan.skipped_count, 2);
+        assert_eq!(scan.skipped.len(), 2);
+        for entry in &scan.skipped {
+            assert_eq!(entry.reason, SkipReason::CloudUnavailable);
+            assert!(entry.path == offline_file || entry.path == offline_directory);
+        }
+        let destination = output.path().join("copy");
+        let report = super::super::migration::copy_folder(
+            source.path(),
+            &destination,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        assert!(!report.complete());
+        assert!(
+            report
+                .failed
+                .iter()
+                .any(|(path, _)| path == Path::new("offline-file"))
+        );
+        assert!(
+            report
+                .failed
+                .iter()
+                .any(|(path, _)| path == Path::new("offline-directory"))
+        );
+        assert!(!destination.join("offline-file").exists());
+        assert!(!destination.join("offline-directory").exists());
+        assert_eq!(fs::read(destination.join("local")).unwrap(), b"local");
+
+        // A selected unavailable root is not a successful empty review, nor
+        // may the copier accept it simply because it contains no files.
+        assert!(
+            scan_folder(&offline_directory)
+                .unwrap_err()
+                .contains("offline or requiring recall")
+        );
+        let selected_below_offline = offline_directory.join("selected");
+        fs::create_dir(&selected_below_offline).unwrap();
+        assert!(scan_folder(&selected_below_offline).is_err());
+        assert!(
+            super::super::migration::copy_folder(
+                &offline_directory,
+                &output.path().join("root-copy"),
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .is_err()
+        );
+        set_attributes(&offline_file, FILE_ATTRIBUTE_NORMAL);
+        set_attributes(&offline_directory, FILE_ATTRIBUTE_NORMAL);
     }
 
     /// Symlink handling and skip details.

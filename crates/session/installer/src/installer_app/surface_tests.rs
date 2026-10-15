@@ -10,6 +10,8 @@ use serde_json::{Value, json};
 use super::*;
 use crate::operation::{self as op, Operation};
 
+mod method_intent_tests;
+
 /// A recording install backend: disks from a fixture, an install that
 /// streams a recovery-key marker and progress, and power actions noted
 /// instead of taken.
@@ -107,6 +109,87 @@ fn refused(reply: &Value) -> Option<&str> {
 
 fn state(app: &mut InstallerApp, doc: &mut AutoCommit) -> Value {
     console(app, doc, &json!({"op": "state_dump"}))["state"].clone()
+}
+
+#[test]
+fn linux_without_unallocated_space_never_falls_back_to_erase() {
+    for filesystem in ["ext4", "btrfs", "crypto_LUKS"] {
+        let backend = FakeBackend::new();
+        let (mut app, mut doc) = app(&backend);
+        let mut disk = sample_disks().remove(0);
+        disk.partitions.truncate(2);
+        let root = &mut disk.partitions[1];
+        root.filesystem = filesystem.into();
+        root.label = "Linux and Nextcloud files".into();
+        root.part_type = LINUX_FILESYSTEM_GUID.into();
+        root.size_bytes = disk.size_bytes - root.start_bytes - 1_048_576;
+        app.refresh_disks_with(vec![disk]);
+        app.step = Step::Disk;
+        assert!(
+            refused(&invoke(
+                &mut app,
+                &mut doc,
+                "set-method@installer.storage",
+                &json!({"method":"alongside"})
+            ))
+            .is_none()
+        );
+        assert!(
+            refused(&invoke(
+                &mut app,
+                &mut doc,
+                "select@installer.disk:/dev/sda",
+                &json!({})
+            ))
+            .is_none()
+        );
+        let published = app.publish();
+        let storage = published[0]
+            .children
+            .iter()
+            .find(|r| r.id.0 == op::STORAGE)
+            .unwrap();
+        let guidance = storage
+            .children
+            .iter()
+            .filter(|r| r.kind == "installer.guidance")
+            .map(|r| {
+                r.presentation
+                    .as_ref()
+                    .unwrap()
+                    .preview
+                    .as_ref()
+                    .unwrap()
+                    .as_str()
+            })
+            .collect::<Vec<_>>()
+            .join(". ");
+        assert!(guidance.contains("Free space inside ext4 or Btrfs is not unallocated"));
+        assert!(guidance.contains("offline partitioning tools"));
+        assert!(guidance.contains("Back up your files"));
+        assert!(guidance.contains(
+            "This installer will not automatically shrink existing filesystems, LVM, or LUKS"
+        ));
+        assert!(!guidance.contains(&crate::i18n::t(LINUX_ALONGSIDE_READY)));
+        assert!(!guidance.contains("32 GiB root +"));
+        assert!(!guidance.contains(&crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE)));
+        assert!(!guidance.contains("Disk Management"));
+        assert!(refused(&invoke(&mut app, &mut doc, "next@installer", &json!({}))).is_some());
+        assert_eq!(app.step, Step::Disk);
+        assert_eq!(app.install_method, InstallMethod::Alongside);
+        assert!(app.destructive_confirmation_target().is_none());
+        app.step = Step::Review;
+        assert!(
+            refused(&invoke(
+                &mut app,
+                &mut doc,
+                "begin@installer.review",
+                &json!({})
+            ))
+            .is_some()
+        );
+        assert!(backend.installs.lock().unwrap().is_empty());
+    }
 }
 
 #[test]

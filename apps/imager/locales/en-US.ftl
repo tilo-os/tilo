@@ -1519,8 +1519,19 @@ installer-accounts-dav-endpoint-unavailable = Couldn’t reach the server. Try a
 
 installer-accounts-dav-files-unavailable = The server didn’t provide access to this files folder.
 
+# Folder review and copy-time eligibility share these explanations.
+imager-folder-cloud-unavailable = Windows marks this item as offline or requiring recall. Its contents are not counted or copied, and Tilo will not download them. Make it available locally in Windows and review again; this may need more disk space.
+imager-folder-reparse-unsupported = This item is a Windows reparse point, such as a link, junction or cloud-managed item. This copier does not support it, even if its contents are local. Its contents are not counted or copied.
+
 # Same-computer app state is copied separately from shared original documents.
 
 installer-preview-flatpak-computer-found = { $count } apps available to copy, with their selected data and settings.
 
 installer-preview-flatpak-computer-body = Copy selected apps, their data and settings into Tilo. Later app changes stay in Tilo; edits to shared files appear in both systems.
+
+# Native Linux Nextcloud discovery reads account identity, not client sync status.
+installer-accounts-nextcloud-linux-summary = Found a Linux Nextcloud account, not a verified backup. Review local changes before erasing Linux.
+installer-accounts-nextcloud-linux-files = Your existing Linux sync folders stay unchanged. Tilo accesses files on the Nextcloud server on demand; it does not turn your Linux sync folder into a cloud mount.
+installer-accounts-nextcloud-linux-local-changes = Account discovery does not check pending uploads, folder mappings, exclusions or conflicts. Local-only changes may not be on the server. Before erasing Linux, let the Nextcloud client finish syncing and resolve conflicts, or copy local-only changes somewhere safe.
+installer-accounts-nextcloud-linux-dual-boot = Keeping Linux? Edits and deletions that sync to the Nextcloud server affect the files you access from both systems. Choose separately which local folders to copy or share with Tilo.
+installer-accounts-nextcloud-linux-calendar = Connecting Nextcloud files does not configure Calendar. After setup, use Connect calendars for this account in Settings to choose calendars.

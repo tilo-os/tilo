@@ -463,7 +463,8 @@ impl Accounts {
             Step::Failed { .. } => "failed",
         };
         serde_json::json!({ "state": state, "prepared_accounts": self.prepared.len(),
-            "can_continue": self.can_continue() })
+            "can_continue": self.can_continue(),
+            "source_review": self.source_review_keys().iter().map(|key| t(key)).collect::<Vec<_>>() })
     }
     fn stage_home(&mut self) -> Result<PathBuf, &'static str> {
         if self.stage.is_none() {
@@ -1460,12 +1461,57 @@ impl Accounts {
         ))
     }
 
+    // Native client configuration identifies an account, not the state of its sync queue.
+    // Keep this advice separate from authentication and migration destination choices.
+    fn source_review_keys(&self) -> Vec<&'static str> {
+        #[cfg(target_os = "linux")]
+        {
+            use super::super::account_transfer::Origin;
+            let native = |candidate: &Candidate| candidate.origin == Origin::Nextcloud;
+            let selected_native = |selection: &Selection| match selection {
+                Selection::Saved(candidate)
+                | Selection::NextcloudBrowser {
+                    candidate: Some(candidate),
+                }
+                | Selection::Dav {
+                    candidate: Some(candidate),
+                    ..
+                } => native(candidate),
+                _ => false,
+            };
+            let detailed = match &self.step {
+                Step::ReviewSaved => self.inventory.candidates.iter().any(native),
+                Step::NextcloudMethod(selected)
+                | Step::Confirm(selected)
+                | Step::Dav { selected, .. }
+                | Step::Done(selected)
+                | Step::Failed { selected, .. } => selected_native(selected),
+                _ => false,
+            };
+            if detailed {
+                return vec![
+                    "installer-accounts-nextcloud-linux-files",
+                    "installer-accounts-nextcloud-linux-local-changes",
+                    "installer-accounts-nextcloud-linux-dual-boot",
+                    "installer-accounts-nextcloud-linux-calendar",
+                ];
+            }
+            if matches!(self.step, Step::Overview) && self.inventory.candidates.iter().any(native) {
+                return vec!["installer-accounts-nextcloud-linux-summary"];
+            }
+        }
+        Vec::new()
+    }
+
     pub fn view(
         &self,
         dispatch: Rc<dyn Fn(AccountRequest)>,
         edit: Rc<dyn Fn(&str, String)>,
     ) -> Container {
         let mut body = page::stack().with_rhythm(Rhythm::Sibling);
+        for key in self.source_review_keys() {
+            body = body.push(Box::new(Text::new(&t(key))));
+        }
         match &self.step {
             Step::ICloud(flow) => {
                 body = body.push(flow.view(dispatch.clone(), edit));
@@ -1991,6 +2037,8 @@ fn connection_message(reason: ConnectionError) -> &'static str {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod source_review_tests;
 #[cfg(test)]
 mod tests;
 
