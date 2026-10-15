@@ -3229,7 +3229,7 @@ impl State {
     /// Grant (or revoke) each of `peers` workspace control of `surface`, on
     /// the stream's route, when legacy streams are published at all.
     fn publish_share_grants<'a>(
-        &mut self,
+        &self,
         surface: SurfaceId,
         peers: impl IntoIterator<Item = &'a MsgPeerId>,
         granted: bool,
