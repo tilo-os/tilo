@@ -1676,13 +1676,14 @@ pub(crate) fn verified_launch_installation(
     // Re-read on every launch, as `tilo-install run` does: a publisher
     // revoked after install must not keep launching from the shell. An
     // unreadable list refuses rather than reading as "nothing revoked".
+    use tilo_app_package::TrustFile as _;
     let revoked = match tilo_app_package::default_revoked_keys_path() {
         Some(path) => tilo_app_package::RevocationList::load(&path).map_err(|error| {
             RunError::InvalidServiceLaunch(format!(
                 "the publisher revocation list is unreadable ({error})"
             ))
         })?,
-        None => tilo_app_package::RevocationList::empty(),
+        None => tilo_app_package::RevocationList::default(),
     };
     verified_launch_installation_against(installed, manifest_path, payload_root, expected, &revoked)
 }

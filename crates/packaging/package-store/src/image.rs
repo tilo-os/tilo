@@ -27,7 +27,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use tilo_app_package::trust::{RevocationList, TrustedAttestor, TrustedAttestors};
+use tilo_app_package::trust::{RevocationList, TrustFile, TrustedAttestor, TrustedAttestors};
 use tilo_app_package::{
     BlobFetcher, BlobHash, BlobSink, Kind, PackageFetcher, PackageId, PackageMeta, Verification,
 };
@@ -182,11 +182,11 @@ impl ImageTrust {
         };
         let attestors = match tilo_app_package::default_trusted_attestors_path() {
             Some(path) => TrustedAttestors::load(&path).map_err(refused)?,
-            None => TrustedAttestors::empty(),
+            None => TrustedAttestors::default(),
         };
         let revoked = match tilo_app_package::default_revoked_keys_path() {
             Some(path) => RevocationList::load(&path).map_err(refused)?,
-            None => RevocationList::empty(),
+            None => RevocationList::default(),
         };
         let mut trust = Self {
             publishers: Vec::new(),
