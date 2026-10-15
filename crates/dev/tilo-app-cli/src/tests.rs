@@ -4138,6 +4138,30 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         .to_string();
         collect_cargo_message(&dependency, &manifest, &mut artifacts);
         assert!(!artifacts.contains_key("other"));
+
+        // Cargo spells the manifest as it was reached, here through a symlinked directory
+        // (macOS's /tmp); the caller's canonical path names the same file.
+        #[cfg(unix)]
+        {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let real = temp.path().join("real");
+            std::fs::create_dir(&real).expect("real directory");
+            std::fs::write(real.join("Cargo.toml"), "").expect("manifest");
+            std::os::unix::fs::symlink(&real, temp.path().join("link")).expect("symlink");
+            let canonical = real
+                .join("Cargo.toml")
+                .canonicalize()
+                .expect("canonical manifest");
+            let line = serde_json::json!({
+                "reason": "compiler-artifact",
+                "manifest_path": temp.path().join("link/Cargo.toml"),
+                "target": {"name": "linked", "kind": ["bin"]},
+                "executable": "/workspace/target/release/linked",
+            })
+            .to_string();
+            collect_cargo_message(&line, &canonical, &mut artifacts);
+            assert!(artifacts.contains_key("linked"));
+        }
     }
 
     // Phase: package_refuses_to_replace_output_before_building.
