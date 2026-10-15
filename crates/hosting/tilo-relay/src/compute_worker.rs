@@ -1408,7 +1408,7 @@ mod tests {
         assert!(own.locates());
         assert_eq!(
             own.held(file_digest, Some(manifest), u64::MAX),
-            Ok(Some(file.clone()))
+            Ok(Some(file))
         );
         assert_eq!(own.held(file_digest, None, u64::MAX), Ok(None));
         assert_eq!(

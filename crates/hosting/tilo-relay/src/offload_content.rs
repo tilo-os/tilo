@@ -384,10 +384,7 @@ mod tests {
         let held = ReplicaContent::new(vec![root.path().join("absent"), replica]);
         assert!(held.locates());
 
-        assert_eq!(
-            held.held(digest, Some(manifest), len),
-            Ok(Some(bytes.clone()))
-        );
+        assert_eq!(held.held(digest, Some(manifest), len), Ok(Some(bytes)));
         // A digest names no file here: without the requester's locator,
         // nothing is held.
         assert_eq!(held.held(digest, None, u64::MAX), Ok(None));
