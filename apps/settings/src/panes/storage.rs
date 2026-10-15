@@ -254,21 +254,14 @@ impl SyncRead {
             }
         };
         let snapshot = client.snapshot().map_err(|error| error.to_string());
-        // A service that predates the summary closes the connection.
-        let residency = client.residency().ok().map(|summary| {
-            let (key, label) = crate::device_fleet::list()
-                .ok()
-                .and_then(|devices| devices.into_iter().find(|device| device.current))
-                .map_or_else(
-                    || (String::new(), String::new()),
-                    |device| (hex::encode(device.key), device.label),
-                );
-            DeviceResidency {
-                key,
-                label,
-                current: true,
-                summary,
-            }
+        // A service that predates the summary closes the connection. This
+        // device's card is titled "This device"; its key and name come from
+        // the host's device list, which the other devices' summaries need.
+        let residency = client.residency().ok().map(|summary| DeviceResidency {
+            key: String::new(),
+            label: String::new(),
+            current: true,
+            summary,
         });
         Self {
             snapshot,
