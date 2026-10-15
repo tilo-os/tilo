@@ -1814,6 +1814,9 @@ mod tests {
 
     #[test]
     fn cloud_import_queues_on_its_device_and_undo_reverts_its_record() {
+        // Keep this real service socket private to the test: other concurrently
+        // running Files tests can also browse the default cloud endpoint.
+        let _home = tilo_test_env::TestHome::new().unwrap();
         let mut app = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
         let root = tempfile::tempdir().unwrap();
         let socket = tilo_cloud_files::cloud::default_files_socket().unwrap();
@@ -2194,22 +2197,59 @@ mod tests {
         assert!(state.ops.entries().next().unwrap().1.settled.is_none());
     }
 
+    fn invoke_confirmed_by(
+        app: &mut TestApp<FileExplorerShell>,
+        role: ui::permissions::Role,
+        invoker: ui::tilo_actions::ActionInvoker,
+        invoke: &ui::tilo_resource::Invoke<FileExplorer>,
+    ) -> Result<(), ui::tilo_actions::DoorError> {
+        if let Some(refusal) = invoke.refusal() {
+            return Err(ui::tilo_actions::DoorError::InvalidArguments(
+                refusal.to_owned(),
+            ));
+        }
+        // Discover as the local host, then exercise admission under the
+        // caller's role: discovery is not an authority grant.
+        let address = app
+            .actions()?
+            .into_iter()
+            .find(|action| action.address.action == invoke.id)
+            .ok_or_else(|| {
+                ui::tilo_actions::DoorError::Failed(format!(
+                    "action {} is not published",
+                    invoke.id
+                ))
+            })?
+            .address;
+        app.set_role(role);
+        let instance_id = app.harness().component_instance_id().unwrap();
+        app.harness().start_bound_job_for(
+            Some(invoker),
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id,
+                address,
+            },
+            &invoke.arguments,
+            true,
+        )?;
+        Ok(())
+    }
+
     #[test]
     fn mounted_import_refuses_guest_public_actions() {
         use ui::permissions::Role;
         use ui::tilo_actions::ActionInvoker;
         for role in [Role::Editor, Role::Viewer] {
             let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
-            app.set_role(role);
-            let instance_id = app.harness().component_instance_id().unwrap();
-            let result = app.harness().start_bound_job_for(
-                Some(ActionInvoker::actor("guest")),
-                &ui::bound_dispatch::BoundActionAddress {
-                    instance_id,
-                    address: ui::tilo_actions::ActionAddress::new(<FileExplorer as ui::tilo_resource::Resource>::KIND, "import-mounted"),
-                },
-                serde_json::json!({"device": "test-device", "paths": ["/private/Google.docx"], "folder": "/private/Copies"}).as_object().unwrap(),
-                true,
+            let result = invoke_confirmed_by(
+                &mut app,
+                role,
+                ActionInvoker::actor("guest"),
+                &FileExplorer::IMPORT_MOUNTED.with(file_explorer::ImportMounted {
+                    device: "test-device".into(),
+                    paths: vec!["/private/Google.docx".into()],
+                    folder: "/private/Copies".into(),
+                }),
             );
             assert!(result.is_err());
             app.settle();
@@ -2272,33 +2312,21 @@ mod tests {
             ("guest-viewer", Role::Viewer),
         ] {
             let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
-            app.set_role(role);
             let root = tempfile::tempdir().unwrap();
             let folder = root.path().join("must-not-be-pinned");
-            let instance_id = app.harness().component_instance_id().unwrap();
-            let error = app
-                .harness()
-                .start_bound_job_for(
-                    Some(ActionInvoker::actor(actor)),
-                    &ui::bound_dispatch::BoundActionAddress {
-                        instance_id,
-                        address: ui::tilo_actions::ActionAddress::new(
-                            <FileExplorer as ui::tilo_resource::Resource>::KIND,
-                            "cloud-import",
-                        ),
-                    },
-                    serde_json::json!({
-                        "device": "test-device",
-                        "job_id": format!("{actor}-attempt"),
-                        "account": "private-account",
-                        "entries": [import_entry()],
-                        "destination": nonexistent_import_destination(&folder),
-                    })
-                    .as_object()
-                    .unwrap(),
-                    true,
-                )
-                .unwrap_err();
+            let error = invoke_confirmed_by(
+                &mut app,
+                role,
+                ActionInvoker::actor(actor),
+                &FileExplorer::CLOUD_IMPORT.with(file_explorer::CloudImport {
+                    device: "test-device".into(),
+                    job_id: format!("{actor}-attempt"),
+                    account: "private-account".into(),
+                    entries: vec![serde_json::json!(import_entry())],
+                    destination: nonexistent_import_destination(&folder),
+                }),
+            )
+            .unwrap_err();
             // Editors and owners pass workspace permission admission, but
             // neither owns this host's account. Viewers may be denied earlier.
             if role != Role::Viewer {
@@ -2450,27 +2478,18 @@ mod tests {
     #[test]
     fn workspace_file_actions_remain_available_to_guests() {
         let mut app = TestApp::<FileExplorerShell>::for_person("local-person").unwrap();
-        app.set_role(ui::permissions::Role::Editor);
         let folder = tempfile::tempdir().unwrap();
-        let instance_id = app.harness().component_instance_id().unwrap();
-        app.harness()
-            .start_bound_job_for(
-                Some(ui::tilo_actions::ActionInvoker::actor("guest-editor")),
-                &ui::bound_dispatch::BoundActionAddress {
-                    instance_id,
-                    address: ui::tilo_actions::ActionAddress::new(
-                        <FileExplorer as ui::tilo_resource::Resource>::KIND,
-                        "new-folder",
-                    ),
-                },
-                serde_json::json!({
-                    "device": "test-device", "parent": folder.path(), "name": "Shared folder",
-                })
-                .as_object()
-                .unwrap(),
-                true,
-            )
-            .unwrap();
+        invoke_confirmed_by(
+            &mut app,
+            ui::permissions::Role::Editor,
+            ui::tilo_actions::ActionInvoker::actor("guest-editor"),
+            &FileExplorer::NEW_FOLDER.with(file_explorer::NewFolder {
+                device: "test-device".into(),
+                parent: folder.path().to_string_lossy().into_owned(),
+                name: "Shared folder".into(),
+            }),
+        )
+        .unwrap();
         app.settle();
         assert!(folder.path().join("Shared folder").is_dir());
         assert_eq!(app.state().ops.entries().count(), 1);

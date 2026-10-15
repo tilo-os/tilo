@@ -363,6 +363,14 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     assert!(bus.status().starts_with("locked"), "{}", bus.status());
     let record_before = std::fs::read(&keyring).unwrap();
     let sealed_before = std::fs::read(&vault).unwrap();
+    // App launch needs only public metadata; custody must still refuse the
+    // identity host's attempt to retrieve the locked signing key.
+    let metadata = runtime_identity::load_metadata_for_launch(&keyring)
+        .expect("a locked provider must not block public launch metadata");
+    assert_eq!(
+        metadata.group_public_key,
+        SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes()
+    );
     assert!(
         runtime_identity::load_from_path(keyring.clone()).is_err(),
         "a locked store released a key"
@@ -399,7 +407,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     assert_stored_key_signs(&keyring, 2);
     assert_stored_key_signs(&locked, 3);
 
-    // 6. A damaged record fails its launch by name and is never re-keyed.
+    // 6. A damaged record fails loading by name and is never re-keyed.
     let truncated = identities.join("truncated.json");
     let prefix = record_before.get(..record_before.len() / 2).unwrap();
     std::fs::write(&truncated, prefix).unwrap();
@@ -409,7 +417,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     };
     assert!(
         error.to_string().contains("identity JSON malformed"),
-        "the launch error does not name the damage: {error}"
+        "the loading error does not name the damage: {error}"
     );
     assert_eq!(std::fs::read(&truncated).unwrap(), prefix);
     assert_stored_key_signs(&keyring, 2);
