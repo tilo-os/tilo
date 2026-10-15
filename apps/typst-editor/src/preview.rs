@@ -222,19 +222,24 @@ impl PreviewPane {
         // A reader at the top of the document stays there as the pages change
         // under them; one who scrolled keeps their place.
         let at_top = self.images.is_empty() || self.viewport.scroll_y() <= 0.5;
+        let page_pt: Vec<_> = pages.iter().map(|p| (p.width_pt, p.height_pt)).collect();
+        let layout_changed = self.page_pt != page_pt || self.page_text != page_text;
         self.images = pages
             .iter()
             .map(|p| Image::from_rgba(p.rgba.clone(), p.width, p.height).with_fit(ImageFit::Fill))
             .collect();
         self.sizes_px = pages.iter().map(|p| (p.width, p.height)).collect();
         self.empty = Empty::NoPages;
-        self.page_pt = pages.iter().map(|p| (p.width_pt, p.height_pt)).collect();
+        self.page_pt = page_pt;
         self.page_text = page_text.to_vec();
 
         // Fresh pages supersede any stale render.
         self.stale = false;
         self.restack(at_top);
-        self.clear_selection();
+        // Resolution-only refreshes must not discard the reader's selection.
+        if layout_changed {
+            self.clear_selection();
+        }
     }
 
     /// Follow `theme`'s spacing scale: the page gap, the viewport padding and
@@ -355,6 +360,20 @@ impl PreviewPane {
         } else {
             1.0
         }
+    }
+
+    /// Two bitmap samples per physical pixel avoid magnifying a low-density
+    /// raster at fit width, UI zoom or `HiDPI`. Half-point buckets avoid rerenders
+    /// for subpixel layout noise; the cap bounds memory on very large pages.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "density is finite and clamped to 2..=8"
+    )]
+    pub fn raster_density(&self, device_scale: f64) -> f32 {
+        (self.viewport.zoom() * device_scale * 2.0 * 2.0)
+            .ceil()
+            .mul_add(0.5, 0.0)
+            .clamp(2.0, 8.0) as f32
     }
 
     pub fn zoom_in(&mut self) {
@@ -1231,6 +1250,29 @@ mod tests {
         p.set_pages_with_text(&pages, &[runs]);
         p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
         p
+    }
+
+    #[test]
+    fn raster_density_tracks_physical_zoom_and_preserves_selected_text() {
+        let parts = crate::compile::WorldParts::new();
+        let source = "#set page(width: 300pt, height: 500pt)\nA crisp equation $x^2$.";
+        let mut p = PreviewPane::new();
+        p.set_rect(Rect::new(0.0, 0.0, 600.0, 400.0));
+        let first = crate::compile::compile_source(&parts, source, 2.0);
+        assert!(first.ok);
+        p.set_pages_with_text(&first.pages, &first.page_text);
+        p.select_all();
+        let selected = p.selected_text().unwrap();
+        let density = p.raster_density(1.0);
+        assert!(f64::from(density) >= 2.0 * p.viewport.zoom());
+        p.zoom_in();
+        assert!(p.raster_density(1.0) > density);
+        assert!(p.raster_density(2.0) > p.raster_density(1.0));
+        let refreshed = crate::compile::compile_source(&parts, source, p.raster_density(1.0));
+        assert!(refreshed.ok);
+        assert!(refreshed.pages[0].width > first.pages[0].width);
+        p.set_pages_with_text(&refreshed.pages, &refreshed.page_text);
+        assert_eq!(p.selected_text().as_deref(), Some(selected.as_str()));
     }
 
     #[test]

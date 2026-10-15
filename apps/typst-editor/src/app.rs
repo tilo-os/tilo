@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────┐
-//! │ document  Outline  B I Math Cite Section  Save Export PDF   │
+//! │ document  Outline                         Export PDF      │
 //! ├───────────────────────────┬──────────────────────────────┤
 //! │ source editor             │      rendered preview         │
 //! │ (code, line numbers,      │  (scrollable pages + thumbs)  │
@@ -101,9 +101,8 @@ use crate::preview::PreviewPane;
 use crate::resource::TypstFilePaths;
 use crate::worker::CompileWorker;
 
-/// Pixels-per-point the document is rasterised at. 2.0 keeps pages crisp on
-/// a `HiDPI` surface; preview zoom only scales the *display*, never the render
-/// resolution.
+/// Initial density before the preview has geometry. Subsequent renders follow
+/// its physical display scale with two samples per pixel.
 const PPP: f32 = 2.0;
 
 /// Which single pane the compact (narrow-window) layout is showing.
@@ -158,6 +157,7 @@ pub struct TypstApp {
     /// Sequence number of the freshest compile result we've applied. Stale
     /// (lower-numbered) results from the worker are ignored.
     applied_seq: u64,
+    raster_density: f32,
 
     // --- panes ---
     editor: SourceEditor,
@@ -280,6 +280,7 @@ impl TypstApp {
             parts: WorldParts::new(),
             worker: None,
             applied_seq: 0,
+            raster_density: PPP,
             editor,
             navigation: crate::navigation::Navigation::new(),
             pending_format: Vec::new(),
@@ -552,9 +553,15 @@ impl TypstApp {
         let (name, main_source) = self.compilation_main(source);
         let files = self.project_snapshot();
         if let Some(w) = self.worker.as_mut() {
-            w.request_project(name, main_source, files.clone(), PPP);
+            w.request_project(name, main_source, files.clone(), self.raster_density);
         } else {
-            let out = compile::compile_project(&self.parts, &name, &main_source, &files, PPP);
+            let out = compile::compile_project(
+                &self.parts,
+                &name,
+                &main_source,
+                &files,
+                self.raster_density,
+            );
             self.apply_output(out);
         }
         self.last_source = source.to_string();
@@ -1221,7 +1228,13 @@ impl Widget for TypstApp {
             // worker online for subsequent edits.
             let files = self.project_snapshot();
             let (name, main_source) = self.compilation_main(&source);
-            let out = compile::compile_project(&self.parts, &name, &main_source, &files, PPP);
+            let out = compile::compile_project(
+                &self.parts,
+                &name,
+                &main_source,
+                &files,
+                self.raster_density,
+            );
             self.last_project = files;
             self.apply_output(out);
             self.worker = CompileWorker::spawn(self.parts.clone());
@@ -1313,6 +1326,13 @@ impl Widget for TypstApp {
         // Measure the chrome in this frame's theme and text scale; a change
         // re-fits the panes now, so this very frame paints coherently.
         self.refresh_frame(tr, theme);
+        if self.initialized && self.preview_rect.area() > 0.0 && !self.compiling() {
+            let density = self.preview.raster_density(t.determinant().abs().sqrt());
+            if (density - self.raster_density).abs() > f32::EPSILON {
+                self.raster_density = density;
+                self.request_compile(&self.source_cache.clone());
+            }
+        }
 
         // The window ground is the framework's. The preview stands on the
         // inspector region; the editor on the ground itself.
@@ -2268,10 +2288,8 @@ mod tests {
             .unwrap();
         app.settle();
         assert!(app.surface_mut::<TypstApp>().navigation.visible());
-        let bold = app.harness().a11y_node_named("Bold").unwrap();
-        app.harness()
-            .perform_a11y_action(bold, &ui::a11y::Action::Activate)
-            .unwrap();
+        assert!(app.harness().a11y_node_named("Bold").is_none());
+        app.effect(&crate::actions::TypstEffect::Bold).unwrap();
         app.settle();
         let file = app.state().files.values().next().unwrap().clone();
         assert_eq!(file.source, "**");
@@ -2733,6 +2751,8 @@ mod tests {
                 .unwrap()
             );
             app.harness().resize((390, 720)).unwrap();
+            app.harness().key("Escape");
+            app.settle();
             let more = app
                 .harness()
                 .a11y_node_named("More commands")
@@ -2740,17 +2760,8 @@ mod tests {
             app.harness()
                 .perform_a11y_action(more, &ui::a11y::Action::Activate)
                 .unwrap();
-            for command in [
-                "Open",
-                "Save",
-                "Export PDF",
-                "Outline",
-                "Bold",
-                "Italic",
-                "Math",
-                "Cite",
-                "Section",
-            ] {
+            app.settle();
+            for command in ["Export PDF", "Outline"] {
                 assert!(
                     app.harness().a11y_node_named(command).is_some(),
                     "published command {command}"
@@ -2807,9 +2818,10 @@ mod tests {
             app.navigation.open();
             app.layout_in(Rect::new(0.0, 0.0, 1440.0, 810.0));
             assert!(!app.compact);
-            assert!((app.navigation.rect().width() - 208.0).abs() < 0.01);
-            assert!((app.editor_rect.width() / 1440.0 - 0.40).abs() < 0.01);
-            assert!((app.preview_rect.width() / 1440.0 - 0.45).abs() < 0.01);
+            assert!((app.navigation.rect().width() - 360.0).abs() < 0.01);
+            let remaining = 1440.0 - 360.0 - app.splitter.hit_rect().width();
+            assert!((app.editor_rect.width() / remaining - 0.47).abs() < 0.01);
+            assert!((app.preview_rect.width() / remaining - 0.53).abs() < 0.01);
         }
     }
 
@@ -2900,44 +2912,28 @@ mod tests {
         );
         for theme in [Theme::dark(), Theme::dark().with_text_scale(2.0)] {
             app.harness().relayout_themed((390, 520), theme).unwrap();
+            app.harness().key("Escape");
+            app.settle();
             let chip = app
                 .with_widget(|surface: &mut TypstApp| surface.chrome.toolbar_chip())
                 .unwrap()
                 .expect("commands fold into the shared More menu");
             app.harness().click_at(chip.center().x, chip.center().y);
+            app.settle();
             let names = app
                 .with_widget(|surface: &mut TypstApp| surface.chrome.toolbar_names())
                 .unwrap();
-            for wanted in [
-                "Outline",
-                "Bold",
-                "Italic",
-                "Math",
-                "Cite",
-                "Section",
-                "Save",
-                "Open",
-                "Export PDF",
-                "Zoom out",
-                "Zoom in",
-                "Fit width",
-                "Problems",
-            ] {
+            for wanted in ["Outline", "Export PDF"] {
                 assert!(
                     names.iter().any(|name| name == wanted),
                     "{wanted} remains reachable in {names:?}"
                 );
             }
-            let zoom = app
-                .harness()
-                .a11y_node_named("Zoom in")
-                .expect("the shared menu exposes Zoom in");
+            assert!(app.harness().a11y_node_named("Zoom in").is_none());
             let before = app
                 .with_widget(|surface: &mut TypstApp| surface.preview.zoom())
                 .unwrap();
-            app.harness()
-                .perform_a11y_action(zoom, &ui::a11y::Action::Activate)
-                .unwrap();
+            app.effect(&crate::actions::TypstEffect::ZoomIn).unwrap();
             app.settle();
             assert!(
                 app.with_widget(|surface: &mut TypstApp| surface.preview.zoom() > before)

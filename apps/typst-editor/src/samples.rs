@@ -49,8 +49,8 @@ This paragraph uses #undefined_value, which is unknown.
 The heading is fine; the font and variable are wrong.
 "#;
 
-const MOTION_NOTES: &str = r##"#set page(width: 18cm, height: auto, margin: (x: 1.2cm, y: 0.8cm))
-#set text(font: "Libertinus Serif", size: 10pt)
+const MOTION_NOTES: &str = r##"#set page(width: 12.5cm, height: auto, margin: (x: 1.0cm, y: 0.9cm))
+#set text(font: "Libertinus Serif", size: 11.5pt)
 #set par(justify: true, leading: 0.6em)
 #show heading: set text(fill: rgb("#245568"))
 

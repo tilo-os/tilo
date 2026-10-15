@@ -19,7 +19,7 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::toggle_group::{Segment, SegmentedFace, ToggleGroup};
 use ui::widget::toolbar::{Orientation, Toolbar};
-use ui::widget::{Button, ButtonRole, ControlSize, Text, Widget};
+use ui::widget::{Button, ControlSize, Text, Widget};
 
 /// What a control asked the editor to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,6 +62,8 @@ pub struct Chrome {
     queue: Queue,
     toolbar: Toolbar,
     toolbar_for: ToolbarFor,
+    actions: Option<ui::framework::Actions<crate::resource::Workspace>>,
+    retired_toolbars: Vec<Toolbar>,
     document: Text,
     document_name: Rc<RefCell<String>>,
     view: ToggleGroup,
@@ -116,56 +118,30 @@ fn build_toolbar(
     actions: Option<&ui::framework::Actions<crate::resource::Workspace>>,
 ) -> Toolbar {
     use crate::actions::TypstEffect;
-    let label = problems_label(problems);
-    // Overflow folds the trailing commands first, so the order is the
-    // priority: document navigation leads, formatting follows, and the file
-    // commands, which have shortcuts, fold into the More menu first.
-    Toolbar::new(Orientation::Horizontal)
+    let toolbar = Toolbar::new(Orientation::Horizontal)
         .push_toggle(
             "Outline",
             outline_shown,
             command(queue, Command::ToggleOutline),
         )
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Outline)))
-        .push_toggle(&label, shown, command(queue, Command::ToggleProblems))
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Problems)))
-        .push_separator()
-        .push_button("B", command(queue, Command::Bold))
-        .with_accessible_name("Bold")
-        .with_button_role(ButtonRole::Secondary)
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Bold)))
-        .push_button("I", command(queue, Command::Italic))
-        .with_accessible_name("Italic")
-        .with_button_role(ButtonRole::Secondary)
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Italic)))
-        .push_button("Math", command(queue, Command::Math))
-        .with_button_role(ButtonRole::Secondary)
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Math)))
-        .push_button("Cite", command(queue, Command::Cite))
-        .with_button_role(ButtonRole::Secondary)
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Cite)))
-        .push_button("Section", command(queue, Command::Section))
-        .with_button_role(ButtonRole::Secondary)
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Section)))
-        .push_separator()
-        .push_icon(Icon::Minus, "Zoom out", command(queue, Command::ZoomOut))
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::ZoomOut)))
-        .push_icon(Icon::Plus, "Zoom in", command(queue, Command::ZoomIn))
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::ZoomIn)))
-        // Zoom out without zoom in reads as a broken control: the pair folds
-        // into the More menu together.
-        .joined()
-        .push_button("Fit width", command(queue, Command::Fit))
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::FitWidth)))
+        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Outline)));
+    let toolbar = if problems > 0 {
+        toolbar
+            .push_toggle(
+                &problems_label(problems),
+                shown,
+                command(queue, Command::ToggleProblems),
+            )
+            .with_optional_action(
+                actions.and_then(|actions| actions.effect(&TypstEffect::Problems)),
+            )
+    } else {
+        toolbar
+    };
+    // Formatting, file operations and zoom remain in the action palette and
+    // keyboard map; only navigation and the primary output belong in the bar.
+    toolbar
         .push_spacer()
-        .push_button("Save", command(queue, Command::Save))
-        .with_optional_action(
-            actions.and_then(|actions| actions.effect(&TypstEffect::Save { path: None })),
-        )
-        .push_button("Open", command(queue, Command::Open))
-        .with_optional_action(
-            actions.and_then(|actions| actions.effect(&TypstEffect::OpenFile { path: None })),
-        )
         .push_button("Export PDF", command(queue, Command::ExportPdf))
         .with_optional_action(
             actions.and_then(|actions| actions.effect(&TypstEffect::ExportPdf { path: None })),
@@ -207,6 +183,8 @@ impl Chrome {
         Self {
             toolbar: build_toolbar(&queue, 0, false, false, None),
             toolbar_for,
+            actions: None,
+            retired_toolbars: Vec::new(),
             document,
             document_name,
             view,
@@ -225,13 +203,16 @@ impl Chrome {
         &mut self,
         actions: &ui::framework::Actions<crate::resource::Workspace>,
     ) {
-        self.toolbar = build_toolbar(
+        self.actions = Some(actions.clone());
+        let toolbar = build_toolbar(
             &self.queue,
             self.toolbar_for.problems,
             self.toolbar_for.shown,
             self.toolbar_for.outline_shown,
             Some(actions),
         );
+        self.retired_toolbars
+            .push(std::mem::replace(&mut self.toolbar, toolbar));
         self.close_problems = actions.bind_effect_invocation(
             Button::icon_only("typst.close-problems", Icon::X, "Close problems"),
             &crate::actions::TypstEffect::Problems,
@@ -264,10 +245,26 @@ impl Chrome {
             outline_shown,
         };
         if wanted != self.toolbar_for {
-            self.toolbar.set_active(OUTLINE_ITEM, outline_shown);
-            self.toolbar.set_active(PROBLEMS_ITEM, problems_shown);
-            self.toolbar
-                .set_label(PROBLEMS_ITEM, &problems_label(problems));
+            if (problems > 0) == (self.toolbar_for.problems > 0) {
+                self.toolbar.set_active(OUTLINE_ITEM, outline_shown);
+                if problems > 0 {
+                    self.toolbar.set_active(PROBLEMS_ITEM, problems_shown);
+                    self.toolbar
+                        .set_label(PROBLEMS_ITEM, &problems_label(problems));
+                }
+            } else {
+                let toolbar = build_toolbar(
+                    &self.queue,
+                    problems,
+                    problems_shown,
+                    outline_shown,
+                    self.actions.as_ref(),
+                );
+                // The old layout tree still holds widget pointers until rebuilt.
+                self.retired_toolbars
+                    .push(std::mem::replace(&mut self.toolbar, toolbar));
+                self.structure_dirty = true;
+            }
             self.toolbar_for = wanted;
         }
         self.view.set_selected(usize::from(preview_shown));
@@ -286,6 +283,7 @@ impl Chrome {
     /// may now be dropped.
     pub fn layout_rebuilt(&mut self) {
         self.history.tree_rebuilt();
+        self.retired_toolbars.clear();
     }
 
     /// The height of one control in the bar: the toolbar's own measure, so
@@ -515,6 +513,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn problems_only_exist_while_there_are_diagnostics() {
+        let mut chrome = Chrome::new();
+        let mut text = TextRenderer::new();
+        for count in [0, 2, 1, 0, 3, 0] {
+            chrome.sync(&["note.typ"], 0, count, count > 0, false, false);
+            chrome.place(
+                Rect::new(0.0, 0.0, 1440.0, 60.0),
+                false,
+                1,
+                &mut text,
+                &Theme::dark(),
+            );
+            let names = chrome.toolbar_names();
+            let problems: Vec<_> = names
+                .iter()
+                .filter(|name| name.starts_with("Problems"))
+                .collect();
+            if count == 0 {
+                assert!(problems.is_empty(), "{names:?}");
+            } else {
+                assert_eq!(problems, vec![&format!("Problems ({count})")]);
+            }
+            chrome.layout_rebuilt();
+        }
+    }
+
+    #[test]
     fn outline_face_tracks_visibility_without_rebuilding_bound_commands() {
         let mut chrome = Chrome::new();
         let theme = Theme::dark();
@@ -535,8 +560,26 @@ mod tests {
                 .unwrap();
             assert_eq!(outline.role, ui::a11y::Role::ToggleButton);
             assert_eq!(outline.state.checked, Some(shown));
-            assert!(chrome.toolbar_names().iter().any(|name| name == "Bold"));
-            assert!(chrome.toolbar_names().iter().any(|name| name == "Italic"));
+            let names = chrome.toolbar_names();
+            assert!(names.iter().any(|name| name == "Export PDF"));
+            for absent in [
+                "Bold",
+                "Italic",
+                "Math",
+                "Cite",
+                "Section",
+                "Zoom in",
+                "Zoom out",
+                "Fit width",
+                "Save",
+                "Open",
+                "Problems",
+            ] {
+                assert!(
+                    !names.iter().any(|name| name == absent),
+                    "{absent}: {names:?}"
+                );
+            }
         }
     }
 }

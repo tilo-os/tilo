@@ -76,7 +76,7 @@ pub struct PageImage {
 /// cell per glyph so the preview can hit-test a drag to a character boundary
 /// and copy the covered text. Extracted from the compiled `typst` frame — the
 /// same layout the raster is rendered from — so positions line up exactly.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextRun {
     /// Top / bottom of the run's line box in page points (y grows downward).
     pub top: f64,
@@ -85,7 +85,7 @@ pub struct TextRun {
 }
 
 /// One selectable glyph cell within a [`TextRun`], in page points.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextCell {
     pub x0: f64,
     pub x1: f64,
@@ -702,9 +702,10 @@ mod tests {
                 assert_eq!(out.pages.len(), 1, "the note is a single complete page");
                 let page = &out.pages[0];
                 assert!(
-                    page.height_pt / page.width_pt < 0.88,
-                    "fits the showcase viewport"
+                    (page.width_pt - 12.5 / 2.54 * 72.0).abs() < 0.01,
+                    "the reading note uses narrow paper, not a shrunken full-size sheet"
                 );
+                assert!(sample.source.contains("size: 11.5pt"));
                 assert!((f64::from(page.width) - 2.0 * page.width_pt).abs() <= 1.0);
                 assert!((f64::from(page.height) - 2.0 * page.height_pt).abs() <= 1.0);
             }
