@@ -1233,3 +1233,151 @@ fn an_agent_cuts_room_footage_into_a_timeline_and_exports_it_as_content() {
         "{exported}"
     );
 }
+
+/// An agent builds a titled promo cut with only what the project itself
+/// offers — no clip or title row listed first: a coloured title added and
+/// restyled by the id `add-title` answered, a take removed with the gap
+/// closed, and the last shot faded out — and the exported timeline says so.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one cut, built step by step, each step checked"
+)]
+fn an_agent_titles_trims_and_fades_a_cut_with_the_projects_own_operations() {
+    let room = ContentStore::memory();
+    let shots: Vec<(&str, String)> = [
+        ("a.mp4", 3_000),
+        ("b.mp4", 3_200),
+        ("b2.mp4", 2_800),
+        ("c.mp4", 3_400),
+    ]
+    .into_iter()
+    .map(|(name, millis)| (name, room.put(&mp4(millis, 64, 48)).unwrap()))
+    .collect();
+    let editor = new_record(VIDEO, &room);
+    let offered: Vec<String> = editor
+        .survey_with_effects()
+        .into_iter()
+        .map(|descriptor| descriptor.address.action)
+        .collect();
+    for action in ["add-title", "set-title", "set-clip", "remove-clip"] {
+        assert!(
+            offered.iter().any(|offered| offered == action),
+            "an empty project offers {action}: {offered:?}"
+        );
+    }
+    let invoke = |action: &str, value: serde_json::Value, confirm: bool| {
+        let descriptor = operation(&editor, action);
+        assert!(!device_only(&descriptor), "{action} is offered to agents");
+        editor.invoke(&descriptor.address, &arguments(value), confirm)
+    };
+    let run = |action: &str, value: serde_json::Value| {
+        invoke(action, value, false)
+            .unwrap_or_else(|error| panic!("{action}: {error:?}"))
+            .value
+            .unwrap_or_else(|| panic!("{action} answers"))
+    };
+
+    let mut clips = Vec::new();
+    for (name, hash) in &shots {
+        run(
+            "import-content",
+            serde_json::json!({
+                "content": tilo_actions::content_resource(hash).unwrap(),
+                "name": name,
+            }),
+        );
+        let placed = run(
+            "add-clip",
+            serde_json::json!({"media": name, "out": if *name == "b2.mp4" { 2.5 } else { 3.0 }}),
+        );
+        clips.push(placed["clip"].as_str().unwrap().to_owned());
+    }
+    let [_, take_b, take_b2, last] = clips.as_slice() else {
+        panic!("four clips: {clips:?}");
+    };
+
+    let draft = run(
+        "add-title",
+        serde_json::json!({"text": "HARBOUR WEEKEND", "colour": "#FFFFFF"}),
+    );
+    let title_id = draft["media"]["id"].as_str().unwrap().to_owned();
+    assert_eq!(draft["media"]["name"], "HARBOUR WEEKEND", "{draft}");
+    run(
+        "add-clip",
+        serde_json::json!({"media": title_id, "track": "V2", "at": 0.0, "out": 2.0}),
+    );
+    let restyled = run(
+        "set-title",
+        serde_json::json!({"title": title_id, "text": "HARBOUR DAYS", "colour": "#FFD400"}),
+    );
+    assert_eq!(restyled["media"]["title"]["color"], "#ffd400", "{restyled}");
+
+    assert!(
+        invoke("remove-clip", serde_json::json!({"clip": take_b}), false).is_err(),
+        "removing a clip is confirmed first"
+    );
+    let removed = invoke(
+        "remove-clip",
+        serde_json::json!({"clip": take_b, "ripple": true}),
+        true,
+    )
+    .expect("a confirmed removal runs")
+    .value
+    .expect("it answers");
+    assert_eq!(removed["removed"], serde_json::json!([take_b]), "{removed}");
+    let faded = run(
+        "set-clip",
+        serde_json::json!({"clip": last, "fade_out": 1.0}),
+    );
+    assert_eq!(faded["clip"]["fade_out"], 1.0, "{faded}");
+    assert!(editor.take_mutation().unwrap().is_some());
+
+    let export = operation(&editor, "export-timeline-content");
+    let output = editor
+        .invoke(
+            &export.address,
+            &arguments(serde_json::json!({"format": "json"})),
+            false,
+        )
+        .expect("the timeline is exported");
+    let exported: serde_json::Value = serde_json::from_slice(&produced(&room, &output)).unwrap();
+
+    let picture = clips_on(&exported, "V1");
+    let ids: Vec<&str> = picture
+        .iter()
+        .map(|clip| clip["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 3, "{exported}");
+    assert!(
+        !ids.contains(&take_b.as_str()),
+        "the removed take is gone: {ids:?}"
+    );
+    assert_eq!(picture[1]["id"], take_b2.as_str());
+    assert_eq!(picture[1]["start"], 3.0, "the gap is closed: {exported}");
+    assert_eq!(picture[2]["id"], last.as_str());
+    assert_eq!(picture[2]["start"], 5.5);
+    assert_eq!(picture[2]["fade_out"], 1.0);
+    assert!(
+        picture[..2]
+            .iter()
+            .all(|clip| clip.get("fade_out").is_none() && clip.get("fade_in").is_none()),
+        "only the last shot fades: {exported}"
+    );
+    let titles = clips_on(&exported, "V2");
+    assert_eq!(titles.len(), 1, "{exported}");
+    assert_eq!(titles[0]["title"], "HARBOUR DAYS");
+    assert_eq!(
+        (titles[0]["start"].as_f64(), titles[0]["end"].as_f64()),
+        (Some(0.0), Some(2.0))
+    );
+    let title = exported["media"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == title_id.as_str())
+        .unwrap_or_else(|| panic!("the title is in the bin: {exported}"));
+    assert_eq!(title["title"]["text"], "HARBOUR DAYS");
+    assert_eq!(title["title"]["color"], "#ffd400");
+    assert_eq!(exported["project"]["duration"], 8.5);
+}

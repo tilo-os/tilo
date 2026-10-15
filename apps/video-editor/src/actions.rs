@@ -51,7 +51,7 @@ use crate::curve::Curve;
 use crate::doc::VideoDoc;
 use crate::model::{
     ChromaKey, Clip, ClipId, EffectKind, Filters, MAX_GAIN_DB, MIN_GAIN_DB, Mask, MaskShape,
-    MediaItem, MediaKind, Project, TextSource, Track, TrackKind, Transform, Transition,
+    MediaItem, MediaKind, Project, Track, TrackKind, Transform, Transition,
 };
 use crate::param::{ClipAnimation, Interp, Param};
 use crate::resource::VideoProject;
@@ -2020,7 +2020,7 @@ const EFFECT_CHOICES: [&str; 11] = [
 /// Every spelling `parse_transition` accepts, on the same rule as
 /// [`EFFECT_CHOICES`]: the placeholder listed five names, the parser takes
 /// twelve, so the declaration has to be the parser's set.
-const TRANSITION_CHOICES: [&str; 12] = [
+pub(crate) const TRANSITION_CHOICES: [&str; 12] = [
     "cut",
     "none",
     "dissolve",
@@ -2038,7 +2038,7 @@ const TRANSITION_CHOICES: [&str; 12] = [
 /// Parse a title colour: `#rrggbb` / `rrggbb`, or three comma-separated
 /// `0..1` components. `None` for anything else, so a typo leaves the colour
 /// alone rather than blanking a title to black.
-fn parse_colour(s: &str) -> Option<[f64; 4]> {
+pub(crate) fn parse_colour(s: &str) -> Option<[f64; 4]> {
     let s = s.trim();
     let hex = s.strip_prefix('#').unwrap_or(s);
     if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -2448,42 +2448,8 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
         ));
     }
 
-    // Project-level: a title. It lands in the bin like any other source —
-    // the id is minted here, at authoring time, so the action replays
-    // byte-identically on a peer.
-    {
-        let palette = (p.media.len() as u8) % 7;
-        root = root.with_action(ActionSpec::typed(
-            "add-title",
-            "Add title",
-            "Title",
-            ExecutionLocus::ClientLocal,
-            vec![ActionParam::required(
-                "text",
-                ParamType::Text,
-                "the words the title shows; empty reads as “Title”",
-            )],
-            move |args: &ActionArgs| {
-                let words = args.text("text").unwrap_or("").trim();
-                let content = if words.is_empty() { "Title" } else { words };
-                let item = MediaItem {
-                    id: Uuid::new_v4(),
-                    name: content.lines().next().unwrap_or("Title").to_string(),
-                    kind: MediaKind::Text,
-                    // Long enough to be trimmed down rather than stretched.
-                    duration: 5.0,
-                    palette,
-                    // A title has no bytes: nothing to hydrate, nothing to
-                    // fetch, and it renders on every peer immediately.
-                    path: String::new(),
-                    hydration: crate::media::Hydration::Local,
-                    text: Some(TextSource::new(content)),
-                    ..Default::default()
-                };
-                encode(&upsert_media_action(&item))
-            },
-        ));
-    }
+    // Project-level: a title is `add-title`, a declaration of
+    // [`crate::revision`], so it answers the id of the title it made.
 
     // Project markers are first-class navigable resources. Their marker id,
     // rather than a captured timestamp, keeps a search row attached to the
@@ -3956,7 +3922,7 @@ enum CropEdge {
 
 /// Map a palette transition name to the stored [`Transition`], tolerant of the
 /// on-screen labels ("Cut", "Dissolve", …) as well as the stored tags.
-fn parse_transition(s: &str) -> Transition {
+pub(crate) fn parse_transition(s: &str) -> Transition {
     match s.trim().to_lowercase().as_str() {
         "cut" | "none" => Transition::None,
         "dissolve" | "crossdissolve" | "cross dissolve" => Transition::CrossDissolve,
@@ -4342,10 +4308,10 @@ mod tests {
             let gone = run(&ctx2.project, &spec(&ctx2, "remove-marker-here"), None);
             assert!(gone.markers.is_empty());
         }
-        // Case `the_palette_adds_a_title_to_the_bin`.
+        // Case `the_project_adds_a_title_to_the_bin`.
         {
             let (ctx, _) = ctx_fixture();
-            let with_title = run(&ctx.project, &spec(&ctx, "add-title"), Some("Chapter One"));
+            let with_title = titled(&ctx.project, "Chapter One");
             let t = with_title
                 .media
                 .iter()
@@ -5334,11 +5300,30 @@ mod tests {
         }
     }
 
+    /// `p` with a title of `words` in the bin, added as the project's
+    /// `add-title` declaration adds it.
+    fn titled(p: &Project, words: &str) -> Project {
+        let decl = crate::placement::declarations(p)
+            .into_iter()
+            .find(|decl| decl.id == "add-title")
+            .expect("the project declares add-title");
+        let args = ActionArgs::bind_json(
+            &decl.params,
+            &serde_json::Map::from_iter([("text".to_owned(), serde_json::json!(words))]),
+        )
+        .expect("the words bind");
+        let action = (decl.build)(&args, 0).expect("add-title builds");
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, p);
+        action.apply(&mut doc).expect("applies");
+        VideoDoc::load_project(&doc)
+    }
+
     /// The fixture with a title in the bin, so the media resource exports the
     /// title actions as well as the rename.
     fn ctx_with_title() -> VideoResourceCtx {
         let (ctx, _) = ctx_fixture();
-        let mut with_title = run(&ctx.project, &spec(&ctx, "add-title"), Some("Chapter One"));
+        let mut with_title = titled(&ctx.project, "Chapter One");
         // A second clip on the timeline, so the actions that name *another*
         // clip -- linking one to another -- are offered here too. With a
         // single clip there is nothing to name, the action is (rightly)
@@ -5370,7 +5355,7 @@ mod tests {
     }
 
     /// The title source in the bin, whichever media item it turned out to be.
-    fn title_of(p: &Project) -> TextSource {
+    fn title_of(p: &Project) -> crate::model::TextSource {
         p.media
             .iter()
             .find(|m| m.kind == MediaKind::Text)
@@ -5388,7 +5373,7 @@ mod tests {
     /// width without a height would be a shape nobody asked for. Every
     /// assertion the single-pair table made is still made, once per declared
     /// parameter.
-    const DECLARED: [(&str, &[(&str, ParamType)]); 33] = [
+    const DECLARED: [(&str, &[(&str, ParamType)]); 32] = [
         ("rename-project", &[("name", ParamType::Text)]),
         (
             "set-frame-size",
@@ -5414,7 +5399,6 @@ mod tests {
             "trim-out-clip",
             &[("clip", ParamType::Text), ("at", ParamType::Number)],
         ),
-        ("add-title", &[("text", ParamType::Text)]),
         ("rename-track", &[("name", ParamType::Text)]),
         ("set-brightness", &[("value", ParamType::Number)]),
         ("set-contrast", &[("value", ParamType::Number)]),

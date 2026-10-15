@@ -223,3 +223,99 @@ fn an_agent_renders_its_cut_of_room_footage_to_video_and_stills() {
         "rendering changes nothing in the record"
     );
 }
+
+/// How many pixels of `rgba` are a strong yellow (#FFD400 and near it).
+fn yellow_pixels(rgba: &[u8]) -> usize {
+    rgba.chunks_exact(4)
+        .filter(|px| px[0] > 200 && px[1] > 160 && px[2] < 90)
+        .count()
+}
+
+/// A title an agent coloured and a fade-out it set with the project's own
+/// operations are what the host's render draws: the title's yellow while it
+/// is placed and not after, and the last clip dimming to black.
+#[test]
+fn an_agents_coloured_title_and_fade_out_show_in_its_render() {
+    assert!(
+        render::available(),
+        "no tilo-video-render: build it (cargo build -p video-editor --bin tilo-video-render) \
+         or name it in TILO_VIDEO_RENDER"
+    );
+    let room = ContentStore::memory();
+    let red = room.put(&solid_clip(0xffd0_2020)).unwrap();
+    let blue = room.put(&solid_clip(0xff20_40d0)).unwrap();
+    let editor =
+        ConfinedReplica::open(&catalogue(), VIDEO, common::ROOM, "cutter", true, Seed::New)
+            .unwrap()
+            .with_content(room.clone());
+    editor.take_mutation().unwrap();
+    let run = |action: &str, value: serde_json::Value| {
+        let descriptor = operation(&editor, action);
+        let output = editor
+            .invoke(&descriptor.address, &arguments(value), false)
+            .unwrap_or_else(|error| panic!("{action}: {error:?}"));
+        editor.take_mutation().unwrap();
+        output.value.unwrap_or_else(|| panic!("{action} answers"))
+    };
+    for (hash, name) in [(&red, "red.mov"), (&blue, "blue.mov")] {
+        run(
+            "import-content",
+            serde_json::json!({
+                "content": tilo_actions::content_resource(hash).unwrap(),
+                "name": name,
+            }),
+        );
+    }
+    run("add-clip", serde_json::json!({"media": "red.mov"}));
+    let last = run("add-clip", serde_json::json!({"media": "blue.mov"}));
+    let title = run(
+        "add-title",
+        serde_json::json!({"text": "HELLO", "colour": "#FFD400", "size": 0.3}),
+    );
+    run(
+        "add-clip",
+        serde_json::json!({"media": title["media"]["id"], "track": "V2", "at": 0.0, "out": 1.0}),
+    );
+    run(
+        "set-clip",
+        serde_json::json!({"clip": last["clip"], "fade_out": 1.0}),
+    );
+
+    let still = |at: f64| {
+        let output = render_op(
+            &editor,
+            &room,
+            "view-frame-content",
+            serde_json::json!({"at": at, "width": 320}),
+        );
+        let (_, png) = produced(&room, &output);
+        thumbnail::decode_png(&png).expect("a PNG")
+    };
+    let titled = still(0.5);
+    assert!(
+        yellow_pixels(&titled.rgba) > 100,
+        "the title is yellow: {} yellow pixels",
+        yellow_pixels(&titled.rgba)
+    );
+    let untitled = still(1.5);
+    assert_eq!(
+        yellow_pixels(&untitled.rgba),
+        0,
+        "the title is gone at 1.5 s"
+    );
+
+    let blue_at = |at: f64| {
+        let frame = still(at);
+        frame.rgba[(90 * 320 + 160) * 4 + 2]
+    };
+    let (full, half, nearly_black) = (blue_at(2.5), blue_at(3.5), blue_at(3.95));
+    assert!(full > 150, "blue before the fade: {full}");
+    assert!(
+        (40..150).contains(&half),
+        "half way through the fade: {half}"
+    );
+    assert!(
+        nearly_black < 30,
+        "the fade ends near black: {nearly_black}"
+    );
+}

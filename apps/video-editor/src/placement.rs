@@ -38,17 +38,22 @@ const PROBE_BYTES: u64 = 96 * 1024 * 1024;
 const EPSILON: f64 = 1e-6;
 
 /// The declarations bound to `project`: what it holds names the sources,
-/// tracks and clips their arguments refer to.
+/// tracks and clips their arguments refer to. With them, [`crate::revision`]'s
+/// titles and clip edits, so a caller reaches every edit of a cut on the
+/// project itself rather than on a child it has to list first.
 pub(crate) fn declarations(project: &Project) -> Vec<ActionDecl<VideoProject>> {
-    vec![
+    let mut declared = vec![
         import_content(project),
         add_clip(project),
         move_clip(project),
-    ]
+    ];
+    declared.extend(crate::revision::declarations(project));
+    declared
 }
 
-/// What `action`, one of these declarations, did once it applied to `doc`
-/// as `changes`: the source or clips it wrote and the timeline it left.
+/// What `action`, one of these declarations or [`crate::revision`]'s, did
+/// once it applied to `doc` as `changes`: the source or clips it wrote and
+/// the timeline it left.
 pub(crate) fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<serde_json::Value> {
     let project = || VideoDoc::load_project(doc);
     match action {
@@ -87,13 +92,13 @@ pub(crate) fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<serde
                 "timeline": crate::timeline::timeline_json(&project),
             }))
         }
-        _ => None,
+        _ => crate::revision::answer(doc, action, changes),
     }
 }
 
 /// The ids of the entries of the root map `map` (`clips`, `media`) that
 /// `changes` wrote, in the order first written.
-fn touched(changes: &[Patch], map: &str) -> Vec<Uuid> {
+pub(crate) fn touched(changes: &[Patch], map: &str) -> Vec<Uuid> {
     let mut ids = Vec::new();
     for patch in changes {
         let id = match (patch.path.as_slice(), &patch.action) {
@@ -250,7 +255,7 @@ fn import_content(project: &Project) -> ActionDecl<VideoProject> {
 
 /// The bin source an argument names: its id (`video.media:<id>` too), else
 /// its name exactly, else its name ignoring case.
-fn media_named<'a>(project: &'a Project, named: &str) -> Result<&'a MediaItem, String> {
+pub(crate) fn media_named<'a>(project: &'a Project, named: &str) -> Result<&'a MediaItem, String> {
     let named = named.trim();
     if named.is_empty() {
         return Err("name the source to place: its id or its name in the bin".into());
@@ -363,6 +368,50 @@ fn time_arg(args: &ActionArgs, name: &str) -> Result<Option<f64>, String> {
         Some(seconds) if seconds.is_finite() && seconds >= 0.0 => Ok(Some(seconds)),
         Some(_) => Err(format!("`{name}` is seconds at or after 0")),
     }
+}
+
+/// The two fade parameters `add-clip`, `move-clip` and `set-clip` share.
+pub(crate) fn fade_params() -> [ActionParam; 2] {
+    [
+        ActionParam::optional(
+            "fade_in",
+            ParamType::Number,
+            "Seconds the clip fades up from black (and its sound from silence) at its head; \
+             0 removes it; at most the clip's length",
+        ),
+        ActionParam::optional(
+            "fade_out",
+            ParamType::Number,
+            "Seconds the clip fades to black (and its sound to silence) at its tail; 0 removes \
+             it; at most the clip's length",
+        ),
+    ]
+}
+
+/// A fade argument `name` (`fade_in`, `fade_out`) for a clip lasting
+/// `length` seconds: absent, or seconds from 0 to the clip's length. Refused
+/// rather than clamped past the end, so a caller learns the clip is shorter
+/// than it thought instead of getting a fade it did not ask for.
+fn fade_arg(args: &ActionArgs, name: &str, length: f64) -> Result<Option<f64>, String> {
+    match time_arg(args, name)? {
+        Some(seconds) if seconds > length + EPSILON => Err(format!(
+            "`{name}` is at most the clip's length, {length:.3}s"
+        )),
+        Some(seconds) => Ok(Some(seconds.min(length))),
+        None => Ok(None),
+    }
+}
+
+/// Set the fades `args` give on `clip`, checked against its length.
+pub(crate) fn apply_fades(clip: &mut Clip, args: &ActionArgs) -> Result<(), String> {
+    let length = clip.duration();
+    if let Some(seconds) = fade_arg(args, "fade_in", length)? {
+        clip.fade_in = seconds;
+    }
+    if let Some(seconds) = fade_arg(args, "fade_out", length)? {
+        clip.fade_out = seconds;
+    }
+    Ok(())
 }
 
 /// Refuse a clip at `start..end` on `track` that would cover part of another
@@ -499,7 +548,7 @@ fn place(project: &Project, args: &ActionArgs) -> Result<VideoEditorAction, Stri
             .map(|c| c.end())
             .fold(0.0, f64::max),
     };
-    let clip = Clip {
+    let mut clip = Clip {
         id: Uuid::new_v4(),
         track,
         media: media.id,
@@ -509,6 +558,7 @@ fn place(project: &Project, args: &ActionArgs) -> Result<VideoEditorAction, Stri
         palette: media.palette,
         ..Default::default()
     };
+    apply_fades(&mut clip, args)?;
     refuse_overlap(project, track, (clip.start, clip.end()), &[])?;
     Ok(upsert_tracks_and_clips_action(&made, &[clip]))
 }
@@ -551,19 +601,23 @@ fn add_clip(project: &Project) -> ActionDecl<VideoProject> {
                 "Seconds into the source where the clip stops reading, after `in`; default: \
                  the source's end. The clip lasts out - in seconds",
             ),
-        ],
+        ]
+        .into_iter()
+        .chain(fade_params())
+        .collect(),
         move |args, _now| place(&project, args),
     )
     .describe(
         "Place a bin source (video, sound, picture or title) on a track as a new clip: at \
-         `at` seconds on the timeline, reading the source from `in` to `out` seconds. A clip \
-         may not cover another on the same track. Answers the new clip's id and the timeline.",
+         `at` seconds on the timeline, reading the source from `in` to `out` seconds, with \
+         optional fades. A clip may not cover another on the same track. Answers the new \
+         clip's id and the timeline.",
     )
     .answering()
 }
 
 /// The clip an argument names: its id, `video.clip:<id>` too.
-fn clip_named<'a>(project: &'a Project, named: &str) -> Result<&'a Clip, String> {
+pub(crate) fn clip_named<'a>(project: &'a Project, named: &str) -> Result<&'a Clip, String> {
     let named = named.trim();
     let id = named
         .trim_start_matches("video.clip:")
@@ -598,7 +652,10 @@ fn move_clip(project: &Project) -> ActionDecl<VideoProject> {
                 "Another track of the same kind to move it to: its id or name (V2, A1, …); \
                  default: the track it is on",
             ),
-        ],
+        ]
+        .into_iter()
+        .chain(fade_params())
+        .collect(),
         move |args, _now| {
             let clip = clip_named(&project, args.text("clip").unwrap_or_default())?;
             let start = time_arg(args, "start")?.ok_or("give `start`, seconds on the timeline")?;
@@ -631,6 +688,7 @@ fn move_clip(project: &Project) -> ActionDecl<VideoProject> {
                     member.start = (member.start + delta).max(0.0);
                     if *id == clip.id {
                         member.track = target;
+                        apply_fades(member, args)?;
                     }
                 }
             }
@@ -649,8 +707,9 @@ fn move_clip(project: &Project) -> ActionDecl<VideoProject> {
     )
     .describe(
         "Move a placed clip to start at `start` seconds, keeping its length and the part of \
-         the source it reads; to another track of its kind when `track` is given. Clips linked \
-         to it move by the same amount. Answers the moved clips and the timeline.",
+         the source it reads; to another track of its kind when `track` is given, and with \
+         the fades given. Clips linked to it move by the same amount. Answers the moved clips \
+         and the timeline.",
     )
     .answering()
 }
