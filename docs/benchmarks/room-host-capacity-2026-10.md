@@ -35,6 +35,16 @@ the host's CPU and memory are read from `/proc` over its whole process tree
 (the relay and the Automerge worker processes it starts, proportional set
 size so shared pages count once), with the busiest thread's share.
 
+Each report also says where the host's time went (`timings`, from the relay's
+`tilo_relay::timing` target, which the bench's host enables): per newcomer the
+wait for a replay slot, its capture, preparation, boundary, catch-up, cleanup
+and how long it held the slot, by arrival tenth; per commit its wait and
+durability; per kind of change (member and host checkpoints and deltas, and
+which channel governance a member's checkpoint carries) its owner turn and
+publication; and per second the room owner's queue, transaction and
+publication time, its replay turns by kind, room lock waits and membership
+reloads. An owner whose turns add up to 1000 ms in a second is saturated.
+
 `tools/perf/room_capacity.py sweep` runs the plan below one run after another
 on one runner, and `summarize` derives the per-guest figures and prices them
 with `[room_node.*]` of `tools/perf/prices.toml`. The `perf-room-capacity`

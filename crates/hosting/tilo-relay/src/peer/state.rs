@@ -56,6 +56,8 @@ pub(crate) struct Lag {
 }
 impl Lag {
     pub(super) fn mark(&self, workspace_id: u64) {
+        // Counted, not timed: how often a live delivery fell back to replay.
+        crate::timing::window("state.lag_mark", crate::timing::start());
         let first = self
             .rooms
             .lock()

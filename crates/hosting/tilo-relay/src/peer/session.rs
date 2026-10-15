@@ -25,6 +25,7 @@ fn lag_resume(session: &SessionCtx<'_>, subscribed: &[u64]) -> Option<Envelope> 
         if !subscribed.contains(&workspace_id) {
             continue;
         }
+        crate::timing::window("state.lag_resume", crate::timing::start());
         if let Some(Envelope::Position { position, .. }) = resume_record(session, workspace_id, [])
         {
             return Some(Envelope::SubscribeFrom {

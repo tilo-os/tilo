@@ -74,8 +74,11 @@ pub(super) async fn handle_commit(
         return refused(reason);
     };
     let digest = *blake3::hash(&delta).as_bytes();
+    let gated = crate::timing::start();
     let gate = ws.lock().await.commit_gate.clone();
     let _admitting = gate.lock().await;
+    crate::timing::event("commit.gate_wait", gated, 0);
+    let committing = crate::timing::start();
     let admitted = ws
         .lock()
         .await
@@ -110,6 +113,7 @@ pub(super) async fn handle_commit(
     // What an author is told is committed never depends on work that can
     // still fail: wait for the change to be durable and published.
     crate::persistence::receipt(admitted.completion).await?;
+    crate::timing::event("commit.durable", committing, 0);
     let durable = admitted.sequence.load(std::sync::atomic::Ordering::SeqCst);
     if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
         compactor.note(&ws, workspace_id, observed);

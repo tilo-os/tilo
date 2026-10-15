@@ -195,7 +195,9 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             authority: &ticket.authority,
             catchup: &catchup,
         };
+        let replaying = crate::timing::start();
         let replayed_frames = drive_replay(run, handle, peer, session, private_rx, write).await?;
+        crate::timing::event("join.replay_total", replaying, replayed_frames);
         authorize_replay(&ws, &StateSource::new(peer, session), &ticket.authority).await?;
         reply = Some(Envelope::Ready {
             workspace_id,
@@ -210,6 +212,7 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
         // Dropping this ticket schedules specific bounded spool reclamation.
     }
     if let Some(reply) = reply {
+        let readying = crate::timing::start();
         authorize_state_frame(&reply, peer, session).await?;
         if let Some((catchup, workspace, source, ticket)) = &completed_replay {
             #[cfg(test)]
@@ -240,6 +243,7 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
         }
         if let Some((catchup, workspace, source, ticket)) = completed_replay {
             complete_replay_ready(&workspace, &source, &ticket.authority, &catchup).await?;
+            crate::timing::event("join.ready", readying, 0);
         }
     }
     if batch.replaying {
@@ -262,6 +266,9 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
     let mut written = None;
     let mut boundary_done = false;
     let mut replayed_frames = 0u64;
+    let mut phase = crate::timing::start();
+    // Of the phase, the time spent writing batches to the connection.
+    let mut writing = std::time::Duration::ZERO;
     loop {
         let authority = run.authority.clone();
         let source = StateSource::new(peer, session);
@@ -272,21 +279,38 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
         match replay_direct_wait(preparing, peer, session, private_rx, write).await? {
             ReplayAdvance::Preparing => {}
             ReplayAdvance::Batch(frames) => {
+                let batch_at = crate::timing::start();
                 written =
                     Some(write_replay_batch(run, frames, peer, session, private_rx, write).await?);
+                if let Some(batch_at) = batch_at {
+                    writing = writing.saturating_add(batch_at.elapsed());
+                }
                 continue;
             }
             ReplayAdvance::Exhausted(summary) => {
                 replayed_frames = replayed_frames.saturating_add(summary.total_frames);
                 if boundary_done {
+                    crate::timing::event("join.catchup", phase, summary.total_frames);
+                    let cleaning = crate::timing::start();
                     finish_replay_cleanup(run, &handle, peer, session, private_rx, write).await?;
+                    crate::timing::event("join.cleanup", cleaning, 0);
                     return Ok(replayed_frames);
                 }
+                crate::timing::event("join.replay", phase, summary.total_frames);
+                crate::timing::event(
+                    "join.replay_write",
+                    phase.and_then(|_| std::time::Instant::now().checked_sub(writing)),
+                    summary.total_frames,
+                );
+                let cutting = crate::timing::start();
                 let Some(catchup_handle) =
                     cut_replay_boundary(run, &handle, peer, session, private_rx, write).await?
                 else {
+                    crate::timing::event("join.boundary", cutting, 0);
                     return Ok(replayed_frames);
                 };
+                crate::timing::event("join.boundary", cutting, 1);
+                phase = crate::timing::start();
                 handle = catchup_handle;
                 written = None;
                 boundary_done = true;
@@ -371,8 +395,10 @@ async fn finish_replay_cleanup<W: tokio::io::AsyncWrite + Unpin>(
         },
         move |state, authority| {
             let authority = authority.as_ref().invariant("replay cleanup")?;
-            state.finish_replay(authority, &cleanup_handle, |store| {
-                authorize_replay_now(store, &checking_workspace, &checking_source, authority)
+            crate::timing::windowed("owner.replay.cleanup_step", || {
+                state.finish_replay(authority, &cleanup_handle, |store| {
+                    authorize_replay_now(store, &checking_workspace, &checking_source, authority)
+                })
             })
         },
         |result| async { result },
@@ -417,8 +443,15 @@ async fn cut_replay_boundary<W: tokio::io::AsyncWrite + Unpin>(
         move |state, authority| {
             let authority = authority.as_ref().invariant("replay boundary")?;
             if !finished {
-                let step = state.finish_replay(authority, &cleanup_handle, |store| {
-                    authorize_replay_now(store, &checking_workspace, &checking_source, authority)
+                let step = crate::timing::windowed("owner.replay.boundary_cleanup_step", || {
+                    state.finish_replay(authority, &cleanup_handle, |store| {
+                        authorize_replay_now(
+                            store,
+                            &checking_workspace,
+                            &checking_source,
+                            authority,
+                        )
+                    })
                 })?;
                 if matches!(step, Step::More) {
                     return Ok(Step::More);
@@ -428,7 +461,9 @@ async fn cut_replay_boundary<W: tokio::io::AsyncWrite + Unpin>(
             if !checking.dirty.load(std::sync::atomic::Ordering::SeqCst) {
                 return Ok(Step::Done(None));
             }
-            let step = state.capture_pending_replay(authority, &checking.held)?;
+            let step = crate::timing::windowed("owner.replay.boundary_capture_step", || {
+                state.capture_pending_replay(authority, &checking.held)
+            })?;
             match step {
                 Step::More => Ok(Step::More),
                 Step::Done(handle) => Ok(Step::Done(Some(handle))),
@@ -579,13 +614,20 @@ fn authorize_replay_now(
 ) -> Result<(), StoreError> {
     // The in-memory set while the membership watch vouches for it; otherwise
     // the file, as a fresh membership reload would read it.
+    let locking = crate::timing::start();
     let current = workspace.blocking_lock().membership_is_current();
+    crate::timing::window("replay.authorize_lock", locking);
     let members = if current {
         None
     } else {
-        Some(store.load_membership()?)
+        let loading = crate::timing::start();
+        let members = store.load_membership()?;
+        crate::timing::window("replay.authorize_membership_load", loading);
+        Some(members)
     };
+    let locking = crate::timing::start();
     let runtime = workspace.blocking_lock();
+    crate::timing::window("replay.authorize_lock", locking);
     let room = members.as_deref().map_or_else(
         || room_access::Room::current(&runtime),
         |listed| room_access::Room::with_listed(&runtime, listed),

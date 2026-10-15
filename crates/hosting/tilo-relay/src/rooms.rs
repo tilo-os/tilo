@@ -385,6 +385,7 @@ impl GovernedRoom {
         now: SystemTime,
         state: impl FnOnce(&RoomRecord, &StatePeer) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
+        let committing = crate::timing::start();
         if candidate.room() != self.peer.room() || candidate.authority() != self.peer.authority() {
             return Err("a room change cannot replace the room".into());
         }
@@ -443,6 +444,11 @@ impl GovernedRoom {
             return Err(error);
         }
         self.peer = candidate;
+        crate::timing::event(
+            "room.governance_commit",
+            committing,
+            self.record.outgoing.len() as u64,
+        );
         Ok(generation)
     }
 
@@ -1266,10 +1272,13 @@ impl Rooms {
             let readers = steward.readers(generation, readers);
             let mut asked = false;
             let mut acks = Vec::new();
+            let passing = crate::timing::start();
+            let mut requests = 0u64;
             for (author, notice) in waiting {
                 match notice {
                     ChannelNoticeKind::Request(request, route) => {
                         asked = true;
+                        requests = requests.saturating_add(1);
                         if let Err(error) =
                             stewardship.request(author, *request, route.as_deref(), &readers)
                         {
@@ -1279,11 +1288,13 @@ impl Rooms {
                     ChannelNoticeKind::Ack(ack) => acks.push((author, *ack)),
                 }
             }
+            crate::timing::event("steward.acks", passing, acks.len() as u64);
             stewardship.acknowledge(acks);
             if !asked {
                 return Ok(());
             }
             let messages = stewardship.admit_pending(&readers)?;
+            crate::timing::event("steward.admit", passing, requests);
             // After the channel changes a settle handed over.
             publisher.flushed().await;
             let admissions = self
@@ -1292,6 +1303,7 @@ impl Rooms {
             for admission in admissions {
                 admission.durable().await?;
             }
+            crate::timing::event("steward.pass", passing, requests);
             drop(stewardship);
         }
         Ok(())

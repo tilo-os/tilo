@@ -277,7 +277,10 @@ impl Sessions {
                         Admit::Closed => return,
                         Admit::Full(back) => envelope = back,
                     }
+                    let waiting = crate::timing::start();
                     drained.await;
+                    // A reader this far behind holds its peer loop's writes.
+                    crate::timing::window("web.log_full_wait", waiting);
                 }
                 pumped.changed.notify_waiters();
             }

@@ -150,8 +150,11 @@ pub(super) async fn handle_subscribe(
         .cloned()
         .unwrap_or_else(|| mpsc::channel(1).0);
     let completion_workspace = ws.clone();
+    let waited = crate::timing::start();
     let ticket =
         ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned()).await?;
+    crate::timing::event("join.ticket_wait", waited, 0);
+    let capturing = crate::timing::start();
     let capture = ticket.authority.clone();
     let bind = ticket.authority.clone();
     let catchup = Arc::new(ReplayCatchup::new(&work));
@@ -172,7 +175,9 @@ pub(super) async fn handle_subscribe(
             1,
             async { Ok(()) },
             move |state, _| {
-                let step = state.capture_resumed_replay(&capture, skip.clone())?;
+                let step = crate::timing::windowed("owner.replay.capture_step", || {
+                    state.capture_resumed_replay(&capture, skip.clone())
+                })?;
                 match step {
                     Step::More => Ok(Step::More),
                     Step::Done(handle) => Ok(Step::Done(SubscribeReplayCompletion::Ready(handle))),
@@ -189,6 +194,7 @@ pub(super) async fn handle_subscribe(
         )
         .await?;
     let completion = crate::persistence::receipt(rx).await?;
+    crate::timing::event("join.capture", capturing, 0);
     let handle = match completion {
         SubscribeReplayCompletion::Ready(handle) => handle,
         SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
