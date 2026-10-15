@@ -11,6 +11,8 @@
 //! * [`bootc_copy_cache`]: `tilo-vm-bootc-copy-cache check|record` (VMs only)
 //! * [`offline_target`]: `tilo-installer-offline-target verify|import`
 //! * [`staging_handoff`]: `tilo-staging-handoff detect|check-install|…`
+//! * [`install_proof`]: `tilo-vm-install-proof --target-root … --output OUTPUT`
+//!   (VMs only)
 
 use std::ffi::OsString;
 use std::fmt;
@@ -20,6 +22,8 @@ pub mod args;
 pub mod bootc_copy_cache;
 pub mod dev_ssh;
 pub mod handoff_copy;
+pub mod ini;
+pub mod install_proof;
 pub mod offline_target;
 pub mod process;
 pub mod py;

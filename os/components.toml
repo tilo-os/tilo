@@ -561,8 +561,8 @@ files = [
 # the USB-free installation guard before greetd; the installer backend
 # (tilo-install) runs the rest: the signed offline target's verification and
 # import, the setup handoff copy, a dev self-install's owner SSH keys and, in
-# an opted-in VM, the bootc export cache. The installer image inherits them
-# from here; a swap takes effect at the next install.
+# a VM, the bootc export cache and the install proof. The installer image
+# inherits them from here; a swap takes effect at the next install.
 [[component]]
 name = "install-helpers"
 kind = "userspace"
@@ -574,6 +574,7 @@ bins = [
   "tilo-vm-bootc-copy-cache",
   "tilo-installer-offline-target",
   "tilo-staging-handoff",
+  "tilo-vm-install-proof",
 ]
 layer = "recovery-files"
 files = [
@@ -582,6 +583,7 @@ files = [
   { from = "tilo-vm-bootc-copy-cache", to = "/usr/libexec/tilo-vm-bootc-copy-cache", mode = "0755" },
   { from = "tilo-installer-offline-target", to = "/usr/libexec/tilo-installer-offline-target", mode = "0755" },
   { from = "tilo-staging-handoff", to = "/usr/libexec/tilo-staging-handoff", mode = "0755" },
+  { from = "tilo-vm-install-proof", to = "/usr/libexec/tilo-vm-install-proof", mode = "0755" },
 ]
 
 # Downloaded, Tilo-signed system extensions: tilo-extension-activate.service at
