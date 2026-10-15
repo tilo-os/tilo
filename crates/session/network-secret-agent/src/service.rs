@@ -2,6 +2,8 @@
 //! registered with `NetworkManager`'s agent manager for this session.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio_util::sync::CancellationToken;
@@ -13,9 +15,20 @@ use super::{
     AgentError, ConnectionDict, SecretPrompter, SecretRequest, SheetAnswer, agent_owned_secrets,
     connection_uuid, request_secrets,
 };
-use crate::shell::portal_dialog::{
-    NetworkSecretsDecision, NetworkSecretsRequest, PortalDialogQueue,
-};
+
+/// What a sheet answers: what the person typed, or `None` when they
+/// dismissed it or it could not be shown.
+pub type SheetReply = Pin<Box<dyn Future<Output = Option<SheetAnswer>> + Send>>;
+
+/// The sheets the agent asks in, drawn by its host — in the shell, the
+/// compositor's own dialog queue, which no application can imitate.
+pub trait Sheets: Send + Sync {
+    /// Show `request` in the sheet named `handle`, resolving its
+    /// [`crate::Message`]s in the host's catalogue.
+    fn ask(&self, handle: &str, request: &SecretRequest) -> SheetReply;
+    /// Take the sheet named `handle` down, if it is still up.
+    fn cancel(&self, handle: &str);
+}
 
 /// Where `NetworkManager` looks for every agent.
 pub const AGENT_PATH: &str = "/org/freedesktop/NetworkManager/SecretAgent";
@@ -29,9 +42,9 @@ pub const AGENT_MANAGER_INTERFACE: &str = "org.freedesktop.NetworkManager.AgentM
 /// so the sheet can ask for them without a plugin's own dialog.
 pub const CAPABILITY_VPN_HINTS: u32 = 0x1;
 
-/// The sheet the compositor draws for one request.
+/// The sheet the host draws for one request.
 pub struct SheetPrompter {
-    queue: PortalDialogQueue,
+    sheets: Arc<dyn Sheets>,
     handle: String,
 }
 
@@ -39,13 +52,13 @@ impl SheetPrompter {
     /// `number` tells apart requests for the same setting, so a request
     /// `NetworkManager` replaced never takes down its successor's sheet.
     pub fn new(
-        queue: PortalDialogQueue,
+        sheets: Arc<dyn Sheets>,
         number: u64,
         connection_path: &str,
         setting_name: &str,
     ) -> Self {
         Self {
-            queue,
+            sheets,
             handle: format!("nm-secrets:{number}:{connection_path}/{setting_name}"),
         }
     }
@@ -57,22 +70,7 @@ impl SheetPrompter {
 
 impl SecretPrompter for SheetPrompter {
     async fn ask(&self, request: &SecretRequest) -> Option<SheetAnswer> {
-        let receiver = self
-            .queue
-            .enqueue_network_secrets(NetworkSecretsRequest {
-                handle: self.handle.clone(),
-                title: request.title.clone(),
-                detail: request.detail.clone(),
-                fields: request.fields.clone(),
-                remember: Some(request.remember_default),
-            })
-            .ok()?;
-        match receiver.await.ok()? {
-            NetworkSecretsDecision::Answered { values, remember } => {
-                Some(SheetAnswer { values, remember })
-            }
-            NetworkSecretsDecision::Cancelled => None,
-        }
+        self.sheets.ask(&self.handle, request).await
     }
 }
 
@@ -101,16 +99,16 @@ async fn from_network_manager(connection: &zbus::Connection, header: &Header<'_>
 type LiveRequests = Arc<Mutex<HashMap<(String, String), (u64, CancellationToken)>>>;
 
 pub struct SecretAgent {
-    queue: PortalDialogQueue,
+    sheets: Arc<dyn Sheets>,
     store: Arc<dyn SecretStore>,
     live: LiveRequests,
     started: std::sync::atomic::AtomicU64,
 }
 
 impl SecretAgent {
-    pub fn new(queue: PortalDialogQueue, store: Arc<dyn SecretStore>) -> Self {
+    pub fn new(sheets: Arc<dyn Sheets>, store: Arc<dyn SecretStore>) -> Self {
         Self {
-            queue,
+            sheets,
             store,
             live: Arc::default(),
             started: std::sync::atomic::AtomicU64::new(0),
@@ -168,7 +166,7 @@ impl SecretAgent {
             stale.cancel();
         }
         let prompter = SheetPrompter::new(
-            self.queue.clone(),
+            Arc::clone(&self.sheets),
             number,
             connection_path.as_str(),
             &setting_name,
@@ -177,7 +175,7 @@ impl SecretAgent {
             outcome = request_secrets(&request, &self.store, &prompter) => outcome,
             () = token.cancelled() => Err(AgentError::AgentCanceled("withdrawn by NetworkManager".into())),
         };
-        self.queue.cancel(prompter.handle());
+        self.sheets.cancel(prompter.handle());
         {
             let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
             if live
@@ -366,12 +364,12 @@ async fn reregister_on_restart(connection: zbus::Connection) {
 /// When the object cannot be served or `NetworkManager` refuses the agent.
 pub async fn serve_on(
     connection: zbus::Connection,
-    queue: PortalDialogQueue,
+    sheets: Arc<dyn Sheets>,
     store: Arc<dyn SecretStore>,
 ) -> zbus::Result<AgentHandle> {
     connection
         .object_server()
-        .at(AGENT_PATH, SecretAgent::new(queue, store))
+        .at(AGENT_PATH, SecretAgent::new(sheets, store))
         .await?;
     register(&connection).await?;
     let reregister = connection
@@ -391,7 +389,7 @@ pub async fn serve_on(
 /// When the system bus or `NetworkManager` cannot be reached, or no vault
 /// location exists for this session.
 pub async fn serve(
-    queue: PortalDialogQueue,
+    sheets: Arc<dyn Sheets>,
     roaming: super::store::RoamingWifiSlot,
 ) -> zbus::Result<AgentHandle> {
     // Choosing the vault's custody probes the secret store over a blocking
@@ -403,5 +401,5 @@ pub async fn serve(
             zbus::Error::Failure("no configuration directory for the network secrets vault".into())
         })?;
     let connection = zbus::Connection::system().await?;
-    serve_on(connection, queue, Arc::new(store)).await
+    serve_on(connection, sheets, Arc::new(store)).await
 }
