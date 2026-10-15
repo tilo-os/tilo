@@ -184,7 +184,23 @@ than the inviter's role, membership changes are the room's policy checks
 `call` action, which no role preset below the owner's holds. What no room
 decides stays the host person's (`host_authority.rs`): creating, listing
 and entering rooms, pre-admission, room grants, administrators, bots,
-application authorship and the host's compute control.
+application authorship and the host's compute control. An agent is a
+device of that person and still none of it: the room authority, the
+compute control stream and compute job content all refuse a device the
+relay's agent registry names (`RelayTrust::is_agent`), in every relay
+build, not only the one that runs agents.
+
+The suite that holds a hosted relay to this is
+`crates/hosting/tilo-relay/tests/tenant_isolation.rs`: one relay governing
+two tenants' rooms, where each tenant's administrator, member and the
+host's delegated agent try every administration command, subscription,
+write, catalogue, action and compute door against the other room, and
+every refusal is checked against that room's governance afterwards. The
+`Security / tenant and agent isolation` workflow
+(`.forgejo/workflows/security-isolation.yml`) runs it nightly and on
+demand with the room-access, admission, revocation and agent-confinement
+suites, against the default relay build and the `agents` build the room
+service ships.
 
 The desktop administers a relay room it holds through those governance
 actions, on the room's own relay session, the same surface agents and

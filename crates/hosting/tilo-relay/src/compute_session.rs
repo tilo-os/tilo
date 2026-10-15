@@ -164,7 +164,7 @@ async fn run_server_session(
     mut receive: RecvStream,
 ) -> Result<(), ComputeSessionError> {
     let peer = authenticate_server(&protocol, &mut send, &mut receive).await?;
-    let controls = crate::host_authority::HostOperation::ComputeControl
+    let host_person = crate::host_authority::HostOperation::ComputeControl
         .permits(&protocol.identity.user_public_key, &peer.user_public_key);
     let streams = tokio::spawn(accept_streams(
         protocol.routing(),
@@ -190,6 +190,11 @@ async fn run_server_session(
                 }
                 incoming = read_compute(&mut receive) => {
                     let incoming = incoming?;
+                    // The host's person drives its compute, never an agent
+                    // of theirs: asked per message, so an agent registered
+                    // after its device connected is refused from then on.
+                    let controls =
+                        host_person && !protocol.trust().is_agent(&peer.device_public_key);
                     if !controls {
                         // Another user's device reaches environments on its
                         // own streams; the control stream is the host's
