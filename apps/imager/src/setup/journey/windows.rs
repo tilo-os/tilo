@@ -28,6 +28,9 @@ pub(super) struct Preparation {
     source_worker: Option<std::sync::mpsc::Receiver<Result<Discovery, String>>>,
     exported: bool,
     failed: bool,
+    expanded: std::collections::BTreeSet<(String, String)>,
+    opener: fn(&str) -> ui::portal::LaunchChannel,
+    opening: Option<ui::portal::LaunchChannel>,
 }
 
 impl Default for Preparation {
@@ -46,6 +49,9 @@ impl Default for Preparation {
             source_worker: None,
             exported: false,
             failed: false,
+            expanded: std::collections::BTreeSet::new(),
+            opener: ui::portal::send_open_uri,
+            opening: None,
         }
     }
 }
@@ -58,7 +64,8 @@ impl Preparation {
     pub(super) fn projection(&self) -> serde_json::Value {
         serde_json::json!({"available": self.enabled, "exporting": self.worker.is_some(), "discovering": self.source_worker.is_some(),
             "exported": self.exported, "failed": self.failed, "hints_unavailable":self.hints_unavailable,
-            "sign_in": "live_only", "replacement_authorized":false})
+            "sign_in": "live_only", "replacement_authorized":false,
+            "opening_source": self.opening.is_some(), "expanded":self.expanded})
     }
     pub(super) fn busy(&self) -> bool {
         self.worker.is_some() || self.source_worker.is_some()
@@ -88,20 +95,75 @@ fn role(value: &str) -> Result<RootRole, &'static str> {
 }
 
 impl InstallerPreview {
+    fn windows_view_button(&self, id: &str, label: &str, effect: InstallerPreviewEffect) -> Button {
+        let commands = self.commands.clone();
+        Button::new(id, &t(label)).on_view(move || commands.borrow_mut().push(effect.clone()))
+    }
+
+    pub(super) fn windows_review_projection(&self) -> serde_json::Value {
+        let Some(inventory) = &self.belongings.windows else {
+            return serde_json::json!([]);
+        };
+        serde_json::json!(inventory.roots.iter().enumerate().map(|(index, root)| {
+            serde_json::json!({"source_id":root.source_id, "source_path":root.path,
+                "categories":root.review_categories(index),
+                "gaps":root.gaps.iter().map(|gap| root.path.join(&gap.relative)).collect::<Vec<_>>()})
+        }).collect::<Vec<_>>())
+    }
+
     pub(super) fn apply_windows(
         &mut self,
         effect: InstallerPreviewEffect,
     ) -> Result<(), &'static str> {
         use InstallerPreviewEffect::{
             ChooseWindowsExport, ChooseWindowsRoot, ExportWindowsPreparation, FindWindowsRoots,
-            PrepareUsb, ReadPreview, ReviewWindowsCategory, ReviewWindowsRoot, SelectWindowsRoot,
-            SetWindowsExclusionReason, SetWindowsPreparationPassword,
+            OpenWindowsSource, PrepareUsb, ReadPreview, ReviewWindowsCategory, ReviewWindowsRoot,
+            SelectWindowsRoot, SetWindowsExclusionReason, SetWindowsPreparationPassword,
+            ShowWindowsCategory,
         };
         if self.windows.busy() && !matches!(effect, ReadPreview) {
             return Err("installer-preview-transfer-busy");
         }
         match effect {
             ReadPreview => {}
+            OpenWindowsSource { source_id } => {
+                if self.windows.opening.is_some() {
+                    return Err("installer-windows-open-pending");
+                }
+                let uri = self
+                    .belongings
+                    .windows
+                    .as_ref()
+                    .ok_or("installer-windows-source-failed")?
+                    .source_folder_uri(&source_id)
+                    .map_err(|_| "installer-windows-source-failed")?;
+                self.windows.opening = Some((self.windows.opener)(&uri));
+            }
+            ShowWindowsCategory {
+                source_id,
+                category,
+                expanded,
+            } => {
+                let present = self.belongings.windows.as_ref().is_some_and(|inventory| {
+                    inventory.roots.iter().any(|root| {
+                        root.source_id == source_id
+                            && ((category == "gaps" && !root.gaps.is_empty())
+                                || root
+                                    .entries
+                                    .iter()
+                                    .any(|entry| category_id(entry.category) == category))
+                    })
+                });
+                if !present {
+                    return Err("installer-preview-invalid-choice");
+                }
+                let key = (source_id, category);
+                if expanded {
+                    self.windows.expanded.insert(key);
+                } else {
+                    self.windows.expanded.remove(&key);
+                }
+            }
             FindWindowsRoots => {
                 self.windows.picker = None;
                 let (tx, rx) = std::sync::mpsc::channel();
@@ -259,6 +321,21 @@ impl InstallerPreview {
 
     pub(super) fn poll_windows(&mut self) -> bool {
         let mut changed = false;
+        if let Some(opening) = &self.windows.opening {
+            let result = match opening.try_recv() {
+                Ok(ui::portal::LaunchOutcome::Opened) => Some(true),
+                Ok(ui::portal::LaunchOutcome::Failed(_))
+                | Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(false),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            };
+            if let Some(success) = result {
+                self.windows.opening = None;
+                if !success {
+                    self.error = Some("installer-windows-open-failed");
+                }
+                changed = true;
+            }
+        }
         if let Some(worker) = &self.windows.source_worker {
             let result = match worker.try_recv() {
                 Ok(result) => Some(result),
@@ -273,10 +350,31 @@ impl InstallerPreview {
                     }
                     Ok(Discovery::Granted {
                         selected,
-                        belongings,
+                        mut belongings,
                         hints,
                         hints_unavailable,
                     }) => {
+                        // Preserve local bytes by default, including unknown game
+                        // folders and mods. Unavailable bytes are never claimed copied.
+                        if let Some(inventory) = &mut belongings.windows {
+                            for root in &mut inventory.roots {
+                                if let Some(previous) =
+                                    self.belongings.windows.as_ref().and_then(|old| {
+                                        old.roots.iter().find(|old| old.source_id == root.source_id)
+                                    })
+                                {
+                                    root.decision = previous.decision;
+                                    root.exclusion_reason.clone_from(&previous.exclusion_reason);
+                                    root.category_decisions
+                                        .clone_from(&previous.category_decisions);
+                                    root.category_exclusion_reasons
+                                        .clone_from(&previous.category_exclusion_reasons);
+                                } else {
+                                    root.decision = Decision::Copy;
+                                }
+                            }
+                        }
+                        self.windows.expanded.clear();
                         self.windows.selected = selected;
                         self.windows.hints = hints;
                         self.windows.hints_unavailable = hints_unavailable;
@@ -397,11 +495,60 @@ impl InstallerPreview {
                     ),
                 ],
             ))));
+            content = content.push(Box::new(Text::new(&t("installer-windows-backup-plan"))));
             if !budget.coverage_complete {
                 content = content.push(Box::new(Text::new(&t("installer-windows-incomplete"))));
             }
             for (index, root) in inventory.roots.iter().enumerate() {
                 content = content.push(Box::new(Text::new(&root.path.to_string_lossy())));
+                content = content.push(Box::new(
+                    self.windows_view_button(
+                        &format!("windows.root.{index}.open"),
+                        "installer-windows-open-source",
+                        InstallerPreviewEffect::OpenWindowsSource {
+                            source_id: root.source_id.clone(),
+                        },
+                    )
+                    .with_enabled(self.windows.opening.is_none()),
+                ));
+                if !root.gaps.is_empty() {
+                    content = content.push(Box::new(Text::new(&t_args(
+                        "installer-windows-gaps",
+                        &[("count", root.gaps.len().to_string().into())],
+                    ))));
+                    let expanded = self
+                        .windows
+                        .expanded
+                        .contains(&(root.source_id.clone(), "gaps".into()));
+                    content = content.push(Box::new(self.windows_view_button(
+                        &format!("windows.root.{index}.gaps"),
+                        if expanded {
+                            "installer-windows-hide-paths"
+                        } else {
+                            "installer-windows-show-paths"
+                        },
+                        InstallerPreviewEffect::ShowWindowsCategory {
+                            source_id: root.source_id.clone(),
+                            category: "gaps".into(),
+                            expanded: !expanded,
+                        },
+                    )));
+                    if expanded {
+                        for gap in &root.gaps {
+                            content = content.push(Box::new(Text::new(&t_args(
+                                "installer-windows-gap-path",
+                                &[(
+                                    "path",
+                                    root.path
+                                        .join(&gap.relative)
+                                        .to_string_lossy()
+                                        .into_owned()
+                                        .into(),
+                                )],
+                            ))));
+                        }
+                    }
+                }
                 for (suggestion_index, path) in root.additional_grants.iter().enumerate() {
                     let commands = self.commands.clone();
                     let source = path.to_string_lossy().into_owned();
@@ -423,43 +570,94 @@ impl InstallerPreview {
                         }),
                     ));
                 }
-                // Categories are actual inventory rows, not an assumed app label.
-                for category in categories() {
-                    let count = root
-                        .entries
-                        .iter()
-                        .filter(|entry| entry.category == category)
-                        .count();
-                    if count == 0 {
-                        continue;
-                    }
-                    let category_id = category_id(category);
-                    let decision = root
-                        .category_decisions
-                        .get(&category)
-                        .copied()
-                        .unwrap_or(root.decision);
-                    let decision_id = match decision {
+                if root.entries.is_empty() && root.gaps.is_empty() {
+                    content = content.push(Box::new(Text::new(&t("installer-windows-empty"))));
+                }
+                for group in root.review_categories(index) {
+                    let category_id = category_id(group.category);
+                    let mut items: Vec<Box<dyn Widget>> = Vec::new();
+                    let decision_id = match group.decision {
                         Decision::Copy => "copy",
                         Decision::RetainOriginal => "retain-original",
                         Decision::Exclude => "exclude",
                     };
-                    content = content.push(Box::new(Text::new(&t_args(
+                    items.push(Box::new(Text::new(&t_args(
                         "installer-windows-category-summary",
                         &[
                             (
                                 "category",
                                 t(&format!("installer-windows-category-{category_id}")).into(),
                             ),
-                            ("count", count.to_string().into()),
+                            ("count", group.entries.to_string().into()),
                             (
                                 "decision",
                                 t(&format!("installer-windows-{decision_id}")).into(),
                             ),
+                            ("size", ui::format::bytes(group.known_bytes).into()),
+                            ("unknown", group.unknown_sizes.to_string().into()),
+                            ("unavailable", group.unavailable.to_string().into()),
                         ],
                     ))));
+                    items.push(Box::new(Text::new(&t_args(
+                        &format!("installer-windows-plan-{decision_id}"),
+                        &[("destination", group.destination.clone().into())],
+                    ))));
+                    let expanded = self
+                        .windows
+                        .expanded
+                        .contains(&(root.source_id.clone(), category_id.into()));
+                    items.push(Box::new(self.windows_view_button(
+                        &format!("windows.root.{index}.{category_id}.details"),
+                        if expanded {
+                            "installer-windows-hide-paths"
+                        } else {
+                            "installer-windows-show-paths"
+                        },
+                        InstallerPreviewEffect::ShowWindowsCategory {
+                            source_id: root.source_id.clone(),
+                            category: category_id.into(),
+                            expanded: !expanded,
+                        },
+                    )));
+                    if expanded {
+                        for entry in &group.paths {
+                            let availability = if entry.copy_eligible {
+                                "local"
+                            } else {
+                                match entry.availability {
+                                    crate::setup::windows_inventory::Availability::Placeholder => {
+                                        "placeholder"
+                                    }
+                                    _ => "unsupported",
+                                }
+                            };
+                            items.push(Box::new(Text::new(&t_args(
+                                "installer-windows-path",
+                                &[
+                                    ("path", entry.path.clone().into()),
+                                    (
+                                        "size",
+                                        entry
+                                            .bytes
+                                            .map_or_else(
+                                                || t("installer-windows-size-unknown"),
+                                                ui::format::bytes,
+                                            )
+                                            .into(),
+                                    ),
+                                    (
+                                        "availability",
+                                        t(&format!(
+                                            "installer-windows-availability-{availability}"
+                                        ))
+                                        .into(),
+                                    ),
+                                ],
+                            ))));
+                        }
+                    }
                     for decision in ["copy", "retain-original", "exclude"] {
-                        content = content.push(Box::new(
+                        items.push(Box::new(
                             self.button(
                                 &format!("windows.root.{index}.{category_id}.{decision}"),
                                 &format!("installer-windows-{decision}"),
@@ -473,6 +671,10 @@ impl InstallerPreview {
                             ),
                         ));
                     }
+                    content = content.push(Box::new(ui::widget::Section::titled(
+                        t(&format!("installer-windows-category-{category_id}")),
+                        items,
+                    )));
                 }
                 for decision in ["copy", "retain-original"] {
                     content = content.push(Box::new(self.button(
@@ -669,6 +871,222 @@ mod tests {
     use super::*;
     use InstallerPreviewEffect::*;
 
+    thread_local! {
+        static OPENED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn recording_opener(uri: &str) -> ui::portal::LaunchChannel {
+        OPENED.with(|opened| opened.borrow_mut().push(uri.into()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(ui::portal::LaunchOutcome::Opened).unwrap();
+        rx
+    }
+
+    fn fixture_preview(root: &Path, role: RootRole) -> InstallerPreview {
+        let mut preview = InstallerPreview::default();
+        preview.windows.enabled = true;
+        preview.live = true;
+        preview.windows.opener = recording_opener;
+        preview.belongings = belongings::Belongings::from_windows_roots(&[SelectedRoot {
+            path: root.into(),
+            role,
+        }])
+        .unwrap();
+        preview
+    }
+
+    fn texts(widget: &dyn Widget) -> Vec<String> {
+        let mut result = widget
+            .accessibility()
+            .and_then(|node| node.name)
+            .into_iter()
+            .collect::<Vec<_>>();
+        for child in widget.children() {
+            result.extend(texts(child));
+        }
+        result
+    }
+
+    #[test]
+    fn windows_review_projects_real_paths_and_progressively_discloses_them() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("Documents & local mail");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("archive.pst"), b"mail").unwrap();
+        std::fs::create_dir(root.join("saves")).unwrap();
+        std::fs::write(root.join("saves/game.dat"), b"save").unwrap();
+        std::fs::create_dir(root.join("mods")).unwrap();
+        std::fs::write(root.join("mods/unknown.bin"), b"mod").unwrap();
+        let mut preview = fixture_preview(&root, RootRole::Other);
+        let id = preview.belongings.windows.as_ref().unwrap().roots[0]
+            .source_id
+            .clone();
+        let projection = preview.windows_review_projection();
+        let groups = projection[0]["categories"].as_array().unwrap();
+        assert_eq!(groups.len(), 3);
+        let mail = groups
+            .iter()
+            .find(|group| group["category"] == "mail-archive")
+            .unwrap();
+        assert_eq!(mail["known_bytes"], 4);
+        assert_eq!(
+            mail["paths"][0]["path"],
+            root.join("archive.pst").to_str().unwrap()
+        );
+        assert_eq!(mail["paths"][0]["destination"], "source-0/archive.pst");
+        assert_eq!(mail["unavailable"], 0);
+        let before = texts(preview.windows_view().as_ref());
+        assert!(
+            !before
+                .iter()
+                .any(|label| label.contains(root.join("archive.pst").to_str().unwrap()))
+        );
+        preview
+            .apply(ShowWindowsCategory {
+                source_id: id.clone(),
+                category: "mail-archive".into(),
+                expanded: true,
+            })
+            .unwrap();
+        let after = texts(preview.windows_view().as_ref());
+        assert!(
+            after
+                .iter()
+                .any(|label| label.contains(mail["paths"][0]["path"].as_str().unwrap()))
+        );
+        let view = preview.windows_view();
+        let open =
+            super::super::visual_tests::control(view.as_ref(), "windows.root.0.open").unwrap();
+        assert_eq!(
+            open.accessibility().unwrap().name.as_deref(),
+            Some(t("installer-windows-open-source").as_str())
+        );
+        let resources = ui::widget::published_resources(open, &automerge::AutoCommit::new());
+        assert_eq!(
+            resources[0].actions[0].kind,
+            ui::tilo_actions::OperationKind::View
+        );
+        let declarations = InstallerPreviewEffect::declarations();
+        for id in ["open-windows-source", "show-windows-category"] {
+            assert!(preview.effect_page_admitted(id));
+            assert_eq!(
+                declarations
+                    .iter()
+                    .find(|declaration| declaration.id == id)
+                    .unwrap()
+                    .kind,
+                ui::tilo_actions::OperationKind::View
+            );
+            if id == "open-windows-source" {
+                let declaration = declarations
+                    .iter()
+                    .find(|declaration| declaration.id == id)
+                    .unwrap();
+                assert_eq!(declaration.params.len(), 1);
+                assert_eq!(declaration.params[0].name, "source_id");
+            }
+        }
+        assert!(
+            preview
+                .apply(ShowWindowsCategory {
+                    source_id: id,
+                    category: "absent".into(),
+                    expanded: true,
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn windows_review_exposes_unavailable_entries_and_gaps_without_following_them() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("granted");
+        let outside = fixture.path().join("not-granted");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("unique.txt"), b"private").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linked-folder")).unwrap();
+        let mut preview = fixture_preview(&root, RootRole::Other);
+        let projected = preview.windows_review_projection();
+        let group = &projected[0]["categories"][0];
+        assert_eq!(group["entries"], 1);
+        assert_eq!(group["known_bytes"], 0);
+        assert_eq!(group["unknown_sizes"], 1);
+        assert_eq!(group["unavailable"], 1);
+        assert!(group["paths"][0]["bytes"].is_null());
+        assert!(!projected.to_string().contains("unique.txt"));
+        assert_eq!(
+            projected[0]["gaps"][0],
+            root.join("linked-folder").to_str().unwrap()
+        );
+        let source_id = projected[0]["source_id"].as_str().unwrap().to_owned();
+        preview
+            .apply(ShowWindowsCategory {
+                source_id,
+                category: "gaps".into(),
+                expanded: true,
+            })
+            .unwrap();
+        assert!(
+            texts(preview.windows_view().as_ref())
+                .iter()
+                .any(|text| text.contains(root.join("linked-folder").to_str().unwrap()))
+        );
+    }
+
+    #[test]
+    fn windows_open_uses_one_escaped_file_uri_and_rejects_paths_and_replaced_roots() {
+        OPENED.with(|opened| opened.borrow_mut().clear());
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("User's & mail #100% é");
+        std::fs::create_dir(&root).unwrap();
+        let mut preview = fixture_preview(&root, RootRole::Outlook);
+        // Production uses the shared send_open_uri, whose Windows native
+        // backend enables ShellExecute rather than interpolating a shell command.
+        assert!(std::ptr::fn_addr_eq(
+            Preparation::default().opener,
+            ui::portal::send_open_uri as fn(&str) -> ui::portal::LaunchChannel,
+        ));
+        let id = preview.belongings.windows.as_ref().unwrap().roots[0]
+            .source_id
+            .clone();
+        assert!(
+            preview
+                .apply(OpenWindowsSource {
+                    source_id: root.to_string_lossy().into_owned()
+                })
+                .is_err()
+        );
+        preview
+            .apply(OpenWindowsSource {
+                source_id: id.clone(),
+            })
+            .unwrap();
+        assert!(
+            preview
+                .apply(OpenWindowsSource {
+                    source_id: id.clone()
+                })
+                .is_err()
+        );
+        preview.poll_windows();
+        OPENED.with(|opened| {
+            let calls = opened.borrow();
+            assert_eq!(calls.len(), 1);
+            let uri = url::Url::parse(&calls[0]).unwrap();
+            assert_eq!(uri.scheme(), "file");
+            assert_eq!(uri.to_file_path().unwrap(), root);
+            assert!(uri.query().is_none());
+            assert!(uri.fragment().is_none());
+            assert!(calls[0].contains("%23"));
+            assert!(calls[0].contains("%25"));
+        });
+        std::fs::rename(&root, fixture.path().join("original")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        assert!(preview.apply(OpenWindowsSource { source_id: id }).is_err());
+        OPENED.with(|opened| assert_eq!(opened.borrow().len(), 1));
+    }
+
     #[test]
     fn windows_route_grants_reviews_and_exports_without_sign_in() {
         let fixture = tempfile::tempdir().unwrap();
@@ -705,8 +1123,16 @@ mod tests {
                 .unwrap()
                 .budget()
                 .copy_bytes,
-            0
+            10
         );
+        preview
+            .apply(ReviewWindowsCategory {
+                source_id: id.clone(),
+                category: "potentially-unique".into(),
+                decision: "retain-original".into(),
+                reason: None,
+            })
+            .unwrap();
         preview
             .apply(ReviewWindowsCategory {
                 source_id: id.clone(),

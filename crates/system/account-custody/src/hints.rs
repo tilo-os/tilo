@@ -2,8 +2,8 @@
 //!
 //! The caller supplies a fresh source binding for every selection/read, including
 //! re-selection of the same source. Nothing here authorizes an account or stores
-//! hints in the shared install profile. Only provider, email and server endpoint
-//! cross this boundary; credentials and authorization responses have no wire field.
+//! hints in the shared install profile. Only identity, endpoint and closed source
+//! metadata cross this boundary; credentials and authorization have no wire field.
 
 pub mod media;
 
@@ -27,12 +27,51 @@ pub struct AccountHint {
     pub provider: Provider,
     pub email: String,
     pub server: String,
+    pub sources: HintSources,
+}
+
+/// Bounded provenance, not scopes, consent or evidence of a current login.
+/// An unclassified web account must never imply Calendar authorization.
+#[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HintSources {
+    pub onedrive: bool,
+    pub outlook: bool,
+    pub google_web: bool,
+}
+
+impl HintSources {
+    pub fn merge(&mut self, other: Self) {
+        self.onedrive |= other.onedrive;
+        self.outlook |= other.outlook;
+        self.google_web |= other.google_web;
+    }
+}
+
+/// Merge only exact nonempty identities under the same provider and endpoint.
+/// Do not collapse aliases, personal/work addresses or unidentified profiles.
+#[must_use]
+pub fn group_hints(hints: Vec<AccountHint>) -> Vec<AccountHint> {
+    let mut grouped: Vec<AccountHint> = Vec::new();
+    for hint in hints {
+        if let Some(previous) = grouped.iter_mut().find(|previous| {
+            !hint.email.trim().is_empty()
+                && previous.provider == hint.provider
+                && previous.email == hint.email
+                && previous.server == hint.server
+        }) {
+            previous.sources.merge(hint.sources);
+        } else {
+            grouped.push(hint);
+        }
+    }
+    grouped
 }
 
 const MAX_HINTS: usize = 32;
 const MAX_FIELD_BYTES: usize = 2048;
 // JSON can double every permitted byte through quote/backslash escaping.
-const MAX_PLAINTEXT_BYTES: usize = MAX_HINTS * (MAX_FIELD_BYTES * 4 + 128) + 64;
+const MAX_PLAINTEXT_BYTES: usize = MAX_HINTS * (MAX_FIELD_BYTES * 4 + 256) + 64;
 const MAX_SEALED_BYTES: usize = MAX_PLAINTEXT_BYTES + 56;
 const DOMAIN: &[u8] = b"tilo-installer/online-account-hints/v1\0";
 
@@ -98,6 +137,8 @@ struct WireHint {
     provider: WireProvider,
     email: String,
     server: String,
+    #[serde(default)]
+    sources: HintSources,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -183,6 +224,7 @@ pub fn seal(
                 provider: hint.provider.into(),
                 email: hint.email.clone(),
                 server: hint.server.clone(),
+                sources: hint.sources,
             })
             .collect(),
     };
@@ -237,6 +279,7 @@ pub fn open(
             provider: hint.provider.into(),
             email: hint.email,
             server: hint.server,
+            sources: hint.sources,
         })
         .collect())
 }
@@ -289,6 +332,7 @@ pub fn seal_password(
                 provider: hint.provider.into(),
                 email: hint.email.clone(),
                 server: hint.server.clone(),
+                sources: hint.sources,
             })
             .collect(),
     };
@@ -343,6 +387,7 @@ pub fn open_password(
             provider: hint.provider.into(),
             email: hint.email,
             server: hint.server,
+            sources: hint.sources,
         })
         .collect())
 }
@@ -358,6 +403,7 @@ mod tests {
             provider: Provider::Nextcloud,
             email: "private-person@example.org".into(),
             server: "https://private-cloud.example.org".into(),
+            sources: Default::default(),
         }
     }
 
@@ -372,6 +418,62 @@ mod tests {
             .unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn legacy_hints_default_to_unknown_services_and_typed_sources_round_trip() {
+        let key = SymmetricKey::generate().unwrap();
+        let legacy = raw(
+            &key,
+            br#"{"hints":[{"provider":"google","email":"person@example.org","server":""}]}"#,
+        );
+        assert_eq!(
+            open(&key, SOURCE, &legacy).unwrap()[0].sources,
+            HintSources::default()
+        );
+        let mut hint = hint();
+        hint.sources = HintSources {
+            onedrive: true,
+            outlook: true,
+            google_web: false,
+        };
+        let sealed = seal(&key, SOURCE, &[hint.clone()]).unwrap();
+        assert_eq!(
+            open(&key, SOURCE, &sealed).unwrap()[0].sources,
+            hint.sources
+        );
+        let unknown = raw(&key, br#"{"hints":[{"provider":"google","email":"a","server":"","sources":{"token":"secret"}}]}"#);
+        assert!(open(&key, SOURCE, &unknown).is_err());
+    }
+
+    #[test]
+    fn grouping_combines_provenance_not_aliases_providers_or_unidentified_profiles() {
+        let mut files = hint();
+        files.sources.onedrive = true;
+        let mut mail = files.clone();
+        mail.sources = HintSources {
+            outlook: true,
+            ..Default::default()
+        };
+        let mut alias = files.clone();
+        alias.email = "private-person+work@example.org".into();
+        let mut other_provider = files.clone();
+        other_provider.provider = Provider::Google;
+        let mut other_server = files.clone();
+        other_server.server = "https://other.example.org".into();
+        let mut unknown = files.clone();
+        unknown.email.clear();
+        let grouped = group_hints(vec![
+            files,
+            mail,
+            alias,
+            other_provider,
+            other_server,
+            unknown.clone(),
+            unknown,
+        ]);
+        assert_eq!(grouped.len(), 6);
+        assert!(grouped[0].sources.onedrive && grouped[0].sources.outlook);
     }
 
     #[test]
@@ -465,6 +567,7 @@ mod tests {
                     provider: h.provider.into(),
                     email: h.email.clone(),
                     server: h.server.clone(),
+                    sources: Default::default(),
                 })
                 .collect(),
         };
@@ -488,6 +591,7 @@ mod tests {
                     provider: WireProvider::Google,
                     email: email.clone(),
                     server: server.clone(),
+                    sources: Default::default(),
                 }],
             };
             assert!(
@@ -505,7 +609,8 @@ mod tests {
                     &[AccountHint {
                         provider: Provider::Google,
                         email,
-                        server
+                        server,
+                        sources: Default::default(),
                     }]
                 )
                 .is_err()

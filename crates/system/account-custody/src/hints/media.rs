@@ -260,6 +260,7 @@ mod tests {
             provider: super::super::Provider::Microsoft,
             email: "private-person@example.org".into(),
             server: String::new(),
+            sources: Default::default(),
         };
         let prepared = Prepared::seal(
             b"private-password",

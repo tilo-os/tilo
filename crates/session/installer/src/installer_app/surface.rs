@@ -504,6 +504,22 @@ impl InstallerApp {
             ))
     }
 
+    pub(super) fn alongside_capacity_binding(&self) -> Option<tilo_actions::ActionBinding<f64>> {
+        let resource = self.storage_resource();
+        let spec = resource.actions.iter().find(|spec| spec.id == "set-size")?;
+        tilo_actions::ActionBinding::fallible(&resource, spec, |value: f64| {
+            let gib = value
+                .to_string()
+                .parse::<i64>()
+                .map_err(|_| "Choose a whole number of GiB".to_owned())?;
+            Ok(serde_json::Map::from_iter([(
+                "gib".into(),
+                Value::from(gib),
+            )]))
+        })
+        .ok()
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the method, the disks and the free regions are one Disk-step resource"
@@ -618,6 +634,36 @@ impl InstallerApp {
                     )),
                 );
             }
+        }
+        if let Some(extent) = self.selected_full_guided_plan()
+            && let Some(disk) = self
+                .selected_disk_ref()
+                .filter(|disk| !disk.hosts_staged_installer())
+                .cloned()
+        {
+            storage = storage.with_action(gate(
+                typed(
+                    "set-size",
+                    "Use N GiB for Tilo",
+                    vec![
+                        ActionParam::required(
+                            "gib",
+                            ParamType::Integer,
+                            "Total Tilo capacity in whole GiB (at least 35)",
+                        )
+                        .with_schema(serde_json::json!({
+                            "type": "integer", "minimum": 35,
+                            "maximum": extent.free_size_bytes / (1 << 30)
+                        })),
+                    ],
+                    move |args| Operation::SetAlongsideSize {
+                        gib: args.integer("gib").unwrap_or(0),
+                        disk: Box::new(disk.clone()),
+                        extent: extent.clone(),
+                    },
+                ),
+                on_step,
+            ));
         }
         storage
     }
@@ -860,10 +906,12 @@ impl InstallerApp {
             .clone()
             .unwrap_or_else(|| "select a disk first".to_owned());
         let begin_target = target.unwrap_or_default();
+        let allocation = self.guided_alongside_plan();
         let begin = gate(
             typed("begin", "Begin installation", Vec::new(), move |_| {
                 Operation::BeginInstall {
                     target: begin_target.clone(),
+                    allocation: allocation.clone(),
                 }
             }),
             self.begin_blocked(),
@@ -897,7 +945,7 @@ impl InstallerApp {
                     ),
                     self.guided_alongside_plan()
                         .as_ref()
-                        .map(Self::alongside_capacity_summary)
+                        .map(|plan| self.alongside_allocation_summary(plan))
                         .unwrap_or_default(),
                     crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE),
                     crate::i18n::t(ALONGSIDE_FILES_GUIDANCE)
@@ -1159,6 +1207,7 @@ impl InstallerApp {
                 if self.install_method != method {
                     self.clear_erase_confirmation();
                     self.selected_guided_extent = None;
+                    self.alongside_capacity = None;
                     self.storage_preflight_request = None;
                     self.storage_preflight_passed = false;
                 }
@@ -1196,6 +1245,7 @@ impl InstallerApp {
                 if self.selected_disk != Some(index) {
                     self.clear_erase_confirmation();
                     self.selected_guided_extent = None;
+                    self.alongside_capacity = None;
                     self.storage_preflight_request = None;
                     self.storage_preflight_passed = false;
                 }
@@ -1214,9 +1264,45 @@ impl InstallerApp {
                 if self.selected_guided_extent != Some(index) {
                     self.clear_erase_confirmation();
                     self.selected_guided_extent = Some(index);
+                    self.alongside_capacity = None;
+                    self.storage_preflight_request = None;
+                    self.storage_preflight_passed = false;
                     self.status.clear();
                     self.dirty_structure = true;
                 }
+                done()
+            }
+            Operation::SetAlongsideSize {
+                gib,
+                disk: reviewed_disk,
+                extent,
+            } => {
+                self.require_step(Step::Disk)?;
+                let disk = self
+                    .selected_disk_ref()
+                    .filter(|disk| !disk.hosts_staged_installer())
+                    .ok_or_else(|| {
+                        "Select an existing disk with unallocated space first".to_owned()
+                    })?;
+                let full = self.selected_full_guided_plan().ok_or_else(|| {
+                    "Select an unallocated region first; refresh disks if it changed".to_owned()
+                })?;
+                if disk != reviewed_disk.as_ref() || full != extent {
+                    return Err("The selected disk or free extent changed; review the new target before choosing its capacity".into());
+                }
+                let bytes = u64::try_from(gib)
+                    .ok()
+                    .and_then(|n| n.checked_mul(1 << 30))
+                    .ok_or_else(|| "Tilo capacity is outside the supported range".to_owned())?;
+                full.with_capacity_bytes(bytes).ok_or_else(|| {
+                    "Choose at least 35 GiB within the selected unallocated region".to_owned()
+                })?;
+                self.alongside_capacity = Some((disk.clone(), full, bytes));
+                self.clear_erase_confirmation();
+                self.storage_preflight_request = None;
+                self.storage_preflight_passed = false;
+                self.status.clear();
+                self.dirty_structure = true;
                 done()
             }
             Operation::SetIdentity {
@@ -1367,7 +1453,13 @@ impl InstallerApp {
                 self.dirty_structure = true;
                 done()
             }
-            Operation::BeginInstall { target } => {
+            Operation::BeginInstall { target, allocation } => {
+                if allocation != self.guided_alongside_plan() {
+                    return Err(
+                        "The reviewed allocation changed; review the new target before installing"
+                            .into(),
+                    );
+                }
                 self.require_step(Step::Review)?;
                 if self.destructive_confirmation_target().as_deref() != Some(target.as_str()) {
                     return Err(

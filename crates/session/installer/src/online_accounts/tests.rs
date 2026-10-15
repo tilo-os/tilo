@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
 
 struct FixtureBrowser {
-    visit: bool,
+    visit: AtomicBool,
     urls: mpsc::SyncSender<String>,
     closes: AtomicUsize,
 }
@@ -13,7 +13,7 @@ struct FixtureBrowser {
 impl BrowserOpener for FixtureBrowser {
     fn open(&self, url: &str) -> Result<(), browser::BrowserError> {
         self.urls.try_send(url.to_string()).unwrap();
-        if self.visit {
+        if self.visit.swap(false, Ordering::SeqCst) {
             let url = url.to_string();
             std::thread::spawn(move || {
                 let _ = browse(&url);
@@ -42,7 +42,7 @@ fn setup(
     let server = FakeAuthorizationServer::start();
     let (sender, urls) = mpsc::sync_channel(1);
     let opener = Arc::new(FixtureBrowser {
-        visit,
+        visit: AtomicBool::new(visit),
         urls: sender,
         closes: AtomicUsize::new(0),
     });
@@ -56,6 +56,94 @@ fn setup(
     })
     .unwrap();
     (directory, server, opener, urls, controller)
+}
+
+pub(crate) fn mail_fixture() -> (
+    tempfile::TempDir,
+    FakeAuthorizationServer,
+    mpsc::Receiver<String>,
+    AccountsController,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+    let (directory, server, _opener, urls, mut controller) = setup(true);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/profile", listener.local_addr().unwrap());
+    let profile = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = [0; 4096];
+        let _ = stream.read(&mut request).unwrap();
+        let body = r#"{"emailAddress":"personal@example.org"}"#;
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+    });
+    controller.custody = Arc::new(
+        Custodian::for_root(Some(controller.root.clone()))
+            .with_issuer_endpoints(OAuthIssuer::Google, server.provider())
+            .with_gmail_profile_endpoint(endpoint),
+    );
+    (directory, server, urls, controller, profile)
+}
+
+pub(crate) fn assert_adopted_projection(controller: &mut AccountsController) {
+    let expected = controller.connected();
+    let selected = controller.selected().to_vec();
+    let binding = PortableBinding::new("install", "disk", "alice", 1000).unwrap();
+    let key = tilo_seal::SymmetricKey::generate().unwrap();
+    let sealed = controller
+        .stage_selected_with_key(&selected, &key, &binding)
+        .unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let adopted =
+        portable::import_sealed_accounts(destination.path(), &sealed, &key, binding.as_bytes())
+            .unwrap();
+    assert!(connected_accounts(destination.path(), &adopted) == expected);
+}
+
+#[test]
+fn projection_follows_selected_canonical_services_without_merging_identities_or_providers() {
+    let (_directory, _server, _opener, _urls, mut controller) = setup(false);
+    let mut store = AccountStore::load_in(&controller.root);
+    for (kind, identity) in [
+        ("google-drive", "personal@example.org"),
+        ("email", "personal@example.org"),
+        ("google-drive", "work@example.org"),
+        ("onedrive", "personal@example.org"),
+    ] {
+        let mut account = new_account(kind);
+        account.config = serde_json::json!({
+            "connected_identity": identity,
+            "mount": {},
+            "imap_host": "imap.gmail.com",
+            "email": identity,
+            "use_calendar": true,
+            "calendar": {"calendars": []}
+        });
+        controller.selected.push(account.id.clone());
+        store.upsert(account);
+    }
+    let mut foreign = new_account("dropbox");
+    foreign.config = serde_json::json!({"mount": {}, "connected_identity": "foreign@example.org"});
+    store.upsert(foreign);
+    store.save_in(&controller.root).unwrap();
+    let connected = controller.connected();
+    assert_eq!(connected.len(), 3);
+    assert_eq!(connected[0].provider, Provider::Google);
+    assert!(connected[0].files && connected[0].mail && !connected[0].calendar);
+    assert!(connected[1].identity == "work@example.org" && !connected[1].mail);
+    assert_eq!(connected[2].provider, Provider::Microsoft);
+    assert!(!accounts::vault_dir_in(&controller.root).exists());
+    // A later canonical change must be observed, not a cached request snapshot.
+    let first = controller.selected[0].clone();
+    let mut account = store.get(&first).unwrap().clone();
+    account.config.as_object_mut().unwrap().remove("mount");
+    store.upsert(account);
+    store.save_in(&controller.root).unwrap();
+    assert!(!controller.connected()[0].files);
+    controller.selected.clear();
+    assert!(controller.connected().is_empty());
 }
 
 fn request() -> AccountRequest {

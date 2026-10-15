@@ -6,6 +6,7 @@
 
 mod metadata;
 mod native;
+mod review;
 #[cfg(test)]
 mod tests;
 

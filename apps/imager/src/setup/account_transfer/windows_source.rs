@@ -16,19 +16,26 @@ pub fn private_windows_hints(
     selected: &[crate::setup::windows_inventory::SelectedRoot],
     profiles: &[WindowsProfile],
 ) -> Vec<account_custody::hints::AccountHint> {
-    profiles
+    let hints = profiles
         .iter()
         .filter(|profile| {
             selected
                 .iter()
                 .any(|grant| grant.role == RootRole::OneDrive && grant.path == profile.root)
         })
-        .take(32)
         .map(|profile| account_custody::hints::AccountHint {
             provider: account_custody::hints::Provider::Microsoft,
             email: profile.email.clone(),
             server: String::new(),
+            sources: account_custody::hints::HintSources {
+                onedrive: true,
+                ..Default::default()
+            },
         })
+        .collect();
+    account_custody::hints::group_hints(hints)
+        .into_iter()
+        .take(32)
         .collect()
 }
 
@@ -140,6 +147,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn multiple_profiles_merge_only_exact_granted_account_identities() {
+        let profiles = parse_profiles(br#"[{"root":"personal","email":"personal@example.org"},{"root":"work","email":"work@example.org"},{"root":"duplicate","email":"personal@example.org"},{"root":"alias","email":"personal+alias@example.org"}]"#).unwrap();
+        let grants: Vec<_> = ["personal", "work", "duplicate", "alias"]
+            .into_iter()
+            .map(|path| crate::setup::windows_inventory::SelectedRoot {
+                path: path.into(),
+                role: RootRole::OneDrive,
+            })
+            .collect();
+        let hints = private_windows_hints(&grants, &profiles);
+        assert_eq!(hints.len(), 3);
+        assert_eq!(
+            hints
+                .iter()
+                .map(|hint| hint.email.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "personal@example.org",
+                "work@example.org",
+                "personal+alias@example.org"
+            ]
+        );
+        assert!(hints.iter().all(|hint| hint.sources.onedrive));
+    }
+
+    #[test]
     fn registry_profiles_are_private_suggestions_only_for_exact_grants() {
         let profiles = parse_profiles(br#"[{"root":"chosen","email":"private-fixture@example.org"},{"root":"not-granted","email":"other@example.org"}]"#).unwrap();
         let grants = [crate::setup::windows_inventory::SelectedRoot {
@@ -149,6 +182,9 @@ mod tests {
         let hints = private_windows_hints(&grants, &profiles);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].email, "private-fixture@example.org");
+        assert!(hints[0].sources.onedrive);
+        assert!(!hints[0].sources.outlook);
+        assert!(!hints[0].sources.google_web);
         assert!(private_windows_hints(&[], &profiles).is_empty());
         assert!(parse_profiles(br#"[{"root":"chosen","email":"a","token":"forbidden"}]"#).is_err());
         let key = tilo_seal::SymmetricKey::generate().unwrap();

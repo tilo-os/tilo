@@ -943,6 +943,8 @@ pub struct InstallerApp {
     /// Explicit choice when a disk has multiple safe unallocated extents.
     /// A sole candidate is selected implicitly; ambiguity never is.
     selected_guided_extent: Option<usize>,
+    /// Bound to the exact hardware inventory and free extent, never an index alone.
+    alongside_capacity: Option<(Disk, GuidedAlongsidePlan, u64)>,
     install_method: InstallMethod,
     /// Manual method choices are session-local and bound to discovered hardware,
     /// never a global preference that can carry Erase onto another disk.
@@ -1182,6 +1184,7 @@ impl InstallerApp {
             disks,
             selected_disk: None,
             selected_guided_extent: None,
+            alongside_capacity: None,
             install_method: InstallMethod::Erase,
             disk_method_choices: HashMap::new(),
             guided_efi_partuuid: uuid::Uuid::new_v4().to_string(),
@@ -1528,6 +1531,17 @@ impl InstallerApp {
     }
 
     fn guided_alongside_plan(&self) -> Option<GuidedAlongsidePlan> {
+        let full = self.selected_full_guided_plan()?;
+        let Some((disk, extent, bytes)) = &self.alongside_capacity else {
+            return Some(full);
+        };
+        if self.selected_disk_ref()? != disk || extent != &full {
+            return None;
+        }
+        full.with_capacity_bytes(*bytes)
+    }
+
+    fn selected_full_guided_plan(&self) -> Option<GuidedAlongsidePlan> {
         if self.install_method != InstallMethod::Alongside {
             return None;
         }
@@ -1887,6 +1901,7 @@ impl InstallerApp {
         }
         if let Some(controller) = self.accounts_controller.as_mut() {
             let status = controller.poll();
+            self.accounts_form.set_connected(controller.connected());
             if status != self.accounts_form.status() {
                 self.accounts_form.set_status(status);
                 self.dirty_structure = true;
@@ -2136,6 +2151,7 @@ impl InstallerApp {
                 self.step = Step::Disk;
                 self.selected_disk = None;
                 self.selected_guided_extent = None;
+                self.alongside_capacity = None;
                 self.clear_erase_confirmation();
                 self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
                 self.guided_boot_partuuid = uuid::Uuid::new_v4().to_string();
@@ -2683,6 +2699,7 @@ impl InstallerApp {
         if self.install_method == InstallMethod::Alongside && guided_plans.len() > 1 {
             self.compose_guided_extent_choices(theme, children, &guided_plans);
         }
+        self.compose_alongside_capacity(children);
         let unavailable = read_only
             || (self.install_method == InstallMethod::Alongside
                 && !self.selected_disk_can_install_alongside());
@@ -2709,7 +2726,7 @@ impl InstallerApp {
             && let Some(plan) = self.guided_alongside_plan()
         {
             children.push(Box::new(
-                Text::new(&Self::alongside_capacity_summary(&plan))
+                Text::new(&self.alongside_allocation_summary(&plan))
                     .with_role(TextRole::Caption)
                     .with_color(theme.status_success),
             ));
@@ -2792,6 +2809,50 @@ impl InstallerApp {
         })
     }
 
+    fn compose_alongside_capacity(&self, children: &mut Vec<Box<dyn Widget>>) {
+        let Some(full) = self.selected_full_guided_plan() else {
+            return;
+        };
+        if self
+            .selected_disk_ref()
+            .is_some_and(Disk::hosts_staged_installer)
+        {
+            return;
+        }
+        let Some(plan) = self.guided_alongside_plan() else {
+            return;
+        };
+        let Some(binding) = self.alongside_capacity_binding() else {
+            return;
+        };
+        children.push(Box::new(Text::new(&crate::i18n::t(
+            "installer-storage-use-capacity",
+        ))));
+        children.push(Box::new(
+            ui::widget::NumberInput::new(ui::num::f64_of_u64(plan.free_size_bytes / (1 << 30)))
+                .with_range(35.0, ui::num::f64_of_u64(full.free_size_bytes / (1 << 30)))
+                .with_step(1.0)
+                .with_suffix("GiB")
+                .with_id("installer.alongside-capacity")
+                .with_accessible_name(crate::i18n::t("installer-storage-use-capacity"))
+                .on_action(binding),
+        ));
+    }
+
+    fn alongside_allocation_summary(&self, plan: &GuidedAlongsidePlan) -> String {
+        let remaining = self.selected_full_guided_plan().map_or(0, |full| {
+            full.free_size_bytes.saturating_sub(plan.free_size_bytes)
+        });
+        crate::i18n::t_args(
+            "installer-storage-allocation-summary",
+            &[
+                ("capacity", ui::format::bytes(plan.free_size_bytes).into()),
+                ("remaining", ui::format::bytes(remaining).into()),
+                ("details", Self::alongside_capacity_summary(plan).into()),
+            ],
+        )
+    }
+
     fn alongside_capacity_summary(plan: &GuidedAlongsidePlan) -> String {
         crate::i18n::t_args(
             "installer-storage-alongside-capacity",
@@ -2811,7 +2872,7 @@ impl InstallerApp {
         } else if self.uses_guided_alongside() {
             self.guided_alongside_plan()
                 .as_ref()
-                .map(Self::alongside_capacity_summary)
+                .map(|plan| self.alongside_allocation_summary(plan))
                 .unwrap_or_default()
         } else {
             "Format only the prepared Tilo boot and root partitions; preserve the existing EFI and other OS partitions.".to_string()
@@ -3367,7 +3428,7 @@ impl InstallerApp {
                 children.push(summary_row(
                     theme,
                     "Tilo storage",
-                    &Self::alongside_capacity_summary(&plan),
+                    &self.alongside_allocation_summary(&plan),
                 ));
                 children.push(summary_row(
                     theme,
@@ -3977,6 +4038,7 @@ impl InstallerApp {
         });
         self.reset_disk_method();
         self.selected_guided_extent = None;
+        self.alongside_capacity = None;
         self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
         self.guided_boot_partuuid = uuid::Uuid::new_v4().to_string();
         self.guided_root_partuuid = uuid::Uuid::new_v4().to_string();
@@ -5571,49 +5633,80 @@ mod tests {
         app.selected_disk = Some(0);
         app.install_method = InstallMethod::Alongside;
         app.step = Step::Disk;
-        let _ = build(&mut app);
-        let plan = app
+        let full = app
             .guided_alongside_plan()
             .expect("usable unallocated extent");
-        let capacity = InstallerApp::alongside_capacity_summary(&plan);
-        assert!(find_accessible(&app, &crate::i18n::t(LINUX_ALONGSIDE_READY)).is_some());
-        assert!(find_accessible(&app, &capacity).is_some());
-        assert!(find_accessible(&app, &crate::i18n::t(LINUX_ALONGSIDE_PREPARATION)).is_none());
-        assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE)).is_none());
-        let guidance = app.alongside_storage_guidance();
-        assert!(guidance.contains(&crate::i18n::t(LINUX_ALONGSIDE_READY)));
-        assert!(guidance.contains(&capacity));
-        let published = app.publish();
-        let storage = published[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == op::STORAGE)
-            .unwrap();
-        let published_guidance = storage
-            .children
-            .iter()
-            .filter(|resource| resource.kind == "installer.guidance")
-            .map(|resource| {
-                resource
-                    .presentation
-                    .as_ref()
+        for chosen_gib in [None, Some(48)] {
+            app.step = Step::Disk;
+            if let Some(gib) = chosen_gib {
+                let invocation = app
+                    .alongside_capacity_binding()
                     .unwrap()
-                    .preview
-                    .as_ref()
-                    .unwrap()
-                    .as_str()
-            })
-            .collect::<Vec<_>>()
-            .join(". ");
-        assert_eq!(published_guidance, guidance);
-        for hidden in ["35 GiB", "offline", "LUKS", "2 GiB", "1 GiB"] {
-            assert!(!guidance.contains(hidden), "unexpected advice: {guidance}");
+                    .invoke(f64::from(gib))
+                    .unwrap();
+                let resources = app.publish();
+                let spec = tilo_actions::door::resolve(&resources, &invocation.address).unwrap();
+                app.apply_encoded(&spec.build_json(&invocation.arguments).unwrap())
+                    .unwrap();
+            }
+            let _ = build(&mut app);
+            let plan = app.guided_alongside_plan().unwrap();
+            let expected_bytes = chosen_gib.map_or(full.free_size_bytes, |gib| {
+                u64::try_from(gib).unwrap() << 30
+            });
+            assert_eq!(plan.free_size_bytes, expected_bytes);
+            let capacity = app.alongside_allocation_summary(&plan);
+            assert!(
+                capacity.contains(&ui::format::bytes(expected_bytes)),
+                "missing selected capacity: {capacity}"
+            );
+            assert!(
+                capacity.contains(&ui::format::bytes(full.free_size_bytes - expected_bytes)),
+                "missing unused space: {capacity}"
+            );
+            assert!(capacity.contains("remains unused"), "{capacity}");
+            assert!(capacity.contains("unallocated space"), "{capacity}");
+            assert!(find_accessible(&app, &crate::i18n::t(LINUX_ALONGSIDE_READY)).is_some());
+            assert!(find_accessible(&app, &capacity).is_some());
+            assert!(find_accessible(&app, &crate::i18n::t(LINUX_ALONGSIDE_PREPARATION)).is_none());
+            assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE)).is_none());
+            let guidance = app.alongside_storage_guidance();
+            assert!(guidance.contains(&crate::i18n::t(LINUX_ALONGSIDE_READY)));
+            assert!(guidance.contains(&capacity));
+            let published = app.publish();
+            let storage = published[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == op::STORAGE)
+                .unwrap();
+            let published_guidance = storage
+                .children
+                .iter()
+                .filter(|resource| resource.kind == "installer.guidance")
+                .map(|resource| {
+                    resource
+                        .presentation
+                        .as_ref()
+                        .unwrap()
+                        .preview
+                        .as_ref()
+                        .unwrap()
+                        .as_str()
+                })
+                .collect::<Vec<_>>()
+                .join(". ");
+            assert_eq!(published_guidance, guidance);
+            for hidden in ["35 GiB", "offline", "LUKS", "2 GiB", "1 GiB"] {
+                assert!(!guidance.contains(hidden), "unexpected advice: {guidance}");
+            }
+            app.step = Step::Review;
+            let _ = build(&mut app);
+            assert!(find_accessible(&app, &capacity).is_some());
+            assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE)).is_some());
+            assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_FILES_GUIDANCE)).is_some());
+            assert_eq!(app.install_options().guided_free_size_bytes, expected_bytes);
         }
-        app.step = Step::Review;
-        let _ = build(&mut app);
-        assert!(find_accessible(&app, &capacity).is_some());
-        assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE)).is_some());
-        assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_FILES_GUIDANCE)).is_some());
+        let capacity = app.alongside_allocation_summary(&app.guided_alongside_plan().unwrap());
 
         app.disks[0].partitions[0].size_bytes =
             app.disks[0].size_bytes - app.disks[0].partitions[0].start_bytes - 1_048_576;

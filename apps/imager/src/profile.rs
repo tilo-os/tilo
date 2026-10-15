@@ -179,6 +179,7 @@ mod windows_tests {
                 provider: Provider::Microsoft,
                 email: "private@example.org".into(),
                 server: String::new(),
+                sources: Default::default(),
             }],
             b"independently verified recovery copies",
         )

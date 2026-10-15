@@ -102,8 +102,9 @@ struct Attempt {
 }
 
 /// Owned by the installer session, never the shared profile or install worker.
-/// Call `command` for drained form commands and `poll` on each UI sync; copy only
-/// its returned fixed status into the form. `selected` contains opaque private
+/// Call `command` for drained form commands and `poll` on each UI sync; publish
+/// its fixed status and private `connected` projection to the local form only.
+/// `selected` contains opaque private
 /// IDs; `stage_selected` returns ciphertext for the existing staging handoff.
 pub struct AccountsController {
     root: PathBuf,
@@ -189,6 +190,13 @@ impl AccountsController {
 
     pub fn selected(&self) -> &[AccountId] {
         &self.selected
+    }
+
+    /// Private presentation of selected canonical metadata only. This never opens
+    /// the credential vault or refreshes a grant. Unsaved discovery and source
+    /// suggestions cannot make a service appear connected.
+    pub fn connected(&self) -> Vec<view::ConnectedAccount> {
+        connected_accounts(&self.root, &self.selected)
     }
 
     /// At most one worker and one pending outcome exist. Retry invalidates even
@@ -405,6 +413,104 @@ impl Drop for AccountsController {
     }
 }
 
+fn connected_accounts(root: &Path, selected: &[AccountId]) -> Vec<view::ConnectedAccount> {
+    use accounts::cloud_types::{DROPBOX, GOOGLE_DRIVE, MOUNT_CONFIG_KEY, NEXTCLOUD, ONEDRIVE};
+    let store = AccountStore::load_in(root);
+    let mut connected: Vec<view::ConnectedAccount> = Vec::new();
+    for id in selected {
+        let Some(account) = store.get(id) else {
+            continue;
+        };
+        let config = &account.config;
+        let calendar = config
+            .get("use_calendar")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+            && config
+                .pointer("/calendar/calendars")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|collections| !collections.is_empty());
+        let kind = account.type_id.as_str();
+        let provider = match kind {
+            GOOGLE_DRIVE => Provider::Google,
+            ONEDRIVE => Provider::Microsoft,
+            DROPBOX => Provider::Dropbox,
+            NEXTCLOUD => Provider::Nextcloud,
+            "email" => match config.get("imap_host").and_then(serde_json::Value::as_str) {
+                Some("imap.gmail.com") => Provider::Google,
+                Some("outlook.office365.com") => Provider::Microsoft,
+                _ => continue,
+            },
+            "caldav"
+                if config
+                    .get("calendar_provider")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("google") =>
+            {
+                Provider::Google
+            }
+            "caldav"
+                if config
+                    .get("app_password")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true) =>
+            {
+                Provider::Nextcloud
+            }
+            _ => continue,
+        };
+        let files = match kind {
+            GOOGLE_DRIVE | ONEDRIVE | DROPBOX => config
+                .get(MOUNT_CONFIG_KEY)
+                .is_some_and(serde_json::Value::is_object),
+            NEXTCLOUD => config.get("use_files").and_then(serde_json::Value::as_bool) == Some(true),
+            _ => false,
+        };
+        let mail = kind == "email";
+        if !files && !mail && !calendar {
+            continue;
+        }
+        let identity = if provider == Provider::Nextcloud {
+            format!(
+                "{} — {}",
+                config
+                    .get("username")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                config
+                    .get("server_url")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+            )
+        } else {
+            config
+                .get("connected_identity")
+                .or_else(|| config.get("email"))
+                .and_then(serde_json::Value::as_str)
+                .filter(|identity| !identity.is_empty())
+                .unwrap_or_else(|| id.as_str())
+                .to_owned()
+        };
+        if let Some(existing) = connected
+            .iter_mut()
+            .find(|existing| existing.provider == provider && existing.identity == identity)
+        {
+            existing.files |= files;
+            existing.mail |= mail;
+            existing.calendar |= calendar;
+        } else {
+            connected.push(view::ConnectedAccount {
+                provider,
+                identity,
+                files,
+                mail,
+                calendar,
+            });
+        }
+    }
+    connected
+}
+
 fn validate_session(root: &Path) -> Result<(), AccountsError> {
     let metadata = std::fs::symlink_metadata(root).map_err(|_| AccountsError::InvalidSession)?;
     if !root.is_absolute()
@@ -528,7 +634,39 @@ fn authorize(
             .entries
             .push((account, account_custody::oauth_secret(tokens)));
     }
+    bind_confirmed_identity(&mut verified);
     Ok(verified)
+}
+
+fn bind_confirmed_identity(verified: &mut Verified) {
+    // Only provider-confirmed identity may join independently stored services.
+    // Files-only providers without an identity endpoint retain an opaque account
+    // ID rather than treating the optional login hint as proof of identity.
+    let identity = verified
+        .entries
+        .iter()
+        .find_map(|(account, _)| {
+            account
+                .config
+                .get("email")
+                .and_then(serde_json::Value::as_str)
+                .filter(|identity| !identity.is_empty())
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            verified
+                .calendar
+                .as_ref()
+                .map(|review| review.config.username.clone())
+                .filter(|identity| !identity.is_empty())
+        });
+    if let Some(identity) = identity {
+        for (account, _) in &mut verified.entries {
+            if let Some(config) = account.config.as_object_mut() {
+                config.insert("connected_identity".into(), identity.clone().into());
+            }
+        }
+    }
 }
 
 fn requested_capabilities(
@@ -720,4 +858,4 @@ mod native_browser_tests;
 #[cfg(test)]
 mod oauth_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

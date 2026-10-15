@@ -55,6 +55,17 @@ pub struct AccountRequest {
     pub calendar: bool,
 }
 
+/// Private presentation of a successfully stored, selected account. The owner
+/// derives services from actual grants, never the pending request or a hint.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ConnectedAccount {
+    pub provider: Provider,
+    pub identity: String,
+    pub files: bool,
+    pub mail: bool,
+    pub calendar: bool,
+}
+
 /// Private in-process messages. The owner must validate again before sign-in.
 #[derive(Clone, Eq, PartialEq)]
 pub enum AccountsCommand {
@@ -99,6 +110,7 @@ pub struct AccountsForm {
     notice: LocalState<String>,
     source: LocalState<Option<String>>,
     hints: LocalState<Vec<AccountHint>>,
+    connected: LocalState<Vec<ConnectedAccount>>,
     commands: LocalState<VecDeque<AccountsCommand>>,
     structure_revision: LocalState<u64>,
     synced_structure: LocalState<Option<(Provider, u64)>>,
@@ -119,6 +131,7 @@ impl Default for AccountsForm {
             notice: LocalState::new(String::new()),
             source: LocalState::new(None),
             hints: LocalState::new(Vec::new()),
+            connected: LocalState::new(Vec::new()),
             commands: LocalState::new(VecDeque::new()),
             structure_revision: LocalState::new(0),
             synced_structure: LocalState::new(None),
@@ -165,6 +178,15 @@ impl AccountsForm {
         self.notice.set(String::new());
     }
 
+    /// Replace the private selected-account list from the actor's stored grants.
+    /// Imported suggestions and pending authorizations must never call this.
+    pub fn set_connected(&self, accounts: Vec<ConnectedAccount>) {
+        if self.connected.with(|previous| *previous != accounts) {
+            self.connected.set(accounts);
+            self.invalidate_structure();
+        }
+    }
+
     /// Invalidate decrypted suggestions before starting a new source read.
     /// Call only while idle; source selection never cancels an actor implicitly.
     ///
@@ -183,6 +205,7 @@ impl AccountsForm {
         self.hints.set(Vec::new());
         self.email.set(String::new());
         self.server.set(String::new());
+        self.files.set(false);
         self.mail.set(false);
         self.calendar.set(false);
         self.invalidate_structure();
@@ -199,13 +222,14 @@ impl AccountsForm {
         if !self.source.with(|s| s.as_deref() == Some(source)) {
             return Err(FormError::StaleSource);
         }
-        self.hints.set(
-            hints
-                .into_iter()
-                .take(MAX_HINTS)
-                .filter(|hint| bounded_field(&hint.email) && bounded_field(&hint.server))
-                .collect(),
-        );
+        if hints.len() > MAX_HINTS
+            || hints
+                .iter()
+                .any(|hint| !bounded_field(&hint.email) || !safe_server(&hint.server))
+        {
+            return Err(FormError::InvalidFields);
+        }
+        self.hints.set(account_custody::hints::group_hints(hints));
         self.invalidate_structure();
         Ok(())
     }
@@ -230,8 +254,8 @@ impl AccountsForm {
         self.provider.set(hint.provider);
         self.email.set(hint.email);
         self.server.set(hint.server);
-        self.files.set(true);
-        self.mail.set(false); // Imported hints never grant consent.
+        self.files.set(false); // Suggestions never select permissions.
+        self.mail.set(false);
         self.calendar.set(false);
         self.invalidate_structure();
         Ok(())
@@ -239,6 +263,9 @@ impl AccountsForm {
 
     fn request(&self) -> Result<AccountRequest, FormError> {
         let provider = self.provider.with(|p| *p);
+        if !self.email.with(|s| bounded_field(s)) || !self.server.with(|s| safe_server(s)) {
+            return Err(FormError::InvalidFields);
+        }
         let email = self.email.with(|s| s.trim().to_owned());
         let server = if provider == Provider::Nextcloud {
             self.server.with(|s| s.trim().to_owned())
@@ -251,17 +278,8 @@ impl AccountsForm {
         if !bounded_field(&email) || !bounded_field(&server) || (!files && !mail && !calendar) {
             return Err(FormError::InvalidFields);
         }
-        if provider == Provider::Nextcloud {
-            let url = url::Url::parse(&server).map_err(|_| FormError::InvalidFields)?;
-            if url.scheme() != "https"
-                || url.host_str().is_none()
-                || !url.username().is_empty()
-                || url.password().is_some()
-                || url.query().is_some()
-                || url.fragment().is_some()
-            {
-                return Err(FormError::InvalidFields);
-            }
+        if provider == Provider::Nextcloud && (server.is_empty() || !safe_server(&server)) {
+            return Err(FormError::InvalidFields);
         }
         Ok(AccountRequest {
             provider,
@@ -410,23 +428,9 @@ impl AccountsForm {
             .push(Box::new(Text::new(&t("installer-online-private"))))
             .push(Box::new(self.providers(idle, provider)));
         column = self.windows_view(column);
-        for (index, hint) in self.hints.with(Clone::clone).into_iter().enumerate() {
-            let form = self.clone();
-            column = column.push(Box::new(
-                Button::new(
-                    &format!("installer.online.hint.{index}"),
-                    &t("installer-online-use-hint"),
-                )
-                .with_enabled(idle)
-                .on_view(move || {
-                    let _ = form.choose_hint(index);
-                }),
-            ));
-            // Read-only hint text is also local, never a document path.
-            let label = hint.email;
-            column = column.push(Box::new(Text::new(&label)));
-        }
+        column = self.saved_and_suggested(column, idle);
         column = column
+            .push(Box::new(Text::new(&t("installer-online-manual"))))
             .push(Box::new(Text::new(&t(provider.label()))))
             .push(Box::new(Text::new(&t("installer-online-email"))))
             .push(Box::new(
@@ -488,6 +492,57 @@ impl AccountsForm {
         Box::new(column.push(Box::new(self.actions(status))))
     }
 
+    fn saved_and_suggested(&self, mut column: Column, idle: bool) -> Column {
+        for account in self.connected.with(Clone::clone) {
+            column = column
+                .push(Box::new(Text::new(&t(account.provider.label()))))
+                .push(Box::new(Text::new(&account.identity)));
+            for (granted, key) in [
+                (account.files, "installer-online-connected-files"),
+                (account.mail, "installer-online-connected-mail"),
+                (account.calendar, "installer-online-connected-calendar"),
+            ] {
+                if granted {
+                    column = column.push(Box::new(Text::new(&t(key))));
+                }
+            }
+        }
+        let hints = self.hints.with(Clone::clone);
+        if !hints.is_empty() {
+            column = column.push(Box::new(Text::new(&t("installer-online-previous"))));
+        }
+        for (index, hint) in hints.into_iter().enumerate() {
+            column = column.push(Box::new(Text::new(&t(hint.provider.label()))));
+            for (present, key) in [
+                (hint.sources.onedrive, "installer-online-source-onedrive"),
+                (hint.sources.outlook, "installer-online-source-outlook"),
+                (
+                    hint.sources.google_web,
+                    "installer-online-source-google-web",
+                ),
+            ] {
+                if present {
+                    column = column.push(Box::new(Text::new(&t(key))));
+                }
+            }
+            let form = self.clone();
+            column = column.push(Box::new(
+                Button::new(
+                    &format!("installer.online.hint.{index}"),
+                    &t("installer-online-use-hint"),
+                )
+                .with_enabled(idle)
+                .on_view(move || {
+                    let _ = form.choose_hint(index);
+                }),
+            ));
+            // Read-only hint text is also local, never a document path.
+            let label = hint.email;
+            column = column.push(Box::new(Text::new(&label)));
+        }
+        column
+    }
+
     fn actions(&self, status: AccountsStatus) -> Row {
         let idle = status != AccountsStatus::SigningIn;
         let mut actions = Row::new();
@@ -497,6 +552,9 @@ impl AccountsForm {
             ("installer-online-cancel", true),
             ("installer-online-skip", true),
         ] {
+            if id == "installer-online-retry" && status != AccountsStatus::Failed {
+                continue;
+            }
             let form = self.clone();
             actions = actions.push(Box::new(
                 Button::new(
@@ -534,6 +592,19 @@ impl AccountsForm {
     }
 }
 
+fn safe_server(value: &str) -> bool {
+    bounded_field(value)
+        && (value.is_empty()
+            || url::Url::parse(value).is_ok_and(|url| {
+                url.scheme() == "https"
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+            }))
+}
+
 fn bounded_field(value: &str) -> bool {
     value.len() <= MAX_FIELD_BYTES && !value.chars().any(char::is_control)
 }
@@ -541,6 +612,96 @@ fn bounded_field(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connected_accounts_are_owner_supplied_and_survive_hint_source_changes() {
+        let form = AccountsForm::new();
+        let account = ConnectedAccount {
+            provider: Provider::Microsoft,
+            identity: "work@example.org".into(),
+            files: false,
+            mail: true,
+            calendar: false,
+        };
+        form.set_connected(vec![account.clone()]);
+        form.take_structure_changed();
+        form.set_connected(vec![account.clone()]);
+        assert!(!form.take_structure_changed());
+        form.select_source(Some("new-source".into())).unwrap();
+        assert!(form.connected.with(|connected| connected == &[account]));
+        assert!(form.hints.with(Vec::is_empty));
+        assert!(form.drain_commands().is_empty());
+    }
+
+    #[test]
+    fn merged_suggestions_are_editable_and_never_select_services_or_start_auth() {
+        let form = AccountsForm::new();
+        form.select_source(Some("source".into())).unwrap();
+        let files = AccountHint {
+            provider: Provider::Microsoft,
+            email: "person@example.org".into(),
+            server: String::new(),
+            sources: account_custody::hints::HintSources {
+                onedrive: true,
+                ..Default::default()
+            },
+        };
+        let mut mail = files.clone();
+        mail.sources = account_custody::hints::HintSources {
+            outlook: true,
+            ..Default::default()
+        };
+        form.accept_hints("source", vec![files, mail]).unwrap();
+        assert_eq!(form.hints.with(Vec::len), 1);
+        form.choose_hint(0).unwrap();
+        assert_eq!(form.email.with(Clone::clone), "person@example.org");
+        assert!(!form.files.with(|v| *v));
+        assert!(!form.mail.with(|v| *v));
+        assert!(!form.calendar.with(|v| *v));
+        assert!(form.drain_commands().is_empty());
+        assert_eq!(form.submit(false), Err(FormError::InvalidFields));
+        form.email.set("personal@example.org".into());
+        form.mail.set(true);
+        form.submit(false).unwrap();
+        assert!(
+            matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
+            if request.email == "personal@example.org" && request.mail && !request.files && !request.calendar)
+        );
+    }
+
+    #[test]
+    fn prefilled_server_is_editable_and_unsafe_direct_handles_are_rejected() {
+        let form = AccountsForm::new();
+        form.select_source(Some("source".into())).unwrap();
+        form.accept_hints(
+            "source",
+            vec![AccountHint {
+                provider: Provider::Nextcloud,
+                email: "person@example.org".into(),
+                server: "https://cloud.example.org".into(),
+                sources: account_custody::hints::HintSources::default(),
+            }],
+        )
+        .unwrap();
+        form.choose_hint(0).unwrap();
+        assert_eq!(form.server.with(Clone::clone), "https://cloud.example.org");
+        form.files.set(true);
+        for server in [
+            "https://user:password@cloud.example.org",
+            "https://cloud.example.org/?token=secret",
+            "https://cloud.example.org/#secret",
+            "https://cloud.example.org\n",
+        ] {
+            form.server.set(server.into());
+            assert_eq!(form.submit(false), Err(FormError::InvalidFields));
+        }
+        form.server.set("https://edited.example.org".into());
+        form.submit(false).unwrap();
+        assert!(
+            matches!(&form.drain_commands()[..], [AccountsCommand::Add(request)]
+            if request.server == "https://edited.example.org")
+        );
+    }
 
     #[test]
     fn submit_is_private_snapshot_and_blocks_duplicate_start() {
@@ -637,6 +798,7 @@ mod tests {
                     provider: Provider::Nextcloud,
                     email: String::new(),
                     server: "https://cloud.example.org".into(),
+                    sources: account_custody::hints::HintSources::default(),
                 }]
             ),
             Ok(())
@@ -690,6 +852,7 @@ mod tests {
             provider: Provider::Microsoft,
             email: "person@example.org".into(),
             server: String::new(),
+            sources: account_custody::hints::HintSources::default(),
         };
         assert_eq!(form.select_source(Some("source-a-read-1".into())), Ok(()));
         assert_eq!(

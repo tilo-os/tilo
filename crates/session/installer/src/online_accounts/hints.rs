@@ -328,6 +328,7 @@ mod tests {
             provider: Provider::Nextcloud,
             email: "private@example.org".into(),
             server: "https://cloud.example.org".into(),
+            sources: account_custody::hints::HintSources::default(),
         }
     }
     #[test]
