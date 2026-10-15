@@ -1938,6 +1938,69 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
     }
 }
 
+/// Roundtrip completion runs at the backend level, before EventQueue dispatch.
+/// A clipboard worker must not dispatch it on behalf of the application: that
+/// can complete the sync between the application's completion check and poll,
+/// leaving the application asleep on an already-consumed reply.
+#[test]
+fn publication_worker_does_not_dispatch_application_roundtrip_callbacks() {
+    use wayland_client::backend::{Backend, ObjectData, ObjectId, protocol::Message};
+
+    struct Completion(mpsc::Sender<std::thread::ThreadId>);
+    impl ObjectData for Completion {
+        fn event(
+            self: Arc<Self>,
+            _: &Backend,
+            _: Message<ObjectId, OwnedFd>,
+        ) -> Option<Arc<dyn ObjectData>> {
+            self.0.send(std::thread::current().id()).unwrap();
+            None
+        }
+
+        fn destroyed(&self, _: ObjectId) {}
+    }
+
+    for native in [true, false] {
+        eprintln!("[clipboard-e2e] roundtrip callback isolation: native={native}");
+        let compositor = Compositor::start();
+        let app = TestClient::new(compositor.connect(), "org.tilo.test.roundtrip-owner");
+        let clipboard = if native {
+            // SAFETY: app owns the display and outlives clipboard.
+            unsafe { ui::clipboard::WaylandClipboard::new(app.conn.backend().display_ptr().cast()) }
+        } else {
+            ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone())
+        };
+        assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+
+        let (completed, received) = mpsc::channel();
+        app.conn
+            .send_request(
+                &app.conn.display(),
+                wayland_client::protocol::wl_display::Request::Sync {},
+                Some(Arc::new(Completion(completed))),
+            )
+            .expect("application sync request");
+        app.conn.flush().expect("flush application sync");
+        // These real worker sync replies follow the application's sync on the
+        // same display. Their acknowledgement proves that its reply was read,
+        // without asking the application backend to dispatch anything itself.
+        assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+        assert_eq!(
+            received.try_recv(),
+            Err(mpsc::TryRecvError::Empty),
+            "the clipboard worker dispatched the application's sync callback"
+        );
+        app.conn
+            .backend()
+            .dispatch_inner_queue()
+            .expect("application dispatch");
+        assert_eq!(
+            received.recv_timeout(deadline()).unwrap(),
+            std::thread::current().id()
+        );
+    }
+}
+
 #[test]
 fn native_borrowed_display_pastes_the_compositors_current_selection() {
     let compositor = Compositor::start();

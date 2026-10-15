@@ -257,6 +257,21 @@ impl WaylandClipboard {
         let thread = std::thread::Builder::new()
             .name("tilo-wayland-clipboard-test".into())
             .spawn(move || {
+                // Match the native constructor: share the client's display,
+                // but not its backend event queue. Dispatching a cloned
+                // backend here can consume an application's roundtrip callback
+                // just before that application starts waiting on the socket.
+                // Keep the owning connection alive until this worker stops.
+                let display_owner = connection;
+                // SAFETY: display_owner owns the live display for this entire
+                // run, including destruction of the foreign backend below.
+                let backend = unsafe {
+                    smithay_client_toolkit::reexports::client::backend::Backend::from_foreign_display(
+                        display_owner.backend().display_ptr(),
+                    )
+                };
+                let connection =
+                    smithay_client_toolkit::reexports::client::Connection::from_backend(backend);
                 image_worker_impl::run(
                     connection,
                     receiver,
@@ -264,6 +279,7 @@ impl WaylandClipboard {
                     worker_rich,
                     rich_read_budget,
                 );
+                drop(display_owner);
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
             })
             .ok();
