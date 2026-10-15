@@ -1684,7 +1684,12 @@ impl App {
                 .output(&plan.vm(&["shot", "first-boot-observe"]))
                 && shot.success
             {
+                // Canonical: on macOS /tmp is a link to /private/tmp, and
+                // Homebrew's tesseract (leptonica) rewrites any path that
+                // starts with /tmp to its own temporary directory, where the
+                // shot is not, so the unlock prompt was never recognized.
                 let source = PathBuf::from(shot.stdout.trim());
+                let source = std::fs::canonicalize(&source).unwrap_or(source);
                 if source.is_file()
                     && let Ok(ocr) = std::process::Command::new("tesseract")
                         .arg(&source)
