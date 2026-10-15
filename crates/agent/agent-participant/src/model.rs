@@ -25,8 +25,8 @@ use tilo_browser_peer::DocumentRoute;
 use tilo_model_gateway::openai::{self, Failure, Target as ApiTarget};
 
 use crate::planner::{
-    MESSAGE_APPS, NoReads, PlanContext, Planner, Reads, Step, StepAction, Wait, message_app,
-    observation_within, readable, rendered_picture, written_steps,
+    MESSAGE_APPS, MOST_WAITS, NoReads, PlanContext, Planner, Reads, Step, StepAction, Wait,
+    message_app, observation_within, readable, rendered_picture, written_steps,
 };
 use crate::vision::{Eyes, LOOK_CONTENT, Picture, Seen};
 
@@ -1762,9 +1762,11 @@ fn wait_apps() -> String {
 fn wait_for_definition() -> serde_json::Value {
     serde_json::json!({
         "type": ["object", "null"],
-        "description": "null unless the request needs something another person or agent has \
-            yet to send (a login code, a reply) that nothing shown holds. Then: wait for it after \
-            the steps; you are asked again with what arrived, or told nothing did.",
+        "description": format!("null unless the request needs something another person or \
+            agent has yet to send (a login code, a reply) that nothing shown holds. Then: wait \
+            for it after the steps; you are asked again with what arrived, or told nothing did. \
+            One wait lasts at most {} s, and a task may wait {MOST_WAITS} times: if nothing \
+            arrived and it may still come, wait again.", tilo_agent::tools::MOST_WAIT_SECONDS),
         "properties": {
             "app": {
                 "type": "string",
@@ -1774,8 +1776,8 @@ fn wait_for_definition() -> serde_json::Value {
             },
             "contains": {
                 "type": "string",
-                "description": "Text it will hold (case-insensitive), e.g. \"code\"; omit for any \
-                    new message."
+                "description": "Words it will hold, e.g. \"code\" (any order and case; its \
+                    sender's name counts); omit for any new message."
             },
             "seconds": {
                 "type": "integer",

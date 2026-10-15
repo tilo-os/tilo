@@ -1839,12 +1839,27 @@ async fn a_task_waits_for_a_code_another_agent_delivers_then_goes_on() {
 
     deliver(&mut courier, "Your bank code is 4821");
     waiter.run_until(Some(Instant::now() + Duration::from_secs(30)), |_| {
+        waiter_control.activity().is_none()
+    });
+    // The rest of the message lands just after the wait ended, before the
+    // plan after it is made: it is part of that plan, not news that
+    // replaces it.
+    deliver(&mut courier, "It expires in 5 minutes");
+    let until = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < until {
+        courier.pump();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    waiter.run_until(Some(Instant::now() + Duration::from_secs(30)), |_| {
         ended(&waiter_control, &task).is_some()
     });
     let info = ended(&waiter_control, &task).expect("the task ended");
     assert_eq!(info.state, TaskState::Completed, "{info:?}");
-    let replan = asked.lock().unwrap()[1].clone();
+    let planned = asked.lock().unwrap().clone();
+    assert_eq!(planned.len(), 2, "no re-plan for news: {planned:?}");
+    let replan = planned[1].clone();
     assert!(replan.contains("Your bank code is 4821"), "{replan}");
+    assert!(replan.contains("It expires in 5 minutes"), "{replan}");
     assert!(replan.contains("changed by Courier"), "{replan}");
     assert!(replan.contains("Then: sign in with it"), "{replan}");
     assert!(!replan.contains("1111"), "{replan}");

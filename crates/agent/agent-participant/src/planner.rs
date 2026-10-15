@@ -55,6 +55,11 @@ pub fn message_app(name: &str) -> Option<&'static str> {
     })
 }
 
+/// How many times one task waits for a message ([`StepAction::Wait`]):
+/// each wait ends in a plan, so a model that keeps waiting cannot hold the
+/// task open for ever. The model is told it, so it knows it may wait again.
+pub const MOST_WAITS: u32 = 4;
+
 /// What a waiting task waits for: a change another member makes to a
 /// record that carries messages (a delivered SMS, a mail, a chat post).
 #[derive(Clone, Debug, PartialEq, Eq)]
