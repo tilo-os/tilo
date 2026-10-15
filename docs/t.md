@@ -117,3 +117,10 @@ Some of `t.toml` is generated: the `package_inputs` of the cargo families and th
 checks from [`tools/ci/suites.toml`](../tools/ci/suites.toml), and the `goldens` family from
 `.config/nextest-filters.toml` and `.config/visual-goldens-image`. After changing those, run
 `python3 tools/ci/t_toml.py write`; the policy tests fail while `t.toml` is out of date.
+
+## Publishing
+
+Checks can also publish: container images, signatures and releases, from `main` (development
+artifacts) and from `stable` and release tags (releases). Their build halves are ordinary checks
+you can run before pushing, such as `t test image-room-service`. [Publishing with
+t](publishing-on-t.md) lists every publishing workflow, how it maps onto t and which are moved.
