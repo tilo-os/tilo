@@ -497,7 +497,8 @@ mod tests {
             now,
         )
         .unwrap();
-        peer.put_governed_grants(&[agent_grant("agent-scribe", ROOM)], &governor_key, now)
+        peer.governance_mut()
+            .put_governed_grants(&[agent_grant("agent-scribe", ROOM)], &governor_key, now)
             .unwrap();
         (peer, governor, other, now)
     }
@@ -557,19 +558,20 @@ mod tests {
         .unwrap();
         doc.commit();
         peer.apply_governance_doc(doc, &before, &key, now).unwrap();
-        peer.put_governed_grants(
-            &[Grant::new(
-                "read-only-member",
-                Subject::person(hex::encode(other.user_public_key)),
-                TreePath::room(ROOM),
-                KindSet::UNDOABLE,
-                Answer::Deny,
-                Subject::person("governor"),
-            )],
-            &key,
-            now,
-        )
-        .unwrap();
+        peer.governance_mut()
+            .put_governed_grants(
+                &[Grant::new(
+                    "read-only-member",
+                    Subject::person(hex::encode(other.user_public_key)),
+                    TreePath::room(ROOM),
+                    KindSet::UNDOABLE,
+                    Answer::Deny,
+                    Subject::person("governor"),
+                )],
+                &key,
+                now,
+            )
+            .unwrap();
     }
 
     struct SteeringFixture {
@@ -604,29 +606,30 @@ mod tests {
             let scope = documents.clone().resource("A");
             let wildcard = documents.any(Level::Resource);
             let subject = Subject::person(hex::encode(other.user_public_key));
-            peer.put_governed_grants(
-                &[
-                    Grant::new(
-                        "starter-wildcard-deny",
-                        subject.clone(),
-                        wildcard.clone(),
-                        KindSet::UNDOABLE,
-                        Answer::Deny,
-                        Subject::person("governor"),
-                    ),
-                    Grant::new(
-                        "starter-concrete-allow",
-                        subject.clone(),
-                        scope.clone(),
-                        KindSet::UNDOABLE,
-                        Answer::Allow,
-                        Subject::person("governor"),
-                    ),
-                ],
-                &key,
-                now,
-            )
-            .unwrap();
+            peer.governance_mut()
+                .put_governed_grants(
+                    &[
+                        Grant::new(
+                            "starter-wildcard-deny",
+                            subject.clone(),
+                            wildcard.clone(),
+                            KindSet::UNDOABLE,
+                            Answer::Deny,
+                            Subject::person("governor"),
+                        ),
+                        Grant::new(
+                            "starter-concrete-allow",
+                            subject.clone(),
+                            scope.clone(),
+                            KindSet::UNDOABLE,
+                            Answer::Allow,
+                            Subject::person("governor"),
+                        ),
+                    ],
+                    &key,
+                    now,
+                )
+                .unwrap();
             let caller = WorkspaceTaskAuthority::Person {
                 caller: other.clone(),
             };
@@ -729,19 +732,20 @@ mod tests {
             };
             // An allow on one concrete item must not stand in for every item
             // matched by a wildcard deny: the unnamed remainder is a separate cell.
-            peer.put_governed_grants(
-                &[Grant::new(
-                    "caller-selected-item-allow",
-                    subject.clone(),
-                    wildcard.clone().item("selected").action("append"),
-                    KindSet::UNDOABLE,
-                    Answer::Allow,
-                    Subject::person("governor"),
-                )],
-                &key,
-                now,
-            )
-            .unwrap();
+            peer.governance_mut()
+                .put_governed_grants(
+                    &[Grant::new(
+                        "caller-selected-item-allow",
+                        subject.clone(),
+                        wildcard.clone().item("selected").action("append"),
+                        KindSet::UNDOABLE,
+                        Answer::Allow,
+                        Subject::person("governor"),
+                    )],
+                    &key,
+                    now,
+                )
+                .unwrap();
             // Each denial crosses a different policy boundary inside the same
             // concrete attachment, including a concrete exception to a wildcard.
             for node in [
@@ -750,19 +754,20 @@ mod tests {
                 wildcard.clone().item("selected").action("append"),
                 wildcard.clone().rest().action("append"),
             ] {
-                peer.put_governed_grants(
-                    &[Grant::new(
-                        "caller-missing-append",
-                        subject.clone(),
-                        node,
-                        KindSet::UNDOABLE,
-                        Answer::Deny,
-                        Subject::person("governor"),
-                    )],
-                    &key,
-                    now,
-                )
-                .unwrap();
+                peer.governance_mut()
+                    .put_governed_grants(
+                        &[Grant::new(
+                            "caller-missing-append",
+                            subject.clone(),
+                            node,
+                            KindSet::UNDOABLE,
+                            Answer::Deny,
+                            Subject::person("governor"),
+                        )],
+                        &key,
+                        now,
+                    )
+                    .unwrap();
                 let before = peer.durable().unwrap();
                 assert_eq!(
                     peer.workspace_mut()
@@ -810,19 +815,20 @@ mod tests {
 
             // Revoking a live permission that the frozen ceiling still allows
             // must not shrink the ceiling used to authorize steering.
-            peer.put_governed_grants(
-                &[Grant::new(
-                    "caller-attached-revoked",
-                    subject.clone(),
-                    scope.clone(),
-                    KindSet::UNDOABLE,
-                    Answer::Deny,
-                    Subject::person("governor"),
-                )],
-                &key,
-                now,
-            )
-            .unwrap();
+            peer.governance_mut()
+                .put_governed_grants(
+                    &[Grant::new(
+                        "caller-attached-revoked",
+                        subject.clone(),
+                        scope.clone(),
+                        KindSet::UNDOABLE,
+                        Answer::Deny,
+                        Subject::person("governor"),
+                    )],
+                    &key,
+                    now,
+                )
+                .unwrap();
             let before = peer.durable().unwrap();
             assert!(
                 peer.workspace_mut()
@@ -923,15 +929,16 @@ mod tests {
             )
             .unwrap();
         assert!(
-            peer.put_governed_grants(
-                &[agent_grant(
-                    "other-room-agent",
-                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-                )],
-                &key,
-                now,
-            )
-            .is_err(),
+            peer.governance_mut()
+                .put_governed_grants(
+                    &[agent_grant(
+                        "other-room-agent",
+                        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+                    )],
+                    &key,
+                    now,
+                )
+                .is_err(),
             "a grant on another room is not this room's policy"
         );
         let command = WorkspaceTaskCommand::Queue {
@@ -954,7 +961,8 @@ mod tests {
                 .is_err()
         );
         assert_eq!(peer.durable().unwrap(), before);
-        peer.put_governed_grants(&[agent_grant("actual-room-agent", ROOM)], &key, now)
+        peer.governance_mut()
+            .put_governed_grants(&[agent_grant("actual-room-agent", ROOM)], &key, now)
             .unwrap();
         assert!(
             peer.workspace_mut()

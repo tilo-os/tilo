@@ -650,7 +650,8 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
         .with_current(room(), |view| {
             let before = view.peer().clone();
             let mut next = before.clone();
-            next.put_governed_grants(&[grant], &f.native.key, now)?;
+            next.governance_mut()
+                .put_governed_grants(&[grant], &f.native.key, now)?;
             next.durable_mutation_messages(
                 &before,
                 &f.native.key,

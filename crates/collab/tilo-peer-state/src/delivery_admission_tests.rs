@@ -278,6 +278,7 @@ fn delivery_admission_exact_retry_rechecks_signature_route_and_current_revocatio
     };
     tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
     receiver
+        .governance_mut()
         .publish_governed_revocations(&[revocation], &governor, now)
         .unwrap();
     let later = now + Duration::from_secs(301);

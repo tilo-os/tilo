@@ -92,11 +92,12 @@ impl StatePeer {
                     .find(|held| held.id == grant.id)
                     .cloned()
                     .ok_or("the grant was not recorded")?;
-                self.put_governed_grants(&[recorded], key, now)
+                self.governance_mut()
+                    .put_governed_grants(&[recorded], key, now)
             }
-            WorkspaceMembershipCommand::Revoke { grant } => {
-                self.remove_governed_grants(std::slice::from_ref(grant), key, now)
-            }
+            WorkspaceMembershipCommand::Revoke { grant } => self
+                .governance_mut()
+                .remove_governed_grants(std::slice::from_ref(grant), key, now),
             _ => Err("not a governance grant command".into()),
         }
     }
@@ -145,11 +146,12 @@ impl StatePeer {
                     Subject::Person(member.person),
                 )
                 .with_lifetime(Lifetime::Task(task.clone()));
-                self.put_governed_grants(&[grant], key, now)
+                self.governance_mut()
+                    .put_governed_grants(&[grant], key, now)
             }
-            WorkspaceMembershipCommand::RevokeForTask { grant, .. } => {
-                self.remove_governed_grants(std::slice::from_ref(grant), key, now)
-            }
+            WorkspaceMembershipCommand::RevokeForTask { grant, .. } => self
+                .governance_mut()
+                .remove_governed_grants(std::slice::from_ref(grant), key, now),
             _ => Err("not a task grant command".into()),
         }
     }
@@ -229,7 +231,10 @@ impl PeerWorkspaceMut<'_> {
         if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
             let grant =
                 roles::app_authorship(&self.peer.core.room, app, Subject::Person(member.person));
-            return self.peer.put_governed_grants(&[grant], key, now);
+            return self
+                .peer
+                .governance_mut()
+                .put_governed_grants(&[grant], key, now);
         }
         let subject = Subject::agent(command.agent().ok_or("missing agent membership target")?);
         let room = member.policy.node();
@@ -247,12 +252,16 @@ impl PeerWorkspaceMut<'_> {
         // Work on a clone: an invalid later addition must not leave a removal
         // applied to the caller's candidate.
         let mut candidate = self.peer.clone();
-        let removed = candidate.remove_governed_grants(&removals, key, now)?;
+        let removed = candidate
+            .governance_mut()
+            .remove_governed_grants(&removals, key, now)?;
         let added = match command {
             WorkspaceMembershipCommand::AddAgent { agent, preset } => {
                 let grants =
                     preset.grants(&self.peer.core.room, agent, &Subject::Person(member.person));
-                candidate.put_governed_grants(&grants, key, now)?
+                candidate
+                    .governance_mut()
+                    .put_governed_grants(&grants, key, now)?
             }
             WorkspaceMembershipCommand::RemoveAgent { .. } => false,
             WorkspaceMembershipCommand::GrantAppAuthorship { .. }

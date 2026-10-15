@@ -440,7 +440,8 @@ pub(crate) fn add_editor(
         crate::join::verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns)
             .unwrap();
     assert!(
-        peer.admit_invited_member(&redemption, authority, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, authority, now)
             .unwrap()
     );
     (cert, root.verifying_key().to_bytes())
@@ -553,12 +554,14 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     .unwrap();
 
     assert!(
-        peer.admit_invited_member(&redemption, &other_owner_device, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &other_owner_device, now)
             .is_err(),
         "only the pinned authority device may mutate governance"
     );
     assert!(
-        peer.admit_invited_member(&redemption, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
     assert_eq!(
@@ -567,7 +570,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .role,
         collab_types::Role::Editor
     );
-    let access = peer.governed_access(now).unwrap();
+    let access = peer.governance().governed_access(now).unwrap();
     assert!(
         access
             .member_devices
@@ -590,6 +593,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert!(
         !peer
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
@@ -622,11 +626,13 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     )
     .unwrap();
     assert!(
-        peer.admit_invited_member(&second_redemption, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&second_redemption, &authority_key, now)
             .unwrap()
     );
     assert!(
         !peer
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap(),
         "a later invite for the same device must not overwrite the first receipt"
@@ -643,11 +649,13 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     .unwrap();
     assert!(
         !restored
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
     assert!(
         !restored
+            .governance_mut()
             .admit_invited_member(&second_redemption, &authority_key, now)
             .unwrap()
     );
@@ -689,6 +697,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     .unwrap();
     assert!(
         restored
+            .governance_mut()
             .admit_invited_member(&replay_redemption, &authority_key, now)
             .unwrap_err()
             .contains("already redeemed"),
@@ -736,6 +745,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert!(
         restored
+            .governance_mut()
             .set_member_role(
                 guest_cert.user_public_key,
                 MemberRole::Viewer,
@@ -752,6 +762,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         collab_types::Role::Viewer
     );
     restored
+        .governance()
         .membership_challenge(
             7,
             &guest_cert,
@@ -763,6 +774,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         .unwrap();
     assert!(
         restored
+            .governance_mut()
             .remove_member(guest_cert.user_public_key, &authority_key, now)
             .unwrap()
     );
@@ -773,6 +785,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert_eq!(
         restored
+            .governance()
             .membership_challenge(
                 7,
                 &guest_cert,
@@ -786,10 +799,11 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert!(
         !restored
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
-    let access = restored.governed_access(now).unwrap();
+    let access = restored.governance().governed_access(now).unwrap();
     assert!(
         !access
             .member_devices
@@ -802,6 +816,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     );
     assert!(
         restored
+            .governance_mut()
             .remove_member(peer.authority().user_public_key, &authority_key, now)
             .is_err(),
         "the owner cannot be removed through member governance"
@@ -843,7 +858,8 @@ fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
     )
     .unwrap();
     assert!(
-        peer.install_workspace_delegation(delegation.clone(), &authority_key, now)
+        peer.governance_mut()
+            .install_workspace_delegation(delegation.clone(), &authority_key, now)
             .unwrap()
     );
 
@@ -896,7 +912,8 @@ fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
     let redemption =
         verify_join_proof(&proof, &challenge, &guest, &RevocationList::new(), now_ns).unwrap();
     assert!(
-        peer.admit_invited_member(&redemption, &host_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &host_key, now)
             .unwrap()
     );
     assert_eq!(
@@ -972,11 +989,13 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
     let mut left = base.clone();
     let mut right = base.clone();
     assert!(
-        left.admit_invited_member(&first, &authority_key, now)
+        left.governance_mut()
+            .admit_invited_member(&first, &authority_key, now)
             .unwrap()
     );
     assert!(
         right
+            .governance_mut()
             .admit_invited_member(&second, &authority_key, now)
             .unwrap()
     );
@@ -1065,7 +1084,8 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         &authority_key,
     )
     .unwrap();
-    base.install_workspace_delegation(delegation.clone(), &authority_key, now)
+    base.governance_mut()
+        .install_workspace_delegation(delegation.clone(), &authority_key, now)
         .unwrap();
 
     let guest_root = SigningKey::from_bytes(&[81; 32]);
@@ -1120,9 +1140,11 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     let redemption_b = redeem(&signed_b, 87, 88, &guest, &guest_key);
     let mut left = base.clone();
     let mut right = base.clone();
-    left.admit_invited_member(&redemption_a, &authority_key, now)
+    left.governance_mut()
+        .admit_invited_member(&redemption_a, &authority_key, now)
         .unwrap();
     right
+        .governance_mut()
         .admit_invited_member(&redemption_b, &delegate_key, now)
         .unwrap();
 
@@ -1162,6 +1184,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     for (redemption, issuer) in [(&replay_a, &authority_key), (&replay_b, &delegate_key)] {
         assert!(
             restored
+                .governance_mut()
                 .admit_invited_member(redemption, issuer, now)
                 .unwrap_err()
                 .contains("already redeemed")
@@ -3204,33 +3227,39 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
     let first = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 70, now);
     let unused = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 80, now);
     assert!(
-        peer.admit_invited_member(&first, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&first, &authority_key, now)
             .unwrap()
     );
     let owner = hex::encode(peer.authority().user_public_key);
     assert!(
-        peer.ban_member(guest_cert.user_public_key, &owner, &authority_key, now)
+        peer.governance_mut()
+            .ban_member(guest_cert.user_public_key, &owner, &authority_key, now)
             .unwrap()
     );
     assert!(peer.permissions(guest_cert.device_public_key, now).is_err());
     assert!(
         !peer
+            .governance()
             .governed_access(now)
             .unwrap()
             .member_user_roots
             .contains(&guest_cert.user_public_key)
     );
     assert!(
-        peer.admit_invited_member(&unused, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&unused, &authority_key, now)
             .is_err(),
         "an invitation issued before the ban does not let them back"
     );
     assert!(
-        peer.unban_member(guest_cert.user_public_key, &authority_key, now)
+        peer.governance_mut()
+            .unban_member(guest_cert.user_public_key, &authority_key, now)
             .unwrap()
     );
     assert!(
-        peer.admit_invited_member(&unused, &authority_key, now)
+        peer.governance_mut()
+            .admit_invited_member(&unused, &authority_key, now)
             .unwrap()
     );
     assert_eq!(

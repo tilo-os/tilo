@@ -175,7 +175,8 @@ fn room_with(role: MemberRole) -> (StatePeer, SigningKey, DeviceCert) {
         crate::join::verify_join_proof(&proof, &challenge, &guest, &RevocationList::new(), now_ns)
             .unwrap();
     assert!(
-        peer.admit_invited_member(&redemption, &owner_key, now())
+        peer.governance_mut()
+            .admit_invited_member(&redemption, &owner_key, now())
             .unwrap()
     );
     peer.set_surfaces(Surfaces::from_source(Arc::new(Source(true))));

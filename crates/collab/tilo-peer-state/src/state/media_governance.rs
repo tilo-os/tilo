@@ -1,5 +1,5 @@
 //! Native governance transactions. Public policy data is never an authority proof.
-use super::facades::{PeerMediaGovernance, PeerMediaGovernanceMut};
+use super::facades::{PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut};
 use super::{
     BTreeMap, DeviceCert, DurableV4, DurableV5, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc,
     RevocationList, Role, Route, SigningKey, StatePeer, SystemTime, Transactable, TransportOrigin,
@@ -74,18 +74,15 @@ impl StatePeer {
         }
         Ok(())
     }
-
-    /// Host enrollment and its invitation-only delegation share one basis change.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer or the certificate or
-    /// delegation is refused.
+}
+impl StatePeer {
+    /// The enrollment transaction behind
+    /// [`PeerGovernanceMut::admit_certificate_with_workspace_delegation`].
     #[expect(
         clippy::needless_pass_by_value,
-        reason = "public API: callers hand over the certificate"
+        reason = "public API: callers hand over the certificate, through the governance view"
     )]
-    pub fn admit_certificate_with_workspace_delegation(
+    fn admit_certificate_with_delegation(
         &mut self,
         cert: DeviceCert,
         delegation: crate::join::WorkspaceDelegation,
@@ -190,6 +187,25 @@ impl StatePeer {
             return Ok(false);
         }
         self.apply_governance_doc(doc, &before, key, now)
+    }
+}
+
+impl PeerGovernanceMut<'_> {
+    /// Host enrollment and its invitation-only delegation share one basis change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer or the certificate or
+    /// delegation is refused.
+    pub fn admit_certificate_with_workspace_delegation(
+        self,
+        cert: DeviceCert,
+        delegation: crate::join::WorkspaceDelegation,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.peer
+            .admit_certificate_with_delegation(cert, delegation, key, now)
     }
 }
 impl PeerMediaGovernance<'_> {

@@ -252,16 +252,19 @@ fn the_owner_installs_a_bot_in_one_governed_change() {
         ),
         Ok(true)
     );
-    let bots = governor.installations(now).unwrap();
+    let bots = governor.governance().installations(now).unwrap();
     assert_eq!(bots.len(), 1);
     assert!(bots[0].acting);
     assert_eq!(bots[0].device_public_key, cert.device_public_key);
     assert_eq!(
-        governor.bot_program(&bots[0].installation.program),
+        governor
+            .governance()
+            .bot_program(&bots[0].installation.program),
         Some(text)
     );
     assert_eq!(
         governor
+            .governance()
             .installation(BOT, now)
             .map(|bot| bot.device_public_key),
         Some(cert.device_public_key)
@@ -306,7 +309,7 @@ fn install_refuses_a_delegation_for_another_installation_or_room() {
                 .is_err()
         );
     }
-    assert!(governor.installations(now).unwrap().is_empty());
+    assert!(governor.governance().installations(now).unwrap().is_empty());
 }
 
 #[test]
@@ -363,7 +366,7 @@ fn an_editor_cannot_install_by_default() {
             .apply_workspace_membership_command(&editor_device, &command, &authority, now)
             .is_err()
     );
-    assert!(governor.installations(now).unwrap().is_empty());
+    assert!(governor.governance().installations(now).unwrap().is_empty());
 }
 
 #[test]
@@ -375,6 +378,7 @@ fn an_update_wider_than_the_old_grant_needs_install_bot() {
         tilo_action_policy::roles::governance::INSTALL_BOT,
     );
     governor
+        .governance_mut()
         .put_governed_grants(std::slice::from_ref(&install_grant), &authority, now)
         .unwrap();
     // A narrow program first: posting only read.
@@ -388,6 +392,7 @@ fn an_update_wider_than_the_old_grant_needs_install_bot() {
 
     // The Editor keeps only pause-bot, then pushes the wider program.
     governor
+        .governance_mut()
         .remove_governed_grants(std::slice::from_ref(&install_grant.id), &authority, now)
         .unwrap();
     let pause = governance_grant(
@@ -396,6 +401,7 @@ fn an_update_wider_than_the_old_grant_needs_install_bot() {
         tilo_action_policy::roles::governance::PAUSE_BOT,
     );
     governor
+        .governance_mut()
         .put_governed_grants(&[pause], &authority, now)
         .unwrap();
     let wide = program(vec![post_rule()]);
@@ -422,6 +428,7 @@ fn an_update_wider_than_the_old_grant_needs_install_bot() {
         "the same grant is a no-op update anyone who may pause can apply"
     );
     governor
+        .governance_mut()
         .put_governed_grants(&[install_grant], &authority, now)
         .unwrap();
     assert!(
@@ -435,14 +442,18 @@ fn an_update_wider_than_the_old_grant_needs_install_bot() {
             )
             .unwrap()
     );
-    let bots = governor.installations(now).unwrap();
+    let bots = governor.governance().installations(now).unwrap();
     assert_eq!(bots.len(), 1);
     assert_eq!(
-        governor.bot_program(&bots[0].installation.program),
+        governor
+            .governance()
+            .bot_program(&bots[0].installation.program),
         Some(wide)
     );
     assert_eq!(
-        governor.bot_program(&tilo_automation::program::program_hash(narrow.as_bytes())),
+        governor
+            .governance()
+            .bot_program(&tilo_automation::program::program_hash(narrow.as_bytes())),
         None,
         "the replaced program is dropped"
     );
@@ -457,6 +468,7 @@ fn a_bot_is_bounded_by_its_installers_current_authority() {
         tilo_action_policy::roles::governance::INSTALL_BOT,
     );
     governor
+        .governance_mut()
         .put_governed_grants(&[install_grant], &authority, now)
         .unwrap();
     let text = program(vec![post_rule()]);
@@ -483,6 +495,7 @@ fn a_bot_is_bounded_by_its_installers_current_authority() {
         tilo_action_policy::Subject::person(person_hex()),
     );
     governor
+        .governance_mut()
         .put_governed_grants(&[deny], &authority, now)
         .unwrap();
     let member = governor.permissions(cert.device_public_key, now).unwrap();
@@ -524,7 +537,7 @@ fn renewing_replaces_the_delegation_and_moving_withdraws_the_old_device() {
             .apply_workspace_membership_command(&owner_device, &renewal(&moved), &authority, later)
             .unwrap()
     );
-    let rows = governor.installations(later).unwrap();
+    let rows = governor.governance().installations(later).unwrap();
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().any(
         |row| row.device_public_key == cert.device_public_key && row.withdrawn_at_ns.is_some()
@@ -604,7 +617,7 @@ fn uninstall_is_final_and_keeps_the_row() {
             )
             .unwrap()
     );
-    let rows = governor.installations(now).unwrap();
+    let rows = governor.governance().installations(now).unwrap();
     assert_eq!(rows.len(), 1);
     assert!(rows[0].withdrawn_at_ns.is_some());
     assert!(!rows[0].acting);
@@ -612,6 +625,7 @@ fn uninstall_is_final_and_keeps_the_row() {
     assert!(governor.bot_grants(BOT, now).unwrap().is_empty());
     assert!(
         governor
+            .governance()
             .bot_program(&rows[0].installation.program)
             .is_some()
     );
@@ -644,7 +658,14 @@ fn pausing_needs_no_privilege_and_only_flips_the_flag() {
             )
             .unwrap()
     );
-    assert!(governor.installation(BOT, now).unwrap().installation.paused);
+    assert!(
+        governor
+            .governance()
+            .installation(BOT, now)
+            .unwrap()
+            .installation
+            .paused
+    );
     assert_eq!(
         governor.workspace_mut().apply_workspace_membership_command(
             &owner,
@@ -665,7 +686,14 @@ fn pausing_needs_no_privilege_and_only_flips_the_flag() {
             )
             .unwrap()
     );
-    assert!(!governor.installation(BOT, now).unwrap().installation.paused);
+    assert!(
+        !governor
+            .governance()
+            .installation(BOT, now)
+            .unwrap()
+            .installation
+            .paused
+    );
 }
 
 #[test]
@@ -691,6 +719,7 @@ fn appearance_is_a_privileged_change() {
     );
     assert_eq!(
         governor
+            .governance()
             .installation(BOT, now)
             .unwrap()
             .installation
@@ -739,6 +768,7 @@ fn adopting_moves_the_bot_to_the_adopter_and_reissues_its_grants() {
         tilo_action_policy::Subject::person(person_hex()),
     );
     governor
+        .governance_mut()
         .put_governed_grants(&[adopt], &authority, now)
         .unwrap();
     assert!(
@@ -747,7 +777,7 @@ fn adopting_moves_the_bot_to_the_adopter_and_reissues_its_grants() {
             .apply_workspace_membership_command(&editor, &adoption, &authority, now)
             .unwrap()
     );
-    let live = governor.installation(BOT, now).unwrap();
+    let live = governor.governance().installation(BOT, now).unwrap();
     assert_eq!(live.installation.installed_by, hex::encode(editor_root));
     assert_eq!(live.device_public_key, device.device_public_key);
     assert!(governor.permissions(old.device_public_key, now).is_err());

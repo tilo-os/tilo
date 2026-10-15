@@ -677,10 +677,12 @@ mod display_name_tests {
         )
         .unwrap();
         assert!(
-            peer.admit_invited_member(&redemption, &authority_key, now)
+            peer.governance_mut()
+                .admit_invited_member(&redemption, &authority_key, now)
                 .unwrap()
         );
         let member = peer
+            .governance()
             .governed_members(now)
             .unwrap()
             .into_iter()
@@ -790,7 +792,8 @@ mod retention_tests {
             .collect();
         for redemption in &redemptions {
             assert!(
-                peer.admit_invited_member(redemption, &authority, now)
+                peer.governance_mut()
+                    .admit_invited_member(redemption, &authority, now)
                     .unwrap()
             );
         }
@@ -830,12 +833,16 @@ mod retention_tests {
             "fixture: this receipt was pruned from the identity row"
         );
         assert!(
-            peer.remove_member(guest.1.user_public_key, &authority, now)
+            peer.governance_mut()
+                .remove_member(guest.1.user_public_key, &authority, now)
                 .unwrap()
         );
         assert!(peer.permissions(guest.1.device_public_key, now).is_err());
         assert!(
-            !peer.admit_invited_member(pruned, &authority, now).unwrap(),
+            !peer
+                .governance_mut()
+                .admit_invited_member(pruned, &authority, now)
+                .unwrap(),
             "replaying a pruned redemption is already applied, not a new admission"
         );
         assert!(
@@ -846,7 +853,8 @@ mod retention_tests {
         let replay = redemption(&peer, &authority, 101, &other, now_ns);
         assert_eq!(replay.join().invite_id(), invite(pruned));
         assert!(
-            peer.admit_invited_member(&replay, &authority, now)
+            peer.governance_mut()
+                .admit_invited_member(&replay, &authority, now)
                 .unwrap_err()
                 .contains("already redeemed"),
             "a pruned invitation stays spent for every other device"

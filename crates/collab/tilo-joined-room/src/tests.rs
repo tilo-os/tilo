@@ -85,11 +85,12 @@ fn set_test_agent_membership(joined: &Enrolled, agent: &str, admitted: bool) {
             let before = view.peer().clone();
             let mut candidate = before.clone();
             if admitted {
-                candidate.put_governed_grants(
+                let room = candidate.room().to_owned();
+                candidate.governance_mut().put_governed_grants(
                     &[tilo_action_policy::Grant::new(
                         format!("test-agent-{agent}"),
                         tilo_action_policy::Subject::agent(agent),
-                        tilo_action_policy::TreePath::room(candidate.room()),
+                        tilo_action_policy::TreePath::room(&room),
                         tilo_action_policy::KindSet::READ_UNDOABLE,
                         tilo_action_policy::Answer::Allow,
                         tilo_action_policy::Subject::person("governor"),
@@ -98,7 +99,7 @@ fn set_test_agent_membership(joined: &Enrolled, agent: &str, admitted: bool) {
                     joined.now,
                 )?;
             } else {
-                candidate.remove_governed_grants(
+                candidate.governance_mut().remove_governed_grants(
                     &[tilo_action_policy::GrantId::new(format!(
                         "test-agent-{agent}"
                     ))],

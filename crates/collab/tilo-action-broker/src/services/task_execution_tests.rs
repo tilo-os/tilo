@@ -84,19 +84,20 @@ fn policy_fixture(room: &str) -> (StatePeer, DeviceCert, SigningKey, std::time::
         now,
     )
     .unwrap();
-    peer.put_governed_grants(
-        &[Grant::new(
-            "agent",
-            Subject::agent("scribe"),
-            TreePath::room(room),
-            KindSet::ALL,
-            Answer::Allow,
-            Subject::person("governor"),
-        )],
-        &key,
-        now,
-    )
-    .unwrap();
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "agent",
+                Subject::agent("scribe"),
+                TreePath::room(room),
+                KindSet::ALL,
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
 
     (peer, starter, key, now)
 }
@@ -196,19 +197,20 @@ fn assert_frozen_starter(
 ) {
     let node = action_node(room, requirement);
     // A later grant to the starter cannot widen an already running task.
-    peer.put_governed_grants(
-        &[Grant::new(
-            "starter-new-outside",
-            Subject::person(hex::encode(starter.user_public_key)),
-            node,
-            KindSet::OUTSIDE,
-            Answer::Allow,
-            Subject::person("governor"),
-        )],
-        key,
-        now,
-    )
-    .unwrap();
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "starter-new-outside",
+                Subject::person(hex::encode(starter.user_public_key)),
+                node,
+                KindSet::OUTSIDE,
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            key,
+            now,
+        )
+        .unwrap();
     let mut widened = requirement.clone();
     widened.need.kind = tilo_action_policy::ActionKind::Outside;
     assert!(
@@ -260,19 +262,20 @@ fn assert_independent_task_grants(
             now,
         )
         .unwrap();
-    peer.put_governed_grants(
-        &[Grant::new(
-            "other-task-deny",
-            Subject::task(&other),
-            TreePath::room(room),
-            KindSet::ALL,
-            Answer::Deny,
-            Subject::person("governor"),
-        )],
-        key,
-        now,
-    )
-    .unwrap();
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "other-task-deny",
+                Subject::task(&other),
+                TreePath::room(room),
+                KindSet::ALL,
+                Answer::Deny,
+                Subject::person("governor"),
+            )],
+            key,
+            now,
+        )
+        .unwrap();
     requirement.check(peer, room, "scribe", now).unwrap();
     let mut other_requirement = requirement.clone();
     other_requirement.binding.as_mut().unwrap().task_id = other;
@@ -288,19 +291,20 @@ fn assert_live_starter_revocation(
     authority: &WorkspaceTaskAuthority,
     requirement: &NativeTaskActionRequirement,
 ) {
-    peer.put_governed_grants(
-        &[Grant::new(
-            "starter-no-append",
-            Subject::person(hex::encode(starter.user_public_key)),
-            action_node(room, requirement),
-            KindSet::UNDOABLE,
-            Answer::Deny,
-            Subject::person("governor"),
-        )],
-        key,
-        now,
-    )
-    .unwrap();
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "starter-no-append",
+                Subject::person(hex::encode(starter.user_public_key)),
+                action_node(room, requirement),
+                KindSet::UNDOABLE,
+                Answer::Deny,
+                Subject::person("governor"),
+            )],
+            key,
+            now,
+        )
+        .unwrap();
     // Room write and the agent's own grant remain valid: only this exact
     // operation is revoked from the person who consciously started the run.
     assert!(
