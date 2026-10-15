@@ -99,13 +99,6 @@ fn read_is_published_as_the_notebooks_document_read() {
 
 #[test]
 fn note_and_body_reads_are_bound_document_projections() {
-    ui::i18n::I18nManager::init("en-US");
-    let mut app = TestApp::<NotesShell>::new().unwrap();
-    app.call("new-note", json!({"title": "Public note"}))
-        .unwrap();
-    app.settle();
-    let id = crate::framework_support::shown(&app).pages()[0].id;
-    let resources = app.harness().resources();
     fn find<'a>(
         resources: &'a [tilo_actions::Resource],
         id: &str,
@@ -118,6 +111,13 @@ fn note_and_body_reads_are_bound_document_projections() {
             }
         })
     }
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    app.call("new-note", json!({"title": "Public note"}))
+        .unwrap();
+    app.settle();
+    let id = crate::framework_support::shown(&app).pages()[0].id;
+    let resources = app.harness().resources();
     for id in [
         notes::actions::page_resource_id(id),
         notes::actions::body_resource_id(id),

@@ -106,7 +106,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             ("available", Expr::Path(path)) => options.available = Some(path.path.clone()),
             ("read_content", Expr::Path(path)) => options.read_content = Some(path.path.clone()),
             ("document_child", Expr::Path(path)) => {
-                options.document_child = Some(path.path.clone())
+                options.document_child = Some(path.path.clone());
             }
             ("read_content_in_doc", Expr::Path(path)) => {
                 options.read_content_in_doc = Some(path.path.clone());
