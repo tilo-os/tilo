@@ -121,6 +121,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_app_content_store.py": "tools/tests/test_app_content_store.py",
     "tools/policy/check_document_engine_boundary.py": "tools/tests/test_document_engine_boundary.py",
     "tools/policy/check_shell_layers.py": "tools/tests/test_check_shell_layers.py",
+    "tools/policy/check_media_stack.py": "tools/tests/test_media_stack_policy.py",
 }
 # Control-plane files are validated by tests that read or execute the production
 # file in the mandatory repository-policy suite. A file missing from this exact
