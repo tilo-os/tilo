@@ -7489,7 +7489,7 @@ dependencies = [
  "portable-atomic",
  "reqwest 0.13.4",
  "rustls",
- "rustls-platform-verifier 0.7.1",
+ "rustls-platform-verifier",
  "ryu",
  "serde",
  "tokio",
@@ -8439,7 +8439,7 @@ dependencies = [
  "librespot-protocol",
  "log",
  "sha1 0.10.6",
- "sysinfo 0.36.1",
+ "sysinfo",
  "thiserror 2.0.21",
  "tokio",
  "url",
@@ -8528,7 +8528,7 @@ dependencies = [
  "serde_json",
  "sha1 0.10.6",
  "shannon",
- "sysinfo 0.36.1",
+ "sysinfo",
  "thiserror 2.0.21",
  "time",
  "tokio",
@@ -9214,7 +9214,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
- "sysinfo 0.32.1",
+ "sysinfo",
  "taffy",
  "tilo-app",
  "tilo-automerge-fork",
@@ -9723,7 +9723,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier 0.7.1",
+ "rustls-platform-verifier",
  "slab",
  "sorted-index-buffer",
  "thiserror 2.0.21",
@@ -12168,7 +12168,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier 0.7.1",
+ "rustls-platform-verifier",
  "slab",
  "thiserror 2.0.21",
  "tinyvec",
@@ -12775,7 +12775,7 @@ dependencies = [
  "pin-project-lite",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier 0.7.1",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -13517,27 +13517,6 @@ dependencies = [
 
 [[package]]
 name = "rustls-platform-verifier"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d99feebc72bae7ab76ba994bb5e121b8d83d910ca40b36e0921f53becc41784"
-dependencies = [
- "core-foundation 0.10.1",
- "core-foundation-sys",
- "jni 0.21.1",
- "log",
- "once_cell",
- "rustls",
- "rustls-native-certs",
- "rustls-platform-verifier-android 0.1.1",
- "rustls-webpki",
- "security-framework",
- "security-framework-sys",
- "webpki-root-certs",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "rustls-platform-verifier"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1167586491e2b18b8bfbb293e8180ec17c201c4f076d7cb3070ca964e7598f98"
@@ -13549,19 +13528,13 @@ dependencies = [
  "once_cell",
  "rustls",
  "rustls-native-certs",
- "rustls-platform-verifier-android 0.2.0",
+ "rustls-platform-verifier-android",
  "rustls-webpki",
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "rustls-platform-verifier-android"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-platform-verifier-android"
@@ -14399,7 +14372,7 @@ dependencies = [
  "smithay",
  "smithay-client-toolkit",
  "store",
- "sysinfo 0.32.1",
+ "sysinfo",
  "taffy",
  "tar",
  "tempfile",
@@ -15464,20 +15437,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "sysinfo"
-version = "0.32.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c33cd241af0f2e9e3b5c32163b873b29956890b5342e6745b917ce9d490f4af"
-dependencies = [
- "core-foundation-sys",
- "libc",
- "memchr",
- "ntapi",
- "rayon",
- "windows 0.56.0",
 ]
 
 [[package]]
@@ -17626,7 +17585,7 @@ dependencies = [
  "reqwest 0.13.4",
  "rustls",
  "rustls-native-certs",
- "rustls-platform-verifier 0.6.2",
+ "rustls-platform-verifier",
  "send_wrapper",
  "serde",
  "serde_json",
