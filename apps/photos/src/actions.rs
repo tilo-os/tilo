@@ -153,6 +153,25 @@ pub enum PhotosEffect {
         #[param("The photograph")]
         photo: ui::tilo_resource::Id,
     },
+    /// Make thumbnails: a small PNG of each photograph, in order. The same
+    /// bytes whichever of your devices makes them, so the system may run it
+    /// on a better-placed one.
+    #[effect(
+        content,
+        idempotent,
+        kind = "read",
+        offload(
+            app = "so.tilo.thumbnails",
+            entrypoint = "thumbnail-batch",
+            cpu_ms = 120000,
+            memory_mb = 1024,
+            output_mb = 16
+        )
+    )]
+    MakeThumbnails {
+        #[param(content, "The photographs' content, in order")]
+        photos: Vec<String>,
+    },
     /// Save edited photograph: the photograph this window shows.
     #[effect(job, device_only)]
     Save {
@@ -364,6 +383,54 @@ pub fn export_edited_content(
     Ok(tilo_actions::ActionOutput {
         value: None,
         resources: vec![address],
+    })
+}
+
+/// Make thumbnails of `photos` (content hashes or `tilo.content:`
+/// addresses) from `store`: the local run of the offloadable
+/// `make-thumbnails`, byte for byte what the thumbnails package's
+/// `thumbnail-batch` entrypoint makes on another device. As there, content
+/// named twice is one input, and a batch with an input that is not an image
+/// makes nothing.
+///
+/// # Errors
+///
+/// Names content that is not here or not an image, or a store failure.
+pub fn make_thumbnails(
+    photos: &[String],
+    store: &tilo_content::ContentStore,
+) -> Result<tilo_actions::ActionOutput, String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut inputs = Vec::with_capacity(photos.len());
+    for photo in photos {
+        let hash = tilo_actions::content_hash(photo).unwrap_or(photo);
+        if !crate::model::is_content_hash(hash) {
+            return Err(format!("`{photo}` is not a photograph's content"));
+        }
+        if seen.insert(hash) {
+            inputs.push(
+                store
+                    .read(hash)
+                    .ok_or_else(|| format!("the content {hash} is not on this device"))?,
+            );
+        }
+    }
+    let thumbnails =
+        thumbnail::batch::thumbnail_batch(&inputs).map_err(|error| error.to_string())?;
+    let mut resources = Vec::with_capacity(thumbnails.len());
+    for bytes in thumbnails {
+        let hash = store.put(&bytes).map_err(|error| {
+            tracing::warn!(%error, "photos: could not store a thumbnail");
+            "a thumbnail could not be stored".to_string()
+        })?;
+        resources.push(
+            tilo_actions::content_resource(&hash)
+                .ok_or_else(|| "the content provider returned an invalid address".to_string())?,
+        );
+    }
+    Ok(tilo_actions::ActionOutput {
+        value: None,
+        resources,
     })
 }
 

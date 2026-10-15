@@ -19,6 +19,7 @@ mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
 mod observed_launch;
+mod offload_door;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
 #[cfg(test)]
@@ -3338,6 +3339,13 @@ pub struct CapnpBrokerState {
     /// Queued directory work, a test callback, or a new invocation. The
     /// accept loop parks until one of these; a timer used to notice them.
     local_turn: std::sync::Arc<tokio::sync::Notify>,
+    /// Admitted offloadable invocations waiting for the turn to ask
+    /// [`HostServices::action_offload`] where they run.
+    offloads: Mutex<Vec<offload_door::QueuedOffload>>,
+    /// Offloadable invocations the route sent back here, by wire id: what
+    /// was asked and when the app was handed it.
+    offloaded_here:
+        Mutex<HashMap<u64, (tilo_actions::offload::OffloadRequest, std::time::Instant)>>,
     /// Signed joins on actual private host-worker descriptors; never reconstructed from surfaces.
     host_workers: Mutex<HashMap<u64, AdmittedJoinIdentity>>,
     /// Peer ids of the broker's own services on its thread's runtime.
@@ -3790,6 +3798,9 @@ impl CapnpBrokerState {
         actor: InvocationOwner,
         update: tilo_actions::InvocationUpdate,
     ) {
+        if update.is_terminal() {
+            self.offload_answered(id, &update);
+        }
         if let Ok(mut completed) = self.completed_invocations.lock() {
             completed.insert(id, (actor, update));
             self.invocation_changed();
@@ -4127,6 +4138,8 @@ impl CapnpBrokerState {
                 workers: Mutex::new(Vec::new()),
                 worker_admitted: tokio::sync::Notify::new(),
                 local_turn,
+                offloads: Mutex::default(),
+                offloaded_here: Mutex::default(),
                 host_workers: Mutex::new(HashMap::new()),
                 service_peers: Mutex::new(Vec::new()),
                 thread_restarts: AtomicU64::new(0),
@@ -5703,6 +5716,13 @@ impl CapnpBrokerState {
                 .insert(id);
         }
         self.spend_once_grants(&offered.0.route.cluster_id, &spent);
+        // Admitted: an offloadable action may now run on a better-placed
+        // device, which the turn asks the route about.
+        let offload = self.offload_request(
+            (&offered.0.route.cluster_id, &offered.0.app_id),
+            &offered.1,
+            argument,
+        );
         // Keep acceptance before an immediately completing application's first
         // update. Sending to the unbounded app queue and bounded observation
         // bus never waits or calls back into the broker.
@@ -5773,17 +5793,31 @@ impl CapnpBrokerState {
             },
         );
         self.invocation_changed();
-        if sender
-            .send(InvocationEnvelope {
-                id,
-                invocation,
-                resource: offered.1.resource,
-                action: offered.1.action,
-                argument: argument.map(str::to_string),
-                actor: actor.id.clone(),
-                context,
-            })
-            .is_err()
+        let envelope = InvocationEnvelope {
+            id,
+            invocation,
+            resource: offered.1.resource,
+            action: offered.1.action,
+            argument: argument.map(str::to_string),
+            actor: actor.id.clone(),
+            context,
+        };
+        let envelope = match (offload, self.offloads.lock()) {
+            (Some((route, request)), Ok(mut queued)) => {
+                queued.push(offload_door::QueuedOffload {
+                    id,
+                    peer_id,
+                    request,
+                    route,
+                    envelope,
+                    app: sender.clone(),
+                });
+                None
+            }
+            _ => Some(envelope),
+        };
+        if let Some(envelope) = envelope
+            && sender.send(envelope).is_err()
         {
             let removed = registry.remove(&id);
             drop(registry);
@@ -13067,6 +13101,7 @@ async fn serve_broker_thread(
             });
         }
         state.drain_action_directory_bridge(&directories);
+        state.drain_offloads();
         if quit.load(Ordering::Relaxed) {
             break;
         }
@@ -14863,6 +14898,8 @@ pub mod tests {
     include!("durable_local_invocation_matrix_tests.rs");
     #[cfg(test)]
     include!("record_content_tests.rs");
+    #[cfg(test)]
+    include!("offload_door_tests.rs");
 
     pub struct LocalDirectoryFixture {
         _fanout: Arc<FanoutState>,

@@ -195,6 +195,9 @@ impl PhotosApp {
             PhotosEffect::ExportEditedContent { .. } => {
                 return Err("edited content export requires lifecycle dispatch".into());
             }
+            PhotosEffect::MakeThumbnails { .. } => {
+                return Err("making thumbnails requires lifecycle dispatch".into());
+            }
             PhotosEffect::View { photo_id } => {
                 self.view_photo(library, &photo_id)?;
             }
@@ -737,6 +740,9 @@ impl PhotosApp {
                     &self.content,
                 )
                 .map(Some);
+            }
+            PhotosEffect::MakeThumbnails { photos } => {
+                return crate::actions::make_thumbnails(&photos, &self.content).map(Some);
             }
             PhotosEffect::Import { path: Some(file) } => {
                 self.import_content = Some(LiveContent {

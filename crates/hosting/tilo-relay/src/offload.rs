@@ -58,6 +58,7 @@ pub use crate::offload_content::{BindError, ReplicaContent, WorkspaceContent};
 pub use crate::offload_placement::{
     ComputePlacement, PLACEMENT_TIMEOUT, Placed, PlacementAnswer, PlacementQuery, RelayPlacement,
 };
+pub use crate::offload_route::OffloadRoute;
 
 /// How long past a job's own lifetime its requester waits for the result
 /// before it gives up on the worker and runs the action itself.
@@ -335,54 +336,152 @@ impl Offloader {
             }
             bound.bytes = bound.bytes.saturating_add(len);
         }
-        let input_bytes = bound.bytes;
-        let action = format!("{}:{}", offload.app, offload.entrypoint);
-        let remote_started = Instant::now();
-        let (outputs, ran_on, run_time) =
-            match self.remote(job.workspace_id, &offload, &bound).await {
-                Ok((worker, outputs)) => (outputs, RanOn::Worker(worker), remote_started.elapsed()),
-                Err(reason) => {
-                    tracing::info!(
-                        app = %offload.app,
-                        entrypoint = %offload.entrypoint,
-                        %reason,
-                        "offloadable action runs locally"
-                    );
-                    // The local run alone: time lost to a worker that failed is
-                    // not what running here costs.
-                    let local_started = Instant::now();
-                    let outputs = self.local(&bound.digests, local).await?;
-                    (outputs, RanOn::Local { reason }, local_started.elapsed())
-                }
-            };
-        let elapsed = started.elapsed();
-        let device = match &ran_on {
-            RanOn::Worker(worker) => *worker,
-            RanOn::Local { .. } => self.device,
+        match self
+            .remote_run(job.workspace_id, &offload, &bound, started)
+            .await
+        {
+            Ok(run) => Ok(run),
+            Err(reason) => {
+                tracing::info!(
+                    app = %offload.app,
+                    entrypoint = %offload.entrypoint,
+                    %reason,
+                    "offloadable action runs locally"
+                );
+                // The local run alone: time lost to a worker that failed is
+                // not what running here costs. A worker stages each distinct
+                // input once, so the batch here is of distinct inputs too.
+                let local_started = Instant::now();
+                let distinct: Vec<[u8; 32]> =
+                    bound.distinct.iter().map(|(digest, _)| *digest).collect();
+                let outputs = self.local(&distinct, local).await?;
+                self.record_local(&offload, local_started.elapsed(), bound.bytes);
+                Ok(OffloadRun {
+                    output: content_output(&outputs),
+                    outputs,
+                    ran_on: RanOn::Local { reason },
+                    elapsed: started.elapsed(),
+                })
+            }
+        }
+    }
+
+    /// Run `offload` over `inputs` — content this device holds, by the
+    /// digest of its bytes, as the invoker's room reaches it — on the
+    /// best-placed other device, or say why it should run here. The caller
+    /// runs it here itself then, through the app's own handler, and reports
+    /// how long that took ([`Self::record_local`]).
+    ///
+    /// # Errors
+    ///
+    /// Why it was not offloaded: an input not wholly on this device, no
+    /// better-placed device, or what failed remotely.
+    pub async fn offload(
+        &self,
+        workspace_id: u64,
+        offload: &Offload,
+        inputs: &[[u8; 32]],
+    ) -> Result<OffloadRun, String> {
+        let started = Instant::now();
+        let invalid = offload.validate();
+        if !invalid.is_empty() {
+            return Err(format!(
+                "the action is not offloadable: {}",
+                invalid.join("; ")
+            ));
+        }
+        let mut bound = BoundInputs {
+            digests: Vec::with_capacity(inputs.len()),
+            distinct: Vec::with_capacity(inputs.len()),
+            bytes: 0,
         };
+        for (index, digest) in inputs.iter().enumerate() {
+            if bound.digests.contains(digest) {
+                continue;
+            }
+            let len = self
+                .content
+                .bind_blob(*digest)
+                .await
+                .map_err(|error| format!("input {index}: {error}"))?;
+            bound.digests.push(*digest);
+            bound.distinct.push((*digest, len));
+            bound.bytes = bound.bytes.saturating_add(len);
+        }
+        self.remote_run(workspace_id, offload, &bound, started)
+            .await
+    }
+
+    /// The bytes of `inputs` [`Self::offload`] would bind, once each.
+    ///
+    /// # Errors
+    ///
+    /// Names an input that is not wholly on this device.
+    pub async fn input_bytes(&self, inputs: &[[u8; 32]]) -> Result<u64, String> {
+        let mut seen = Vec::with_capacity(inputs.len());
+        let mut total = 0_u64;
+        for (index, digest) in inputs.iter().enumerate() {
+            if seen.contains(digest) {
+                continue;
+            }
+            seen.push(*digest);
+            let len = self
+                .content
+                .blob_len(*digest)
+                .await
+                .map_err(|error| format!("input {index}: {error}"))?;
+            total = total.saturating_add(len);
+        }
+        Ok(total)
+    }
+
+    /// `offload` ran here in `elapsed` over `input_bytes` of input: what
+    /// placement weighs moving its inputs against next time.
+    pub fn record_local(&self, offload: &Offload, elapsed: Duration, input_bytes: u64) {
+        self.record(offload, self.device, elapsed, input_bytes);
+    }
+
+    fn record(&self, offload: &Offload, device: DeviceKey, elapsed: Duration, input_bytes: u64) {
+        let action = format!("{}:{}", offload.app, offload.entrypoint);
         self.wall_times
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(
                 (action, device),
                 Observed {
-                    elapsed: run_time,
+                    elapsed,
                     input_bytes,
                 },
             );
-        let resources = outputs
-            .iter()
-            .filter_map(|digest| tilo_actions::content_resource(&hex::encode(digest)))
-            .collect();
+    }
+
+    /// [`Self::remote`] over bound `inputs`, recorded and answered as an
+    /// [`OffloadRun`] timed from `started`.
+    async fn remote_run(
+        &self,
+        workspace_id: u64,
+        offload: &Offload,
+        inputs: &BoundInputs,
+        started: Instant,
+    ) -> Result<OffloadRun, String> {
+        let remote_started = Instant::now();
+        let (worker, outputs) = self.remote(workspace_id, offload, inputs).await?;
+        self.record(offload, worker, remote_started.elapsed(), inputs.bytes);
         Ok(OffloadRun {
-            output: ActionOutput {
-                value: None,
-                resources,
-            },
+            output: content_output(&outputs),
             outputs,
-            ran_on,
-            elapsed,
+            ran_on: RanOn::Worker(worker),
+            elapsed: started.elapsed(),
         })
+    }
+
+    /// The bytes of `digest`, an input bound or an output kept here.
+    ///
+    /// # Errors
+    ///
+    /// A diagnostic when the content can no longer be read as those bytes.
+    pub async fn content(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        self.content.read(digest).await
     }
 
     /// Run the transform here over the bound `inputs` and keep its outputs.
@@ -535,6 +634,17 @@ impl Offloader {
         hex::decode_to_slice(&package.package_id_hex, &mut digest)
             .map_err(|_| format!("{app} has a malformed package id"))?;
         Ok(digest)
+    }
+}
+
+/// The action output of `outputs`: each a content resource, in order.
+fn content_output(outputs: &[[u8; 32]]) -> ActionOutput {
+    ActionOutput {
+        value: None,
+        resources: outputs
+            .iter()
+            .filter_map(|digest| tilo_actions::content_resource(&hex::encode(digest)))
+            .collect(),
     }
 }
 
