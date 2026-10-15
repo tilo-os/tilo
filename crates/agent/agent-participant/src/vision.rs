@@ -38,8 +38,9 @@ pub const MOST_PICTURE_BYTES: usize = 1024 * 1024;
 /// The most pictures one planning turn's answers carry.
 pub const MOST_PICTURES_PER_TURN: usize = 2;
 
-/// The most pictures one plan is shown, its first turn's included.
-pub const MOST_PICTURES_PER_PLAN: usize = 4;
+/// The most pictures one plan is shown, its first turn's included: enough to
+/// look through a handful of scans to pick the right ones (about 1k tokens each).
+pub const MOST_PICTURES_PER_PLAN: usize = 6;
 
 /// The most bytes of a picture handed to the confined worker to shrink: a
 /// larger one is refused before it is read further.
@@ -659,9 +660,12 @@ pub(crate) mod tests {
         assert_eq!(eyes.attach(seen('4')).1.len(), 1);
         assert_eq!(eyes.attach(seen('5')).1.len(), 1);
         eyes.next_turn();
+        assert_eq!(eyes.attach(seen('a')).1.len(), 1);
+        assert_eq!(eyes.attach(seen('b')).1.len(), 1);
+        eyes.next_turn();
         let (text, shown) = eyes.attach(seen('6'));
-        assert!(shown.is_empty(), "four a plan");
-        assert!(text.contains("this plan has been shown its 4"), "{text}");
+        assert!(shown.is_empty(), "six a plan");
+        assert!(text.contains("this plan has been shown its 6"), "{text}");
         assert!(eyes.was_shown(&address('6')), "its address was still shown");
 
         let mut blind = Eyes::new(false);
