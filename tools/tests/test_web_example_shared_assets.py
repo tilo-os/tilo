@@ -56,7 +56,10 @@ else:
         p = root / 'target/debug/tilo-app'
         p.write_text('#!' + os.sys.executable + '\n' + cli)
         p.chmod(0o755)
-        return {**os.environ, 'PATH': str(root / 'bin') + ':' + os.environ['PATH'],
+        # The script finds tilo-app under CARGO_TARGET_DIR when it is set, which in CI
+        # is the node's build directory: the fixture's own target/ is the one to use.
+        env = {key: value for key, value in os.environ.items() if key != 'CARGO_TARGET_DIR'}
+        return {**env, 'PATH': str(root / 'bin') + ':' + os.environ['PATH'],
                 'FIXTURE_ROOT': str(root), 'FIXTURE_EXAMPLES': json.dumps({'result': {'examples': examples}})}, calls
 
     def test_builds_pinned_shared_assets_once_before_every_selected_example(self):

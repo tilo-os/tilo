@@ -9,6 +9,9 @@ inputs = ["rust-toolchain.toml", ".cargo/config.toml", "deny.toml"]
 
 # A check that needs a particular node names it in `requires`: `arch=x86_64`, `os=macos`, a
 # device such as `/dev/kvm`, or a node label such as `disk-100g`.
+# Checks whose result can't depend on the node's architecture (formatting, and lints and
+# policy scripts that only read the sources) say `arch=any`, so the arm64 nodes take them
+# too. Tests, clippy and builds don't: what they compile is the node's own.
 
 # check.yml's workflow environment. Warnings fail through the per-target flags, which
 # Cargo joins with .cargo/config.toml's target rustflags (RUSTFLAGS would replace them).
@@ -205,6 +208,7 @@ video-player = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 # lists it through Git, which t's copy of the tree has no .git for.
 [[check]]
 name = "policy"
+requires = ["arch=any"]
 run = "bash tools/ci/t-git-index.sh bash tools/policy/run.sh"
 inputs = ["**"]
 
@@ -220,6 +224,7 @@ inputs = ["**"]
 
 [[check]]
 name = "fmt"
+requires = ["arch=any"]
 run = "cargo fmt --check"
 inputs = ["**/*.rs", "rustfmt.toml", "Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
 
@@ -243,12 +248,14 @@ inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".config/hakari.toml", "c
 
 [[check]]
 name = "deny"
+requires = ["arch=any"]
 run = "cargo deny --workspace check --hide-inclusion-graph"
 inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
 
 # The whole-tree form of lint.yml's changed-crate scan.
 [[check]]
 name = "machete"
+requires = ["arch=any"]
 run = "bash tools/ci/t-git-index.sh bash tools/ci/check-unused-dependencies.sh"
 inputs = ["**/Cargo.toml", "**/*.rs", ".gitignore", "tools/ci/check-unused-dependencies.sh", "tools/ci/t-git-index.sh"]
 
@@ -287,6 +294,7 @@ env = { CARGO_INCREMENTAL = "0", CARGO_PROFILE_DEV_DEBUG = "0" }
 
 [[check]]
 name = "workspace-layout"
+requires = ["arch=any"]
 run = """
 bash tools/ci/t-git-index.sh ./scripts/check-workspace-complete.sh
 bash tools/ci/t-git-index.sh python3 tools/policy/check_repository_layout.py
@@ -739,6 +747,7 @@ inputs = ["tools/ci/suites.py", "tools/ci/suites.toml", "tools/test-assets.py", 
 
 [[check]]
 name = "sdk-policy"
+requires = ["arch=any"]
 run = """
 python3 tools/policy/check_app_portability.py
 python3 tools/policy/check_app_capabilities.py
@@ -751,6 +760,7 @@ inputs = ["apps/**", "crates/**", "examples/**", "Cargo.toml", "Cargo.lock", "to
 # the commit this change branched from, so it reads Git.
 [[check]]
 name = "sdk-web-budget"
+requires = ["arch=any"]
 run = "python3 tools/web/wasm_size_ratchet.py check-budget --base main"
 git = true
 inputs = ["tools/web/wasm_size_ratchet.py", "tools/web/wasm-size-budget/**", "tools/web/wasm-size-budget.toml"]
