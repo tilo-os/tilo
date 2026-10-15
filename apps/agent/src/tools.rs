@@ -11,12 +11,14 @@
 //! | [`LIST_OPERATIONS`] | what can be done — to one resource, to a kind of resource in any application, in one application, or anywhere |
 //! | [`DESCRIBE_OPERATION`] | what one operation does, what it takes, the application's own example of it, and what the resource says about itself |
 //! | [`INVOKE`] | perform one published operation now, and see what it changed |
+//! | [`READ_RESULT`](crate::pages::READ_RESULT) | read on in a result too long for one observation |
 //! | [`PLAN`] | the answer: the steps to perform in order (plan mode), or the reply that finishes the task (loop mode) |
 //!
 //! Two tool sets are built from these. The *plan* set ([`definitions`]) is
 //! discovery plus a `plan` naming every step; the caller dispatches the steps
 //! afterwards. The *loop* set ([`loop_definitions`]) is discovery plus
-//! [`INVOKE`] plus a `plan` that only carries the reply: the agent
+//! [`INVOKE`], paging through long results, and a `plan` that only carries
+//! the reply: the agent
 //! discovers, invokes and observes step by step, the same way a person uses
 //! the palette, and a step that changes its view (a selection, a find) can
 //! make later operations available.
@@ -368,11 +370,32 @@ pub struct Answer {
 }
 
 /// The `plan` tool's optional `reply` property, as the model is told it.
-pub const PLAN_REPLY_DESCRIPTION: &str =
-    "One or two sentences to the person who asked, written as you would answer them in chat.";
+pub const PLAN_REPLY_DESCRIPTION: &str = "Your answer to the person who asked, written as you \
+     would answer them in chat: one or two sentences after doing something, the whole answer \
+     when they asked a question (an explanation, a translation, a summary for them).";
 
-/// The most characters of a plan's `reply` that are kept.
-pub const MAX_PLAN_REPLY_CHARS: usize = 1000;
+/// The most characters of a plan's `reply` that are kept: room for a
+/// paragraph-length answer to a question about a selection.
+pub const MAX_PLAN_REPLY_CHARS: usize = 4000;
+
+/// The most bytes of a reply, under the task outcome's retained-text bound
+/// (`tilo_desktop_model::MAX_WORKSPACE_TASK_SUMMARY_BYTES`) with room to
+/// spare, so a reply in a script that takes several bytes a character is
+/// never refused for its length.
+pub const MAX_REPLY_BYTES: usize = 6 * 1024;
+
+/// `reply` as it is kept: trimmed, at most [`MAX_PLAN_REPLY_CHARS`]
+/// characters and [`MAX_REPLY_BYTES`] bytes, cut at a character boundary.
+pub fn bound_reply(reply: &str) -> String {
+    let mut kept = String::new();
+    for character in reply.trim().chars().take(MAX_PLAN_REPLY_CHARS) {
+        if kept.len() + character.len_utf8() > MAX_REPLY_BYTES {
+            break;
+        }
+        kept.push(character);
+    }
+    kept
+}
 
 // ---------------------------------------------------------------------------
 // The definitions
@@ -509,14 +532,17 @@ fn plan_definition(most_steps: usize) -> Value {
                     }
                 },
                 "why": { "type": "string", "description": "One short clause." },
+                // A plain string, not a nullable union: every provider's
+                // schema dialect accepts it (Gemini's refuses `anyOf` with
+                // `null` in places), and an empty string reads as none.
                 "then": {
-                    "anyOf": [{ "type": "string" }, { "type": "null" }],
+                    "type": "string",
                     "description":
                         "What the request still asks for that nothing you were shown can \
                          express yet, in the request's own words — the rest of the \
                          sentence, after the steps you named. Use it when opening an \
                          application is what would put the needed operation on the list, \
-                         since that operation cannot be named until it is open. Null when \
+                         since that operation cannot be named until it is open. Empty when \
                          the steps you named already do all of it."
                 }
             },
@@ -723,6 +749,7 @@ pub fn loop_definitions() -> Value {
         list_operations_definition(),
         describe_operation_definition(),
         invoke_definition(),
+        crate::pages::read_result_definition(),
         finish_definition(),
     ])
 }
@@ -743,7 +770,7 @@ pub fn read_finish(input: &Value) -> Finish {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|reply| !reply.is_empty())
-            .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect()),
+            .map(bound_reply),
         done: input.get("done").and_then(Value::as_bool).unwrap_or(true),
     }
 }
@@ -788,7 +815,7 @@ pub fn read_invoke(input: &Value, revealed: &Revealed) -> Result<Invocation, Str
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|reply| !reply.is_empty())
-            .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect()),
+            .map(bound_reply),
     })
 }
 
@@ -1014,11 +1041,15 @@ pub struct InvokeReport {
     pub note: Option<String>,
 }
 
-/// The most characters of a returned value shown to the model.
+/// The most characters of a changed view shown to the model. A returned
+/// value is never cut: a long one is shown a page at a time
+/// ([`crate::pages`]).
 pub const MOST_RESULT_CHARS: usize = 2_000;
 
-/// A compact JSON observation for one [`INVOKE`].
-pub fn invoke_result(report: &InvokeReport) -> String {
+/// A compact JSON observation for one [`INVOKE`]. A value too long for one
+/// observation is kept in `pages`, its first page shown and `continues`
+/// saying how to read on.
+pub fn invoke_result(report: &InvokeReport, pages: &mut crate::pages::Pages) -> String {
     let bounded = |value: &Value| {
         let text = value.to_string();
         if text.chars().count() <= MOST_RESULT_CHARS {
@@ -1051,7 +1082,11 @@ pub fn invoke_result(report: &InvokeReport) -> String {
         out.insert("error".into(), Value::String(error.clone()));
     }
     if let Some(value) = &report.value {
-        out.insert("value".into(), bounded(value));
+        let (page, continues) = pages.first_page(value);
+        out.insert("value".into(), page);
+        if let Some(continues) = continues {
+            out.insert("continues".into(), continues);
+        }
     }
     if !report.resources.is_empty() {
         out.insert("resources".into(), json!(report.resources));
@@ -1493,7 +1528,7 @@ pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Resul
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|reply| !reply.is_empty())
-            .map(|reply| reply.chars().take(MAX_PLAN_REPLY_CHARS).collect()),
+            .map(bound_reply),
     })
 }
 
@@ -2144,6 +2179,10 @@ mod tests {
         )
         .expect("read");
         assert_eq!(bounded.reply.unwrap().chars().count(), MAX_PLAN_REPLY_CHARS);
+        let wide = "語".repeat(MAX_PLAN_REPLY_CHARS);
+        let kept = bound_reply(&wide);
+        assert!(kept.len() <= MAX_REPLY_BYTES, "{}", kept.len());
+        assert_eq!(kept.chars().count(), MAX_REPLY_BYTES / "語".len());
     }
 
     /// The plan tool set names no ids, so it is the same bytes on every turn
@@ -2269,6 +2308,7 @@ mod tests {
                 LIST_OPERATIONS,
                 DESCRIBE_OPERATION,
                 INVOKE,
+                crate::pages::READ_RESULT,
                 PLAN
             ]
         );
@@ -2315,26 +2355,50 @@ mod tests {
         );
     }
 
-    /// An observation is compact JSON and bounded.
+    /// An observation is compact JSON and bounded; a long value is not cut
+    /// but continues on a later page.
     #[test]
     fn an_invoke_observation_is_compact_and_bounded() {
+        let mut pages = crate::pages::Pages::new();
+        let long = "x".repeat(crate::pages::PAGE_CHARS * 2);
         let report = InvokeReport {
             succeeded: true,
-            value: Some(Value::String("x".repeat(MOST_RESULT_CHARS * 2))),
+            value: Some(Value::String(long.clone())),
             changed_view: Some(json!({"caret": {"block": "b1", "offset": 3}})),
             newly_available: vec!["a#b — B".into()],
             ..InvokeReport::default()
         };
-        let text = invoke_result(&report);
+        let text = invoke_result(&report, &mut pages);
         let value: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["result"], "succeeded");
         assert_eq!(value["changed_view"]["caret"]["offset"], 3);
         assert_eq!(value["newly_available"][0], "a#b — B");
-        assert!(text.len() < MOST_RESULT_CHARS + 400, "{}", text.len());
-        let skipped = invoke_result(&InvokeReport {
-            skipped: Some("an earlier invoke failed".into()),
-            ..InvokeReport::default()
-        });
+        assert!(
+            text.len() < crate::pages::PAGE_CHARS + 600,
+            "{}",
+            text.len()
+        );
+        let from = value["continues"]["from"].as_u64().unwrap();
+        let rest: Value = serde_json::from_str(
+            &pages.read(&json!({"result": value["continues"]["result"], "from": from})),
+        )
+        .unwrap();
+        assert_eq!(rest["next"], Value::Null);
+        assert_eq!(
+            format!(
+                "{}{}",
+                value["value"].as_str().unwrap(),
+                rest["text"].as_str().unwrap()
+            ),
+            long
+        );
+        let skipped = invoke_result(
+            &InvokeReport {
+                skipped: Some("an earlier invoke failed".into()),
+                ..InvokeReport::default()
+            },
+            &mut pages,
+        );
         assert_eq!(
             serde_json::from_str::<Value>(&skipped).unwrap()["result"],
             "not run"
@@ -2374,5 +2438,51 @@ mod tests {
             undeclared.is_empty(),
             "implicitly open objects: {undeclared:?}"
         );
+    }
+
+    /// Every tool schema stays inside the JSON Schema subset every provider
+    /// dialect the agent speaks accepts as function parameters, Gemini's
+    /// included: plain types, no unions, no `null` type, no references.
+    #[test]
+    fn tool_schemas_use_only_keywords_every_provider_accepts() {
+        const ACCEPTED: &[&str] = &[
+            "type",
+            "description",
+            "properties",
+            "required",
+            "items",
+            "enum",
+            "minimum",
+            "maximum",
+            "minItems",
+            "maxItems",
+            "additionalProperties",
+        ];
+        fn check(schema: &Value, at: &str) {
+            let Some(object) = schema.as_object() else {
+                panic!("{at}: a schema is an object");
+            };
+            for (key, value) in object {
+                assert!(ACCEPTED.contains(&key.as_str()), "{at}: `{key}`");
+                match key.as_str() {
+                    "type" => assert!(
+                        value.as_str().is_some_and(|ty| ty != "null"),
+                        "{at}: one non-null type"
+                    ),
+                    "properties" => {
+                        for (name, property) in value.as_object().unwrap() {
+                            check(property, &format!("{at}.{name}"));
+                        }
+                    }
+                    "items" => check(value, &format!("{at}[]")),
+                    _ => {}
+                }
+            }
+        }
+        for set in [definitions(8), loop_definitions()] {
+            for tool in set.as_array().unwrap() {
+                check(&tool["input_schema"], tool["name"].as_str().unwrap());
+            }
+        }
     }
 }

@@ -22,6 +22,10 @@ mod native_task;
 mod outstanding;
 mod selection_prompt;
 
+/// The most characters the Task Center carrier of a non-workspace task
+/// takes in one update.
+const LEGACY_TASK_MESSAGE_CHARS: usize = 280;
+
 /// How long a task waits for the broker's pushed action catalogue.
 const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
 const TASK_ACTION_WAIT: Duration = Duration::from_secs(30);
@@ -503,9 +507,12 @@ impl Session {
                         }
                     };
                     let message = match finish.reply {
-                        // The model's own reply is the durable chat answer. The
-                        // Task Center carrier bounds it to 280 characters.
-                        Some(reply) => reply.chars().take(280).collect(),
+                        // The model's own reply is the durable chat answer. A
+                        // workspace task keeps the whole of it (an answer to a
+                        // question is the task's result); the older Task Center
+                        // carrier bounds it to 280 characters.
+                        Some(reply) if self.native_task.is_some() => reply,
+                        Some(reply) => reply.chars().take(LEGACY_TASK_MESSAGE_CHARS).collect(),
                         None => format!("Completed {completed} broker-approved action(s)"),
                     };
                     self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
