@@ -791,10 +791,14 @@ pub trait TransformModel: Send + Sync {
     ) -> Result<String, String>;
 }
 
-/// The Settings-selected provider, reached only through the model gateway.
-/// The selection is read per call so a provider change applies to the next
-/// transform without restarting the agent.
-pub struct GatewayModel;
+/// The provider the agent chose when it started (a managed agent's arrives
+/// with its launch), else the Settings-selected one, reached only through
+/// the model gateway. A sandboxed agent cannot read Settings, so the one it
+/// started with is asked first.
+#[derive(Default)]
+pub struct GatewayModel {
+    pub launched: Option<crate::providers::ProviderSelection>,
+}
 
 impl TransformModel for GatewayModel {
     fn answer(
@@ -804,7 +808,10 @@ impl TransformModel for GatewayModel {
         max_output_tokens: u32,
         timeout: Duration,
     ) -> Result<String, String> {
-        let selection = crate::providers::default_selection()
+        let selection = self
+            .launched
+            .clone()
+            .or_else(crate::providers::default_selection)
             .ok_or_else(|| "no model provider is configured in Settings".to_string())?;
         if !tilo_model_gateway::available() {
             return Err("the model gateway is not available to the agent".into());
@@ -1005,10 +1012,13 @@ impl TransformService {
             .spawn(move || {
                 let update = match run(&call, model.as_ref()) {
                     Ok(output) => InvocationUpdate::Succeeded { invocation, output },
-                    Err(error) => InvocationUpdate::Failed {
-                        invocation,
-                        error: *error,
-                    },
+                    Err(error) => {
+                        tracing::info!(code = %error.code, reason = %error.message, "a transform produced no value");
+                        InvocationUpdate::Failed {
+                            invocation,
+                            error: *error,
+                        }
+                    }
                 };
                 let _ = finished.send((id, update));
             });

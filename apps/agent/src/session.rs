@@ -359,7 +359,9 @@ impl Session {
     /// progress through the collaboration link fails.
     pub fn run_task_runs(&mut self) -> Result<()> {
         let mut transforms = crate::transform::TransformService::new(
-            std::sync::Arc::new(crate::transform::GatewayModel),
+            std::sync::Arc::new(crate::transform::GatewayModel {
+                launched: self.chooser.selection().cloned(),
+            }),
             self.cfg.content.clone(),
         );
         // The transforms are published under the agent's own route; a
