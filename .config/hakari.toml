@@ -57,6 +57,12 @@ third-party = [
     { name = "wayland-backend", path = "vendor/wayland-backend" },
     { name = "wayland-client" },
     { name = "wayland-sys" },
+    # Their `client` feature reaches wayland-client and wayland-sys, so in the
+    # hack's unconditional section they put the Linux client library into
+    # every Windows build of the imager.
+    { name = "wayland-protocols" },
+    { name = "wayland-protocols-misc" },
+    { name = "wayland-protocols-wlr" },
     { name = "gstreamer" },
     { name = "gstreamer-app" },
     { name = "gstreamer-base" },
