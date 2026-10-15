@@ -5901,6 +5901,120 @@ mod injected_startup_tests {
         assert_eq!(listings.observations(), vec![(child, false)]);
     }
 
+    /// The real hosted pump reads Files' `next_wake_deadline` to decide whether
+    /// to update/sync. A slow broker must not make that repeat on every pass.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unanswered_nearby_snapshot_does_not_repeat_hosted_files_work() {
+        use tilo_clock::testing::with_monotonic_time;
+        use ui::collaboration::{
+            CollabEvent, CollabRequest, NearbyTransferCommand, NearbyTransferReply,
+            NearbyTransferSnapshot,
+        };
+
+        let parent = tempfile::tempdir().unwrap();
+        let child = owned_child(parent.path());
+        let start = ui::time::now();
+        let scope = ui::wake::WakeScope::new();
+        let (mut app, counts, request_id) = with_monotonic_time(start, || {
+            let entry = scope.enter();
+            let mut widget = FileExplorerWidget::with_startup_inputs_and_services(
+                startup(&child),
+                absent_services(),
+            );
+            widget.refresh_metadata_if_due(start);
+            assert_eq!(
+                widget.next_metadata_refresh, None,
+                "the fixture directory is fully watched"
+            );
+            let counts = widget.idle_work.clone();
+            let request_id = widget
+                .take_collab_requests()
+                .into_iter()
+                .find_map(|request| match request {
+                    CollabRequest::NearbyTransferCommand {
+                        request_id,
+                        command: NearbyTransferCommand::Snapshot,
+                        ..
+                    } => Some(request_id),
+                    _ => None,
+                })
+                .expect("Files must actually request the unanswered snapshot");
+            let state = ui::State::new();
+            scope.handle().wake();
+            drop(entry);
+            let mut app = ui::App::from_scoped_parts_local(scope, state, Box::new(widget));
+            app.init_layout();
+            // Settle initial composition/publication at a fixed instant. This
+            // bound is an event count, never a wall-time or CPU budget.
+            for _ in 0..8 {
+                app.controlled_hosted_model_for_test();
+            }
+            (app, counts, request_id)
+        });
+        assert_eq!(
+            counts.get(),
+            [1, 1, 0, 0, 1],
+            "the worker must update and sync Files without painting"
+        );
+        // Deliver the remaining startup deadline before Nearby Send's
+        // two-second poll interval expires.
+        with_monotonic_time(start + Duration::from_secs(1), || {
+            for _ in 0..8 {
+                app.controlled_hosted_model_for_test();
+            }
+        });
+        let settled = counts.get();
+        assert_eq!(settled, [2, 2, 0, 0, 1]);
+        for second in 2..=33 {
+            with_monotonic_time(start + Duration::from_secs(second), || {
+                app.controlled_hosted_model_for_test();
+            });
+        }
+        assert_eq!(
+            counts.get(),
+            settled,
+            "an unanswered snapshot must add zero Files updates, syncs, layouts and draws"
+        );
+
+        // A real unchanged reply permits the next discovery request without
+        // requiring layout or draw. That request may remain unanswered too.
+        let replied = start + Duration::from_secs(34);
+        with_monotonic_time(replied, || {
+            app.apply_collab_event_for_test(CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(NearbyTransferReply::Snapshot {
+                    snapshot: NearbyTransferSnapshot::default(),
+                }),
+            });
+            app.controlled_hosted_model_for_test();
+        });
+        assert_eq!(
+            counts.get()[4],
+            settled[4] + 1,
+            "the reply must unblock the next real snapshot request"
+        );
+        let answered = counts.get();
+        for second in 35..=65 {
+            with_monotonic_time(start + Duration::from_secs(second), || {
+                app.controlled_hosted_model_for_test();
+            });
+        }
+        assert_eq!(
+            counts.get(),
+            answered,
+            "discovery must park again after the reply"
+        );
+        assert_eq!(
+            answered[2..],
+            [0, 0, 2],
+            "both discovery requests ran without layout or drawing"
+        );
+        println!(
+            "FILES-IDLE-WORK unanswered_pumps=32 updates=0 syncs=0 layouts=0 draws=0 snapshot_requests=0 reply_resumed=true followup_pumps=31 updates=0 syncs=0 layouts=0 draws=0 snapshot_requests=0"
+        );
+    }
+
     #[test]
     fn deferred_document_open_reports_the_shell_refusal_on_the_next_sync() {
         let parent = tempfile::tempdir().unwrap();

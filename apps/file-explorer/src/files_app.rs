@@ -512,6 +512,9 @@ enum FileServices {
     reason = "each boolean is independent named UI state for loading, clipboard, rename, layout, or visibility"
 )]
 pub struct FileExplorerWidget {
+    /// Actual update, sync, layout, draw and outgoing snapshot counts.
+    #[cfg(test)]
+    idle_work: Rc<Cell<[usize; 5]>>,
     framework_history: ui::history_mode::checked_files::FileHistorySource,
     framework_history_binding: Option<(PathBuf, fs_protocol::FileRecordId)>,
     services: FileServices,
@@ -1494,6 +1497,8 @@ impl FileExplorerWidget {
             None => state_retry.with_enabled(false),
         };
         Self {
+            #[cfg(test)]
+            idle_work: Rc::new(Cell::new([0; 5])),
             services,
             startup_accounts,
             current_path: cwd,
@@ -8784,6 +8789,22 @@ impl Collaborative for FileExplorerWidget {
         self.nearby_send.poll_if_due(now);
         self.shortcut_menu.poll_if_due(now);
         let mut requests = self.nearby_send.take_requests();
+        #[cfg(test)]
+        self.idle_work.update(|mut counts| {
+            counts[4] += requests
+                .iter()
+                .filter(|request| {
+                    matches!(
+                        request,
+                        ui::collaboration::CollabRequest::NearbyTransferCommand {
+                            command: ui::collaboration::NearbyTransferCommand::Snapshot,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            counts
+        });
         requests.extend(self.shortcut_menu.take_requests());
         requests.extend(self.local_clipboard.take_request());
         requests
@@ -8903,12 +8924,22 @@ impl Widget for FileExplorerWidget {
     }
 
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        #[cfg(test)]
+        self.idle_work.update(|mut counts| {
+            counts[0] += 1;
+            counts
+        });
         // Service calls finishing on the app runtime wake the event loop.
         let received = self.poll_received_share();
         self.poll_share_result() | received
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        #[cfg(test)]
+        self.idle_work.update(|mut counts| {
+            counts[1] += 1;
+            counts
+        });
         self.adopt_preferences();
         // A control a caller invoked through the door (a toolbar button)
         // queued its command; apply it before this frame is laid out.
@@ -9019,6 +9050,11 @@ impl Widget for FileExplorerWidget {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
+        #[cfg(test)]
+        self.idle_work.update(|mut counts| {
+            counts[2] += 1;
+            counts
+        });
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let base = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node)
@@ -9037,6 +9073,11 @@ impl Widget for FileExplorerWidget {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
+        #[cfg(test)]
+        self.idle_work.update(|mut counts| {
+            counts[3] += 1;
+            counts
+        });
         self.poll_share_result();
         self.poll_history_result();
         self.paint_background(theme);
