@@ -953,7 +953,10 @@ macro_rules! __table_functions {
 /// Implements [`Model`] (and [`Settable`]) for serde types stored whole as
 /// one JSON string, last writer wins: values with no meaningful concurrent
 /// merge (a tone curve, a keyframe track). The types need `Serialize`,
-/// `Deserialize` and `Default` (the value of an absent slot).
+/// `Deserialize`, `Default` (the value of an absent slot) and `PartialEq`
+/// holding only between values of equal JSON forms, as a derived one does:
+/// the edits between two copies compare each value in memory, and serialise
+/// only the ones that differ.
 #[macro_export]
 macro_rules! json_model {
     ($($ty:ty),* $(,)?) => {$(
@@ -964,7 +967,7 @@ macro_rules! json_model {
             const NULLABLE: bool = true;
             // Run by one set of functions for every value stored as JSON text.
             const TABLE: &'static $crate::table::ModelTable =
-                &$crate::table::ModelTable::of_json(&$crate::table::JsonOf::<$ty>::PLAIN);
+                &$crate::table::ModelTable::of_json(&$crate::table::JsonOf::<$ty>::COMPARED);
             $crate::__table_functions!();
             fn missing() -> ::core::result::Result<Self, $crate::ModelError> {
                 ::core::result::Result::Ok(<Self as ::core::default::Default>::default())

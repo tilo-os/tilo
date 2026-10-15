@@ -843,6 +843,12 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         S::store(self.items(), doc, slot)
     }
 
+    /// Items two clones still share are the same items, and store as they
+    /// are: saving a record whose items no change touched visits none.
+    fn stores_as(&self, before: &Self) -> bool {
+        self.stock.same(&before.stock)
+    }
+
     #[inline(never)]
     fn refresh(
         &mut self,

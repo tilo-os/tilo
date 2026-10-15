@@ -233,6 +233,41 @@ impl<V> ChunkMap<V> {
         self.len = self.chunks.iter().map(|chunk| chunk.get().len()).sum();
     }
 
+    /// The keys whose entries may differ between `self` and `before`, in
+    /// key order, once each: the keys of the chunks the two do not share. A
+    /// chunk both hold ([`Shared::same`]) holds the same entries in both, so
+    /// a map changed an entry at a time since it was cloned differs only in
+    /// the chunks those changes copied, however many entries it holds.
+    pub(crate) fn differing_keys<'a>(&'a self, before: &'a Self) -> Vec<&'a str> {
+        let mut keys: Vec<&'a str> = Vec::new();
+        let mut mine = self.chunks.iter().peekable();
+        let mut theirs = before.chunks.iter().peekable();
+        loop {
+            // A shared chunk sits on both sides with the same keys, and every
+            // chunk before it on either side ends below its first key: the
+            // chunk whose keys end first is shared with no later chunk of the
+            // other side, so its keys differ, and the walk meets both copies
+            // of a shared chunk together.
+            let unshared = match (mine.peek(), theirs.peek()) {
+                (None, None) => break,
+                (Some(held), Some(was)) if held.same(was) => {
+                    mine.next();
+                    theirs.next();
+                    continue;
+                }
+                (Some(held), Some(was)) if last_key(held) <= last_key(was) => mine.next(),
+                (Some(_) | None, Some(_)) => theirs.next(),
+                (Some(_), None) => mine.next(),
+            };
+            if let Some(chunk) = unshared {
+                keys.extend(chunk.get().iter().map(|(key, _)| key.as_str()));
+            }
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        keys
+    }
+
     /// Whether `self` and `other` hold the chunk with `key` in common, not
     /// an equal copy of it.
     #[cfg(test)]
@@ -245,6 +280,11 @@ impl<V> ChunkMap<V> {
             _ => false,
         }
     }
+}
+
+/// The last key of `chunk`, the one its keys end with.
+fn last_key<V>(chunk: &Shared<Chunk<V>>) -> Option<&str> {
+    chunk.get().last().map(|(key, _)| key.as_str())
 }
 
 /// The values of a [`ChunkMap`], in key order.

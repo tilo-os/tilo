@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::app::{EMPTY_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use crate::model::{
     ClipId, EffectKind, MAX_GAIN_DB, MIN_GAIN_DB, MediaItem, MediaKind, Project, TextSource, Track,
-    TrackKind,
+    TrackKind, key,
 };
 use crate::param::Param;
 
@@ -167,11 +167,7 @@ impl Project {
     #[action(item = tracks)]
     pub fn reset_mix(&mut self, track: &Id) -> Result<(), Refusal> {
         let id = uuid(track)?;
-        let track = self
-            .tracks
-            .iter_mut()
-            .find(|t| t.id == id)
-            .ok_or("no such track")?;
+        let track = self.tracks.find_mut(&key(id)).ok_or("no such track")?;
         track.gain_db = 0.0;
         track.pan = 0.0;
         Ok(())
@@ -200,7 +196,7 @@ impl Project {
             return Err(Refusal::new("nothing to trim"));
         }
         for next in trimmed {
-            if let Some(track) = self.tracks.iter_mut().find(|t| t.id == next.id) {
+            if let Some(track) = self.tracks.find_mut(&key(next.id)) {
                 *track = next;
             }
         }
@@ -442,8 +438,7 @@ impl Project {
             .clip_mut(id)
             .ok_or("no such clip")?
             .effects
-            .iter_mut()
-            .find(|e| e.id == effect)
+            .find_mut(&key(effect))
             .ok_or("no such effect on the clip")?;
         target.amount = amount;
         Ok(())
