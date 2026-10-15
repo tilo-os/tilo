@@ -25,6 +25,8 @@
 //!     and checks (`read-timeline`, `export-timeline-content`).
 //!   * [`placement`] — building a cut by name: room content into the bin,
 //!     a source onto a track, a clip moved.
+//!   * [`revision`] — titles and clip edits by name on the project itself:
+//!     add or restyle a title, set a clip's fades and levels, remove one.
 //!   * [`shot`]    — the fingerprint that proves two runs of a `--shots`
 //!     scenario describe one picture.
 //!   * [`presence`] — who else is in the edit: the presence keys for the
@@ -75,6 +77,7 @@ pub mod project_file;
 pub mod render_helper;
 mod render_jobs;
 pub mod resource;
+pub mod revision;
 pub mod search;
 pub mod shot;
 pub mod thumbnail;
