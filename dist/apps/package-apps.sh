@@ -30,6 +30,15 @@ max_tapp_bytes=${MAX_TAPP_BYTES:-$policy_max_tapp_bytes}
 (( max_tapp_bytes <= policy_max_tapp_bytes )) \
     || { printf 'MAX_TAPP_BYTES cannot exceed the %s-byte app policy\n' "$policy_max_tapp_bytes" >&2; exit 1; }
 target_dir=$(realpath -m "${CARGO_TARGET_DIR:-$repo_root/target}")
+# A directory with what an earlier compile-only run built (release/ with tilo-app-package and
+# tilo-runtime-bundle, thin-app/ with the apps, the runtime and its engines): package and sign
+# those without compiling, so the signing step runs no build script or compiler.
+prebuilt=${TILO_APP_PREBUILT:-}
+if [[ -n $prebuilt ]]; then
+    [[ ${TILO_APP_COMPILE_ONLY:-} != 1 ]] \
+        || { printf 'TILO_APP_PREBUILT and TILO_APP_COMPILE_ONLY exclude each other\n' >&2; exit 2; }
+    target_dir=$(realpath -e "$prebuilt")
+fi
 release_dir=$target_dir/release
 thin_app_dir=$target_dir/thin-app
 
@@ -69,6 +78,7 @@ runtime_plan="$out/runtime-plan.json"
 python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_plan"
 mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
 features=$(jq -r '.features | join(",")' "$runtime_plan")
+if [[ -z $prebuilt ]]; then
 (cd "$repo_root" && cargo build --release --locked -p tilo-app-package-cli -p runtime-bundle)
 # The Rust dylib ABI includes dependency crate hashes and Cargo unifies
 # features across the selected graph.  Always resolve the shared runtime against
@@ -77,6 +87,7 @@ features=$(jq -r '.features | join(",")' "$runtime_plan")
 # selection and therefore safe to combine with unchanged tapps.
 INCLUDE_PACKAGES="${runtime_packages[*]}" BUILD_PACKAGES="${packages[*]}" APP_FEATURES="$features" \
     "$repo_root/os/scripts/build-thin-apps.sh"
+fi
 mapfile -t app_binaries < <(
     jq -r --arg root "$thin_app_dir" \
         '.catalog[] | $root + "/" + .binary' "$plan"

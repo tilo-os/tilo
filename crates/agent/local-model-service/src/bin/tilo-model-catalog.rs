@@ -7,11 +7,6 @@
 //! complete catalog. Only the derived Ed25519 public key is written to trust
 //! output; the supplied release key is read once and never copied.
 
-#![allow(
-    clippy::missing_errors_doc,
-    reason = "the release tool reports one contextual string error contract"
-)]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read as _;

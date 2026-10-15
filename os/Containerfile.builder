@@ -136,8 +136,9 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 # package-windows.sh) and the x86_64 Windows test executables. Inno Setup is
 # installed into a throwaway Wine prefix and only its program directory kept,
 # at /opt/inno-setup. jsign signs Authenticode with a key that stays in AWS
-# KMS; osslsigncode verifies the signatures it makes without an OpenSSL CLI.
-# PyYAML and jsonschema check WinGet manifests against its published schemas.
+# KMS (no OpenSSL here: os/tests/no_openssl_runtime.sh keeps it out of every
+# image; the JDK checks the signing certificate). PyYAML and
+# jsonschema check the WinGet manifests against WinGet's published schemas.
 # wine-core alone loops forever creating a prefix: wine.inf copies files that
 # wine-common (winmd metadata) and wine-cms (the sRGB profile) ship.
 ARG INNO_SETUP_VERSION=6.7.3
@@ -147,7 +148,7 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     --mount=type=bind,source=tools/ci/windows/wine-prefix.sh,target=/tmp/wine-prefix.sh,ro \
     if [ "$(uname -m)" = x86_64 ]; then \
       dnf install -y --setopt=install_weak_deps=False \
-        wine-core wine-common wine-cms java-25-openjdk-headless osslsigncode \
+        wine-core wine-common wine-cms java-25-openjdk-headless \
         python3-pyyaml python3-jsonschema \
       && dnf clean all && rm -rf /var/cache/dnf \
       && for archive in "innosetup-${INNO_SETUP_VERSION}.exe" "jsign-${JSIGN_VERSION}.jar"; do \
@@ -166,7 +167,7 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       && install -D -m 0644 "/tilo-assets/jsign-${JSIGN_VERSION}.jar" /usr/local/share/jsign/jsign.jar \
       && printf '#!/bin/sh\nexec java -jar /usr/local/share/jsign/jsign.jar "$@"\n' > /usr/local/bin/jsign \
       && chmod 0755 /usr/local/bin/jsign \
-      && jsign --help >/dev/null && osslsigncode --version; \
+      && jsign --help >/dev/null; \
     fi
 
 # Match the workspace's own check so a stale image fails loudly rather than

@@ -641,12 +641,6 @@ fn apply_ownership_cancellation(state: &ChromeState) -> Result<(), ActionError> 
 /// pre-checks. One lock scope reads and destructures the workspace
 /// (`WorkspaceId` and `RoomId` are `Copy`; `actor` is cloned out), so the
 /// tree's read guard is already gone before the caller does anything else.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the read guard's last use is the tuple that ends the block it's scoped to; \
-              there is nothing after it to hoist the drop past without cloning the \
-              workspace out for no real gain"
-)]
 /// Let the identity `principal` govern `workspace_id` as fully as `actor`:
 /// a member of the room, granted everything in it.
 fn delegate_room_to_identity(

@@ -1944,7 +1944,6 @@ mod tests {
 
     #[allow(
         clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
         reason = "fixed offsets construct a bounded synthetic PE fixture"
     )]
     fn minimal_efi_image() -> Vec<u8> {
@@ -2034,7 +2033,6 @@ mod tests {
     /// encoding habits (or a forger holding the key) would.
     #[allow(
         clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
         reason = "offsets come from locating the envelope's own fields"
     )]
     fn resign_attributes(
@@ -2095,11 +2093,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
-        reason = "offsets come from locating the envelope's own fields"
-    )]
     fn efi_verification_checks_every_signed_field() {
         let signer = generate_secure_boot_certificate("Tilo EFI signer").expect("signer");
         let image = minimal_efi_image();

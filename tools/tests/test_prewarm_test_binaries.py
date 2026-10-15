@@ -159,22 +159,17 @@ class PrewarmTests(unittest.TestCase):
             artifacts.write_text("not JSON\n")
             self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
 
-    def test_nextest_workflow_owns_discovery_and_keeps_full_tests_and_doctests(self):
-        source = (ROOT / ".forgejo/workflows/dev-apps-macos.yml").read_text()
-        apps = source.split("  apps:\n", 1)[1]
+    def test_nextest_check_owns_discovery_and_keeps_full_tests_and_doctests(self):
+        import tomllib
+        checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+        apps = checks["apps-macos"]["run"]
         self.assertNotIn("prewarm_test_binaries.py", apps)
         self.assertNotIn("--no-run", apps)
-        self.assertEqual(apps.count(
-            "run: cargo nextest run --locked --profile ci --no-fail-fast $(python3 tools/ci/macos_apps.py)"
-        ), 1)
-        self.assertEqual(apps.count(
-            "run: cargo test --locked --no-fail-fast --doc $(python3 tools/ci/macos_apps.py)"
-        ), 1)
-        self.assertIn("timeout-minutes: 180", apps)
-        self.assertIn("needs: sdk", apps)
-        doctests = apps.split("- name: Doctests of every macOS app", 1)[1]
-        self.assertIn("if: ${{ !cancelled() }}", doctests)
-        self.assertLess(apps.index("Test every macOS app"), apps.index("Doctests of every macOS app"))
+        nextest = "cargo nextest run --locked --profile ci --no-fail-fast $packages || status=$?"
+        doctests = "cargo test --locked --no-fail-fast --doc $packages || status=$?"
+        self.assertEqual(apps.count(nextest), 1)
+        self.assertEqual(apps.count(doctests), 1)
+        self.assertLess(apps.index(nextest), apps.index(doctests))
 
 
 if __name__ == "__main__":

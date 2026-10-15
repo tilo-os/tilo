@@ -1665,7 +1665,6 @@ mod native {
 
 #[cfg(test)]
 #[allow(
-    clippy::arithmetic_side_effects,
     clippy::cast_precision_loss,
     reason = "fixture arithmetic on literal times, frame counts and ramps"
 )]

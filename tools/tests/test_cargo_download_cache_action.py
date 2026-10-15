@@ -13,7 +13,6 @@ DIRECT_CONSUMERS = {
     "release-apps.yml": 3,  # The scoped Signal build is also a Cargo consumer.
 }
 PREPARED_CONSUMERS = {
-    "release-verifier-bundles.yml": 1,
     "check.yml": 7,
     "ci-legacy-apps.yml": 1,
     "ci-nightly.yml": 3,

@@ -56,10 +56,6 @@ const COMPONENT_GAP: f64 = 8.0;
 /// A spacing or metric token as a layout length. Layout runs without a
 /// theme (hosts may place the picker externally), so the optional rows use
 /// the unscaled token values, as the base block's geometry does.
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const; f32 -> f64 is exact"
-)]
 const fn token(value: f32) -> f64 {
     value as f64
 }

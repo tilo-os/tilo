@@ -1961,10 +1961,6 @@ impl DeviceMeshModel {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "polling keeps each child-process completion transition together so success, retry, error text, and UI rebuild state cannot drift apart"
-    )]
     fn poll_background_tasks(&mut self) {
         let apply_result = self
             .apply_child

@@ -1343,10 +1343,6 @@ impl FileExplorerWidget {
     /// so the standard favourites are deterministic without depending on the
     /// build machine's locale.
     #[doc(hidden)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the constructor declares the complete stable widget state in one auditable place"
-    )]
     pub fn with_persistence_dirs(
         config_dir: Option<&Path>,
         home: Option<PathBuf>,
@@ -7577,10 +7573,6 @@ impl FileExplorerWidget {
 
     /// Drain and apply all queued commands. Returns whether any command
     /// changed the structure.
-    #[allow(
-        clippy::needless_collect,
-        reason = "collecting drops the RefCell borrow before the loop; apply_command can itself queue follow-up commands into the same self.cmds sink, and iterating the drain directly would hold the borrow_mut across that and panic"
-    )]
     /// What shows the row a search hit or an agent's `open` names: queued,
     /// and opened before the next frame is laid out.
     pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
@@ -8360,10 +8352,6 @@ impl FileExplorerWidget {
         }
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "nearby payloads contain only fixed tuples of serializable opaque handles"
-    )]
     fn nearby_receiver_resource(
         &self,
         transfer: &ui::collaboration::NearbyTransferStatus,
@@ -8412,10 +8400,6 @@ impl FileExplorerWidget {
         resource
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "nearby payloads contain only fixed tuples of serializable opaque handles"
-    )]
     fn append_nearby_decision_actions(
         &self,
         resource: &mut Resource,
@@ -8710,10 +8694,6 @@ impl FileExplorerWidget {
             .collect()
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "remote account payloads are fixed local strings"
-    )]
     fn live_remote_account_resources(&self) -> Vec<Resource> {
         // External file accounts are the folders the storage daemon's cloud
         // service mounts under `~/Remote`. Files never talks to the server or
@@ -9317,10 +9297,6 @@ impl Widget for FileExplorerWidget {
         self.collab_panel.is_some() && self.collab_panel_focused
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "custom-painted file, collaboration, and empty-state surfaces require one matching semantic tree"
-    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
         if self.app_chooser_open() {
