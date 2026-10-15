@@ -18,12 +18,19 @@
 //! date after a change asks only the items the change touched for their
 //! ids: an id may be costly to make (formatted from a UUID), and finding and
 //! sorting by asking every item again cost more than the change itself.
+//!
+//! A copy changed one item at a time ([`Items::find_mut`]) remembers which
+//! items it handed out since it was copied, so the edits between it and the
+//! items it was copied from ([`Model::diff`], what a surface that edited a
+//! local copy submits) compare only those: an edit of one clip of 600 costs
+//! one clip, not 600.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as Atomic};
 
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ReadDoc, Value};
@@ -59,30 +66,131 @@ pub struct Items<T, S> {
     storage: PhantomData<fn() -> S>,
 }
 
-/// The items, and the id of each once a refresh has needed them.
+/// The items, the id of each once a refresh has needed them, and what they
+/// were copied from.
 struct Stock<T> {
     items: Vec<T>,
-    /// `ids[i]` is `items[i].id()`. Kept by the refreshes that read it,
-    /// dropped whenever the items are handed out to change: whoever changes
-    /// an item may change its id.
+    /// `ids[i]` is `items[i].id()`, except at the positions in `stale`. Kept
+    /// by the refreshes that read it, dropped whenever all the items are
+    /// handed out to change: whoever changes an item may change its id.
     ids: Option<Vec<Arc<str>>>,
+    /// Positions, ascending, whose kept id may be out of date: items handed
+    /// out one at a time to change ([`Items::find_mut`]).
+    stale: Vec<usize>,
+    /// Which state of the items this is, a mark no other has had: made anew
+    /// whenever they are handed out to change, so items copied from these
+    /// can tell whether these are still as they were copied.
+    mark: u64,
+    /// The items these were copied from, and which of them changed since.
+    since: Option<Since>,
+}
+
+/// Items still as the ones they were copied from, except at `changed`.
+struct Since {
+    /// The [`Stock::mark`] of the items copied.
+    copied: u64,
+    /// Positions, ascending, handed out one at a time to change since the
+    /// copy. Nothing else changed: handing out all the items, or any change
+    /// that moves one, forgets the copy.
+    changed: Vec<usize>,
+}
+
+/// A [`Stock::mark`] no other stock has had.
+fn fresh_mark() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, Atomic::Relaxed)
+}
+
+/// Add `at` to the ascending positions `positions`, once.
+fn note(positions: &mut Vec<usize>, at: usize) {
+    if let Err(slot) = positions.binary_search(&at) {
+        positions.insert(slot, at);
+    }
+}
+
+impl<T> Stock<T> {
+    fn new(items: Vec<T>) -> Self {
+        Self {
+            items,
+            ids: None,
+            stale: Vec::new(),
+            mark: fresh_mark(),
+            since: None,
+        }
+    }
+
+    /// All the items, to change: their ids, and what they were copied
+    /// from, are no longer known.
+    fn all_mut(&mut self) -> &mut Vec<T> {
+        self.mark = fresh_mark();
+        self.ids = None;
+        self.stale.clear();
+        self.since = None;
+        &mut self.items
+    }
+
+    /// The item at `at`, to change; the copy remembers it changed.
+    fn one_mut(&mut self, at: usize) -> Option<&mut T> {
+        if at >= self.items.len() {
+            return None;
+        }
+        self.mark = fresh_mark();
+        if self.ids.is_some() {
+            note(&mut self.stale, at);
+        }
+        if let Some(since) = &mut self.since {
+            note(&mut since.changed, at);
+        }
+        self.items.get_mut(at)
+    }
+
+    /// The positions changed since these items were copied from `origin`,
+    /// when they were and `origin` is still as it was then.
+    fn changed_since(&self, origin: &Self) -> Option<&[usize]> {
+        let since = self.since.as_ref()?;
+        let still_as_copied = since.copied == origin.mark;
+        (still_as_copied && self.items.len() == origin.items.len())
+            .then_some(since.changed.as_slice())
+    }
+}
+
+impl<T: Identified> Stock<T> {
+    /// The kept ids, brought up to date where an item handed out may have
+    /// changed its id; taken, to be put back.
+    fn take_ids(&mut self) -> Option<Vec<Arc<str>>> {
+        let mut ids = self.ids.take()?;
+        for at in self.stale.drain(..) {
+            if let (Some(held), Some(item)) = (ids.get_mut(at), self.items.get(at)) {
+                let id = item.id();
+                if **held != *id.as_str() {
+                    *held = Arc::from(id.as_str());
+                }
+            }
+        }
+        Some(ids)
+    }
 }
 
 impl<T> Default for Stock<T> {
     fn default() -> Self {
-        Self {
-            items: Vec::new(),
-            ids: None,
-        }
+        Self::new(Vec::new())
     }
 }
 
 impl<T: Clone> Clone for Stock<T> {
-    /// The ids come along: a pointer each.
+    /// The copy made to change items another holder still shares: the ids
+    /// come along (a pointer each), and the copy remembers these items as
+    /// what it was copied from.
     fn clone(&self) -> Self {
         Self {
             items: self.items.clone(),
             ids: self.ids.clone(),
+            stale: self.stale.clone(),
+            mark: fresh_mark(),
+            since: Some(Since {
+                copied: self.mark,
+                changed: Vec::new(),
+            }),
         }
     }
 }
@@ -104,13 +212,14 @@ fn in_order<T: Identified>(a: (&T, &str), b: (&T, &str)) -> Ordering {
 /// Sort `items` and their `ids` alike, as a read from the document does: by
 /// [`Identified::order`], then id. Stable, so this is a sort by id followed
 /// by a stable sort by order; items already in place are not moved.
-fn settle_with_ids<T: Identified>(items: &mut Vec<T>, ids: &mut Vec<Arc<str>>) {
+/// Whether any moved.
+fn settle_with_ids<T: Identified>(items: &mut Vec<T>, ids: &mut Vec<Arc<str>>) -> bool {
     let held = || items.iter().zip(ids.iter().map(|id| &**id));
     if held()
         .zip(held().skip(1))
         .all(|(a, b)| in_order(a, b).is_le())
     {
-        return;
+        return false;
     }
     let mut pairs: Vec<(T, Arc<str>)> = std::mem::take(items)
         .into_iter()
@@ -120,6 +229,7 @@ fn settle_with_ids<T: Identified>(items: &mut Vec<T>, ids: &mut Vec<Arc<str>>) {
     let (sorted, sorted_ids) = pairs.into_iter().unzip();
     *items = sorted;
     *ids = sorted_ids;
+    true
 }
 
 /// Items stored under the ids they carry. See the module docs.
@@ -235,9 +345,7 @@ impl<T, S> Items<T, S> {
     /// The items, to change: copied first when a clone still shares them.
     /// Their ids are forgotten, as the change may change one.
     fn items_mut(&mut self) -> &mut Vec<T> {
-        let stock = self.stock.make_mut();
-        stock.ids = None;
-        &mut stock.items
+        self.stock.make_mut().all_mut()
     }
 }
 
@@ -258,7 +366,7 @@ impl<T, S> DerefMut for Items<T, S> {
 impl<T, S> From<Vec<T>> for Items<T, S> {
     fn from(items: Vec<T>) -> Self {
         Self {
-            stock: Shared::new(Stock { items, ids: None }),
+            stock: Shared::new(Stock::new(items)),
             storage: PhantomData,
         }
     }
@@ -322,7 +430,17 @@ impl<T: Identified, S> Items<T, S> {
     pub fn position_of(&self, id: &Id) -> Option<usize> {
         let stock = self.stock.get();
         match &stock.ids {
-            Some(ids) => ids.iter().position(|held| **held == *id.as_str()),
+            Some(ids) if stock.stale.is_empty() => {
+                ids.iter().position(|held| **held == *id.as_str())
+            }
+            // An item handed out to change is asked: its id may have changed.
+            Some(ids) => ids.iter().enumerate().position(|(at, held)| {
+                if stock.stale.binary_search(&at).is_ok() {
+                    stock.items.get(at).is_some_and(|item| &item.id() == id)
+                } else {
+                    **held == *id.as_str()
+                }
+            }),
             None => stock.items.iter().position(|item| &item.id() == id),
         }
     }
@@ -333,10 +451,21 @@ impl<T: Identified, S> Items<T, S> {
     }
 
     /// The item `id`, to change. The items are copied first when a clone
-    /// still shares them, and only when the item is there.
+    /// still shares them, and only when the item is there; the copy
+    /// remembers which items changed, so comparing it with what it was
+    /// copied from compares only those. The ids asked to find it are kept,
+    /// so finding the next one asks none.
     pub fn find_mut(&mut self, id: &Id) -> Option<&mut T> {
-        let at = self.position_of(id)?;
-        self.items_mut().get_mut(at)
+        let learned = self.stock.get().ids.is_none().then(|| ids_of(self.items()));
+        let at = match &learned {
+            Some(ids) => ids.iter().position(|held| **held == *id.as_str())?,
+            None => self.position_of(id)?,
+        };
+        let stock = self.stock.make_mut();
+        if learned.is_some() {
+            stock.ids = learned;
+        }
+        stock.one_mut(at)
     }
 
     /// Remove the item `id`.
@@ -350,8 +479,12 @@ impl<T: Identified> Keyed<T> {
     /// Sort as a read from the document does: by id, then [`Identified::order`].
     pub fn settle(&mut self) {
         let stock = self.stock.make_mut();
-        let mut ids = stock.ids.take().unwrap_or_else(|| ids_of(&stock.items));
-        settle_with_ids(&mut stock.items, &mut ids);
+        let mut ids = stock.take_ids().unwrap_or_else(|| ids_of(&stock.items));
+        if settle_with_ids(&mut stock.items, &mut ids) {
+            // Moved: no longer as they were copied, position by position.
+            stock.mark = fresh_mark();
+            stock.since = None;
+        }
         stock.ids = Some(ids);
     }
 }
@@ -595,6 +728,39 @@ pub(crate) fn removed_and_changed<T: Model + Identified, R>(
     before_ids
 }
 
+/// The edits between `before` and `after`, which holds the same items at
+/// the same positions except at `changed` (ascending): each changed item
+/// that kept its id, field by field, in the order [`ItemStorage::diff`]
+/// would list them. `false`, with nothing written, when one changed its id:
+/// then items left and came, which only comparing them all can tell.
+fn diff_changed<T: Model + Identified, R>(
+    before: &[T],
+    after: &[T],
+    changed: &[usize],
+    path: &[Segment],
+    out: &mut Vec<Edit<R>>,
+) -> bool {
+    let mut pairs = Vec::with_capacity(changed.len());
+    for &at in changed {
+        let (Some(was), Some(now)) = (before.get(at), after.get(at)) else {
+            return false;
+        };
+        let id = was.id();
+        if now.id() != id {
+            return false;
+        }
+        pairs.push((id, was, now));
+    }
+    let mut at = Vec::with_capacity(path.len().saturating_add(1));
+    at.extend_from_slice(path);
+    for (id, was, now) in pairs {
+        at.push(Segment::Item(id));
+        was.diff(now, &at, out);
+        at.pop();
+    }
+    true
+}
+
 impl<T: Model + Identified, S> crate::items::ItemSource for Items<T, S> {
     fn item_collection(&self, field: &'static str) -> crate::items::ItemCollection {
         crate::collection::listed_items(T::TABLE, self, field)
@@ -694,7 +860,10 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
             return Ok(());
         }
         let stock = self.stock.make_mut();
-        S::refresh_with_ids(&mut stock.items, &mut stock.ids, doc, id, delta)
+        let mut ids = stock.take_ids();
+        let refreshed = S::refresh_with_ids(stock.all_mut(), &mut ids, doc, id, delta);
+        stock.ids = ids;
+        refreshed
     }
 
     #[inline(never)]
@@ -725,8 +894,18 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
         }
     }
 
+    /// Items two clones still share are not compared; a copy changed one
+    /// item at a time compares only the items it changed.
     #[inline(never)]
     fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<Edit<R>>) {
+        if self.stock.same(&after.stock) {
+            return;
+        }
+        if let Some(changed) = after.stock.get().changed_since(self.stock.get())
+            && diff_changed(self.items(), after.items(), changed, path, out)
+        {
+            return;
+        }
         S::diff(self.items(), after.items(), path, out);
     }
 
