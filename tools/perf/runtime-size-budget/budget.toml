@@ -69,15 +69,20 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # 154733808 -> 143671024, 5709824 -> 5308416, 9219 -> 8793. Linking the
 # runtime with section garbage collection and without the proc-macro crates'
 # exports takes it lower again (Release / apps 97422, before the Spotify
-# engine: aarch64 152438520 bytes, x86_64 167700968).
+# engine: aarch64 152438520 bytes, x86_64 167700968). Keeping the model
+# gateway's daemon (its provider clients, on-device model service and rten)
+# out of the runtime, then the main commits after it, left main's runtime at
+# x86_64 156364744 bytes, 5435392 dirtied per process, 6625 symbol
+# relocations; aarch64 141824904, 5218304, 6659 (Release / apps 119198, at
+# 1067088ee0).
 [runtime.x86_64]
-bytes = 160366592
-relocation_bytes = 327680
-relocated_bytes = 5636096
-symbol_relocations = 8896
+bytes = 157941760
+relocation_bytes = 262144
+relocated_bytes = 5505024
+symbol_relocations = 6720
 
 [runtime.aarch64]
-bytes = 145162240
-relocation_bytes = 327680
-relocated_bytes = 5373952
-symbol_relocations = 8896
+bytes = 143261696
+relocation_bytes = 262144
+relocated_bytes = 5308416
+symbol_relocations = 6784
