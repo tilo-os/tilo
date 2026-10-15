@@ -126,8 +126,9 @@ fn run() -> Result<(), SpeechError> {
     // no owner for descriptors >=3 exists before prepare closes them.
     unsafe { worker::prepare()? };
     // Review input overrides are never permitted with elevated identity.
-    // SAFETY: uid queries are argument-free.
-    if unsafe { libc::geteuid() == 0 || libc::geteuid() != libc::getuid() } {
+    if rustix::process::geteuid().as_raw() == 0
+        || rustix::process::geteuid().as_raw() != rustix::process::getuid().as_raw()
+    {
         return Err(SpeechError::ModelUnavailable);
     }
     let args: Vec<String> = std::env::args().collect();

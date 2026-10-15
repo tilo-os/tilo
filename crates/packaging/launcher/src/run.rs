@@ -1343,7 +1343,7 @@ mod system_bundle_tree_policy_tests {
 
     #[test]
     fn immutable_system_bundle_accepts_a_root_owned_symlinked_prefix() {
-        if unsafe { libc::geteuid() } != 0 {
+        if rustix::process::geteuid().as_raw() != 0 {
             return;
         }
         // The policy walks every ancestor, so the fixture has to live below
@@ -2469,7 +2469,10 @@ fn sandbox_account(uid: u32, gid: u32) -> String {
 
 /// Give bwrap a private, read-only account file. No host `/etc/passwd` bind.
 fn stage_sandbox_account(argv: &mut Vec<String>) -> Result<OwnedFd, RunError> {
-    let account = sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() });
+    let account = sandbox_account(
+        rustix::process::geteuid().as_raw(),
+        rustix::process::getegid().as_raw(),
+    );
     let data = stage_seccomp_blob(account.as_bytes())?;
     // Keep the source above the fixed child slots: earlier dup2 calls must
     // not overwrite it before the account descriptor is handed to bwrap.
@@ -2503,7 +2506,10 @@ mod sandbox_account_tests {
         let account = stage_sandbox_account(&mut Vec::new()).expect("account");
         let expected = format!(
             "serviceclone3baseline{}",
-            sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+            sandbox_account(
+                rustix::process::geteuid().as_raw(),
+                rustix::process::getegid().as_raw()
+            )
         );
         let source = service.as_raw_fd();
         let mut pairs = vec![(ACCOUNT_CHILD_FD, 17)];
@@ -2542,7 +2548,10 @@ mod sandbox_account_tests {
             .expect("account bytes");
         assert_eq!(
             contents,
-            sandbox_account(unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+            sandbox_account(
+                rustix::process::geteuid().as_raw(),
+                rustix::process::getegid().as_raw()
+            )
         );
         assert_eq!(
             argv,
@@ -4418,8 +4427,7 @@ exec sleep infinity
 /// Current process UID via libc, avoiding a `users`/`nix` dependency.
 /// Falls back to 1000 if the syscall somehow fails.
 fn current_uid() -> u32 {
-    // SAFETY: getuid always succeeds and returns a uid_t.
-    unsafe { libc::getuid() }
+    rustix::process::getuid().as_raw()
 }
 
 #[cfg(test)]

@@ -127,10 +127,7 @@ impl LegacyLaunchRoute {
         let route = self.clone();
         Ok(runtime.spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
-                let expected = uid.unwrap_or_else(|| {
-                    // SAFETY: geteuid cannot fail.
-                    unsafe { libc::geteuid() }
-                });
+                let expected = uid.unwrap_or_else(|| rustix::process::geteuid().as_raw());
                 if stream.peer_cred().map(|cred| cred.uid()).ok() != Some(expected) {
                     continue;
                 }
