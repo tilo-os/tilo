@@ -472,7 +472,8 @@ pub enum SlidesAction {
         slides: Vec<SlideData>,
     },
     /// Add `slide` after the last slide as the deck stands when this
-    /// applies. A deck whose only slide has nothing on it (a new deck) gets
+    /// applies. A new deck whose only slide is still its untouched starter
+    /// (no earlier edit gave it a layout, words or anything else) gets
     /// `slide` in that slide's place instead, so a deck an agent composes
     /// does not keep an empty first slide. What `add-slide` authors.
     AppendSlide { slide: SlideData },
@@ -726,6 +727,7 @@ fn set_slide_text(doc: &mut Doc, slide: &str, texts: [Option<&str>; 2]) -> Resul
     if edits.is_empty() {
         return Err(refused("give a title, a body or both"));
     }
+    SlidesDoc::touch_slide(doc, &target.id);
     for (body, markdown) in edits {
         tilo_document::RichTextAction::ReplaceBody { markdown }.apply_under(doc, &body)?;
     }
@@ -958,6 +960,7 @@ impl Action for SlidesAction {
             } => {
                 let body = SlidesDoc::element_body(doc, slide_id, element_id)
                     .ok_or_else(|| refused("the text element no longer exists"))?;
+                SlidesDoc::touch_slide(doc, slide_id);
                 return edit.apply_under(doc, &body);
             }
             SlidesAction::EditNotes { slide_id, edit } => {
@@ -975,6 +978,7 @@ impl Action for SlidesAction {
             } => {
                 let deck = replacement_deck(title, palette, slides)?;
                 SlidesDoc::seed(doc, &deck);
+                SlidesDoc::touch_all(doc);
                 return Ok(());
             }
             _ => {}
@@ -1022,7 +1026,10 @@ impl Action for SlidesAction {
             }
             SlidesAction::AppendSlide { slide } => {
                 let ranks = SlidesDoc::slide_ranks(doc);
-                let fills = matches!(deck.slides.as_slice(), [only] if only.is_unwritten());
+                // Only the starter no edit has reached gives way: words
+                // alone miss a layout or background written over it.
+                let fills = matches!(deck.slides.as_slice(), [only] if only.is_unwritten())
+                    && !SlidesDoc::is_touched(doc, 0);
                 let mut projected = deck;
                 if fills {
                     projected.slides.clear();
@@ -2272,7 +2279,8 @@ fn deck_bound_document_actions() -> Vec<ActionSpec> {
         )
         .with_description(
             "Add a slide after the last one. A new deck starts with one empty slide: while it \
-             is the only slide and still empty, add-slide fills it instead of adding a second. \
+             is the only slide and nothing has changed it yet (no layout, text or other edit), \
+             add-slide fills it instead of adding a second. \
              The returned outline lists the new slide last with its {#id}.",
         )
         .reversible(),

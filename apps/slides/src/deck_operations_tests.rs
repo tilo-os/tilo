@@ -596,6 +596,47 @@ fn add_slide_into_a_new_deck_fills_its_empty_slide() {
     assert_eq!(deck.slides[0].id, slide);
 }
 
+/// The starter already has the title layout, so `layout-title` leaves it
+/// looking as it did; it was still edited, and add-slide appends after it.
+#[test]
+fn a_starter_slide_given_a_title_layout_is_kept_by_add_slide() {
+    let mut participant = Participant::over(&crate::model::starter_deck());
+    let starter = participant.deck().slides[0].id.clone();
+    participant
+        .invoke_on(
+            &actions::slide_resource_id(&starter),
+            "layout-title",
+            &json!({}),
+            false,
+        )
+        .expect("layout-title applies");
+    participant
+        .invoke(ADD_SLIDE, &json!({"title": "Agenda"}))
+        .unwrap();
+    let deck = participant.deck();
+    assert_eq!(deck.slides.len(), 2, "the titled starter stays");
+    assert_eq!(deck.slides[0].id, starter);
+    assert_eq!(deck.slides[0].layout, crate::model::Layout::Title);
+    assert_eq!(deck.slides[1].elements[0].text, "Agenda");
+}
+
+/// A slide add-slide wrote is no starter, even with no words on it: the
+/// next add-slide appends after it.
+#[test]
+fn an_empty_slide_add_slide_wrote_is_kept_by_the_next() {
+    let mut participant = Participant::over(&crate::model::starter_deck());
+    participant
+        .invoke(ADD_SLIDE, &json!({"layout": "title"}))
+        .unwrap();
+    let cover = participant.deck().slides[0].id.clone();
+    participant
+        .invoke(ADD_SLIDE, &json!({"title": "Agenda"}))
+        .unwrap();
+    let deck = participant.deck();
+    assert_eq!(deck.slides.len(), 2);
+    assert_eq!(deck.slides[0].id, cover);
+}
+
 /// Four pixels of PNG.
 fn png() -> Vec<u8> {
     use image::ImageEncoder as _;
