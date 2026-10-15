@@ -251,15 +251,21 @@ impl ActionCatalog {
         results: &[SearchResult],
         visible: &[usize],
     ) -> Vec<Option<ActionHierarchy>> {
+        // Each provider once by id (the first registered, as a scan would
+        // find), not a scan of the registry per row.
+        let mut providers: std::collections::HashMap<&str, &dyn super::SearchProvider> =
+            std::collections::HashMap::new();
+        for provider in registry.providers_iter() {
+            providers.entry(provider.id()).or_insert(provider);
+        }
         let mut hierarchies = vec![None; results.len()];
         for &index in visible {
             let Some((result, hierarchy)) = results.get(index).zip(hierarchies.get_mut(index))
             else {
                 continue;
             };
-            *hierarchy = registry
-                .providers_iter()
-                .find(|provider| provider.id() == result.provider_id)
+            *hierarchy = providers
+                .get(result.provider_id.as_str())
                 .and_then(|provider| provider.action_hierarchy(&result.id));
         }
         hierarchies

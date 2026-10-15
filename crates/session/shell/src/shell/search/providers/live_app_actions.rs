@@ -365,6 +365,13 @@ pub struct LiveAppActionsProvider {
     directory_query_probe: RefCell<Option<CatalogueQuery>>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many result ids this thread minted, so a test can tell a lookup
+    /// from a scan that mints every entry's id to compare.
+    static IDS_MINTED: Cell<usize> = const { Cell::new(0) };
+}
+
 struct SurfaceSnapshot {
     source_generation: u64,
     scope: String,
@@ -373,6 +380,42 @@ struct SurfaceSnapshot {
     /// one-row projection of an entry that already matched.
     index: Option<SearchIndex>,
     machine_index: Option<SearchIndex>,
+    /// Each entry's position by its result id, so resolving an address
+    /// (a listing asks once per row) is one lookup instead of minting every
+    /// entry's id to compare: with thirty windows' actions published, a
+    /// listing of six thousand rows minted thirty-six million ids.
+    by_id: HashMap<String, usize>,
+}
+
+impl SurfaceSnapshot {
+    fn new(
+        source_generation: u64,
+        scope: String,
+        entries: Vec<(PublishedSurface, PublishedAction)>,
+        index: Option<SearchIndex>,
+        machine_index: Option<SearchIndex>,
+    ) -> Self {
+        // The first entry with an id answers for it, as a scan would find.
+        let mut by_id = HashMap::with_capacity(entries.len());
+        for (at, (surface, action)) in entries.iter().enumerate() {
+            by_id
+                .entry(LiveAppActionsProvider::result_id(surface, action))
+                .or_insert(at);
+        }
+        Self {
+            source_generation,
+            scope,
+            entries,
+            index,
+            machine_index,
+            by_id,
+        }
+    }
+
+    /// The entry `id` names, if this snapshot holds it.
+    fn entry(&self, id: &str) -> Option<&(PublishedSurface, PublishedAction)> {
+        self.by_id.get(id).and_then(|&at| self.entries.get(at))
+    }
 }
 
 /// One rebuild the index worker owes: the scope to project, where the
@@ -861,13 +904,13 @@ impl LiveAppActionsProvider {
             .collect::<Vec<_>>();
         let index = Some(index_actions(&entries, false));
         let machine_index = Some(index_actions(&entries, true));
-        SurfaceSnapshot {
+        SurfaceSnapshot::new(
             source_generation,
-            scope: scope.key.clone(),
+            scope.key.clone(),
             entries,
             index,
             machine_index,
-        }
+        )
     }
 
     fn refresh_local_snapshot(&self, ctx: &SearchContext<'_>) {
@@ -1051,13 +1094,13 @@ impl LiveAppActionsProvider {
         let id = Self::result_id(&surface, &action);
         let scope = Self::surface_scope(ctx);
         let source_generation = self.broker.surfaces_generation();
-        let temporary = SurfaceSnapshot {
+        let temporary = SurfaceSnapshot::new(
             source_generation,
             scope,
-            entries: vec![(surface, action)],
-            index: None,
-            machine_index: None,
-        };
+            vec![(surface, action)],
+            None,
+            None,
+        );
         let previous = self.surface_snapshot.replace(Some(temporary));
         let previous_projection = self.projection.replace(QueryProjection::LocalOnly);
         let results = self.query(*ctx);
@@ -2176,6 +2219,8 @@ impl LiveAppActionsProvider {
     }
 
     fn result_id(surface: &PublishedSurface, action: &PublishedAction) -> String {
+        #[cfg(test)]
+        IDS_MINTED.with(|minted| minted.set(minted.get().saturating_add(1)));
         format!(
             "{}{}{}{}{}{}{}{}{}{}{}{}{}",
             surface.app_id,
@@ -2454,19 +2499,15 @@ impl SearchProvider for LiveAppActionsProvider {
                 .as_ref()
                 .filter(|snapshot| snapshot.source_generation == self.broker.surfaces_generation())
                 .and_then(|snapshot| {
-                    snapshot
-                        .entries
-                        .iter()
-                        .find(|(surface, action)| Self::result_id(surface, action) == id)
-                        .and_then(|(_, action)| {
-                            action
-                                .semantic_identity
-                                .as_ref()
-                                .filter(|identity| {
-                                    identity.is_valid() && identity.kind == action.resource_kind
-                                })
-                                .cloned()
-                        })
+                    snapshot.entry(id).and_then(|(_, action)| {
+                        action
+                            .semantic_identity
+                            .as_ref()
+                            .filter(|identity| {
+                                identity.is_valid() && identity.kind == action.resource_kind
+                            })
+                            .cloned()
+                    })
                 }),
         })
     }
@@ -3968,13 +4009,13 @@ mod tests {
                 .semantic_identity
                 .is_none()
         );
-        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot {
-            source_generation: broker.surfaces_generation(),
-            scope: String::new(),
+        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot::new(
+            broker.surfaces_generation(),
+            String::new(),
             entries,
-            index: None,
-            machine_index: None,
-        });
+            None,
+            None,
+        ));
         assert_eq!(
             provider.action_hierarchy(&id).unwrap().semantic_identity,
             Some(identity)
@@ -4023,6 +4064,117 @@ mod tests {
             view: None,
             input: PublishedInput::None,
         }
+    }
+
+    /// After thirty windows were opened, each publishing its app's actions
+    /// under its own record, every `actions list` over the control socket
+    /// took about seventy seconds: describing a row's hierarchy looked its
+    /// semantic identity up by minting the id of every published action and
+    /// comparing, so six thousand rows minted thirty-six million ids. Each
+    /// row is now one lookup, and the listing still carries every row's
+    /// hierarchy and identity through the same policy gate the socket uses.
+    #[test]
+    fn a_listing_after_thirty_windows_resolves_each_row_by_lookup() {
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::ActionCatalog;
+        use crate::shell::search::visibility::PolicyVisibility;
+        use crate::shell::state::WorkspaceAuthority as _;
+        const WINDOWS: u64 = 30;
+        const ACTIONS: usize = 200;
+        // Materializing a row mints its id a few times (five here); a scan
+        // per row minted every entry's id again, millions in all.
+        const MINTED_PER_ROW: usize = 8;
+        let chrome = chrome();
+        let room_id = chrome.borrow().tree().desktop.workspaces[0].room;
+        let user = chrome.borrow().local_user_for_room(&room_id);
+        chrome.borrow().tree_mut().desktop.workspaces[0].set_owner(user.clone());
+        let broker = broker_for(&chrome);
+        let room = room_id.to_string();
+        let identity =
+            tilo_actions::ResourceSemanticIdentity::new("fixture", "fixture:document").unwrap();
+        let surfaces: Vec<PublishedSurface> = (0..WINDOWS)
+            .map(|window| {
+                let app_id = format!("so.tilo.fixture{}", window % 5);
+                let mut route = CrdtRoute::app(&app_id, &room);
+                route.record_id = format!("window-{window}");
+                PublishedSurface {
+                    peer_id: 7 + window,
+                    app_id,
+                    route,
+                    actions: (0..ACTIONS)
+                        .map(|index| {
+                            let mut action = local_action(
+                                &format!("action {index}"),
+                                &format!("action-{index}"),
+                            );
+                            action.semantic_identity = Some(identity.clone());
+                            // Half of them change the document, so the gate
+                            // decides them rather than letting reads through.
+                            if index % 2 == 0 {
+                                action.contract = tilo_actions::ActionContract::default();
+                            }
+                            action
+                        })
+                        .collect(),
+                    live: true,
+                }
+            })
+            .collect();
+        broker.replace_published_surfaces_for_test(surfaces);
+        let provider = Rc::new(LiveAppActionsProvider::new(broker.clone()));
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let ctx = SearchContext {
+            query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+            ..context("", &state, &doc)
+        };
+        // The index worker builds this off the main loop.
+        *provider.surface_snapshot.borrow_mut() =
+            Some(LiveAppActionsProvider::build_local_snapshot(
+                &broker,
+                &LiveAppActionsProvider::build_scope(&ctx),
+                &provider.build_probe,
+            ));
+        let mut registry = SearchRegistry::new();
+        registry.register(provider);
+        let args = crate::shell::search::QueryArgs {
+            needle: "",
+            scope: crate::shell::chrome_state::SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let workspace = state
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(crate::shell::state::Workspace::policy_view)
+            .unwrap();
+        let gate = PolicyVisibility::new(&workspace, workspace.actor_for_person(&user));
+        super::IDS_MINTED.with(|minted| minted.set(0));
+        let catalog = ActionCatalog::build_query(&registry, &args, &gate, true);
+        let minted = super::IDS_MINTED.with(std::cell::Cell::get);
+        let rows = catalog.enumerate();
+        let expected = usize::try_from(WINDOWS).unwrap() * ACTIONS;
+        assert_eq!(
+            rows.len(),
+            expected,
+            "the owner sees every window's actions"
+        );
+        assert!(
+            rows.iter().all(|row| row
+                .hierarchy
+                .as_ref()
+                .is_some_and(|hierarchy| hierarchy.semantic_identity.as_ref() == Some(&identity))),
+            "every row keeps its hierarchy and semantic identity"
+        );
+        assert!(
+            minted <= MINTED_PER_ROW * expected,
+            "{minted} ids minted for {expected} rows: resolving a row must not mint every \
+             entry's id"
+        );
     }
 
     #[test]
@@ -5441,13 +5593,13 @@ mod tests {
             .replace_published_surfaces_for_test(vec![published]);
         let index = Some(index_actions(&entries, false));
         let machine_index = Some(index_actions(&entries, true));
-        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot {
-            source_generation: provider.broker.surfaces_generation(),
-            scope: LiveAppActionsProvider::surface_scope(&ctx),
+        *provider.surface_snapshot.borrow_mut() = Some(SurfaceSnapshot::new(
+            provider.broker.surfaces_generation(),
+            LiveAppActionsProvider::surface_scope(&ctx),
             entries,
             index,
             machine_index,
-        });
+        ));
         let page = provider.query_page(
             ctx,
             None,
