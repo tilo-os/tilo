@@ -272,6 +272,14 @@ fn every_mutable_entry_point_invalidates_local_state() {
             "take_browser_font_demands",
             "drains the text renderer's fetch list",
         ),
+        (
+            "set_pan_replay",
+            "chooses how later frames draw; reaches nothing a frame reads",
+        ),
+        (
+            "settle_replayed_draws",
+            "draws again a frame that only moved laid-out content, as a polled frame would",
+        ),
         ("take_profile_samples", "drains the profiler"),
         ("clear_profile_samples", "drains the profiler"),
     ];

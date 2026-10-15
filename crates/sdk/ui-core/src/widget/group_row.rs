@@ -378,6 +378,71 @@ pub struct GroupRow {
     /// again while the strip pans ([`Self::draw_group_apart`]). Emptied once
     /// the row is drawn in screen space again.
     apart_drawings: Vec<ApartDrawing>,
+    /// While frames only move the strip drawn in screen space
+    /// ([`crate::retained_present::pan_replay`]): the last drawing of each
+    /// window at rest, which the next such frame replays where the window
+    /// is now ([`Self::draw_group_replaying`]). Any other frame empties it.
+    pan_drawings: Vec<ApartDrawing>,
+    /// Windows at rest the current draw drew or replayed: their drawings
+    /// are kept, every other one is dropped.
+    pan_kept: Vec<u64>,
+    /// Windows the last draw replayed. Like a culled window, each keeps its
+    /// state for its next real draw; unlike one, it was shown.
+    replayed_groups: Vec<u64>,
+    /// The theme [`Self::pan_drawings`] were drawn in.
+    pan_theme: Option<Theme>,
+    /// The frame ([`crate::retained_present::pan_frame`]) this row was last
+    /// drawn in.
+    pan_drawn_frame: Option<u64>,
+    /// Windows whose drawing cannot be kept (it carries a blurred material
+    /// or pixels living outside it) while frames only move: drawn plainly.
+    pan_unkept: Vec<u64>,
+    /// Windows that put anything on the top layer in the last frame
+    /// ([`Widget::draw_overlay`]): an open menu or popover may hang on
+    /// where the window's widgets last drew, so such a window is drawn,
+    /// never replayed.
+    overlay_groups: Vec<u64>,
+}
+
+/// What of a group at `rect` the draw viewport shows across, measured from
+/// the group's left edge and limited to the group, which is what its
+/// widgets cull against the viewport; `None` with no viewport (nothing is
+/// culled).
+fn seen_across(presence: &PresenceCtx, rect: Rect) -> Option<(f64, f64)> {
+    presence.viewport.get().map(|viewport| {
+        (
+            (viewport.x0 - rect.x0).max(0.0),
+            (viewport.x1 - rect.x0).min(rect.width()),
+        )
+    })
+}
+
+/// A group's drawing just made ([`GroupRow::record_group`]), not yet
+/// appended to the frame.
+struct GroupDrawing(ApartDrawing);
+
+impl GroupDrawing {
+    /// Append the drawing to `scene` as drawn, carrying the floating
+    /// surfaces drawn into it; returns how many it carried.
+    fn append_to(&self, scene: &mut Scene) -> usize {
+        let drawing = &self.0;
+        crate::scene_parts::append_with(
+            scene,
+            drawing.parts.as_ref(),
+            Some(Affine::IDENTITY),
+            |scene| crate::backdrop::append_nested(scene, &drawing.scene, Affine::IDENTITY),
+        )
+    }
+
+    /// The drawing, when it may be kept for a replay: one that carried a
+    /// blurred material (`carried` surfaces) is drawn every frame, since
+    /// replayed, the material would lose its backdrop. So is one that draws
+    /// pixels living outside it (a client's GPU buffer): those are valid
+    /// only for the frame that drew them, and a replay could read a buffer
+    /// its client already got back.
+    fn keep(self, carried: usize) -> Option<ApartDrawing> {
+        (carried == 0 && !draws_external_pixels(&self.0.scene)).then_some(self.0)
+    }
 }
 
 /// What of a strip drawn in canvas coordinates the screen shows this draw.
@@ -416,6 +481,10 @@ struct ApartDrawing {
     parts: Option<crate::scene_parts::SectionParts>,
     /// The drawing put a secret on screen; a replay notes it again.
     shows_secret: bool,
+    /// What of the group the drawing culled nothing in, across: the draw
+    /// viewport's `(x0, x1)` measured from the group's left edge. `None`
+    /// when nothing was culled. A replay must show no more of the group.
+    seen: Option<(f64, f64)>,
 }
 
 /// One display's horizontal extent in the compositor's combined
@@ -1022,6 +1091,13 @@ impl GroupRow {
             apart_window: None,
             apart_spans: Vec::new(),
             apart_drawings: Vec::new(),
+            pan_drawings: Vec::new(),
+            pan_kept: Vec::new(),
+            replayed_groups: Vec::new(),
+            pan_theme: None,
+            pan_drawn_frame: None,
+            overlay_groups: Vec::new(),
+            pan_unkept: Vec::new(),
         }
     }
 
@@ -2317,6 +2393,27 @@ impl GroupRow {
         self.pan.scroll_x = x;
     }
 
+    /// The groups presented as children ([`Widget::children_mut`]): none
+    /// while hidden, the promoted one while one is fullscreen or
+    /// maximized, otherwise all of them.
+    fn shown_group_indices(&self) -> Vec<usize> {
+        if self.hidden {
+            return Vec::new();
+        }
+        match self
+            .fullscreen_idx()
+            .or_else(|| self.groups.iter().position(|g| g.maximized))
+        {
+            Some(index) => vec![index],
+            None => (0..self.groups.len()).collect(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replayed_groups_for_test(&self) -> &[u64] {
+        &self.replayed_groups
+    }
+
     #[cfg(test)]
     pub(crate) fn group_left_edges_for_test(&self) -> &[f64] {
         &self.pan.group_left_edges
@@ -3342,19 +3439,39 @@ impl Widget for GroupRow {
             .collect()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if self.hidden {
-            return vec![];
-        }
-        if let Some(index) = self
-            .fullscreen_idx()
-            .or_else(|| self.groups.iter().position(|g| g.maximized))
-        {
-            return vec![&mut self.groups[index]];
-        }
+        let shown = self.shown_group_indices();
         self.groups
             .iter_mut()
-            .map(|group| group as &mut dyn Widget)
+            .enumerate()
+            .filter(|(index, _)| shown.contains(index))
+            .map(|(_, group)| group as &mut dyn Widget)
             .collect()
+    }
+
+    /// Each window's top layer, in [`Self::children_mut`]'s order as the
+    /// default draws it, noting which windows put anything there
+    /// ([`Self::overlay_groups`]).
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        fn drawn(scene: &Scene) -> (usize, usize) {
+            let encoding = scene.encoding();
+            (encoding.path_tags.len(), encoding.draw_tags.len())
+        }
+        self.overlay_groups.clear();
+        for index in self.shown_group_indices() {
+            let before = drawn(scene);
+            let group = &mut self.groups[index];
+            group.draw_overlay(scene, transform, text_renderer, theme, presence);
+            if drawn(scene) != before {
+                self.overlay_groups.push(group.id);
+            }
+        }
     }
 
     // Read-only resource discovery follows retained owners, including inactive tabs.
@@ -3865,13 +3982,32 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Drawings are replayed only into the frame right after the one
+        // that drew or replayed them, and only while frames only pan: any
+        // frame between may have changed a window.
+        let frame = crate::retained_present::pan_frame();
+        let consecutive = self
+            .pan_drawn_frame
+            .is_some_and(|last| last.wrapping_add(1) == frame);
+        self.pan_drawn_frame = Some(frame);
+        self.pan_kept.clear();
+        self.replayed_groups.clear();
+        let only_moved =
+            crate::retained_present::pan_frame_kind() != crate::retained_present::PanFrame::Drawn;
+        if !only_moved || !consecutive || self.pan_theme.as_ref() != Some(theme) {
+            self.pan_drawings.clear();
+            self.pan_unkept.clear();
+            self.pan_theme = only_moved.then(|| theme.clone());
+        }
         if self.drawn_apart {
             self.apart_transform = Some(transform);
+            self.pan_drawings.clear();
             return;
         }
         self.reduce_motion = theme.reduce_motion;
         self.sync_sibling_fade(theme);
         if self.external_navigation && self.hidden {
+            self.pan_drawings.clear();
             return;
         }
         self.scroll_dirty = false;
@@ -3973,6 +4109,12 @@ impl Widget for GroupRow {
             self.apart_drawings.clear();
             self.apart_spans.clear();
         }
+        // A window this frame did not draw or replay at rest may change
+        // before it is shown again, and a frame that is not only a pan may
+        // have changed any of them.
+        let kept = &self.pan_kept;
+        self.pan_drawings
+            .retain(|drawing| kept.contains(&drawing.id));
         self.draw_group_drag_preview(scene, transform, tr, theme, presence);
         self.draw_reorder_capsule(scene, transform, theme);
     }
@@ -4203,8 +4345,9 @@ impl Widget for GroupRow {
 
     fn mark_drawn(&mut self) {
         let culled = std::mem::take(&mut self.culled_groups);
+        let replayed = self.replayed_groups.clone();
         for group in &mut self.groups {
-            if culled.contains(&group.id) {
+            if culled.contains(&group.id) || replayed.contains(&group.id) {
                 group.next_frame();
             } else {
                 group.mark_drawn();
@@ -4447,7 +4590,27 @@ impl GroupRow {
                 {
                     self.draw_group_apart(i, window, scene, t, (tr, theme, presence));
                 }
-                _ => self.groups[i].draw(scene, t, tr, theme, presence),
+                // Only a group at rest in its slot, as above.
+                None if crate::retained_present::pan_replay()
+                    && !source_is_lifted
+                    && !fading_sibling
+                    && dx.abs() <= f64::EPSILON =>
+                {
+                    self.draw_group_replaying(i, scene, t, (tr, theme, presence));
+                }
+                _ => {
+                    // A frame that only moved but draws every window keeps
+                    // the drawings of the windows at rest it draws: nothing in
+                    // them changed.
+                    if crate::retained_present::pan_frame_kind()
+                        == crate::retained_present::PanFrame::Kept
+                        && dx.abs() <= f64::EPSILON
+                        && self.group_at_rest(i, now)
+                    {
+                        self.pan_kept.push(id);
+                    }
+                    self.groups[i].draw(scene, t, tr, theme, presence);
+                }
             }
             if source_is_lifted {
                 scene.pop_layer();
@@ -4553,39 +4716,134 @@ impl GroupRow {
             self.culled_groups.push(id);
             return;
         }
-        let mut local = kept
+        let local = kept
             .map(|index| self.apart_drawings.swap_remove(index).scene)
             .unwrap_or_default();
+        let drawing = self.record_group(i, local, transform, (tr, theme, presence));
+        let carried =
+            crate::scene_parts::part(scene, key, bounds, |scene| drawing.append_to(scene));
+        if let Some(drawing) = drawing.keep(carried) {
+            self.apart_drawings.push(drawing);
+        }
+    }
+
+    /// Draw group `i` on its own into `local`, a scene of its own that is
+    /// nested so floating chrome drawn into it waits for it, and keep what
+    /// a replay of the drawing needs.
+    fn record_group(
+        &mut self,
+        i: usize,
+        mut local: Scene,
+        transform: Affine,
+        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+    ) -> GroupDrawing {
         local.reset();
         crate::backdrop::nest_scene(&local);
         let secrets = crate::secret_paint::SecretPaint::begin();
         let group = &mut self.groups[i];
+        let (id, rect) = (group.id, group.get_rect());
         let ((), parts) = crate::scene_parts::record(&mut local, |local| {
             group.draw(local, transform, tr, theme, presence);
         });
-        let shows_secret = secrets.finish();
-        // A drawing that carries a blurred material is drawn every frame:
-        // replayed, the material would lose its backdrop. So is one that
-        // draws pixels living outside it (a client's GPU buffer): those are
-        // valid only for the frame that drew them, and a replay could read a
-        // buffer its client already got back.
-        let carries_material = crate::scene_parts::part(scene, key, bounds, |scene| {
-            crate::scene_parts::append_with(
-                scene,
-                parts.as_ref(),
-                Some(Affine::IDENTITY),
-                |scene| crate::backdrop::append_nested(scene, &local, Affine::IDENTITY),
-            )
-        }) > 0;
-        if !carries_material && !draws_external_pixels(&local) {
-            self.apart_drawings.push(ApartDrawing {
-                id,
-                rect,
-                transform,
-                scene: local,
-                parts,
-                shows_secret,
-            });
+        GroupDrawing(ApartDrawing {
+            id,
+            rect,
+            transform,
+            scene: local,
+            parts,
+            shows_secret: secrets.finish(),
+            seen: seen_across(presence, rect),
+        })
+    }
+
+    /// Whether group `i` is at rest for a frame that only moves laid-out
+    /// content: not keyboard focused, nothing on the top layer last frame,
+    /// and no animation frame, unfinished visual work or due wake asked for.
+    /// Such a frame follows one in which nothing reached a widget, the
+    /// document, focus or presence, so only time could change the window,
+    /// and it asks for none. Its dirty flag is no sign either way: a widget
+    /// that does not track one reports itself dirty on every frame.
+    fn group_at_rest(&self, i: usize, now: Instant) -> bool {
+        let group = &self.groups[i];
+        !group.focused()
+            && !self.overlay_groups.contains(&group.id)
+            && !group.needs_animation_frame()
+            && !group.has_pending_visual_work()
+            && group
+                .next_wake_deadline()
+                .is_none_or(|deadline| deadline > now)
+    }
+
+    /// Draw group `i` of a strip drawn in screen space on a frame that only
+    /// moves laid-out content ([`crate::retained_present::pan_replay`]).
+    ///
+    /// A window at rest ([`Self::group_at_rest`]) whose last drawing was made
+    /// at its size, height and transform, in the frame just before, and
+    /// culled none of what the screen shows of it now, replays that drawing
+    /// moved by how far the strip panned since. Any other window at rest is
+    /// drawn, culled as on any frame, and its drawing kept. A window not at
+    /// rest, or whose drawing cannot be kept, is drawn as on any frame.
+    ///
+    /// What the window's widgets note while drawing still describes where it
+    /// was drawn; the host draws again before input or a semantics read
+    /// reaches them ([`crate::retained_present::PanReplay`]). Like a culled
+    /// window, a replayed one keeps its dirty state for its next real draw.
+    fn draw_group_replaying(
+        &mut self,
+        i: usize,
+        scene: &mut Scene,
+        transform: Affine,
+        (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
+    ) {
+        let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
+        if !self.group_at_rest(i, crate::time::now()) || self.pan_unkept.contains(&id) {
+            self.groups[i].draw(scene, transform, tr, theme, presence);
+            return;
+        }
+        let kept = self
+            .pan_drawings
+            .iter()
+            .position(|drawing| drawing.id == id);
+        self.pan_kept.push(id);
+        // The drawing culled what its draw viewport did not show; the
+        // screen may show no more of the window now.
+        let shows = seen_across(presence, rect);
+        let covers = |seen: Option<(f64, f64)>| match (seen, shows) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(seen), Some(shows)) => {
+                shows.0 >= shows.1 || (seen.0 <= shows.0 && shows.1 <= seen.1)
+            }
+        };
+        if let Some(drawing) = kept.and_then(|index| self.pan_drawings.get(index))
+            && drawing.transform == transform
+            && drawing.rect.size() == rect.size()
+            && drawing.rect.y0.to_bits() == rect.y0.to_bits()
+            && covers(drawing.seen)
+        {
+            // The drawing's layout moved by `dx`; in the scene that is the
+            // same move through the draw transform.
+            let dx = rect.x0 - drawing.rect.x0;
+            let moved =
+                Affine::translate(transform * Point::new(dx, 0.0) - transform * Point::ORIGIN);
+            crate::scene_parts::append(scene, &drawing.scene, drawing.parts.as_ref(), Some(moved));
+            if drawing.shows_secret {
+                crate::secret_paint::note_secret_painted();
+            }
+            self.replayed_groups.push(id);
+            crate::retained_present::note_replayed();
+            return;
+        }
+        let local = kept
+            .map(|index| self.pan_drawings.swap_remove(index).scene)
+            .unwrap_or_default();
+        // Culled as on any frame: a window the pan brings further on screen
+        // is drawn again until it shows no more than a drawing of it saw.
+        let drawing = self.record_group(i, local, transform, (tr, theme, presence));
+        let carried = drawing.append_to(scene);
+        match drawing.keep(carried) {
+            Some(drawing) => self.pan_drawings.push(drawing),
+            None => self.pan_unkept.push(id),
         }
     }
 
@@ -7641,6 +7899,122 @@ mod tests {
             row.apart_drawings.is_empty(),
             "a screen-space draw drops the canvas drawings"
         );
+    }
+
+    /// On frames that only pan a strip drawn in screen space, a window at
+    /// rest shows its last drawing moved by the pan instead of drawing again,
+    /// and the frame renders as one that drew every window does, in every
+    /// theme and at fractional pans. A keyboard-focused window draws; a
+    /// frame that is not only a pan draws every window and drops the
+    /// drawings, so the next pan frame replays nothing; a pan frame that
+    /// draws every window anyway keeps them.
+    #[test]
+    fn a_pan_frame_replays_windows_at_rest_and_renders_as_a_drawn_frame() {
+        use crate::offscreen::OffscreenRenderer;
+        use crate::retained_present::{PanFrame, PanReplay, take_replayed};
+        fn draw(row: &mut GroupRow, text: &mut TextRenderer, theme: &Theme, replay: bool) -> Scene {
+            draw_as(
+                row,
+                text,
+                theme,
+                if replay {
+                    PanFrame::Replayed
+                } else {
+                    PanFrame::Drawn
+                },
+            )
+        }
+        fn draw_as(
+            row: &mut GroupRow,
+            text: &mut TextRenderer,
+            theme: &Theme,
+            frame: PanFrame,
+        ) -> Scene {
+            thread_local! {
+                static FRAMES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+            }
+            let number = FRAMES.with(|frames| {
+                frames.set(frames.get().wrapping_add(1));
+                frames.get()
+            });
+            let _frame = PanReplay::begin(frame, number);
+            let mut scene = Scene::new();
+            let presence = PresenceCtx::empty();
+            let previous = presence.push_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+            row.draw(&mut scene, Affine::IDENTITY, text, theme, &presence);
+            presence.pop_viewport(previous);
+            row.mark_drawn();
+            scene
+        }
+        let text = &mut TextRenderer::new();
+        let mut renderer = OffscreenRenderer::new(800, 600);
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let mut row = strip_at(5, 800.0, 0.0, 400);
+            relayout_strip(&mut row, 800.0);
+            take_replayed();
+            let _ = draw(&mut row, text, &theme, true);
+            assert_eq!(take_replayed(), 0, "the first pan frame draws every window");
+            for scroll in [37.0, 210.5, 333.25, 0.0] {
+                row.set_scroll_x_for_test(scroll);
+                relayout_strip(&mut row, 800.0);
+                let replayed = draw(&mut row, text, &theme, true);
+                let windows = take_replayed();
+                assert!(windows > 0, "a pan to {scroll} replays the windows at rest");
+                assert_eq!(windows, row.replayed_groups_for_test().len());
+                // The same pan drawn by a frame that is not only a pan.
+                let drawn = draw(&mut row, text, &theme, false);
+                assert_eq!(
+                    take_replayed(),
+                    0,
+                    "a frame that is not only a pan draws every window"
+                );
+                let replayed = renderer.render(&replayed, vello::peniko::Color::BLACK);
+                let drawn = renderer.render(&drawn, vello::peniko::Color::BLACK);
+                assert_eq!(
+                    OffscreenRenderer::pixels_differing_beyond_aa(&replayed, &drawn),
+                    0,
+                    "a pan to {scroll} replayed renders as drawn"
+                );
+                // That frame dropped the drawings: the next pan frame draws.
+                let _ = draw(&mut row, text, &theme, true);
+                assert_eq!(
+                    take_replayed(),
+                    0,
+                    "drawings do not outlive a frame that is not only a pan"
+                );
+            }
+            // A keyboard-focused window is drawn on every frame.
+            let shown = row.onscreen_group_ids();
+            let focused = shown[0];
+            let index = row
+                .groups
+                .iter()
+                .position(|group| group.id == focused)
+                .unwrap();
+            let _ = row.groups[index].set_focused(true);
+            let _ = draw(&mut row, text, &theme, false);
+            let _ = draw(&mut row, text, &theme, true);
+            row.set_scroll_x_for_test(120.0);
+            relayout_strip(&mut row, 800.0);
+            let _ = draw(&mut row, text, &theme, true);
+            assert!(take_replayed() > 0);
+            assert!(
+                !row.replayed_groups_for_test().contains(&focused),
+                "the focused window draws: {:?}",
+                row.replayed_groups_for_test()
+            );
+            // A pan frame that draws every window keeps the drawings: the
+            // one after replays again.
+            let _ = draw_as(&mut row, text, &theme, PanFrame::Kept);
+            assert_eq!(take_replayed(), 0, "a kept frame draws every window");
+            row.set_scroll_x_for_test(140.0);
+            relayout_strip(&mut row, 800.0);
+            let _ = draw(&mut row, text, &theme, true);
+            assert!(
+                take_replayed() > 0,
+                "drawings outlive a pan frame that drew every window"
+            );
+        }
     }
 
     /// Each window group of a strip drawn in canvas coordinates is a damage
