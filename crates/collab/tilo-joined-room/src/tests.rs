@@ -13,9 +13,9 @@ use std::{
     },
     time::SystemTime,
 };
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::{
     TransportOrigin,
-    owner_commit::{CommitOperation, OwnerCommitRequest},
     workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId},
 };
 

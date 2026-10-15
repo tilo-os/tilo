@@ -38,9 +38,8 @@ pub mod durability;
 
 pub mod topology;
 
-pub mod desktop_command;
 pub mod document_import;
-pub mod owner_commit;
+pub mod legacy_policy;
 pub mod workspace_checkpoint;
 pub mod workspace_membership;
 pub mod workspace_task;

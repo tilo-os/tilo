@@ -140,7 +140,7 @@ impl NativeWorkspaceOwner {
         initialization: ApplicationInitialization<'_>,
         now: SystemTime,
     ) -> Result<[u8; 32], String> {
-        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+        use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
         if initialization.document.is_empty() || initialization.document.len() > 64 * 1024 {
             return Err("application initialization exceeds bootstrap limit".into());
         }

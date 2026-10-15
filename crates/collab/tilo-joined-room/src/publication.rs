@@ -5,7 +5,7 @@ use neighbour_wire::NeighbourMsg;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, time::SystemTime};
-use tilo_peer_state::owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
+use tilo_owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::{Reseal, StatePeer};
 
 mod reservation;
@@ -533,7 +533,7 @@ pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> R
     let bytes = encode(&view.peer.room_message(), MAX_BYTES)?;
     let binding = if matches!(
         existing.binding.target,
-        tilo_peer_state::owner_commit::CommitTarget::NativeCheckpointRoot { .. }
+        tilo_owner_commit::CommitTarget::NativeCheckpointRoot { .. }
     ) {
         crate::checkpoint::binding(
             view.record.room,
@@ -732,9 +732,7 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
     if retention != Retention::Checkpoint || channel != entry.channel {
         return Err("native governance checkpoint transport mismatch".into());
     }
-    if let tilo_peer_state::owner_commit::CommitTarget::NativeCheckpointRoot { root } =
-        entry.binding.target
-    {
+    if let tilo_owner_commit::CommitTarget::NativeCheckpointRoot { root } = entry.binding.target {
         if view.peer.workspace_checkpoint_root()? != Some(root)
             || entry.binding != crate::checkpoint::binding(view.record.room, root)
         {
@@ -1011,7 +1009,7 @@ mod encoding_tests {
             bytes,
             binding: CommitBinding {
                 room: "room".into(),
-                target: tilo_peer_state::owner_commit::CommitTarget::Document {
+                target: tilo_owner_commit::CommitTarget::Document {
                     app: "so.tilo.code".into(),
                     record: "a".into(),
                 },

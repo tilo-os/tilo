@@ -267,9 +267,9 @@ impl CapnpBrokerState {
                 invocation,
                 redacted,
             } => {
-                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                let request = tilo_owner_commit::OwnerCommitRequest {
                     room: caller.room.clone(),
-                    operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                    operation: tilo_owner_commit::CommitOperation::EffectReceipt {
                         invocation: invocation.0,
                         redacted: redacted.as_bytes().to_vec(),
                     },

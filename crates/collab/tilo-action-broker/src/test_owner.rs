@@ -21,12 +21,10 @@ use std::{
     },
     time::SystemTime,
 };
-use tilo_peer_state::{
-    SeedDocument, SeedState, StatePeer, TransportOrigin,
-    owner_commit::{
-        CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
-    },
+use tilo_owner_commit::{
+    CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
 };
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use tokio::sync::{mpsc, oneshot};
 

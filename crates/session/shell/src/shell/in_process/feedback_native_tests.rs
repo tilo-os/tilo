@@ -227,7 +227,7 @@ fn native_configuration_cannot_supply_role_or_reporter_authority() {
 }
 
 fn prepare_existing_chat(owner: &NativeWorkspaceOwner, key: &ed25519_dalek::SigningKey) {
-    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
     let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
     owner
         .commit_document_with_current(

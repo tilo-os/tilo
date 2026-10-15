@@ -6,7 +6,7 @@
 use super::*;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::CommitNamed as _;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 
 /// The parent exchange test's state directory, device identity, endpoint,
 /// relay and publishing session, still live when its restart phase begins.

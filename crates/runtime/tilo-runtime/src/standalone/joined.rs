@@ -24,10 +24,8 @@ use tilo_joined_room::{
     NativeWorkspaceOwner,
     session::{self, Connect, Input, Scope},
 };
-use tilo_peer_state::{
-    InputDisposition,
-    owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService},
-};
+use tilo_owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+use tilo_peer_state::InputDisposition;
 use tilo_relay_session::{Inbound, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
 use tokio::sync::Notify;
 

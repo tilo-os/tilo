@@ -253,8 +253,8 @@ pub trait WorkspaceMemberships: Send + Sync {
 
     fn execute(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture;
+        request: tilo_owner_commit::OwnerCommitRequest,
+    ) -> tilo_owner_commit::CommitFuture;
 }
 
 /// Where the view of a launched app opens: next to where the actor that

@@ -284,7 +284,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         // The room's own governance (its grants' and capabilities' expiries)
         // and this host's custody certificate (`check_native_custody`).
         let committed = owner.with_current(room, |view| {
-            let grants = tilo_peer_state::owner_commit::PrivatePolicyBasis::from_peer(view.peer())?
+            let grants = tilo_owner_commit::PrivatePolicyBasis::from_peer(view.peer())?
                 .next_expiry_after(after);
             let custody = view
                 .device()
