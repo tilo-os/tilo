@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Keep the parts of t.toml that other repository files define in step with them.
 
-t keys a cargo check by its package's own files and path dependencies, and a
+t keys a cargo check by what cargo reads for its package (its sources, the
+local crates it reaches and the lockfile entries of the crates it uses), and a
 shell check by its `inputs`. suites.toml already says which packages read
 files outside their directory and which paths each hermetic suite group reads,
 so t.toml carries both, generated between markers:
