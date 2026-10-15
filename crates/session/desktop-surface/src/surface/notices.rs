@@ -21,7 +21,7 @@ use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::notifications::{
     CenterLayout, CenterMetrics, CenterOutcome, HistoryActivation, Notification,
-    NotificationCenter, NotificationHost, NotificationLog, NotificationStack,
+    NotificationCenter, NotificationHost, NotificationLog, NotificationSeverity, NotificationStack,
 };
 
 /// Width of the centre panel, and its inset from the surface's edges.
@@ -122,13 +122,14 @@ impl NotificationHost for NoticeState {
         self.touch();
     }
     /// An ask the host posted shows its choices as buttons: "Not now" and
-    /// the action itself. Other notifications open on a click, as before.
+    /// the action itself. An application's notification shows the action
+    /// it named ("Try again"); one without opens on a click.
     fn actions_for(&self, notification: &Notification) -> Vec<(String, String)> {
         if super::search::is_host_offer(notification) {
             // Painted secondary first, so the answer ends the row.
             notification.actions.iter().rev().cloned().collect()
         } else {
-            Vec::new()
+            notification.actions.clone()
         }
     }
     fn invoke_action(&self, id: u64, key: &str) {
@@ -439,9 +440,17 @@ impl AppInbox {
                         shown.app_name = Some(name);
                         shown.source_workspace = workspace;
                     }
+                    shown.severity = match notification.severity {
+                        ui::notify::Severity::Info => NotificationSeverity::Info,
+                        ui::notify::Severity::Warning => NotificationSeverity::Warning,
+                        ui::notify::Severity::Error => NotificationSeverity::Error,
+                    };
                     if let Some(uri) = notification.activation {
-                        shown.actions =
-                            vec![("default".into(), crate::i18n::t("notification-action-open"))];
+                        // A click opens it; an activation the app named
+                        // ("Try again") is a button too.
+                        if let Some(label) = notification.action {
+                            shown.actions = vec![("default".into(), label)];
+                        }
                         self.activations.insert(shown.id, uri);
                     }
                     self.shown.insert(key, notifications.post(shown));
@@ -991,7 +1000,8 @@ mod tests {
             notifier
                 .show(
                     &ui::notify::Notification::new("alarm", "Alarm", "07:00")
-                        .with_activation("tilo-clocks:alarm/1"),
+                        .with_activation("tilo-clocks:alarm/1")
+                        .with_action("Stop"),
                 )
                 .unwrap();
         }
@@ -1003,6 +1013,10 @@ mod tests {
         );
         let alarm = notifications.log().active()[1].clone();
         assert_eq!(alarm.default_action_key().as_deref(), Some("default"));
+        assert_eq!(
+            alarm.actions[0].1, "Stop",
+            "the button says what choosing it does"
+        );
         assert_eq!(
             inbox.take_activation(alarm.id).as_deref(),
             Some("tilo-clocks:alarm/1")
