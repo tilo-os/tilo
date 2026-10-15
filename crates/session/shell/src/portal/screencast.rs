@@ -22,7 +22,7 @@
               lint fires on macro-generated code a per-function #[allow] cannot reach"
 )]
 
-use super::reply::{Ended, OrFail, Reply, Results, answer, ensure};
+use super::reply::{Ended, OrFail, Reply, Results, answer};
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -450,169 +450,140 @@ impl ScreenCastBackend {
                 resource: LifecycleResource::Prompt,
             };
             let request_path = handle.to_string();
-            let registered = self
-                .lifecycle
-                .register_request(connection, &request_path, request_entry, move |_| {
-                    cancellation.store(true, Ordering::Release);
-                })
-                .await;
-            ensure(matches!(registered, Ok(true)))?;
-
-            // SelectSources is mandatory. Never synthesize a session from fields
-            // supplied by an otherwise authenticated Start call.
-            let Some(session) = self.sessions.lock().ok().and_then(|s| s.get(&key).cloned()) else {
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            };
-            if session.owner != auth.owner.as_str()
-                || session.app_id != app_id
-                || session.caller.as_ref() != Some(&auth.caller)
-                || session.source_types == 0
-                || session.starting
-                || !session.streams.is_empty()
-            {
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            }
-            let marked_starting = self.sessions.lock().ok().is_some_and(|mut sessions| {
-                sessions.get_mut(&key).is_some_and(|entry| {
-                    if entry.starting || !entry.streams.is_empty() {
-                        false
-                    } else {
-                        entry.starting = true;
-                        true
+            let cancel = move |_: &LifecycleEntry| cancellation.store(true, Ordering::Release);
+            self.lifecycle
+                .with_request(connection, &request_path, request_entry, cancel, async {
+                    // SelectSources is mandatory. Never synthesize a session from fields
+                    // supplied by an otherwise authenticated Start call.
+                    let Some(session) =
+                        self.sessions.lock().ok().and_then(|s| s.get(&key).cloned())
+                    else {
+                        return Err(Ended::Failed);
+                    };
+                    if session.owner != auth.owner.as_str()
+                        || session.app_id != app_id
+                        || session.caller.as_ref() != Some(&auth.caller)
+                        || session.source_types == 0
+                        || session.starting
+                        || !session.streams.is_empty()
+                    {
+                        return Err(Ended::Failed);
                     }
-                })
-            });
-            if !marked_starting {
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            }
+                    let marked_starting = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                        sessions.get_mut(&key).is_some_and(|entry| {
+                            if entry.starting || !entry.streams.is_empty() {
+                                false
+                            } else {
+                                entry.starting = true;
+                                true
+                            }
+                        })
+                    });
+                    if !marked_starting {
+                        return Err(Ended::Failed);
+                    }
 
-            // The sole consent prompt for this handshake lives here. A valid
-            // restore token is the only fast path.
-            if !session.restored && !session.consented {
-                let cap_template = Capability::Screencast { scope: GRANT_ONCE };
-                let outcome = flow::resolve(
-                    &self.ctx,
-                    auth.caller.clone(),
-                    CapabilityKind::Screencast,
-                    cap_template,
-                )
-                .await;
-                if cancelled.load(Ordering::Acquire) || !outcome.is_allowed() {
-                    self.reset_starting(&key);
-                    self.lifecycle
-                        .complete_request_object(connection, &request_path)
+                    // The sole consent prompt for this handshake lives here. A valid
+                    // restore token is the only fast path.
+                    if !session.restored && !session.consented {
+                        let cap_template = Capability::Screencast { scope: GRANT_ONCE };
+                        let outcome = flow::resolve(
+                            &self.ctx,
+                            auth.caller.clone(),
+                            CapabilityKind::Screencast,
+                            cap_template,
+                        )
                         .await;
-                    return Err(Ended::Cancelled);
-                }
-            }
+                        if cancelled.load(Ordering::Acquire) || !outcome.is_allowed() {
+                            self.reset_starting(&key);
+                            return Err(Ended::Cancelled);
+                        }
+                    }
 
-            // One stream per selected source type (bounded by `multiple`).
-            let (width, height) = size_from_options(&options);
-            let types = selected_source_types(session.source_types, session.multiple);
-            let mut infos: Vec<PipewireStreamInfo> = Vec::with_capacity(types.len());
-            for st in types {
-                let req = PipewireStreamRequest {
-                    caller: auth.caller.clone(),
-                    width,
-                    height,
-                    framerate: 30,
-                    source_type: st,
-                    cursor_mode: session.cursor_mode,
-                };
-                match self
-                    .ctx
-                    .screencast_provisioner
-                    .provision_blocking(req)
-                    .await
-                {
-                    Ok(info) => infos.push(info),
-                    Err(e) => {
+                    // One stream per selected source type (bounded by `multiple`).
+                    let (width, height) = size_from_options(&options);
+                    let types = selected_source_types(session.source_types, session.multiple);
+                    let mut infos: Vec<PipewireStreamInfo> = Vec::with_capacity(types.len());
+                    for st in types {
+                        let req = PipewireStreamRequest {
+                            caller: auth.caller.clone(),
+                            width,
+                            height,
+                            framerate: 30,
+                            source_type: st,
+                            cursor_mode: session.cursor_mode,
+                        };
+                        match self
+                            .ctx
+                            .screencast_provisioner
+                            .provision_blocking(req)
+                            .await
+                        {
+                            Ok(info) => infos.push(info),
+                            Err(e) => {
+                                for info in &infos {
+                                    self.ctx.screencast_provisioner.release(info.node_id);
+                                }
+                                self.reset_starting(&key);
+                                tracing::warn!("screencast: pipewire provision failed: {e}");
+                                return Err(Ended::Failed);
+                            }
+                        }
+                    }
+
+                    if cancelled.load(Ordering::Acquire) {
                         for info in &infos {
                             self.ctx.screencast_provisioner.release(info.node_id);
                         }
                         self.reset_starting(&key);
-                        self.lifecycle
-                            .complete_request_object(connection, &request_path)
-                            .await;
-                        tracing::warn!("screencast: pipewire provision failed: {e}");
+                        return Err(Ended::Cancelled);
+                    }
+
+                    // Persist: issue an opaque key carried in standard `restore_data` if
+                    // the session asked for it.
+                    let restore_key =
+                        (session.persist_mode > 0).then(|| uuid::Uuid::new_v4().to_string());
+
+                    let updated = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                        let Some(entry) = sessions.get_mut(&key) else {
+                            return false;
+                        };
+                        entry.consented = true;
+                        entry.starting = false;
+                        entry.streams = infos.iter().map(|info| info.node_id).collect();
+                        true
+                    });
+                    if !updated {
+                        for info in &infos {
+                            self.ctx.screencast_provisioner.release(info.node_id);
+                        }
                         return Err(Ended::Failed);
                     }
-                }
-            }
 
-            if cancelled.load(Ordering::Acquire) {
-                for info in &infos {
-                    self.ctx.screencast_provisioner.release(info.node_id);
-                }
-                self.reset_starting(&key);
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Cancelled);
-            }
-
-            // Persist: issue an opaque key carried in standard `restore_data` if
-            // the session asked for it.
-            let restore_key = (session.persist_mode > 0).then(|| uuid::Uuid::new_v4().to_string());
-
-            let updated = self.sessions.lock().ok().is_some_and(|mut sessions| {
-                let Some(entry) = sessions.get_mut(&key) else {
-                    return false;
-                };
-                entry.consented = true;
-                entry.starting = false;
-                entry.streams = infos.iter().map(|info| info.node_id).collect();
-                true
-            });
-            if !updated {
-                for info in &infos {
-                    self.ctx.screencast_provisioner.release(info.node_id);
-                }
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            }
-
-            if let Some(token) = &restore_key {
-                let data = RestoreData {
-                    app_id: session.app_id.clone(),
-                    source_types: session.source_types,
-                    cursor_mode: session.cursor_mode,
-                    multiple: session.multiple,
-                    persist_mode: session.persist_mode,
-                    issued_unix_seconds: tilo_clock::unix_now(),
-                };
-                let stored =
-                    self.restore.lock().map_err(|_| ()).and_then(|mut restore| {
-                        restore.insert(token.clone(), data).map_err(|_| ())
-                    });
-                if stored.is_err() {
-                    for info in &infos {
-                        self.ctx.screencast_provisioner.release(info.node_id);
+                    if let Some(token) = &restore_key {
+                        let data = RestoreData {
+                            app_id: session.app_id.clone(),
+                            source_types: session.source_types,
+                            cursor_mode: session.cursor_mode,
+                            multiple: session.multiple,
+                            persist_mode: session.persist_mode,
+                            issued_unix_seconds: tilo_clock::unix_now(),
+                        };
+                        let stored = self.restore.lock().map_err(|_| ()).and_then(|mut restore| {
+                            restore.insert(token.clone(), data).map_err(|_| ())
+                        });
+                        if stored.is_err() {
+                            for info in &infos {
+                                self.ctx.screencast_provisioner.release(info.node_id);
+                            }
+                            self.reset_starting(&key);
+                            return Err(Ended::Failed);
+                        }
                     }
-                    self.reset_starting(&key);
-                    self.lifecycle
-                        .complete_request_object(connection, &request_path)
-                        .await;
-                    return Err(Ended::Failed);
-                }
-            }
 
-            let results = start_response(infos, restore_key, session.persist_mode);
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            Ok(results)
+                    Ok(start_response(infos, restore_key, session.persist_mode))
+                })
+                .await
         })
         .await
     }

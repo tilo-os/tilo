@@ -532,30 +532,31 @@ impl InputCaptureBackend {
                 app_id: app_id.clone(),
                 resource: LifecycleResource::Prompt,
             };
-            if !matches!(
-                self.lifecycle
-                    .register_request(&self.connection, &request, entry, |_| {})
-                    .await,
-                Ok(true)
-            ) {
-                return Err(Ended::Failed);
-            }
-            let allowed = flow::resolve(
-                &self.ctx,
-                auth.caller.clone(),
-                CapabilityKind::InputCapture,
-                Capability::RemoteDesktop {
-                    scope: Expiry::AfterUse,
-                },
-            )
-            .await
-            .is_allowed();
             self.lifecycle
-                .complete_request_object(&self.connection, &request)
-                .await;
-            if !allowed {
-                return Err(Ended::Cancelled);
-            }
+                .with_request(
+                    &self.connection,
+                    &request,
+                    entry,
+                    |_: &LifecycleEntry| {},
+                    async {
+                        let allowed = flow::resolve(
+                            &self.ctx,
+                            auth.caller.clone(),
+                            CapabilityKind::InputCapture,
+                            Capability::RemoteDesktop {
+                                scope: Expiry::AfterUse,
+                            },
+                        )
+                        .await
+                        .is_allowed();
+                        if allowed {
+                            Ok(())
+                        } else {
+                            Err(Ended::Cancelled)
+                        }
+                    },
+                )
+                .await?;
             let started = self.compositor.state.lock().ok().is_some_and(|mut state| {
                 let zone_set = state.zone_set;
                 state.sessions.get_mut(&key).is_some_and(|session| {
@@ -612,23 +613,23 @@ impl InputCaptureBackend {
                 app_id,
                 resource: LifecycleResource::Prompt,
             };
-            if !matches!(
-                self.lifecycle
-                    .register_request(&self.connection, &request, entry, |_| {})
-                    .await,
-                Ok(true)
-            ) {
-                return Err(Ended::Failed);
-            }
             let (zones, zone_set) = self
-                .compositor
-                .state
-                .lock()
-                .map(|state| (state.zones.clone(), state.zone_set))
-                .unwrap_or_default();
-            self.lifecycle
-                .complete_request_object(&self.connection, &request)
-                .await;
+                .lifecycle
+                .with_request(
+                    &self.connection,
+                    &request,
+                    entry,
+                    |_: &LifecycleEntry| {},
+                    async {
+                        Ok(self
+                            .compositor
+                            .state
+                            .lock()
+                            .map(|state| (state.zones.clone(), state.zone_set))
+                            .unwrap_or_default())
+                    },
+                )
+                .await?;
             let mut results = HashMap::new();
             insert_value(
                 &mut results,
@@ -671,39 +672,35 @@ impl InputCaptureBackend {
                 app_id,
                 resource: LifecycleResource::Prompt,
             };
-            if !matches!(
-                self.lifecycle
-                    .register_request(&self.connection, &request, entry, |_| {})
-                    .await,
-                Ok(true)
-            ) {
-                return Err(Ended::Failed);
-            }
-            let (zones, current_zone_set) = self
-                .compositor
-                .state
-                .lock()
-                .map(|state| (state.zones.clone(), state.zone_set))
-                .unwrap_or_default();
-            let mut accepted = vec![];
-            let mut failed = vec![];
-            for raw in barriers {
-                match parse_barrier(&raw).filter(|barrier| {
-                    zone_set == current_zone_set && valid_barrier(barrier, &zones)
-                }) {
-                    Some(barrier) => accepted.push(barrier),
-                    None => failed.push(opt_u32(&raw, "barrier_id").unwrap_or(0)),
-                }
-            }
-            if let Ok(mut state) = self.compositor.state.lock()
-                && let Some(session) = state.sessions.get_mut(&key)
-            {
-                session.barriers = accepted;
-                session.zone_set = current_zone_set;
-            }
-            self.lifecycle
-                .complete_request_object(&self.connection, &request)
-                .await;
+            let no_cancel = |_: &LifecycleEntry| {};
+            let failed = self
+                .lifecycle
+                .with_request(&self.connection, &request, entry, no_cancel, async {
+                    let (zones, current_zone_set) = self
+                        .compositor
+                        .state
+                        .lock()
+                        .map(|state| (state.zones.clone(), state.zone_set))
+                        .unwrap_or_default();
+                    let mut accepted = vec![];
+                    let mut failed = vec![];
+                    for raw in barriers {
+                        match parse_barrier(&raw).filter(|barrier| {
+                            zone_set == current_zone_set && valid_barrier(barrier, &zones)
+                        }) {
+                            Some(barrier) => accepted.push(barrier),
+                            None => failed.push(opt_u32(&raw, "barrier_id").unwrap_or(0)),
+                        }
+                    }
+                    if let Ok(mut state) = self.compositor.state.lock()
+                        && let Some(session) = state.sessions.get_mut(&key)
+                    {
+                        session.barriers = accepted;
+                        session.zone_set = current_zone_set;
+                    }
+                    Ok(failed)
+                })
+                .await?;
             let mut results = HashMap::new();
             insert_value(&mut results, "failed_barriers", Value::from(failed));
             Ok(results)
@@ -856,17 +853,16 @@ impl InputCaptureBackend {
             app_id,
             resource: LifecycleResource::Prompt,
         };
-        if !matches!(
-            self.lifecycle
-                .register_request(&self.connection, &request, request_entry, |_| {})
-                .await,
-            Ok(true)
-        ) {
-            return Err(Ended::Failed);
-        }
+        let no_cancel = |_: &LifecycleEntry| {};
         self.lifecycle
-            .complete_request_object(&self.connection, &request)
-            .await;
+            .with_request(
+                &self.connection,
+                &request,
+                request_entry,
+                no_cancel,
+                async { Ok(()) },
+            )
+            .await?;
         let mut results = HashMap::new();
         insert_value(&mut results, "capabilities", Value::U32(requested));
         Ok(results)

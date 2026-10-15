@@ -500,99 +500,81 @@ impl RemoteDesktopBackend {
                 app_id: auth.caller.app_id.clone(),
                 resource: LifecycleResource::Prompt,
             };
-            let registered = self
-                .lifecycle
-                .register_request(connection, &request_path, request_entry, move |_| {
-                    cancellation.store(true, Ordering::Release);
-                })
-                .await;
-            ensure(matches!(registered, Ok(true)))?;
-            let Some(session) = self
-                .sessions
-                .lock()
-                .ok()
-                .and_then(|sessions| sessions.get(&key).cloned())
-            else {
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
+            let cancel = move |_: &LifecycleEntry| {
+                cancellation.store(true, Ordering::Release);
             };
-            if session.owner != auth.owner.as_str()
-                || session.app_id != app_id
-                || session.caller.as_ref() != Some(&auth.caller)
-                || session.consented
-                || session.started
-            {
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            }
-            let marked_selecting = self.sessions.lock().ok().is_some_and(|mut sessions| {
-                sessions.get_mut(&key).is_some_and(|entry| {
-                    if entry.selecting || entry.consented || entry.started {
-                        false
-                    } else {
-                        entry.selecting = true;
-                        true
-                    }
-                })
-            });
-            if !marked_selecting {
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            }
-            let cap_template = Capability::RemoteDesktop {
-                scope: Expiry::AfterUse,
-            };
-            let allowed = restored.is_some()
-                || flow::resolve(
-                    &self.ctx,
-                    auth.caller,
-                    CapabilityKind::RemoteDesktop,
-                    cap_template,
-                )
-                .await
-                .is_allowed();
-
-            if cancelled.load(Ordering::Acquire) || !allowed {
-                if let Ok(mut sessions) = self.sessions.lock()
-                    && let Some(entry) = sessions.get_mut(&key)
-                {
-                    entry.selecting = false;
-                }
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Cancelled);
-            }
-
-            let updated = self.sessions.lock().ok().is_some_and(|mut sessions| {
-                let Some(entry) = sessions.get_mut(&key) else {
-                    return false;
-                };
-                entry.devices = types;
-                entry.consented = true;
-                entry.selecting = false;
-                entry.persist_mode = restored
-                    .as_ref()
-                    .map_or(requested_persist, |record| record.persist_mode);
-                entry.restored = restored.is_some();
-                true
-            });
-            if !updated {
-                self.lifecycle
-                    .complete_request_object(connection, &request_path)
-                    .await;
-                return Err(Ended::Failed);
-            }
             self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            Ok(Results::new())
+                .with_request(connection, &request_path, request_entry, cancel, async {
+                    let Some(session) = self
+                        .sessions
+                        .lock()
+                        .ok()
+                        .and_then(|sessions| sessions.get(&key).cloned())
+                    else {
+                        return Err(Ended::Failed);
+                    };
+                    if session.owner != auth.owner.as_str()
+                        || session.app_id != app_id
+                        || session.caller.as_ref() != Some(&auth.caller)
+                        || session.consented
+                        || session.started
+                    {
+                        return Err(Ended::Failed);
+                    }
+                    let marked_selecting = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                        sessions.get_mut(&key).is_some_and(|entry| {
+                            if entry.selecting || entry.consented || entry.started {
+                                false
+                            } else {
+                                entry.selecting = true;
+                                true
+                            }
+                        })
+                    });
+                    if !marked_selecting {
+                        return Err(Ended::Failed);
+                    }
+                    let cap_template = Capability::RemoteDesktop {
+                        scope: Expiry::AfterUse,
+                    };
+                    let allowed = restored.is_some()
+                        || flow::resolve(
+                            &self.ctx,
+                            auth.caller,
+                            CapabilityKind::RemoteDesktop,
+                            cap_template,
+                        )
+                        .await
+                        .is_allowed();
+
+                    if cancelled.load(Ordering::Acquire) || !allowed {
+                        if let Ok(mut sessions) = self.sessions.lock()
+                            && let Some(entry) = sessions.get_mut(&key)
+                        {
+                            entry.selecting = false;
+                        }
+                        return Err(Ended::Cancelled);
+                    }
+
+                    let updated = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                        let Some(entry) = sessions.get_mut(&key) else {
+                            return false;
+                        };
+                        entry.devices = types;
+                        entry.consented = true;
+                        entry.selecting = false;
+                        entry.persist_mode = restored
+                            .as_ref()
+                            .map_or(requested_persist, |record| record.persist_mode);
+                        entry.restored = restored.is_some();
+                        true
+                    });
+                    if !updated {
+                        return Err(Ended::Failed);
+                    }
+                    Ok(Results::new())
+                })
+                .await
         })
         .await
     }

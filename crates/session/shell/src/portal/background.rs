@@ -420,40 +420,40 @@ impl BackgroundBackend {
             };
             let service = self.service.clone();
             let cancel_key = key.clone();
-            let registered = self
-                .lifecycle
-                .register_request(connection, &key, entry, move |_| {
-                    service.cancel_background(&cancel_key);
-                })
-                .await;
-            ensure(matches!(registered, Ok(true)))?;
-            let (reply, rx) = oneshot::channel();
-            let request = BackgroundConsentRequest {
-                handle: key.clone(),
-                app_id: auth.caller.app_id.clone(),
-                name,
-            };
-            let outcome = match self.service.request_background(request, reply) {
-                PortalResult::Success(()) => rx.await.unwrap_or(PortalResult::Cancelled),
-                PortalResult::Cancelled => PortalResult::Cancelled,
-                PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
-                PortalResult::Failed(error) => PortalResult::Failed(error),
+            let cancel = move |_: &LifecycleEntry| {
+                service.cancel_background(&cancel_key);
             };
             self.lifecycle
-                .complete_request_object(connection, &key)
-                .await;
-            let allowed = matches!(outcome, PortalResult::Success(BackgroundConsent::Allow));
-            if allowed {
-                if let Ok(mut apps) = self.apps.lock() {
-                    if apps.contains_key(&auth.caller.app_id) || apps.len() < MAX_TRACKED_APPS {
-                        apps.entry(auth.caller.app_id.clone())
-                            .or_default()
-                            .background_allowed = true;
+                .with_request(connection, &key, entry, cancel, async {
+                    let (reply, rx) = oneshot::channel();
+                    let request = BackgroundConsentRequest {
+                        handle: key.clone(),
+                        app_id: auth.caller.app_id.clone(),
+                        name,
+                    };
+                    let outcome = match self.service.request_background(request, reply) {
+                        PortalResult::Success(()) => rx.await.unwrap_or(PortalResult::Cancelled),
+                        PortalResult::Cancelled => PortalResult::Cancelled,
+                        PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
+                        PortalResult::Failed(error) => PortalResult::Failed(error),
+                    };
+                    let allowed =
+                        matches!(outcome, PortalResult::Success(BackgroundConsent::Allow));
+                    if allowed {
+                        if let Ok(mut apps) = self.apps.lock() {
+                            if apps.contains_key(&auth.caller.app_id)
+                                || apps.len() < MAX_TRACKED_APPS
+                            {
+                                apps.entry(auth.caller.app_id.clone())
+                                    .or_default()
+                                    .background_allowed = true;
+                            }
+                        }
                     }
-                }
-            }
-            outcome.into_result()?;
-            Ok(allowed_result(allowed))
+                    outcome.into_result()?;
+                    Ok(allowed_result(allowed))
+                })
+                .await
         })
         .await
     }

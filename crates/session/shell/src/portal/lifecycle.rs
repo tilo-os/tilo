@@ -16,6 +16,8 @@ use zbus::interface;
 use zbus::names::OwnedUniqueName;
 use zbus::object_server::SignalEmitter;
 
+use super::reply::{Ended, ensure};
+
 /// Resource that must be torn down when a request or session ends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LifecycleResource {
@@ -231,6 +233,27 @@ impl PortalLifecycle {
             return Err(error);
         }
         Ok(true)
+    }
+
+    /// Run `body` while a request object is exported at `path`. A failed
+    /// registration ends the call as failed without running `body`; the
+    /// object is removed however `body` ends, so no early return can strand
+    /// it on the bus.
+    pub async fn with_request<T>(
+        &self,
+        connection: &zbus::Connection,
+        path: &str,
+        entry: LifecycleEntry,
+        cleanup: impl Fn(&LifecycleEntry) + Send + Sync + 'static,
+        body: impl Future<Output = Result<T, Ended>>,
+    ) -> Result<T, Ended> {
+        let registered = self
+            .register_request(connection, path, entry, cleanup)
+            .await;
+        ensure(matches!(registered, Ok(true)))?;
+        let outcome = body.await;
+        self.complete_request_object(connection, path).await;
+        outcome
     }
 
     /// Export a session object at `path` and arrange for cleanup on Close.
