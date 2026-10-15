@@ -327,7 +327,7 @@ run = """
 cargo check --locked -p tilo-ui --no-default-features --lib
 cargo check --locked -p tilo-app --no-default-features --lib
 """
-inputs = ["crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+cargo_packages = ["tilo-ui", "tilo-app"]
 cost = "minutes"
 
 # Apps with an Android host example, linted for both Android ABIs. Clippy's
@@ -875,7 +875,7 @@ default = false
 name = "files-ux"
 run = "cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1"
 env = { TILO_FS_FUSE_REQUIRED = "0", TILO_REQUIRE_FUSE = "0" }
-inputs = ["apps/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+cargo_packages = ["file-explorer"]
 cost = "minutes"
 
 # The kernel-path filesystem contract over a real FUSE device, which every test
@@ -1409,7 +1409,7 @@ memory_gib = "22"
 name = "runtime-macos"
 requires = ["os=macos", "arch=arm64"]
 run = "cargo check -p tilo-runtime --all-targets --locked"
-inputs = ["crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+cargo_packages = ["tilo-runtime"]
 cost = "minutes"
 on = ["main"]
 default = false
@@ -2222,7 +2222,9 @@ TILO_GITHUB_ASSET_CACHE=$assets TILO_ASSET_STORE= bash os/dev/cache-github-asset
 bash tools/ci/publish/oci-build.sh . crates/packaging/registry-server/container/Containerfile /target/publish/registry-server --platform linux/amd64 --build-context github-assets=$assets
 bash crates/packaging/registry-server/container/test-image.sh /target/publish/registry-server/image.oci.tar
 """
-inputs = ["tools/ci/publish/**", "crates/packaging/registry-server/container/**", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", ".containerignore", ".cargo/**", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates/packaging/registry-types/**", "crates/packaging/app-registry/**", "crates/packaging/tilo-app-package/**", "crates/collab/collab-types/**", "crates/collab/threshold-identity/**", "crates/system/tilo-native-certs/**", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/doc/tilo-automerge/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-lock/**", "crates/system/advisory-lock/**", "crates/system/content/**", "crates/workspace-hack/**", "vendor/automerge/**", "vendor/iroh/**", "vendor/netwatch/**", "vendor/wayland-backend/**", "vendor/genawaiter-proc-macro/**", "crates/packaging/registry-server/**"]
+inputs = ["tools/ci/publish/**", "crates/packaging/registry-server/container/**", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", ".containerignore", ".cargo/**", "rust-toolchain.toml"]
+cargo_packages = ["registry-server"]
+cargo_dev_dependencies = false
 outputs = ["/target/publish/registry-server/image.oci.tar", "/target/publish/registry-server/digest"]
 requires = ["arch=x86_64"]
 cost = "heavy"

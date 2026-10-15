@@ -104,6 +104,31 @@ and nothing else does. List too few and a stale result is reused; list too many 
 for nothing. `default = false` keeps a check out of a plain `t` run, so it only runs when asked
 for by name (and on `main`).
 
+The cargo families (`test/<package>`, `clippy/<package>`, `check/<package>`) need no globs for
+Rust code: t derives what each package reads from the manifests and `Cargo.lock`, the way cargo
+resolves it. That is the sources of the package and of every local crate it reaches, vendored
+crates patched in with `[patch]` included, and the lockfile entries of only the crates it uses,
+so a lockfile bump reruns the users of the bumped crate, not the workspace. A shell check that
+builds packages names them instead of copying their directories as globs:
+
+```toml
+[[check]]
+name = "image-registry-server"
+run = "bash tools/ci/publish/oci-build.sh . crates/packaging/registry-server/container/Containerfile …"
+cargo_packages = ["registry-server"]   # what building it reads,
+cargo_dev_dependencies = false         # not what only its tests use,
+inputs = ["tools/ci/publish/**", "crates/packaging/registry-server/container/**"]   # and these
+```
+
+The lockfile records every optional dependency, so a package reads the crates behind its
+features whether a build enables them or not. Where that matters, as for `image-relay`, whose
+release build leaves out much of what the workspace's features pull in, a hand-kept list checked
+by `tools/policy/check_workflow_package_paths.py` can still be tighter.
+
+Files a package reads that no manifest names (an `include_str!` of a file outside every crate, a
+fixture a test opens) still have to be declared: in `tools/ci/suites.toml`, which generates the
+families' `package_inputs`, or in the check's `inputs`.
+
 A check that needs particular hardware says so, and runs only on a node that has it:
 
 ```toml

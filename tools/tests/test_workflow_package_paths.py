@@ -10,6 +10,7 @@ from tools.policy.check_workflow_package_paths import (
     audit,
     dependency_directories,
     pattern_covers,
+    t_check_blocks,
     unmatched_patterns,
     workflow_path_blocks,
 )
@@ -47,6 +48,32 @@ def metadata(root: Path) -> dict:
 
 
 class WorkflowPackagePathTests(unittest.TestCase):
+    def test_a_t_check_naming_the_package_covers_its_closure(self) -> None:
+        text = """
+[[check]]
+name = "image"
+run = "build"
+cargo_packages = ["app", "tool-*"]
+inputs = ["tools/build.sh"]
+
+[[check]]
+name = "packages-only"
+run = "build"
+cargo_packages = ["other"]
+
+[[check]]
+name = "globs"
+run = "build"
+inputs = ["apps/app/**"]
+"""
+        self.assertEqual(t_check_blocks(text, "image", "app"), [])
+        self.assertEqual(t_check_blocks(text, "image", "tool-x"), [])
+        self.assertEqual(t_check_blocks(text, "image", "shared"), [{"tools/build.sh"}])
+        self.assertEqual(t_check_blocks(text, "packages-only", "app"), [set()])
+        self.assertEqual(t_check_blocks(text, "globs", "app"), [{"apps/app/**"}])
+        with self.assertRaises(ValueError):
+            t_check_blocks(text, "missing", "app")
+
     def test_workflow_path_filters_cover_every_package_closure(self) -> None:
         with self.subTest(phase='extracts each paths block and ignores other lists'):
             text = """on:
