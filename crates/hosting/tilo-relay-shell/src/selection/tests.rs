@@ -336,9 +336,7 @@ fn synthetic_frame(
     msg: &NeighbourMsg,
     checkpoint: bool,
 ) -> Vec<u8> {
-    let channel = tilo_peer_state::transport::retention(msg, checkpoint)
-        .unwrap()
-        .0;
+    let channel = neighbour_wire::retention(msg, checkpoint).unwrap().0;
     let body = postcard::to_allocvec(msg).unwrap();
     let payload = if checkpoint {
         CoeditPayload::Checkpoint { channel, body }

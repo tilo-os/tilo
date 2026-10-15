@@ -21,7 +21,8 @@ use iroh::EndpointAddr;
 use iroh::endpoint::{Endpoint, presets};
 use tokio::task::JoinHandle;
 
-use tilo_peer_state::{NeighbourMsg, SeedDocument, SeedState, StatePeer, seed_room};
+use neighbour_wire::NeighbourMsg;
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,
@@ -543,8 +544,8 @@ impl Collaborator {
             .peer
             .publish_incremental(APP, RECORD, change, &self.sk, SystemTime::now())
             .map_err(|error| anyhow!("publish an edit: {error}"))?;
-        let (channel, _) = tilo_peer_state::transport::retention(&message, false)
-            .context("an edit is retained history")?;
+        let (channel, _) =
+            neighbour_wire::retention(&message, false).context("an edit is retained history")?;
         let body = postcard::to_allocvec(&message)?;
         self.fleet.sent(&body, self.recipients);
         self.session.publish_retained_delta(channel, body)?;

@@ -4,11 +4,12 @@ use crate::shell::{persist, state::WorkspaceTree};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::{sync::Arc, time::SystemTime};
 use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_joined_room::testing::{APP, ROOM, raw_fixture, raw_fixture_at};
 use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
-use tilo_peer_state::{NeighbourMsg, TransportOrigin, join};
+use tilo_peer_state::{TransportOrigin, join};
 
 struct Fixture {
     enrollment: VerifiedNativeEnrollment,

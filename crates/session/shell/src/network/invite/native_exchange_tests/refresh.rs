@@ -308,16 +308,14 @@ pub(super) fn publish_committed(
     let mut sent = Vec::new();
     for (bytes, kind) in owner.outgoing() {
         let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-        let (channel, _) = tilo_peer_state::transport::retention(
-            &message,
-            kind == tilo_peer_state::transport::Retention::Checkpoint,
-        )
-        .unwrap();
+        let (channel, _) =
+            neighbour_wire::retention(&message, kind == neighbour_wire::Retention::Checkpoint)
+                .unwrap();
         match kind {
-            tilo_peer_state::transport::Retention::Checkpoint => {
+            neighbour_wire::Retention::Checkpoint => {
                 publisher.publish_checkpoint(channel, bytes.to_vec())
             }
-            tilo_peer_state::transport::Retention::Delta => {
+            neighbour_wire::Retention::Delta => {
                 publisher.publish_retained_delta(channel, bytes.to_vec())
             }
         }

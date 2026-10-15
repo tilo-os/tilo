@@ -1547,7 +1547,7 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
             .access_request(&member_key, 1, &vault)
             .unwrap()
             .expect("a member waiting for the channel asks for it");
-    let body = postcard::to_stdvec(&tilo_peer_state::NeighbourMsg::MlsAccessRequest {
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsAccessRequest {
         room: created.room.clone(),
         request: Box::new(request),
         delivery: 1,

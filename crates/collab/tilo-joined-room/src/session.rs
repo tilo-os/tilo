@@ -6,13 +6,14 @@ mod cursor;
 
 use crate::{NativeWorkspaceOwner, RoomId};
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
 use tilo_identity_host::custody::HostIdentity;
-use tilo_peer_state::{NeighbourMsg, Reseal, TransportOrigin, join::TransportHint};
+use tilo_peer_state::{Reseal, TransportOrigin, join::TransportHint};
 use tilo_relay_session::{RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -277,14 +278,14 @@ impl Scope {
                     }),
                     |bytes, channel, retention| {
                         match retention {
-                            tilo_peer_state::transport::Retention::Delta => {
+                            neighbour_wire::Retention::Delta => {
                                 session.publish_retained_delta(channel, bytes.to_vec())
                             }
                             // Members never republish a governor checkpoint with
                             // their own relay author, even if a producer errs. A
                             // sealed checkpoint already arrives here as a delta
                             // (`publication::member_publishes_as_delta`).
-                            tilo_peer_state::transport::Retention::Checkpoint => {
+                            neighbour_wire::Retention::Checkpoint => {
                                 return Err("native member checkpoint publication refused".into());
                             }
                         }

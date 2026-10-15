@@ -2,7 +2,7 @@ use super::*;
 use crate::store::WorkspaceStore;
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use ed25519_dalek::Signer as _;
-use tilo_peer_state::NeighbourMsg;
+use neighbour_wire::NeighbourMsg;
 
 const WORKSPACE: u64 = 7;
 

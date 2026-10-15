@@ -50,8 +50,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
+use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::{GovernedAccess, StatePeer, transport::Retention};
+use tilo_peer_state::{GovernedAccess, StatePeer};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
@@ -277,8 +278,8 @@ impl GovernedRoom {
     /// Take a member's write to a record the governor has into its copy.
     /// Not persisted: the relay retains the write, and opening the room
     /// replays it.
-    fn follow(&mut self, author: [u8; 32], message: tilo_peer_state::NeighbourMsg) {
-        let tilo_peer_state::NeighbourMsg::AppDocument {
+    fn follow(&mut self, author: [u8; 32], message: neighbour_wire::NeighbourMsg) {
+        let neighbour_wire::NeighbourMsg::AppDocument {
             app_id, record_id, ..
         } = &message
         else {
@@ -355,7 +356,7 @@ impl GovernedRoom {
                 .durable_mutation_messages(&self.peer, key, now, generation)?
                 .into_iter()
                 .filter_map(|message| match message {
-                    tilo_peer_state::NeighbourMsg::AppDocument {
+                    neighbour_wire::NeighbourMsg::AppDocument {
                         app_id, record_id, ..
                     } => Some((app_id, record_id)),
                     _ => None,
@@ -365,7 +366,7 @@ impl GovernedRoom {
                 .durable_bootstrap_messages(key, now, generation)?
                 .iter()
                 .filter(|message| match message {
-                    tilo_peer_state::NeighbourMsg::AppDocument {
+                    neighbour_wire::NeighbourMsg::AppDocument {
                         app_id, record_id, ..
                     } => changed_records.contains(&(app_id.clone(), record_id.clone())),
                     _ => true,
@@ -424,10 +425,10 @@ fn prepare_governance(
 }
 
 fn publication(
-    message: &tilo_peer_state::NeighbourMsg,
+    message: &neighbour_wire::NeighbourMsg,
     checkpoint: bool,
 ) -> Result<Publication, String> {
-    let (_, kind) = tilo_peer_state::transport::retention(message, checkpoint)
+    let (_, kind) = neighbour_wire::retention(message, checkpoint)
         .ok_or("room governance message has no retention channel")?;
     Ok(Publication {
         bytes: postcard::to_stdvec(message).map_err(|error| error.to_string())?,
@@ -1034,11 +1035,11 @@ impl Rooms {
         if author == host.cert.device_public_key {
             return Ok(());
         }
-        let Ok(message) = postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(body) else {
+        let Ok(message) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) else {
             return Ok(());
         };
         match message {
-            tilo_peer_state::NeighbourMsg::MlsAccessRequest {
+            neighbour_wire::NeighbourMsg::MlsAccessRequest {
                 room: named,
                 request,
                 ..
@@ -1046,7 +1047,7 @@ impl Rooms {
                 return self
                     .channel_notice(room, (author, ChannelNoticeKind::Request(request, None)));
             }
-            tilo_peer_state::NeighbourMsg::MlsRoutedAccessRequest {
+            neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
                 room: named,
                 request,
                 route,
@@ -1057,14 +1058,14 @@ impl Rooms {
                     (author, ChannelNoticeKind::Request(request, Some(route))),
                 );
             }
-            tilo_peer_state::NeighbourMsg::MlsGovernanceAck {
+            neighbour_wire::NeighbourMsg::MlsGovernanceAck {
                 room: named, ack, ..
             } if named == room => {
                 return self.channel_notice(room, (author, ChannelNoticeKind::Ack(ack)));
             }
             _ => {}
         }
-        let tilo_peer_state::NeighbourMsg::AppDocument {
+        let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             record_id,
             envelope,
@@ -1273,7 +1274,7 @@ impl Rooms {
     async fn publish_channel_governance(
         &self,
         workspace_id: u64,
-        messages: Vec<tilo_peer_state::NeighbourMsg>,
+        messages: Vec<neighbour_wire::NeighbourMsg>,
     ) -> Result<(), String> {
         for admission in self
             .enqueue_channel_governance(workspace_id, messages)
@@ -1289,7 +1290,7 @@ impl Rooms {
     async fn enqueue_channel_governance(
         &self,
         workspace_id: u64,
-        messages: Vec<tilo_peer_state::NeighbourMsg>,
+        messages: Vec<neighbour_wire::NeighbourMsg>,
     ) -> Result<Vec<crate::room_records::RoomAdmission>, String> {
         let mut admissions = Vec::with_capacity(messages.len());
         for message in messages {
@@ -1362,9 +1363,9 @@ impl Rooms {
             .map_err(|error| error.to_string())?;
         let mut admissions = Vec::new();
         while let Some(entry) = room.record.outgoing.get(room.record.published) {
-            let message: tilo_peer_state::NeighbourMsg =
+            let message: neighbour_wire::NeighbourMsg =
                 postcard::from_bytes(&entry.bytes).map_err(|error| error.to_string())?;
-            let (channel, _) = tilo_peer_state::transport::retention(&message, entry.checkpoint)
+            let (channel, _) = neighbour_wire::retention(&message, entry.checkpoint)
                 .ok_or("room governance message has no retention channel")?;
             admissions.push(
                 host.records

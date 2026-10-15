@@ -10,7 +10,8 @@
 use super::*;
 use automerge::transaction::Transactable;
 use collab_types::CommitNamed as _;
-use tilo_peer_state::{NeighbourMsg, StatePeer};
+use neighbour_wire::NeighbourMsg;
+use tilo_peer_state::StatePeer;
 
 struct Recovery {
     fixture: Fixture,
@@ -21,9 +22,7 @@ struct Recovery {
     now: web_time::SystemTime,
 }
 fn envelope(author: [u8; 32], room: &str, message: &NeighbourMsg, checkpoint: bool) -> Envelope {
-    let channel = tilo_peer_state::transport::retention(message, checkpoint)
-        .unwrap()
-        .0;
+    let channel = neighbour_wire::retention(message, checkpoint).unwrap().0;
     let body = postcard::to_allocvec(message).unwrap();
     let delta = if checkpoint {
         crate::coedit::CoeditPayload::Checkpoint { channel, body }

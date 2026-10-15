@@ -18,7 +18,8 @@ use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
+use neighbour_wire::{NeighbourMsg, Retention};
+use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::store::{RETAINED_DIR, WorkspaceStore};
 use tilo_relay::transport::Envelope;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
@@ -119,11 +120,8 @@ struct Publication {
 
 impl Publication {
     fn payload(&self) -> CoeditPayload {
-        let (channel, kind) = tilo_peer_state::transport::retention(
-            &self.message,
-            self.kind == Retention::Checkpoint,
-        )
-        .unwrap();
+        let (channel, kind) =
+            neighbour_wire::retention(&self.message, self.kind == Retention::Checkpoint).unwrap();
         assert_eq!(kind, self.kind);
         let body = postcard::to_allocvec(&self.message).unwrap();
         match kind {

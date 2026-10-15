@@ -7,7 +7,8 @@
 use super::*;
 use crate::{Envelope, RelayClient, RelayConfig};
 use ed25519_dalek::{Signer as _, SigningKey};
-use tilo_peer_state::{NeighbourMsg, join::MemberRole};
+use neighbour_wire::NeighbourMsg;
+use tilo_peer_state::join::MemberRole;
 use tilo_relay_protocol::legacy_window as wire;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
