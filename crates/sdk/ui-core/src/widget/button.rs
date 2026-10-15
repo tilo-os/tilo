@@ -139,6 +139,13 @@ fn theme_key(theme: &Theme) -> ThemeKey {
 }
 
 impl Button {
+    /// Box this widget in the SDK so thin apps reuse its shared implementation.
+    /// This keeps the widget's vtable instantiation out of the app.
+    #[must_use]
+    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+        Box::new(self)
+    }
+
     /// Focus a person needs to be shown: keyboard focus, not the focus a
     /// click on the button gave it.
     fn focus_visible(&self) -> bool {

@@ -2591,7 +2591,7 @@ impl FileExplorerWidget {
         if let Some((dragged, before)) = drag {
             list.stage_drag(&dragged, &before);
         }
-        self.nav.set_sidebar(Some(Box::new(list)));
+        self.nav.set_sidebar(Some(list.into_widget()));
         *self.places_choice.borrow_mut() = None;
         self.places_shown = Some((sections, selected));
     }
@@ -2645,7 +2645,7 @@ impl FileExplorerWidget {
             // letting it claim `percent(1.0)`, so a long directory overflows
             // the viewport and the wheel + scrollbar thumb move the grid.
             ViewMode::Grid => {
-                view_col = view_col.push(Box::new(
+                view_col = view_col.push(
                     Scrollable::new(ScrollAxis::Vertical)
                         .fill_parent_height()
                         .with_persisted_offset(self.scroll_offset.clone())
@@ -2656,11 +2656,12 @@ impl FileExplorerWidget {
                         // file name, target, or keyboard focus ring at the
                         // bottom of a compact grid.
                         .with_bottom_content_inset(status_bubble_safe_inset(theme))
-                        .with_child(crate::views::grid_view::build_grid(view)),
-                ));
+                        .with_child(crate::views::grid_view::build_grid(view))
+                        .into_widget(),
+                );
             }
         }
-        Box::new(view_col)
+        view_col.into_widget()
     }
 
     /// The label for the floating status bubble: an operation status, else the
@@ -6406,26 +6407,14 @@ impl FileExplorerWidget {
     }
 }
 
-/// Resolve a standalone [`ContextMenu`]'s rect from its anchor (it isn't part
-/// of the App's taffy tree, so drive a throwaway layout pass). Shared by the
-/// main menu and the "New File" flyout.
+/// Resolve a standalone [`ContextMenu`]'s rect through its shared anchored
+/// layout. Both the main menu and the "New File" flyout own their geometry;
+/// neither needs an app-local instantiation of the Taffy layout solver.
 fn layout_menu_widget(menu: &mut ContextMenu) {
-    if !menu.is_open() {
-        return;
+    if menu.is_open() {
+        menu.set_text_scale(ui::Theme::dark().text_scale);
+        menu.layout_at_position();
     }
-    let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-    let mut node_map: std::collections::HashMap<taffy::NodeId, *mut dyn Widget> =
-        std::collections::HashMap::new();
-    let theme = ui::Theme::dark();
-    let node = menu.build_layout(&mut taffy, &theme, &mut node_map);
-    let _ = taffy.compute_layout(
-        node,
-        taffy::Size {
-            width: taffy::AvailableSpace::Definite(400.0),
-            height: taffy::AvailableSpace::Definite(800.0),
-        },
-    );
-    menu.apply_layout(&taffy, node, Point::ZERO);
 }
 
 /// Thin mockable wrapper around the desktop "open with default app"

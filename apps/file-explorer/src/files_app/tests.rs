@@ -1,5 +1,46 @@
 use super::*;
 
+#[test]
+fn shared_menu_layout_matches_the_former_taffy_pass() {
+    for initial_scale in [0.5, 1.0, 2.0, 4.0] {
+        for viewport in [None, Some(vello::kurbo::Rect::new(0.0, 0.0, 320.0, 240.0))] {
+            let make_menu = || {
+                let mut menu = ContextMenu::with_items(vec![
+                    MenuItem::action("Open", || {}),
+                    MenuItem::separator(),
+                    MenuItem::action("Rename", || {}),
+                ]);
+                if let Some(viewport) = viewport {
+                    menu.open_at_clamped([290.0, 210.0], viewport);
+                } else {
+                    menu.open_at([290.0, 210.0]);
+                }
+                menu.set_text_scale(initial_scale);
+                menu
+            };
+            let mut expected = make_menu();
+            let mut tree = taffy::TaffyTree::new();
+            let mut nodes = std::collections::HashMap::new();
+            let node = expected.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
+            tree.compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+            expected.apply_layout(&tree, node, Point::ZERO);
+            let mut actual = make_menu();
+            layout_menu_widget(&mut actual);
+            assert_eq!(actual.get_rect(), expected.get_rect());
+            for index in 0..3 {
+                assert_eq!(actual.item_rect(index), expected.item_rect(index));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod open_with_tests {
     use super::*;

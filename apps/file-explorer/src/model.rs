@@ -180,7 +180,7 @@ fn read_record_index_manifest_v2(root: &Path) -> Option<RecordIndexManifestV2> {
     if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
         return None;
     }
-    let manifest: RecordIndexManifestV2 = serde_json::from_slice(&bytes).ok()?;
+    let manifest = RecordIndexManifestV2::from_json(&bytes).ok()?;
     if manifest.schema_version != RECORD_INDEX_V2_VERSION
         || !valid_record_index_revision(&manifest.revision)
         || manifest.page_entries != RECORD_INDEX_PAGE_ENTRIES
@@ -200,7 +200,7 @@ fn read_record_index_page_v2(
     if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
         return None;
     }
-    let page: RecordIndexPageV2 = serde_json::from_slice(&bytes).ok()?;
+    let page = RecordIndexPageV2::from_json(&bytes).ok()?;
     if page.schema_version != RECORD_INDEX_V2_VERSION
         || page.revision != manifest.revision
         || page.offset != offset
@@ -220,7 +220,7 @@ fn read_record_index_manifest_v3(root: &Path) -> Option<RecordIndexManifestV3> {
     if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
         return None;
     }
-    let value: RecordIndexManifestV3 = serde_json::from_slice(&bytes).ok()?;
+    let value = RecordIndexManifestV3::from_json(&bytes).ok()?;
     (value.schema_version == RECORD_INDEX_V3_VERSION
         && valid_record_index_revision(&value.revision)
         && uuid::Uuid::parse_str(&value.initial_cursor).is_ok()
@@ -238,7 +238,7 @@ fn read_record_index_page_v3(
     if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
         return None;
     }
-    let value: RecordIndexPageV3 = serde_json::from_slice(&bytes).ok()?;
+    let value = RecordIndexPageV3::from_json(&bytes).ok()?;
     (value.schema_version == RECORD_INDEX_V3_VERSION
         && value.revision == manifest.revision
         && value.records.len() <= manifest.page_entries
@@ -267,7 +267,7 @@ pub fn resolve_workspace_record(
         if bytes.len() > MAX_RECORD_INDEX_PAGE_BYTES {
             continue;
         }
-        let Ok(projection) = serde_json::from_slice::<RecordIndexExactV2>(&bytes) else {
+        let Ok(projection) = RecordIndexExactV2::from_json(&bytes) else {
             continue;
         };
         if projection.schema_version != RECORD_INDEX_V2_VERSION
@@ -340,7 +340,7 @@ fn parse_record_index_projection(root: &Path, bytes: &[u8]) -> Option<RecordInde
     if bytes.len() > MAX_RECORD_INDEX_XATTR_BYTES {
         return None;
     }
-    let projection: RecordIndexProjectionV1 = serde_json::from_slice(bytes).ok()?;
+    let projection = RecordIndexProjectionV1::from_json(bytes).ok()?;
     if projection.schema_version != 1 || projection.records.len() > MAX_RECORD_INDEX_ENTRIES {
         return None;
     }

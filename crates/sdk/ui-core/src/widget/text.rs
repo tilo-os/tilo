@@ -201,6 +201,13 @@ enum TextAccess {
 }
 
 impl Text {
+    /// Box this widget in the SDK so thin apps reuse its shared implementation.
+    /// This keeps the widget's vtable instantiation out of the app.
+    #[must_use]
+    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+        Box::new(self)
+    }
+
     pub fn new(label: &str) -> Self {
         Self {
             label: label.to_string(),
