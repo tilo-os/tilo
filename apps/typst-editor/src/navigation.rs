@@ -2,17 +2,20 @@
 //! list. The drawer starts closed so opening a workspace keeps both panes' room.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use typst::syntax::{LinkedNode, Source, SyntaxKind, SyntaxNode, ast};
 use ui::i18n::EmbeddedCatalog;
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::Resource;
-use ui::tilo_resource::{Effect, Id};
-use ui::widget::{Decorator, NavItem, NavList, NavSection, SidebarDrawer, Widget};
+use ui::tilo_resource::{Effect, Id, Invoke};
+use ui::widget::{
+    Decorator, NavAction, NavItem, NavList, NavSection, RowStatus, SidebarDrawer, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -24,7 +27,7 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
     &[(
         "en-US",
-        "typst-navigation-name = Project navigation\ntypst-navigation-files = Files\ntypst-navigation-outline = Outline\n",
+        "typst-navigation-name = Project navigation\ntypst-navigation-files = Files\ntypst-navigation-outline = Outline\ntypst-navigation-new-file = New file\ntypst-navigation-new-file-name = untitled.typ\n",
     )],
 );
 
@@ -138,10 +141,11 @@ fn file_id(id: &Id) -> String {
 
 /// Each heading belongs to the nearest preceding shallower heading, including
 /// when the source skips levels. There are no fabricated intermediate rows.
-fn outline_items(headings: &[Heading]) -> Vec<NavItem> {
+fn outline_items(headings: &[Heading], caret_line: Option<usize>) -> Vec<NavItem> {
     fn children(
         remaining: &mut std::iter::Peekable<std::slice::Iter<'_, Heading>>,
         parent_level: usize,
+        active: Option<&Heading>,
     ) -> Vec<NavItem> {
         let mut items = Vec::new();
         while remaining
@@ -151,27 +155,34 @@ fn outline_items(headings: &[Heading]) -> Vec<NavItem> {
             let Some(heading) = remaining.next() else {
                 break;
             };
-            let nested = children(remaining, heading.level);
-            items.push(
-                NavItem::new(heading_id(heading.line), &heading.title)
-                    .children(nested)
-                    .expanded(),
-            );
+            let nested = children(remaining, heading.level, active);
+            let mut item = NavItem::new(heading_id(heading.line), &heading.title)
+                .badge(format!("H{}", heading.level))
+                .children(nested)
+                .expanded();
+            if active == Some(heading) {
+                item = item.status(RowStatus::Active);
+            }
+            items.push(item);
         }
         items
     }
-    children(&mut headings.iter().peekable(), 0)
+    let active =
+        caret_line.and_then(|line| headings.iter().rev().find(|heading| heading.line <= line));
+    children(&mut headings.iter().peekable(), 0, active)
 }
 
 pub(crate) struct Navigation {
     drawer: SidebarDrawer,
     list: NavList,
     requests: Rc<RefCell<Vec<String>>>,
+    new_file_requests: Rc<RefCell<usize>>,
     sections: Vec<NavSection>,
     destinations: HashMap<String, TypstEffect>,
     current: Option<Id>,
     source: Option<String>,
     headings: Vec<Heading>,
+    caret_line: Option<usize>,
     structure_dirty: bool,
 }
 
@@ -179,18 +190,28 @@ impl Navigation {
     pub(crate) fn new() -> Self {
         let requests = Rc::new(RefCell::new(Vec::new()));
         let chosen = Rc::clone(&requests);
+        let new_file_requests = Rc::new(RefCell::new(0));
+        let create = Rc::clone(&new_file_requests);
         Self {
             drawer: SidebarDrawer::new().left().closed(),
             list: NavList::new(Vec::new())
                 .with_id("typst.navigation")
                 .with_accessible_name(CATALOG.t("typst-navigation-name"))
-                .on_activate(move |id| chosen.borrow_mut().push(id)),
+                .compact_rows()
+                .on_activate(move |id| chosen.borrow_mut().push(id))
+                .on_section_action(move |section, action| {
+                    if section == "typst.files" && action == "typst.new-file" {
+                        *create.borrow_mut() += 1;
+                    }
+                }),
             requests,
+            new_file_requests,
             sections: Vec::new(),
             destinations: HashMap::new(),
             current: None,
             source: None,
             headings: Vec::new(),
+            caret_line: None,
             structure_dirty: true,
         }
     }
@@ -202,6 +223,53 @@ impl Navigation {
             .into_iter()
             .filter_map(|id| self.destinations.get(&id).cloned())
             .collect()
+    }
+
+    /// Submit these through the same host custody as other workspace edits.
+    /// Names are reserved across a batch of clicks before the next document sync.
+    pub(crate) fn take_new_file_requests(&self) -> Vec<Invoke<Workspace>> {
+        let count = std::mem::take(&mut *self.new_file_requests.borrow_mut());
+        let mut names: HashSet<_> = self
+            .sections
+            .iter()
+            .filter(|section| section.id == "typst.files")
+            .flat_map(|section| section.items.iter().map(|item| item.label.clone()))
+            .collect();
+        let base = CATALOG.t("typst-navigation-new-file-name");
+        let stem = base.strip_suffix(".typ").unwrap_or(&base);
+        (0..count)
+            .map(|_| {
+                let mut name = base.clone();
+                let mut suffix = 2;
+                while names.contains(&name) {
+                    name = format!("{stem}-{suffix}.typ");
+                    suffix += 1;
+                }
+                names.insert(name.clone());
+                crate::resource::new_file(&name, None, "")
+            })
+            .collect()
+    }
+
+    /// One-based source line, matching `SourceEditor::goto_line`. A quiet
+    /// active marker follows the caret independently of keyboard selection;
+    /// updating it never unfolds branches or steals navigation focus.
+    pub(crate) fn set_caret_line(&mut self, line: usize) {
+        if self.caret_line == Some(line) {
+            return;
+        }
+        self.caret_line = Some(line);
+        if let Some(outline) = self
+            .sections
+            .iter_mut()
+            .find(|section| section.id == "typst.outline")
+        {
+            let items = outline_items(&self.headings, self.caret_line);
+            if outline.items != items {
+                outline.items = items;
+                self.list.set_sections(self.sections.clone());
+            }
+        }
     }
 
     pub(crate) fn sync(&mut self, workspace: &Workspace, current: Option<&Id>, source: &str) {
@@ -219,7 +287,12 @@ impl Navigation {
                     key.clone(),
                     TypstEffect::OpenProjectFile { id: id.to_string() },
                 );
-                NavItem::new(key, &file.name.0)
+                let icon = if file.name.0.to_ascii_lowercase().ends_with(".bib") {
+                    Icon::Quote
+                } else {
+                    Icon::FileText
+                };
+                NavItem::new(key, &file.name.0).icon(icon)
             })
             .collect();
         for heading in &self.headings {
@@ -229,11 +302,16 @@ impl Navigation {
             );
         }
         let sections = vec![
-            NavSection::new("typst.files", CATALOG.t("typst-navigation-files"), files),
+            NavSection::new("typst.files", CATALOG.t("typst-navigation-files"), files)
+                .trailing_action(NavAction::new(
+                    "typst.new-file",
+                    Icon::Plus,
+                    CATALOG.t("typst-navigation-new-file"),
+                )),
             NavSection::new(
                 "typst.outline",
                 CATALOG.t("typst-navigation-outline"),
-                outline_items(&self.headings),
+                outline_items(&self.headings, self.caret_line),
             ),
         ];
         if sections != self.sections {
@@ -251,8 +329,11 @@ impl Navigation {
 
     pub(crate) fn layout(&mut self, body: Rect, theme: &Theme) -> Rect {
         self.drawer.scale_for(theme);
-        // Long section names need a full list column, including tree indentation.
+        // Keep room for nested headings without taking a full editor column.
+        // UI zoom changes row density, not the sidebar's share of the window;
+        // accessibility text growth still reserves room for larger labels.
         let width = f64::from(theme.tokens.metrics.panel_width_list) / f64::from(theme.ui_scale)
+            * (7.0 / 9.0)
             * f64::from(theme.text_growth());
         self.drawer
             .set_docked_width(width / theme.responsive_scale());
@@ -464,9 +545,10 @@ mod tests {
 
     #[test]
     fn hierarchy_uses_nearest_shallower_heading_without_fake_rows() {
-        let items = outline_items(&headings(
-            "== First\n==== Deep\n=== Middle\n= Root\n== Child\n= Last",
-        ));
+        let items = outline_items(
+            &headings("== First\n==== Deep\n=== Middle\n= Root\n== Child\n= Last"),
+            None,
+        );
         assert_eq!(
             items
                 .iter()
@@ -498,6 +580,134 @@ mod tests {
             navigation.list.visible_item_ids(),
             vec![heading_id(1), heading_id(3)]
         );
+    }
+
+    #[test]
+    fn file_icons_badges_and_resources_keep_the_original_destinations() {
+        use crate::resource::TypstFile;
+        use ui::tilo_resource::Atom;
+        let mut workspace = Workspace::default();
+        for (id, name) in [("main", "main.typ"), ("refs", "references.BIB")] {
+            workspace.files.push(
+                Id::from_raw(id),
+                TypstFile {
+                    name: Atom(name.into()),
+                    ..TypstFile::default()
+                },
+            );
+        }
+        let mut navigation = Navigation::new();
+        let current = Id::from_raw("main");
+        navigation.sync(&workspace, Some(&current), "= Root\n== Child\n=== Deep");
+        let files = &navigation.sections[0];
+        assert_eq!(files.title, "Files");
+        assert_eq!(files.items[0].icon, Some(Icon::FileText));
+        assert_eq!(files.items[1].icon, Some(Icon::Quote));
+        assert_eq!(files.trailing_action.as_ref().unwrap().icon, Icon::Plus);
+        let root = &navigation.sections[1].items[0];
+        assert_eq!(root.badge.as_deref(), Some("H1"));
+        assert_eq!(root.children[0].badge.as_deref(), Some("H2"));
+        assert_eq!(root.children[0].children[0].badge.as_deref(), Some("H3"));
+        assert_eq!(navigation.selected(), Some(file_id(&current)));
+        let resources = navigation.live_resources();
+        assert_eq!(resources[0].label, "Files");
+        assert_eq!(resources[1].children[0].label, "Root");
+        navigation
+            .requests
+            .borrow_mut()
+            .extend([file_id(&current), heading_id(2)]);
+        assert_eq!(
+            navigation.take_requests(),
+            vec![
+                TypstEffect::OpenProjectFile {
+                    id: current.to_string()
+                },
+                TypstEffect::GoToHeading { line: 2 },
+            ]
+        );
+    }
+
+    #[test]
+    fn caret_marks_the_nearest_preceding_heading_without_unfolding_or_selecting() {
+        let mut navigation = Navigation::new();
+        let workspace = Workspace::default();
+        navigation.sync(
+            &workspace,
+            None,
+            "Introduction\n= Root\nBody\n== Child\nChild body\n= Next",
+        );
+        navigation.set_caret_line(1);
+        assert!(
+            navigation.sections[1]
+                .items
+                .iter()
+                .all(|item| item.status.is_none())
+        );
+        navigation.list.set_expanded(&heading_id(2), false);
+        navigation.set_caret_line(5);
+        let root = &navigation.sections[1].items[0];
+        assert!(root.status.is_none());
+        assert_eq!(
+            root.children[0].status.as_ref().unwrap().row_status(),
+            RowStatus::Active
+        );
+        assert!(!navigation.list.is_expanded(&heading_id(2)));
+        assert_eq!(navigation.selected(), None);
+        assert!(navigation.take_requests().is_empty());
+        navigation.set_caret_line(6);
+        assert!(navigation.sections[1].items[0].children[0].status.is_none());
+        assert!(navigation.sections[1].items[1].status.is_some());
+        navigation.sync(&workspace, None, "Introduction\n= Only\nBody");
+        assert!(navigation.sections[1].items[0].status.is_some());
+        navigation.sync(&workspace, None, "");
+        assert!(navigation.sections[1].items.is_empty());
+    }
+
+    #[test]
+    fn files_plus_is_accessible_and_queues_typed_new_file_actions() {
+        use ui::a11y::Action;
+        use ui::headless::FrameHarness;
+        use ui::state::State;
+        let mut workspace = Workspace::default();
+        workspace.files.push(
+            Id::from_raw("existing"),
+            crate::resource::TypstFile {
+                name: ui::tilo_resource::Atom("untitled.typ".into()),
+                ..crate::resource::TypstFile::default()
+            },
+        );
+        let mut navigation = Navigation::new();
+        navigation.sync(&workspace, None, "");
+        let list = std::mem::replace(&mut navigation.list, NavList::new(Vec::new()));
+        let mut harness = FrameHarness::for_root(State::new(), list, (280, 360), Theme::dark());
+        harness.relayout_at((280, 360)).unwrap();
+        let button = harness
+            .a11y_node_named("New file Files")
+            .expect("FILES plus button");
+        harness.perform_a11y_action(button, &Action::Focus).unwrap();
+        harness.key("Enter");
+        harness.key("Enter");
+        let requests = navigation.take_new_file_requests();
+        assert_eq!(requests.len(), 2);
+        for (request, name) in requests.iter().zip(["untitled-2.typ", "untitled-3.typ"]) {
+            assert_eq!(request.id, Workspace::NEW_FILE.id);
+            assert!(!request.is_effect());
+            assert_eq!(request.arguments["name"], name);
+            assert_eq!(request.arguments["source"], "");
+        }
+        assert!(navigation.take_new_file_requests().is_empty());
+    }
+
+    #[test]
+    fn sidebar_reserves_a_compact_column_at_both_ui_scales() {
+        for scale in [1.0, 1.5] {
+            let mut navigation = Navigation::new();
+            navigation.open();
+            let body = Rect::new(0.0, 0.0, 1440.0, 900.0);
+            let remaining = navigation.layout(body, &Theme::dark().with_ui_scale(scale));
+            assert!((navigation.rect().width() - 280.0).abs() < 0.01);
+            assert!((remaining.width() - 1160.0).abs() < 0.01);
+        }
     }
 
     #[test]

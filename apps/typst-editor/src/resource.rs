@@ -178,7 +178,7 @@ pub(crate) fn sample_files(scenario: Option<&str>) -> Vec<(Id, TypstFile)> {
             Id::from_raw("sample-references"),
             TypstFile {
                 name: Atom("references.bib".into()),
-                source: "@article{flash,\n  author = {Flash, Tamar and Hogan, Neville},\n  title = {The coordination of arm movements},\n  year = {1985},\n}\n".into(),
+                source: "@article{flash1985,\n  author = {Flash, Tamar and Hogan, Neville},\n  title = {Coordination of arm movements},\n  year = {1985},\n}\n@article{knuth1984,\n  author = {Knuth, Donald E.},\n  title = {Literate Programming},\n  year = {1984},\n}\n".into(),
                 ..TypstFile::default()
             },
         )))

@@ -37,6 +37,7 @@ pub mod actions;
 pub mod app;
 pub mod chrome;
 pub mod compile;
+pub mod completions;
 pub mod diagnostics;
 pub mod editor;
 mod navigation;

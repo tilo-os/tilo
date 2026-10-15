@@ -133,6 +133,8 @@ pub(crate) type NavMenuFn = Box<dyn FnMut(NodeId, Rect, Point)>;
 /// The navigation presentation a `NavList` installs on its tree.
 pub(crate) struct NavPresentation<M> {
     pub rail: bool,
+    pub compact_sections: bool,
+    pub compact_rows: bool,
     pub spec: SpecFn<M>,
     /// A section header's trailing action was pressed.
     pub on_section_action: Option<Box<dyn FnMut(NodeId)>>,
@@ -150,11 +152,21 @@ impl<M> NavPresentation<M> {
     pub(crate) fn new(rail: bool, spec: SpecFn<M>) -> Self {
         Self {
             rail,
+            compact_sections: false,
+            compact_rows: false,
             spec,
             on_section_action: None,
             on_check: None,
             on_menu: None,
             theme: Theme::dark(),
+        }
+    }
+
+    fn effective_theme(&self, theme: &Theme) -> Theme {
+        if self.compact_rows && !self.rail {
+            crate::chrome::nav_row::compact_nav_theme(theme)
+        } else {
+            theme.clone()
         }
     }
 
@@ -197,11 +209,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// Size every row for the navigation presentation: rows at the nav row
     /// height (or the rail tile), section headers with their leading space.
     /// Navigation lists are short, so every row is measured.
-    pub(super) fn apply_nav_metrics(&mut self, theme: &Theme) {
+    pub(crate) fn apply_nav_metrics(&mut self, theme: &Theme) {
         let Some(nav) = self.nav.as_mut() else {
             return;
         };
-        nav.theme = theme.clone();
+        nav.theme = nav.effective_theme(theme);
+        let theme = &nav.theme;
         let row = if nav.rail {
             nav_rail_row_height(theme)
         } else {
@@ -318,6 +331,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let mut face = NavSectionFace::new(row, title)
             .hovered(self.hovered == Some(key))
             .focused(self.is_focused && self.focused == Some(key));
+        face.compact = self.nav.as_ref().is_some_and(|nav| nav.compact_sections);
         if *collapsible {
             face = face.collapsible(self.expanded.contains(&id));
         }
@@ -348,7 +362,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let Some(spec) = self.nav_spec(id) else {
             return false;
         };
-        let rail = self.nav.as_ref().is_some_and(|nav| nav.rail);
+        let Some(nav) = self.nav.as_ref() else {
+            return false;
+        };
+        let effective = nav.effective_theme(theme);
+        let theme = &effective;
+        let rail = nav.rail;
         match &spec {
             NavRowSpec::Section { .. } => {
                 if !rail && let Some(face) = self.nav_section_face(id, row, &spec) {
@@ -641,8 +660,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
             NavRowSpec::Section { .. } if !nav.rail => {
                 let face = NavSectionFace::new(row, label);
                 let layout = nav_section_layout(theme, &face);
-                let style = theme.text(TextRole::Subheading);
-                let (width, _) = text.measure_style(label, None, &style);
+                let style =
+                    crate::chrome::nav_row::nav_section_title_style(theme, nav.compact_sections);
+                let title = if nav.compact_sections {
+                    label.to_uppercase()
+                } else {
+                    label.to_owned()
+                };
+                let (width, _) = text.measure_style(&title, None, &style);
                 Some(f64::from(width) > layout.title_x1 - layout.title_x0 + 0.5)
             }
             NavRowSpec::Item(item) => {
@@ -693,6 +718,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return false;
         };
         let label = self.model.label(id).unwrap_or_default();
+        let effective = nav.effective_theme(theme);
+        let theme = &effective;
         let floating = theme.on_ground(theme.tokens.colors.surfaces.overlay);
         let mut face = item.face(ghost, label, &floating);
         face.style = nav.style();

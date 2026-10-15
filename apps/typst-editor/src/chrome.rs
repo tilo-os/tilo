@@ -19,7 +19,7 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::toggle_group::{Segment, SegmentedFace, ToggleGroup};
 use ui::widget::toolbar::{Orientation, Toolbar};
-use ui::widget::{Button, ControlSize, Text, Widget};
+use ui::widget::{Button, ButtonRole, Chip, ChipLead, ChipStyle, ControlSize, Text, Tone, Widget};
 
 /// What a control asked the editor to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,23 +45,23 @@ pub enum Command {
 
 type Queue = Rc<RefCell<Vec<Command>>>;
 
-/// The position of the Problems toggle among the toolbar's items.
-const PROBLEMS_ITEM: usize = 1;
-const OUTLINE_ITEM: usize = 0;
-
-/// What the toolbar was built for; it is rebuilt when the Problems label or
-/// the toggle's state would differ.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct ToolbarFor {
-    problems: usize,
-    shown: bool,
-    outline_shown: bool,
+/// Compiler status shared by the header and bottom status controls.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct Diagnostics {
+    errors: usize,
+    warnings: usize,
+    elapsed_ms: u128,
+    compiling: bool,
 }
 
 pub struct Chrome {
     queue: Queue,
     toolbar: Toolbar,
-    toolbar_for: ToolbarFor,
+    diagnostics: Diagnostics,
+    bottom_status: Toolbar,
+    sidebar: Button,
+    compact: bool,
+    footer_density: FooterDensity,
     actions: Option<ui::framework::Actions<crate::resource::Workspace>>,
     retired_toolbars: Vec<Toolbar>,
     document: Text,
@@ -73,7 +73,14 @@ pub struct Chrome {
     history: ui::widget::HistoryOpener,
     history_rect: Rect,
     structure_dirty: bool,
+    reopen_overflow: bool,
     visible: Visible,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FooterDensity {
+    Full,
+    Compact,
 }
 
 /// Which of the optional controls show in the current layout.
@@ -81,6 +88,7 @@ pub struct Chrome {
 struct Visible {
     view: bool,
     close: bool,
+    bottom_status: bool,
 }
 
 fn command(queue: &Queue, command: Command) -> impl FnMut() + 'static {
@@ -88,12 +96,35 @@ fn command(queue: &Queue, command: Command) -> impl FnMut() + 'static {
     move || queue.borrow_mut().push(command)
 }
 
-/// The Problems toggle's label: the count of problems, when there are any.
-fn problems_label(problems: usize) -> String {
-    if problems == 0 {
-        "Problems".to_string()
+fn sidebar_label(shown: bool) -> &'static str {
+    if shown {
+        "Hide sidebar"
     } else {
-        format!("Problems ({problems})")
+        "Show sidebar"
+    }
+}
+
+fn diagnostic_label(count: usize, singular: &str, plural: &str) -> String {
+    format!("{count} {}", if count == 1 { singular } else { plural })
+}
+
+fn status_chip(
+    queue: &Queue,
+    id: &str,
+    label: &str,
+    tone: Tone,
+    icon: Icon,
+    actions: Option<&ui::framework::Actions<crate::resource::Workspace>>,
+) -> Chip {
+    let chip = Chip::new(label)
+        .with_id(id)
+        .with_lead(ChipLead::Glyph(icon))
+        .style(ChipStyle::Tinted(tone))
+        .tooltip("Toggle problems")
+        .on_click(command(queue, Command::ToggleProblems));
+    match actions.and_then(|actions| actions.effect(&crate::actions::TypstEffect::Problems)) {
+        Some(binding) => chip.on_action(binding),
+        None => chip,
     }
 }
 
@@ -112,40 +143,114 @@ impl OptionalToolbarAction for Toolbar {
 
 fn build_toolbar(
     queue: &Queue,
-    problems: usize,
-    shown: bool,
-    outline_shown: bool,
+    status: Diagnostics,
+    export: bool,
+    compact: bool,
     actions: Option<&ui::framework::Actions<crate::resource::Workspace>>,
 ) -> Toolbar {
-    use crate::actions::TypstEffect;
-    let toolbar = Toolbar::new(Orientation::Horizontal)
-        .push_toggle(
-            "Outline",
-            outline_shown,
-            command(queue, Command::ToggleOutline),
-        )
-        .with_optional_action(actions.and_then(|actions| actions.effect(&TypstEffect::Outline)));
-    let toolbar = if problems > 0 {
-        toolbar
-            .push_toggle(
-                &problems_label(problems),
-                shown,
-                command(queue, Command::ToggleProblems),
-            )
-            .with_optional_action(
-                actions.and_then(|actions| actions.effect(&TypstEffect::Problems)),
-            )
-    } else {
-        toolbar
+    let mut toolbar = Toolbar::new(Orientation::Horizontal);
+    let status_id = |name: &str| {
+        if export {
+            format!("typst.{name}")
+        } else {
+            format!("typst.status.{name}")
+        }
     };
-    // Formatting, file operations and zoom remain in the action palette and
-    // keyboard map; only navigation and the primary output belong in the bar.
-    toolbar
-        .push_spacer()
-        .push_button("Export PDF", command(queue, Command::ExportPdf))
+    // Hosted controls never fold into More: the diagnostics stay visible even
+    // when secondary commands overflow in a narrow window.
+    if status.errors + status.warnings == 0 {
+        toolbar = toolbar.push_element(Box::new(
+            status_chip(
+                queue,
+                &status_id("no-problems"),
+                if compact { "" } else { "No problems" },
+                Tone::Success,
+                Icon::Check,
+                actions,
+            )
+            .with_accessible_name("No problems"),
+        ));
+    } else if !export && compact && status.errors > 0 && status.warnings > 0 {
+        let label = format!("{} ⚠ {}", status.errors, status.warnings);
+        let accessible = format!(
+            "{} · {}",
+            diagnostic_label(status.errors, "error", "errors"),
+            diagnostic_label(status.warnings, "warning", "warnings")
+        );
+        toolbar = toolbar.push_element(Box::new(
+            status_chip(
+                queue,
+                &status_id("problems"),
+                &label,
+                Tone::Danger,
+                Icon::CircleAlert,
+                actions,
+            )
+            .with_accessible_name(accessible),
+        ));
+    } else {
+        for (count, singular, plural, tone, icon, id) in [
+            (
+                status.errors,
+                "error",
+                "errors",
+                Tone::Danger,
+                Icon::CircleAlert,
+                "errors",
+            ),
+            (
+                status.warnings,
+                "warning",
+                "warnings",
+                Tone::Warning,
+                Icon::TriangleAlert,
+                "warnings",
+            ),
+        ] {
+            if count > 0 {
+                let name = diagnostic_label(count, singular, plural);
+                let label = if compact {
+                    count.to_string()
+                } else {
+                    name.clone()
+                };
+                toolbar = toolbar.push_element(Box::new(
+                    status_chip(queue, &status_id(id), &label, tone, icon, actions)
+                        .with_accessible_name(name),
+                ));
+            }
+        }
+    }
+    if !export && compact {
+        return toolbar;
+    }
+    let timing = if status.compiling {
+        "Compiling…".to_owned()
+    } else if status.errors == 0 {
+        format!("Compiled in {} ms", status.elapsed_ms)
+    } else {
+        "Compilation failed".to_owned()
+    };
+    // Timing is secondary metadata: unlike the diagnostics pill it can move
+    // into More on narrow headers, and still opens the same Problems panel.
+    toolbar = toolbar
+        .push_button(&timing, command(queue, Command::ToggleProblems))
+        .with_button_role(ButtonRole::Plain)
+        .with_priority(-1)
         .with_optional_action(
-            actions.and_then(|actions| actions.effect(&TypstEffect::ExportPdf { path: None })),
-        )
+            actions.and_then(|actions| actions.effect(&crate::actions::TypstEffect::Problems)),
+        );
+    if export {
+        // Formatting, file operations and zoom remain in the action palette
+        // and keyboard map; only the primary output belongs in the bar.
+        toolbar = toolbar
+            .push_spacer()
+            .push_button("Export PDF", command(queue, Command::ExportPdf))
+            .with_optional_action(actions.and_then(|actions| {
+                actions.effect(&crate::actions::TypstEffect::ExportPdf { path: None })
+            }));
+    }
+    toolbar
 }
 
 impl Default for Chrome {
@@ -175,14 +280,16 @@ impl Chrome {
                 };
                 view_queue.borrow_mut().push(command);
             });
-        let toolbar_for = ToolbarFor {
-            problems: 0,
-            shown: false,
-            outline_shown: false,
-        };
+        let diagnostics = Diagnostics::default();
         Self {
-            toolbar: build_toolbar(&queue, 0, false, false, None),
-            toolbar_for,
+            toolbar: build_toolbar(&queue, diagnostics, true, false, None),
+            bottom_status: build_toolbar(&queue, diagnostics, false, false, None),
+            diagnostics,
+            sidebar: Button::icon_only("typst.sidebar", Icon::PanelLeft, "Show sidebar")
+                .toggled(false)
+                .on_click(command(&queue, Command::ToggleOutline)),
+            compact: false,
+            footer_density: FooterDensity::Full,
             actions: None,
             retired_toolbars: Vec::new(),
             document,
@@ -193,6 +300,7 @@ impl Chrome {
             history: ui::widget::HistoryOpener::new(),
             history_rect: Rect::ZERO,
             structure_dirty: true,
+            reopen_overflow: false,
             visible: Visible::default(),
             queue,
         }
@@ -204,15 +312,13 @@ impl Chrome {
         actions: &ui::framework::Actions<crate::resource::Workspace>,
     ) {
         self.actions = Some(actions.clone());
-        let toolbar = build_toolbar(
-            &self.queue,
-            self.toolbar_for.problems,
-            self.toolbar_for.shown,
-            self.toolbar_for.outline_shown,
-            Some(actions),
+        self.rebuild_status();
+        let shown = self.sidebar.is_toggled();
+        self.sidebar = actions.bind_effect_invocation(
+            Button::icon_only("typst.sidebar", Icon::PanelLeft, sidebar_label(shown))
+                .toggled(shown),
+            &crate::actions::TypstEffect::Outline,
         );
-        self.retired_toolbars
-            .push(std::mem::replace(&mut self.toolbar, toolbar));
         self.close_problems = actions.bind_effect_invocation(
             Button::icon_only("typst.close-problems", Icon::X, "Close problems"),
             &crate::actions::TypstEffect::Problems,
@@ -233,41 +339,71 @@ impl Chrome {
         names: &[&str],
         current: usize,
         problems: usize,
-        problems_shown: bool,
+        _problems_shown: bool,
         outline_shown: bool,
         preview_shown: bool,
     ) {
         let name = names.get(current).copied().unwrap_or_default();
         *self.document_name.borrow_mut() = name.to_string();
-        let wanted = ToolbarFor {
-            problems,
-            shown: problems_shown,
-            outline_shown,
-        };
-        if wanted != self.toolbar_for {
-            if (problems > 0) == (self.toolbar_for.problems > 0) {
-                self.toolbar.set_active(OUTLINE_ITEM, outline_shown);
-                if problems > 0 {
-                    self.toolbar.set_active(PROBLEMS_ITEM, problems_shown);
-                    self.toolbar
-                        .set_label(PROBLEMS_ITEM, &problems_label(problems));
-                }
-            } else {
-                let toolbar = build_toolbar(
-                    &self.queue,
-                    problems,
-                    problems_shown,
-                    outline_shown,
-                    self.actions.as_ref(),
-                );
-                // The old layout tree still holds widget pointers until rebuilt.
-                self.retired_toolbars
-                    .push(std::mem::replace(&mut self.toolbar, toolbar));
-                self.structure_dirty = true;
-            }
-            self.toolbar_for = wanted;
+        // Preserve callers that only know a total; detailed compiler status
+        // supplied through `set_diagnostics` takes precedence when it matches.
+        if problems != self.diagnostics.errors + self.diagnostics.warnings {
+            self.set_diagnostics(
+                problems,
+                0,
+                self.diagnostics.elapsed_ms,
+                self.diagnostics.compiling,
+            );
         }
+        self.sidebar.set_toggled(outline_shown);
+        self.sidebar
+            .set_accessible_name(sidebar_label(outline_shown));
+        self.sidebar
+            .set_tooltip(Some(sidebar_label(outline_shown).to_owned()));
         self.view.set_selected(usize::from(preview_shown));
+    }
+
+    /// Supply the compiler's separate severities, last elapsed time and busy
+    /// state before `sync`. Both status surfaces invoke the existing Problems
+    /// action; the parent remains the owner of panel visibility.
+    pub fn set_diagnostics(
+        &mut self,
+        errors: usize,
+        warnings: usize,
+        elapsed_ms: u128,
+        compiling: bool,
+    ) {
+        let wanted = Diagnostics {
+            errors,
+            warnings,
+            elapsed_ms,
+            compiling,
+        };
+        if wanted != self.diagnostics {
+            self.diagnostics = wanted;
+            self.rebuild_status();
+        }
+    }
+
+    fn rebuild_status(&mut self) {
+        self.reopen_overflow |= self.toolbar.is_overflow_open();
+        for (toolbar, export) in [(&mut self.toolbar, true), (&mut self.bottom_status, false)] {
+            let replacement = build_toolbar(
+                &self.queue,
+                self.diagnostics,
+                export,
+                if export {
+                    self.compact
+                } else {
+                    self.footer_density == FooterDensity::Compact
+                },
+                self.actions.as_ref(),
+            );
+            // Keep widget pointers alive until the host replaces its layout tree.
+            self.retired_toolbars
+                .push(std::mem::replace(toolbar, replacement));
+        }
+        self.structure_dirty = true;
     }
 
     /// Whether the controls were rebuilt since the layout tree was.
@@ -312,10 +448,27 @@ impl Chrome {
 
         self.show(Visible {
             view: compact,
-            close: self.visible.close,
+            ..self.visible
         });
+        if compact != self.compact {
+            self.compact = compact;
+            self.rebuild_status();
+        }
+        // Measure the non-overflowing pills first. The filename gives way
+        // before diagnostics; timing and export can use the More chip.
+        let overflow_open = self.toolbar.is_overflow_open() || self.reopen_overflow;
+        self.toolbar.lay_out_in(self.toolbar.get_rect(), tr, theme);
+        let toolbar_min = self
+            .toolbar
+            .children()
+            .into_iter()
+            .map(|child| child.get_rect().width() + gap)
+            .sum::<f64>()
+            + control;
         let natural = self.natural_document_width(tr, theme);
         let mut x = bar.x0 + pad;
+        self.sidebar.apply_layout_external(row(x, x + control));
+        x += control + gap;
 
         let mut right = bar.x1 - pad;
         // The window's History control holds the trailing corner.
@@ -337,18 +490,17 @@ impl Chrome {
                 ControlSize::Regular,
                 tr,
                 theme,
-            );
-            // The overflow chip is the least the toolbar needs; the picker
-            // gives way to the switch and the chip, never the other way round.
-            let toolbar_min = control;
+            )
+            .min((right - x - toolbar_min - gap).max(0.0));
+            // The filename gives way to the switch, status and More chip.
             let picker_w = natural.min((right - x - view_w - toolbar_min - 2.0 * gap).max(0.0));
             let picker_rect = row(x, x + picker_w);
-            x += picker_w + gap;
+            x += picker_w + if picker_w > 0.0 { gap } else { 0.0 };
             view_rect = row(x, x + view_w);
             x += view_w + gap;
             picker_rect
         } else {
-            let picker_rect = row(x, x + natural.min((right - x - control - gap).max(0.0)));
+            let picker_rect = row(x, x + natural.min((right - x - toolbar_min - gap).max(0.0)));
             x = picker_rect.x1 + gap;
             picker_rect
         };
@@ -357,6 +509,34 @@ impl Chrome {
         self.document.apply_layout_external(picker_rect);
         self.view.apply_layout_external(view_rect);
         self.toolbar.lay_out_in(toolbar_rect, tr, theme);
+        if overflow_open {
+            self.toolbar.open_overflow();
+        }
+        self.reopen_overflow = false;
+    }
+
+    /// Place the bottom diagnostics controls in a reserved part of the status
+    /// bar, after calling `place`. The parent must omit its old compile-status
+    /// text from this region. `None` removes the controls from focus and
+    /// accessibility traversal.
+    pub fn place_status(&mut self, rect: Option<Rect>, tr: &mut TextRenderer, theme: &Theme) {
+        self.show(Visible {
+            bottom_status: rect.is_some(),
+            ..self.visible
+        });
+        let compact = rect
+            .is_some_and(|rect| rect.width() < f64::from(theme.tokens.metrics.panel_width_list));
+        let density = if compact {
+            FooterDensity::Compact
+        } else {
+            FooterDensity::Full
+        };
+        if density != self.footer_density {
+            self.footer_density = density;
+            self.rebuild_status();
+        }
+        self.bottom_status
+            .lay_out_in(rect.unwrap_or(Rect::ZERO), tr, theme);
     }
 
     /// Place the Problems panel's close button; `None` hides it.
@@ -410,11 +590,15 @@ impl Chrome {
     /// accessibility all follow it.
     pub fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = Vec::with_capacity(7);
+        children.push(&self.sidebar);
         children.push(&self.document);
         if self.visible.view {
             children.push(&self.view);
         }
         children.push(&self.toolbar);
+        if self.visible.bottom_status {
+            children.push(&self.bottom_status);
+        }
         if self.visible.close {
             children.push(&self.close_problems);
         }
@@ -426,11 +610,15 @@ impl Chrome {
 
     pub fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut children: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(7);
+        children.push(&mut self.sidebar);
         children.push(&mut self.document);
         if self.visible.view {
             children.push(&mut self.view);
         }
         children.push(&mut self.toolbar);
+        if self.visible.bottom_status {
+            children.push(&mut self.bottom_status);
+        }
         if self.visible.close {
             children.push(&mut self.close_problems);
         }
@@ -482,10 +670,16 @@ impl Chrome {
             }
             out.push(node);
         }
-        let mut out = Vec::new();
-        if let Some(root) = self.toolbar.accessibility() {
-            flatten(root, &mut out);
+        fn visit(widget: &dyn Widget, out: &mut Vec<ui::a11y::AccessNode>) {
+            if let Some(root) = widget.accessibility() {
+                flatten(root, out);
+            }
+            for child in widget.children() {
+                visit(child, out);
+            }
         }
+        let mut out = Vec::new();
+        visit(&self.toolbar, &mut out);
         out
     }
 
@@ -513,30 +707,192 @@ mod tests {
     use super::*;
 
     #[test]
-    fn problems_only_exist_while_there_are_diagnostics() {
+    fn diagnostics_are_always_visible_with_separate_severities_and_timing() {
         let mut chrome = Chrome::new();
         let mut text = TextRenderer::new();
-        for count in [0, 2, 1, 0, 3, 0] {
-            chrome.sync(&["note.typ"], 0, count, count > 0, false, false);
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            for (errors, warnings) in [(0, 0), (2, 1), (0, 3), (1, 0), (0, 0)] {
+                chrome.set_diagnostics(errors, warnings, 37, false);
+                chrome.sync(&["note.typ"], 0, errors + warnings, false, false, false);
+                chrome.place(
+                    Rect::new(0.0, 0.0, 1440.0, 60.0),
+                    false,
+                    1,
+                    &mut text,
+                    &theme,
+                );
+                let names = chrome.toolbar_names();
+                assert_eq!(
+                    names.iter().any(|name| name == "No problems"),
+                    errors + warnings == 0
+                );
+                assert_eq!(
+                    names
+                        .iter()
+                        .any(|name| name.ends_with("error") || name.ends_with("errors")),
+                    errors > 0
+                );
+                assert_eq!(
+                    names
+                        .iter()
+                        .any(|name| name.ends_with("warning") || name.ends_with("warnings")),
+                    warnings > 0
+                );
+                let timing = if errors == 0 {
+                    "Compiled in 37 ms"
+                } else {
+                    "Compilation failed"
+                };
+                assert!(names.iter().any(|name| name == timing), "{names:?}");
+                for node in chrome.toolbar_nodes().into_iter().filter(|node| {
+                    node.name.as_deref() == Some("No problems")
+                        || node.name.as_ref().is_some_and(|name| {
+                            name.ends_with("error")
+                                || name.ends_with("errors")
+                                || name.ends_with("warning")
+                                || name.ends_with("warnings")
+                        })
+                }) {
+                    assert_eq!(node.role, ui::a11y::Role::Button);
+                    assert!(
+                        node.bounds
+                            .is_some_and(|bounds| bounds.to_rect().area() > 0.0)
+                    );
+                }
+                chrome.layout_rebuilt();
+            }
+        }
+    }
+
+    fn activate_status(widget: &mut dyn Widget, id: &str) -> bool {
+        if widget.test_id() == Some(id) {
+            let mut doc = automerge::AutoCommit::new();
+            return widget.perform_action(
+                &ui::a11y::Action::Activate,
+                &[],
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            );
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .any(|child| activate_status(child, id))
+    }
+
+    #[test]
+    fn top_and_bottom_status_use_the_existing_problems_command() {
+        let mut chrome = Chrome::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::dark();
+        chrome.place_status(
+            Some(Rect::new(0.0, 100.0, 1000.0, 140.0)),
+            &mut text,
+            &theme,
+        );
+        for (errors, warnings, ids) in [
+            (0, 0, vec!["typst.no-problems"]),
+            (1, 2, vec!["typst.errors", "typst.warnings"]),
+        ] {
+            chrome.set_diagnostics(errors, warnings, 19, false);
             chrome.place(
                 Rect::new(0.0, 0.0, 1440.0, 60.0),
                 false,
                 1,
                 &mut text,
-                &Theme::dark(),
+                &theme,
             );
-            let names = chrome.toolbar_names();
-            let problems: Vec<_> = names
-                .iter()
-                .filter(|name| name.starts_with("Problems"))
-                .collect();
-            if count == 0 {
-                assert!(problems.is_empty(), "{names:?}");
-            } else {
-                assert_eq!(problems, vec![&format!("Problems ({count})")]);
+            chrome.place_status(
+                Some(Rect::new(0.0, 100.0, 1000.0, 140.0)),
+                &mut text,
+                &theme,
+            );
+            for id in ids {
+                assert!(activate_status(&mut chrome.toolbar, id));
+                assert_eq!(chrome.take(), vec![Command::ToggleProblems]);
+                let bottom_id = id.replace("typst.", "typst.status.");
+                assert!(activate_status(&mut chrome.bottom_status, &bottom_id));
+                assert_eq!(chrome.take(), vec![Command::ToggleProblems]);
             }
-            chrome.layout_rebuilt();
         }
+        assert_eq!(chrome.children().len(), 4);
+        chrome.place_status(None, &mut text, &theme);
+        assert_eq!(chrome.children().len(), 3);
+    }
+
+    #[test]
+    fn narrow_headers_keep_diagnostics_visible_before_secondary_commands() {
+        let mut chrome = Chrome::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::dark();
+        let bar = Rect::new(0.0, 0.0, 390.0, 60.0);
+        for (errors, warnings) in [(0, 0), (2, 1)] {
+            chrome.set_diagnostics(errors, warnings, 37, false);
+            chrome.sync(
+                &["motion-notes.typ"],
+                0,
+                errors + warnings,
+                false,
+                false,
+                false,
+            );
+            chrome.place(bar, true, 1, &mut text, &theme);
+            assert!(chrome.toolbar_chip().is_some());
+            for child in chrome.toolbar.children() {
+                let rect = child.get_rect();
+                assert!(
+                    rect.area() > 0.0 && rect.x0 >= 0.0 && rect.x1 <= bar.x1,
+                    "{rect:?}"
+                );
+                assert!(rect.x0 >= chrome.view.get_rect().x1, "{rect:?}");
+            }
+            let names = chrome.toolbar_names();
+            for wanted in if errors == 0 {
+                vec!["No problems"]
+            } else {
+                vec!["2 errors", "1 warning"]
+            } {
+                assert!(names.iter().any(|name| name == wanted), "{names:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_footer_keeps_both_severities_visible_without_an_overflow_chip() {
+        for scale in [1.0, 2.0] {
+            let mut chrome = Chrome::new();
+            let mut text = TextRenderer::new();
+            let theme = Theme::dark().with_text_scale(scale);
+            chrome.set_diagnostics(1, 2, 19, false);
+            let bar = Rect::new(0.0, 100.0, 180.0, 160.0);
+            chrome.place_status(Some(bar), &mut text, &theme);
+            assert!(!chrome.bottom_status.has_overflow());
+            let pills = chrome.bottom_status.children();
+            assert_eq!(pills.len(), 1);
+            let pill = pills[0];
+            assert_eq!(
+                pill.accessibility().unwrap().name.as_deref(),
+                Some("1 error · 2 warnings")
+            );
+            assert!(pill.get_rect().x0 >= bar.x0 && pill.get_rect().x1 <= bar.x1);
+        }
+    }
+
+    #[test]
+    fn busy_status_does_not_claim_a_completed_compile() {
+        let mut chrome = Chrome::new();
+        let mut text = TextRenderer::new();
+        chrome.set_diagnostics(0, 0, 37, true);
+        chrome.place(
+            Rect::new(0.0, 0.0, 1440.0, 60.0),
+            false,
+            1,
+            &mut text,
+            &Theme::dark(),
+        );
+        let names = chrome.toolbar_names();
+        assert!(names.iter().any(|name| name == "Compiling…"));
+        assert!(!names.iter().any(|name| name.starts_with("Compiled in")));
     }
 
     #[test]
@@ -553,13 +909,14 @@ mod tests {
                 &mut text,
                 &theme,
             );
-            let outline = chrome
-                .toolbar_nodes()
-                .into_iter()
-                .find(|node| node.name.as_deref() == Some("Outline"))
-                .unwrap();
+            let outline = chrome.sidebar.accessibility().unwrap();
+            assert_eq!(outline.name.as_deref(), Some(sidebar_label(shown)));
             assert_eq!(outline.role, ui::a11y::Role::ToggleButton);
             assert_eq!(outline.state.checked, Some(shown));
+            assert!(chrome.sidebar.get_rect().x1 < chrome.document.get_rect().x0);
+            assert_eq!(chrome.children()[0].test_id(), Some("typst.sidebar"));
+            assert!(activate_status(&mut chrome.sidebar, "typst.sidebar"));
+            assert_eq!(chrome.take(), vec![Command::ToggleOutline]);
             let names = chrome.toolbar_names();
             assert!(names.iter().any(|name| name == "Export PDF"));
             for absent in [

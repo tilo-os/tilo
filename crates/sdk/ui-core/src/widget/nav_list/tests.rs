@@ -90,6 +90,67 @@ fn rows_follow_the_sections_and_headers_are_not_destinations() {
 }
 
 #[test]
+fn compact_rows_share_measured_geometry_with_pointer_and_section_actions() {
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let theme = theme.with_ui_scale(1.5);
+        let actions = Rc::new(Cell2::new(Vec::new()));
+        let seen = Rc::clone(&actions);
+        let sections = vec![
+            NavSection::new(
+                "files",
+                "Files",
+                vec![
+                    NavItem::new("file", "paper.typ"),
+                    NavItem::new("heading", "Introduction").status(RowStatus::Active),
+                ],
+            )
+            .trailing_action(NavAction::new("new", Icon::Plus, "New file")),
+        ];
+        let list = NavList::new(sections.clone())
+            .compact_rows()
+            .selected("file")
+            .on_section_action(move |section, action| {
+                seen.borrow_mut()
+                    .push((section.to_owned(), action.to_owned()));
+            });
+        let mut h = harness(list, theme.clone());
+        let file = h.root::<NavList>().row_rect("file").unwrap();
+        let heading = h.root::<NavList>().row_rect("heading").unwrap();
+        assert!((file.height() - 36.0).abs() < 1e-6);
+        assert!((heading.height() - 36.0).abs() < 1e-6);
+        assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("file"));
+        let effective = crate::chrome::nav_row::compact_nav_theme(&theme);
+        let header = Rect::new(file.x0, 0.0, file.x1, file.y0);
+        let face = NavSectionFace::new(header, "Files").action(Icon::Plus);
+        let target = crate::chrome::nav_section_layout(&effective, &face)
+            .action
+            .unwrap();
+        assert!(target.width() >= 32.0 && target.height() >= 32.0);
+        assert!(h.a11y_node_named("New file Files").is_some());
+        h.click_at(target.x0 + 1.0, target.center().y);
+        assert_eq!(
+            actions.borrow().as_slice(),
+            [("files".into(), "new".into())]
+        );
+        assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("file"));
+        // Near the lower row edge, not merely its centre, is a real target.
+        h.click_at(heading.center().x, heading.y1 - 1.0);
+        assert_eq!(
+            h.root::<NavList>().selected_id().as_deref(),
+            Some("heading")
+        );
+        h.root_mut::<NavList>().set_sections(sections);
+        h.relayout_at((280, 360)).expect("updated layout");
+        assert!((h.root::<NavList>().row_rect("file").unwrap().height() - 36.0).abs() < 1e-6);
+        let plain = harness(NavList::new(mailboxes()), theme);
+        assert_eq!(
+            plain.root::<NavList>().row_rect("inbox").unwrap().height(),
+            48.0
+        );
+    }
+}
+
+#[test]
 fn the_keyboard_moves_the_selection_and_skips_headers() {
     let chosen = Rc::new(Cell2::new(Vec::<String>::new()));
     let seen = Rc::clone(&chosen);

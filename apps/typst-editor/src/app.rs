@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────┐
-//! │ document  Outline                         Export PDF      │
+//! │ [sidebar] document   [diagnostics]        Export PDF      │
 //! ├───────────────────────────┬──────────────────────────────┤
 //! │ source editor             │      rendered preview         │
 //! │ (code, line numbers,      │  (scrollable pages + thumbs)  │
@@ -21,9 +21,9 @@
 //!
 //! The editor stands on the window ground and the preview on the inspector
 //! region; neither fills a ground of its own. What a person reads while
-//! working (caret position, pages, zoom) is the status bar, which reserves its
-//! band; a change worth noticing once ("Compiled in 42 ms") is the transient
-//! [`ui::StatusBubble`].
+//! working (caret position, diagnostics, compile time, pages and zoom) is the
+//! status bar, which reserves its band. One-off operation feedback uses the
+//! transient [`ui::StatusBubble`].
 //!
 //! The workspace's files — names, paths and sources — are the resource's
 //! state ([`crate::resource::Workspace`]); every edit is a field edit or one
@@ -531,8 +531,10 @@ impl TypstApp {
             }
         }
         self.diagnostics.set_diagnostics(out.diagnostics);
-        if self.err_count > 0 {
-            // Surface the failure: pop the panel open so the message is visible.
+        if self.err_count > 0 && self.compile_feedback {
+            // An explicit compile can open Problems. While typing, inline
+            // messages and the status pills surface failures without moving
+            // the caret's pane or interrupting completion.
             self.show_diagnostics = true;
         }
         if std::mem::take(&mut self.compile_feedback) {
@@ -1087,6 +1089,13 @@ impl TypstApp {
 
         let name = self.current_name();
         let names = [name.as_str()];
+        self.chrome.set_diagnostics(
+            self.err_count,
+            self.warn_count,
+            self.elapsed_ms,
+            self.compiling(),
+        );
+        self.navigation.set_caret_line(self.caret_line_col().0);
         self.chrome.sync(
             &names,
             0,
@@ -1097,6 +1106,18 @@ impl TypstApp {
         );
         self.chrome
             .place(self.bar_rect, self.compact, names.len(), tr, theme);
+        let style = theme.text(ui::tokens::TextRole::Caption).numeric();
+        let left_width = f64::from(tr.measure_style(&self.status_left_label(), None, &style).0);
+        let right_width = f64::from(tr.measure_style(&self.status_right_label(), None, &style).0);
+        let gap = f64::from(theme.tokens.spacing.s3 + theme.tokens.spacing.s4);
+        let start = (self.status_rect.x0 + left_width + gap).min(self.status_rect.x1);
+        let status = Rect::new(
+            start,
+            self.status_rect.y0,
+            (self.status_rect.x1 - right_width - gap).max(start),
+            self.status_rect.y1,
+        );
+        self.chrome.place_status(Some(status), tr, theme);
         let close = (self.show_diagnostics && self.diag_rect.height() > 1.0)
             .then(|| self.diagnostics.close_rect(theme));
         self.chrome.place_close(close);
@@ -1107,21 +1128,20 @@ impl TypstApp {
     /// What the person reads while working, left: where the caret is.
     fn status_left_label(&self) -> String {
         let (ln, col) = self.caret_line_col();
+        if self.status_rect.width() < 720.0 {
+            return format!("Ln {ln}:{col}");
+        }
         let words = crate::navigation::word_count(&self.source_cache);
-        let compile = if self.compiling() {
-            "Compiling…".to_owned()
-        } else if self.err_count > 0 {
-            plural(self.err_count, "error", "errors")
-        } else {
-            format!("Compiled in {} ms", self.elapsed_ms)
-        };
-        format!("Ln {ln}, Col {col}  ·  {words} words  ·  {compile}")
+        format!("Ln {ln}, Col {col}  ·  {words} words")
     }
 
     /// What the person reads while working, right: the document's pages and
     /// the preview's zoom.
     fn status_right_label(&self) -> String {
         let pages = self.preview.page_count();
+        if self.status_rect.width() < 720.0 {
+            return format!("{:.0}%", self.preview.zoom() * 100.0);
+        }
         if pages == 0 {
             return "No pages".to_string();
         }
@@ -1170,6 +1190,10 @@ impl Widget for TypstApp {
             child.settle(edits, path);
         }
         self.navigation.widget_mut().settle(edits, path);
+        self.editor.accept_pending_completion(edits);
+        for request in self.navigation.take_new_file_requests() {
+            self.submit(request);
+        }
         for effect in self.navigation.take_requests() {
             self.perform_resource_operation(effect);
         }
@@ -1205,6 +1229,7 @@ impl Widget for TypstApp {
         self.drain_io();
         // Show the open file's source as the document holds it.
         self.editor.pull(doc);
+        self.editor.update_completions(&self.files);
         let source = self.editor.text().to_owned();
         self.navigation
             .sync(&self.files, self.current.as_ref(), &source);
@@ -1340,7 +1365,6 @@ impl Widget for TypstApp {
             ui::surface::region(scene, t, self.preview_rect, Region::Inspector, theme);
         }
         ui::widget::toolbar::paint_band(scene, t, theme, self.bar_rect);
-        self.chrome.draw(scene, t, tr, theme, presence);
 
         if self.editor_rect.area() > 0.0 {
             self.editor.focused = self.editor.widget().is_focused();
@@ -1377,6 +1401,8 @@ impl Widget for TypstApp {
         }
         self.status.paint(scene, t, tr, theme, area, now);
         self.save_status.paint(scene, t, tr, theme, area, now);
+        // The status controls sit above the status bar's ground.
+        self.chrome.draw(scene, t, tr, theme, presence);
 
         // This frame reflects the latest interaction state; clear the move-dirty
         // flag so idle hover doesn't spin the render loop.
@@ -1399,12 +1425,23 @@ impl Widget for TypstApp {
         for child in self.chrome.children_mut() {
             child.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
+        self.editor.completion_widget_mut().draw_overlay(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // The controls see the event first. Keys reach them only while the
         // editor is not typing, or while one holds an open list.
         self.editor.focused = self.editor.widget().is_focused();
+        if !*ctx.handled && self.editor.completion_event(event, ctx) {
+            self.dirty = true;
+            return;
+        }
         let already_handled = *ctx.handled;
         let is_key = matches!(event, WindowEvent::KeyboardInput { .. });
         if self.navigation.visible()
@@ -1445,6 +1482,9 @@ impl Widget for TypstApp {
                     .ok()
                     .and_then(|nodes| nodes.last().copied());
             }
+        }
+        for request in self.navigation.take_new_file_requests() {
+            self.submit(request);
         }
         for command in self.chrome.take() {
             self.run_command(command, ctx.state.doc());
@@ -1537,7 +1577,13 @@ impl Widget for TypstApp {
         doc: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
-        let mut handled = false;
+        let mut handled = self
+            .editor
+            .completion_widget_mut()
+            .perform_semantic_action(target, action, doc, path);
+        if handled {
+            self.editor.accept_pending_completion(doc);
+        }
         for child in self.chrome.children_mut() {
             handled |= child.perform_semantic_action(target, action, doc, path);
         }
@@ -1806,6 +1852,9 @@ impl TypstApp {
         }
         // Route remaining keys to the focused editor.
         if self.editor.focused && self.editor.handle_key(event, &modifiers, doc) {
+            self.editor.update_completions(&self.files);
+            self.navigation.set_caret_line(self.caret_line_col().0);
+            self.dirty = true;
             *handled = true;
         }
     }
@@ -2070,6 +2119,81 @@ mod tests {
         workspace(None)
     }
 
+    fn completion_fixture(
+        source: &str,
+        caret: usize,
+    ) -> ui::framework::testing::TestApp<TypstEditorShell> {
+        let mut app = live_fixture((1440, 810));
+        let file = crate::resource::sample_id(DEFAULT_INDEX);
+        app.effect_on(
+            &format!("typst.project-file:{file}"),
+            &crate::actions::TypstEffect::OpenProjectFile {
+                id: file.to_string(),
+            },
+        )
+        .unwrap();
+        let path = Workspace::paths().files.item(&file).source;
+        app.invoke(Invoke::edit(&path.replace(source)).unwrap())
+            .unwrap();
+        let node = app.harness().a11y_node_named("Typst source").unwrap();
+        app.harness()
+            .perform_a11y_action(node, &ui::a11y::Action::Focus)
+            .unwrap();
+        app.harness()
+            .perform_a11y_action(
+                node,
+                &ui::a11y::Action::SetSelection {
+                    anchor: caret,
+                    focus: caret,
+                },
+            )
+            .unwrap();
+        app
+    }
+
+    fn visible_completion(
+        app: &mut ui::framework::testing::TestApp<TypstEditorShell>,
+        prefix: &str,
+    ) -> bool {
+        app.harness().a11y_nodes().iter().any(|(_, node)| {
+            node.label().is_some_and(|name| name.starts_with(prefix)) && !node.is_hidden()
+        })
+    }
+
+    #[test]
+    fn hosted_typing_opens_math_menu_and_tab_accepts_without_indentation() {
+        let mut app = completion_fixture("$  $", 2);
+        app.harness().type_text("al");
+        app.settle();
+        assert!(visible_completion(&mut app, "alpha α"));
+        app.harness().key("Tab");
+        app.settle();
+        let file = crate::resource::sample_id(DEFAULT_INDEX);
+        assert_eq!(app.state().file(&file).unwrap().source, "$ alpha $");
+        assert!(!visible_completion(&mut app, "alpha α"));
+    }
+
+    #[test]
+    fn hosted_escape_dismisses_and_enter_can_accept_a_directive() {
+        let mut app = completion_fixture("", 0);
+        app.harness().type_text("#s");
+        app.settle();
+        assert!(visible_completion(&mut app, "set "));
+        app.harness().key("Escape");
+        app.settle();
+        assert!(!visible_completion(&mut app, "set "));
+        app.harness().type_text("e");
+        app.settle();
+        assert!(visible_completion(&mut app, "set "));
+        app.harness().key("Enter");
+        app.settle();
+        let file = crate::resource::sample_id(DEFAULT_INDEX);
+        assert_eq!(
+            app.state().file(&file).unwrap().source,
+            "#set text(size: 12pt)"
+        );
+    }
+
     /// [`fresh`] with the examples a capture of `scenario` shows.
     fn workspace(scenario: Option<&str>) -> (TypstApp, AutoCommit) {
         let mut replica = Replica::<Workspace>::new();
@@ -2282,7 +2406,7 @@ mod tests {
     fn toolbar_navigation_and_formatting_use_real_local_operations() {
         let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
         app.harness().resize((1440, 810)).unwrap();
-        let outline = app.harness().a11y_node_named("Outline").unwrap();
+        let outline = app.harness().a11y_node_named("Show sidebar").unwrap();
         app.harness()
             .perform_a11y_action(outline, &ui::a11y::Action::Activate)
             .unwrap();
@@ -2673,9 +2797,17 @@ mod tests {
                 app.preview.is_stale(),
                 "the retained render is flagged stale"
             );
+            assert!(app.err_count >= 1, "the status pill counts the error");
             assert!(
-                app.err_count >= 1 && app.show_diagnostics,
-                "the error is surfaced"
+                app.diagnostics
+                    .diags()
+                    .iter()
+                    .any(|d| d.kind == DiagKind::Error),
+                "inline messages and Problems receive the actual compiler error"
+            );
+            assert!(
+                !app.show_diagnostics,
+                "automatic compilation does not interrupt typing with a drawer"
             );
 
             // A subsequent clean compile clears the stale flag and refreshes pages.
@@ -2685,6 +2817,13 @@ mod tests {
             assert!(
                 !app.preview.is_stale(),
                 "a clean recompile clears the stale flag"
+            );
+            app.compile_feedback = true;
+            let broken = compile::compile_source(&app.parts, "Body #undefined_var end.\n", PPP);
+            app.apply_output(broken);
+            assert!(
+                app.show_diagnostics,
+                "an explicit failed compile still opens Problems"
             );
         }
     }
@@ -2761,7 +2900,7 @@ mod tests {
                 .perform_a11y_action(more, &ui::a11y::Action::Activate)
                 .unwrap();
             app.settle();
-            for command in ["Export PDF", "Outline"] {
+            for command in ["Export PDF", "Show sidebar"] {
                 assert!(
                     app.harness().a11y_node_named(command).is_some(),
                     "published command {command}"
@@ -2792,13 +2931,17 @@ mod tests {
                     "the document heading, toolbar and compact view switch show at {width}px"
                 );
                 for (index, (left_name, left)) in rects.iter().enumerate() {
-                    assert!(
-                        left.x0 >= app.bar_rect.x0
-                            && left.x1 <= app.bar_rect.x1
-                            && left.y0 >= app.bar_rect.y0
-                            && left.y1 <= app.bar_rect.y1,
-                        "{left_name} {left:?} leaves the bar {:?} at {width}px",
+                    let band = if left.y0 >= app.status_rect.y0 {
+                        app.status_rect
+                    } else {
                         app.bar_rect
+                    };
+                    assert!(
+                        left.x0 >= band.x0
+                            && left.x1 <= band.x1
+                            && left.y0 >= band.y0
+                            && left.y1 <= band.y1,
+                        "{left_name} {left:?} leaves its bar {band:?} at {width}px"
                     );
                     for (right_name, right) in rects.iter().skip(index + 1) {
                         assert!(
@@ -2818,11 +2961,28 @@ mod tests {
             app.navigation.open();
             app.layout_in(Rect::new(0.0, 0.0, 1440.0, 810.0));
             assert!(!app.compact);
-            assert!((app.navigation.rect().width() - 360.0).abs() < 0.01);
-            let remaining = 1440.0 - 360.0 - app.splitter.hit_rect().width();
+            assert!((app.navigation.rect().width() - 280.0).abs() < 0.01);
+            let remaining = 1440.0 - 280.0 - app.splitter.hit_rect().width();
             assert!((app.editor_rect.width() / remaining - 0.47).abs() < 0.01);
             assert!((app.preview_rect.width() / remaining - 0.53).abs() < 0.01);
         }
+    }
+
+    #[test]
+    fn showcase_source_has_no_soft_wrapped_lines() {
+        let (mut app, _) = fresh();
+        let theme = Theme::dark().with_ui_scale(1.5);
+        app.layout_theme = theme.clone();
+        app.navigation.open();
+        app.layout_in(Rect::new(0.0, 0.0, 1440.0, 810.0));
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        assert_eq!(app.editor.soft_wrapped_lines(&theme), Vec::<usize>::new());
     }
 
     #[test]
@@ -2879,8 +3039,9 @@ mod tests {
         assert_eq!(app.editor_rect.y0, app.bar_rect.y1);
         for (_, rect) in control_rects(&app) {
             assert!(
-                rect.y1 <= app.bar_rect.y1,
-                "every control fits the grown bar"
+                rect.y1 <= app.bar_rect.y1
+                    || (rect.y0 >= app.status_rect.y0 && rect.y1 <= app.status_rect.y1),
+                "every control fits its grown bar"
             );
         }
     }
@@ -2923,12 +3084,10 @@ mod tests {
             let names = app
                 .with_widget(|surface: &mut TypstApp| surface.chrome.toolbar_names())
                 .unwrap();
-            for wanted in ["Outline", "Export PDF"] {
-                assert!(
-                    names.iter().any(|name| name == wanted),
-                    "{wanted} remains reachable in {names:?}"
-                );
-            }
+            assert!(
+                names.iter().any(|name| name == "Export PDF"),
+                "Export PDF remains reachable in {names:?}"
+            );
             assert!(app.harness().a11y_node_named("Zoom in").is_none());
             let before = app
                 .with_widget(|surface: &mut TypstApp| surface.preview.zoom())

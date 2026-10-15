@@ -327,6 +327,15 @@ impl<'a> NavRowFace<'a> {
     fn lifted(&self) -> bool {
         self.state.active || self.state.pressed
     }
+
+    fn paint_state(&self) -> SelectionState {
+        // A current location (for example an editor's caret heading) is a
+        // quieter lift than selection, and never changes keyboard selection.
+        SelectionState {
+            hover: self.state.hover || matches!(self.status, Some(RowStatus::Active)),
+            ..self.state
+        }
+    }
 }
 
 /// Where each part of a navigation row lands. Painting and hit-testing
@@ -364,6 +373,14 @@ pub struct NavRowLayout {
     pub status: Option<Rect>,
     /// Trailing action squares, in action order.
     pub actions: Vec<Rect>,
+}
+
+/// Resolve compact navigation as one component snapshot: typography, icons,
+/// spacing and row geometry shrink together. Keep the stock pointer-target
+/// floor and the user's independent accessibility text scale.
+pub(crate) fn compact_nav_theme(theme: &Theme) -> Theme {
+    let scale = (theme.ui_scale * 0.75).max(theme.ui_scale.min(1.0));
+    theme.clone().with_component_scales(theme.text_scale, scale)
 }
 
 /// Height of one list row: [`crate::tokens::Metrics::nav_row_height`],
@@ -854,7 +871,7 @@ pub fn paint_nav_row(
         scene,
         transform,
         layout.selection,
-        face.state,
+        face.paint_state(),
         ground,
         theme,
     );
@@ -1153,8 +1170,10 @@ pub struct NavSectionFace<'a> {
     /// The header's full band, edge to edge of the list, including the
     /// space above it ([`nav_section_height`]).
     pub rect: Rect,
-    /// Sentence case; painted as written.
+    /// Sentence case; painted as written unless `compact` is set.
     pub title: &'a str,
+    /// A compact, tracked uppercase caption; semantics keep the original title.
+    pub compact: bool,
     /// `Some(expanded)` when the section collapses.
     pub collapsible: Option<bool>,
     /// A trailing action (usually [`Icon::Plus`] for "new …").
@@ -1172,6 +1191,7 @@ impl<'a> NavSectionFace<'a> {
         Self {
             rect,
             title,
+            compact: false,
             collapsible: None,
             action: None,
             hover: false,
@@ -1228,7 +1248,9 @@ pub fn nav_section_layout(theme: &Theme, face: &NavSectionFace<'_>) -> NavSectio
     let mid = band.center().y;
     let mut trailing = band.x1 - s1;
     let action = face.action.map(|_| {
-        let side = (band.height() - 2.0 * s1).max(1.0);
+        let side = (band.height() - 2.0 * s1)
+            .max(f64::from(tokens.metrics.min_pointer_target))
+            .min(band.height());
         let rect = Rect::new(
             trailing - side,
             mid - side / 2.0,
@@ -1255,7 +1277,19 @@ pub fn nav_section_layout(theme: &Theme, face: &NavSectionFace<'_>) -> NavSectio
     }
 }
 
-/// Paint a section header: the title in `Subheading`, secondary ink; a
+pub(crate) fn nav_section_title_style(theme: &Theme, compact: bool) -> TextStyle {
+    let heading = theme.text(TextRole::Subheading);
+    if compact {
+        let mut caption = theme.text(TextRole::Caption).with_tracking(0.08);
+        caption.weight = heading.weight;
+        caption
+    } else {
+        heading
+    }
+}
+
+/// Paint a section header: the title in `Subheading` (or a compact uppercase
+/// caption), secondary ink; a
 /// collapsible section's chevron while the pointer or focus is on it (or
 /// while it is collapsed, so a hidden section is never mistaken for an
 /// empty one); and its trailing action.
@@ -1271,9 +1305,14 @@ pub fn paint_nav_section(
     if face.focused {
         paint_focus(scene, transform, theme, layout.band);
     }
-    let style = theme.text(TextRole::Subheading);
+    let style = nav_section_title_style(theme, face.compact);
+    let title = if face.compact {
+        std::borrow::Cow::Owned(face.title.to_uppercase())
+    } else {
+        std::borrow::Cow::Borrowed(face.title)
+    };
     let max_w = (layout.title_x1 - layout.title_x0).max(0.0);
-    let title = text_renderer.elide_to_width_style(face.title, f32_of_f64(max_w), &style);
+    let title = text_renderer.elide_to_width_style(&title, f32_of_f64(max_w), &style);
     let (_, line_h) = text_renderer.measure_style(&title, None, &style);
     let y = crate::text_metrics::centered_text_top(
         layout.band.y0,
@@ -1330,6 +1369,61 @@ mod tests {
 
     fn row(theme: &Theme) -> Rect {
         Rect::new(0.0, 0.0, 280.0, nav_row_height(theme))
+    }
+
+    #[test]
+    fn compact_sections_keep_action_geometry_and_scale_their_caption() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            for scale in [1.0, 2.0] {
+                let theme = theme.clone().with_text_scale(scale);
+                let mut face = NavSectionFace::new(row(&theme), "Files").action(Icon::Plus);
+                let normal = nav_section_layout(&theme, &face);
+                face.compact = true;
+                assert_eq!(normal, nav_section_layout(&theme, &face));
+                assert_eq!(face.title, "Files");
+                let style = nav_section_title_style(&theme, true);
+                assert_eq!(style.size, theme.text(TextRole::Caption).size);
+                assert_eq!(style.weight, theme.text(TextRole::Subheading).weight);
+                assert!(style.letter_spacing > 0.0);
+                assert!(style.size < nav_section_title_style(&theme, false).size);
+            }
+        }
+    }
+
+    #[test]
+    fn compact_rows_resolve_type_and_geometry_without_losing_text_growth() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            for (scale, height, body, caption_size) in
+                [(1.0, 32.0, 14.0, 12.0), (1.5, 36.0, 15.75, 13.5)]
+            {
+                let source = theme.clone().with_ui_scale(scale);
+                let compact = compact_nav_theme(&source);
+                assert!((nav_row_height(&compact) - height).abs() < 1e-6);
+                assert_eq!(compact.text(TextRole::Body).size, body);
+                let caption = nav_section_title_style(&compact, true);
+                assert_eq!(caption.size, caption_size);
+                assert!(caption.letter_spacing > 0.0);
+                let face = NavSectionFace::new(row(&compact), "Files").action(Icon::Plus);
+                let action = nav_section_layout(&compact, &face).action.unwrap();
+                assert!(action.width() >= 32.0 && action.height() >= 32.0);
+                let large = compact_nav_theme(&source.with_text_scale(2.0));
+                assert_eq!(large.text_scale, 2.0);
+                assert_eq!(large.text(TextRole::Body).size, body * 2.0);
+                assert!(nav_row_height(&large) > height);
+                assert_eq!(compact.tokens.colors, theme.tokens.colors);
+            }
+        }
+    }
+
+    #[test]
+    fn active_location_uses_a_quiet_lift_without_becoming_selected() {
+        let theme = Theme::dark();
+        let face = NavRowFace::new(row(&theme), "Current heading").status(RowStatus::Active);
+        assert!(!face.state.active);
+        assert!(!face.lifted());
+        assert!(face.paint_state().hover);
+        assert!(!face.paint_state().active);
+        assert!(face.selected(true).paint_state().active);
     }
 
     #[test]

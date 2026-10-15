@@ -983,6 +983,10 @@ impl NavList {
             Some(spec)
         };
         let mut nav = NavPresentation::new(rail, Box::new(spec));
+        if let Some(previous) = self.tree.nav_mut() {
+            nav.compact_sections = previous.compact_sections;
+            nav.compact_rows = previous.compact_rows;
+        }
         let section_shared = Rc::clone(&self.shared);
         nav.on_section_action = Some(Box::new(move |id| {
             let mut shared = section_shared.borrow_mut();
@@ -1069,6 +1073,30 @@ impl NavList {
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.tree = self.tree.with_accessible_name(name);
+        self
+    }
+
+    /// Paint section titles as compact, tracked uppercase captions. The
+    /// original titles remain intact for accessibility and resource names.
+    #[must_use]
+    pub fn compact_sections(mut self) -> Self {
+        if let Some(nav) = self.tree.nav_mut() {
+            nav.compact_sections = true;
+        }
+        self
+    }
+
+    /// Compact navigation typography and geometry together, with tracked
+    /// caption section titles. At 150% UI scale a single-line row is 36px
+    /// rather than 48px; stock pointer targets and accessibility text growth
+    /// are preserved. Icon-over-label rails retain their usual density.
+    #[must_use]
+    pub fn compact_rows(mut self) -> Self {
+        if let Some(nav) = self.tree.nav_mut() {
+            nav.compact_rows = true;
+            nav.compact_sections = true;
+        }
+        self.tree.apply_nav_metrics(&crate::theme::Theme::dark());
         self
     }
 

@@ -49,7 +49,11 @@ This paragraph uses #undefined_value, which is unknown.
 The heading is fine; the font and variable are wrong.
 "#;
 
-const MOTION_NOTES: &str = r##"#set page(width: 12.5cm, height: auto, margin: (x: 1.0cm, y: 0.9cm))
+const MOTION_NOTES: &str = r##"#set page(
+  width: 12.5cm,
+  height: auto,
+  margin: (x: 1.0cm, y: 0.9cm),
+)
 #set text(font: "Libertinus Serif", size: 11.5pt)
 #set par(justify: true, leading: 0.6em)
 #show heading: set text(fill: rgb("#245568"))
@@ -57,6 +61,7 @@ const MOTION_NOTES: &str = r##"#set page(width: 12.5cm, height: auto, margin: (x
 #text(8pt, tracking: 1.5pt)[MOTION SYSTEMS / RESEARCH NOTE 01]
 = Smooth motion, by design
 _Leah Chen · Interaction Lab · October 2026_
+
 
 *Abstract.* A good transition makes a change
 easy to follow without drawing attention to
@@ -74,7 +79,9 @@ $ s(tau) = 10 tau^3 - 15 tau^4 + 6 tau^5 $
   *Boundary conditions.* For $tau in {0, 1}$,
   $s'(tau) = s''(tau) = 0$. Among paths with these
   endpoints, this curve minimizes the squared jerk:
-  $ J = integral_0^T (upright(d)^3 x / (upright(d) t^3))^2 thin upright(d) t $
+  $ J = integral_0^T
+    (upright(d)^3 x / (upright(d) t^3))^2
+    thin upright(d) t $
 ]
 
 == A gentler handoff
@@ -253,3 +260,46 @@ $ integral_0^1 x^2 thin upright(d) x = 1/3 $
   caption: [A boxed figure],
 )
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_bundled_source_line_fits_the_editor_column() {
+        for (name, source) in SAMPLES
+            .iter()
+            .map(|sample| (sample.name, sample.source))
+            .chain(std::iter::once(("errors.typ", ERROR_WARNING)))
+        {
+            for (line, text) in source.lines().enumerate() {
+                assert!(
+                    text.chars().count() <= 62,
+                    "{name}:{} exceeds the 62-character source column: {text}",
+                    line + 1,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wrapped_showcase_preserves_typesetting_and_content() {
+        let sample = &SAMPLES[DEFAULT_INDEX];
+        let parts = crate::compile::WorldParts::new();
+        let output = crate::compile::compile_source(&parts, sample.source, 1.0);
+        assert!(output.ok, "{:?}", output.diagnostics);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert_eq!(output.pages.len(), 1);
+        for feature in [
+            "Smooth motion, by design",
+            "10 tau^3 - 15 tau^4 + 6 tau^5",
+            "integral_0^T",
+            "upright(d)^3 x / (upright(d) t^3)",
+            "table.header([*Time*], [*25%*], [*50%*], [*75%*])",
+            "[Minimum jerk], [10.4%], [50.0%], [89.6%]",
+            "respect the reader's reduced-motion preference.",
+        ] {
+            assert!(sample.source.contains(feature), "missing {feature}");
+        }
+    }
+}

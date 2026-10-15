@@ -21,11 +21,12 @@ use vello::kurbo::{Affine, BezPath, CubicBez, ParamCurve, Point, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 const VIEWPORT: (u32, u32) = (1440, 810);
 const FPS: u32 = 60;
-const FRAMES: u32 = 210;
-const HEADING: &str = "A gentler handoff";
+const FRAMES: u32 = 240;
+const EQUATION: &str = "$ s(tau) = 10 tau^3 - 15 tau^4 + 6 tau^5 $";
 const ADA: &str = "ada";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -65,11 +66,9 @@ fn capture(
         true
     });
     app.harness().relayout();
-    let target = app
-        .surface_mut::<TypstApp>()
-        .heading_target(HEADING)
-        .ok_or("the outline does not expose the capture heading")?
-        .center();
+    // Keep the pointer clear of the source completion menu and then guide it
+    // toward the document, where the accepted math symbol will appear.
+    let target = Point::new(f64::from(VIEWPORT.0) * 0.78, f64::from(VIEWPORT.1) * 0.55);
     let start = Point::new(f64::from(VIEWPORT.0) * 0.48, f64::from(VIEWPORT.1) * 0.30);
     let curve = CubicBez::new(
         start,
@@ -83,15 +82,22 @@ fn capture(
     let mut renderer = OffscreenRenderer::try_new_with_cpu_preprocessing(size.0, size.1)?;
     let mut encoder = Recording::start(video, size)?;
     let epoch = ui::time::now();
-    let mut clicked = false;
-    let mut edited = false;
+    let mut positioned = false;
+    let mut typing = [(42, " "), (51, "+"), (60, " "), (69, "a"), (78, "l")]
+        .into_iter()
+        .peekable();
+    let mut accepted = false;
     let source = sample.source;
-    let heading_byte = source.find(HEADING).ok_or("missing capture heading")?;
-    let heading_line = source
-        .get(..heading_byte)
-        .ok_or("invalid source offset")?
-        .lines()
-        .count();
+    let equation_byte = source.find(EQUATION).ok_or("missing capture equation")?;
+    let insertion = equation_byte
+        .checked_add(EQUATION.len())
+        .and_then(|end| end.checked_sub(" $".len()))
+        .ok_or("equation offset overflow")?;
+    let expected = format!(
+        "{} + alpha{}",
+        source.get(..insertion).ok_or("invalid insertion")?,
+        source.get(insertion..).ok_or("invalid insertion")?
+    );
     let file = app
         .state()
         .files
@@ -104,29 +110,29 @@ fn capture(
         let at = epoch
             .checked_add(ui::time::Duration::from_secs_f64(seconds))
             .ok_or("recording clock overflow")?;
-        ui::time::testing::with_monotonic_time(at, || {
+        let result = ui::time::testing::with_monotonic_time(at, || {
             let point = cursor_at(curve, seconds);
-            // The local arrow and hit-testing use the same position.
-            // The click goes through the real hosted event route;
-            // no screenshot-only preview or prearranged scroll replaces it.
+            // The local arrow and hit-testing use the same position. All edits
+            // use the real hosted accessibility and keyboard routes.
             app.harness().send(&WindowEvent::CursorMoved {
                 device_id: DeviceId::dummy(),
                 position: PhysicalPosition::new(point.x, point.y),
             });
-            let just_clicked = !clicked && seconds >= 2.0;
-            if just_clicked {
-                app.harness().click_at(target.x, target.y);
-                if app.surface_mut::<TypstApp>().caret_line_col().0 != heading_line {
-                    return Err(std::io::Error::other(
-                        "outline click did not move the source caret",
-                    ));
-                }
-                clicked = true;
+            let just_positioned = !positioned && frame >= 30;
+            if just_positioned {
+                position_caret(app, source, insertion)?;
+                positioned = true;
             }
-            let just_edited = !edited && seconds >= 2.4;
-            if just_edited {
-                append_heading(app, &file, source, heading_byte)?;
-                edited = true;
+            // One real keystroke every 150 ms, followed by a long enough hold
+            // to read the production popup's alpha name, glyph and Math badge.
+            let just_typed = typing.peek().is_some_and(|(at, _)| frame >= *at);
+            if just_typed && let Some((_, character)) = typing.next() {
+                app.harness().type_text(character);
+            }
+            let just_accepted = !accepted && frame >= 144;
+            if just_accepted {
+                accept_completion(app, &file, &expected)?;
+                accepted = true;
             }
             app.harness().relayout();
             let presence = app.harness().presence();
@@ -141,7 +147,7 @@ fn capture(
             // Import the harness's captured backdrop into the reusable
             // renderer when the composition changes. Ordinary cursor frames
             // need only the final render, not a fresh GPU/renderer per frame.
-            if frame == 0 || just_clicked || just_edited {
+            if frame == 0 || just_positioned || just_typed || just_accepted {
                 let _ = app.harness().render_rgba_with(&mut renderer, background);
             }
             let scene = capture_scene(app, point);
@@ -149,7 +155,16 @@ fn capture(
                 renderer.render_png(&scene, background, output);
             }
             encoder.write(&renderer.render_resilient(&scene, background))
-        })?;
+        });
+        if let Err(error) = result {
+            // Flush even a failed take so its last visible popup can be
+            // inspected rather than leaving an unreadable MP4 container.
+            encoder.finish()?;
+            return Err(error.into());
+        }
+    }
+    if !accepted {
+        return Err("recording did not show an accepted live edit".into());
     }
     encoder.finish()?;
     Ok(())
@@ -159,47 +174,77 @@ fn abstract_caret(source: &str) -> std::io::Result<usize> {
     let caret = source
         .find("A good transition")
         .ok_or_else(|| std::io::Error::other("capture document has no abstract"))?;
-    if source
-        .get(..caret)
-        .is_none_or(|prefix| prefix.lines().count() != 10)
-    {
-        return Err(std::io::Error::other(
-            "the remote caret must stay on Abstract line 10",
-        ));
-    }
     Ok(caret)
 }
 
-fn append_heading(
+fn position_caret(
     app: &mut TestApp<TypstEditorShell>,
-    file: &ui::tilo_resource::Id,
     source: &str,
-    heading_byte: usize,
+    byte: usize,
 ) -> std::io::Result<()> {
-    let end = heading_byte
-        .checked_add(HEADING.len())
-        .ok_or_else(|| std::io::Error::other("heading offset overflow"))?;
-    // Resource text splices address Unicode scalars, not source byte offsets.
+    let editor = app
+        .harness()
+        .a11y_node_named("Typst source")
+        .ok_or_else(|| std::io::Error::other("missing accessible source editor"))?;
+    app.harness()
+        .perform_a11y_action(editor, &ui::a11y::Action::Focus)
+        .map_err(std::io::Error::other)?;
+    // The fixture prefix contains no combining sequences: its scalar and
+    // accessible grapheme offsets agree, including the non-ASCII byline.
     let at = source
-        .get(..end)
-        .ok_or_else(|| std::io::Error::other("invalid heading offset"))?
+        .get(..byte)
+        .ok_or_else(|| std::io::Error::other("invalid caret offset"))?
         .chars()
         .count();
-    let path = typst_editor::Workspace::paths().files.item(file).source;
-    let edit = path.splice(at, 0, ", not a jump");
-    let invoke = ui::tilo_resource::Invoke::edit(&edit).map_err(std::io::Error::other)?;
-    app.invoke(invoke).map_err(std::io::Error::other)?;
+    app.harness()
+        .perform_a11y_action(
+            editor,
+            &ui::a11y::Action::SetSelection {
+                anchor: at,
+                focus: at,
+            },
+        )
+        .map_err(std::io::Error::other)
+}
+
+fn accept_completion(
+    app: &mut TestApp<TypstEditorShell>,
+    file: &ui::tilo_resource::Id,
+    expected: &str,
+) -> std::io::Result<()> {
+    let choice = "alpha α — Greek alpha · Math";
+    if !completion_visible(app, choice) {
+        return Err(std::io::Error::other(
+            "typing did not expose the real math completion popup",
+        ));
+    }
+    app.harness().send(&ui::synthetic_input::key_press(
+        Key::Named(NamedKey::Tab),
+        None,
+    ));
     app.harness()
         .wait_for_visuals(ui::time::Duration::from_secs(10))
         .map_err(std::io::Error::other)?;
-    if !app
-        .state()
-        .file(file)
-        .is_some_and(|file| file.source.contains("A gentler handoff, not a jump"))
-    {
-        return Err(std::io::Error::other("live heading edit did not persist"));
+    let state = app.state();
+    if state.file(file).is_none_or(|file| file.source != expected) {
+        let equation = state
+            .file(file)
+            .and_then(|file| file.source.lines().find(|line| line.starts_with("$ s(")));
+        return Err(std::io::Error::other(format!(
+            "Tab did not accept alpha into the live source: {equation:?}",
+        )));
+    }
+    if completion_visible(app, choice) {
+        return Err(std::io::Error::other("accepted completion stayed open"));
     }
     Ok(())
+}
+
+fn completion_visible(app: &mut TestApp<TypstEditorShell>, choice: &str) -> bool {
+    app.harness()
+        .a11y_nodes()
+        .iter()
+        .any(|(_, node)| node.label() == Some(choice) && !node.is_hidden())
 }
 
 fn capture_scene(app: &mut TestApp<TypstEditorShell>, point: Point) -> Scene {

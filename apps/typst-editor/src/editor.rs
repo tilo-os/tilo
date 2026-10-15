@@ -6,8 +6,8 @@
 //! `Language::Typst` highlighter. This module is now a thin shell that owns that
 //! widget and adds the Typst-editor-specific pieces: the inline
 //! compiler-diagnostic overlay (gutter severity markers, wavy squiggles under
-//! error spans, and the hover tooltip), rendered on top of the shared editor
-//! using its public geometry.
+//! error spans, end-of-line messages and the hover tooltip), plus an anchored
+//! shared completion menu, using the editor's public geometry.
 //!
 //! The editor shows the source text of the file the app has open and submits
 //! every edit as a splice of the file's `source` field, so a keystroke is an
@@ -15,23 +15,29 @@
 
 use automerge::AutoCommit;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{Modifiers, WindowEvent};
 
+use ui::ColorCompat as _;
 use ui::framework::{Dispatcher, TextControl};
 use ui::presence::{PathSegment, PresenceCtx};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Path;
-use ui::widget::Widget;
+use ui::tokens::TextRole;
 use ui::widget::code_editor::{CodeEditor, Diagnostic as CodeDiagnostic, Language, Severity};
+use ui::widget::{ContextMenu, MenuItem, Widget};
 
 use crate::compile::{DiagKind, Diagnostic};
+use crate::completions::{self, CompletionSession};
 use crate::resource::Workspace;
 
 /// Tab expands to this many spaces (soft tabs).
 const TAB_WIDTH: usize = 2;
+
+/// Dense source type; retain both the theme's UI and accessibility text scales.
+const SOURCE_TYPE_SCALE: f32 = 0.64;
 
 /// Source syntax inserted around the shared editor's selection, or at its caret.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +47,40 @@ pub enum SourceFormat {
     Math,
     Citation,
     Section,
+}
+
+/// Completion choices are non-modal: typing and IME stay with the source.
+/// Reuse the shared menu's painting, navigation and accessible actions without
+/// the focus trap appropriate to an ordinary context menu.
+struct CompletionMenu(ContextMenu);
+
+impl std::ops::Deref for CompletionMenu {
+    type Target = ContextMenu;
+    fn deref(&self) -> &ContextMenu {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for CompletionMenu {
+    fn deref_mut(&mut self) -> &mut ContextMenu {
+        &mut self.0
+    }
+}
+
+impl ui::widget::Decorator for CompletionMenu {
+    type Inner = ContextMenu;
+    fn inner(&self) -> &ContextMenu {
+        &self.0
+    }
+    fn inner_mut(&mut self) -> &mut ContextMenu {
+        &mut self.0
+    }
+    fn traps_focus(&self) -> bool {
+        false
+    }
+    fn modal_capture(&self) -> Option<Rect> {
+        None
+    }
 }
 
 pub struct SourceEditor {
@@ -59,6 +99,14 @@ pub struct SourceEditor {
     /// Last known hover position (window space), or `None` when the pointer is
     /// off the pane. Drives the inline-diagnostic tooltip.
     hover: Option<Point>,
+    completion_menu: CompletionMenu,
+    completion: Option<CompletionSession>,
+    /// Exact buffer/caret for which the visible choices were computed.
+    completion_snapshot: Option<(String, usize)>,
+    dismissed_completion: Option<(String, usize)>,
+    /// Only a local edit may trigger suggestions, never shaping, sync or navigation.
+    completion_edit: Option<(String, usize)>,
+    completion_pointer: Option<Point>,
 }
 
 impl SourceEditor {
@@ -76,6 +124,12 @@ impl SourceEditor {
             rect: Rect::ZERO,
             drag_anchor: None,
             hover: None,
+            completion_menu: CompletionMenu(ContextMenu::new()),
+            completion: None,
+            completion_snapshot: None,
+            dismissed_completion: None,
+            completion_edit: None,
+            completion_pointer: None,
         }
     }
 }
@@ -105,16 +159,19 @@ impl SourceEditor {
     /// Include this control in the host's widget children so the framework
     /// publishes the real caret/selection and exposes the editor to accessibility.
     pub fn widget(&self) -> &dyn Widget {
-        &self.code
+        self
     }
 
     pub fn set_focused(&mut self, focused: bool) {
+        if !focused {
+            self.dismiss_completions();
+        }
         self.focused = focused;
         self.control_mut().set_focused(focused);
     }
 
     pub fn widget_mut(&mut self) -> &mut dyn Widget {
-        &mut self.code
+        self
     }
 
     fn control(&self) -> &CodeEditor {
@@ -133,6 +190,8 @@ impl SourceEditor {
     /// Show the source at `path`, each edit a splice there once a
     /// dispatcher is attached.
     pub fn follow(&mut self, path: Path<Workspace, String>) {
+        self.dismiss_completions();
+        self.dismissed_completion = None;
         let mut control = Self::control_new(&path);
         control.set_focused(self.focused);
         control.set_rect(self.rect);
@@ -275,7 +334,199 @@ impl SourceEditor {
         }
         self.focused = true;
         self.control_mut().set_focused(true);
+        self.completion_edit = Some((self.text().to_owned(), self.caret()));
         true
+    }
+
+    // ----- completions -----------------------------------------------------
+
+    /// The shared menu owns its overlay, hit testing and semantic choices.
+    pub fn completion_widget(&self) -> &dyn Widget {
+        &self.completion_menu
+    }
+
+    pub fn completion_widget_mut(&mut self) -> &mut dyn Widget {
+        &mut self.completion_menu
+    }
+
+    /// Recompute after the current source has been pulled and after local edits.
+    /// Merely opening a file, moving its caret or receiving remote edits cannot
+    /// summon a popup. Existing choices are invalidated as soon as they go stale.
+    pub fn update_completions(&mut self, workspace: &Workspace) {
+        let snapshot = (self.text().to_owned(), self.caret());
+        let edited = self.completion_edit.take().as_ref() == Some(&snapshot);
+        if self.control().selection().is_some() || self.control().inner().is_composing() {
+            self.dismiss_completions();
+            return;
+        }
+        if !edited {
+            if self
+                .completion_snapshot
+                .as_ref()
+                .is_some_and(|old| *old != snapshot)
+            {
+                self.dismiss_completions();
+            }
+            return;
+        }
+        if self.dismissed_completion.as_ref() == Some(&snapshot) {
+            return;
+        }
+        let Some(session) = completions::complete(&snapshot.0, snapshot.1, workspace) else {
+            self.dismiss_completions();
+            return;
+        };
+        let items = session
+            .items
+            .iter()
+            .map(|item| {
+                let glyph = item.glyph.as_deref().unwrap_or("");
+                let label = if matches!(item.badge.as_str(), "fn" | "kw") {
+                    format!("{} [{}] — {}", item.label, item.badge, item.detail)
+                } else {
+                    format!("{} {glyph} — {} · {}", item.label, item.detail, item.badge)
+                };
+                MenuItem::selection(label)
+            })
+            .collect();
+        self.completion_menu.set_items(items);
+        self.completion_menu.open_anchored(Rect::ZERO, self.rect);
+        self.completion_menu.focus_first_action();
+        self.completion = Some(session);
+        self.completion_snapshot = Some(snapshot);
+    }
+
+    pub fn dismiss_completions(&mut self) {
+        self.dismissed_completion = Some((self.text().to_owned(), self.caret()));
+        self.completion_menu.close();
+        self.completion = None;
+        self.completion_snapshot = None;
+        self.completion_edit = None;
+    }
+
+    /// Drain after semantic activation as well as ordinary events. Acceptance
+    /// goes through the same permission-checked, undoable splice as typing.
+    pub fn accept_pending_completion(&mut self, edits: &mut ui::widget::Edits<'_>) -> bool {
+        let Some(index) = self.completion_menu.take_selection() else {
+            return false;
+        };
+        let snapshot = (self.text().to_owned(), self.caret());
+        if !self.focused
+            || self.control().inner().is_composing()
+            || self.control().selection().is_some()
+            || self.completion_snapshot.as_ref() != Some(&snapshot)
+        {
+            self.dismiss_completions();
+            return false;
+        }
+        let Some(session) = self.completion.take() else {
+            return false;
+        };
+        let Some(item) = session.items.get(index) else {
+            return false;
+        };
+        let caret = self.caret();
+        let selection = self.control().inner().selection_anchor_focus_public();
+        let (Some(before), Some(after)) = (
+            self.text().get(..session.start),
+            self.text().get(session.end..),
+        ) else {
+            self.dismiss_completions();
+            return false;
+        };
+        let expected = format!("{before}{}{after}", item.insert);
+        self.control_mut().set_selection(session.start, session.end);
+        self.control_mut()
+            .inner_mut()
+            .insert_at_cursor(&item.insert);
+        self.submit(edits);
+        let accepted = self.text() == expected;
+        if !accepted {
+            if let Some((anchor, focus)) = selection {
+                self.control_mut().set_selection(anchor, focus);
+            } else {
+                self.set_caret(caret);
+            }
+        }
+        self.dismiss_completions();
+        accepted
+    }
+
+    /// Route BEFORE the host's normal pointer, key and shortcut handling. Text
+    /// and IME still go to `CodeEditor`; only menu navigation/acceptance is captured.
+    pub fn completion_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        use winit::event::ElementState;
+        use winit::keyboard::{Key, NamedKey};
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.completion_pointer = Some(ctx.logical(position));
+        } else if let WindowEvent::Touch(touch) = event {
+            self.completion_pointer = Some(ctx.logical(touch.location));
+        }
+        if self.control().inner().is_composing()
+            || matches!(event, WindowEvent::Ime(winit::event::Ime::Preedit(..)))
+        {
+            self.dismiss_completions();
+            return false;
+        }
+        let pending = self.accept_pending_completion(&mut ctx.edits());
+        if !self.completion_menu.is_open() {
+            return pending;
+        }
+        let over_menu = self
+            .completion_pointer
+            .is_some_and(|point| self.completion_menu.get_rect().contains(point));
+        if !over_menu
+            && matches!(
+                event,
+                WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::Touch(_)
+            )
+        {
+            self.dismiss_completions();
+            return false;
+        }
+        if let WindowEvent::KeyboardInput { event, .. } = event {
+            let modifiers = ctx.modifiers.state();
+            if modifiers.control_key() || modifiers.super_key() || modifiers.alt_key() {
+                return false;
+            }
+            if event.state != ElementState::Pressed {
+                return false;
+            }
+            match event.logical_key {
+                Key::Named(NamedKey::Tab | NamedKey::Enter) => {
+                    let selected = self.completion_menu.hovered().unwrap_or(0);
+                    self.completion_menu.click_item(selected);
+                    self.accept_pending_completion(&mut ctx.edits());
+                    *ctx.handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Escape) => {}
+                Key::Named(
+                    NamedKey::ArrowLeft
+                    | NamedKey::ArrowRight
+                    | NamedKey::Home
+                    | NamedKey::End
+                    | NamedKey::PageUp
+                    | NamedKey::PageDown,
+                ) => {
+                    self.dismiss_completions();
+                    return false;
+                }
+                _ => return false,
+            }
+        }
+        self.completion_menu.handle_event(event, ctx);
+        self.accept_pending_completion(&mut ctx.edits());
+        if !self.completion_menu.is_open() {
+            self.dismiss_completions();
+        }
+        *ctx.handled
     }
 
     // ----- scrolling -------------------------------------------------------
@@ -348,6 +599,7 @@ impl SourceEditor {
     ) -> bool {
         use taffy::{Style, TaffyTree};
         let focused = self.focused;
+        let before = self.text().to_owned();
         self.control_mut().set_focused(focused);
         let mut handled = false;
         let mut focus_target = None;
@@ -371,6 +623,9 @@ impl SourceEditor {
             },
         );
         self.submit(doc);
+        if before != self.text() {
+            self.completion_edit = Some((self.text().to_owned(), self.caret()));
+        }
         handled
     }
 
@@ -399,7 +654,7 @@ impl SourceEditor {
         // content sizing prevents applying the accessibility scale twice.
         self.control_mut()
             .inner_mut()
-            .set_content_size(Some(theme.text(ui::tokens::TextRole::Code).size));
+            .set_content_size(Some(theme.text(TextRole::Code).size * SOURCE_TYPE_SCALE));
         let text = self.control().value().to_string();
         let spans = diags
             .iter()
@@ -432,7 +687,116 @@ impl SourceEditor {
         let clip = self.content_clip(theme);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
         scene.append(&content, None);
+        self.draw_inline_diagnostics(scene, transform, tr, theme, diags);
         scene.pop_layer();
+        if self.completion_menu.is_open() {
+            let anchor = self.control().caret_rect(theme, self.caret());
+            if clip.contains(anchor.center()) {
+                let window = presence.viewport.get().unwrap_or(rect);
+                let row = f64::from(theme.tokens.metrics.menu_row_height).max(f64::from(
+                    theme.text(TextRole::Body).line_height_px() + theme.tokens.spacing.s2,
+                ));
+                // Keep suggestions below the caret whenever two rows fit;
+                // near the window bottom the shared menu flips above instead.
+                let popup = if window.y1 - anchor.y1 >= row * 2.0 {
+                    Rect::new(
+                        window.x0,
+                        anchor.y0,
+                        window.x1,
+                        window.y1.min(anchor.y1 + row * 6.0),
+                    )
+                } else {
+                    Rect::new(
+                        window.x0,
+                        window.y0.max(anchor.y0 - row * 6.0),
+                        window.x1,
+                        anchor.y1,
+                    )
+                };
+                self.completion_menu.reanchor(anchor, popup);
+                self.completion_menu.layout_within(tr, theme);
+            } else {
+                self.dismiss_completions();
+            }
+        }
+    }
+
+    fn draw_inline_diagnostics(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        diags: &[Diagnostic],
+    ) {
+        let mut style = theme.text(TextRole::Caption);
+        style.size = style
+            .size
+            .min(theme.text(TextRole::Code).size * SOURCE_TYPE_SCALE);
+        let pad = f64::from(theme.tokens.spacing.s1);
+        let gap = f64::from(theme.tokens.spacing.s3);
+        for entry in inline_diagnostics(diags, self.text()) {
+            let end = self.control().caret_rect(theme, entry.line_end);
+            let x = end.x1 + gap;
+            let available = self.rect.x1 - pad - x;
+            if available <= pad * 3.0 || !self.rect.contains(end.center()) {
+                continue;
+            }
+            let message = entry
+                .diagnostic
+                .message
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let label = match entry.diagnostic.kind {
+                DiagKind::Error => format!("⊗ {message}"),
+                DiagKind::Warning => format!("⚠ {message}"),
+            };
+            let label = tr.elide_to_width_style(&label, (available - 2.0 * pad) as f32, &style);
+            let (w, h) = tr.measure_style(&label, None, &style);
+            let h = f64::from(h).min(end.height());
+            let y = end.center().y - h / 2.0;
+            let chip = Rect::new(
+                x,
+                y,
+                (x + f64::from(w) + 2.0 * pad).min(self.rect.x1),
+                y + h,
+            );
+            let color = match entry.diagnostic.kind {
+                DiagKind::Error => theme.tokens.colors.semantic.danger,
+                DiagKind::Warning => theme.tokens.colors.semantic.warning,
+            };
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                color.with_alpha_factor(0.12),
+                None,
+                &chip.to_rounded_rect(f64::from(theme.tokens.radii.control)),
+            );
+            tr.draw_style(
+                scene,
+                &label,
+                theme.tokens.colors.text_primary,
+                transform.pre_translate(Vec2::new(x + pad, y)),
+                None,
+                &style,
+            );
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn soft_wrapped_lines(&self, theme: &Theme) -> Vec<usize> {
+        let mut byte = 0;
+        self.text()
+            .split('\n')
+            .enumerate()
+            .filter_map(|(line, text)| {
+                let start = self.control().caret_rect(theme, byte);
+                let end = self.control().caret_rect(theme, byte + text.len());
+                byte += text.len() + 1;
+                ((start.y0 - end.y0).abs() > 0.5).then_some(line + 1)
+            })
+            .collect()
     }
 
     fn content_clip(&self, theme: &Theme) -> Rect {
@@ -474,6 +838,90 @@ impl SourceEditor {
     }
 }
 
+/// One message per logical line, with errors taking precedence over warnings.
+/// The end is a UTF-8 boundary before the newline, not the diagnostic span's end.
+struct InlineDiagnostic<'a> {
+    line_end: usize,
+    diagnostic: &'a Diagnostic,
+}
+
+fn inline_diagnostics<'a>(diags: &'a [Diagnostic], text: &str) -> Vec<InlineDiagnostic<'a>> {
+    let mut lines = std::collections::BTreeMap::<usize, &Diagnostic>::new();
+    for diagnostic in diags {
+        let Some(line) = diagnostic.line.and_then(|line| line.checked_sub(1)) else {
+            continue;
+        };
+        if text.split('\n').nth(line).is_none() || diag_byte_span(diagnostic, text).is_none() {
+            continue;
+        }
+        let end = byte_of_line_col(text, line, usize::MAX);
+        lines
+            .entry(end)
+            .and_modify(|old| {
+                if diagnostic.kind == DiagKind::Error {
+                    *old = diagnostic;
+                }
+            })
+            .or_insert(diagnostic);
+    }
+    lines
+        .into_iter()
+        .map(|(line_end, diagnostic)| InlineDiagnostic {
+            line_end,
+            diagnostic,
+        })
+        .collect()
+}
+
+// Focused input is delivered directly to the retained node, not necessarily
+// through the painted app. Stand in for the text control so popup navigation
+// precedes editing on that route as well as on the app's shortcut route.
+impl ui::widget::Decorator for SourceEditor {
+    type Inner = TextControl<CodeEditor, Workspace>;
+
+    fn inner(&self) -> &Self::Inner {
+        &self.code
+    }
+
+    fn inner_mut(&mut self) -> &mut Self::Inner {
+        &mut self.code
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.completion_menu]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.completion_menu]
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let source = Widget::build_layout(&mut self.code, taffy, theme, nodes);
+        let menu = Widget::build_layout(&mut self.completion_menu, taffy, theme, nodes);
+        // Both nodes were just allocated in this tree. The popup is positioned
+        // from shaped caret geometry, outside the code's measured content.
+        let _ = taffy.set_children(source, &[menu]);
+        ui::widget::decorator::register_node(nodes, source, self);
+        source
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.completion_event(event, ctx) {
+            return;
+        }
+        let before = self.text().to_owned();
+        Widget::handle_event(&mut self.code, event, ctx);
+        if self.text() != before {
+            self.completion_edit = Some((self.text().to_owned(), self.caret()));
+        }
+    }
+}
+
 /// The byte offset in `text` of 0-based `(line, col)` (col in chars). Clamps to
 /// the line end / text end for out-of-range inputs.
 fn byte_of_line_col(text: &str, line0: usize, col0: usize) -> usize {
@@ -495,19 +943,24 @@ fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
     let (sl, sc) = (d.line?.saturating_sub(1), d.col?.saturating_sub(1));
     let (el, ec) = (
         d.end_line.unwrap_or(d.line?).saturating_sub(1),
-        d.end_col.unwrap_or(d.col? + 1).saturating_sub(1),
+        d.end_col
+            .unwrap_or(d.col?.saturating_add(1))
+            .saturating_sub(1),
     );
     let b0 = byte_of_line_col(text, sl, sc);
-    let b1 = byte_of_line_col(text, el, ec)
-        .max(b0 + 1)
-        .min(text.len().max(b0 + 1));
+    let next = text
+        .get(b0..)
+        .unwrap_or_default()
+        .chars()
+        .next()
+        .map_or(b0, |c| b0 + c.len_utf8());
+    let b1 = byte_of_line_col(text, el, ec).max(next);
     Some((b0, b1.min(text.len())))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::ColorCompat as _;
     use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
 
     /// A workspace whose one file holds `text`, and an editor showing it
@@ -538,6 +991,283 @@ mod tests {
             .unwrap()
             .source
             .clone()
+    }
+
+    fn key(key: winit::keyboard::Key, text: Option<&str>) -> WindowEvent {
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            key,
+            text.map(winit::keyboard::SmolStr::new),
+            winit::event::ElementState::Pressed,
+        ))
+    }
+
+    fn type_source(editor: &mut SourceEditor, doc: &mut AutoCommit, text: &str) {
+        for ch in text.chars() {
+            let text = ch.to_string();
+            assert!(editor.handle_key(
+                &key(
+                    winit::keyboard::Key::Character(text.clone().into()),
+                    Some(&text)
+                ),
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(doc),
+            ));
+            editor.update_completions(&Workspace::read(doc).unwrap());
+        }
+    }
+
+    fn completion_event(
+        editor: &mut SourceEditor,
+        doc: &mut AutoCommit,
+        event: &WindowEvent,
+    ) -> bool {
+        let mut taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        let mut handled = false;
+        editor.completion_event(
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: ui::widget::Edits::lend(doc),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &taffy,
+            },
+        )
+    }
+
+    #[test]
+    fn completion_typing_acceptance_and_navigation_use_shared_controls() {
+        use winit::keyboard::{Key, NamedKey};
+        for accept in [NamedKey::Tab, NamedKey::Enter] {
+            let (mut doc, mut editor) = showing("");
+            editor.attach(ui::framework::testing::detached_dispatcher("author"));
+            type_source(&mut editor, &mut doc, "#ta");
+            assert!(editor.completion_menu.is_open());
+            assert!(completion_event(
+                &mut editor,
+                &mut doc,
+                &key(Key::Named(accept), None)
+            ));
+            assert_eq!(source(&doc), "#table(columns: 2, [], [])");
+            assert!(!editor.completion_menu.is_open());
+            editor.update_completions(&Workspace::read(&doc).unwrap());
+            assert!(
+                !editor.completion_menu.is_open(),
+                "acceptance cannot reopen suggestions"
+            );
+        }
+        let (mut doc, mut editor) = showing("");
+        editor.attach(ui::framework::testing::detached_dispatcher("author"));
+        type_source(&mut editor, &mut doc, "#");
+        let caret = editor.caret();
+        assert!(completion_event(
+            &mut editor,
+            &mut doc,
+            &key(Key::Named(NamedKey::ArrowDown), None)
+        ));
+        assert_eq!(
+            editor.caret(),
+            caret,
+            "menu navigation does not move the source caret"
+        );
+        assert_eq!(editor.completion_menu.hovered(), Some(1));
+        assert!(completion_event(
+            &mut editor,
+            &mut doc,
+            &key(Key::Named(NamedKey::ArrowUp), None)
+        ));
+        assert_eq!(editor.completion_menu.hovered(), Some(0));
+        assert!(completion_event(
+            &mut editor,
+            &mut doc,
+            &key(Key::Named(NamedKey::Escape), None)
+        ));
+        editor.update_completions(&Workspace::read(&doc).unwrap());
+        assert!(!editor.completion_menu.is_open());
+        editor.set_caret(0);
+        editor.update_completions(&Workspace::read(&doc).unwrap());
+        editor.set_caret(1);
+        editor.update_completions(&Workspace::read(&doc).unwrap());
+        assert!(
+            !editor.completion_menu.is_open(),
+            "navigation never triggers suggestions"
+        );
+        type_source(&mut editor, &mut doc, "t");
+        assert!(
+            editor.completion_menu.is_open(),
+            "editing resumes suggestions after Escape"
+        );
+    }
+
+    #[test]
+    fn completion_does_not_open_after_navigation_in_the_same_event_batch() {
+        use winit::keyboard::Key;
+        let (mut doc, mut editor) = showing("");
+        editor.attach(ui::framework::testing::detached_dispatcher("author"));
+        assert!(editor.handle_key(
+            &key(Key::Character("#".into()), Some("#")),
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+        ));
+        editor.set_caret(0);
+        editor.update_completions(&Workspace::read(&doc).unwrap());
+        editor.set_caret(1);
+        editor.update_completions(&Workspace::read(&doc).unwrap());
+        assert!(!editor.completion_menu.is_open());
+    }
+
+    #[test]
+    fn completion_semantic_activation_splices_the_same_crdt_text() {
+        use automerge::ReadDoc as _;
+        let (mut doc, mut editor) = showing("");
+        editor.attach(ui::framework::testing::detached_dispatcher("author"));
+        type_source(&mut editor, &mut doc, "#ta");
+        let obj = editor.control().inner().bound_obj().unwrap().clone();
+        let access = editor.completion_widget().accessibility().unwrap();
+        let target = access.children[0].action_target.clone().unwrap();
+        assert!(editor.completion_widget_mut().perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert!(editor.accept_pending_completion(&mut ui::widget::Edits::lend(&mut doc)));
+        assert_eq!(doc.text(&obj).unwrap(), "#table(columns: 2, [], [])");
+        assert_eq!(source(&doc), editor.text());
+    }
+
+    #[test]
+    fn completion_pointer_acceptance_uses_the_shaped_caret_anchor() {
+        let (mut doc, mut editor) = showing("");
+        editor.attach(ui::framework::testing::detached_dispatcher("author"));
+        editor.set_rect(Rect::new(30.0, 40.0, 530.0, 440.0));
+        type_source(&mut editor, &mut doc, "#ta");
+        let theme = Theme::dark().with_ui_scale(1.5);
+        editor.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &[],
+            &PresenceCtx::empty(),
+        );
+        let caret = editor.control().caret_rect(&theme, editor.caret());
+        let row = editor.completion_menu.item_rect(0).unwrap();
+        assert!(row.y0 >= caret.y1, "choices open below the shaped caret");
+        let point = row.center();
+        completion_event(
+            &mut editor,
+            &mut doc,
+            &ui::synthetic_input::cursor_moved(point.x, point.y),
+        );
+        assert!(completion_event(
+            &mut editor,
+            &mut doc,
+            &ui::synthetic_input::mouse_press()
+        ));
+        assert_eq!(source(&doc), "#table(columns: 2, [], [])");
+        assert!(!editor.completion_menu.is_open());
+    }
+
+    #[test]
+    fn completion_does_not_capture_outside_clicks_or_wheel_scroll() {
+        use winit::event::{DeviceId, MouseScrollDelta, TouchPhase};
+        for event in [
+            ui::synthetic_input::mouse_press(),
+            WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+                phase: TouchPhase::Moved,
+            },
+        ] {
+            let (mut doc, mut editor) = showing("");
+            editor.attach(ui::framework::testing::detached_dispatcher("author"));
+            type_source(&mut editor, &mut doc, "#ta");
+            completion_event(
+                &mut editor,
+                &mut doc,
+                &ui::synthetic_input::cursor_moved(1000.0, 1000.0),
+            );
+            assert!(
+                !completion_event(&mut editor, &mut doc, &event),
+                "the underlying pane must receive outside input"
+            );
+            assert!(!editor.completion_menu.is_open());
+            assert_eq!(source(&doc), "#ta");
+        }
+    }
+
+    #[test]
+    fn ime_preedit_dismisses_completions_without_accepting_a_candidate() {
+        let (mut doc, mut editor) = showing("");
+        editor.attach(ui::framework::testing::detached_dispatcher("author"));
+        type_source(&mut editor, &mut doc, "#ta");
+        assert!(editor.completion_menu.is_open());
+        let preedit = WindowEvent::Ime(winit::event::Ime::Preedit("日本".into(), Some((0, 6))));
+        assert!(!completion_event(&mut editor, &mut doc, &preedit));
+        assert!(!editor.completion_menu.is_open());
+        editor.handle_key(
+            &preedit,
+            &Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert!(editor.control().inner().is_composing());
+        editor.completion_menu.click_item(0);
+        assert!(!editor.accept_pending_completion(&mut ui::widget::Edits::lend(&mut doc)));
+        assert_eq!(source(&doc), "#ta");
+    }
+
+    #[test]
+    fn completion_is_not_seeded_or_allowed_to_bypass_permissions() {
+        let (mut doc, mut editor) = showing("#ta");
+        editor.set_caret(3);
+        editor.update_completions(&Workspace::read(&doc).unwrap());
+        assert!(!editor.completion_menu.is_open());
+        // Exercise acceptance against a view-only binding, independent of the
+        // local-edit gate that normally prevents this popup from opening.
+        editor.completion_edit = Some((editor.text().to_owned(), editor.caret()));
+        editor.update_completions(&Workspace::read(&doc).unwrap());
+        editor.completion_menu.click_item(0);
+        assert!(!editor.accept_pending_completion(&mut ui::widget::Edits::lend(&mut doc)));
+        assert_eq!(source(&doc), "#ta");
+        assert_eq!(editor.text(), "#ta");
+        assert_eq!(editor.caret(), 3);
+    }
+
+    #[test]
+    fn inline_messages_anchor_at_utf8_line_ends_and_prefer_errors() {
+        let diagnostic = |kind, line, col, message: &str| Diagnostic {
+            kind,
+            line: Some(line),
+            col: Some(col),
+            end_line: Some(line),
+            end_col: Some(col),
+            message: message.into(),
+            hints: vec![],
+        };
+        let text = "λ café\n日本\n";
+        let diagnostics = [
+            diagnostic(DiagKind::Warning, 1, 2, "warning"),
+            diagnostic(DiagKind::Error, 1, 3, "error"),
+            diagnostic(DiagKind::Warning, 2, 1, "unicode"),
+            diagnostic(DiagKind::Error, 3, 1, "empty final line"),
+            diagnostic(DiagKind::Error, 99, 1, "outside source"),
+        ];
+        let entries = inline_diagnostics(&diagnostics, text);
+        assert_eq!(
+            entries.iter().map(|e| e.line_end).collect::<Vec<_>>(),
+            [8, 15, 16]
+        );
+        assert_eq!(entries[0].diagnostic.message, "error");
+        for entry in entries {
+            assert!(text.is_char_boundary(entry.line_end));
+        }
+        assert_eq!(diag_byte_span(&diagnostics[2], text), Some((9, 12)));
+        assert_eq!(diag_byte_span(&diagnostics[3], text), Some((16, 16)));
     }
 
     #[test]
