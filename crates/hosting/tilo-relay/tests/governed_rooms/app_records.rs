@@ -3,7 +3,9 @@
 //! `tilo.member` action, for the app's record; the relay signs its empty
 //! genesis, and the app's first state reaches the record as the member's own
 //! change, which every replica admits.
-use super::governance_actions::{admitted, ask, host_operation, invocation, outcome, subscribed};
+use super::governance_actions::{
+    admitted, ask, host_operation, invocation, outcome, subscribed, try_ask,
+};
 use super::*;
 use tilo_actions::remote::ActionHostError;
 use tilo_relay::rooms::{GRANT_APP_AUTHORSHIP, PREPARE_APPLICATION_RECORD};
@@ -115,12 +117,15 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
         !admitted(&relay, &outsider, workspace).await,
         "a device the room never admitted cannot reach the action"
     );
+    // A viewer's session may not act in the workspace at all; were its
+    // action delivered, the room would refuse it as a change it may not make.
     let reader = subscribed(&relay, &viewer, workspace).await;
+    let refused = match try_ask(&reader, &host, workspace, prepare(&room.room, OPENED)).await {
+        Err(reason) => reason.contains("may not act"),
+        Ok(answer) => matches!(outcome(answer), Err(ActionHostError::Refused { .. })),
+    };
     assert!(
-        matches!(
-            outcome(ask(&reader, &host, workspace, prepare(&room.room, OPENED)).await),
-            Err(ActionHostError::Refused { .. })
-        ),
+        refused,
         "a member who may not change the record creates nothing"
     );
     drop(reader);
