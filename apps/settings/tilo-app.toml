@@ -11,8 +11,10 @@
 # socket and the compositor's runtime state. Printing stays behind the
 # Print portal. The launcher also binds the parts of `~/.config/tilo` this
 # app edits (the settings document's own directory, the account stores and
-# their credential vault, the identity store) and, read-only, the workspace
-# tree; never the trust lists, app registries or settings records.
+# their credential vault) and, read-only, the workspace tree; never the
+# identity store, trust lists, app registries or settings records. The
+# identity store is the host's: Settings administers identities and devices
+# through the host's `tilo.identity` actions.
 #
 
 

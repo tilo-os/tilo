@@ -4985,6 +4985,7 @@ mod app_dir_tests {
             "the whole session configuration root must never be bound: {argv:?}"
         );
         for private in [
+            "identity",
             "trusted-attestors.toml",
             "revoked-keys.toml",
             "registries.toml",
