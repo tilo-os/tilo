@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Check and stage one immutable CI target in a live installer's writable /var.
 
+The host side of the transport: the live installer applies the same checks
+compiled, in tilo-installer-offline-target (crates/system/install-helpers).
+
 This checks transport integrity, not release authority. The normal transport
 still requires the running installer to verify signatures and SLSA provenance.
 Explicit --development checks a separate unsigned dev-image schema and its

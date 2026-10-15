@@ -1,4 +1,4 @@
-//! Small privileged helpers of the installer backend (`tilo-install`).
+//! Privileged helpers of the live installer and its backend (`tilo-install`).
 //!
 //! Each was a Python script under `/usr/libexec`; each is now a binary of this
 //! crate at the same path without the `.py`, with the same command line, the
@@ -9,6 +9,8 @@
 //! * [`handoff_copy`]: `tilo-install-handoff-copy SOURCE DESTINATION`
 //! * [`dev_ssh`]: `tilo-install-dev-ssh --etc ETC --username USERNAME --key KEY`
 //! * [`bootc_copy_cache`]: `tilo-vm-bootc-copy-cache check|record` (VMs only)
+//! * [`offline_target`]: `tilo-installer-offline-target verify|import`
+//! * [`staging_handoff`]: `tilo-staging-handoff detect|check-install|…`
 
 use std::ffi::OsString;
 use std::fmt;
@@ -18,8 +20,11 @@ pub mod args;
 pub mod bootc_copy_cache;
 pub mod dev_ssh;
 pub mod handoff_copy;
+pub mod offline_target;
 pub mod process;
 pub mod py;
+pub mod staging_handoff;
+pub mod target_transport;
 
 /// Why a helper refused or failed: the message it prints.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -207,7 +207,10 @@ containerfile="$repo/os/Containerfile"
 # now compiled. The base image carries them from the install-helpers component
 # (three new rows): they used to reach only the installer image, from the
 # installer's overlay of os/usr, and the installer now inherits them.
-expected_contract=9f880a1a4a05049f26e0886ff3b6ddd317c045deea26bd6399f28681047b6df0
+# The signed offline target's verifier and the USB-free installation guard
+# (tilo-staging-handoff) are now compiled too: two more install-helpers rows,
+# from the base image instead of the installer's overlay of os/usr.
+expected_contract=a69ec6ad3b73855dd3eed27b346332892f9bcb452755a4b28b17a107bd50eb5c
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

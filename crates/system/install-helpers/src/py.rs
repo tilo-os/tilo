@@ -26,6 +26,50 @@ pub fn split(text: &str) -> Vec<&str> {
         .collect()
 }
 
+/// `int(text)` for a decimal string: surrounding whitespace, a sign, and `_`
+/// between digits. Values beyond `i128` saturate; callers refuse them by
+/// range, as Python did. Non-ASCII decimal digits, which Python also reads,
+/// are refused.
+///
+/// # Errors
+/// Anything else, worded as Python worded it.
+pub fn int(text: &str) -> Result<i128, String> {
+    let invalid = || format!("invalid literal for int() with base 10: {text:?}");
+    let trimmed = strip(text);
+    let (negative, digits) = match trimmed.as_bytes().first() {
+        Some(b'-') => (true, trimmed.get(1..).unwrap_or_default()),
+        Some(b'+') => (false, trimmed.get(1..).unwrap_or_default()),
+        _ => (false, trimmed),
+    };
+    let bytes = digits.as_bytes();
+    if bytes.is_empty() || bytes.first() == Some(&b'_') || bytes.last() == Some(&b'_') {
+        return Err(invalid());
+    }
+    let mut value: i128 = 0;
+    let mut previous_underscore = false;
+    for byte in bytes {
+        if *byte == b'_' {
+            if previous_underscore {
+                return Err(invalid());
+            }
+            previous_underscore = true;
+            continue;
+        }
+        previous_underscore = false;
+        if !byte.is_ascii_digit() {
+            return Err(invalid());
+        }
+        value = value
+            .saturating_mul(10)
+            .saturating_add(i128::from(byte.saturating_sub(b'0')));
+    }
+    Ok(if negative {
+        value.saturating_neg()
+    } else {
+        value
+    })
+}
+
 /// What `Path.read_text()` returns for `bytes`: universal newlines, so
 /// `\r\n` and a lone `\r` both read as `\n`.
 #[must_use]
