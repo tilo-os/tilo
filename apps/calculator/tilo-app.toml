@@ -23,6 +23,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard"]
 
+[resources]
+kinds = ["calculator.document"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
