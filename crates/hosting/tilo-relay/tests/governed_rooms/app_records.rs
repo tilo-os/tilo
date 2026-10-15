@@ -143,6 +143,18 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
         "a malformed application id is refused"
     );
 
+    let reply = outcome(ask(&editor, &host, workspace, prepare(&room.room, OPENED)).await).unwrap();
+    assert_eq!(reply["created"], serde_json::json!(true), "{reply}");
+    let generation = reply["generation"].as_u64().expect("a generation");
+    assert_eq!(
+        outcome(ask(&editor, &host, workspace, prepare(&room.room, OPENED)).await).unwrap(),
+        serde_json::json!({ "created": false, "generation": generation }),
+        "a retry finds the record and changes nothing"
+    );
+    // A device's newest session is its current one: the replicas' sessions
+    // below replace this one.
+    drop(editor);
+
     let member_session = session(&relay, &member, workspace).await;
     let laptop_session = session(&relay, &laptop, workspace).await;
     let roster = vec![
@@ -165,10 +177,6 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
     };
     let mut member_peer = replica();
     let mut laptop_peer = replica();
-
-    let reply = outcome(ask(&editor, &host, workspace, prepare(&room.room, OPENED)).await).unwrap();
-    assert_eq!(reply["created"], serde_json::json!(true), "{reply}");
-    let generation = reply["generation"].as_u64().expect("a generation");
     receive_until(
         "the member holds the relay's empty genesis",
         &member_session,
@@ -181,11 +189,6 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
     assert!(
         genesis.get_heads().is_empty(),
         "the relay signs an empty document and nothing else"
-    );
-    assert_eq!(
-        outcome(ask(&editor, &host, workspace, prepare(&room.room, OPENED)).await).unwrap(),
-        serde_json::json!({ "created": false, "generation": generation }),
-        "a retry finds the record and changes nothing"
     );
 
     // The app's first state is the member's own change onto the genesis.
@@ -211,6 +214,8 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
         |peer, _| first_state(peer).as_deref() == Some("First note"),
     )
     .await;
+    member_session.close().await;
+    let editor = subscribed(&relay, &member, workspace).await;
     let retry = outcome(ask(&editor, &host, workspace, prepare(&room.room, OPENED)).await).unwrap();
     assert_eq!(
         retry["created"],
