@@ -237,12 +237,6 @@ impl Widget for ResizeHandle {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {
-        // Taffy's reported rect for the zero-width leaf sits on the gap's
-        // left edge, useful for neither hit-test nor paint, so it is
-        // ignored in favour of the row's explicit `set_neighbour_rects`.
-    }
-
     /// A fixed slot whose geometry comes from its neighbours, never from
     /// what it contains: there is never anything to measure.
     fn is_layout_dirty(&self) -> bool {

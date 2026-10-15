@@ -300,12 +300,6 @@ impl Widget for RevealToggle {
             .then_some(winit::window::CursorIcon::Pointer)
     }
 
-    /// An inline accessory is not a Tab stop; the pointer, assistive
-    /// technology and agents reach it.
-    fn is_focusable(&self) -> bool {
-        false
-    }
-
     fn is_enabled(&self) -> bool {
         self.enabled
     }

@@ -319,7 +319,7 @@ pub trait AppWidget: Widget {
 
 // The sole internal owner adapter; raw descendants inherit its layout boundary.
 mod component_adapter {
-    use super::{AppCommand, AppHostIntent, AppWidget, IconDescriptor, Widget};
+    use super::{AppHostIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
@@ -1022,9 +1022,6 @@ mod component_adapter {
         fn name(&self) -> &'static str {
             "BoundComponent"
         }
-        fn test_id(&self) -> Option<&str> {
-            None
-        }
         fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
             Some(self)
         }
@@ -1040,14 +1037,8 @@ mod component_adapter {
         fn tooltip(&self) -> Option<&str> {
             self.in_root(|root| root.tooltip()).flatten()
         }
-        fn is_focusable(&self) -> bool {
-            false
-        }
         fn set_focus(&mut self, focused: bool) {
             self.in_root_mut(|root| root.set_focus(focused));
-        }
-        fn is_focused(&self) -> bool {
-            false
         }
         fn wants_tab_input(&self) -> bool {
             self.in_root(|root| root.wants_tab_input())
@@ -1058,9 +1049,6 @@ mod component_adapter {
         }
         fn traps_focus(&self) -> bool {
             self.in_root(|root| root.traps_focus()).unwrap_or_default()
-        }
-        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-            None
         }
         fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<vello::kurbo::Rect> {
             self.in_root(|root| root.synthetic_accessibility_rect(path))
@@ -1694,15 +1682,7 @@ mod component_adapter {
         }
     }
 
-    impl crate::undo::UndoControl for BoundAppWidget {
-        fn set_undo_status(&mut self, _: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-            // Individual bound nodes receive their own record/instance status.
-        }
-        fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-            // The host captures the origin from its admitted node map.
-            None
-        }
-    }
+    impl crate::undo::UndoControl for BoundAppWidget {}
 
     impl crate::undo::CommittedActions for BoundAppWidget {
         fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
@@ -1789,11 +1769,6 @@ mod component_adapter {
             let binding = self.component.callback_binding();
             let _entry = binding.enter().ok()?;
             self.component.root.as_deref()?.permission_hint()
-        }
-        // Canonical components discover commands through resource operations.
-        // Legacy direct callbacks are deliberately not exported by this adapter.
-        fn commands(&self) -> Vec<AppCommand> {
-            vec![]
         }
         fn device_shell_operation(
             &mut self,

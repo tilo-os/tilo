@@ -29,7 +29,6 @@ use ui::time::Duration;
 use ui::widget::{TaffyTreeExt as _, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 /// The bar over an empty desktop with the Tilo menu over both, as the
 /// browser shell stacks them.
@@ -77,8 +76,6 @@ impl Widget for Stage {
         // The menu and the sheet are overlays the frame draws above this.
         self.bar.draw(scene, transform, text, theme, presence);
     }
-
-    fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut ui::widget::EventCtx<'_>) {}
 
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.bar, &self.menu]

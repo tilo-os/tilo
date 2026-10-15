@@ -1496,12 +1496,6 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
     fn get_rect(&self) -> Rect {
         self.button.get_rect()
     }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        // Presentational: the button and the popover speak for themselves;
-        // the button's expanded state follows the popover.
-        None
-    }
 }
 
 #[cfg(test)]

@@ -2947,16 +2947,8 @@ impl Widget for NotesApp {
         children
     }
 
-    fn is_focusable(&self) -> bool {
-        false
-    }
-
     fn modal_capture(&self) -> Option<Rect> {
         self.children().into_iter().find_map(Widget::modal_capture)
-    }
-
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        None
     }
 
     fn needs_redraw(&self) -> bool {
@@ -3021,13 +3013,7 @@ impl ui::presence::capability::PublishesPresence for NotesApp {
     }
 }
 
-impl ui::resources::PublishesResources for NotesApp {
-    /// The notebook is the framework root's publication; the surface adds
-    /// nothing beside it.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Vec::new()
-    }
-}
+impl ui::resources::PublishesResources for NotesApp {}
 
 impl NotesApp {
     /// Whether the page tree is part of the window: the shell shows its
