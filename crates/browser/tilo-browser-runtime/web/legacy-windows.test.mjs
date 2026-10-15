@@ -628,3 +628,48 @@ test('a dismissed window queues one close while its host acknowledges it', async
   assert.deepEqual(sent, [['Close']], 'the same dismissal is still one action after acknowledgement');
   m.layer.close();
 });
+
+test('a window that goes still while its decoder skips a backlog is subscribed again and ends on its last picture', () => {
+  const m = mount();
+  m.live.deliver(INDEX_RECORD.record, SHELL, json(1, [STREAM]));
+  const send = (seq, key) => m.live.deliver(STREAM.record, SHELL,
+    chunk((key ? CHUNK_KEY : 0) | CHUNK_FIRST | CHUNK_LAST, seq, key ? SPS_IDR : [0, 0, 1, 0x41]));
+  const group = (from, to) => {
+    m.live.deliver(STREAM.record, SHELL, json(2, STREAM));
+    for (let seq = from; seq <= to; seq++) send(seq, seq === from);
+  };
+  // The first group (what the host replays to the new subscription) is decoded
+  // whole even though it arrives at once and outruns the decoder.
+  group(0, 1);
+  const decoder = m.codecs.decoders[0];
+  decoder.decodeQueueSize = 100;
+  send(2, false);
+  assert.equal(decoder.chunks.length, 3, 'the replayed group is caught up on');
+  // Live: the next group is subject to the backlog bound, and its tail is skipped.
+  group(3, 3);
+  send(4, false);
+  send(5, false);
+  assert.equal(decoder.chunks.length, 3, 'a backlog skips until the next keyframe');
+  // Still within the quiet time, nothing changes.
+  m.clock.t += 100;
+  m.poll();
+  m.run();
+  assert.equal(m.layer.stats().resyncs, 0);
+  // The window went still: no keyframe will come. Subscribe again.
+  m.clock.t += 500;
+  m.poll();
+  m.run();
+  assert.equal(m.layer.stats().resyncs, 1);
+  const watches = m.live.watches.filter(watch => watch.record.record === STREAM.record);
+  assert.deepEqual(watches.map(watch => watch.active), [false, true], 'one live subscription, the new one');
+  // The host replays its current group: all of it is decoded, ending on frame 5.
+  group(3, 5);
+  assert.deepEqual(decoder.chunks.slice(3).map(chunk => chunk.type), ['key', 'delta', 'delta']);
+  assert.equal(m.codecs.decoders.length, 1, 'the same decoder');
+  // Caught up, nothing further to resync.
+  m.clock.t += 1000;
+  m.poll();
+  m.run();
+  assert.equal(m.layer.stats().resyncs, 1);
+  m.layer.close();
+});

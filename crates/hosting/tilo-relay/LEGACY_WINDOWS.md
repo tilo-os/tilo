@@ -67,9 +67,16 @@ beside the focused one.
   There is no independent PNG/JPEG/image delivery endpoint or codec negotiation.
 - These tests prove real relay HTTP/auth/presence, role changes, private input,
   and MoQ delivery/replay, plus the production browser adapter with a simulated
-  DOM/WebCodecs. They do not constitute a Linux Wayland capture -> browser
-  WebCodecs -> native seat proof. That requires an isolated Linux compositor,
-  a consented legacy client and a browser supporting WebCodecs.
+  DOM/WebCodecs. `scripts/perf/native_stream_qualification.mjs` (Perf /
+  scheduled's `stream` group) adds the real encoder -> host -> Chrome WebCodecs
+  half: the `legacy_stream_source` example streams a drawn window through the
+  production H.264 encoder to a release desktop bundle, which must show every
+  frame it draws correctly, end on the last one and deliver each click back.
+  Neither is a Linux Wayland capture -> native seat proof. That requires an
+  isolated Linux compositor and a consented legacy client.
+- The bridge carries H.264 only, and a session encodes H.264 only with a
+  hardware encoder or Cisco's openh264 from the opt-in codec pack: a stock
+  session without either never shows its legacy windows to browser members.
 
 ## Focused validation
 
@@ -85,6 +92,14 @@ cargo test --locked -p tilo-browser-peer --test legacy_windows
 cargo check --locked -p tilo-relay --features web --tests
 cargo check --locked -p tilo-browser-runtime --target wasm32-unknown-unknown --lib
 node --test crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs crates/browser/tilo-browser-runtime/web/peer.test.mjs
+```
+
+End to end, on a machine with an H.264 encoder (docs/measurements/performance.md):
+
+```sh
+cargo build --release -p tilo-relay --features web,stream-source --bin tilo-relay --example legacy_stream_source
+node scripts/perf/native_stream_qualification.mjs BUNDLE_DIR --out stream.json --renderer gpu \
+  --relay target/release/tilo-relay --source target/release/examples/legacy_stream_source
 ```
 
 The viewer/reassembly/input mapping reuses pre-deletion PR #541 implementation
