@@ -1162,6 +1162,12 @@ impl Rooms {
         let mut room = room.lock().await;
         if room.peer().document(&app_id, &record_id).is_some() {
             room.follow(author, message);
+            // Before the record's sealed history is full: past its bound the
+            // copy would stop following the record.
+            #[cfg(any(feature = "agents", feature = "web"))]
+            if let Err(error) = self.compact_sealed_histories(&mut room).await {
+                tracing::warn!(room = %room.room(), %error, "governed room did not compact a sealed record");
+            }
             let _ = self.inner.record_writes.send(RecordWrite {
                 room: room.room().to_owned(),
                 app: app_id,

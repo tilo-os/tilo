@@ -247,3 +247,28 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
     drop((state, rooms));
     relay.shutdown().await;
 }
+
+/// A public room's chat takes thousands of writes within hours. Past three
+/// quarters of a sealed history's bound the node compacts it into one sealed
+/// checkpoint, so its copy goes on following the record, and reads it whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_node_compacts_a_sealed_history_before_it_fills() {
+    let Lounge {
+        _dir,
+        relay,
+        rooms,
+        room,
+        member,
+        ..
+    } = lounge().await;
+    // More writes than the history's bound (4096) holds.
+    for index in 0..4200 {
+        member.writes(&rooms, &room, &format!("line {index}")).await;
+    }
+    assert_eq!(readable(&rooms, &room).await.as_deref(), Some("line 4199"));
+    let state = rooms.room(&room).await.unwrap();
+    let due = state.lock().await.peer().sealed_records_to_compact();
+    assert!(due.is_empty(), "the history was compacted: {due:?}");
+    drop((state, rooms));
+    relay.shutdown().await;
+}

@@ -2,18 +2,23 @@
 //!
 //! In a room whose channels this relay stewards, members seal every write
 //! of a record, and the governor's copy keeps those writes as the record's
-//! ciphertext history ([`StatePeer::is_sealed_record`]). As the channels'
+//! ciphertext history ([`tilo_peer_state::StatePeer::is_sealed_record`]). As the channels'
 //! steward the relay holds their content keys: it reads such a record by
-//! opening that history over the record's cleartext base, and writes to it
-//! sealed like any member does.
+//! opening that history over the record's cleartext base, writes to it
+//! sealed like any member does, and compacts the history before it reaches
+//! its bound, so its copy goes on following the record however long the
+//! room keeps writing.
 
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
+#[cfg(feature = "agents")]
 use ed25519_dalek::SigningKey;
+#[cfg(feature = "agents")]
 use neighbour_wire::NeighbourMsg;
+#[cfg(feature = "agents")]
 use tilo_peer_state::StatePeer;
 
-use super::{GovernedRoom, SystemTime};
+use super::{GovernedRoom, Rooms, SystemTime};
 
 /// The content keys of one record's channel, as its steward holds them.
 pub(super) struct RecordKeys {
@@ -98,6 +103,7 @@ impl GovernedRoom {
 
 /// Publish `changes` to `record` of `app` into `candidate` as `key`'s write:
 /// sealed with `keys` for a sealed record, in the clear otherwise.
+#[cfg(feature = "agents")]
 pub(super) fn publish_changes(
     candidate: &mut StatePeer,
     keys: Option<&RecordKeys>,
@@ -116,6 +122,58 @@ pub(super) fn publish_changes(
             key,
             now,
         ),
+    }
+}
+
+impl Rooms {
+    /// Compact every sealed record history of `room` that has used most of
+    /// its bound into one sealed checkpoint, and commit and publish the
+    /// compactions. A record whose history does not merge yet (a write it
+    /// depends on has not arrived) waits for a later call.
+    ///
+    /// # Errors
+    ///
+    /// The commit or its publication fails.
+    pub(super) async fn compact_sealed_histories(
+        &self,
+        room: &mut GovernedRoom,
+    ) -> Result<(), String> {
+        let due = room.peer().sealed_records_to_compact();
+        if due.is_empty() {
+            return Ok(());
+        }
+        let now = SystemTime::now();
+        let mut candidate = room.peer().clone();
+        let mut compacted = 0usize;
+        for (app, record) in &due {
+            let compaction = match room.record_keys(app, record).await {
+                Ok(Some(keys)) => candidate.compact_sealed_history(
+                    app,
+                    record,
+                    &mut keys.open(),
+                    &mut keys.seal(ContentRetention::Checkpoint),
+                    &self.inner.host.key,
+                    now,
+                ),
+                Ok(None) => continue,
+                Err(error) => Err(error),
+            };
+            match compaction {
+                Ok(_) => compacted = compacted.saturating_add(1),
+                Err(error) => {
+                    tracing::warn!(room = %room.room(), %app, %record, %error,
+                        "a sealed record history was not compacted");
+                }
+            }
+        }
+        if compacted == 0 {
+            return Ok(());
+        }
+        let collaboration = room.collaboration().clone();
+        room.commit(candidate, &self.inner.host.key, now, |_, _| {
+            Ok(collaboration)
+        })?;
+        self.settle(room).await
     }
 }
 
