@@ -201,6 +201,28 @@ the action ran; where it ran and how long it took are reported beside it
 (`thumbnail::batch`, entrypoint `thumbnail-batch` of `so.tilo.thumbnails`) is
 the first offloadable transform.
 
+An app declares one with `#[effect(content, kind = "read", offload(app = "…",
+entrypoint = "…", cpu_ms = N, memory_mb = N, output_mb = N))]`; its inputs are
+its content parameters (`#[param(content)]`, a list of content for
+`Vec<String>`), and its handler is the local run. Photos publishes
+`make-thumbnails` this way. The action door admits an invocation of it like any
+other, then asks the device's route (`HostServices::action_offload`,
+`tilo_actions::offload::ActionOffload`) where it runs:
+
+- `tilo_relay::offload::OffloadRoute` runs it through `Offloader::offload`
+  when every input is document media the invoking room reaches on this device
+  (`DocumentMedia::contains`), bound by its blob hash
+  (`WorkspaceContent::bind_blob`), and keeps the outputs as that room's media,
+  so the door answers with exactly the `tilo.content` addresses the app's
+  handler returns.
+- Otherwise — a room this device places no compute for, an input not here, no
+  better device, any remote failure — the door hands the app the invocation
+  and its own handler answers it; the route hears how long that took
+  (`ActionOffload::ran_here`, `Offloader::record_local`), which placement
+  weighs next time.
+
+Content named twice is one input on both paths, as a worker stages it.
+
 ## Integration seams
 
 - Shell/device settings write device role and per-workspace replication intent.

@@ -20,6 +20,12 @@
 //!   manifest hash is then known ([`WorkspaceContent::manifest_of`]), so
 //!   the result lands in the workspace like any other file content.
 //!
+//! - **Document media.** Content an app put for its room is a raw blob whose
+//!   hash *is* the digest of its bytes. The caller, having checked that the
+//!   invoking room reaches it, binds it by that digest
+//!   ([`WorkspaceContent::bind_blob`]); it is servable from then on, like a
+//!   bound file.
+//!
 //! Every read is re-checked: a bound file whose bytes no longer hash to the
 //! bound digest is refused, never substituted.
 //!
@@ -31,7 +37,7 @@
 //!   On an always-on device that replica is the filesystem's home-peer
 //!   replica, read from beside it ([`ReplicaContent`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use fs::store::ContentStore;
@@ -62,6 +68,8 @@ pub struct WorkspaceContent {
     /// Byte digest → manifest hash, for every input bound and every output
     /// stored through this handle.
     bound: Arc<Mutex<HashMap<[u8; 32], [u8; 32]>>>,
+    /// Content bound as a raw blob, by the digest that is its blob hash.
+    blobs: Arc<Mutex<HashSet<[u8; 32]>>>,
 }
 
 impl WorkspaceContent {
@@ -74,7 +82,48 @@ impl WorkspaceContent {
             store,
             runtime,
             bound: Arc::default(),
+            blobs: Arc::default(),
         }
+    }
+
+    /// Bind content this store holds as a raw blob — document media an app
+    /// put for its room, named by the blake3 of its bytes, which is also
+    /// the digest a job names it by — as a job input, and return how many
+    /// bytes it is. The caller has checked the invoker's room reaches it.
+    ///
+    /// # Errors
+    ///
+    /// [`BindError::NotLocal`] when the blob is not wholly here, and
+    /// [`BindError::Integrity`] when its bytes do not hash to `digest`.
+    pub async fn bind_blob(&self, digest: [u8; 32]) -> Result<u64, BindError> {
+        let bytes = read_blob(&self.store, digest).await?;
+        self.blobs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(digest);
+        Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+    }
+
+    /// How many bytes the raw blob `digest` is, when it is here: its
+    /// recorded length, without reading or checking the bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`BindError::NotLocal`] when the store has no such blob; binds
+    /// nothing.
+    pub async fn blob_len(&self, digest: [u8; 32]) -> Result<u64, BindError> {
+        self.store
+            .read_blob_range(digest.into(), 0..0)
+            .await
+            .map(|(_, total)| total)
+            .ok_or(BindError::NotLocal)
+    }
+
+    fn blob_bound(&self, digest: [u8; 32]) -> bool {
+        self.blobs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&digest)
     }
 
     fn bindings(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], [u8; 32]>> {
@@ -118,6 +167,12 @@ impl WorkspaceContent {
     /// A diagnostic when the bound file can no longer be read as those bytes.
     pub async fn read(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
         let Some(manifest) = self.manifest_of(digest) else {
+            if self.blob_bound(digest) {
+                return read_blob(&self.store, digest)
+                    .await
+                    .map(Some)
+                    .map_err(|error| error.to_string());
+            }
             return Ok(None);
         };
         let bytes = read_version(&self.store, manifest)
@@ -164,6 +219,22 @@ impl WorkspaceContent {
         receiver
             .recv()
             .map_err(|_| "workspace content runtime stopped".to_string())
+    }
+}
+
+/// The whole of raw blob `digest`, from `store`, checked against it.
+async fn read_blob(store: &ContentStore, digest: [u8; 32]) -> Result<Vec<u8>, BindError> {
+    let (bytes, total) = store
+        .read_blob_range(digest.into(), 0..u64::MAX)
+        .await
+        .ok_or(BindError::NotLocal)?;
+    if u64::try_from(bytes.len()).ok() != Some(total) {
+        return Err(BindError::NotLocal);
+    }
+    if blake3::hash(&bytes).as_bytes() == &digest {
+        Ok(bytes)
+    } else {
+        Err(BindError::Integrity)
     }
 }
 
@@ -501,5 +572,34 @@ mod tests {
             Ok(None),
             "fetched instead"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_bound_blobs_are_served_by_their_own_digest() {
+        let store = Arc::new(ContentStore::memory());
+        let content = WorkspaceContent::new(Arc::clone(&store), tokio::runtime::Handle::current());
+        let bytes = b"document media a room put here".to_vec();
+        let digest = *store.ingest(bytes.clone()).await.unwrap().as_bytes();
+        assert_eq!(digest, *blake3::hash(&bytes).as_bytes(), "one address");
+        assert_eq!(content.blob_len(digest).await, Ok(30));
+
+        // In the store, but nobody bound it: unknown.
+        let unbound = content.clone();
+        assert_eq!(
+            tokio::task::spawn_blocking(move || unbound.get(digest))
+                .await
+                .unwrap(),
+            Ok(None)
+        );
+        assert_eq!(content.bind_blob(digest).await, Ok(30));
+        let bound = content.clone();
+        assert_eq!(
+            tokio::task::spawn_blocking(move || bound.get(digest))
+                .await
+                .unwrap(),
+            Ok(Some(bytes))
+        );
+        assert_eq!(content.manifest_of(digest), None, "no file version");
+        assert_eq!(content.bind_blob([9; 32]).await, Err(BindError::NotLocal));
     }
 }

@@ -5,7 +5,9 @@
 //! locally returns. A device whose own replica already holds the inputs
 //! runs the job on them once the invoker proves it holds the same bytes,
 //! and the relay, having seen it do so, keeps placing such jobs there
-//! however slow the link it measured.
+//! however slow the link it measured. Through the action door's route, the
+//! action Photos publishes runs there over the room's own media and answers
+//! exactly what Photos' handler answers here.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -14,16 +16,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
+use fs::document_media::DocumentMedia;
 use launcher::capture::{CaptureCancellation, CapturedRunOutput, CapturedTermination};
+use runtime_fs::blobs::BlobScope;
 use thumbnail::batch::{ENTRYPOINT, PACKAGE, thumbnail_batch};
+use tilo_actions::offload::{ActionOffload, OffloadRequest, Offloaded, content_inputs};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, Offload,
     OperationKind,
 };
 use tilo_clock::unix_now_ms;
 use tilo_relay::offload::{
-    ComputePlacement, LocalTransform, OffloadError, OffloadJob, Offloader, OffloaderParts,
-    PlacementQuery, RanOn, RelayPlacement, WorkspaceContent,
+    ComputePlacement, LocalTransform, OffloadError, OffloadJob, OffloadRoute, Offloader,
+    OffloaderParts, PlacementQuery, RanOn, RelayPlacement, WorkspaceContent,
 };
 use tilo_relay::{
     ComputeClient, ComputeEnvelope, ComputeJobBinding, ComputeJobPhase, ComputeOutputSource,
@@ -1020,4 +1025,218 @@ async fn a_lost_or_revoked_worker_fails_its_job_at_once_and_the_action_runs_loca
     if let Some(reason) = cut_off {
         assert!(reason.contains("revoked"), "{reason}");
     }
+}
+
+/// The room the door's offload journey runs in, and the app invoked there.
+const ROOM: &str = "0b5c7a7e-6f43-4a39-9d1c-1d3f2a6c0e11";
+const PHOTOS: &str = "so.tilo.photos";
+
+/// Photos' published `make-thumbnails` and a request for it over `hashes`,
+/// as the door builds one from an admitted invocation's arguments.
+fn make_thumbnails_request(hashes: &[String]) -> OffloadRequest {
+    use tilo_resource::Effect as _;
+    let spec = photos::actions::PhotosEffect::specs()
+        .into_iter()
+        .find(|spec| spec.id == "make-thumbnails")
+        .expect("Photos publishes make-thumbnails");
+    let arguments = serde_json::json!({ "photos": hashes });
+    OffloadRequest {
+        room: ROOM.into(),
+        app_id: PHOTOS.into(),
+        address: ActionAddress::new("photos.library:main", "make-thumbnails"),
+        offload: spec.contract.offload.clone().expect("declared offloadable"),
+        inputs: content_inputs(spec.params(), arguments.as_object().unwrap()).unwrap(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one door journey, here then on a worker, that reads top to bottom"
+)]
+async fn the_door_runs_photos_make_thumbnails_on_the_placed_device_with_the_local_output() {
+    let user = TestUser::fresh("offload owner");
+    let relay_device = user.enrol("relay", DeviceCapabilities::host());
+    let relay_key = relay_device.device_pubkey();
+    let laptop = user.enrol("laptop", DeviceCapabilities::primary());
+    let laptop_key = laptop.device_pubkey();
+    let desktop = user.enrol("desktop", DeviceCapabilities::host());
+    let desktop_key = desktop.device_pubkey();
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_device,
+        &[WORKSPACE],
+        &[laptop_key, desktop_key],
+    ))
+    .await;
+    let address = relay.relay.node_addr();
+    let root = tempfile::tempdir().unwrap();
+
+    // The laptop: Photos put the photographs in the room's document media,
+    // and its route places the room's compute in the relay workspace.
+    let store = Arc::new(fs::store::ContentStore::memory());
+    let media = DocumentMedia::new(Arc::clone(&store));
+    let scope = BlobScope::new(ROOM, PHOTOS).unwrap();
+    let photographs: Vec<Vec<u8>> = (0..IMAGES)
+        .map(|seed| photograph(u32::try_from(seed).unwrap()))
+        .collect();
+    let mut hashes = Vec::new();
+    for bytes in &photographs {
+        let hash = media.store(&scope, bytes.clone()).await.unwrap();
+        hashes.push(hash.to_hex());
+    }
+    let (laptop_package, _) = installed_package(&root.path().join("laptop"), PACKAGE, ENTRYPOINT);
+    let placement = Arc::new(RelayPlacement::new(
+        relay_session(address.clone(), &user, &laptop).await,
+        relay_key,
+    ));
+    let offloader = Arc::new(
+        Offloader::start(OffloaderParts {
+            compute: compute_session(address.clone(), &user, relay_key, laptop).await,
+            workspaces: vec![WORKSPACE],
+            content: WorkspaceContent::new(Arc::clone(&store), tokio::runtime::Handle::current()),
+            placement,
+            packages: Arc::new(FixtureCatalogue(laptop_package)),
+        })
+        .await
+        .unwrap(),
+    );
+    let route = OffloadRoute::new(
+        Arc::clone(&offloader),
+        Arc::clone(&media),
+        std::collections::HashMap::from([(ROOM.to_owned(), WORKSPACE)]),
+    );
+    // An agent asks for thumbnails of every photograph, one named twice.
+    let mut named = hashes.clone();
+    named.push(hashes[0].clone());
+    let request = make_thumbnails_request(&named);
+    assert_eq!(request.inputs.len(), IMAGES + 1);
+
+    // No other device advertises compute: the door runs Photos' handler
+    // here, and reports how long it took.
+    let Offloaded::RunHere { reason } = route.offload(request.clone()).await else {
+        panic!("nothing is placed elsewhere yet");
+    };
+    assert!(reason.contains("no other device"), "{reason}");
+    let app_content = tilo_content::ContentStore::memory();
+    for bytes in &photographs {
+        app_content.put(bytes).unwrap();
+    }
+    let started = std::time::Instant::now();
+    let here = photos::actions::make_thumbnails(&named, &app_content).unwrap();
+    let local_elapsed = started.elapsed();
+    route.ran_here(&request, local_elapsed);
+    assert_eq!(here.resources.len(), IMAGES, "one thumbnail per photograph");
+    assert!(
+        offloader
+            .wall_times()
+            .iter()
+            .any(|time| time.device == laptop_key && time.elapsed == local_elapsed),
+        "the local run is what placement weighs next"
+    );
+
+    // The desktop advertises the thumbnails package and runs its jobs.
+    let (desktop_package, _) = installed_package(&root.path().join("desktop"), PACKAGE, ENTRYPOINT);
+    let executor = Arc::new(ComputeWorker::new(
+        worker_advertisement(desktop_key, WORKSPACE, PACKAGE),
+        root.path().join("data"),
+        root.path().join("execution"),
+        FileComputeContentStore::open(root.path().join("retained")).unwrap(),
+        FixtureCatalogue(desktop_package),
+        ThumbnailSandbox,
+    ));
+    let mut desktop_compute = compute_session(address, &user, relay_key, desktop).await;
+    advertise_thumbnails(&mut desktop_compute, desktop_key).await;
+    let outputs: Arc<dyn ComputeOutputSource> = executor.clone();
+    let desktop_connection = desktop_compute.connection();
+    let serving = tokio::spawn(async move {
+        while let Ok((mut send, mut receive)) = desktop_connection.accept_bi().await {
+            let outputs = Arc::clone(&outputs);
+            tokio::spawn(async move {
+                let _ = serve_worker_stream_with(
+                    WorkerEnvironments::default(),
+                    Some(outputs),
+                    &mut send,
+                    &mut receive,
+                )
+                .await;
+                let _ = send.finish();
+            });
+        }
+    });
+    let staging = Arc::new(Staging {
+        next: Mutex::new(InputStaging::from(root.path().join("hydrated"))),
+        staged: Mutex::default(),
+    });
+    let jobs = tokio::spawn(run_jobs(
+        desktop_compute,
+        Arc::clone(&executor),
+        Arc::clone(&staging),
+    ));
+
+    // The same invocation now runs on the desktop, and the door answers it
+    // with exactly what Photos answered here; the thumbnails are the room's
+    // media, readable by the addresses in the output.
+    let door_run =
+        tilo_test_env::within("the offloaded door run", route.offload(request.clone())).await;
+    let Offloaded::Ran {
+        output,
+        device,
+        elapsed: remote_elapsed,
+    } = door_run
+    else {
+        panic!("the desktop is better placed: {door_run:?}");
+    };
+    assert_eq!(device, hex::encode(desktop_key));
+    assert_eq!(output, here, "the same output, wherever it ran");
+    for resource in &output.resources {
+        let hash = tilo_actions::content_hash(resource).unwrap();
+        let mut digest = [0; 32];
+        hex::decode_to_slice(hash, &mut digest).unwrap();
+        assert!(
+            media.contains(&scope, digest.into()).await,
+            "the room's media"
+        );
+        assert_eq!(
+            app_content.read(hash),
+            store
+                .read_blob_range(digest.into(), 0..u64::MAX)
+                .await
+                .map(|(bytes, _)| bytes),
+            "byte for byte the local thumbnail"
+        );
+    }
+    let fetched = *staging.staged.lock().unwrap().last().unwrap();
+    assert_eq!(fetched.inputs, IMAGES, "each distinct input staged once");
+    eprintln!(
+        "make-thumbnails through the door ({IMAGES} images, {} input bytes): \
+         Photos' handler here {local_elapsed:?}, offloaded {remote_elapsed:?} \
+         (inputs staged in {:?}; single host: both devices share its cores)",
+        photographs.iter().map(Vec::len).sum::<usize>(),
+        fetched.elapsed,
+    );
+
+    // Content another room put on this device is never an input: the door
+    // runs the app's handler, which cannot read it either.
+    let elsewhere = BlobScope::new("another-room", PHOTOS).unwrap();
+    let foreign = media
+        .store(&elsewhere, b"another room's bytes".to_vec())
+        .await
+        .unwrap()
+        .to_hex();
+    let Offloaded::RunHere { reason } = route.offload(make_thumbnails_request(&[foreign])).await
+    else {
+        panic!("another room's content stays here");
+    };
+    assert!(reason.contains("not the room's content"), "{reason}");
+
+    // A room this device places no compute for runs here.
+    let mut unplaced = request;
+    unplaced.room = "a-room-without-compute".into();
+    let Offloaded::RunHere { reason } = route.offload(unplaced).await else {
+        panic!("no workspace, no offload");
+    };
+    assert!(reason.contains("no compute for the room"), "{reason}");
+    jobs.abort();
+    serving.abort();
 }

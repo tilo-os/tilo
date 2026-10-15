@@ -123,6 +123,8 @@ mod offload_content;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_placement;
 #[cfg(not(target_arch = "wasm32"))]
+mod offload_route;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;

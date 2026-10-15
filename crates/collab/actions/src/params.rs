@@ -310,6 +310,32 @@ impl ActionParam {
         self
     }
 
+    /// Make this list parameter a list of content addresses, each one
+    /// content another action produced ([`Self::as_content`]), in order.
+    #[must_use]
+    pub fn as_content_list(mut self) -> Self {
+        self.ty = ParamType::Array;
+        self.schema = Some(std::sync::Arc::new(serde_json::json!({
+            "type": "array",
+            "items": { "type": "string", CONTENT_ANNOTATION: true },
+        })));
+        self
+    }
+
+    /// Whether this parameter takes a list of content
+    /// ([`Self::as_content_list`]).
+    #[must_use]
+    pub fn is_content_list(&self) -> bool {
+        self.ty == ParamType::Array
+            && self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get("items"))
+                .and_then(|items| items.get(CONTENT_ANNOTATION))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    }
+
     /// Whether this parameter takes content another action produced
     /// ([`Self::as_content`]).
     #[must_use]

@@ -1225,4 +1225,9 @@ pub struct HostServices {
     /// endpoint when its channel keys changed (`channelKeysChanged`).
     /// Without it endpoints ask the identity service on a timer.
     pub channel_keys: Option<crate::channel_encryption::ChannelKeyProvider>,
+    /// Where an admitted invocation of an offloadable action runs: on the
+    /// person's best-placed device when another is
+    /// (`tilo_actions::offload`). Without it every one runs here, through
+    /// the app's own handler.
+    pub action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
 }
