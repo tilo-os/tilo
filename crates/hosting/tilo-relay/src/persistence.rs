@@ -469,11 +469,15 @@ async fn run_owner(
     // ticket wakes this task (`reclaim_wake`). From then on the owner steps
     // the released entries one per interval, between jobs, until none is
     // left; with none it sleeps until a job or a released ticket arrives.
-    let reclaim_wake = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .replays
-        .reclaim_wake();
+    let reclaim_wake = {
+        let state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let wake = state.replays.reclaim_wake();
+        // So are collections that waited for the last capture to pin.
+        state.store.wake_on_capture_release(wake.clone());
+        wake
+    };
     let mut idle = tokio::time::interval(RECLAIM_INTERVAL);
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut reclaiming = false;

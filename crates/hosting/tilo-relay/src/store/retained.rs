@@ -599,6 +599,25 @@ impl FreshCheckpoint {
     pub(crate) fn discard_paths(&self) -> (PathBuf, PathBuf) {
         (self.lineage.clone(), self.staged.clone())
     }
+    /// Remove a stage no owner turn took: its checkpoint, its directory and
+    /// the CURRENT that would have named it. One the lineage selected stays.
+    /// Best effort: what is left is collected with the lineage's next commit.
+    pub(crate) fn discard(self) {
+        if current(&self.lineage).ok().flatten().as_ref() == Some(&self.staged) {
+            return;
+        }
+        for result in [
+            fs::remove_file(self.staged.join("checkpoint.delta")),
+            fs::remove_dir(&self.staged),
+            fs::remove_file(&self.selection),
+        ] {
+            if let Err(error) = result
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                tracing::debug!(%error, "an untaken checkpoint stage was left for collection");
+            }
+        }
+    }
 }
 /// A checkpoint staged as a projected lineage generation, promoted with the
 /// batch it belongs to.
@@ -1355,6 +1374,16 @@ impl WorkspaceStore {
         build.staged_only = true;
         Ok(CheckpointStage { build })
     }
+    /// Whether `author`'s lineage on `channel` has a generation: one stat,
+    /// for a caller deciding whether a checkpoint may start it.
+    pub(crate) fn lineage_has_generation(&self, author: &[u8; 32], channel: &[u8; 32]) -> bool {
+        self.root
+            .join(RETAINED_DIR)
+            .join("v2")
+            .join(format!("{}-{}", hex::encode(author), hex::encode(channel)))
+            .join("CURRENT")
+            .exists()
+    }
     /// Stage the checkpoint `bytes` on `channel` as the first generation of
     /// a lineage that has none yet, and make the stage durable, all outside
     /// the workspace's order: everything [`RetainBuild`] writes before its
@@ -1371,9 +1400,11 @@ impl WorkspaceStore {
     /// Stages of other lineages, and the owner, change the retained root
     /// and this lineage meanwhile, so every barrier here is a real one: a
     /// remembered sync ([`sync_dir_once`]) could vouch for an entry made
-    /// after it began. A stage that is never committed is collected with
-    /// the lineage's next commit ([`GenerationGc`]) or discarded by its
-    /// owner ([`CheckpointDiscard`]).
+    /// after it began. A stage that is never committed is discarded by the
+    /// owner turn that falls back from it ([`CheckpointDiscard`]), or by its
+    /// stager when no turn takes it ([`FreshCheckpoint::discard`]); what a
+    /// crash leaves is collected with the lineage's next commit
+    /// ([`GenerationGc`]).
     ///
     /// # Errors
     ///
@@ -1389,21 +1420,17 @@ impl WorkspaceStore {
         if actual_channel != *channel || !checkpoint {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
-        if !covers(bytes, bytes, self.workspace_id)
-            && standalone(&**self.payloads(), bytes, self.workspace_id).is_none()
-        {
-            return Ok(None);
-        }
         let v2 = self.root.join(RETAINED_DIR).join("v2");
-        if !v2.is_dir() {
+        let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
+        if !v2.is_dir()
+            || current(&lineage)?.is_some()
+            || (!covers(bytes, bytes, self.workspace_id)
+                && standalone(&**self.payloads(), bytes, self.workspace_id).is_none())
+        {
             return Ok(None);
         }
         for directory in self.root.ancestors().take(3) {
             sync_dir_once(directory)?;
-        }
-        let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
-        if current(&lineage)?.is_some() {
-            return Ok(None);
         }
         match fs::create_dir(&lineage) {
             Ok(()) => {}
@@ -2433,6 +2460,33 @@ pub(super) mod tests {
         assert!(!staged.exists());
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![second]);
+    }
+
+    /// A stage no owner turn took (its job failed first) leaves nothing
+    /// behind: its lineage may never commit, so nothing would collect it.
+    #[test]
+    fn a_stage_no_turn_took_is_discarded_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let channel = collab_types::ChannelId::new();
+        let (earlier_route, earlier) = standalone_checkpoint(channel, 2, 1);
+        store.retain_checkpoint(&earlier_route, &earlier).unwrap();
+        let (route, first) = standalone_checkpoint(channel, 1, 1);
+        assert!(!store.lineage_has_generation(&[1; 32], &route));
+        let fresh = store
+            .stage_fresh_checkpoint(&route, &first)
+            .unwrap()
+            .expect("a lineage without a generation is staged");
+        let (lineage, staged) = fresh.discard_paths();
+        fresh.discard();
+        let left: Vec<_> = fs::read_dir(&lineage)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(left.is_empty(), "the discarded stage left {left:?}");
+        assert!(!staged.exists());
+        assert!(!store.lineage_has_generation(&[1; 32], &route));
+        assert_eq!(store.load_retained().unwrap(), vec![earlier]);
     }
 
     /// A payload adapter that recognises nothing.

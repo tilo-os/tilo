@@ -4361,9 +4361,21 @@ const FRESH_STAGES: usize = 16;
 async fn stage_fresh_checkpoint(
     store: &crate::store::WorkspaceStore,
     envelope: &Envelope,
+) -> UntakenStage {
+    UntakenStage(stage_fresh_checkpoint_inner(store, envelope).await)
+}
+
+async fn stage_fresh_checkpoint_inner(
+    store: &crate::store::WorkspaceStore,
+    envelope: &Envelope,
 ) -> Option<crate::store::retained::FreshCheckpoint> {
     static STAGES: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
-    let Envelope::Delta { delta, .. } = envelope else {
+    let Envelope::Delta {
+        author_device_public_key,
+        delta,
+        ..
+    } = envelope
+    else {
         return None;
     };
     let Some((channel, crate::coedit::RetentionKind::Checkpoint)) =
@@ -4371,6 +4383,11 @@ async fn stage_fresh_checkpoint(
     else {
         return None;
     };
+    // Most checkpoints replace an earlier one of their lineage: one stat
+    // tells, before anything is encoded or leaves this task.
+    if store.lineage_has_generation(author_device_public_key, &channel) {
+        return None;
+    }
     let raw = crate::transport::encode(envelope).ok()?;
     let permit = STAGES
         .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(FRESH_STAGES)))
@@ -4391,9 +4408,34 @@ async fn stage_fresh_checkpoint(
         .flatten()
 }
 
+/// A staged first checkpoint until its owner turn takes it. A stage no turn
+/// takes (the job failed or was refused before its turn) is discarded when
+/// this drops: its lineage may never commit, and nothing else would.
+struct UntakenStage(Option<crate::store::retained::FreshCheckpoint>);
+
+impl UntakenStage {
+    fn take(&mut self) -> Option<crate::store::retained::FreshCheckpoint> {
+        self.0.take()
+    }
+}
+
+impl Drop for UntakenStage {
+    fn drop(&mut self) {
+        let Some(fresh) = self.0.take() else {
+            return;
+        };
+        // A few unlinks, off the async thread when there is one.
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn_blocking(move || fresh.discard())),
+            Err(_) => fresh.discard(),
+        }
+    }
+}
+
 /// Begin retaining `raw` in the owner's turn: commit `fresh`, its stage,
 /// when there is one and it still starts its lineage; otherwise retain it
-/// as usual and leave the stage to the owner's disposal.
+/// as usual and leave the stage to the owner's disposal. A stage is only
+/// ever of a checkpoint, which has no `seq`.
 fn retain_or_commit_stage(
     state: &mut crate::persistence::State,
     channel: &[u8; 32],
@@ -4401,17 +4443,21 @@ fn retain_or_commit_stage(
     raw: Vec<u8>,
     fresh: Option<crate::store::retained::FreshCheckpoint>,
 ) -> Result<crate::store::retained::RetainBuild, crate::store::StoreError> {
-    let Some(fresh) = fresh else {
-        return state.store.start_retain(channel, seq, raw);
-    };
-    // Disposed of after the job, unless its lineage selected it by then.
-    state.retention_candidates.push(fresh.discard_paths());
-    if seq.is_some() {
-        return state.store.start_retain(channel, seq, raw);
-    }
-    match state.store.start_fresh_retain(channel, fresh, raw)? {
-        Ok(build) => Ok(build),
-        Err((_, raw)) => state.store.start_retain(channel, None, raw),
+    match (fresh, seq) {
+        (Some(fresh), None) => {
+            // Disposed of after the job, unless its lineage selected it.
+            state.retention_candidates.push(fresh.discard_paths());
+            match state.store.start_fresh_retain(channel, fresh, raw)? {
+                Ok(build) => Ok(build),
+                Err((_, raw)) => state.store.start_retain(channel, None, raw),
+            }
+        }
+        (fresh, seq) => {
+            if let Some(fresh) = fresh {
+                state.retention_candidates.push(fresh.discard_paths());
+            }
+            state.store.start_retain(channel, seq, raw)
+        }
     }
 }
 
@@ -4512,7 +4558,7 @@ async fn enqueue_state_inner(
     // A checkpoint that may start its lineage is staged before its turn;
     // the turn commits the stage, or retains it as usual if it cannot.
     let mut fresh = if sync || continuity_evidence.is_some() {
-        None
+        UntakenStage(None)
     } else {
         stage_fresh_checkpoint(&store, &envelope).await
     };
