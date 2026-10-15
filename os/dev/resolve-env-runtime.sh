@@ -14,7 +14,7 @@
 #   resolve-env-runtime.sh --tag     print set-<fingerprint> only
 #   resolve-env-runtime.sh --version print the runtime's package version
 #
-# Needs: cosign, skopeo. Registry read access for the tag.
+# Needs: cosign, and skopeo or python3. Registry read access for the tag.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -53,14 +53,28 @@ if [ "$mode" = tag ]; then
   exit 0
 fi
 
-command -v skopeo >/dev/null \
-  || { printf 'resolve-env-runtime: skopeo is required\n' >&2; exit 3; }
+# The manifest digest and the manifest of an image reference: skopeo where it is installed,
+# else an anonymous reader (os/dev/registry-manifest.py) whose errors read the same.
+manifest_digest() {
+  if command -v skopeo >/dev/null; then
+    skopeo inspect --format '{{.Digest}}' "docker://$1"
+  else
+    python3 "$repo/os/dev/registry-manifest.py" digest "$1"
+  fi
+}
+manifest_raw() {
+  if command -v skopeo >/dev/null; then
+    skopeo inspect --raw "docker://$1"
+  else
+    python3 "$repo/os/dev/registry-manifest.py" raw "$1"
+  fi
+}
 
 err="$(mktemp)"
 trap 'rm -f -- "$err"' EXIT
 # Exit 1: the tag does not exist. Exit 3: the registry could not be asked,
 # which says nothing about the tag.
-if ! digest="$(skopeo inspect --format '{{.Digest}}' "docker://$tagged" 2>"$err")"; then
+if ! digest="$(manifest_digest "$tagged" 2>"$err")"; then
   if grep -qE 'manifest unknown|name unknown|not found' "$err"; then
     printf 'resolve-env-runtime: no published env-runtime for %s\n' "$tagged" >&2
     exit 1

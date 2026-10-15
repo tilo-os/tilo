@@ -1538,6 +1538,10 @@ reason = "runs inside a booted guest, as root, and repartitions its disk"
 workflow = "dev-disk-boot-diagnostic.yml"
 
 [[unrequired]]
+suite = "os/tests/ci_fast_images.sh"
+reason = "needs the built CI fast images: t's image-ci-fast-smoke check runs it"
+
+[[unrequired]]
 suite = "os/tests/release_tools_image.sh"
 reason = "needs the built release-tools image: t's image-release-tools-<arch> checks run it"
 

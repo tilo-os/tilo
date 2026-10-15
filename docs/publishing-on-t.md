@@ -74,6 +74,12 @@ same signing and publishing scripts handle it. `oci-run.sh` runs a command insid
 archive (buildah, no daemon), which is how image tests run between building and publishing, and
 `oci-anonymous.sh` proves a published image can be pulled with no credentials.
 
+Images that release builds verify with a plain `cosign verify --key keys/cosign.pub` (the
+kernel buildroot, the env-runtime, the relay) are signed with `TILO_SIGN_TLOG=1`: `oci-sign.sh`
+then also enters the signature in the public transparency log (Rekor) and keeps the entry as
+`bundle.json`, which `oci-publish.sh` attaches with the signature, since such a verification
+requires a log entry. The signing check still needs no registry access.
+
 ## Declared in t.toml
 
 | chain | build (no secrets) | sign (stable) | publish (main, development tag) | release (stable) |
@@ -82,6 +88,9 @@ archive (buildah, no daemon), which is how image tests run between building and 
 | web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry`: `dev-<commit>` | `release-web-entry`: `sha-<commit>`, signed, receipt |
 | ci-fast, ci-control | `image-ci-fast`, `image-ci-control` (built on the ci-fast just built), `image-ci-fast-smoke` (runs both) | | `publish-ci-fast`: `sha-<commit>` | (CI tooling, not a product) |
 | registry server | `image-registry-server` (compiled in the Containerfile, then its image test) | | `publish-registry-server`: `sha-<commit>`, receipt for GitOps | |
+| env-runtime | `rpm-snapshot`, `image-env-runtime-tree-x86_64`, `-aarch64`, `env-runtime-packer`; `env-runtime-preview`, `image-env-runtime-preview` (sealed with a throwaway key) | `seal-env-runtime` (publisher identity), `sign-env-runtime` (`image-env-runtime` between them) | | `release-env-runtime`: `set-<fingerprint>` once, signed |
+| kernel buildroot | `image-kernel-buildroot-x86_64`, `-aarch64` (built and audited natively) | `sign-kernel-buildroot` (both) | | `release-kernel-buildroot`: `sha-<commit>-<arch>`, signed, the `kernel-buildroot` pointer |
+| CI builder | `image-ci-builder-x86_64`, `-aarch64` | | | (canaries and promotion stay with build-ci-builder.yml) |
 | release tools | `image-release-tools-x86_64`, `-aarch64` (each built and tested natively), `image-release-tools` (their index) | | `publish-release-tools`: index `sha-<commit>`, proven anonymously pullable | (CI tooling, not a product) |
 | local model catalog | `model-catalog-compiler` | `sign-model-catalog`, `review-speech-catalog` (dispatch) | | `publish-model-catalog` (dispatch): the signed catalog in generic packages |
 | cloud promotion | `cloud-drift` (Mondays, reports only) | | | `cloud-promotion` (dispatch): the infra pull request |
@@ -95,6 +104,19 @@ archive (buildah, no daemon), which is how image tests run between building and 
 publishing anything. The publishing checks run only as trusted runs; `t test publish-room-service`
 on a working tree reports them skipped ("needs identity tokens: runs on …") after running their
 builds.
+
+## Shadow runs
+
+Until the cutover, every workflow keeps publishing while its checks run on t beside it. A
+workflow is retired only once its checks have built on t from a working tree (`t test`) and
+their trusted half has published from main or stable. The trusted halves are blocked for now:
+release nodes can't run image builds yet (rpm's database can't be written on their storage).
+
+| workflow | checks on t | built with `t test` | trusted half |
+|---|---|---|---|
+| `build-env-runtime.yml` | env-runtime chain | both trees, packer, throwaway seal and index (`tapp:10c0ac25…`, index `sha256:6ff8cec4…`) | blocked: release nodes |
+| `build-buildroots.yml` | kernel buildroot chain | x86_64 built and audited; aarch64 built, its output refused by t (worker output size) | blocked: release nodes; the pin needs a pushing check once the workflow stops proposing it |
+| `build-ci-builder.yml` | `image-ci-builder-*` | x86_64 in 6.5 min | canaries need images built in the same run (t 82e83c3) and the compiler cache; promotion stays |
 
 ## Inventory
 
