@@ -121,6 +121,11 @@ test('a member whose device key another tab holds is told so, not that the host 
     connectMember: async () => { throw new CustodyError('custody-busy', 'Another tab holds this device key'); },
   });
   await assert.rejects(admit({scope: room, deps}), {name: 'CustodyError', code: 'custody-busy'});
+  const missing = doors({
+    readAccounts: async () => [{userPublicKey: 'ab'}],
+    connectMember: async () => { throw new CustodyError('custody-missing', 'This account has no existing browser device'); },
+  });
+  await assert.rejects(admit({scope: room, deps: missing.deps}), {name: 'AdmissionError', code: 'no-access', message: NO_ACCESS});
 });
 
 test('a guest ticket is redeemed where the web host says, and refused where it says nothing', async () => {
