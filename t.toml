@@ -1393,3 +1393,31 @@ on = ["dispatch"]
 [check.dispatch_inputs]
 revision = ""
 open_pull_request = "true"
+
+# ---------------------------------------------------------------------------
+# The canonical verifier bundles (tools/ci/verifier-bundle.sh): the native tools an app
+# publication verifies with, per architecture, for someone to review and upload. Nothing here
+# publishes. `t dispatch verifier-bundle-x86_64` builds main's head; `t outputs
+# verifier-bundle-x86_64` downloads the bundle and its descriptor. The bundle names the
+# builder index the tools were built in, which is this file's `image`.
+[[check]]
+name = "verifier-bundle-x86_64"
+run = '''bash tools/ci/verifier-bundle.sh x86_64 "$(git rev-parse HEAD)" "$(awk -F'"' '/^image = /{print $2; exit}' t.toml)" /target/verifier-bundle'''
+inputs = ["t.toml", "tools/ci/verifier-bundle.sh", "tools/ci/python.py", "tools/canonical_verifier_bundle.py", "tools/apps/canonical_app_verifier.py", "tools/apps/app_channel_manifest.py", "crates/**", "apps/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/verifier-bundle/**"]
+git = true
+requires = ["arch=x86_64"]
+on = ["dispatch"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "verifier-bundle-aarch64"
+run = '''bash tools/ci/verifier-bundle.sh aarch64 "$(git rev-parse HEAD)" "$(awk -F'"' '/^image = /{print $2; exit}' t.toml)" /target/verifier-bundle'''
+inputs = ["t.toml", "tools/ci/verifier-bundle.sh", "tools/ci/python.py", "tools/canonical_verifier_bundle.py", "tools/apps/canonical_app_verifier.py", "tools/apps/app_channel_manifest.py", "crates/**", "apps/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/verifier-bundle/**"]
+git = true
+requires = ["arch=aarch64"]
+on = ["dispatch"]
+cost = "heavy"
+default = false
