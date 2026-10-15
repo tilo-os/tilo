@@ -26,6 +26,8 @@ IMAGE = {"application/vnd.oci.image.manifest.v1+json",
          "application/vnd.docker.distribution.manifest.v2+json"}
 MAX_BYTES = 50 * 1024**3
 MAX_BLOBS = 500
+DEV_UKI = "target-uki.efi"
+MAX_UKI_BYTES = 1024**3
 
 
 def require(condition, message):
@@ -46,8 +48,16 @@ def blob_path(layout, digest):
 
 def verify(directory, *, development=False):
     require(directory.is_dir() and not directory.is_symlink(), "target transport is not a directory")
-    require({item.name for item in directory.iterdir()} == {"oci", "target.json"},
+    entries = {item.name for item in directory.iterdir()}
+    # A split-kernel development target carries the UKI the CI runner built
+    # from its kernel; the VM installer checks its payload against the image.
+    require(entries == {"oci", "target.json"}
+            or (development and entries == {"oci", "target.json", DEV_UKI}),
             "target transport has unexpected root entries")
+    if DEV_UKI in entries:
+        uki = directory / DEV_UKI
+        require(uki.is_file() and not uki.is_symlink() and 0 < uki.stat().st_size <= MAX_UKI_BYTES,
+                "development target UKI is missing, unsafe or oversized")
     metadata = bounded_json(directory / "target.json", 16384)
     fields = {"schema", "target_ref", "target_digest", "architecture", "hardware_profile",
               "update_origin"}
