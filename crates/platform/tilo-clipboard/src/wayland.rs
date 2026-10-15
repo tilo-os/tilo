@@ -2142,6 +2142,7 @@ mod tests {
                 worker_stopped.store(true, std::sync::atomic::Ordering::Release);
             });
             let publication = PublicationClipboard {
+                progress: Arc::new(PublicationProgress::default()),
                 sender,
                 thread: std::sync::Mutex::new(Some(worker)),
                 alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
