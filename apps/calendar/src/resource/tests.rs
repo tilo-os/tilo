@@ -971,3 +971,45 @@ mod tasks_screen {
         assert!(app.state().tasks.is_empty());
     }
 }
+
+/// A caller with no screen reads the calendar's events through the
+/// framework's `read`, and one event in full with its notes.
+#[test]
+fn the_calendar_reads_its_events_and_one_in_full() {
+    let mut app = TestApp::<CalendarShell>::new().expect("test app");
+    let id = Uuid::new_v4();
+    app.invoke(Calendar::NEW_EVENT.with(calendar::NewEvent {
+        event: EventData {
+            id: id.to_string(),
+            title: "Review".into(),
+            start: "2026-09-08T09:00".into(),
+            end: "2026-09-08T10:00".into(),
+            location: "Room 4".into(),
+            ..EventData::default()
+        },
+    }))
+    .expect("create");
+    app.invoke(Invoke::from(
+        notes_path(id)
+            .perform(&RichTextAction::AppendParagraph {
+                text: "Bring the mockups".into(),
+            })
+            .expect("a notes edit"),
+    ))
+    .expect("append");
+    let listed = app.call("read", serde_json::json!({})).unwrap().unwrap();
+    let event = &listed["events"][0];
+    assert_eq!(event["title"], "Review");
+    assert_eq!(event["location"], "Room 4");
+    let item = event["item"].as_str().unwrap().to_owned();
+    let full = app
+        .call("read", serde_json::json!({ "item": item }))
+        .unwrap()
+        .unwrap();
+    assert_eq!(full["notes"], "Bring the mockups");
+    assert_eq!(full["start"], "2026-09-08 09:00:00");
+    assert!(
+        app.call("read", serde_json::json!({ "item": "nothing" }))
+            .is_err()
+    );
+}

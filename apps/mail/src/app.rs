@@ -2855,6 +2855,28 @@ fn attachment_meta(attachment: &crate::model::DraftAttachment) -> Attachment {
 }
 
 /// Reconstruct an editable [`Draft`] from a Drafts-folder message.
+/// What `message` says, for a caller with no screen: its people, subject,
+/// time, text and attachments' names.
+fn message_read(message: &Message) -> serde_json::Value {
+    let person = |addr: &crate::model::Addr| match &addr.name {
+        Some(name) if !name.trim().is_empty() => format!("{name} <{}>", addr.email),
+        _ => addr.email.clone(),
+    };
+    serde_json::json!({
+        "from": person(&message.from),
+        "to": message.to.iter().map(person).collect::<Vec<_>>(),
+        "cc": message.cc.iter().map(person).collect::<Vec<_>>(),
+        "subject": message.subject,
+        "sent_minutes_since_epoch": message.timestamp_min,
+        "text": message.body,
+        "attachments": message.attachments.iter().map(|attachment| serde_json::json!({
+            "name": attachment.filename,
+            "type": attachment.mime,
+            "size": attachment.size,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn draft_from_message(m: &Message) -> Draft {
     let join = |addrs: &[Addr]| {
         addrs
@@ -3950,6 +3972,20 @@ impl MailApp {
     /// # Errors
     /// Why the effect does not apply to what this window has loaded now: a
     /// message, folder or account that is gone, no connected account.
+    /// What the loaded message `message` says.
+    fn read_message(&self, message: &str) -> Result<serde_json::Value, String> {
+        let id = message
+            .parse::<MessageId>()
+            .map_err(|_| "invalid message id")?;
+        self.shared
+            .borrow()
+            .mailbox
+            .messages
+            .get(&id)
+            .map(message_read)
+            .ok_or_else(|| "message is no longer loaded".into())
+    }
+
     pub(crate) fn begin_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -4029,6 +4065,9 @@ impl MailApp {
                 self.process_intents();
                 Ok(done)
             }
+            MailEffect::ReadMessage { message } => self
+                .read_message(&message)
+                .map(ui::framework::Effected::value),
             MailEffect::Reply { message } => {
                 self.compose_from(&message, Intent::Reply).map(|()| done)
             }

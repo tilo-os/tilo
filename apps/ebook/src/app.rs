@@ -5243,6 +5243,12 @@ impl BooksApp {
                     (end_block.unwrap_or(start_block), end_char),
                 )?;
             }
+            BooksEffect::ReadChapter { book, chapter } => {
+                let chapter = chapter.unwrap_or_else(|| self.open_chapter_of(&book));
+                return self
+                    .chapter_read(&book, chapter)
+                    .map(ui::framework::Effected::value);
+            }
             BooksEffect::OpenBook | BooksEffect::OpenStored { .. } => {
                 return Err("opening a book is the surface's".into());
             }
@@ -5267,6 +5273,32 @@ impl BooksApp {
                 .map(|record| record.entries.values().cloned().collect())
                 .unwrap_or_default();
         self.begin_effect(invocation, effect, &entries)
+    }
+
+    /// What chapter `chapter` of `book_id` says, block by block, with the
+    /// book's title, author and chapter titles.
+    fn chapter_read(&self, book_id: &str, chapter: usize) -> Result<serde_json::Value, String> {
+        let book = self
+            .library
+            .iter()
+            .find(|book| book.id == book_id)
+            .ok_or("book is no longer in the library")?;
+        let read = book
+            .chapters
+            .get(chapter)
+            .ok_or("chapter is not in this book")?;
+        Ok(serde_json::json!({
+            "book": book.id,
+            "title": book.title,
+            "author": book.author,
+            "chapter": chapter,
+            "chapter_title": read.title,
+            "chapters": book.chapters.iter().map(|chapter| chapter.title.as_str()).collect::<Vec<_>>(),
+            "blocks": read.blocks.iter().enumerate().map(|(index, block)| serde_json::json!({
+                "block": index,
+                "text": block.plain_text(),
+            })).collect::<Vec<_>>(),
+        }))
     }
 
     /// The chapter this reader has open in `book`, else its first.

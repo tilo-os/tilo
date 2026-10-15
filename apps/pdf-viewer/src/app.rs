@@ -71,6 +71,8 @@ use tilo_rich_text::{Draft, FieldOutcome, RichTextSurface, RichTextView, SubmitK
 /// single [`ViewportState`] content rect.
 const PAGE_GAP: f64 = 22.0; // page points between pages, not UI spacing
 const ZOOM_MIN: f64 = 0.25;
+/// The most pages one text read answers with.
+pub(crate) const MOST_READ_PAGES: usize = 50;
 /// Zoomed pages are drawn from bounded tiles ([`crate::tiles`]), so the
 /// ceiling is about usefulness, not bitmap size.
 const ZOOM_MAX: f64 = 16.0;
@@ -5439,7 +5441,9 @@ impl PdfApp {
                 index,
                 page,
             } => self.go_to_search_result(query, *whole_word, *case_sensitive, *index, *page),
-            PdfEffect::OpenPdf { .. } | PdfEffect::SaveAs { .. } => return false,
+            PdfEffect::OpenPdf { .. } | PdfEffect::SaveAs { .. } | PdfEffect::ReadText { .. } => {
+                return false;
+            }
         }
         true
     }
@@ -5521,6 +5525,46 @@ impl PdfApp {
             self.load_error = Some(error.clone());
         }
         Err(error)
+    }
+
+    /// The text of pages `from_page..=to_page` (1-based) of the PDF as its
+    /// file holds them, at most [`MOST_READ_PAGES`] of them.
+    pub(crate) fn read_text(
+        &self,
+        from_page: Option<usize>,
+        to_page: Option<usize>,
+    ) -> Result<serde_json::Value, String> {
+        let path = self
+            .source_path
+            .as_deref()
+            .ok_or("this PDF has no file to read its text from yet; save it first")?;
+        // The portable engine is memory-safe and runs in process; reading
+        // text needs nothing only the sandboxed one draws.
+        let document = tilo_pdf::Engine::portable()
+            .open_path(path)
+            .map_err(|error| format!("the PDF cannot be read: {error}"))?;
+        let count = document.page_count();
+        let first = from_page.unwrap_or(1).max(1);
+        if first > count {
+            return Err(format!("the PDF has {count} pages"));
+        }
+        let last = to_page
+            .unwrap_or(usize::MAX)
+            .min(first.saturating_add(MOST_READ_PAGES - 1))
+            .min(count);
+        let mut pages = Vec::new();
+        for page in first..=last {
+            let text = document
+                .text(page - 1)
+                .map_err(|error| format!("page {page} cannot be read: {error}"))?;
+            pages.push(serde_json::json!({ "page": page, "text": text.text().trim_end() }));
+        }
+        Ok(serde_json::json!({
+            "file": path.display().to_string(),
+            "page_count": count,
+            "pages": pages,
+            "next": (last < count).then_some(last + 1),
+        }))
     }
 
     pub(crate) fn answer_effect(
@@ -5646,6 +5690,43 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
             app.settle();
         }
+    }
+
+    /// A caller with no screen reads the open PDF's text page by page, and
+    /// a page past its end is refused.
+    #[test]
+    fn the_open_pdf_reads_as_its_pages_text() {
+        let (_dir, path, _) = two_documents();
+        let mut app = launched(&path);
+        let read = app
+            .effect(&PdfEffect::ReadText {
+                from_page: None,
+                to_page: Some(1),
+            })
+            .expect("the text reads")
+            .value
+            .expect("a read answers");
+        assert_eq!(read["pages"][0]["page"], 1);
+        assert!(
+            !read["pages"][0]["text"].as_str().unwrap().trim().is_empty(),
+            "{read}"
+        );
+        let count = read["page_count"].as_u64().unwrap();
+        assert_eq!(
+            read["next"],
+            if count > 1 {
+                serde_json::json!(2)
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert!(
+            app.effect(&PdfEffect::ReadText {
+                from_page: Some(usize::try_from(count).unwrap() + 1),
+                to_page: None,
+            })
+            .is_err()
+        );
     }
 
     /// A highlight on the first page of the open document, as the palette

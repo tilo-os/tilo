@@ -850,6 +850,9 @@ impl Mail {
             .with_effect(&MailEffect::Inspect {
                 message: id.to_owned(),
             })
+            .with_effect(&MailEffect::ReadMessage {
+                message: id.to_owned(),
+            })
             .with_effect(&MailEffect::Reply {
                 message: id.to_owned(),
             })
@@ -1404,6 +1407,57 @@ mod tests {
         );
         assert!(app.undo());
         assert!(app.state().draft.attachments.is_empty());
+    }
+
+    /// A loaded message reads as what it says, and reading it marks it read
+    /// for no one.
+    #[test]
+    fn a_loaded_message_reads_as_what_it_says() {
+        let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
+        let id: crate::model::MessageId = "70c4b1cf-78ef-bd2b-7019-d7c509f29930".parse().unwrap();
+        app.with_surface(|mail: &mut MailApp| {
+            mail.shared
+                .borrow_mut()
+                .mailbox
+                .insert(crate::model::Message {
+                    id,
+                    rfc_message_id: Some("m7@example.test".into()),
+                    in_reply_to: None,
+                    from: crate::model::Addr::new("Sam", "sam@example.test"),
+                    to: vec![crate::model::Addr::new("", "me@example.test")],
+                    cc: Vec::new(),
+                    subject: "Quarterly numbers".into(),
+                    body: "They are up.".into(),
+                    html_body: None,
+                    attachments: Vec::new(),
+                    timestamp_min: 0,
+                    read: false,
+                    starred: false,
+                    folder: Folder::Inbox,
+                    labels: Vec::new(),
+                });
+        })
+        .unwrap();
+        app.settle();
+        let row = format!("mail.message:{id}");
+        let answer = app
+            .effect_on(
+                &row,
+                &MailEffect::ReadMessage {
+                    message: id.to_string(),
+                },
+            )
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(answer["subject"], "Quarterly numbers");
+        assert_eq!(answer["from"], "Sam <sam@example.test>");
+        assert_eq!(answer["text"], "They are up.");
+        assert!(
+            !app.with_surface(|mail: &mut MailApp| mail.shared.borrow().mailbox.messages[&id].read)
+                .unwrap(),
+            "reading it marks it read for no one"
+        );
     }
 
     #[test]

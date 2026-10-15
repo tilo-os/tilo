@@ -145,6 +145,18 @@ pub enum PdfEffect {
         #[param("1-based page")]
         page: usize,
     },
+    /// Read text
+    ///
+    /// Answers with the text of the PDF's pages as its file holds them,
+    /// page by page, at most 50 pages at a time: read on from the `next` an
+    /// answer gives. Changes nothing.
+    #[effect(kind = "read", returns, idempotent)]
+    ReadText {
+        #[param("The first page to read, 1-based; the first page when omitted")]
+        from_page: Option<usize>,
+        #[param("The last page to read, 1-based; 50 pages on when omitted")]
+        to_page: Option<usize>,
+    },
     /// Open PDF
     ///
     /// Opens a PDF on its own markup record, in this window.
