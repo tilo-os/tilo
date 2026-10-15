@@ -1086,7 +1086,7 @@ fn a_tab_the_host_asks_to_rebuild_gets_its_content_again() {
 }
 
 #[test]
-fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
+fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() {
     fn groups(node: &ui::headless::InspectionNode, out: &mut Vec<[f64; 4]>) {
         if node.widget == "WindowGroup" {
             out.push(node.rect);
@@ -1112,35 +1112,130 @@ fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
     );
     driver.relayout();
     let entries = handle.snapshot("g", vec![]).entries;
+    let first = handle.snapshot("g", vec![]).active.unwrap();
+    // Wait out the swipe gap.
+    let settle = |driver: &mut ui::headless::FrameHarness| {
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            driver.relayout();
+        }
+    };
+    let shown = |driver: &ui::headless::FrameHarness, index: usize| {
+        let mut rects = Vec::new();
+        groups(&driver.inspection().root, &mut rects);
+        rects.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        let [x, _, width, _] = rects[index];
+        x.max(0.0) < (x + width).min(1200.0) - width / 2.0
+    };
     driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
-    // A mouse tilt wheel held to the right: one run of line-delta clicks,
-    // which winit reports with negative x.
-    for rightward in [0.3, 1.0, 2.0, 1.0, 0.5] {
-        driver.send(&ui::synthetic_input::mouse_wheel(-rightward, 0.0));
+    // A sideways wheel spun to the right as Firefox reports it: six lines a
+    // notch, which winit reports with negative x.
+    let before = pan_offset(&handle);
+    for _ in 0..4 {
+        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
     }
     driver.relayout();
+    assert!(
+        (pan_offset(&handle) - before - 960.0).abs() < 0.5,
+        "four notches pan the strip four notches' travel"
+    );
     assert_eq!(
         handle.snapshot("g", vec![]).active.unwrap(),
-        entries[1].route,
-        "one run of clicks, one window along the strip"
+        first,
+        "the strip moves under focus while the wheel spins"
     );
-    for _ in 0..3 {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        driver.send(&ui::synthetic_input::mouse_wheel(-1.0, 0.0));
-        driver.relayout();
+    let spun = pan_offset(&handle);
+    settle(&mut driver);
+    let followed = handle.snapshot("g", vec![]).active.unwrap();
+    let index = entries.iter().position(|e| e.route == followed).unwrap();
+    assert!(index > 0, "focus follows the strip once the wheel stops");
+    assert!(
+        shown(&driver, index),
+        "to a window mostly in view, window {index}"
+    );
+    assert!(
+        (pan_offset(&handle) - spun).abs() < 0.5,
+        "and the strip stays where the wheel left it"
+    );
+
+    // A long spin stops at the strip's end and keeps the rest of the spin.
+    for _ in 0..40 {
+        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
     }
+    driver.relayout();
+    let pan = handle.snapshot("g", vec![]).desktop_pan.unwrap();
+    assert!((pan.offset - pan.max).abs() < 0.5, "hard stop at the end");
+    settle(&mut driver);
     assert_eq!(
         handle.snapshot("g", vec![]).active.unwrap(),
         entries[3].route,
-        "stops at the last window"
+        "focus follows to the last window"
     );
-    let mut rects = Vec::new();
-    groups(&driver.inspection().root, &mut rects);
-    rects.sort_by(|a, b| a[0].total_cmp(&b[0]));
-    let [x, _, width, _] = rects[3];
+    assert!(shown(&driver, 3));
+}
+
+#[test]
+fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
+    let mut minter = IdMinter::new(7);
+    let tabs = (0..4)
+        .map(|i| tab(&mut minter, &format!("App{i}")))
+        .collect();
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.relayout();
+    let last = handle.snapshot("g", vec![]).entries[3].route.clone();
+    // Wait out the swipe gap.
+    let settle = |driver: &mut ui::headless::FrameHarness| {
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            driver.relayout();
+        }
+    };
+    driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    for _ in 0..40 {
+        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
+    }
+    driver.relayout();
+    settle(&mut driver);
+
+    // A spin whose notches arrive slowly, one or two at a time with pauses
+    // between them, as a busy page gets them: each pause ends a gesture and
+    // focus follows, but the strip still pans exactly the notches' travel.
+    let from = pan_offset(&handle);
+    for lines in [1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0] {
+        driver.send(&ui::synthetic_input::mouse_wheel(lines, 0.0));
+        driver.relayout();
+        settle(&mut driver);
+    }
     assert!(
-        x >= 0.0 && x + width <= 1200.5,
-        "the focused window is in view: {rects:?}"
+        (pan_offset(&handle) - (from - 20.0 * 40.0)).abs() < 0.5,
+        "twenty slow notches pan twenty lines: {} from {from}",
+        pan_offset(&handle)
+    );
+
+    // Where the spin left the strip, windows are cut at both edges. A later
+    // change to the strip's geometry, here the last window a pixel wider,
+    // keeps it there rather than re-framing it onto a window's edge.
+    let held = pan_offset(&handle);
+    dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"width","generation":"g","route":last,"permille":668}),
+    );
+    settle(&mut driver);
+    assert!(
+        (pan_offset(&handle) - held).abs() < 0.5,
+        "a window's width changing keeps the strip where the wheel left it: {} from {held}",
+        pan_offset(&handle)
     );
 }
 
