@@ -9820,6 +9820,9 @@ pub fn run() {
     > = boot_network
         .then(|| start_session_peer_sync(tree_handle.clone(), Arc::clone(&session_wake)));
     let mut recording_audio_probe = start_recording_audio_probe(Arc::clone(&session_wake));
+    // Whether desktop sound can be recorded, once the probe answers: only
+    // then does the device fabric offer this device's audio output.
+    let mut system_audio = false;
     // Whether the launches held for the network fail when it does not come:
     // first login asked for sync, while a boot whose network failed carries
     // on local-only, as it always has.
@@ -12877,8 +12880,9 @@ pub fn run() {
         {
             recording_audio_probe = None;
             match answer {
-                Ok((system_audio, microphone)) => {
-                    frame_builder.set_capture_audio_available(system_audio, microphone);
+                Ok((desktop_sound, microphone)) => {
+                    system_audio = desktop_sound;
+                    frame_builder.set_capture_audio_available(desktop_sound, microphone);
                 }
                 Err(error) => {
                     tracing::warn!(%error, "recording audio probe ended without an answer; capture offers no audio");
