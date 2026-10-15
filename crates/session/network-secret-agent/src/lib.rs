@@ -199,7 +199,7 @@ impl SecretFieldRule {
 /// name. A masked field never carries a starting value.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SecretField {
-    /// NetworkManager's key for the value, e.g. `psk` or `identity`.
+    /// `NetworkManager`'s key for the value, e.g. `psk` or `identity`.
     pub key: String,
     pub label: Line,
     /// Drawn as bullets and never reported by `state-dump`.

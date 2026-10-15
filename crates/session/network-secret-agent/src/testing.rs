@@ -4,6 +4,7 @@
 #![allow(
     clippy::expect_used,
     clippy::panic,
+    clippy::missing_panics_doc,
     reason = "test support: a fixture that cannot be built fails the calling test"
 )]
 
@@ -270,8 +271,8 @@ pub fn gsm_connection() -> Connection {
 }
 
 /// `setting.key` of a reply, which must be a string.
-pub fn string_of(
-    reply: &HashMap<String, HashMap<String, OwnedValue>>,
+pub fn string_of<S: std::hash::BuildHasher, T: std::hash::BuildHasher>(
+    reply: &HashMap<String, HashMap<String, OwnedValue, T>, S>,
     setting: &str,
     key: &str,
 ) -> String {
