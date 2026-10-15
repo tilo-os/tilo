@@ -1139,6 +1139,7 @@ run = "tools/ci/check-warnings.sh"
 # Counts warnings instead of failing on the first, so warnings stay warnings.
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 cost = "heavy"
+on = ["schedule:0 4 * * 0", "dispatch"]
 default = false
 
 # The workspace-wide form of tools/ci/clippy-check.sh, which also records a
@@ -1147,29 +1148,37 @@ default = false
 name = "weekly-clippy"
 run = "cargo clippy --locked --workspace --all-targets --keep-going -- -D warnings"
 cost = "heavy"
+on = ["schedule:0 4 * * 0", "dispatch"]
 default = false
 
 [[check]]
 name = "weekly-docs"
-run = "cargo doc --workspace --no-deps --locked"
+run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets
+cargo doc --workspace --no-deps --locked
+"""
 env = { RUSTDOCFLAGS = "-D warnings" }
 cost = "heavy"
+on = ["schedule:0 4 * * 0", "dispatch"]
 default = false
 
 [[check]]
 name = "weekly-release"
 requires = ["disk-100g"]
 run = """
+export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
 cargo build --release --workspace --locked
 tools/check-binary-size.sh "$CARGO_TARGET_DIR/release"
 """
 cost = "heavy"
+on = ["schedule:0 4 * * 0", "dispatch"]
 default = false
 
 [[check]]
 name = "weekly-latency"
 run = "cargo test --locked -p tilo-media --features realtime --test realtime -- --ignored --exact realtime_latency_per_frame --nocapture"
 cost = "heavy"
+on = ["schedule:0 4 * * 0", "dispatch"]
 default = false
 
 # Getting in, end to end, on the stack the web entry and room service images
