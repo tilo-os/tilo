@@ -167,7 +167,7 @@ zeroize.workspace = true
 cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
 # variation-axis order to translate CSS-like axis values for Vello.
-skrifa = "0.40.0"
+skrifa = "0.44.0"
 pollster.workspace = true
 rustc-hash.workspace = true
 
