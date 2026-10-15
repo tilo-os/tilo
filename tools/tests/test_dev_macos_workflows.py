@@ -1,68 +1,44 @@
-"""Contract of the workflows on the persistent development Mac."""
+"""Contract of the checks on t's Mac (t.toml)."""
 
 from __future__ import annotations
 
 import pathlib
-import re
 import tempfile
+import tomllib
 import unittest
 
 from tools.ci.macos_apps import macos_apps
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-WORKFLOWS = ROOT / ".forgejo/workflows"
-MACOS = ("dev-runtime-macos.yml", "dev-apps-macos.yml")
+CHECKS = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+MACOS = ("runtime-macos", "sdk-macos", "apps-macos")
 
 
-def triggers(source: str) -> str:
-    match = re.search(r"^on:\n((?:  .*\n|\s*\n)*)", source, re.M)
-    assert match
-    return match.group(1)
-
-
-class DevMacosWorkflowTests(unittest.TestCase):
-    def test_jobs_run_on_the_development_label_without_release_credentials(self) -> None:
+class DevMacosCheckTests(unittest.TestCase):
+    def test_checks_run_on_the_mac_without_release_credentials(self) -> None:
         for name in MACOS:
-            source = (WORKFLOWS / name).read_text()
+            check = CHECKS[name]
             with self.subTest(name):
-                labels = re.findall(r"^    runs-on: (.+)$", source, re.M)
-                self.assertTrue(labels)
-                self.assertEqual(set(labels), {"macos-aarch64"})
-                self.assertNotIn("id-token", source)
-                self.assertNotIn("secrets.", source)
+                self.assertIn("os=macos", check["requires"])
+                self.assertNotIn("secrets", check)
+                self.assertNotIn("id_token", check)
+                self.assertFalse(check.get("default", True))
 
-    def test_jobs_build_from_the_stable_source_path(self) -> None:
-        for name in MACOS:
-            source = (WORKFLOWS / name).read_text()
+    def test_app_checks_prepare_the_fonts_their_tests_render_with(self) -> None:
+        for name in ("sdk-macos", "apps-macos"):
             with self.subTest(name):
-                runs = re.findall(r"^      - name: .*\n((?:        .*\n)*)", source, re.M)
-                builds = [step for step in runs if "cargo " in step]
-                self.assertTrue(builds)
-                for step in builds:
-                    self.assertIn("working-directory: ${{ env.SRC }}", step)
-                self.assertEqual(
-                    source.count("uses: ./.forgejo/actions/stable-source"),
-                    source.count("uses: actions/checkout@"),
-                )
+                self.assertIn("tools/font-catalog.py root", CHECKS[name]["run"])
+                self.assertIn("TILO_FONT_ASSETS_OFFLINE=1", CHECKS[name]["run"])
 
-    def test_app_jobs_prepare_the_fonts_their_tests_render_with(self) -> None:
-        source = (WORKFLOWS / "dev-apps-macos.yml").read_text()
-        self.assertEqual(
-            source.count("uses: ./.forgejo/actions/prepare-font-assets"),
-            source.count("uses: actions/checkout@"),
-        )
-
-    def test_runtime_check_follows_pull_requests(self) -> None:
-        on = triggers((WORKFLOWS / "dev-runtime-macos.yml").read_text())
-        self.assertIn("  pull_request:\n", on)
-        self.assertIn("  push:\n", on)
+    def test_runtime_check_follows_main(self) -> None:
+        self.assertEqual(CHECKS["runtime-macos"]["on"], ["main"])
 
     def test_whole_app_build_is_scheduled_not_per_change(self) -> None:
-        on = triggers((WORKFLOWS / "dev-apps-macos.yml").read_text())
-        self.assertIn("  schedule:\n", on)
-        self.assertIn("  workflow_dispatch:\n", on)
-        self.assertNotIn("pull_request", on)
-        self.assertNotIn("push", on)
+        for name in ("sdk-macos", "apps-macos"):
+            with self.subTest(name):
+                on = CHECKS[name]["on"]
+                self.assertEqual(len(on), 1)
+                self.assertTrue(on[0].startswith("schedule:"))
 
 
 class MacosAppsTests(unittest.TestCase):
