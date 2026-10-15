@@ -30,6 +30,7 @@ import {createSpeakers} from './live-speakers.mjs';
 import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
+import {AdmissionError} from './admission.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
 
@@ -822,6 +823,13 @@ async function connect({
 
   async function start() {
     const certified = JSON.parse(await certificate());
+    if (!sameHost(certified.hostCert, host.hostCert)) {
+      // What this browser kept was certified by, and is pinned to, another
+      // host than the one answering at this origin now (it was set up
+      // again): that host would refuse the session, and the kept state is
+      // never handed to it.
+      throw new AdmissionError('host-changed', HOST_CHANGED);
+    }
     const record = storage ? undefined : await store.get(PEER_RECORD);
     peer = runtime.WasmPeer.start(
       JSON.stringify({cert: certified.cert, hostCert: certified.hostCert, displayName}),
@@ -1084,7 +1092,8 @@ async function connect({
           else if (current.phase === 'failed') finish(new Error(current.error ?? 'the host refused this device'));
         };
         if (signal?.aborted) { abort(); return; }
-        timer = setTimeout(() => finish(new Error('Room admission timed out')), timeoutMs);
+        // Not a refusal: the host has not answered yet.
+        timer = setTimeout(() => finish(new DOMException('Room admission timed out', 'TimeoutError')), timeoutMs);
         listeners.add(check); pendingRecordWaits.add(finish);
         signal?.addEventListener('abort', abort, {once: true});
         check(snapshot);
@@ -1163,6 +1172,20 @@ async function connect({
   return certifiedPeer;
 }
 
+/** What a person is told when the host at an origin is no longer the one
+ * this browser's kept state belongs to. */
+export const HOST_CHANGED = 'This workspace’s host was set up again and is no longer the one this browser kept your work for, so Tilo did not open it. Ask the workspace’s owner what happened.';
+/** Whether two host certificates name the same host (its person and device),
+ * as the peer's saved record pins it; unknown when either is missing. */
+const sameHost = (kept, current) => !kept || !current
+  || (hexKey(kept.user_public_key) === hexKey(current.user_public_key)
+    && hexKey(kept.device_public_key) === hexKey(current.device_public_key));
+
+/** What a person is told when the host will not honour an invitation. */
+export const UNUSABLE_INVITATION = 'This invitation can’t be used: it was used already, expired or was withdrawn. Ask whoever sent it for a new one.';
+/** What a person is told when the host refuses to admit them with one. */
+export const REFUSED_JOIN = 'The workspace did not let you in. If someone sent you an invitation, ask them for a new one.';
+
 const invitationBytes = invitation => {
   if (typeof invitation !== 'string') return Uint8Array.from(invitation);
   const text = invitation.trim().replace(/-/g, '+').replace(/_/g, '/');
@@ -1178,7 +1201,12 @@ const invitationBytes = invitation => {
 export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: fetcher} = {}) {
   runtime ??= await pageRuntime();
   const reply = JSON.parse(await runtime.inspectInvitation(httpsPost(relayUrl, fetcher), invitationBytes(invitation)));
-  if (reply.kind !== 'invitation') throw new Error(reply.reason ?? 'This invitation offers nothing here');
+  if (reply.kind !== 'invitation') {
+    // The host read the invitation and will not honour it: spent, expired,
+    // withdrawn or not its own. Its reason is for the console.
+    console.warn('invitation refused:', reply.reason ?? reply.kind);
+    throw new AdmissionError('invitation-unusable', UNUSABLE_INVITATION);
+  }
   return {
     workspaceName: reply.name, role: reply.role.toLowerCase(), room: reply.room, workspaceId: reply.workspaceId,
     expiresAtNs: reply.expiresAtNs, inviter: reply.inviter ?? undefined,
@@ -1281,7 +1309,9 @@ async function join({
   }
   if (reply.kind !== 'admitted') {
     forget();
-    throw new Error(reply.kind === 'declined' ? 'The owner declined the request' : (reply.reason ?? 'The host refused the request'));
+    if (reply.kind === 'declined') throw new AdmissionError('refused', 'The workspace owner declined your request to join');
+    console.warn('join refused:', reply.reason ?? reply.kind);
+    throw new AdmissionError('refused', REFUSED_JOIN);
   }
   forget();
   onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});

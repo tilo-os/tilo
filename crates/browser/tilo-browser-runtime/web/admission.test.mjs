@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {AdmissionError, NO_ACCESS, admit} from './admission.mjs';
+import {CustodyError} from './device-custody.mjs';
 
 const room = {kind: 'room', host: 'https://ada.tilo.example', room: '6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90'};
 
@@ -110,6 +111,21 @@ test('no access says the same thing for a missing and a private room', async () 
     assert.equal(error.code, 'no-access');
     assert.equal(error.message, NO_ACCESS);
   }
+});
+
+test('a member whose device key another tab holds is told so, not that the host refused them', async () => {
+  // The page decides what a refusal means for the remembered room: another
+  // tab of this browser says nothing about the host.
+  const {deps} = doors({
+    readAccounts: async () => [{userPublicKey: 'ab'}],
+    connectMember: async () => { throw new CustodyError('custody-busy', 'Another tab holds this device key'); },
+  });
+  await assert.rejects(admit({scope: room, deps}), {name: 'CustodyError', code: 'custody-busy'});
+  const missing = doors({
+    readAccounts: async () => [{userPublicKey: 'ab'}],
+    connectMember: async () => { throw new CustodyError('custody-missing', 'This account has no existing browser device'); },
+  });
+  await assert.rejects(admit({scope: room, deps: missing.deps}), {name: 'AdmissionError', code: 'no-access', message: NO_ACCESS});
 });
 
 test('a guest ticket is redeemed where the web host says, and refused where it says nothing', async () => {

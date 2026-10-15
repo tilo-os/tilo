@@ -150,6 +150,47 @@ pub fn terminate_tree_checked(
     }
 }
 
+/// Wait up to `timeout` for `child` to exit, and reap it. `None` when it is
+/// still running at the deadline; it is left running. On Unix this sleeps in
+/// [`wait_child_or`] rather than polling.
+///
+/// # Errors
+/// Returns the error of inspecting or reaping the child.
+pub fn wait_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now().checked_add(timeout);
+    #[cfg(unix)]
+    {
+        Ok(match wait_child_or(child, None, deadline)? {
+            Wakeup::Exited(status) => Some(status),
+            Wakeup::Woken | Wakeup::Deadline => None,
+        })
+    }
+    #[cfg(not(unix))]
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// [`wait_timeout`], then kill and reap a child still running at the
+/// deadline. `None` when it had to be killed.
+///
+/// # Errors
+/// Returns the error of inspecting or reaping the child.
+pub fn wait_or_kill(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let status = wait_timeout(child, timeout)?;
+    if status.is_none() {
+        let _ = child.kill();
+        child.wait()?;
+    }
+    Ok(status)
+}
+
 #[cfg(target_os = "linux")]
 fn exited_unreaped(pid: i32) -> bool {
     let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
@@ -813,6 +854,30 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bounded_wait_reaps_an_exited_child_and_kills_only_on_request() {
+        let mut quick = Command::new("true").spawn().unwrap();
+        assert!(
+            wait_or_kill(&mut quick, UNTESTED_TIMEOUT)
+                .unwrap()
+                .is_some_and(|status| status.success())
+        );
+        let mut slow = Command::new("sleep").arg("60").spawn().unwrap();
+        assert_eq!(
+            wait_timeout(&mut slow, Duration::from_millis(50)).unwrap(),
+            None
+        );
+        assert!(
+            slow.try_wait().unwrap().is_none(),
+            "a plain wait leaves it running"
+        );
+        assert_eq!(
+            wait_or_kill(&mut slow, Duration::from_millis(50)).unwrap(),
+            None
+        );
+        assert!(slow.try_wait().unwrap().is_some(), "killed and reaped");
+    }
+
     #[test]
     fn checked_tree_stop_distinguishes_graceful_forced_and_unowned_children() {
         struct Owned(Child);

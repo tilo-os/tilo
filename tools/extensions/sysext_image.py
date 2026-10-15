@@ -11,7 +11,7 @@ built the image ({"part","file","size","sha256","fs"}). The manifest pins that
 one file by URL, exact length and SHA-256 for exactly one base (the image's
 package fingerprint, `resolve.py fingerprint` run inside the OS image). It goes
 through the same `resolve.py check`, signing (publish.sh, the extension-manifest
-KMS key) and device verification (os/usr/libexec/tilo-extension) as an
+KMS key) and device verification (crates/system/extension-helper) as an
 RPM-assembled extension; only the assembly differs: the device links the
 verified image into /var/lib/extensions instead of unpacking packages.
 """
