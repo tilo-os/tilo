@@ -435,7 +435,7 @@ fn bootstrap_candidate(
     owner
         .with_current(RoomId::parse(ROOM).unwrap(), |view| {
             let authority = descriptor::DescriptorAuthority {
-                peer: view.peer(),
+                peer: view,
                 pinned_governor: view.governor(),
                 pinned_host: view.host().unwrap(),
                 workspace: view.workspace(),
