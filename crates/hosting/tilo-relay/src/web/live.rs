@@ -238,15 +238,14 @@ impl LiveGrants {
         if rooms.is_empty() {
             return;
         }
-        let relay = &sessions.context().relay;
         let workspaces: Vec<_> = {
-            let registry = relay.workspaces.lock().await;
+            let registry = sessions.context().relay.workspaces.lock().await;
             rooms
                 .into_iter()
                 .map(|(workspace_id, grants)| (registry.get(&workspace_id).cloned(), grants))
                 .collect()
         };
-        let trust = relay.trust();
+        let trust = sessions.context().relay.trust();
         for (workspace, grants) in workspaces {
             let Some(workspace) = workspace else {
                 for (grant, _) in grants {
@@ -258,8 +257,7 @@ impl LiveGrants {
             for (grant, peer) in grants {
                 // Expiry is read again: the room's lock may have been a wait.
                 let permitted = grant.expires > Instant::now()
-                    && room_access::decide(&workspace, &trust, peer, grant.plane)
-                        .admitted();
+                    && room_access::decide(&workspace, &trust, peer, grant.plane).admitted();
                 grant.permitted.store(permitted, Ordering::Release);
             }
             drop(workspace);
