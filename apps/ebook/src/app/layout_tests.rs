@@ -1,6 +1,115 @@
 //! Reader chrome and page geometry exercised through the production draw pass.
 
 #[test]
+fn hosted_reader_adopts_history_without_an_extra_top_bar() {
+    let mut hosted =
+        ui::framework::testing::TestApp::<crate::EbookShell>::capture_at(Some("read"), (1440, 810))
+            .expect("hosted reader");
+    hosted.harness().set_theme(Theme::dark().with_ui_scale(1.5));
+    hosted
+        .surface_mut::<BooksApp>()
+        .stage_showcase()
+        .expect("fixture");
+    hosted.harness().recompose().expect("real hosted frame");
+    let app = hosted.surface_mut::<BooksApp>();
+    assert_eq!(app.rect.y0, 0.0, "no host toolbar above the reader");
+    assert!(app.history.is_shown());
+    let header = Rect::new(0.0, 0.0, 1440.0, app.header_h);
+    contains(header, app.history_rect);
+    assert!(hit(app, |a| matches!(a, Action::ToggleNotes)).x1 < app.history_rect.x0);
+    let target = app.history_rect.center();
+    assert!(hosted.harness().control_failures().is_empty());
+    hosted
+        .harness()
+        .send(&ui::synthetic_input::cursor_moved(target.x, target.y));
+    hosted.harness().send(&ui::synthetic_input::mouse_press());
+    hosted.harness().send(&ui::synthetic_input::mouse_release());
+    hosted.harness().recompose().expect("History opens");
+    assert!(
+        hosted.harness().control_failures().is_empty(),
+        "{:?}",
+        hosted.harness().control_failures()
+    );
+    assert!(
+        hosted.harness().targets().contains_key("activity_timeline"),
+        "history targets: {:?}",
+        hosted.harness().targets().keys()
+    );
+    hosted
+        .harness()
+        .click_named("history-open")
+        .expect("close History");
+    assert!(!hosted.harness().targets().contains_key("activity_timeline"));
+    assert!(hosted.harness().control_failures().is_empty());
+    hosted.harness().close_components();
+}
+
+#[test]
+fn history_remains_accessible_on_every_books_page() {
+    use ui::widget::WindowHeader;
+    let mut app = reader();
+    app.set_history_control(Some(ui::widget::HistoryControl::Closed));
+    for view in [View::Library, View::Reader, View::Settings] {
+        app.view = view;
+        draw_at(&mut app, &Theme::dark().with_ui_scale(1.5), 1440.0);
+        contains(Rect::new(0.0, 0.0, 1440.0, app.header_h), app.history_rect);
+        let button = app.history.button().expect("retained host control");
+        assert!(button.accessibility().is_some());
+        assert!(
+            !ui::widget::controls::action_control_bindings(&app).is_empty(),
+            "History keeps its host action binding on every page"
+        );
+    }
+}
+
+#[test]
+fn collaborator_indicator_and_shadow_stay_in_the_margin() {
+    for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+        let theme = theme.with_ui_scale(1.5);
+        let mut app = reader();
+        let passage = crate::resource::Passage {
+            book: app.library[0].id.clone(),
+            chapter: 0,
+            block: 2,
+            start: 0,
+            end: 35,
+            excerpt: "Consider what a switch does not do.".into(),
+        };
+        app.shot_drawers = Some((true, true));
+        draw_at(&mut app, &theme, 1440.0);
+        let point = app.showcase_peer_point(&passage).expect("visible passage");
+        let margin = app.showcase_peer_margin();
+        assert!(margin.contains(point));
+        let mut presence = ui::presence::PresenceCtx::empty();
+        presence.upsert_remote_cursor(
+            "ada".into(),
+            [ui::num::f32_of_f64(point.x), ui::num::f32_of_f64(point.y)],
+            Some("Ada"),
+        );
+        let mut text = TextRenderer::new();
+        let bounds = ui::presence::draw_remote_presence(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            margin,
+            &mut text,
+            &theme,
+            &presence,
+        );
+        assert!(!bounds.is_empty());
+        for rect in bounds {
+            assert!(
+                rect.x1 <= margin.x1,
+                "name and shadow stay clear of prose: {rect:?}"
+            );
+            assert!(app.sel_runs.iter().all(|run| {
+                rect.intersect(Rect::new(run.x0, run.y0, run.x1, run.y1))
+                    .is_zero_area()
+            }));
+        }
+    }
+}
+
+#[test]
 fn selection_controls_dock_above_prose_without_reflowing_it() {
     for (scale, width) in [(1.0, 520.0), (1.5, 1440.0), (2.0, 2000.0)] {
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
@@ -182,7 +291,7 @@ fn reader_page_and_progress_follow_ui_scale() {
 }
 
 #[test]
-fn docked_inspector_owns_its_toggle_and_keeps_a_readable_page() {
+fn one_window_header_owns_all_toggles_and_keeps_a_readable_page() {
     let theme = Theme::dark().with_ui_scale(1.5);
     let mut app = reader();
     app.shot_drawers = Some((true, true));
@@ -195,54 +304,37 @@ fn docked_inspector_owns_its_toggle_and_keeps_a_readable_page() {
         .iter()
         .filter(|hit| matches!(hit.action, Action::ToggleNotes))
         .collect();
-    assert_eq!(toggles.len(), 1, "no duplicate in the centre toolbar");
-    contains(inspector, toggles[0].rect);
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        ui::font_catalog::checkout_root(),
-        "en-US",
-    );
-    let mut text = TextRenderer::with_font_catalog(&catalog).expect("checked-in font catalog");
+    assert_eq!(toggles.len(), 1, "one toggle in the window header");
     let toc = app.toc_panel_rect().expect("open contents");
-    let headings = [
-        (
-            "Contents",
-            ui::chrome::HeaderRowFace::new(toc, &theme)
-                .with_inset_title()
-                .with_toggle(),
-        ),
-        (
-            "Annotations",
-            ui::chrome::HeaderRowFace::new(inspector, &theme)
-                .with_inset_title()
-                .with_trailing(),
-        ),
-    ];
-    for (heading, face) in headings {
-        let (width, height) = text.measure_style(heading, None, &theme.text(TextRole::Heading));
-        assert!(
-            f64::from(width) <= face.title.width(),
-            "{heading} fits one line"
-        );
-        assert!(f64::from(height) <= face.row.height());
-        assert!((face.row.y1 - app.header_h).abs() < 0.01);
-    }
+    assert_eq!(toc.y0, app.header_h);
+    assert_eq!(inspector.y0, app.header_h);
+    assert_eq!(
+        app.hits
+            .iter()
+            .filter(|hit| matches!(hit.action, Action::ToggleToc))
+            .count(),
+        1
+    );
     let column = app.notes_drawer.content_rect();
     assert!(
         column.width() >= 720.0,
         "three panes retain a readable page"
     );
-    let header = Rect::new(column.x0, 0.0, column.x1, app.header_h);
+    let header = Rect::new(app.rect.x0, 0.0, app.rect.x1, app.header_h);
     let controls = [
+        hit(&app, |action| matches!(action, Action::ToggleToc)),
         hit(&app, |action| matches!(action, Action::Back)),
         app.type_button,
         hit(&app, |action| matches!(action, Action::ToggleBookmark)),
+        toggles[0].rect,
     ];
     for control in controls {
         contains(header, control);
     }
     let gap = f64::from(theme.tokens.spacing.rhythm.related);
-    assert!(controls[0].x1 + gap <= controls[1].x0);
-    assert!(controls[1].x1 + gap <= controls[2].x0);
+    for pair in controls.windows(2) {
+        assert!(pair[0].x1 + gap <= pair[1].x0);
+    }
 
     // Below the combined rail and page minimum, the inspector floats
     // rather than squeezing the reading column into a sliver.

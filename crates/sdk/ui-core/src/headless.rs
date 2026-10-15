@@ -7107,6 +7107,19 @@ impl FrameHarness {
             if on_behalf_of.is_none() && self.take_search_invocation(&intent) {
                 continue;
             }
+            // A component's header still opens its host's History, not an
+            // application operation with the host resource's address.
+            if on_behalf_of.is_none()
+                && target.binding.enter().is_ok()
+                && self.take_history_invocation(
+                    &intent,
+                    Some(crate::history_mode::HistoryOwner::component(
+                        target.binding.clone(),
+                    )),
+                )
+            {
+                continue;
+            }
             self.dispatch_bound_control(target, &intent, on_behalf_of);
         }
 

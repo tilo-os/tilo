@@ -173,9 +173,24 @@ impl BooksApp {
         self.notes_max_scroll <= 0.01
     }
 
-    /// A real visible text location for the collaborator's window-local pointer.
-    /// If their passage is on the next page, use the last visible text run;
-    /// screen-space pointer presence does not claim a document selection.
+    /// The blank leading page margin, with clearance from every prose run.
+    /// Constrain the SDK presence painter to this area so its name pill cannot
+    /// cover text, regardless of which corner its placement algorithm chooses.
+    #[must_use]
+    pub fn showcase_peer_margin(&self) -> vello::kurbo::Rect {
+        let page = self.reader_page_geometry(self.rect, self.settings.mode);
+        let gap = f64::from(self.reader_spacing.s2);
+        vello::kurbo::Rect::new(
+            page.center_x0 + gap,
+            page.content_y,
+            page.full_content_x - gap,
+            page.content_y + f64::from(page.content_h),
+        )
+    }
+
+    /// A margin indicator aligned with the collaborator's visible passage.
+    /// If the passage is on the next page, align with the last visible run;
+    /// screen-space presence does not claim a document selection.
     #[must_use]
     pub fn showcase_peer_point(&self, passage: &Passage) -> Option<Point> {
         self.showcase_point(DocPos {
@@ -186,6 +201,10 @@ impl BooksApp {
             self.sel_runs
                 .last()
                 .map(|run| Point::new(f64::midpoint(run.x0, run.x1), f64::midpoint(run.y0, run.y1)))
+        })
+        .map(|point| {
+            let margin = self.showcase_peer_margin();
+            Point::new(margin.x0 + f64::from(self.reader_spacing.s1), point.y)
         })
     }
 

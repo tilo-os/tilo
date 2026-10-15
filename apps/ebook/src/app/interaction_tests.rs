@@ -1843,7 +1843,7 @@ fn type_popover_opens_undimmed_and_clear_of_the_rail() {
 
         let (px0, px1) = ReadingSettings::panel_x_bounds(
             app.rect,
-            app.type_button,
+            app.reading_settings_anchor(),
             f64::from(Theme::dark().tokens.metrics.panel_width_utility),
             f64::from(Theme::dark().tokens.spacing.s3),
         );

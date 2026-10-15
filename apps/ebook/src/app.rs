@@ -897,6 +897,9 @@ pub struct BooksApp {
     /// Height of the window's header row in the current theme, refreshed at
     /// the top of every frame so the event path hit-tests what was painted.
     header_h: f64,
+    history: ui::widget::HistoryOpener,
+    history_rect: Rect,
+    history_structure_dirty: bool,
     /// Frame-local page spacing follows UI scale and the theme's density.
     reader_spacing: ui::tokens::spacing::Spacing,
     reader_compact_breakpoint: f64,
@@ -1254,6 +1257,9 @@ impl BooksApp {
             reader_compact_breakpoint: f64::from(Metrics::BASE.compact_breakpoint),
             selection_hud_h: ui::SelectionHud::height(&Theme::dark()),
             header_h: f64::from(Metrics::BASE.header_height),
+            history: ui::widget::HistoryOpener::new(),
+            history_rect: Rect::ZERO,
+            history_structure_dirty: false,
             bubble_h: ui::status_bubble::pill_height(&Theme::dark()),
             type_button: Rect::ZERO,
             toast_area: Rect::ZERO,
@@ -1414,8 +1420,8 @@ impl BooksApp {
             *value = (*value + dy).clamp(0.0, max);
             *value != before
         };
-        // A rail's list is everything under its header row.
-        let header_h = self.header_h;
+        // The rail's content label is not part of the scrolling list.
+        let header_h = f64::from(self.reader_spacing.s3) * 2.0 + self.running_header_h;
         let over_list =
             |rect: Rect, cursor: Point| rect.contains(cursor) && cursor.y >= rect.y0 + header_h;
         if self
@@ -1472,12 +1478,17 @@ impl BooksApp {
         Some(*scroll != before)
     }
 
-    /// Resolve both drawers against the window: the contents sidebar
-    /// against the whole window, the annotations inspector against what the
-    /// sidebar leaves. Cheap and clock-free, so the draw and the event paths
-    /// agree.
+    /// Resolve both drawers below the shared window header, then inset the
+    /// annotations inspector by what Contents leaves. Cheap and clock-free,
+    /// so drawing and hit-testing agree and floating scrims spare the header.
     fn resolve_drawers(&mut self) -> Rect {
-        let beside_toc = self.toc_drawer.resolve(self.rect);
+        let body = Rect::new(
+            self.rect.x0,
+            self.rect.y0 + self.header_h,
+            self.rect.x1,
+            self.rect.y1,
+        );
+        let beside_toc = self.toc_drawer.resolve(body);
         self.notes_drawer.resolve(beside_toc)
     }
 
@@ -4483,8 +4494,54 @@ impl Continuable for BooksApp {
     }
 }
 
+impl ui::widget::WindowHeader for BooksApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+            self.history_structure_dirty |= self.history.take_rebuilt();
+            self.dirty = true;
+        }
+    }
+}
+
+impl ui::widget::controls::ActionControls for BooksApp {}
+
+impl BooksApp {
+    fn handle_history_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let Some(button) = self.history.button_mut() else {
+            return false;
+        };
+        let mut handled = false;
+        let node = ctx
+            .taffy
+            .children(ctx.node_id)
+            .ok()
+            .and_then(|nodes| nodes.first().copied())
+            .unwrap_or(ctx.node_id);
+        button.handle_event(
+            event,
+            &mut ui::widget::EventCtx {
+                handled: &mut handled,
+                ..ctx.reborrow(ctx.path, node)
+            },
+        );
+        self.dirty |= button.needs_redraw();
+        let consumed = handled && !matches!(event, WindowEvent::CursorMoved { .. });
+        *ctx.handled |= consumed;
+        consumed
+    }
+}
+
 impl Widget for BooksApp {
-    ui::provides!(dyn ui::widget::Continuable);
+    ui::provides!(
+        dyn ui::widget::Continuable,
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         self.ensure_library_loaded(edits.doc());
@@ -4589,10 +4646,45 @@ impl Widget for BooksApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.fill_leaf(node_map, self)
+        self.history.tree_rebuilt();
+        let children: Vec<_> = self
+            .history
+            .button_mut()
+            .into_iter()
+            .map(|button| button.build_layout(taffy, theme, node_map))
+            .collect();
+        let node = taffy.parent_node(
+            taffy::Style {
+                size: taffy::Size::from_percent(1.0, 1.0),
+                ..Default::default()
+            },
+            &children,
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    // Retain the host-bound History button for normal custody, resource and
+    // accessibility traversal, even though Books paints its own layout.
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.history
+            .button()
+            .map(|button| vec![button as &dyn Widget])
+            .unwrap_or_default()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.history
+            .button_mut()
+            .map(|button| vec![button as &mut dyn Widget])
+            .unwrap_or_default()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.history_structure_dirty)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -4672,6 +4764,9 @@ impl Widget for BooksApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.handle_history_event(event, ctx) {
+            return;
+        }
         let mut input_ctx = InputEventCtx {
             event,
             scale_factor: ctx.scale_factor,
@@ -6577,11 +6672,33 @@ struct ShelfCard<'a> {
 impl BooksApp {
     /// The header row of a full-width page (library, settings): no fill,
     /// one hairline under it. Returns the band.
-    fn draw_page_header(&self, ctx: &mut PaintCtx<'_>) -> Rect {
-        let r = self.rect;
-        let band = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.header_h);
-        ui::widget::toolbar::paint_band(ctx.scene, ctx.transform, ctx.theme, band);
-        band
+    fn draw_page_header(&mut self, ctx: &mut PaintCtx<'_>) -> Rect {
+        let face = ui::chrome::HeaderRowFace::new(self.rect, ctx.theme)
+            .with_history_if(self.history.is_shown());
+        ui::widget::toolbar::paint_band(ctx.scene, ctx.transform, ctx.theme, face.row);
+        self.history_rect = face.history_rect();
+        if let Some(button) = self.history.button_mut() {
+            button.apply_layout_external(self.history_rect);
+            button.draw(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &ui::presence::PresenceCtx::empty(),
+            );
+        }
+        // Page actions stop before the host's History slot.
+        Rect::new(
+            face.row.x0,
+            face.row.y0,
+            face.actions.x1 + face.metrics().inset
+                - if self.history.is_shown() {
+                    face.metrics().gap
+                } else {
+                    0.0
+                },
+            face.row.y1,
+        )
     }
 
     /// A page's title block at the content gutter: the page name in
@@ -7349,7 +7466,7 @@ impl BooksApp {
         self.reading_settings.draw(
             ctx,
             self.rect,
-            self.type_button,
+            self.reading_settings_anchor(),
             &Appearance {
                 settings: &self.settings,
                 fonts: &self.fonts,
@@ -8404,41 +8521,18 @@ impl BooksApp {
         }
     }
 
-    /// Whether the contents sidebar shows its own header (and with it the
-    /// sidebar toggle): docked and open.
-    fn toc_docked_open(&self) -> bool {
-        self.toc_drawer.is_docked() && self.toc_drawer.reveal() > 0.5
-    }
-
-    /// The content column's header row: the sidebar toggle (when the
-    /// sidebar is hidden), Back, the book's title and author on one
-    /// baseline, and the reading controls at the trailing edge. No fill; one
-    /// hairline under it.
+    /// One window-wide row owns navigation, reading controls and the host's
+    /// History control. Drawers and page content start below it.
     fn draw_reader_header(&mut self, ctx: &mut PaintCtx<'_>, lib: &[Arc<Book>]) {
         let theme = ctx.theme;
-        let content = self.notes_drawer.content_rect();
-        let band = Rect::new(
-            content.x0,
-            self.rect.y0,
-            content.x1,
-            self.rect.y0 + self.header_h,
-        );
-        ui::surface::separator(
-            ctx.scene,
-            ctx.transform,
-            band.x0,
-            band.x1,
-            band.y1,
-            0.0,
-            theme.tokens.colors.surfaces.content,
-        );
+        let band = self.draw_page_header(ctx);
         let spacing = &theme.tokens.spacing;
         let (inset, gap) = (f64::from(spacing.s3), f64::from(spacing.rhythm.related));
         let side = ControlSize::Regular.height(theme);
         let cy = band.center().y;
 
         let mut x = band.x0 + inset;
-        if !self.toc_docked_open() {
+        {
             let toggle = Rect::new(x, cy - side / 2.0, x + side, cy + side / 2.0);
             self.toc_drawer.draw_toggle(
                 ctx.scene,
@@ -8463,17 +8557,31 @@ impl BooksApp {
 
         // Trailing, walking in from the edge: annotations, bookmark, type.
         let mut x1 = band.x1 - inset;
-        // A docked inspector owns its toggle, leaving the book title more
-        // room rather than duplicating a control in the content column.
-        if !(self.notes_drawer.is_docked() && self.notes_drawer.reveal() > 0.5) {
-            let notes = Rect::new(x1 - side, cy - side / 2.0, x1, cy + side / 2.0);
+        {
+            let count = self.annotations.len().to_string();
+            let count_w = ctx.measure_role(&count, TextRole::Caption, None).width;
+            let notes = Rect::new(
+                x1 - side - count_w - gap,
+                cy - side / 2.0,
+                x1,
+                cy + side / 2.0,
+            );
+            let glyph = Rect::new(notes.x0, notes.y0, notes.x0 + side, notes.y1);
             self.notes_drawer.draw_toggle(
                 ctx.scene,
                 ctx.transform,
                 ctx.text,
                 theme,
-                notes,
+                glyph,
                 notes.contains(self.cursor),
+            );
+            let count_h = ctx.line_box(TextRole::Caption);
+            ctx.text_role(
+                &count,
+                TextRole::Caption,
+                theme.text_dim,
+                Point::new(glyph.x1 + gap, cy - count_h / 2.0),
+                None,
             );
             self.push_hit(pointer_target(notes, theme), Action::ToggleNotes);
             x1 = notes.x0 - gap;
@@ -8495,8 +8603,27 @@ impl BooksApp {
         let title_x1 = type_rect.x0 - inset;
 
         if let Some(book) = lib.get(self.book_idx) {
-            Self::draw_title_and_detail(ctx, band, (title_x0, title_x1), &book.title, &book.author);
+            let detail = if book.author.is_empty() {
+                String::new()
+            } else {
+                format!("· {}", book.author)
+            };
+            Self::draw_title_and_detail(ctx, band, (title_x0, title_x1), &book.title, &detail);
         }
+    }
+
+    /// Keep the appearance popover beside the page even though its control
+    /// now belongs to the full-window header. Outside-click dismissal still
+    /// covers the whole window.
+    fn reading_settings_anchor(&self) -> Rect {
+        let column = self.notes_drawer.content_rect();
+        let x1 = self.type_button.x1.min(column.x1);
+        Rect::new(
+            x1 - self.type_button.width(),
+            self.type_button.y0,
+            x1,
+            self.type_button.y1,
+        )
     }
 
     /// The page bookmark toggle: a plain button with the bookmark glyph,
@@ -8600,35 +8727,12 @@ impl BooksApp {
         }
     }
 
-    /// The contents sidebar inside `panel`: its header (the sidebar toggle
-    /// and "Contents"), then one navigation row per chapter, scrolling, the
-    /// current chapter lifted.
+    /// Contents below the window header: a quiet label and scrolling chapter
+    /// rows, with the current chapter lifted. The toggle stays in the header.
     fn draw_toc(&mut self, ctx: &mut PaintCtx<'_>, lib: &[Arc<Book>], panel: Rect) {
         let theme = ctx.theme;
         let spacing = &theme.tokens.spacing;
-        let face = ui::chrome::HeaderRowFace::new(panel, theme)
-            .with_inset_title()
-            .with_toggle();
-        let header = face.row;
-        let toggle = face.toggle;
-        self.toc_drawer.draw_toggle(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            toggle,
-            toggle.contains(self.cursor),
-        );
-        self.push_hit(pointer_target(toggle, theme), Action::ToggleToc);
-        face.paint_title(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            "Contents",
-            None,
-            None,
-        );
+        let header = Self::draw_rail_label(ctx, panel, "Contents");
 
         let Some(book) = lib.get(self.book_idx) else {
             return;
@@ -8685,45 +8789,18 @@ impl BooksApp {
         );
     }
 
-    /// The annotations inspector inside `panel`: its header ("Annotations"
-    /// and how many), how to add one, and one card per annotation, scrolling.
-    fn draw_notes_header(&mut self, ctx: &mut PaintCtx<'_>, panel: Rect, count: usize) -> Rect {
-        let theme = ctx.theme;
-        let face = ui::chrome::HeaderRowFace::new(panel, theme)
-            .with_inset_title()
-            .with_trailing();
-        let header = face.row;
-        self.notes_drawer.draw_toggle(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            face.trailing,
-            face.trailing.contains(self.cursor),
-        );
-        self.push_hit(pointer_target(face.trailing, theme), Action::ToggleNotes);
-        face.paint_title(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            "Annotations",
-            Some(count),
+    /// A quiet content label, not another toolbar or a second set of toggles.
+    fn draw_rail_label(ctx: &mut PaintCtx<'_>, panel: Rect, label: &str) -> Rect {
+        let inset = f64::from(ctx.theme.tokens.spacing.s3);
+        let height = ctx.line_box(TextRole::Caption) + 2.0 * inset;
+        ctx.text_role(
+            label,
+            TextRole::Caption,
+            ctx.theme.text_dim,
+            Point::new(panel.x0 + inset, panel.y0 + inset),
             None,
         );
-        if self.notes_drawer.is_docked() {
-            ui::surface::separator(
-                ctx.scene,
-                ctx.transform,
-                header.x0,
-                header.x1,
-                header.y1,
-                0.0,
-                theme.tokens.colors.surfaces.content,
-            );
-        }
-
-        header
+        Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + height)
     }
 
     fn draw_notes(&mut self, ctx: &mut PaintCtx<'_>, panel: Rect) {
@@ -8731,7 +8808,7 @@ impl BooksApp {
         let spacing = &theme.tokens.spacing;
         let annos = self.annotations.clone();
         let inset = f64::from(spacing.s3);
-        let header = self.draw_notes_header(ctx, panel, annos.len());
+        let header = Self::draw_rail_label(ctx, panel, "Annotations");
         let (x0, x1) = (panel.x0 + inset, panel.x1 - inset);
         let mut y = header.y1 + inset;
         let has_sel = self.sel.is_some_and(|s| !s.is_empty());

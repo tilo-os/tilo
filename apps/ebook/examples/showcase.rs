@@ -70,6 +70,8 @@ mod capture {
             "expected at most one output directory"
         );
         fs::create_dir_all(&output)?;
+        // Atomic image publication provisions an absolute parent directory.
+        let output = fs::canonicalize(output)?;
         link_fonts()?;
         ui::i18n::I18nManager::init("en-US");
         ui::offscreen::set_capture_device_scale(1);
@@ -185,7 +187,7 @@ mod capture {
                 if frame == 161 {
                     verify_highlight(app, passages, before)?;
                 }
-                let scene = compose(app, pointer, &mut text);
+                let scene = compose(app, pointer, &mut text)?;
                 let background = app.harness().theme().tokens.colors.surfaces.content;
                 let rgba = renderer
                     .try_render_resilient(&scene, background)
@@ -366,18 +368,28 @@ mod capture {
         )
     }
 
-    fn compose(app: &mut TestApp<EbookShell>, pointer: Point, text: &mut TextRenderer) -> Scene {
+    fn compose(
+        app: &mut TestApp<EbookShell>,
+        pointer: Point,
+        text: &mut TextRenderer,
+    ) -> Result<Scene> {
+        let margin = app.surface_mut::<BooksApp>().showcase_peer_margin();
         let harness = app.harness();
         let mut scene = Scene::new();
         scene.append(harness.frame_render_input().scene, None);
         let theme = harness.theme();
-        ui::presence::draw_remote_presence(
+        let indicators = ui::presence::draw_remote_presence(
             &mut scene,
             Affine::IDENTITY,
-            Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
+            margin,
             text,
             theme,
             harness.presence(),
+        );
+        ensure!(!indicators.is_empty(), "Ada's margin indicator disappeared");
+        ensure!(
+            indicators.iter().all(|rect| rect.x1 <= margin.x1),
+            "Ada's indicator or shadow escaped the prose-safe margin"
         );
         // Use the shared arrow glyph, with its tip (4, 3) as the input hotspot.
         let scale = f64::from(theme.ui_scale);
@@ -391,7 +403,7 @@ mod capture {
             3.0 * scale,
         );
         Icon::MousePointer2.draw_filled(&mut scene, Affine::IDENTITY, rect, theme.text_primary);
-        scene
+        Ok(scene)
     }
 
     fn link_fonts() -> Result<()> {
