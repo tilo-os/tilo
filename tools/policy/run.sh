@@ -45,7 +45,7 @@ run 'Path-filtered package dependency triggers' \
   --check tilo-fs .forgejo/workflows/ci-filesystem.yml \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
   --check registry-server 't.toml#image-registry-server' \
-  --check tilo-runtime .forgejo/workflows/dev-runtime-macos.yml \
+  --check tilo-runtime 't.toml#runtime-macos' \
   --check tilo-app-cli .forgejo/workflows/app-sdk.yml
 run 'Developer docs pages and links' python3 tools/docs/developer_docs.py check
 run 'Code map is current' python3 tools/docs/codemap.py --check

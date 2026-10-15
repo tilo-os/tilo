@@ -67,9 +67,9 @@ the smaller `os/Containerfile.ci-fast`.
 | `app-sdk.yml` linux | `cargo build -p tilo-app-cli --bin tilo-app`, then `target/debug/tilo-app build --target linux apps/calculator` and `target/debug/tilo-app package --target linux apps/calculator --output calculator.tapp` |
 | `app-sdk.yml` web | `target/debug/tilo-app build --target web --bundle desktop apps/calculator`; `node --test crates/platform/*/web/*.test.mjs` |
 | `app-sdk.yml` web-size | `target/debug/tilo-app build --target web --bundle desktop --release apps/calculator`, then `python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle`; uploads/downloads the exact release worker, verifies hashes and qualifies it in disposable staging. Runs alongside the dev mount. |
-| `dev-runtime-macos.yml` check | `cargo check -p tilo-runtime --all-targets --locked`, on macOS |
-| `dev-apps-macos.yml` sdk | the `app-sdk.yml` linux lane's commands with `--target macos`, on macOS |
-| `dev-apps-macos.yml` apps | `cargo build --locked $(python3 tools/ci/macos_apps.py)`, then `cargo test` with the same packages, on macOS |
+| t `runtime-macos` | `cargo check -p tilo-runtime --all-targets --locked`, on macOS |
+| t `sdk-macos` | the `app-sdk.yml` linux lane's commands with `--target macos`, on macOS |
+| t `apps-macos` | `cargo build --locked $(python3 tools/ci/macos_apps.py)`, then `cargo nextest run` and the doctests with the same packages, on macOS |
 | `t test real-fuse` | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
 | `t test native-tier1` | `tools/native-tier1.sh` on a host with pre-content fanotify, Btrfs and loop devices |
 | `t test render-counters` | `cargo build --release -p ui-examples --example ui-perf`, then `python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf` (pixel parity, then allocation and raster-pixel budgets at 4K; see [docs/ui-performance-benchmark.md](../../docs/ui-performance-benchmark.md#where-this-runs)) |

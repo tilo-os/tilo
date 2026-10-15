@@ -86,6 +86,10 @@ archive (buildah, no daemon), which is how image tests run between building and 
 | local model catalog | `model-catalog-compiler` | `sign-model-catalog`, `review-speech-catalog` (dispatch) | | `publish-model-catalog` (dispatch): the signed catalog in generic packages |
 | cloud promotion | `cloud-drift` (Mondays, reports only) | | | `cloud-promotion` (dispatch): the infra pull request |
 | canonical verifier bundles | `verifier-bundle-<arch>` (`on = ["dispatch"]`, `t outputs`) | | | (reviewed and uploaded by hand) |
+| apps | `apps-build-x86_64`, `apps-build-aarch64`: every app of the default collection, packaged with throwaway keys, smoke-tested | `sign-apps-x86_64`, `sign-apps-aarch64`: the publisher identities over the built binaries, compiling nothing | | `publish-apps` (package token): tapps, collections, runtime objects, the `app-collection` pointer; `submit-apps` (publisher identity): the registry entries |
+| desktop | `desktop-preflight` (packaging inputs) | | | |
+| macOS | `runtime-macos` (main), `sdk-macos`, `apps-macos` (nightly), `runtime-macos-app` (dispatch, ad hoc signed) | | | |
+| Windows ARM64 | `windows-arm64-tilo-vm`, `windows-arm64-imager` (dispatch, cross-built) | | | |
 
 `t test image-room-service` builds the image from your tree exactly as a release would, without
 publishing anything. The publishing checks run only as trusted runs; `t test publish-room-service`
@@ -131,8 +135,8 @@ fixed credentials in the server config, limited by reference and node, only wher
 
 | workflow | trigger | secrets and variables | runner needs | outputs | on t |
 |---|---|---|---|---|---|
-| `release-apps.yml` | push main (paths); `apps-v*` tags validate only; dispatch | `TAPP_PUBLISHER_IDENTITY`, `RUNTIME_BUNDLE_SIGNING_KEY` (raw keys), OIDC token as Forgejo API credential, writes repository variables `TILO_APP_COLLECTION_*` | x86_64 and arm64 builds in the builder image, llvmpipe smoke tests | tapps and collections in generic packages, registry entries at apps.tilo.so, the runtime package | build per arch (`dist/apps/package-apps.sh` compile and package with throwaway keys) as ordinary checks; signing with the publisher identity as a separate check; publication from main stays the development collection, the release collection from stable; the repository variables become a published pointer (see gaps) |
-| `release-desktop.yml` | PR preflight, weekly, `desktop-v*` tags, dispatch | `REGISTRY_TOKEN`, `RELEASE_TOKEN`; RPM signing through a broker on the runner (OIDC) | distribution containers, a full clone for Nix | packages, a Forgejo release on tags, the OS payload and its repository variables | builds as checks; RPM signing with an OpenPGP key in KMS as a signing check; release on `tag:desktop-v*` |
+| `release-apps.yml` | push main (paths); `apps-v*` tags validate only; dispatch | `TAPP_PUBLISHER_IDENTITY`, `RUNTIME_BUNDLE_SIGNING_KEY` (raw keys), OIDC token as Forgejo API credential, writes repository variables `TILO_APP_COLLECTION_*` | x86_64 and arm64 builds in the builder image, llvmpipe smoke tests | tapps and collections in generic packages, registry entries at apps.tilo.so, the runtime package | the release chain is declared (above): on stable, from the full default collection, its release sequence the commit's time (above every run number used so far). `publish-apps` sets the `app-collection` pointer (`channel.json`: each architecture's collection URL and digest, the builder and the source), which replaces `TILO_APP_COLLECTION_*`. The workflow stays until the OS build reads that pointer instead of the variables, since `build-image.yml` still takes its apps from them. Not ported: affected-app selection and reuse of the prior collection's members (they need the pointer), the coordinator qualification, the Signal-provider-only and engine-only dispatches and the run 97894 recovery |
+| `release-desktop.yml` | PR preflight, weekly, `desktop-v*` tags, dispatch | `REGISTRY_TOKEN`, `RELEASE_TOKEN`; RPM signing through a broker on the runner (OIDC) | distribution containers, a full clone for Nix | packages, a Forgejo release on tags, the OS payload and its repository variables | `desktop-preflight` is ported, but for the login wrapper's refusals, which need a user created in a throwaway container. The package lanes run a Docker daemon (or install packages into a writable distribution root), so they need `privileged = true` and a node labelled `privileged`, which t has none of yet. RPM signing: [below](#rpm-signing). The OS payload's variables become a pointer, like the apps' |
 | `host-session-e2e.yml` | called by release-desktop, dispatch, PR | none | `disk-100g` x86_64, KVM | test result | a check needing the RPM build, `requires = ["/dev/kvm", "disk-100g"]` |
 | ~~`release-local-model-catalog.yml`~~ | dispatch on main | `TILO_MODEL_CATALOG_SIGNING_KEY` (raw seed), `REGISTRY_TOKEN` | builder image | signed catalog in generic packages | ported: dispatch checks on stable (above) |
 | ~~`release-verifier-bundles.yml`~~ | dispatch | none | x86_64 and arm64 | artifacts | ported: `verifier-bundle-<arch>` (above) |
@@ -146,7 +150,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 |---|---|---|---|---|---|
 | `release-imager.yml` | `imager-v*` tags (signed release); dispatch (unsigned rehearsal) | brokers on the runners, each leased with OIDC: OpenPGP signing for Linux, Authenticode for Windows, Developer ID and notarization for macOS, GitHub App tokens for the public release repository, Homebrew tap and winget, a site token; Cosign; `REGISTRY_TOKEN`; the EFI/PCR signer | Linux x86_64 and arm64 with KVM and a render node, macOS on both arches, Windows on both arches | the GitHub release in `tilo-os/releases`, Homebrew, winget pull request, site downloads, installer media | Linux and macOS jobs as checks (`requires = ["os=macos", …]`), each signing step a separate check on `tag:imager-v*`; brokers become fixed credentials as secrets for release nodes; Windows: below |
 | `release-imager-winget.yml` | every 6 hours | site token through the broker | Linux | the site's download state | scheduled check, `cache = false` |
-| `release-runtime-macos.yml` | dispatch (disabled) | macOS broker, update key | macOS arm64 | artifacts | a macOS check once enabled |
+| ~~`release-runtime-macos.yml`~~ | dispatch (disabled) | macOS broker, update key | macOS arm64 | artifacts | ported unsigned: `runtime-macos-app` (dispatch); Developer ID signing needs a release-only Mac and `dist/macos/build-app.sh` split into build and sign (dist/macos/README.md) |
 
 ### Not publishing
 
@@ -180,6 +184,27 @@ t's server config (sops-encrypted in the infra repository), none in this reposit
 | `REGISTRY_TOKEN` | `stable` | `release` | a Forgejo token that may write generic packages, which do not take t's identity tokens: `publish-model-catalog` |
 | `INFRA_PROMOTION_TOKEN` | `stable` | `release` | may create branches and pull requests on the infra repository: `cloud-promotion` |
 
+`sign-apps-*` take `TAPP_PUBLISHER_IDENTITY` and `RUNTIME_BUNDLE_SIGNING_KEY`, `submit-apps` only
+`TAPP_PUBLISHER_IDENTITY` (registry entries are signed by the identity that signed the tapp), and
+`publish-apps` only `REGISTRY_TOKEN` (generic packages). None of them holds two of those kinds.
+
+### RPM signing
+
+Fedora RPMs were signed by a broker installed on the release runners, which took the job's
+Forgejo identity token and returned signed copies. On t the key becomes an RSA-4096 AWS KMS key
+(`alias/tilo-rpm-signing`, `SIGN_VERIFY`, `RSASSA_PKCS1_V1_5_SHA_256`) like the other release
+keys, and its OpenPGP certificate is made once, checked in beside `keys/cosign.pub` and published
+as the repository's `RPM-GPG-KEY`: regenerating it would change its self-signatures. A
+`sign-desktop-rpms` check on `tag:desktop-v*` `needs` the Fedora package lane, declares
+`id_token = ["sts.amazonaws.com"]` and assumes the release signing role, whose policy then also
+names this key. `rpmsign --addsign` runs with `%__gpg_sign_cmd` pointing at a small signer that
+hashes locally, asks KMS to sign the digest (`MessageType=DIGEST`) and wraps the answer in an
+OpenPGP v4 signature packet (Sequoia's serialization) for the certificate's key id. The check
+then verifies each signature with `rpmkeys --checksig` against the checked-in certificate and
+that the signed RPMs' immutable headers and payloads equal the tested ones
+(`dist/rpm/sign-rpms-broker.py` already compares them). No secret is stored; what remains to
+build is that signer.
+
 ## Windows
 
 t has no Windows workers. Only `release-imager.yml`'s `windows` job needs Windows: it builds the
@@ -208,5 +233,9 @@ node.
   a push credential in a check.
 - **Service containers and Docker daemons** are gone: images build with buildah inside the
   sandbox, and tests that start containers need `privileged = true`.
+- **Privileged nodes.** No node carries the `privileged` label, so the desktop package lanes,
+  which run distribution containers, can't run yet.
+- **A Mac for release jobs.** Checks on macOS run on the host, so Developer ID signing needs a
+  Mac labelled `release` that takes nothing else.
 - **Compiler cache for isolated builds.** Release builds run in fresh directories; the remote
   sccache the runners use is not wired into t checks.
