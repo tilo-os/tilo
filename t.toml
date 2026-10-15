@@ -1029,6 +1029,97 @@ cost = "heavy"
 default = false
 
 # ---------------------------------------------------------------------------
+# Developer diagnostics, run only when asked for. Each reads the tree it is
+# given, so `t test <check>` from a checkout of a commit diagnoses that commit.
+
+# Candidate visual goldens rendered on the project's image, with that image
+# recorded, as a patch to review and apply: `t outputs visual-baselines` renders
+# and downloads them, then `git apply target/visual-baseline-review/candidates.patch`.
+[[check]]
+name = "visual-baselines"
+run = "bash tools/ci/visual-baselines.sh"
+requires = ["arch=x86_64"]
+writable_sources = true
+git = true
+cache = false
+outputs = ["/target/visual-baseline-review/**"]
+cost = "heavy"
+default = false
+
+# The mounted-resource disconnect/retry journey, built once and observed up to
+# three times; each attempt's evidence and receipt are kept, and the first
+# failure ends the run.
+[[check]]
+name = "mounted-reopen"
+run = """
+rm -rf target/mounted-resource-recovery target/mounted-reopen-probe "$CARGO_TARGET_DIR/mounted-reopen-probe"
+bash tools/ci/ensure-browser-dependencies.sh
+npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
+export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
+status=0
+SOURCE_SHA=$(git rev-parse HEAD) python3 -I tools/ci/mounted_reopen_probe.py run || status=$?
+if [ -d target/mounted-reopen-probe ]; then cp -r target/mounted-reopen-probe "$CARGO_TARGET_DIR/"; fi
+exit $status
+"""
+requires = ["arch=x86_64"]
+writable_sources = true
+git = true
+cache = false
+outputs = ["/target/mounted-reopen-probe/**"]
+cost = "heavy"
+default = false
+
+# The workspace's cargo metadata sealed to this exact committed source, for
+# offline affected-package selection (AGENTS.md): `t test source-metadata` in a
+# clean checkout of a pushed commit, then `t outputs source-metadata`, which
+# writes target/ci/current-source-metadata.json.
+[[check]]
+name = "source-metadata"
+run = """
+mkdir -p "$CARGO_TARGET_DIR/ci"
+cargo metadata --locked --no-deps --format-version 1 > "$TMPDIR/metadata.json"
+python3 tools/ci/current_source_metadata.py seal --root . --input "$TMPDIR/metadata.json" --output "$CARGO_TARGET_DIR/ci/current-source-metadata.json"
+"""
+git = true
+outputs = ["/target/ci/current-source-metadata.json"]
+default = false
+
+# Profiles one policy target without removing any of its checks:
+# `t dispatch policy-profile --input target=app-portability` (or policy-tests).
+[[check]]
+name = "policy-profile"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
+run = "bash tools/ci/t-git-index.sh bash tools/ci/measure.sh 'policy profile tests' -- python3 tools/ci/profile_policy.py --target \"${T_INPUT_TARGET:-app-resource-action}\""
+requires = ["arch=x86_64"]
+on = ["dispatch"]
+cache = false
+default = false
+
+[check.dispatch_inputs]
+target = "app-resource-action"
+
+# The source-content auditor against its version at a baseline commit: both
+# must agree on every blob, and each one's time and memory is reported.
+[[check]]
+name = "source-blobs"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
+env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
+run = """
+python3 tools/ci/compare_source_auditor.py --order "${T_INPUT_ORDER:-baseline-first}" --baseline "${T_INPUT_BASELINE:-cc3f8733cc304af1a1a09aae826ec78a4f31b178}"
+python3 -m unittest discover -s tools/tests -p test_source_content.py
+"""
+requires = ["arch=x86_64"]
+git = true
+on = ["dispatch"]
+cache = false
+default = false
+
+[check.dispatch_inputs]
+order = "baseline-first"
+baseline = "cc3f8733cc304af1a1a09aae826ec78a4f31b178"
+
+# ---------------------------------------------------------------------------
 # macOS, on t's Mac (`requires = ["os=macos"]`), where checks run on the host without the
 # project's image. The per-user runtime (`tilo-runtime`) is the Tilo host on stock macOS, and
 # every app that runs there (tools/ci/macos_apps.py reads the manifests) must keep building and
