@@ -12,7 +12,7 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use ui::time::Duration;
 
 use crate::rfb::{self, Framebuffer, PixelFormat, ServerInit};
@@ -71,7 +71,7 @@ impl VncSession {
             .name("remote-vnc".into())
             .spawn(move || {
                 if let Err(e) = run_client(&cfg, &status_worker, &frame_worker, &input_rx) {
-                    let mut s = lock_recover(&status_worker);
+                    let mut s = status_worker.lock_recover();
                     if !matches!(*s, SessionStatus::Failed(_)) {
                         // A clean server close reads as EOF; anything else is
                         // an honest failure.
@@ -96,7 +96,7 @@ impl VncSession {
     }
 
     pub fn status(&self) -> SessionStatus {
-        lock_recover(&self.status).clone()
+        self.status.lock_recover().clone()
     }
 
     /// Return the framebuffer if it has a newer generation than last taken.
@@ -104,7 +104,7 @@ impl VncSession {
     /// worker receives the next update, when `Framebuffer` performs COW.
     pub fn take_frame(&mut self) -> Option<Framebuffer> {
         let fb = {
-            let guard = lock_recover(&self.frame);
+            let guard = self.frame.lock_recover();
             guard.clone()?
         };
         if self.last_seen_gen == Some(fb.generation) {
@@ -117,7 +117,8 @@ impl VncSession {
 
     /// The remote framebuffer size, once known.
     pub fn size(&self) -> Option<(u16, u16)> {
-        lock_recover(&self.frame)
+        self.frame
+            .lock_recover()
             .as_ref()
             .map(|fb| (fb.width, fb.height))
     }
@@ -136,13 +137,6 @@ impl VncSession {
             TrySendError::Disconnected(_) => "VNC session input channel is closed".into(),
         })
     }
-}
-
-/// Locks `m`, recovering a poisoned mutex instead of panicking: one
-/// worker thread's earlier panic must not cascade into every later read
-/// of shared session state.
-fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock_recover()
 }
 
 fn friendly(e: &io::Error) -> String {
@@ -201,8 +195,8 @@ fn run_client(
     // 6. Kick off with a full (non-incremental) update request.
     request_update(&mut stream, false, &fb)?;
 
-    *lock_recover(status) = SessionStatus::Connected;
-    *lock_recover(frame) = Some(fb.clone());
+    *status.lock_recover() = SessionStatus::Connected;
+    *frame.lock_recover() = Some(fb.clone());
 
     let mut last_request = ui::time::now();
     loop {
@@ -239,7 +233,7 @@ fn run_client(
             0 => {
                 // FramebufferUpdate — decode straight from the socket.
                 rfb::decode_framebuffer_update(&mut stream, &mut fb, &fmt)?;
-                *lock_recover(frame) = Some(fb.clone());
+                *frame.lock_recover() = Some(fb.clone());
                 request_update(&mut stream, true, &fb)?;
                 last_request = ui::time::now();
             }

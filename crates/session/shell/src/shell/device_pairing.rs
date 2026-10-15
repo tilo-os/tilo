@@ -342,7 +342,7 @@ impl Pairing {
     }
 
     fn flights(&self) -> MutexGuard<'_, Flights> {
-        lock(&self.flights)
+        self.flights.lock_recover()
     }
 
     /// Look for a nearby device of `role`; the answer is the device found,
@@ -367,7 +367,7 @@ impl Pairing {
         let started = spawn_step(move || {
             let found = runner(&command, &AtomicBool::new(false))
                 .and_then(|finished| discovered(&finished));
-            let mut flights = lock(&flights);
+            let mut flights = flights.lock_recover();
             flights.discovering = false;
             let answer = found.map(|candidate| {
                 let value = candidate.answer(role);
@@ -425,7 +425,7 @@ impl Pairing {
         let role = approval.role;
         let started = spawn_step(move || {
             let ran = runner(&command, &stop);
-            let mut flights = lock(&flights);
+            let mut flights = flights.lock_recover();
             flights.approving = None;
             let answer = if stop.load(Ordering::Acquire) {
                 Err("the approval was rejected".to_string())
@@ -526,10 +526,6 @@ pub(crate) fn approval(args: &ActionArgs) -> Result<Approval, String> {
         service: node_id(args.text("service").unwrap_or_default(), "service")?,
         workspace_ids,
     })
-}
-
-fn lock(flights: &Mutex<Flights>) -> MutexGuard<'_, Flights> {
-    flights.lock_recover()
 }
 
 fn refuse_busy(flights: &Flights) -> Result<(), String> {

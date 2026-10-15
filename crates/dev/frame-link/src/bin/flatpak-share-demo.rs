@@ -227,16 +227,9 @@ struct SpanStats {
     count: u64,
 }
 
-/// Lock `m`, recovering the inner value on poison rather than panicking.
-/// This is a best-effort latency profiler; a stats read/write racing a
-/// panic elsewhere is not worth taking the whole process down for.
-fn lock_profile<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock_recover()
-}
-
 impl ProfileLayer {
     fn snapshot(&self) -> Vec<(String, SpanStats)> {
-        let inner = lock_profile(&self.inner);
+        let inner = self.inner.lock_recover();
         inner
             .per_span
             .iter()
@@ -250,7 +243,7 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_enter(&self, id: &span::Id, _ctx: Context<'_, S>) {
-        let mut inner = lock_profile(&self.inner);
+        let mut inner = self.inner.lock_recover();
         inner.entered_at.insert(id.into_u64(), Instant::now());
     }
     #[allow(
@@ -267,11 +260,11 @@ where
         // Two short, separate critical sections rather than one held across
         // both the removal and the entry update — each lock/unlock pairs
         // tightly with the map operation it protects.
-        let entered = lock_profile(&self.inner).entered_at.remove(&key);
+        let entered = self.inner.lock_recover().entered_at.remove(&key);
         if let Some(entered) = entered {
             let dur = now.saturating_duration_since(entered);
             if let Some(name) = name {
-                let mut inner = lock_profile(&self.inner);
+                let mut inner = self.inner.lock_recover();
                 let entry = inner.per_span.entry(name).or_default();
                 entry.total_ns = entry.total_ns.saturating_add(dur.as_nanos());
                 entry.count = entry.count.saturating_add(1);
@@ -897,7 +890,7 @@ fn init_tracing() -> Arc<Mutex<ProfileInner>> {
         // nothing else touches it yet, so `None` here can't happen in
         // practice; `get_or_insert_with` still gives a real fallback
         // (a fresh layer) instead of an `unwrap`.
-        let mut slot = lock_profile(&profile_layer);
+        let mut slot = profile_layer.lock_recover();
         slot.get_or_insert_with(ProfileLayer::default).inner.clone()
     };
     // Build a `ProfileLayer` variant referencing the shared `Arc` so it

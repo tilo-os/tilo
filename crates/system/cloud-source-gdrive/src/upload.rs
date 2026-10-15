@@ -24,7 +24,8 @@ use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{self, File};
-use crate::{Inner, UPLOAD_QUANTUM, Url, lock};
+use crate::{Inner, UPLOAD_QUANTUM, Url};
+use tilo_lock::MutexRecover as _;
 
 /// Google's `499 Client Closed Request`, the answer to cancelling a session.
 const CANCELLED: u16 = 499;
@@ -178,7 +179,7 @@ struct Shared(Arc<Mutex<Box<dyn Read + Send>>>);
 
 impl Read for Shared {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        lock(&self.0).read(buf)
+        self.0.lock_recover().read(buf)
     }
 }
 

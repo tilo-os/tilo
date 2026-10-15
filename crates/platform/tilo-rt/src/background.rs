@@ -233,10 +233,6 @@ impl Executor for PageExecutor {
     fn park(&self, _deadline: Instant) {}
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock_recover()
-}
-
 fn run_job(name: &'static str, job: Job) {
     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
         tracing::warn!(job = name, "background job panicked");
@@ -349,12 +345,12 @@ impl ThreadPool {
     }
 
     fn worker(shared: &PoolShared) {
-        let mut state = lock(&shared.state);
+        let mut state = shared.state.lock_recover();
         loop {
             if let Some((name, job)) = state.queue.pop_front() {
                 drop(state);
                 run_job(name, job);
-                state = lock(&shared.state);
+                state = shared.state.lock_recover();
                 state.progress = state.progress.wrapping_add(1);
                 shared.progress.notify_all();
                 continue;
@@ -369,7 +365,7 @@ impl ThreadPool {
     }
 
     fn timer_loop(shared: &PoolShared) {
-        let mut state = lock(&shared.state);
+        let mut state = shared.state.lock_recover();
         loop {
             let now = tilo_clock::now();
             let mut fired = Vec::new();
@@ -384,7 +380,7 @@ impl ThreadPool {
                 for wake in fired {
                     wake.wake();
                 }
-                state = lock(&shared.state);
+                state = shared.state.lock_recover();
                 continue;
             }
             state = match state.timers.next_deadline() {
@@ -412,7 +408,7 @@ impl Executor for ThreadPool {
     )]
     fn spawn(&self, name: &'static str, job: Job) -> Result<(), Unsupported> {
         crate::panic_boundary::abort_outside_boundaries_in_release();
-        let mut state = lock(&self.shared.state);
+        let mut state = self.shared.state.lock_recover();
         state.queue.push_back((name, job));
         if state.idle >= state.queue.len() || state.threads >= self.shared.max_threads {
             self.shared.work.notify_one();
@@ -437,7 +433,7 @@ impl Executor for ThreadPool {
     }
 
     fn wake_at(&self, deadline: Instant, wake: WakeHandle) {
-        let mut state = lock(&self.shared.state);
+        let mut state = self.shared.state.lock_recover();
         state.timers.push(deadline, wake);
         if !state.timer_thread {
             let shared = Arc::clone(&self.shared);
@@ -464,7 +460,7 @@ impl Executor for ThreadPool {
     }
 
     fn park(&self, deadline: Instant) {
-        let state = lock(&self.shared.state);
+        let state = self.shared.state.lock_recover();
         let seen = state.progress;
         let timeout = deadline.saturating_duration_since(tilo_clock::now());
         let _state = self
@@ -517,7 +513,7 @@ impl Pumped {
     pub fn run_pending(&self) -> usize {
         let mut ran = 0_usize;
         loop {
-            let next = lock(&self.state).queue.pop_front();
+            let next = self.state.lock_recover().queue.pop_front();
             let Some((name, job)) = next else {
                 return ran;
             };
@@ -529,7 +525,11 @@ impl Pumped {
     /// Move the virtual clock forward by `by`, firing every timer that falls
     /// due in deadline order and running the work each one releases.
     pub fn advance(&self, by: Duration) {
-        let now = lock(&self.state).now.unwrap_or_else(tilo_clock::now);
+        let now = self
+            .state
+            .lock_recover()
+            .now
+            .unwrap_or_else(tilo_clock::now);
         let target = now.checked_add(by).unwrap_or(now);
         self.advance_to(target);
     }
@@ -538,7 +538,7 @@ impl Pumped {
         self.run_pending();
         loop {
             let wake = {
-                let mut state = lock(&self.state);
+                let mut state = self.state.lock_recover();
                 match state.timers.next_deadline() {
                     Some(deadline) if deadline <= target => {
                         if state.now.is_none_or(|now| now < deadline) {
@@ -553,7 +553,7 @@ impl Pumped {
             wake.wake();
             self.run_pending();
         }
-        let mut state = lock(&self.state);
+        let mut state = self.state.lock_recover();
         if state.now.is_none_or(|now| now < target) {
             state.now = Some(target);
         }
@@ -562,29 +562,29 @@ impl Pumped {
     /// Whether no job is queued. Armed timers do not count: a periodic
     /// refresh is always armed.
     pub fn is_idle(&self) -> bool {
-        lock(&self.state).queue.is_empty()
+        self.state.lock_recover().queue.is_empty()
     }
 
     /// The earliest armed timer, if any.
     pub fn next_deadline(&self) -> Option<Instant> {
-        lock(&self.state).timers.next_deadline()
+        self.state.lock_recover().timers.next_deadline()
     }
 
     /// The virtual clock.
     pub fn now(&self) -> Instant {
-        let mut state = lock(&self.state);
+        let mut state = self.state.lock_recover();
         *state.now.get_or_insert_with(tilo_clock::now)
     }
 }
 
 impl Executor for Pumped {
     fn spawn(&self, name: &'static str, job: Job) -> Result<(), Unsupported> {
-        lock(&self.state).queue.push_back((name, job));
+        self.state.lock_recover().queue.push_back((name, job));
         Ok(())
     }
 
     fn wake_at(&self, deadline: Instant, wake: WakeHandle) {
-        lock(&self.state).timers.push(deadline, wake);
+        self.state.lock_recover().timers.push(deadline, wake);
     }
 
     fn now(&self) -> Instant {
@@ -665,7 +665,7 @@ mod tests {
                 let name = tilo_test_env::recv("a worker thread's name", &rx).unwrap();
                 assert!(name.starts_with("ui-background-"), "{name}");
             }
-            assert!(lock(&pool.shared.state).threads <= 2);
+            assert!(pool.shared.state.lock_recover().threads <= 2);
         }
 
         // Case `thread_pool_survives_a_panicking_job`.

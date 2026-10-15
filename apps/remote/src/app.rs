@@ -140,13 +140,13 @@ impl TiloSession {
             .spawn(move || {
                 let mut h264_decoder = tilo_callstream::VideoDecoder::default();
                 while encoded_rx.recv().is_ok() {
-                    let Some(encoded) = lock_recover(&encoded_worker).take() else {
+                    let Some(encoded) = encoded_worker.lock_recover().take() else {
                         continue;
                     };
                     let Some(frame) = h264_decoder.decode(&encoded) else {
                         continue;
                     };
-                    *lock_recover(&decoded_worker) = Some(frame);
+                    *decoded_worker.lock_recover() = Some(frame);
                 }
                 decoder_available_worker.store(false, Ordering::Release);
             })
@@ -169,7 +169,7 @@ impl TiloSession {
         // Store first, then wake. If a wake is already pending, that worker
         // pass observes this replacement; at most one stale decode can be
         // in progress and no queue of old frames accumulates.
-        *lock_recover(&self.encoded) = Some(encoded);
+        *self.encoded.lock_recover() = Some(encoded);
         match self.encoded_wake.try_send(()) {
             Ok(()) | Err(TrySendError::Full(())) => Ok(()),
             Err(TrySendError::Disconnected(())) => {
@@ -180,12 +180,8 @@ impl TiloSession {
     }
 
     fn take_latest_frame(&self) -> Option<tilo_callstream::DecodedFrame> {
-        lock_recover(&self.decoded).take()
+        self.decoded.lock_recover().take()
     }
-}
-
-fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock_recover()
 }
 
 enum PendingResourceOperation {
