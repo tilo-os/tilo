@@ -4745,11 +4745,10 @@ version = "0.1.0"
 dependencies = [
  "cosmic-text",
  "proptest",
- "shell",
+ "tilo-callstream",
  "tilo-media",
  "tracing",
  "tracing-subscriber",
- "workspace-hack",
 ]
 
 [[package]]
@@ -7002,6 +7001,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "staging-handoff-model",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -7167,6 +7167,7 @@ dependencies = [
  "os-actions",
  "serde",
  "serde_json",
+ "staging-handoff-model",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -14347,7 +14348,6 @@ dependencies = [
  "getrandom 0.4.3",
  "greetd-client",
  "greeter",
- "gstreamer-app",
  "hex",
  "image",
  "iroh",
@@ -15054,6 +15054,15 @@ dependencies = [
  "libc",
  "psm",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "staging-handoff-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -16455,7 +16464,11 @@ dependencies = [
 name = "tilo-callstream"
 version = "0.1.0"
 dependencies = [
+ "gstreamer-app",
+ "neighbour-wire",
+ "tempfile",
  "thiserror 2.0.21",
+ "tilo-callstream",
  "tilo-media",
  "tracing",
  "workspace-hack",
@@ -16996,6 +17009,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-extension"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "reqwest 0.13.4",
+ "rustix 1.1.4",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "tilo-advisory-lock",
+ "tilo-net",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-feedback"
 version = "0.1.0"
 dependencies = [
@@ -17264,6 +17293,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-files",
  "tilo-identity-ceremony",
+ "tilo-paths",
  "tilo-relay-protocol",
  "tilo-seal",
  "tilo-test-env",
@@ -17845,6 +17875,7 @@ name = "tilo-polkit-agent"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustix 1.1.4",
  "tilo-copy-lint",
  "tokio",
  "tokio-util",
@@ -18439,6 +18470,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-files",
+ "tilo-paths",
  "tilo-seal",
  "tilo-user-identity",
  "tokio",

@@ -22,14 +22,5 @@ use std::path::PathBuf;
 /// `None` without an absolute data home or a home directory.
 #[must_use]
 pub fn data_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .filter(|path| path.is_absolute())
-                .map(|home| home.join(".local/share"))
-        })?;
-    Some(base.join("tilo/secrets"))
+    Some(tilo_paths::xdg::data_home()?.join("tilo/secrets"))
 }
