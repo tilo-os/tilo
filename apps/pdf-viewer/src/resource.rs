@@ -76,6 +76,10 @@ impl Resource for PdfViewer {
         crate::actions::declarations()
     }
 
+    fn bound_declarations(state: &PdfMarkup) -> Vec<ActionDecl<Self>> {
+        vec![crate::actions::import_pdf_content(state.source.as_ref())]
+    }
+
     fn least_permission() -> PermissionRequirement {
         PermissionRequirement::Comment
     }
@@ -260,6 +264,20 @@ impl ResourceSurface<PdfViewer, PdfEffect> for PdfApp {
     fn effect(&mut self, effect: PdfEffect, cx: &mut EffectCx<PdfViewer, Self>) -> EffectAnswer {
         match effect {
             PdfEffect::Open { path } => self.open_effect(path, cx),
+            // Read from the record and the room's content, never from what
+            // this window has open: an agent's headless window opens nothing.
+            PdfEffect::ReadText {
+                page,
+                pages,
+                offset,
+            } => crate::reading::read_text(
+                &cx.live().get(),
+                ui::tilo_resource::content::current().as_ref(),
+                page,
+                pages,
+                offset,
+            )
+            .map(ui::framework::Effected::value),
             effect => self.answer_effect(&effect, || cx.reply()),
         }
     }

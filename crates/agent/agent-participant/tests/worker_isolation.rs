@@ -668,6 +668,186 @@ fn an_effect_is_given_the_content_its_record_refers_to() {
     );
 }
 
+const PDF: &str = "so.tilo.pdf-viewer";
+
+/// A PDF the room holds is opened in an agent's PDF record and its text
+/// read page by page, extracted inside the confined worker from the bytes
+/// the room lent it: no file, network or helper process needed.
+#[test]
+fn an_agent_reads_a_pdf_the_room_holds_in_its_worker() {
+    let room = ContentStore::memory();
+    let hash = room
+        .put(&pdf(&[
+            "Lamps in the hall",
+            "Lamps in the attic",
+            "Lamps in the cellar",
+        ]))
+        .unwrap();
+    let agent = new_record(PDF, &room);
+    assert_ne!(agent.worker_id(), Some(std::process::id()));
+
+    let import = operation(&agent, "import-pdf-content");
+    assert_eq!(import.kind, OperationKind::Document);
+    agent
+        .invoke(
+            &import.address,
+            &arguments(serde_json::json!({
+                "content": tilo_actions::content_resource(&hash).unwrap(),
+                "name": "inventory.pdf",
+            })),
+            false,
+        )
+        .expect("the worker opens the room's PDF");
+    agent
+        .take_mutation()
+        .unwrap()
+        .expect("the record pins the PDF as the agent's change");
+
+    let read = operation(&agent, "read-text");
+    assert_eq!(read.kind, OperationKind::View);
+    assert!(!device_only(&read), "{read:?}");
+    let output = agent
+        .invoke(
+            &read.address,
+            &arguments(serde_json::json!({"page": 2, "pages": 1})),
+            false,
+        )
+        .expect("read-text runs in the worker for the agent");
+    let value = output.value.clone().expect("read-text answers");
+    assert_eq!(value["pageCount"], 3, "{value}");
+    assert_eq!(value["name"], "inventory.pdf", "{value}");
+    assert_eq!(value["pages"][0]["page"], 2, "{value}");
+    assert!(
+        value["pages"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Lamps in the attic")),
+        "{value}"
+    );
+    assert_eq!(value["next"]["page"], 3, "{value}");
+    assert!(
+        agent.take_mutation().unwrap().is_none(),
+        "a read changes nothing in the record"
+    );
+    let seen = tilo_agent_participant::planner::observation(PDF, &read.address, &output).unwrap();
+    assert!(seen.contains("Lamps in the attic"), "{seen}");
+
+    // A worker given no content says so rather than reading nothing.
+    let unlent = ConfinedReplica::open(
+        &catalogue(),
+        PDF,
+        ROOM,
+        "unlent",
+        true,
+        Seed::Existing {
+            record: agent.record_id().clone(),
+            changes: vec![agent.read(|doc| doc.clone().save()).unwrap()],
+        },
+    )
+    .unwrap();
+    assert!(
+        unlent
+            .invoke(&read.address, &serde_json::Map::new(), false)
+            .is_err()
+    );
+}
+
+/// A .docx the room holds becomes an agent's Writer document, read with
+/// read-text as any other.
+#[test]
+fn an_agent_imports_a_docx_the_room_holds_and_reads_it() {
+    let room = ContentStore::memory();
+    let source = new_record(WRITER, &room);
+    let append = operation(&source, "append-paragraph");
+    source
+        .invoke(
+            &append.address,
+            &arguments(serde_json::json!({"text": "The cellar lamp flickers"})),
+            false,
+        )
+        .unwrap();
+    source.take_mutation().unwrap().unwrap();
+    let export = operation(&source, "export-content");
+    let output = source
+        .invoke(
+            &export.address,
+            &arguments(serde_json::json!({"format": "docx"})),
+            false,
+        )
+        .unwrap();
+    let docx = produced(&room, &output);
+    let address = tilo_actions::content_resource(&tilo_content::hash_bytes(&docx)).unwrap();
+
+    let writer = new_record(WRITER, &room);
+    let import = operation(&writer, "import-docx-content");
+    assert_eq!(import.kind, OperationKind::Document);
+    writer
+        .invoke(
+            &import.address,
+            &arguments(serde_json::json!({"content": address})),
+            false,
+        )
+        .expect("the worker imports the room's .docx");
+    writer.take_mutation().unwrap().unwrap();
+    let read = operation(&writer, "read-text");
+    let output = writer
+        .invoke(&read.address, &serde_json::Map::new(), false)
+        .unwrap();
+    let text = output
+        .value
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    assert!(text.contains("The cellar lamp flickers"), "{output:?}");
+}
+
+/// A PDF of one page per line in `pages`, set in Helvetica.
+fn pdf(pages: &[&str]) -> Vec<u8> {
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        format!(
+            "<< /Type /Pages /Kids [{}] /Count {} >>",
+            (0..pages.len())
+                .map(|i| format!("{} 0 R", 4 + 2 * i))
+                .collect::<Vec<_>>()
+                .join(" "),
+            pages.len()
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_owned(),
+    ];
+    for (i, line) in pages.iter().enumerate() {
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+            5 + 2 * i
+        ));
+        let stream = format!("BT /F1 12 Tf 72 720 Td ({line}) Tj ET");
+        objects.push(format!(
+            "<< /Length {} >>\nstream\n{stream}\nendstream",
+            stream.len()
+        ));
+    }
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    for offset in offsets {
+        out.extend(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
 /// Every entry of a zip's central directory: its name, CRC-32 and
 /// uncompressed size.
 fn zip_entries(zip: &[u8]) -> Vec<(String, u32, usize)> {
