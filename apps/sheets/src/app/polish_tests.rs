@@ -51,12 +51,18 @@ fn full_ui_scale_keeps_toolbar_labels_and_chart_controls_readable() {
             .iter()
             .filter(|(rect, _)| card.contains(rect.center()))
             .collect();
-        assert_eq!(controls.len(), 6, "all chart commands remain reachable");
-        for (rect, _) in controls {
-            assert!(
-                rect.y0 >= body.y0 + app.metrics.plot_h() - 0.01,
-                "control overlaps the plot"
-            );
+        assert_eq!(
+            controls.len(),
+            1,
+            "only the header management toggle is visible"
+        );
+        assert!(
+            body.height() > app.metrics.plot_h() + app.metrics.control_h,
+            "the plot reclaims the action row"
+        );
+        for (rect, action) in controls {
+            assert!(matches!(action, AnnotationClick::ManageChart(_)));
+            assert!(rect.y1 <= body.y0, "management stays in the header");
             assert!(rect.x0 >= card.x0 && rect.x1 <= card.x1 && rect.y1 <= card.y1);
         }
     }

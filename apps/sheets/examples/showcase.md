@@ -30,7 +30,9 @@ Outputs:
   January groceries from $420 to $680 with real pointer/keyboard input. The
   grid, dependent formulas and charts refresh through the normal application
   path. The capture asserts the stored numeric value, rather than accepting a
-  video of an unsuccessful gesture.
+  video of an unsuccessful gesture. Each encoded frame uses the offscreen
+  renderer's resilient submission path so atlas/buffer growth during edits
+  cannot publish incomplete glyphs.
 - `sheets-light.png`: the same workbook after the interaction, in the light theme.
 
 ## Visual audit
@@ -40,11 +42,18 @@ labels even in a wide window: the toolbar's renderer-free cache watched text
 scale, but full UI scaling also changes spacing and type. Measure the toolbar
 against its actual painter before drawing it.
 
-The annotation dock originally disappeared at this size, and its chart height
-budgeted only one action row while drawing two. Cards now account for both rows
-when narrow, combine every command into one row when wide, and preserve at least
-four sheet rows above the dock. The shorter landscape plot and bottom-edge fade
-keep more of the sheet readable without an abrupt slice through the final row.
+The annotation dock originally disappeared at this size. It now preserves at
+least four sheet rows above the dock. Each chart's body is devoted to its legend
+and plot; the subtle header More toggle explicitly opens or closes management
+mode. All six commands remain available there (one row when wide, two when
+narrow), and through the published accessibility/actions surface. Long titles
+elide before the header toggle rather than colliding with it.
+
+Grid scrollbar thumbs are 5–6 logical pixels thick inside larger drag gutters.
+Only overflowing axes reserve a gutter or paint a thumb. Active-cell formats,
+selection summaries and transient feedback share the bottom strip beside sheet
+navigation, clipped and elided to the available lane; they never float over
+cells. The bottom-edge fade keeps partial rows readable.
 
 Cell typography, row/column headers, currency/number formatting and sheet tabs
 already follow measured theme metrics; retain those paths. Long formula edits
@@ -54,5 +63,6 @@ layout, use the shared themed outline/name chip, and preserve sheet-tab presence
 when a peer changes sheets or selects an unauthored cell.
 
 Regression tests exercise the production painter at full 150% UI scale, command
-label widths, every chart action target, long-formula caret/hit mapping, and cell
-presence across sheet renaming and row insertion.
+label widths, chart management visibility and action targets, overflow-only thin
+scrollbars and their drag behaviour, status placement, long-formula caret/hit
+mapping, and cell presence across sheet renaming and row insertion.

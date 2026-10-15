@@ -59,6 +59,7 @@ fn annotation_cards_keep_rows_and_targets_clear() {
         // Tall enough at 2× text that the dock is not given up for the grid.
         let (mut app, mut tr, theme) = measured_app(1800.0, 1600.0, 2.0);
         seed_annotations(&mut app);
+        app.managed_chart = Some("c1".into());
         paint_frame(&mut app, &mut tr, &theme);
 
         let m = app.metrics.clone();

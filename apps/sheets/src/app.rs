@@ -162,7 +162,7 @@ enum SettingsPanel {
     Document,
 }
 
-/// The app's only decorative animation is the transient status bubble. Keep
+/// The app's only decorative animation is transient status text. Keep
 /// the preference as a semantic state rather than another independent bool so
 /// it cannot accidentally conflict with the run mode.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -242,6 +242,7 @@ enum TabAction {
 #[derive(Clone)]
 enum AnnotationClick {
     Open(Addr),
+    ManageChart(String),
     EditChart(String),
     SetChartKind(String, ChartKind),
     ChartCells(String),
@@ -390,6 +391,8 @@ pub struct SheetsApp {
     /// Rebuilt on paint: annotation cards stay a visual projection of the
     /// shared records, while their click routes dispatch canonical actions.
     annotation_clicks: Vec<(Rect, AnnotationClick)>,
+    /// Only this chart exposes its management controls; plots are uncluttered otherwise.
+    managed_chart: Option<String>,
     /// The strip under the grid that holds the annotation cards, and where
     /// each card stands in it. Empty when the sheet has no annotations.
     dock_rect: Rect,
@@ -406,17 +409,11 @@ pub struct SheetsApp {
     /// The resource's live state, read again right after an own edit.
     live: Option<ui::framework::Live<Workbook>>,
     active_sheet: usize,
-    /// The latest transient action message (e.g. "Pasted into B2"), surfaced
-    /// via the floating [`status_bubble`](Self::status_bubble) rather than a
-    /// permanent status line. Initialised to `"Ready"`, which the bubble
-    /// treats as "nothing to say".
+    /// The latest transient action message (e.g. "Pasted into B2").
+    /// Initialised to `"Ready"`, which counts as nothing to say.
     status: String,
-    /// Transient floating status bubble carrying the selection summary or the
-    /// active cell's format, plus any fresh action message. It surfaces when
-    /// that composed text changes (a selection move/extend, an action) or
-    /// while the pointer rests in its corner, then fades — keeping the
-    /// sheet-tab strip free of status text so it reads purely as the sheet
-    /// switcher.
+    /// Shared transient status timing and text for the bottom status lane:
+    /// selection summary, active format, or a fresh action message.
     status_bubble: ui::StatusBubble,
     /// A staged capture pins the bubble open so a still frame shows it.
     staged_status: bool,
@@ -538,6 +535,7 @@ impl SheetsApp {
             sheet_charts: Vec::new(),
             sheet_comments: Vec::new(),
             annotation_clicks: Vec::new(),
+            managed_chart: None,
             dock_rect: Rect::ZERO,
             dock_cards: Vec::new(),
             dock_scroll: ui::widget::ScrollRegion::horizontal(),
@@ -973,9 +971,8 @@ impl SheetsApp {
         self.settings_panel = SettingsPanel::Document;
     }
 
-    /// Pin the floating status bubble open, so a still frame shows the Sum /
-    /// Avg / Count pill or the message it carries rather than a bubble that
-    /// has faded.
+    /// Pin status text so a still frame shows the selection summary or
+    /// action message rather than a label that has faded.
     fn pin_status_bubble(&mut self) {
         self.staged_status = true;
     }
@@ -2454,9 +2451,8 @@ impl SheetsApp {
         })
     }
 
-    /// The text for the floating status bubble, or `None` when there is nothing
-    /// worth surfacing (an idle sheet: no pending action, no numeric selection,
-    /// a plain `General` active cell — which keeps the bubble hidden).
+    /// The bottom-strip status text, or `None` when there is nothing worth
+    /// surfacing (no action, numeric selection, or non-General active format).
     ///
     /// A fresh transient action message (e.g. "Pasted into B2") wins; absent
     /// one, the text is the live selection summary (count, sum and average of
@@ -2596,7 +2592,7 @@ impl Widget for SheetsApp {
         self.reload();
         self.current_active_format = self.format_of_active();
         self.active_cell_bold = self.grid.cell_is_bold(self.grid.active());
-        // Hand the composed label to the floating status bubble. It shows
+        // Hand the composed label to the shared transient status timer. It shows
         // only when the text actually changes — a selection move/extend, or a
         // fresh action message — so calling this every frame is fine, and the
         // idle nothing state (empty label) never surfaces.
@@ -2644,8 +2640,7 @@ impl Widget for SheetsApp {
         self.grid.draw(scene, transform, text_renderer, theme);
         self.draw_cell_presence(scene, transform, text_renderer, theme, presence);
         self.draw_annotation_dock(scene, transform, text_renderer, theme);
-        // The transient floating status bubble sits above the grid and the
-        // tab strip, below the top layer.
+        // Status lives in the bottom strip, never over the grid.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
         self.draw_tab_rename(scene, transform, text_renderer, theme);
         // Presence-in-navigation: when a peer is on a DIFFERENT sheet,
@@ -2676,7 +2671,7 @@ impl Widget for SheetsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming while the floating status bubble is lingering /
+        // Keep frames coming while the status label is lingering /
         // fading, so it hides itself without needing a stray pointer event.
         (self.motion == MotionPreference::Full && self.status_bubble.needs_frame(ui::time::now()))
             || self.children().iter().any(|c| c.needs_animation_frame())
@@ -2997,6 +2992,10 @@ impl Widget for SheetsApp {
                                 crate::model::addr_to_a1(chart.end.0, chart.end.1)
                             ))
                             .with_children(vec![
+                                AccessNode::new(Role::Button)
+                                    .with_name("Manage chart")
+                                    .with_action_target(format!("{target}:manage"))
+                                    .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
                                     .with_name("Open chart range")
                                     .with_action_target(format!("{target}:open"))
@@ -3471,6 +3470,9 @@ impl SheetsApp {
             return;
         };
         match action {
+            AnnotationClick::ManageChart(id) => {
+                self.managed_chart = (self.managed_chart.as_ref() != Some(&id)).then_some(id);
+            }
             AnnotationClick::Open(addr) => {
                 self.grid.select_only(addr);
                 self.status = format!("Opened {}", crate::model::addr_to_a1(addr.0, addr.1));
@@ -3576,6 +3578,9 @@ impl SheetsApp {
                 .iter()
                 .find(|chart| chart.id == id)
                 .map(|chart| AnnotationClick::Open(chart.start)),
+            ("chart", "manage") if self.sheet_charts.iter().any(|chart| chart.id == id) => {
+                Some(AnnotationClick::ManageChart(id.to_string()))
+            }
             ("chart", "edit") if self.sheet_charts.iter().any(|chart| chart.id == id) => {
                 Some(AnnotationClick::EditChart(id.to_string()))
             }
@@ -4479,38 +4484,19 @@ pub(crate) mod tests {
             );
         }
 
-        // Case `status_bubble_floats_above_the_scrollbar_gutter`.
-        // The floating status pill anchors inside the grid body, clear of the
-        // scroll bar gutters and never on the tab strip.
+        // Status stays beside sheet navigation, outside the cell canvas.
         {
             for scale in [1.0_f32, 2.0] {
                 let (mut app, mut tr, theme) = measured_app(1200.0, 800.0, scale);
                 let area = app.status_area();
-                let gutter = app.grid.scrollbar_thickness();
-                assert!(
-                    (area.y1 - (app.grid_rect.y1 - gutter)).abs() < 0.01,
-                    "the area stops at the horizontal bar's gutter"
-                );
-                assert!(
-                    (area.x1 - (app.grid_rect.x1 - gutter)).abs() < 0.01,
-                    "the area stops at the vertical bar's gutter"
-                );
+                assert!(area.y0 >= app.grid_rect.y1);
+                assert!(area.y0 >= app.tabs_rect.y0 && area.y1 <= app.tabs_rect.y1);
+                assert!(area.x0 > app.add_tab_rect.x1);
                 app.status_bubble.show("Currency (USD)", ui::time::now());
-                let pill = app.status_bubble.rect_in(area, &mut tr, &theme);
-                assert!(
-                    pill.y1 <= area.y1 && pill.x1 <= area.x1,
-                    "{pill:?} in {area:?}"
-                );
-                assert!(pill.y1 < app.tabs_rect.y0);
-                // The pill is at least as tall as its measured text, so a 2×
-                // label never spills out of it.
+                paint_frame(&mut app, &mut tr, &theme);
                 let (_, th) =
                     tr.measure_style("Currency (USD)", None, &theme.text(TextRole::Label));
-                assert!(
-                    pill.height() >= f64::from(th) - 0.01,
-                    "pill height {} at {scale}x",
-                    pill.height()
-                );
+                assert!(area.height() >= f64::from(th), "status fits at {scale}x");
             }
         }
 
@@ -6412,6 +6398,14 @@ pub(crate) mod tests {
             .unwrap()
             .clone();
 
+        let manage = app
+            .annotation_clicks
+            .iter()
+            .find(|(_, action)| matches!(action, AnnotationClick::ManageChart(_)))
+            .map(|(rect, _)| rect.center())
+            .expect("the header offers chart management");
+        assert!(app.try_annotation_click(manage, &mut Edits::lend(&mut doc), &mut false));
+        paint_frame(&mut app, &mut tr, &theme);
         let line = app
             .annotation_clicks
             .iter()
@@ -6459,6 +6453,21 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!((shown.start, shown.end), ((0, 0), (3, 2)));
         assert_eq!(shown.kind, ChartKind::Line, "the type is kept");
+
+        paint_frame(&mut app, &mut tr, &theme);
+        assert_eq!(
+            app.annotation_clicks.len(),
+            7,
+            "six commands and the management toggle"
+        );
+        assert!(app.try_annotation_click(manage, &mut Edits::lend(&mut doc), &mut handled));
+        paint_frame(&mut app, &mut tr, &theme);
+        assert_eq!(
+            app.annotation_clicks.len(),
+            1,
+            "closing management restores the plot"
+        );
+        assert!(app.managed_chart.is_none());
     }
 
     /// An agent edits a chart's title, type and cells in one call, and a

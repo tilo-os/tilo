@@ -380,8 +380,8 @@ impl SheetsApp {
         );
     }
 
-    /// One chart card: its title, its plot in the room above its two rows of
-    /// controls, the type picker and Cells, then Open, Rename and Delete.
+    /// A chart uses its whole body for the plot. The header's More control
+    /// explicitly toggles management; only then do the action rows appear.
     fn draw_chart_card(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -390,9 +390,33 @@ impl SheetsApp {
         series: &[PlotSeries],
     ) {
         let gap = self.metrics.s2;
-        let face = CardFace::new().title(&chart.title);
+        let managing = self.managed_chart.as_ref() == Some(&chart.id);
+        let h = self.metrics.control_h;
+        let padding = CardFace::new().body_rect(ctx.text, ctx.theme, card).x0 - card.x0;
+        let title = ctx.text.elide_to_width_style(
+            &chart.title,
+            ui::num::f32_of_f64((card.width() - 2.0 * padding - h - gap).max(0.0)),
+            &ctx.theme.text(TextRole::Subheading),
+        );
+        let face = CardFace::new().title(&title);
         face.paint(ctx, card);
         let body = face.body_rect(ctx.text, ctx.theme, card);
+        let header_y = card.y0 + padding + self.metrics.lh_label / 2.0;
+        let more = Rect::from_center_size(Point::new(body.x1 - h / 2.0, header_y), (h, h));
+        let button = ButtonFace::icon_only(more, ui::icons::Icon::MoreHorizontal, "Manage chart")
+            .role(ButtonRole::Plain)
+            .control_size(ControlSize::Small)
+            .toggled(managing)
+            .hovered(more.contains(self.last_mouse));
+        Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &button);
+        self.annotation_clicks.push((
+            button.hit_rect(ctx.theme),
+            AnnotationClick::ManageChart(chart.id.clone()),
+        ));
+        if !managing {
+            Self::draw_plot(ctx, body, chart.kind, series);
+            return;
+        }
         let single_row = card.width() >= self.metrics.cards.chart_single_row_w;
         let rows = if single_row {
             self.metrics.control_h

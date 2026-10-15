@@ -122,7 +122,10 @@ fn demo(app: &mut TestApp<SheetsShell>, out: &Path) -> anyhow::Result<()> {
         let theme = app.harness().theme().clone();
         let mut scene = app.harness().scene().clone();
         arrow(&mut scene, at, &theme);
-        let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
+        // Each changed scene may grow Vello's atlas/bump buffers. Use the
+        // capture renderer's confirmed submissions so transition frames do
+        // not publish partially populated glyphs.
+        let rgba = renderer.render_resilient(&scene, theme.tokens.colors.surfaces.content);
         input.write_all(&rgba)?;
     }
     drop(input);

@@ -706,21 +706,19 @@ impl SheetsApp {
         Button::paint(scene, transform, tr, theme, &face);
     }
 
-    /// The area the status bubble floats in: the grid body, clear of the
-    /// scroll bar gutters and the sheet tabs.
+    /// The status lane shares the bottom strip with sheet navigation, never
+    /// the cells. A crowded strip elides the label instead of covering tabs.
     pub(super) fn status_area(&self) -> Rect {
         Rect::new(
-            self.grid_rect.x0,
-            self.grid_rect.y0,
-            self.grid_rect.x1 - self.grid.scrollbar_thickness(),
-            self.grid_rect.y1 - self.grid.scrollbar_thickness(),
+            (self.add_tab_rect.x1 + self.metrics.s3).min(self.tabs_rect.x1),
+            self.tabs_rect.y0,
+            self.tabs_rect.x1,
+            self.tabs_rect.y1,
         )
     }
 
-    /// Paint the transient status bubble over the grid's bottom-trailing
-    /// corner. It shows when the composed status text changes (a selection
-    /// move, a fresh action message) or while the pointer rests in its corner,
-    /// then fades.
+    /// Paint status as quiet, clipped text in the bottom strip. Keep the
+    /// shared transient timing for action feedback, but no floating surface.
     pub(super) fn draw_status_bubble(
         &mut self,
         scene: &mut Scene,
@@ -730,18 +728,41 @@ impl SheetsApp {
     ) {
         let now = ui::time::now();
         let area = self.status_area();
-        // Resting in the bubble's corner pins it open; so does a staged
-        // capture.
-        let gutter = self.metrics.s6;
-        let zone = self
-            .status_bubble
-            .rect_in(area, tr, theme)
-            .inflate(gutter, gutter);
         let over = !self.status_bubble.text().is_empty()
-            && (self.staged_status || zone.contains(self.last_mouse));
+            && (self.staged_status || area.contains(self.last_mouse));
         self.status_bubble.set_hover(over, now);
-        self.status_bubble
-            .paint(scene, transform, tr, theme, area, now);
+        let alpha = self.status_bubble.alpha_in(theme, now);
+        let style = theme.text(TextRole::Label);
+        let available = (area.width() - 2.0 * self.metrics.s3).max(0.0);
+        let label = tr.elide_to_width_style(
+            self.status_bubble.text(),
+            ui::num::f32_of_f64(available),
+            &style,
+        );
+        if alpha <= 0.0 || label.is_empty() {
+            return;
+        }
+        let (width, height) = tr.measure_style(&label, None, &style);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &area,
+        );
+        tr.draw_style(
+            scene,
+            &label,
+            theme.tokens.colors.text_dim,
+            transform
+                * Affine::translate((
+                    area.x1 - self.metrics.s3 - f64::from(width),
+                    ChromeMetrics::centred_top(area, f64::from(height)),
+                )),
+            None,
+            &style,
+        );
+        scene.pop_layer();
     }
 
     /// Paint per-peer "presence-in-navigation" on the sheet tabs: for each
