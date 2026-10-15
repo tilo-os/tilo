@@ -730,6 +730,16 @@ jobs:
           bash scripts/ci-run.sh "relay load bench release build" --
           cargo build --locked --release -p tilo-relay --example relay_load
 
+      # Preserve the original timing-sensitive median-one-write assertion.
+      # This standalone scenario has no pointer or byte-cost tests.
+      - name: Check timed keystroke write cost
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          bash scripts/ci-run.sh "timed keystroke write benchmark" -- \
+            cargo run --locked -p tilo-relay --example keystroke_writes \
+            | tee perf/keystroke-writes.log
+
       - name: Load the relay and record
         run: |
           set -euo pipefail
