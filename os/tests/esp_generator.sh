@@ -45,6 +45,20 @@ efivar() {
   } >"$work/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 }
 
+# The ESP's own file system, as blkid reports it: FAT volume 137A-C31F,
+# label ESP. TEST_BLKID_FAIL makes the probe fail.
+install -d "$work/stub"
+cat >"$work/stub/blkid" <<'STUB'
+#!/usr/bin/env bash
+[ -z "${TEST_BLKID_FAIL:-}" ] || exit 2
+case "$*" in
+  "-o value -s UUID "*) echo 137A-C31F ;;
+  "-o value -s LABEL "*) echo ESP ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "$work/stub/blkid"
+
 # generate NAME CMDLINE [ENV...]: run the generator into $work/NAME.
 generate() {
   local name="$1" cmdline="$2"
@@ -55,7 +69,24 @@ generate() {
     TILO_ESP_CMDLINE_FILE="$work/$name.cmdline" \
     TILO_ESP_EFIVARS="$work/efivars" \
     TILO_ESP_FSTAB="$work/fstab" \
+    TILO_ESP_BLKID="$work/stub/blkid" \
     "$@" bash "$gen" "$work/$name" 2>"$work/$name.log"
+}
+
+# expect NAME CMDLINE FSTAB yes|no WHY [ENV...]: the generator mounts the ESP
+# at /boot/efi (yes) or leaves it (no).
+expect() {
+  local name="$1" cmdline="$2" fstab_line="$3" want="$4" why="$5" got=no
+  shift 5
+  printf '%s' "$fstab_line" >"$work/fstab"
+  generate "$name" "$cmdline" "$@" || bad "the generator failed: $name"
+  [ ! -e "$work/$name/tilo-esp-mount.service" ] || got=yes
+  if [ "$got" = "$want" ]; then
+    ok "$name: $why"
+  else
+    bad "$name: wanted mount=$want ($why), got mount=$got: $(cat "$work/$name.log")"
+  fi
+  : >"$work/fstab"
 }
 
 : >"$work/fstab"
@@ -91,20 +122,33 @@ else
   bad "the generator failed on the installed target's command line: $(cat "$work/installed.log")"
 fi
 
-# 2. Layouts where /boot is the ESP, or no /boot is named, are left alone.
-for case in \
-  "sealed|root=tilo-auto rd.luks.options=tpm2-device=auto,fido2-device=auto composefs=abc" \
-  "dev|composefs=abc root=tilo-auto rw systemd.mount-extra=UUID=137A-C31F:/boot:auto:ro,nosuid,nodev,noexec" \
-  "fat|composefs=abc systemd.mount-extra=UUID=137A-C31F:/boot:vfat:ro" \
-  "other-path|composefs=abc systemd.mount-extra=LABEL=DATA:/srv:ext4:ro"; do
-  name="${case%%|*}"
-  generate "$name" "${case#*|}" || bad "the generator failed on the $name command line"
-  if [ -e "$work/$name/tilo-esp-mount.service" ]; then
-    bad "$name: /boot is not a separate Linux partition, yet the generator mounted the ESP at /boot/efi"
-  else
-    ok "$name: no extra ESP mount"
-  fi
-done
+# 2. Which /boot is separate. An update's own UKI carries no /boot mount; on an
+#    installed system bootc's /etc/fstab still mounts TILO_BOOT there. The
+#    sealed disk's fstab and a dev disk's command line mount the ESP itself.
+update="root=tilo-auto rd.luks.options=tpm2-device=auto,fido2-device=auto composefs=abc"
+boot_uuid=4f6a1c2e-0d1b-4c4e-9a31-2b7f61a0c9d1
+expect updated-installed "$update" "UUID=$boot_uuid /boot ext4 ro,nosuid,nodev,noexec 1 2"$'\n' yes \
+  "an update booted on an installed system: fstab's ext4 /boot is separate"
+expect updated-installed-auto "$update" "UUID=$boot_uuid /boot auto ro 1 2"$'\n' yes \
+  "an fstab /boot of type auto that is not the ESP is separate"
+expect sealed "$update" $'UUID=137A-C31F /boot vfat umask=0077 0 2\n' no \
+  "the sealed disk's fstab mounts the ESP itself at /boot"
+expect sealed-auto "$update" $'UUID=137A-C31F /boot auto ro 0 2\n' no \
+  "an fstab /boot of type auto that is the ESP is left alone"
+expect commented "$update" "# UUID=$boot_uuid /boot ext4 ro 1 2"$'\n' no "a commented-out fstab line mounts nothing"
+expect no-boot "$update" '' no "nothing mounts /boot"
+expect dev "composefs=abc root=tilo-auto rw systemd.mount-extra=UUID=137A-C31F:/boot:auto:ro,nosuid,nodev,noexec" '' no \
+  "a dev disk's /boot is its ESP (by FAT volume id)"
+expect dev-label "composefs=abc systemd.mount-extra=LABEL=ESP:/boot:auto:ro" '' no \
+  "a /boot named by the ESP's label is the ESP"
+expect dev-partuuid "composefs=abc systemd.mount-extra=PARTUUID=$esp_uuid:/boot:auto:ro" '' no \
+  "a /boot named by the ESP's partition UUID is the ESP"
+expect other-partuuid "composefs=abc systemd.mount-extra=PARTUUID=11111111-2222-3333-4444-555555555555:/boot:auto:ro" '' yes \
+  "a /boot on another partition is separate"
+expect fat "composefs=abc systemd.mount-extra=UUID=137A-C31F:/boot:vfat:ro" '' no "a FAT /boot is not separate"
+expect other-path "composefs=abc systemd.mount-extra=LABEL=DATA:/srv:ext4:ro" '' no "a mount elsewhere is not /boot"
+expect auto-unprobed "composefs=abc systemd.mount-extra=UUID=$boot_uuid:/boot:auto:ro" '' no \
+  "a /boot of type auto that cannot be compared with the ESP is left alone" TEST_BLKID_FAIL=1
 
 # 3. The initrd mounts no /boot.
 touch "$work/initrd-release"
