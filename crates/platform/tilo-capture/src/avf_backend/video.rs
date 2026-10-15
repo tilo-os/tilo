@@ -17,8 +17,9 @@ use objc2_core_video::{
     kCVReturnSuccess,
 };
 use objc2_foundation::{NSDictionary, NSString};
+use tilo_lock::MutexRecover as _;
 
-use super::{Capture, Feed, SampleDelegate, Slot, lock, number, settle, state};
+use super::{Capture, Feed, SampleDelegate, Slot, number, settle, state};
 #[cfg(avf_camera)]
 use crate::CameraRequest;
 #[cfg(avf_screen)]
@@ -36,7 +37,7 @@ impl VideoSource for Video {
     }
 
     fn take_latest(&mut self) -> Option<Frame> {
-        lock(&self.slot).latest.take()
+        self.slot.lock_recover().latest.take()
     }
 }
 
@@ -109,7 +110,7 @@ fn output(
     let frames = Arc::clone(&slot);
     let delegate = SampleDelegate::new(Box::new(move |sample| {
         if let Some(frame) = frame(sample) {
-            lock(&frames).latest = Some(frame);
+            frames.lock_recover().latest = Some(frame);
             settle(&frames, CaptureState::Live);
         }
     }));
