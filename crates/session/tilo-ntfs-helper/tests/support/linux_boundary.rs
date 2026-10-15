@@ -20,7 +20,7 @@ unsafe extern "C" {
 }
 fn authorized() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("TILO_NTFS_NATIVE_AUTHORIZATION")?.as_str() != "DISPOSABLE_FIXTURE_ONLY"
-        || unsafe { libc::geteuid() } != 0
+        || rustix::process::geteuid().as_raw() != 0
     {
         return Err("explicit disposable native Linux root opt-in required".into());
     }

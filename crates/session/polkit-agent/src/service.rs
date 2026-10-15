@@ -166,8 +166,7 @@ pub fn resolve_identities<S: std::hash::BuildHasher>(
 }
 
 fn session_user() -> Option<String> {
-    // SAFETY: getuid has no preconditions.
-    user_name(unsafe { libc::getuid() })
+    user_name(rustix::process::getuid().as_raw())
 }
 
 pub struct AuthenticationAgent {

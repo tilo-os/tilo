@@ -96,6 +96,14 @@ fn render_expand_to_fullscreen() {
         g.tab_rects().first().copied().expect("one pill").center()
     };
     d.cursor(&mut fb, pill_center);
+    // A pill opens once the pointer has rested on it for the hover dwell.
+    let mut dwelt = false;
+    if let Some(row) = fb.host_mut().group_row_mut_for_tests(strip_id) {
+        for g in &mut row.groups {
+            dwelt |= g.bar_mut_for_tests().elapse_hover_dwell();
+        }
+    }
+    assert!(dwelt, "resting on the pill opened nothing");
     fb.relayout();
     // The chip cluster slides out on wall time, and the rects stay `Rect::ZERO`
     // until that curve has run, so hold it past the end and lay out again.

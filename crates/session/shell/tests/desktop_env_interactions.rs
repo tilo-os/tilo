@@ -205,6 +205,13 @@ fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: Stri
         .expect("a pill")
         .center();
     cursor(host, layout, pill);
+    // A pill opens once the pointer has rested on it for the hover dwell.
+    let dwelt = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("hovered group")
+        .bar_mut_for_tests()
+        .elapse_hover_dwell();
+    assert!(dwelt, "resting on the pill opened nothing to reveal");
     // The curve is created by the layout pass that first sees the new hover
     // target, so it has to exist before it can be held.
     let _layout = lay_out_host_with_theme(host, layout.theme.clone(), layout.input_scale);
