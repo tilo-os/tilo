@@ -32,8 +32,13 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             source = work / "live"
             target = work / "target" / "etc"
             target.mkdir(parents=True)
+            # The compiled file helper is a build output, not a repository
+            # file; the handoff copies whatever bytes the live image carries.
+            helper_files = source / "usr/libexec/tilo-firstboot-files"
+            helper_files.parent.mkdir(parents=True)
+            helper_files.write_bytes(b"\x7fELF fixture helper")
+            helper_files.chmod(0o755)
             for relative in ("usr/libexec/tilo-firstboot-user",
-                             "usr/libexec/tilo-firstboot-files.py",
                              "usr/lib/systemd/system/tilo-firstboot-user.service",
                              "usr/libexec/tilo-firstboot-autologin-cleanup",
                              "usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service",
@@ -53,8 +58,12 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             self.assertEqual(result.returncode, 0, result.stderr)
             helper = target / "tilo/firstboot-user"
             self.assertEqual(helper.read_bytes(), (source / "usr/libexec/tilo-firstboot-user").read_bytes())
-            self.assertEqual((target / "tilo/tilo-firstboot-files.py").read_bytes(),
-                             (source / "usr/libexec/tilo-firstboot-files.py").read_bytes())
+            files_helper = target / "tilo/tilo-firstboot-files"
+            self.assertEqual(files_helper.read_bytes(),
+                             (source / "usr/libexec/tilo-firstboot-files").read_bytes())
+            # The compiled helper is run directly by the staged firstboot-user.
+            self.assertEqual(files_helper.stat().st_mode & 0o777, 0o755)
+            self.assertIn("/etc/tilo/tilo-firstboot-files", (work / "target/labels").read_text())
             self.assertEqual(helper.stat().st_mode & 0o777, 0o644)
             unit = target / "systemd/system/tilo-firstboot-user.service"
             self.assertIn("ExecStart=/usr/bin/bash /etc/tilo/firstboot-user\n", unit.read_text())

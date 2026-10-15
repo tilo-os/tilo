@@ -115,8 +115,6 @@ suites = [
   "os/tests/airplay_encrypted_session_test.sh",
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
-  "os/tests/test_firstboot_credential_transport.py",
-  "os/tests/test_firstboot_transaction.py",
   "os/tests/boot_order_enlist_test.py",
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
@@ -736,6 +734,12 @@ inputs = [
   "os/components.toml",
 ]
 readers = ["crates/system/extension-helper/tests/support/mod.rs"]
+
+[[cargo]]
+package = "tilo-firstboot-files"
+# The first-boot cases run the shipped tilo-firstboot-user with this helper.
+inputs = ["os/usr/libexec/tilo-firstboot-user"]
+readers = ["crates/system/firstboot-files/tests/firstboot_user.rs"]
 
 [[cargo]]
 package = "greeter"
