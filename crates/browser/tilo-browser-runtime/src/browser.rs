@@ -1395,13 +1395,21 @@ async fn take_prepared_gpu() -> Option<Result<(ui::gpu::RenderContext, vello::Re
 /// hold that thread for the whole compile (seconds each under a software
 /// rasteriser), and a page waiting on the GPU process (one tearing down its
 /// previous WebGPU context, a frame, a screenshot) waits with it.
+///
+/// Only the pipelines a default full frame dispatches are awaited (13 of
+/// 24): the rest (sparse fine, the indirect path and large path-tag scan
+/// stages, the GPU draw prefix, clip reduce) start compiling once the first
+/// frame is out (`start_deferred_pipelines_async` in `render`). A frame that
+/// needs one sooner creates it there and then, so nothing is ever drawn
+/// without its pipeline.
 async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
-    vello::Renderer::new_async(
+    vello::Renderer::new_async_deferring(
         device,
         vello::RendererOptions {
             antialiasing_support: vello::AaSupport::area_only(),
             ..Default::default()
         },
+        vello::PipelineDeferral::Unused,
     )
     .await
     .map_err(|e| e.to_string())
@@ -1861,6 +1869,10 @@ impl Mount {
                 .create_view(&wgpu::TextureViewDescriptor::default()),
         );
         handle.queue.submit([encoder.finish()]);
+        // The first frame is out: the pipelines it did not need compile now.
+        shared
+            .renderer
+            .start_deferred_pipelines_async(&handle.device);
         drop(shared_guard);
         output.present();
         self.presented_capture_protected = self.frame.capture_protected();
