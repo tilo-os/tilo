@@ -1342,6 +1342,61 @@ default = false
 order = "baseline-first"
 baseline = "cc3f8733cc304af1a1a09aae826ec78a4f31b178"
 
+# SDK builds inside a fixed native envelope on arm64: MEMORY_GIB of memory, no
+# swap and 24 CPUs, enforced by a container of exactly that size in a
+# privileged node's own VM, and qualified by tools/ci/qualify_native_envelope.py
+# (no memory limit events or OOM kill, peak below the limit):
+# `t dispatch sdk-envelope --input memory_gib=36`.
+[[check]]
+name = "sdk-envelope"
+run = 'bash tools/ci/native-envelope.sh "${T_INPUT_MEMORY_GIB:-22}" tools/ci/envelope/sdk.sh'
+requires = ["arch=arm64"]
+privileged = true
+on = ["dispatch"]
+cache = false
+timeout_secs = 10800
+cost = "heavy"
+default = false
+
+[check.dispatch_inputs]
+memory_gib = "22"
+
+# The release desktop bundle built inside the same envelope on arm64, and its
+# exact private image worker qualified in headless Chromium on x86_64:
+# `t dispatch web-size-envelope --input memory_gib=36`.
+[[check]]
+name = "web-size-envelope-bundle"
+run = 'bash tools/ci/native-envelope.sh "${T_INPUT_MEMORY_GIB:-22}" tools/ci/envelope/web-size.sh'
+requires = ["arch=arm64"]
+privileged = true
+outputs = ["envelope/release-compute/**"]
+cache = false
+timeout_secs = 10800
+cost = "heavy"
+default = false
+
+[check.dispatch_inputs]
+memory_gib = "22"
+
+[[check]]
+name = "web-size-envelope"
+run = """
+python3 tools/ci/release_compute.py verify envelope/release-compute
+bash tools/ci/ensure-browser-dependencies.sh
+npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
+export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
+node crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs envelope/release-compute "$TMPDIR/compute-qualification" --no-sandbox
+cat "$TMPDIR/compute-qualification/qualification.json"
+"""
+requires = ["arch=x86_64"]
+needs = ["web-size-envelope-bundle"]
+on = ["dispatch"]
+cache = false
+default = false
+
+[check.dispatch_inputs]
+memory_gib = "22"
+
 # ---------------------------------------------------------------------------
 # macOS, on t's Mac (`requires = ["os=macos"]`), where checks run on the host without the
 # project's image. The per-user runtime (`tilo-runtime`) is the Tilo host on stock macOS, and
