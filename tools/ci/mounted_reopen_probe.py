@@ -26,11 +26,9 @@ def execute(root, source):
     if evidence.exists() or output.exists():
         raise ValueError('diagnostic evidence already exists; preserve it before a new run')
     output.mkdir(parents=True, mode=0o700)
-    # Cargo's build directory; the fixture keeps its evidence under ./target.
-    build = Path(os.environ.get('CARGO_TARGET_DIR') or root / 'target')
     commands = (
         ['cargo', 'build', '--locked', '-p', 'tilo-app-cli', '--bin', 'tilo-app'],
-        [str(build / 'debug/tilo-app'), 'build', 'apps/chat', '--platform', 'web'],
+        ['target/debug/tilo-app', 'build', 'apps/chat', '--platform', 'web'],
         ['cargo', 'build', '--locked', '-p', 'tilo-agent-participant', '--example', 'mounted-resource'],
     )
     for command in commands:
@@ -41,7 +39,7 @@ def execute(root, source):
     # of a failed Forgejo run: the first failure ends this diagnostic immediately.
     command = ['cargo', 'run', '--locked', '-p', 'tilo-agent-participant',
                '--example', 'mounted-resource', '--',
-               str(build / 'tilo-app/web/chat/bundle'), '--disconnect-retry']
+               'target/tilo-app/web/chat/bundle', '--disconnect-retry']
     for attempt in range(1, 4):
         started = time.monotonic()
         saved = output / f'attempt-{attempt}'

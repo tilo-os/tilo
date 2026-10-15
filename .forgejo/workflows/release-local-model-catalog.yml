@@ -1,0 +1,179 @@
+name: Release / local model catalog
+
+# Explicit catalog publication only; ordinary app pushes do not build or sign.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Reproduce reviewed image inputs, or prepare a speech candidate for review
+        type: choice
+        required: true
+        default: publish
+        options:
+          - publish
+          - review-speech
+
+concurrency:
+  group: local-model-catalog-release
+  cancel-in-progress: false
+
+jobs:
+  builder:
+    if: github.ref == 'refs/heads/main'
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - id: resolve
+        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py
+
+  compiler:
+    needs: builder
+    runs-on: runner
+    timeout-minutes: 20
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '4'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.forgejo/actions/prepare-rust-build
+      - name: Build the catalog compiler without signing credentials
+        run: cargo build --locked -p local-model-service --bin tilo-model-catalog
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: local-model-catalog-compiler
+          path: target/debug/tilo-model-catalog
+          if-no-files-found: error
+          retention-days: 1
+
+  review-speech:
+    needs: [builder, compiler]
+    if: github.ref == 'refs/heads/main' && inputs.mode == 'review-speech'
+    runs-on: runner
+    timeout-minutes: 20
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: local-model-catalog-compiler
+          path: catalog-compiler
+      - name: Prepare exact public speech inputs without credentials
+        run: python3 -I tools/release/prepare_speech_catalog.py speech-review
+      - name: Sign the candidate with the existing protected identity
+        env:
+          MODEL_SIGNING_SEED: ${{ secrets.TILO_MODEL_CATALOG_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_REF" = refs/heads/main
+          umask 077
+          printf '%s\n' "$MODEL_SIGNING_SEED" > speech-review/signing-key
+          unset MODEL_SIGNING_SEED
+          trap 'rm -f speech-review/signing-key' EXIT
+          chmod +x catalog-compiler/tilo-model-catalog
+          catalog-compiler/tilo-model-catalog --source speech-review/source.json \
+            --signing-key speech-review/signing-key \
+            --catalog-out speech-review/catalog.json --trust-out speech-review/keys.json
+          rm speech-review/signing-key
+          cmp speech-review/keys.json os/usr/share/tilo/system-extensions/local-model-keys.json
+          sha256sum speech-review/catalog.json speech-review/keys.json speech-review/source.json > speech-review/review.sha256
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: signed-speech-catalog-review
+          path: |
+            speech-review/catalog.json
+            speech-review/keys.json
+            speech-review/source.json
+            speech-review/review.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [builder, compiler]
+    if: github.ref == 'refs/heads/main' && inputs.mode != 'review-speech'
+    runs-on: runner
+    timeout-minutes: 20
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: local-model-catalog-compiler
+          path: catalog-compiler
+      - name: Reproduce the reviewed signed image inputs and publish
+        env:
+          MODEL_SIGNING_SEED: ${{ secrets.TILO_MODEL_CATALOG_SIGNING_KEY }}
+          PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_REF" = refs/heads/main
+          umask 077
+          release_dir=$(mktemp -d)
+          release_dir=$(realpath "$release_dir")
+          trap 'rm -rf "$release_dir"' EXIT
+          mkdir "$release_dir/artifacts"
+          cp dist/local-models/catalog-source.json "$release_dir/source.json"
+          if test "$(jq '.models | length' "$release_dir/source.json")" = 4; then
+            python3 -I tools/release/prepare_speech_catalog.py "$release_dir/staged" \
+              --source dist/local-models/catalog-source.json
+            python3 -I tools/release/publish_speech_artifacts.py "$release_dir/staged"
+            cp "$release_dir/staged/artifacts/"* "$release_dir/artifacts/"
+          else
+            jq -e '.production == true and .runtimes == [] and .recommendation == ""
+            and (.models | length) == 1 and .models[0].id == "u2net-subject"
+            and .models[0].artifact.file == "artifacts/u2net.onnx"' "$release_dir/source.json"
+          model_url=$(jq -er '.models[0].artifact.url' "$release_dir/source.json")
+          license_url=$(jq -er '.models[0].license_url' "$release_dir/source.json")
+          curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+            --output "$release_dir/artifacts/u2net.onnx" "$model_url"
+          curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+            --output "$release_dir/artifacts/LICENSE" "$license_url"
+          (cd "$release_dir/artifacts" && sha256sum -c "$GITHUB_WORKSPACE/dist/local-models/u2net-subject/model-files.sha256")
+          test "$(stat --format='%s' "$release_dir/artifacts/u2net.onnx")" = 175997641
+          test "$(stat --format='%s' "$release_dir/artifacts/LICENSE")" = 11357
+          fi
+          printf '%s\n' "$MODEL_SIGNING_SEED" > "$release_dir/signing-key"
+          unset MODEL_SIGNING_SEED
+          chmod +x catalog-compiler/tilo-model-catalog
+          catalog-compiler/tilo-model-catalog --source "$release_dir/source.json" \
+            --signing-key "$release_dir/signing-key" \
+            --catalog-out "$release_dir/catalog.json" --trust-out "$release_dir/keys.json"
+          rm "$release_dir/signing-key"
+          cmp "$release_dir/catalog.json" os/usr/share/tilo/system-extensions/local-model-catalog.json
+          cmp "$release_dir/keys.json" os/usr/share/tilo/system-extensions/local-model-keys.json
+          version=$(sha256sum "$release_dir/catalog.json" | awk '{print $1}')
+          base="https://code.tilo.so/api/packages/tilo/generic/tilo-local-model-catalog/$version"
+          for file in catalog.json keys.json; do
+            if curl --fail --silent --show-error --proto '=https' \
+                --output "$release_dir/existing-$file" "$base/$file"; then
+              cmp "$release_dir/$file" "$release_dir/existing-$file"
+            else
+              curl --fail --silent --show-error --proto '=https' \
+                --header "Authorization: token $PACKAGE_TOKEN" \
+                --upload-file "$release_dir/$file" "$base/$file"
+            fi
+            curl --fail --silent --show-error --proto '=https' \
+              --output "$release_dir/published-$file" "$base/$file"
+            cmp "$release_dir/$file" "$release_dir/published-$file"
+          done
+          printf 'Published reviewed catalog %s from %s\n' "$version" "$GITHUB_SHA"
