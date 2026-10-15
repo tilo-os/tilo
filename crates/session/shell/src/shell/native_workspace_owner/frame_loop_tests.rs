@@ -315,7 +315,8 @@ fn opening_the_owner_never_holds_the_tree_across_a_disk_sync() {
         seen.contains_key("directory") && seen.contains_key("data"),
         "the open's directory and data syncs were not both observed: {seen:?}"
     );
-    opener
+    // The writer holds its owner weakly: keep this one alive to look it up.
+    let owner = opener
         .join()
         .expect("the opening thread")
         .expect("the owner opens");
@@ -323,4 +324,5 @@ fn opening_the_owner_never_holds_the_tree_across_a_disk_sync() {
         tree.read().installed_native_owner().is_some(),
         "the opened owner is attached to its writer"
     );
+    drop(owner);
 }
