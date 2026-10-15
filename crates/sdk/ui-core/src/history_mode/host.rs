@@ -395,6 +395,7 @@ impl HistoryHost {
         self.rebuild_toolbar();
     }
     pub(crate) fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
+        let _phase = tilo_resource::profiling::Phase::start("ui.history_root_validation");
         self.registration
             .validate_root_with_owner(root, self.enclosing_owner.as_ref())
     }
@@ -1131,14 +1132,22 @@ impl HistoryHost {
         }
     }
     pub(crate) fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool {
+        self.refresh_without_owners(width)
+            .unwrap_or_else(|| self.heads_need_refresh(doc))
+    }
+    /// [`Self::needs_refresh`] as far as it can be answered without reading
+    /// an owner's document: `None` leaves it to the committed frontier
+    /// ([`Self::heads_need_refresh`]). What other threads deliver (asset and
+    /// file results) and what is queued for the surface are read here.
+    pub(crate) fn refresh_without_owners(&self, width: f64) -> Option<bool> {
         if self.invalid_owner {
-            return false;
+            return Some(false);
         }
         if self.assets.has_results() {
-            return true;
+            return Some(true);
         }
         if self.file_scope_asking_to_open().is_some() {
-            return true;
+            return Some(true);
         }
         if let HistorySourceRegistration::CheckedFiles { source, .. } = self.source()
             && (source.target().map(|target| target.binding) != self.observed_file_binding
@@ -1152,7 +1161,7 @@ impl HistoryHost {
                     .iter()
                     .any(super::files_session::FileController::has_results))
         {
-            return true;
+            return Some(true);
         }
         if !self.pending_control_recovery.is_empty()
             || self.toolbar_dirty
@@ -1162,18 +1171,22 @@ impl HistoryHost {
             || !self.commands.borrow().is_empty()
             || (self.width < 600.0) != (width < 600.0)
         {
-            return true;
+            return Some(true);
         }
         let selected = self.timeline_selection();
         if !selected.is_empty() && selected != self.selected {
-            return true;
+            return Some(true);
         }
-        if matches!(
+        matches!(
             self.source(),
             HistorySourceRegistration::CheckedFiles { .. }
-        ) {
-            return false;
-        }
+        )
+        .then_some(false)
+    }
+    /// Whether the shown source's committed frontier asks for a refresh: it
+    /// cannot be read, or an open History has not taken it up yet.
+    pub(crate) fn heads_need_refresh(&self, doc: &AutoCommit) -> bool {
+        let _phase = tilo_resource::profiling::Phase::start("ui.history_heads");
         let Ok(heads) = self.source().committed_heads(doc) else {
             return true;
         };
@@ -1182,6 +1195,21 @@ impl HistoryHost {
         self.open
             && self.controller.as_ref().is_some_and(|controller| {
                 super::sorted_heads(heads) != controller.observed_live_heads
+            })
+    }
+    /// Whether every document this surface answers for is a hosted
+    /// component's (or the host's own), whose standing a quiet frame's
+    /// witness follows: its record's frontier, and whether it can be read
+    /// at all. A legacy tile's document is not followed.
+    pub(crate) fn owners_followed_by_frame_witness(&self) -> bool {
+        let followed =
+            |owner: &super::HistoryOwner| matches!(owner.0, super::owner::OwnerKind::Component(_));
+        self.enclosing_owner.as_ref().is_none_or(followed)
+            && self.registration.sources.iter().all(|source| match source {
+                HistorySourceRegistration::OwnedDocument { owner, .. } => followed(owner),
+                HistorySourceRegistration::CheckedFiles { .. }
+                | HistorySourceRegistration::HostDocument { .. }
+                | HistorySourceRegistration::Unversioned { .. } => true,
             })
     }
     pub(crate) fn review_is_open(&self) -> bool {
