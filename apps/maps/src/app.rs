@@ -2429,6 +2429,17 @@ impl MapsApp {
                 ..view
             },
         );
+        if !painted_tiles && !self.basemap.is_empty() {
+            canvas::draw_basemap_labels(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                MapView {
+                    chrome: &floating,
+                    ..view
+                },
+                &self.basemap,
+                &self.model,
+            );
+        }
         // Loading / offline affordance while the substrate grid is showing —
         // above the map but below the chrome, and skipped while the drawer
         // covers the map (the drawer is the focus then).

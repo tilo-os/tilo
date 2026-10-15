@@ -14,6 +14,9 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::tokens::colors::PresenceHue;
 
+mod labels;
+pub use labels::draw_labels as draw_basemap_labels;
+
 use crate::draw;
 use crate::geo::Projection;
 use crate::model::{Category, MapModel, Poi, TransitJourney, TransitMode};

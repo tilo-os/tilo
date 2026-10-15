@@ -1,6 +1,6 @@
 //! Bundled offline data so the app is fully populated without a network:
-//! a procedurally-generated stylised vector basemap (a believable downtown
-//! street grid with a river and parks), sample places, a sample driving
+//! a schematic Munich vector basemap with courtyard blocks, named streets,
+//! river, parks and stations, sample places, a sample driving
 //! route with turn-by-turn steps, and sample public-transport itineraries.
 //!
 //! `--shots` has no event loop and no network, so this is what the headless
@@ -48,6 +48,7 @@ pub struct Basemap {
     pub roads: Vec<Road>,
     /// The river centre-line, drawn as a thick water stroke.
     pub river: Vec<LatLon>,
+    pub labels: Vec<MapLabel>,
 }
 
 impl Basemap {
@@ -79,8 +80,6 @@ impl Rng {
 const CENTER: LatLon = LatLon::new(48.1371, 11.5754);
 const DLAT: f64 = 0.0024;
 const DLON: f64 = 0.0036;
-const NX: i32 = 16;
-const NY: i32 = 13;
 
 fn cell(nx: f64, ny: f64) -> LatLon {
     LatLon::new(CENTER.lat + ny * DLAT, CENTER.lon + nx * DLON)
@@ -145,167 +144,24 @@ fn grid_path(from: (f64, f64), to: (f64, f64)) -> Vec<LatLon> {
     pts
 }
 
-/// Build the stylised basemap.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one deterministic generation pass per layer (river, parks, buildings, roads); \
-              splitting it would only relocate the code, not shrink what a reader must trace"
-)]
-#[allow(
-    clippy::similar_names,
-    reason = "`nx`/`ny` (the grid cell under test) and `px`/`py` (a park centre from the \
-              lookup table) name genuinely different things; the shared axis-letter suffix \
-              is the point, not an accident"
-)]
-pub fn basemap() -> Basemap {
-    let mut rng = Rng(0x51ED_2026_C0FF_EE01);
-    let mut areas: Vec<Area> = Vec::new();
-    let mut roads: Vec<Road> = Vec::new();
+mod cartography;
+pub use cartography::basemap;
 
-    // --- River: a wavy north-south centre-line, slightly east of centre.
-    let mut river = Vec::new();
-    let base_x = 8.5;
-    for i in -NY..=NY {
-        let t = f64::from(i);
-        let wobble = (t * 0.55).sin() * 1.4 + (t * 0.21).cos() * 0.6;
-        river.push(cell(base_x + wobble, t));
-    }
-
-    // --- Parks: a couple of irregular green polygons.
-    areas.push(Area {
-        kind: AreaKind::Park,
-        ring: blob(&mut rng, cell(1.5, 5.5), 2.4, 2.0, 10),
-    });
-    areas.push(Area {
-        kind: AreaKind::Park,
-        ring: blob(&mut rng, cell(-6.0, -3.5), 1.6, 1.4, 9),
-    });
-    areas.push(Area {
-        kind: AreaKind::Park,
-        ring: blob(&mut rng, cell(5.5, -6.5), 1.3, 1.1, 8),
-    });
-
-    // --- A small lake inside the first park.
-    areas.push(Area {
-        kind: AreaKind::Water,
-        ring: blob(&mut rng, cell(1.8, 6.2), 0.7, 0.5, 9),
-    });
-
-    // Helper: is a grid cell occupied by a park/water (skip buildings there)?
-    let park_centers = [
-        (1.5_f64, 5.5_f64, 2.6_f64),
-        (-6.0, -3.5, 1.8),
-        (5.5, -6.5, 1.5),
-    ];
-    let near_park = |nx: f64, ny: f64| {
-        park_centers
-            .iter()
-            .any(|&(px, py, r)| ((nx - px).powi(2) + (ny - py).powi(2)).sqrt() < r)
-    };
-    let near_river = |nx: f64, ny: f64| (nx - (base_x + (ny * 0.55).sin() * 1.4)).abs() < 1.1;
-
-    // --- Building fills: a subset of grid cells get a raised block.
-    for ix in -NX..NX {
-        for iy in -NY..NY {
-            let cx = f64::from(ix) + 0.5;
-            let cy = f64::from(iy) + 0.5;
-            if near_park(cx, cy) || near_river(cx, cy) {
-                continue;
-            }
-            if rng.f() > 0.62 {
-                continue;
-            }
-            let inset = rng.range(0.16, 0.30);
-            let jx = rng.range(-0.05, 0.05);
-            let jy = rng.range(-0.05, 0.05);
-            let x0 = f64::from(ix) + inset + jx;
-            let x1 = (f64::from(ix) + 1.0) - inset + jx;
-            let y0 = f64::from(iy) + inset + jy;
-            let y1 = (f64::from(iy) + 1.0) - inset + jy;
-            areas.push(Area {
-                kind: AreaKind::Building,
-                ring: vec![cell(x0, y0), cell(x1, y0), cell(x1, y1), cell(x0, y1)],
-            });
-        }
-    }
-
-    // --- Street grid: residential roads on every grid line.
-    for ix in -NX..=NX {
-        let x = f64::from(ix);
-        let mut pts = Vec::new();
-        for iy in -NY..=NY {
-            let j = rng.range(-0.04, 0.04);
-            pts.push(cell(x + j, f64::from(iy)));
-        }
-        roads.push(Road {
-            class: RoadClass::Residential,
-            pts,
-        });
-    }
-    for iy in -NY..=NY {
-        let y = f64::from(iy);
-        let mut pts = Vec::new();
-        for ix in -NX..=NX {
-            let j = rng.range(-0.04, 0.04);
-            pts.push(cell(f64::from(ix), y + j));
-        }
-        roads.push(Road {
-            class: RoadClass::Residential,
-            pts,
-        });
-    }
-
-    // --- A few primary avenues (thicker) crossing the grid.
-    roads.push(Road {
-        class: RoadClass::Primary,
-        pts: (-NX..=NX).map(|ix| cell(f64::from(ix), 0.0)).collect(),
-    });
-    roads.push(Road {
-        class: RoadClass::Primary,
-        pts: (-NY..=NY).map(|iy| cell(0.0, f64::from(iy))).collect(),
-    });
-    // A diagonal secondary boulevard.
-    roads.push(Road {
-        class: RoadClass::Secondary,
-        pts: (-NY..=NY)
-            .map(|iy| cell(f64::from(iy) * 0.8 - 3.0, f64::from(iy)))
-            .collect(),
-    });
-    // A ring-ish secondary.
-    roads.push(Road {
-        class: RoadClass::Secondary,
-        pts: vec![
-            cell(-10.0, -8.0),
-            cell(-2.0, -10.0),
-            cell(6.0, -9.0),
-            cell(11.0, -3.0),
-            cell(11.0, 6.0),
-            cell(4.0, 10.0),
-            cell(-5.0, 10.0),
-            cell(-11.0, 4.0),
-            cell(-11.0, -3.0),
-            cell(-10.0, -8.0),
-        ],
-    });
-
-    Basemap {
-        areas,
-        roads,
-        river,
-    }
+/// A geographic name in the offline vector fixture, not application copy.
+#[derive(Clone, Debug)]
+pub struct MapLabel {
+    pub name: &'static str,
+    pub pos: LatLon,
+    pub kind: LabelKind,
 }
 
-/// An irregular closed polygon ("blob") around `c`, radii in grid units.
-fn blob(rng: &mut Rng, c: LatLon, rx: f64, ry: f64, n: usize) -> Vec<LatLon> {
-    let mut pts = Vec::with_capacity(n);
-    for i in 0..n {
-        let a = (i as f64) / (n as f64) * std::f64::consts::TAU;
-        let jitter = rng.range(0.78, 1.18);
-        let dx = a.cos() * rx * jitter;
-        let dy = a.sin() * ry * jitter;
-        pts.push(LatLon::new(c.lat + dy * DLAT, c.lon + dx * DLON));
-    }
-    pts
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelKind {
+    Street,
+    Water,
+    Park,
+    Neighborhood,
+    Station(&'static str),
 }
 
 /// The bundled places (POIs).
@@ -517,55 +373,25 @@ pub fn pois() -> Vec<Poi> {
 }
 
 /// A sample driving route from the origin to Marienplatz that follows the
-/// street grid (east, then north), with believable steps.
+/// named Lindwurmstraße / Sendlinger Straße corridor.
 pub fn sample_route() -> Route {
     let o = origin();
-    // East along the ny ≈ -6 row to nx = 0, then north along nx = 0 col.
-    let mut geometry = Vec::new();
-    let row_y = -6.0;
-    // Bounded rather than a float `while`; the grid span here is a small
-    // compile-time-known constant, so 64 steps is generous headroom.
-    let mut nx = -6.5;
-    for _ in 0..64 {
-        if nx > 0.0 {
-            break;
-        }
-        geometry.push(cell(nx, row_y));
-        nx += 1.0;
-    }
-    geometry.push(cell(0.0, row_y));
-    let mut ny = row_y;
-    for _ in 0..64 {
-        if ny > 0.0 {
-            break;
-        }
-        geometry.push(cell(0.0, ny));
-        ny += 1.0;
-    }
-    geometry.push(cell(0.0, 0.0));
-
-    let leg_east = polyline_length_m(geometry.get(..7.min(geometry.len())).unwrap_or(&[]));
-    let leg_north = polyline_length_m(
-        geometry
-            .get(6.min(geometry.len().saturating_sub(1))..)
-            .unwrap_or(&[]),
-    );
+    let geometry = cartography::corridor();
     let total = polyline_length_m(&geometry);
-    let _ = (o, leg_east, leg_north);
 
     let steps = vec![
         RouteStep {
-            instruction: "Head east on Lindwurmstraße".to_string(),
+            instruction: "Head northeast on Lindwurmstraße".to_string(),
             distance_m: 240.0,
             maneuver: Maneuver::Depart,
         },
         RouteStep {
-            instruction: "Continue onto Pettenkoferstraße".to_string(),
+            instruction: "Continue past Goetheplatz".to_string(),
             distance_m: 1320.0,
             maneuver: Maneuver::Continue,
         },
         RouteStep {
-            instruction: "Turn left onto Sendlinger Straße".to_string(),
+            instruction: "Bear right onto Sendlinger Straße".to_string(),
             distance_m: 80.0,
             maneuver: Maneuver::Left,
         },
@@ -647,8 +473,8 @@ pub fn fallback_route(from: LatLon, to: LatLon, mode: TravelMode) -> Route {
     }
 }
 
-/// Sample public-transport itineraries for the Transit panel. Each leg carries
-/// a plausible on-grid `geometry` polyline so the offline `--shots` map and the
+/// Sample public-transport itineraries for the Transit panel. Each ride follows
+/// the schematic street network so the offline `--shots` map and the
 /// hermetic tests exercise the real on-map itinerary rendering (the live app
 /// gets these from the planner's `legGeometry`).
 #[allow(
@@ -693,7 +519,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     12,
                     16,
                     4,
-                    grid_path((-6.5, -6.0), (-5.0, -5.0)),
+                    cartography::corridor().into_iter().take(3).collect(),
                 ),
                 TransitLeg {
                     mode: TransitMode::Subway,
@@ -705,7 +531,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     arr: clk(23),
                     duration_min: 6,
                     num_stops: 3,
-                    geometry: grid_path((-5.0, -5.0), (0.0, 0.0)),
+                    geometry: cartography::corridor().into_iter().skip(2).collect(),
                     color: Some("eb690b".to_string()),
                     text_color: Some("ffffff".to_string()),
                     agency: "MVG".to_string(),
@@ -733,7 +559,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     8,
                     11,
                     3,
-                    grid_path((-6.5, -6.0), (-4.0, -4.0)),
+                    cartography::corridor().into_iter().take(5).collect(),
                 ),
                 TransitLeg {
                     mode: TransitMode::Tram,
@@ -745,7 +571,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     arr: clk(16),
                     duration_min: 4,
                     num_stops: 2,
-                    geometry: grid_path((-4.0, -4.0), (-2.0, -1.5)),
+                    geometry: cartography::tram_path(),
                     color: Some("e30613".to_string()),
                     text_color: Some("ffffff".to_string()),
                     agency: "MVG".to_string(),
@@ -761,7 +587,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     arr: clk(25),
                     duration_min: 6,
                     num_stops: 3,
-                    geometry: grid_path((-2.0, -1.5), (0.0, 0.0)),
+                    geometry: cartography::bus_path(),
                     color: Some("005e82".to_string()),
                     text_color: Some("ffffff".to_string()),
                     agency: "MVG".to_string(),
@@ -789,7 +615,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     5,
                     10,
                     5,
-                    grid_path((-6.5, -6.0), (-6.0, -4.5)),
+                    cartography::corridor().into_iter().take(2).collect(),
                 ),
                 TransitLeg {
                     mode: TransitMode::Subway,
@@ -801,7 +627,7 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     arr: clk(21),
                     duration_min: 8,
                     num_stops: 4,
-                    geometry: grid_path((-6.0, -4.5), (1.5, 5.0)),
+                    geometry: cartography::northern_path(),
                     color: Some("0065ae".to_string()),
                     text_color: Some("ffffff".to_string()),
                     agency: "MVG".to_string(),
@@ -817,7 +643,11 @@ pub fn sample_transit() -> Vec<TransitJourney> {
                     arr: clk(27),
                     duration_min: 3,
                     num_stops: 1,
-                    geometry: grid_path((1.5, 5.0), (0.0, 0.0)),
+                    geometry: cartography::northern_path()
+                        .into_iter()
+                        .rev()
+                        .take(3)
+                        .collect(),
                     color: Some("16bae7".to_string()),
                     text_color: Some("ffffff".to_string()),
                     agency: "DB Regio AG S-Bahn München".to_string(),
@@ -911,8 +741,71 @@ pub fn default_model() -> MapModel {
 mod tests {
     use super::*;
 
-    /// The sample world: populated basemap, default route and transit, monotonic route
-    /// length, grid-following axis-aligned transit legs, and demo-base clocks.
+    #[test]
+    fn transit_legs_share_stations_and_follow_drawn_streets() {
+        // The primary journey follows the named Munich corridor rather than
+        // an artificial right-angle detour. Other illustrative itineraries
+        // retain multi-segment paths over the same drawn street network.
+        {
+            let journeys = sample_transit();
+            let corridor = cartography::corridor();
+            assert_eq!(journeys[0].legs[0].geometry, corridor[..3]);
+            assert_eq!(journeys[0].legs[1].geometry, corridor[2..]);
+            assert_eq!(sample_route().geometry, corridor);
+            let base = basemap();
+            assert!(base.roads.iter().any(|r| r.pts == corridor));
+            for name in ["Goetheplatz", "Sendlinger Tor", "Marienplatz"] {
+                let station = base.labels.iter().find(|l| l.name == name).unwrap();
+                assert!(matches!(station.kind, LabelKind::Station(_)));
+                assert!(corridor.contains(&station.pos));
+            }
+        }
+        {
+            let journeys = sample_transit();
+            assert!(!journeys.is_empty());
+            let base = basemap();
+            let mut exercised_ride = false;
+            for j in &journeys {
+                for transfer in j.legs.windows(2) {
+                    assert_eq!(
+                        transfer[0].geometry.last(),
+                        transfer[1].geometry.first(),
+                        "adjacent legs meet at the same station"
+                    );
+                }
+                for leg in &j.legs {
+                    let g = &leg.geometry;
+                    assert!(g.len() >= 2, "a drawn leg has a real polyline, not a point");
+                    if leg.mode != TransitMode::Walk {
+                        for segment in g.windows(2) {
+                            assert!(
+                                base.roads.iter().any(|road| road
+                                    .pts
+                                    .windows(2)
+                                    .any(|edge| edge == segment
+                                        || (edge[0] == segment[1] && edge[1] == segment[0]))),
+                                "ride segment leaves the drawn street network: {segment:?}"
+                            );
+                        }
+                    }
+                    if leg.mode != TransitMode::Walk {
+                        assert!(
+                            g.len() >= 3,
+                            "a ride leg follows multiple street segments, not a straight 2-point line"
+                        );
+                        exercised_ride = true;
+                    }
+                }
+            }
+            assert!(
+                exercised_ride,
+                "at least one non-walk transit leg was checked"
+            );
+        }
+    }
+
+    /// The sample world: populated basemap, default route and transit, monotonic
+    /// route length, short local walking paths, and demo-base clocks.
     #[test]
     fn sample_world_is_populated_and_geometrically_sound() {
         // Phase `basemap_is_populated`.
@@ -920,7 +813,7 @@ mod tests {
             let b = basemap();
             assert!(
                 b.roads.len() > 30,
-                "expected a dense grid, got {}",
+                "expected a connected secondary street network, got {}",
                 b.roads.len()
             );
             assert!(b.areas.iter().any(|a| a.kind == AreaKind::Park));
@@ -944,44 +837,6 @@ mod tests {
             assert!(r.duration_s > 0.0);
             assert!(r.geometry.len() >= 3);
             assert_eq!(r.steps.last().unwrap().maneuver, Maneuver::Arrive);
-        }
-
-        // Phase `transit_legs_follow_grid_not_diagonal`.
-        // Every drawn transit leg follows the street grid: each segment runs along
-        // a grid line (constant lat OR constant lon), never a crow-flies diagonal
-        // across the blocks, and a ride leg bends at least once (so it is provably
-        // not a 2-point straight line). This guards the old fake-diagonal route.
-        {
-            let journeys = sample_transit();
-            assert!(!journeys.is_empty());
-            let approx = |a: f64, b: f64| (a - b).abs() < 1e-9;
-            let mut exercised_ride = false;
-            for j in &journeys {
-                for leg in &j.legs {
-                    let g = &leg.geometry;
-                    assert!(g.len() >= 2, "a drawn leg has a real polyline, not a point");
-                    for seg in g.windows(2) {
-                        let axis_aligned =
-                            approx(seg[0].lat, seg[1].lat) || approx(seg[0].lon, seg[1].lon);
-                        assert!(
-                            axis_aligned,
-                            "leg segment cuts a diagonal across blocks: {:?} -> {:?}",
-                            seg[0], seg[1]
-                        );
-                    }
-                    if leg.mode != TransitMode::Walk {
-                        assert!(
-                            g.len() >= 3,
-                            "a ride leg follows multiple grid segments, not a straight 2-point line"
-                        );
-                        exercised_ride = true;
-                    }
-                }
-            }
-            assert!(
-                exercised_ride,
-                "at least one non-walk transit leg was checked"
-            );
         }
 
         // Phase `grid_path_is_axis_aligned_and_keeps_endpoints`.

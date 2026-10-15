@@ -100,10 +100,19 @@ fn plans(app: &mut TestApp<MapsShell>) -> CaptureResult<()> {
     Ok(())
 }
 
+fn overview(app: &mut TestApp<MapsShell>) -> CaptureResult<()> {
+    let zoom = target(app, "maps.control:zoom-out")?;
+    app.harness().click_at(zoom.x, zoom.y);
+    // Keep the Isar in the frame without moving the route under Directions.
+    app.harness().drag_at((1100.0, 500.0), (1040.0, 500.0));
+    Ok(())
+}
+
 fn movie(out: &std::path::Path) -> CaptureResult<()> {
     std::fs::create_dir_all(out)?;
     let mut app = capture("directions")?;
     plans(&mut app)?;
+    overview(&mut app)?;
     let cycle = target(&mut app, "maps.mode:cycle")?;
     let transit = target(&mut app, "maps.mode:transit")?;
     let inspect = Point::new(290.0, 585.0);
@@ -138,12 +147,14 @@ fn movie(out: &std::path::Path) -> CaptureResult<()> {
             if app.state().mode != TravelMode::Bike {
                 return Err("cycle click did not change mode".into());
             }
+            overview(&mut app)?;
         }
         if frame == 62 {
             app.harness().click_at(p.x, p.y);
             if app.state().mode != TravelMode::Transit {
                 return Err("transit click did not change mode".into());
             }
+            overview(&mut app)?;
         }
         if frame == 92 {
             app.harness().scroll(0.0, -1.0);
@@ -177,9 +188,7 @@ fn main() -> CaptureResult<()> {
     }
     let mut app = capture(&scenario)?;
     if args.next().as_deref() == Some("overview") {
-        let zoom = target(&mut app, "maps.control:zoom-out")?;
-        app.harness().click_at(zoom.x, zoom.y);
-        app.harness().drag_at((1100.0, 500.0), (960.0, 500.0));
+        overview(&mut app)?;
     }
     app.harness().render_png(&output);
     app.harness().close_components();
