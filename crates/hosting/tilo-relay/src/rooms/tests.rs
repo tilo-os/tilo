@@ -1686,3 +1686,92 @@ async fn an_owner_capable_node_stewards_the_channels_of_the_rooms_it_governs() {
     drop(steward);
     asked.shut_down().await;
 }
+
+/// A decision does not wait for room in its workspace owner's queue. With
+/// the owner stalled on the room's first change and more changes behind it
+/// than its queue holds, every decision still settles and answers, and a
+/// pre-admission still takes the room; once the owner moves, every change
+/// is retained, in the order the room published them.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn decisions_settle_while_their_workspace_owner_is_stalled() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Public").await.unwrap();
+    let records = rooms.inner.host.records.clone();
+    // The creation's own changes are retained before the owner stalls.
+    records.retained(created.workspace_id).await.unwrap();
+    let root = dir
+        .path()
+        .join("workspaces")
+        .join(created.workspace_id.to_string());
+    let (release, reached) = crate::store::test_barrier::install(&root, "state-persist");
+    // Each name is one governance change: more than the owner queues.
+    for index in 0..48 {
+        tilo_test_env::within(
+            format!("rename {index} while the owner is stalled"),
+            rooms.rename(&created.room, &format!("Public {index}")),
+        )
+        .await
+        .unwrap();
+    }
+    tilo_test_env::within("the owner stalls on the first change", reached)
+        .await
+        .unwrap();
+    tilo_test_env::within(
+        "a pre-admission while the owner is stalled",
+        rooms.pre_admit(
+            &cert,
+            PreAdmitRequest {
+                request_id: [9; 32],
+                grant: signed_pre_admission(&created.room, &[9; 8]),
+                recipient_user_public_key: None,
+                inviter_name: None,
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    drop(release);
+    let retained = tilo_test_env::within(
+        "every change retained once the owner moves",
+        records.retained(created.workspace_id),
+    )
+    .await
+    .unwrap();
+    let published: Vec<Vec<u8>> = {
+        let room = rooms.room(&created.room).await.unwrap();
+        let room = room.lock().await;
+        room.record
+            .outgoing
+            .iter()
+            .filter(|publication| !publication.checkpoint)
+            .map(|publication| publication.bytes.clone())
+            .collect()
+    };
+    assert!(
+        published.len() >= 48,
+        "{} changes published",
+        published.len()
+    );
+    let host = cert.device_public_key;
+    let mut bodies = retained
+        .iter()
+        .filter(|body| body.author == host)
+        .map(|body| &body.body);
+    for change in &published {
+        assert!(
+            bodies.any(|body| body == change),
+            "a published change is retained, after the ones published before it"
+        );
+    }
+    relay.shutdown().await;
+}

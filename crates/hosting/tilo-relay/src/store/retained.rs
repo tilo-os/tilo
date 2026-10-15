@@ -584,6 +584,22 @@ pub struct RetainBuild {
     /// Every record digest a delta's full scan saw, to install as the index.
     collected: Option<std::collections::HashSet<u64>>,
 }
+/// The durable stage of a lineage's first checkpoint, written outside the
+/// workspace's order ([`WorkspaceStore::stage_fresh_checkpoint`]) and not
+/// yet selected.
+pub(crate) struct FreshCheckpoint {
+    lineage: PathBuf,
+    staged: PathBuf,
+    selection: PathBuf,
+    name: String,
+}
+impl FreshCheckpoint {
+    /// The lineage and the stage, for a [`CheckpointDiscard`]: it leaves the
+    /// stage alone once the lineage selected it.
+    pub(crate) fn discard_paths(&self) -> (PathBuf, PathBuf) {
+        (self.lineage.clone(), self.staged.clone())
+    }
+}
 /// A checkpoint staged as a projected lineage generation, promoted with the
 /// batch it belongs to.
 pub struct CheckpointStage {
@@ -1327,6 +1343,164 @@ impl WorkspaceStore {
         build.selected_read = None;
         build.staged_only = true;
         Ok(CheckpointStage { build })
+    }
+    /// Stage the checkpoint `bytes` on `channel` as the first generation of
+    /// a lineage that has none yet, and make the stage durable, all outside
+    /// the workspace's order: everything [`RetainBuild`] writes before its
+    /// commit for such a checkpoint, which depends on nothing retained. The
+    /// owner's turn is left with the commit, [`Self::start_fresh_retain`]:
+    /// one barrier instead of three rounds of them, for the identity record
+    /// each newcomer of a room retains first.
+    ///
+    /// `None` when the lineage has a generation, the workspace has retained
+    /// nothing yet, or the checkpoint is one [`RetainBuild`] would not stage
+    /// as a generation of its own (it neither covers itself nor stands
+    /// alone).
+    ///
+    /// Stages of other lineages, and the owner, change the retained root
+    /// and this lineage meanwhile, so every barrier here is a real one: a
+    /// remembered sync ([`sync_dir_once`]) could vouch for an entry made
+    /// after it began. A stage that is never committed is collected with
+    /// the lineage's next commit ([`GenerationGc`]) or discarded by its
+    /// owner ([`CheckpointDiscard`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `bytes` is not a checkpoint of this channel or
+    /// the stage cannot be written.
+    pub(crate) fn stage_fresh_checkpoint(
+        &self,
+        channel: &[u8; 32],
+        bytes: &[u8],
+    ) -> Result<Option<FreshCheckpoint>, StoreError> {
+        let (author, actual_channel, checkpoint) = identity(bytes, self.workspace_id)
+            .ok_or_else(|| invalid("invalid retained envelope"))?;
+        if actual_channel != *channel || !checkpoint {
+            return Err(invalid("retained envelope channel or kind mismatch"));
+        }
+        if !covers(bytes, bytes, self.workspace_id)
+            && standalone(&**self.payloads(), bytes, self.workspace_id).is_none()
+        {
+            return Ok(None);
+        }
+        let v2 = self.root.join(RETAINED_DIR).join("v2");
+        if !v2.is_dir() {
+            return Ok(None);
+        }
+        for directory in self.root.ancestors().take(3) {
+            sync_dir_once(directory)?;
+        }
+        let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
+        if current(&lineage)?.is_some() {
+            return Ok(None);
+        }
+        match fs::create_dir(&lineage) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        let name = hex::encode(rand::random::<[u8; 16]>());
+        let staged = lineage.join(&name);
+        fs::create_dir(&staged)?;
+        let checkpoint = staged.join("checkpoint.delta");
+        let selection = lineage.join(format!("{SELECTION_PREFIX}{name}"));
+        // As `RetainBuild::inspected` stages one: the checkpoint, the
+        // CURRENT that will name its stage and the lineage's own entry
+        // order nothing between them, nor do the entries of the first two
+        // after them. The lineage's entry is synced even when another stage
+        // made it, which may not have synced it yet.
+        barriers(&mut [
+            &mut || write_synced(&checkpoint, bytes),
+            &mut || write_synced(&selection, name.as_bytes()),
+            &mut || sync_dir(&v2),
+        ])?;
+        barriers(&mut [&mut || sync_dir(&staged), &mut || sync_dir(&lineage)])?;
+        Ok(Some(FreshCheckpoint {
+            lineage,
+            staged,
+            selection,
+            name,
+        }))
+    }
+    /// Begin committing the stage of [`Self::stage_fresh_checkpoint`] in
+    /// the workspace's order: the build renames the stage's CURRENT into
+    /// place and syncs the lineage, then goes on as any checkpoint's build.
+    /// The stage comes back, with `bytes`, when the lineage has a generation
+    /// by now or the stage is not what was written: retain `bytes` with
+    /// [`Self::start_retain`] then, and discard the stage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `bytes` is not a checkpoint of the stage's
+    /// lineage or the lineage cannot be read.
+    pub(crate) fn start_fresh_retain(
+        &self,
+        channel: &[u8; 32],
+        fresh: FreshCheckpoint,
+        bytes: Vec<u8>,
+    ) -> Result<Result<RetainBuild, (FreshCheckpoint, Vec<u8>)>, StoreError> {
+        let (author, actual_channel, checkpoint) = identity(&bytes, self.workspace_id)
+            .ok_or_else(|| invalid("invalid retained envelope"))?;
+        let lineage = self.root.join(RETAINED_DIR).join("v2").join(format!(
+            "{}-{}",
+            hex::encode(author),
+            hex::encode(channel)
+        ));
+        if actual_channel != *channel || !checkpoint || lineage != fresh.lineage {
+            return Err(invalid("retained envelope channel or kind mismatch"));
+        }
+        // Nothing but a commit of this lineage removes a stage of it, and a
+        // commit leaves a CURRENT: an intact stage under no CURRENT is the
+        // durable one its writer made.
+        let intact = current(&lineage)?.is_none()
+            && fs::read(fresh.staged.join("checkpoint.delta")).is_ok_and(|held| held == bytes)
+            && fs::read(&fresh.selection).is_ok_and(|held| held == fresh.name.as_bytes());
+        if !intact {
+            return Ok(Err((fresh, bytes)));
+        }
+        // As any write but a delta the tail cache admits.
+        self.tail_cache.invalidate();
+        let scratch = self.root.join("store-work-v1").join(format!(
+            "retain-{}",
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        Ok(Ok(RetainBuild {
+            lineage,
+            active: fresh.staged.clone(),
+            fresh: false,
+            unsynced_parent: None,
+            pending_current: Some(fresh.selection),
+            sorter: super::bounded::Sorter::unspilled(scratch.join("sort")),
+            scratch,
+            digest: *blake3::hash(&bytes).as_bytes(),
+            key: checkpoint_key(&bytes, self.workspace_id),
+            bytes,
+            checkpoint: true,
+            workspace: self.workspace_id,
+            sorted: None,
+            phase: RetainPhase::Commit,
+            duplicate: false,
+            opaque: false,
+            last: 0,
+            staged: Some(fresh.staged),
+            staged_synced: true,
+            staged_append: false,
+            survivors: 0,
+            written: 0,
+            shell_store: self.shell_binding().map(|_| self.clone()),
+            selected_read: self.selected_read()?,
+            selection: None,
+            publication: None,
+            fast: None,
+            fast_admitted: false,
+            selected_obsolete: false,
+            staged_only: false,
+            continuity: None,
+            store: self.clone(),
+            stamp: None,
+            indexed: false,
+            collected: None,
+        }))
     }
     fn start_retain_at(
         &self,
@@ -2132,6 +2306,122 @@ pub(super) mod tests {
         }
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
         assert_eq!(store.load_retained().unwrap(), vec![third]);
+    }
+
+    /// A standalone checkpoint of `author` (its acknowledgement of
+    /// `channel`'s governance), with its retention route.
+    fn standalone_checkpoint(
+        channel: collab_types::ChannelId,
+        author: u8,
+        through: u8,
+    ) -> ([u8; 32], Vec<u8>) {
+        let message = neighbour_wire::NeighbourMsg::MlsGovernanceAck {
+            room: "room".into(),
+            ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
+                channel,
+                collab_types::Ed25519PublicKey::from_bytes([author; 32]),
+                [through; 32],
+            )),
+            delivery: 0,
+        };
+        let (route, _) = neighbour_wire::retention(&message, false).unwrap();
+        let bytes = crate::transport::encode(&Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: [author; 32],
+            authored_at_ns: u64::from(through),
+            delta: CoeditPayload::Checkpoint {
+                channel: route,
+                body: postcard::to_stdvec(&message).unwrap(),
+            }
+            .encode()
+            .unwrap(),
+            signature: [0; 64],
+        })
+        .unwrap();
+        (route, bytes)
+    }
+
+    fn drive(build: &mut RetainBuild) {
+        while matches!(build.step(WorkLimit::default()).unwrap(), Step::More) {}
+    }
+
+    /// A newcomer's first checkpoint is staged before its owner turn; the
+    /// turn only selects the stage, with one barrier where retaining it
+    /// takes three rounds, and the checkpoint is retained like any other.
+    #[test]
+    fn a_staged_first_checkpoint_costs_its_turn_one_barrier() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        // Another member's record: the workspace has retained before.
+        let channel = collab_types::ChannelId::new();
+        let (earlier_route, earlier) = standalone_checkpoint(channel, 2, 1);
+        store.retain_checkpoint(&earlier_route, &earlier).unwrap();
+        let (route, first) = standalone_checkpoint(channel, 1, 1);
+        let fresh = store
+            .stage_fresh_checkpoint(&route, &first)
+            .unwrap()
+            .expect("a lineage without a generation is staged");
+        let before = crate::store::thread_fsyncs();
+        let Ok(mut build) = store
+            .start_fresh_retain(&route, fresh, first.clone())
+            .unwrap()
+        else {
+            panic!("an intact stage of a fresh lineage is committed");
+        };
+        drive(&mut build);
+        // CURRENT renamed into place, then the lineage synced; nothing to
+        // collect, since the stage was the lineage's only generation.
+        assert_eq!(crate::store::thread_fsyncs() - before, 1);
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let mut retained = store.load_retained().unwrap();
+        retained.sort();
+        let mut expected = vec![earlier, first];
+        expected.sort();
+        assert_eq!(retained, expected);
+    }
+
+    /// A lineage committed between its stage and its turn is not replaced
+    /// by the stage: the checkpoint is retained as usual, against what the
+    /// lineage holds, and the stage is discarded.
+    #[test]
+    fn a_stage_its_lineage_overtook_is_retained_as_usual() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let channel = collab_types::ChannelId::new();
+        let (route, first) = standalone_checkpoint(channel, 1, 1);
+        let (_, second) = standalone_checkpoint(channel, 1, 2);
+        store.retain_checkpoint(&route, &first).unwrap();
+        // Nothing to stage once the lineage has a generation.
+        assert!(
+            store
+                .stage_fresh_checkpoint(&route, &second)
+                .unwrap()
+                .is_none()
+        );
+        let lineage = store.root().join(RETAINED_DIR).join("v2").join(format!(
+            "{}-{}",
+            hex::encode([1; 32]),
+            hex::encode(route)
+        ));
+        fs::remove_file(lineage.join("CURRENT")).unwrap();
+        let fresh = store
+            .stage_fresh_checkpoint(&route, &second)
+            .unwrap()
+            .expect("a lineage without a generation is staged");
+        let (_, staged) = fresh.discard_paths();
+        let active = commit_generation(&lineage, &[], Some(first.as_slice())).unwrap();
+        let Err((_, second)) = store.start_fresh_retain(&route, fresh, second).unwrap() else {
+            panic!("a stage under a CURRENT is not committed");
+        };
+        assert_eq!(current(&lineage).unwrap(), Some(active));
+        let mut build = store.start_retain(&route, None, second.clone()).unwrap();
+        drive(&mut build);
+        if let Some(mut discard) = CheckpointDiscard::new(&lineage, staged.clone()).unwrap() {
+            while discard.step(WorkLimit::default()).unwrap() == Step::More {}
+        }
+        assert!(!staged.exists());
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        assert_eq!(store.load_retained().unwrap(), vec![second]);
     }
 
     /// A payload adapter that recognises nothing.

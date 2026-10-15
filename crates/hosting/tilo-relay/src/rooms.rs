@@ -34,6 +34,7 @@ pub use content::RoomContent;
 mod member_records;
 pub use member_records::PreparedRecord;
 mod pages;
+mod publisher;
 #[cfg(feature = "web")]
 mod spectator_keys;
 #[cfg(feature = "agents")]
@@ -172,6 +173,9 @@ struct GovernedRoom {
     stewardship: Option<Arc<stewardship::Steward>>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
+    /// Admits the governance each settle retains to the host's order, after
+    /// the room's lock is released.
+    publisher: Arc<publisher::RoomPublisher>,
 }
 
 impl RoomRecord {
@@ -227,6 +231,7 @@ impl GovernedRoom {
             stewardship: stewardship(dir, &room, authority, key),
             record,
             peer,
+            publisher: Arc::default(),
         };
         this.persist()?;
         Ok(this)
@@ -266,6 +271,7 @@ impl GovernedRoom {
             peer,
             path,
             stewardship,
+            publisher: Arc::default(),
         })
     }
 
@@ -1177,7 +1183,7 @@ impl Rooms {
     /// not one per pass.
     async fn steward_notices(&self, room: &str) -> Result<(), String> {
         let governed = self.room(room).await.map_err(|error| error.to_string())?;
-        let (workspace_id, generation, readers, steward) = {
+        let (workspace_id, generation, readers, steward, publisher) = {
             let governed = governed.lock().await;
             let Some(steward) = governed.stewardship.clone() else {
                 self.inner
@@ -1196,6 +1202,7 @@ impl Rooms {
                 governed.record.generation,
                 room_readers,
                 steward,
+                Arc::clone(&governed.publisher),
             );
             drop(governed);
             taken
@@ -1232,6 +1239,8 @@ impl Rooms {
                 return Ok(());
             }
             let messages = stewardship.admit_pending(&readers)?;
+            // After the channel changes a settle handed over.
+            publisher.flushed().await;
             let admissions = self
                 .enqueue_channel_governance(workspace_id, messages)
                 .await?;
@@ -1297,21 +1306,12 @@ impl Rooms {
     ) -> Result<Vec<crate::room_records::RoomAdmission>, String> {
         let mut admissions = Vec::with_capacity(messages.len());
         for message in messages {
-            let (channel, retention) = neighbour_wire::retention(&message, false)
-                .ok_or("channel governance has no retention channel")?;
-            let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
+            let commit = channel_commit(&message)?;
             admissions.push(
                 self.inner
                     .host
                     .records
-                    .enqueue(
-                        workspace_id,
-                        crate::room_records::HostCommit {
-                            body,
-                            channel,
-                            checkpoint: retention == neighbour_wire::Retention::Checkpoint,
-                        },
-                    )
+                    .enqueue(workspace_id, commit)
                     .await?,
             );
         }
@@ -1343,10 +1343,15 @@ impl Rooms {
     /// published, then re-derive its calls' participants. Runs after each
     /// decision, before the decision is answered.
     ///
-    /// The changes take their place in the host's order here, under the
-    /// room's lock; they become durable after it, so the next decision does
-    /// not wait behind this one's disk writes (and every member write the
-    /// host queued before them).
+    /// The changes are handed to the room's [`publisher::RoomPublisher`]
+    /// here, under the room's lock, in publication order, each with its
+    /// place reserved so that whoever reads the room's retention waits for
+    /// it. The publisher admits them to the host's order and waits for them
+    /// to be durable after the lock is released: the next decision waits
+    /// neither for room in the workspace owner's queue, which a crowd fills,
+    /// nor behind this one's disk writes (and every member write the host
+    /// queued before them). A change the publisher could not admit is
+    /// published again by the next settle.
     async fn settle(&self, room: &mut GovernedRoom) -> Result<(), String> {
         let host = &self.inner.host;
         let now = SystemTime::now();
@@ -1364,53 +1369,94 @@ impl Rooms {
             )
             .await
             .map_err(|error| error.to_string())?;
-        let mut admissions = Vec::new();
+        let publisher = Arc::clone(&room.publisher);
+        let epoch = publisher.reconcile(&mut room.record.published);
+        let workspace_id = room.workspace_id();
+        let mut publications = Vec::new();
+        let mut unreadable = None;
         while let Some(entry) = room.record.outgoing.get(room.record.published) {
-            let message: neighbour_wire::NeighbourMsg =
-                postcard::from_bytes(&entry.bytes).map_err(|error| error.to_string())?;
-            let (channel, _) = neighbour_wire::retention(&message, entry.checkpoint)
-                .ok_or("room governance message has no retention channel")?;
-            admissions.push(
-                host.records
-                    .enqueue(
-                        room.workspace_id(),
-                        crate::room_records::HostCommit {
-                            body: entry.bytes.clone(),
-                            channel,
-                            checkpoint: entry.checkpoint,
-                        },
-                    )
-                    .await?,
-            );
+            let channel = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&entry.bytes)
+                .map_err(|error| error.to_string())
+                .and_then(|message| {
+                    neighbour_wire::retention(&message, entry.checkpoint)
+                        .map(|(channel, _)| channel)
+                        .ok_or_else(|| "room governance message has no retention channel".into())
+                });
+            let channel = match channel {
+                Ok(channel) => channel,
+                Err(error) => {
+                    // What precedes it is still published, in order.
+                    unreadable = Some(error);
+                    break;
+                }
+            };
+            publications.push(publisher::Publication::new(
+                &host.records,
+                workspace_id,
+                Some(room.record.published),
+                crate::room_records::HostCommit {
+                    body: entry.bytes.clone(),
+                    channel,
+                    checkpoint: entry.checkpoint,
+                },
+            ));
             room.record.published = room.record.published.saturating_add(1);
         }
-        if let Some(steward) = room.stewardship.clone() {
+        if let Some(error) = unreadable {
+            publisher.push(
+                &host.records,
+                room.room(),
+                workspace_id,
+                epoch,
+                publications,
+            );
+            return Err(error);
+        }
+        match room.stewardship.clone() {
             // A join only lets a device in, which moves no channel: the
             // room does not wait for an admission in progress.
-            if steward.moves_channels(&readers) {
+            Some(steward) if steward.moves_channels(&readers) => {
                 let mut channels = steward.channels.lock().await;
-                let messages = channels.reconcile_all(&readers)?;
-                steward.hand_over(room.record.generation, &readers);
-                // Queued under the steward, which orders its channels' changes.
-                let queued = self
-                    .enqueue_channel_governance(room.workspace_id(), messages)
-                    .await?;
-                drop(channels);
-                admissions.extend(queued);
-            } else {
-                steward.hand_over(room.record.generation, &readers);
-            }
-        }
-        if !admissions.is_empty() {
-            let name = room.room().to_owned();
-            tokio::spawn(async move {
-                for admission in admissions {
-                    if let Err(error) = admission.durable().await {
-                        tracing::warn!(room = %name, %error, "room governance change was not retained");
-                        break;
-                    }
+                let commits = channels.reconcile_all(&readers).and_then(|messages| {
+                    steward.hand_over(room.record.generation, &readers);
+                    messages
+                        .iter()
+                        .map(channel_commit)
+                        .collect::<Result<Vec<_>, _>>()
+                });
+                // Handed over under the steward, which orders its channels'
+                // changes: whoever admits one next waits for these first.
+                // The room's own changes go first either way.
+                for commit in commits.iter().flatten().cloned() {
+                    publications.push(publisher::Publication::new(
+                        &host.records,
+                        workspace_id,
+                        None,
+                        commit,
+                    ));
                 }
-            });
+                publisher.push(
+                    &host.records,
+                    room.room(),
+                    workspace_id,
+                    epoch,
+                    publications,
+                );
+                drop(channels);
+                commits?;
+            }
+            steward => {
+                if let Some(steward) = steward {
+                    steward.hand_over(room.record.generation, &readers);
+                }
+                publisher.push(
+                    &host.records,
+                    room.room(),
+                    workspace_id,
+                    epoch,
+                    publications,
+                );
+            }
         }
         self.observe_calls(room);
         // Watchers (a persistent room's operator) learn that this room's
@@ -1454,6 +1500,20 @@ impl Rooms {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
+}
+
+/// A channel governance message, retained as this relay's own.
+fn channel_commit(
+    message: &neighbour_wire::NeighbourMsg,
+) -> Result<crate::room_records::HostCommit, String> {
+    let (channel, retention) = neighbour_wire::retention(message, false)
+        .ok_or("channel governance has no retention channel")?;
+    let body = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
+    Ok(crate::room_records::HostCommit {
+        body,
+        channel,
+        checkpoint: retention == neighbour_wire::Retention::Checkpoint,
+    })
 }
 
 fn system_time(now_ns: u64) -> SystemTime {
