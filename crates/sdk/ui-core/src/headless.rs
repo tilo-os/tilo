@@ -325,6 +325,13 @@ pub struct FrameHarness {
     frame_witness: Option<FrameWitness>,
     /// Frames that skipped sync and publication as quiet, since construction.
     quiet_frames: u64,
+    /// The last frame was quiet, kept its composition, and nothing its
+    /// witness reads moved while it ran: the next quiet frame need not ask
+    /// the History surfaces again what only those inputs answer
+    /// ([`crate::history_mode::embedded::surfaces_at_rest`]).
+    history_settled: bool,
+    /// Quiet frames that took that answer from the frame before them.
+    settled_history_frames: u64,
     /// The host drives frames through [`Self::poll_frame`], so a witness can
     /// make one quiet. A host that only calls [`Self::relayout`] never reads
     /// one and does not pay for taking it.
@@ -472,6 +479,20 @@ struct FrameWitness {
     focused: Option<NodeId>,
     permissions: Result<crate::permissions::DirectoryPermissionWitness, String>,
     owners: Vec<crate::bound_dispatch::BoundOwnerMark>,
+}
+
+impl FrameWitness {
+    /// Whether `other` read the same as this witness did, every document
+    /// committed in both.
+    fn same_as(&self, other: &Self) -> bool {
+        self.local_epoch == other.local_epoch
+            && self.focused == other.focused
+            && self.presentation == other.presentation
+            && self.document.1 == 0
+            && self.document == other.document
+            && self.permissions == other.permissions
+            && crate::bound_dispatch::same_owner_standing(&self.owners, &other.owners)
+    }
 }
 
 /// What one completed [`FrameHarness::relayout`] did with its layout tree.
@@ -1490,6 +1511,8 @@ impl FrameHarness {
             local_epoch: 0,
             frame_witness: None,
             quiet_frames: 0,
+            history_settled: false,
+            settled_history_frames: 0,
             polls_frames: false,
             history_layout: None,
             history_focus_pending: false,
@@ -2042,6 +2065,15 @@ impl FrameHarness {
         self.quiet_frames
     }
 
+    /// Quiet frames that did not ask the History surfaces again what the
+    /// frame before them answered and nothing since moved: whether each
+    /// hosted app still has the document owners its History registered,
+    /// and whether a committed frontier moved.
+    #[must_use]
+    pub fn settled_history_frames(&self) -> u64 {
+        self.settled_history_frames
+    }
+
     /// Whether the witness follows everything this frame's bookkeeping
     /// would read. Presentations and owners it does not follow keep every
     /// frame loud.
@@ -2145,7 +2177,7 @@ impl FrameHarness {
     /// outright; any other debug build logs it and keeps what the work
     /// found, so a missed change is never stale where it can be seen.
     #[cfg(debug_assertions)]
-    fn verify_quiet_frame(&mut self) {
+    fn verify_quiet_frame(&mut self, history_settled: bool) {
         let shown = |harness: &mut Self| {
             (
                 serde_json::to_string(&harness.inspection()).unwrap_or_default(),
@@ -2156,12 +2188,21 @@ impl FrameHarness {
         let (before, after, replaced, resting) = tilo_resource::profiling::unobserved(|| {
             // The History walks it skipped hold only while every surface
             // still rests once the frame is drawn.
+            let width = f64::from(self.viewport.0);
             let resting = crate::history_mode::embedded::surfaces_at_rest(
                 self.root.as_ref(),
                 &self.state.doc,
-                f64::from(self.viewport.0),
+                width,
+                false,
             )
-            .is_some();
+            .is_some()
+                // What a settled frame did not ask again still holds.
+                && (!history_settled
+                    || crate::history_mode::embedded::settled_checks_hold(
+                        self.root.as_ref(),
+                        &self.state.doc,
+                        width,
+                    ));
             let before = shown(self);
             self.host_tick();
             self.sync_frame();
@@ -2977,10 +3018,11 @@ impl FrameHarness {
         };
         // Read before anything below can move it: whether this frame's sync
         // and publication would only repeat the last frame's.
-        let witnessed = self
+        let held = self
             .frame_witness
             .take()
-            .is_some_and(|witness| self.witness_holds(&witness));
+            .filter(|witness| self.witness_holds(witness));
+        let witnessed = held.is_some();
         let focused_at_start = self.focused;
         let epoch_at_start = self.local_epoch;
         self.drain_component_wakes();
@@ -2988,6 +3030,11 @@ impl FrameHarness {
             .component_wake
             .as_ref()
             .is_some_and(|wake| wake.dirty.replace(false));
+        // The frame before asked the History surfaces what this one would,
+        // of the same composition and documents, and nothing that reads has
+        // moved since.
+        let history_settled =
+            std::mem::take(&mut self.history_settled) && witnessed && !woken && !structure_changed;
         // A frame nothing new reached leaves every framework History surface
         // where it was. While each rests, this one walk stands for the
         // several below (entry capture, refresh, review, focus and control
@@ -2998,6 +3045,7 @@ impl FrameHarness {
                     self.root.as_ref(),
                     &self.state.doc,
                     f64::from(self.viewport.0),
+                    history_settled,
                 )
             })
             .flatten();
@@ -3696,11 +3744,24 @@ impl FrameHarness {
         self.scene_capture_protected = protected_paint.finish();
         #[cfg(debug_assertions)]
         if quiet {
-            self.verify_quiet_frame();
+            self.verify_quiet_frame(history_settled);
+        }
+        if quiet && history_settled {
+            self.settled_history_frames = self.settled_history_frames.saturating_add(1);
         }
         // Only a polled frame reads it, and only while it follows everything.
-        self.frame_witness =
+        let witness =
             (self.polls_frames && self.bookkeeping_followed()).then(|| self.read_witness());
+        // What this quiet frame's History walk answered still stands for the
+        // next only if nothing it read moved while the frame ran: the
+        // witness it ends with reads what the one it began with read.
+        self.history_settled = quiet
+            && !stats.rebuilt
+            && witness
+                .as_ref()
+                .zip(held.as_ref())
+                .is_some_and(|(now, then)| now.same_as(then));
+        self.frame_witness = witness;
         Ok(())
     }
 

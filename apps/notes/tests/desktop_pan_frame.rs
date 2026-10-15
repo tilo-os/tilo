@@ -1,7 +1,8 @@
 //! Six Notes windows in the desktop surface the browser desktop hosts apps
 //! in, panned by coalesced trackpad wheels. A pan moves laid-out windows and
 //! nothing else, so a wheel's own host tick is left to the frame, and that
-//! frame, which nothing new reached, neither ticks, syncs nor publishes.
+//! frame, which nothing new reached, neither ticks, syncs nor publishes, nor
+//! asks the windows' History again what the frame before it answered.
 
 use crate::component_support::{self, NotebookFixture};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -130,6 +131,7 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
     let frames: usize = 60;
     let start = pan_offset(&handle);
     let quiet = harness.quiet_frames();
+    let settled = harness.settled_history_frames();
     let ((), rows) = observe(|| {
         for index in 0..frames {
             let dx = if (index / 10) % 2 == 0 { -6.0 } else { 6.0 };
@@ -157,11 +159,23 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
         u64::try_from(frames).unwrap(),
         "every pan frame was quiet: {rows:?}"
     );
+    // Nor does it ask each window's History again whether the app still
+    // has the document owners it registered, or whether a committed
+    // frontier moved: the frame before asked, and its witness proves that
+    // nothing either reads has moved since. Each such question walks a
+    // whole app.
+    assert_eq!(
+        harness.settled_history_frames() - settled,
+        u64::try_from(frames).unwrap(),
+        "every pan frame took its History answer from the frame before: {rows:?}"
+    );
     for phase in [
         "ui.host_tick",
         "ui.frame_sync",
         "ui.publish_undo_status",
         "ui.bound_discovery_miss",
+        "ui.history_root_validation",
+        "ui.history_heads",
     ] {
         assert_eq!(
             calls(&rows, phase),
@@ -190,6 +204,10 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
     assert!(
         calls(&rows, "ui.frame_sync") > 0 && calls(&rows, "ui.publish_undo_status") > 0,
         "a click syncs and publishes on its frame: {rows:?}"
+    );
+    assert!(
+        calls(&rows, "ui.history_root_validation") >= WINDOWS,
+        "a click's frame asks every window's History again: {rows:?}"
     );
 }
 
