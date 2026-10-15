@@ -599,6 +599,16 @@ impl QuickSettingsState {
     }
 }
 
+/// The loop's wake, as [`ChromeState`] keeps it for its record store.
+#[derive(Clone)]
+struct RecordsWake(crate::session_runtime::Wake);
+
+impl std::fmt::Debug for RecordsWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RecordsWake")
+    }
+}
+
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
 #[allow(
@@ -774,6 +784,12 @@ pub struct ChromeState {
     records: RecordStore,
     pending_tab_records: VecDeque<PendingTabRecordCreation>,
     failed_tab_records: BTreeMap<u64, (TabRecordCreationIdentity, String)>,
+    /// Wakes the loop when the record store has opened a document this
+    /// thread declined to wait for ([`Self::open_records_without_waiting`]).
+    records_wake: Option<RecordsWake>,
+    /// Set by that wake: tabs refused while their document was opening ask
+    /// again on the next resync.
+    records_opened: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
     presence_requests: Vec<PresenceRequest>,
@@ -993,6 +1009,8 @@ impl ChromeState {
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
             failed_tab_records: BTreeMap::new(),
+            records_wake: None,
+            records_opened: std::sync::Arc::default(),
         }))
     }
 
@@ -1376,7 +1394,29 @@ impl ChromeState {
         self.pending_tab_records.clear();
         self.failed_tab_records.clear();
         self.records = records;
+        self.install_records_wake();
         self.bump();
+    }
+
+    /// Never wait on the disk to open or create a tab's record: this runs on
+    /// the compositor's loop, where a `mkdir` stuck behind the journal froze
+    /// the desktop. The store's own thread opens the document; a tab asks
+    /// again once `wake` reports it done (see [`Self::retry_new_tab_records`]).
+    pub fn open_records_without_waiting(&mut self, wake: crate::session_runtime::Wake) {
+        self.records_wake = Some(RecordsWake(wake));
+        self.install_records_wake();
+    }
+
+    fn install_records_wake(&self) {
+        let Some(RecordsWake(wake)) = self.records_wake.clone() else {
+            return;
+        };
+        let opened = std::sync::Arc::clone(&self.records_opened);
+        self.records
+            .open_without_waiting(std::sync::Arc::new(move || {
+                opened.store(true, std::sync::atomic::Ordering::Release);
+                wake();
+            }));
     }
 
     /// Finalize a new-tab action after its complete document reference/setup.
@@ -1387,7 +1427,9 @@ impl ChromeState {
         };
         match super::tab_documents::create_scratch_tab_record(&self.records, tab) {
             Ok(()) => {}
-            Err(ui::record::RecordOpenError::Busy) => {
+            // Retried by `retry_new_tab_records`; an opening document wakes
+            // the loop for it.
+            Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
                 self.pending_tab_records
                     .push_back(PendingTabRecordCreation {
                         identity,
@@ -1410,6 +1452,14 @@ impl ChromeState {
             TabRecordCreationIdentity::capture(&tree, *tab).as_ref() == Some(identity)
         });
         let mut changed = self.failed_tab_records.len() != before;
+        // A document the store finished opening: tabs that were refused
+        // while it opened bind again on the resync this bump causes.
+        if self
+            .records_opened
+            .swap(false, std::sync::atomic::Ordering::Acquire)
+        {
+            changed = true;
+        }
         self.pending_tab_records.retain(|pending| {
             TabRecordCreationIdentity::capture(&tree, pending.identity.tab).as_ref()
                 == Some(&pending.identity)
@@ -1424,7 +1474,7 @@ impl ChromeState {
                 pending.identity.tab,
             ) {
                 Ok(()) => changed = true,
-                Err(ui::record::RecordOpenError::Busy) => {
+                Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
                     self.pending_tab_records.push_back(pending);
                 }
                 Err(error) => {
