@@ -745,8 +745,7 @@ impl CheckpointStage {
                     .as_encoded_bytes(),
             )?;
             self.build.written = self.build.bytes.len() as u64;
-            self.build.phase =
-                RetainPhase::Collect(Box::new(GenerationGc::new(self.build.lineage.clone())?));
+            self.build.phase = self.build.collect(false)?;
         }
         Ok(())
     }
@@ -816,6 +815,20 @@ impl RetainBuild {
     pub(crate) fn selected_obsolete(&self) -> bool {
         self.selected_obsolete
     }
+    /// Collect the generations the lineage's CURRENT no longer names; done
+    /// at once while a capture is leased, which collects them later
+    /// ([`WorkspaceStore::collect_or_defer`]).
+    fn collect(&self, after_commit: bool) -> Result<RetainPhase, StoreError> {
+        Ok(
+            match self
+                .store
+                .collect_or_defer(self.lineage.clone(), after_commit)?
+            {
+                Some(gc) => RetainPhase::Collect(Box::new(gc)),
+                None => RetainPhase::Done,
+            },
+        )
+    }
     /// Every prior record was inspected: collect a duplicate, stage a
     /// checkpoint, or append.
     fn inspected(&mut self) -> Result<(), StoreError> {
@@ -834,7 +847,7 @@ impl RetainBuild {
             self.phase = if self.staged_only {
                 RetainPhase::Done
             } else {
-                RetainPhase::Collect(Box::new(GenerationGc::new(self.lineage.clone())?))
+                self.collect(false)?
             };
         } else if stage_checkpoint {
             let name = hex::encode(rand::random::<[u8; 16]>());
@@ -1199,9 +1212,7 @@ impl RetainBuild {
                     )?;
                 }
                 self.written = self.bytes.len() as u64;
-                self.phase = RetainPhase::Collect(Box::new(GenerationGc::after_commit(
-                    self.lineage.clone(),
-                )?));
+                self.phase = self.collect(true)?;
             }
             RetainPhase::Collect(gc) => {
                 if gc.step(limit)? == Step::Done(()) {

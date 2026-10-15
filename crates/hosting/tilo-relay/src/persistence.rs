@@ -12,7 +12,14 @@
 //! and none is published before its own barrier. One edit costs two fsyncs
 //! (the record, then its directory), plus [`State::next_sequence`]'s
 //! reservation renewal at most once per [`SEQUENCE_RESERVATION_NS`] of host
-//! clock per workspace.
+//! clock per workspace. A checkpoint that starts its lineage (each
+//! newcomer's first record) is staged and made durable before its turn,
+//! which then selects the stage with one barrier
+//! (`WorkspaceStore::stage_fresh_checkpoint`).
+//!
+//! A replay capture lists the retained frames in its turn and pins them when
+//! it is prepared, off the owner; retention collects nothing a listed frame
+//! is in until then (`store::replay::CaptureLeases`).
 //!
 //! Host order (`seq`, `Committed::seq`) increases strictly across restarts,
 //! even when the clock steps back over one, and resumes at most
@@ -640,6 +647,46 @@ async fn run_owner(
                     Err(error) => {
                         tracing::warn!(%error, "checkpoint stage disposal failed");
                         tokio::time::sleep(RECLAIM_RETRY).await;
+                    }
+                }
+            }
+        }
+        // Generations retention replaced while a capture still had to pin
+        // them, collected once no capture does. A failed collection is
+        // left to the lineage's next commit, which collects all of them.
+        let deferred = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .store
+            .deferred_collections();
+        for lineage in deferred {
+            let mut collect = None;
+            loop {
+                let lineage = lineage.clone();
+                let Ok((next, result)) = blocking(workers.clone(), move || {
+                    let result = (|| {
+                        let gc = match &mut collect {
+                            Some(gc) => gc,
+                            None => {
+                                collect.insert(crate::store::retained::GenerationGc::new(lineage)?)
+                            }
+                        };
+                        gc.step(WorkLimit::default())
+                    })();
+                    (collect, result)
+                })
+                .await
+                else {
+                    tracing::error!("deferred retention collection worker unavailable");
+                    return;
+                };
+                collect = next;
+                match result {
+                    Ok(Step::Done(())) => break,
+                    Ok(Step::More) => tokio::task::yield_now().await,
+                    Err(error) => {
+                        tracing::warn!(%error, "deferred retention collection failed");
+                        break;
                     }
                 }
             }

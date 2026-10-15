@@ -194,6 +194,10 @@ pub struct WorkspaceStore {
     shell_binding: Option<Arc<dyn ShellBinding>>,
     /// Shared by every handle on `root`; see `tilo_relay_store::tail_cache`.
     tail_cache: SharedTailCache,
+    /// Shared by every handle on `root`: the captures whose retained frames
+    /// are listed but not yet pinned, and the collections that wait for
+    /// them ([`replay::CaptureLeases`]).
+    capture_leases: Arc<replay::CaptureLeases>,
     /// Classifies retained co-edit bodies: checkpoint replacement and
     /// continuity evidence.
     payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
@@ -304,6 +308,7 @@ impl WorkspaceStore {
         remove_legacy_delta_log(&root);
         Ok(Self {
             tail_cache: SharedTailCache::for_root(&root),
+            capture_leases: replay::CaptureLeases::for_root(&root),
             root,
             workspace_id,
             pinned,

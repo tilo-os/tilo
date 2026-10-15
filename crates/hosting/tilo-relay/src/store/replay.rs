@@ -28,6 +28,94 @@ pub(crate) const DEFAULT_REPLAY_TICKETS: usize = 32;
 /// Names one replay's work directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReplayId(pub [u8; 16]);
+
+/// A capture lists the retained frames it replays in its owner turn and
+/// pins them (one hard link each) when it is prepared, off the owner: the
+/// pins were the bulk of a newcomer's turn, and the frames to pin grow with
+/// the room. In between, the listed frames must stay where they were
+/// listed. Only collection removes a retained frame, so collection waits
+/// while any capture of the store is leased: a lineage collected then is
+/// remembered, and collected once no capture is leased
+/// ([`WorkspaceStore::deferred_collections`]).
+///
+/// Leases are taken in the owner's turn, and collection is decided there,
+/// so no collection that a lease should stop can have begun before it.
+#[derive(Default)]
+pub(crate) struct CaptureLeases {
+    held: AtomicUsize,
+    deferred: std::sync::Mutex<std::collections::BTreeSet<PathBuf>>,
+}
+impl CaptureLeases {
+    /// The leases of the store at `root`, shared by every handle on it.
+    pub(crate) fn for_root(root: &Path) -> Arc<Self> {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock, PoisonError, Weak};
+        static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<CaptureLeases>>>> = OnceLock::new();
+        let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let mut registry = REGISTRY
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        registry.retain(|_, leases| leases.strong_count() > 0);
+        if let Some(leases) = registry.get(&root).and_then(Weak::upgrade) {
+            return leases;
+        }
+        let leases = Arc::new(Self::default());
+        registry.insert(root, Arc::downgrade(&leases));
+        leases
+    }
+    fn deferred(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeSet<PathBuf>> {
+        self.deferred
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+/// One capture's hold on its store's collection, until its frames are
+/// pinned or it is given up.
+pub(crate) struct CaptureLease(Arc<CaptureLeases>);
+impl Drop for CaptureLease {
+    fn drop(&mut self) {
+        self.0.held.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+impl WorkspaceStore {
+    fn lease_capture(&self) -> CaptureLease {
+        self.capture_leases.held.fetch_add(1, Ordering::SeqCst);
+        CaptureLease(Arc::clone(&self.capture_leases))
+    }
+    /// The collection of `lineage`'s replaced generations, or `None` while
+    /// a capture is leased: the lineage is collected later then.
+    /// `after_commit` as [`retained::GenerationGc::after_commit`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lineage cannot be listed.
+    pub(crate) fn collect_or_defer(
+        &self,
+        lineage: PathBuf,
+        after_commit: bool,
+    ) -> Result<Option<retained::GenerationGc>, StoreError> {
+        if self.capture_leases.held.load(Ordering::SeqCst) != 0 {
+            self.capture_leases.deferred().insert(lineage);
+            return Ok(None);
+        }
+        if after_commit {
+            retained::GenerationGc::after_commit(lineage).map(Some)
+        } else {
+            retained::GenerationGc::new(lineage).map(Some)
+        }
+    }
+    /// The lineages whose collection waited for a capture, once none is
+    /// leased; none while one is.
+    pub(crate) fn deferred_collections(&self) -> Vec<PathBuf> {
+        if self.capture_leases.held.load(Ordering::SeqCst) != 0 {
+            return Vec::new();
+        }
+        std::mem::take(&mut *self.capture_leases.deferred())
+            .into_iter()
+            .collect()
+    }
+}
 /// The most one replay batch carries.
 #[derive(Clone, Copy)]
 pub struct ReplayLimits {
@@ -266,6 +354,10 @@ pub struct ReplayBuild {
     selected: Option<File>,
     shell_selected: bool,
     skip: Option<ResumeSkip>,
+    /// The retained frames listed to pin when the capture is prepared
+    /// (`capture.manifest`), and the lease that keeps them in place until
+    /// then ([`CaptureLeases`]). A final cut pins what it lists at once.
+    listed: Option<(File, CaptureLease)>,
 }
 /// Retained frames a resuming device already holds, by
 /// [`super::resume::frame_digest`]; a replay for it leaves them out.
@@ -299,8 +391,18 @@ struct Candidate {
     /// Held by the resuming device: indexed for coverage, not replayed.
     held: bool,
 }
+/// The retained frames a capture listed and its preparation pins first.
+struct Link {
+    /// `capture.manifest`: one entry per listed frame, its pin assigned.
+    listed: File,
+    /// `continuity.manifest`, which a pinned frame's receipt joins.
+    continuity: File,
+    _lease: CaptureLease,
+}
 /// A captured replay: pinned retained frames, ready to prepare and read.
 pub struct ReplaySnapshot {
+    /// Retained frames listed in the owner's turn, not pinned yet.
+    link: Option<Link>,
     root: PathBuf,
     workspace: PathBuf,
     workspace_id: u64,
@@ -591,10 +693,20 @@ impl WorkspaceStore {
             next_pin: 0,
             continuity: Some(File::create(root.join("continuity.manifest"))?),
             skip: None,
+            listed: if pending_only {
+                None
+            } else {
+                Some((
+                    File::create(root.join("capture.manifest"))?,
+                    self.lease_capture(),
+                ))
+            },
         })
     }
     /// Invoke under one owner operation until Done; later mutations must not
-    /// interleave before every selected source has its immutable hardlink.
+    /// interleave before every selected source has its immutable hardlink,
+    /// or, for a retained frame, is listed under the capture's lease (it is
+    /// pinned when the snapshot is prepared: [`CaptureLeases`]).
     #[expect(
         clippy::too_many_lines,
         reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
@@ -654,10 +766,29 @@ impl WorkspaceStore {
             sorter.stats.last_step_work = sorter.stats.last_step_work.saturating_add(1);
             if build.phase == 4 {
                 build.phase = 5;
-                drop(build.continuity.take());
+                // Retained frames still to pin keep the continuity manifest
+                // open for theirs; it is read once they are pinned.
+                let link = match build.listed.take() {
+                    Some((listed, lease)) => {
+                        drop(listed);
+                        Some(Link {
+                            listed: File::open(build.root.join("capture.manifest"))?,
+                            continuity: build.continuity.take().invariant("continuity missing")?,
+                            _lease: lease,
+                        })
+                    }
+                    None => None,
+                };
+                let continuity_input = if link.is_none() {
+                    drop(build.continuity.take());
+                    Some(File::open(build.root.join("continuity.manifest"))?)
+                } else {
+                    None
+                };
                 let output = File::create(build.root.join("replay.manifest"))?;
                 let cleanup = File::create(build.root.join("cleanup.manifest"))?;
                 return Ok(Step::Done(ReplaySnapshot {
+                    link,
                     root: build.root.clone(),
                     workspace: self.root.clone(),
                     workspace_id: self.workspace_id,
@@ -674,7 +805,7 @@ impl WorkspaceStore {
                     sorter: build.sorter.take(),
                     ordered: None,
                     continuity_sorter: None,
-                    continuity_input: Some(File::open(build.root.join("continuity.manifest"))?),
+                    continuity_input,
                     continuity_ordered: None,
                     continuity_previous: None,
                     candidate: None,
@@ -799,6 +930,25 @@ impl WorkspaceStore {
             if let Some((source, key)) = selected {
                 let pin = build.next_pin;
                 increment(&mut build.next_pin)?;
+                if build.phase == 2
+                    && let Some((listed, _)) = build.listed.as_mut()
+                {
+                    // Pinned when the capture is prepared, off the owner.
+                    write_meta(
+                        listed,
+                        &Meta {
+                            key,
+                            source: source
+                                .strip_prefix(&self.root)
+                                .map_err(|_| invalid("invalid capture path"))?
+                                .into(),
+                            pin,
+                            len: 0,
+                            pending: false,
+                        },
+                    )?;
+                    continue;
+                }
                 let target = build.root.join("pins").join(format!("{pin:016x}.frame"));
                 fs::hard_link(&source, &target)?;
                 capture_continuity(
@@ -828,6 +978,58 @@ impl WorkspaceStore {
         }
         Ok(Step::More)
     }
+    /// One quantum of pinning the retained frames a capture listed, as the
+    /// capture pinned the rest: a hard link, its continuity receipt, and
+    /// its place in the order. Once every listed frame is pinned the lease
+    /// ends, and retention may collect what it replaced meanwhile.
+    fn pin_listed_step(
+        &self,
+        snapshot: &mut ReplaySnapshot,
+        limit: WorkLimit,
+    ) -> Result<Step<ReplaySummary>, StoreError> {
+        let link = snapshot.link.as_mut().invariant("listed frames missing")?;
+        let sorter = snapshot
+            .sorter
+            .as_mut()
+            .invariant("listed frames without their order")?;
+        sorter.stats.last_step_work = 0;
+        if sorter.spilling() {
+            sorter.spill_step(limit)?;
+            snapshot.stats.last_step_work = sorter.stats.last_step_work;
+            return Ok(Step::More);
+        }
+        for _ in 0..limit.record_entries() {
+            sorter.stats.last_step_work = sorter.stats.last_step_work.saturating_add(1);
+            let Some(meta) = read_meta(&mut link.listed)? else {
+                snapshot.link = None;
+                snapshot.continuity_input =
+                    Some(File::open(snapshot.root.join("continuity.manifest"))?);
+                break;
+            };
+            let source = self.root.join(&meta.source);
+            let target = snapshot
+                .root
+                .join("pins")
+                .join(format!("{:016x}.frame", meta.pin));
+            fs::hard_link(&source, &target)?;
+            capture_continuity(
+                self,
+                &source,
+                &target,
+                meta.pin,
+                &mut link.continuity,
+                &mut sorter.stats,
+            )?;
+            let len = fs::metadata(&target)?.len();
+            sorter.push(Meta { len, ..meta })?;
+            sorter.stats.peak_open_files = sorter.stats.peak_open_files.max(4);
+            if sorter.spilling() {
+                break;
+            }
+        }
+        snapshot.stats.last_step_work = sorter.stats.last_step_work;
+        Ok(Step::More)
+    }
     #[expect(
         clippy::too_many_lines,
         reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
@@ -854,6 +1056,9 @@ impl WorkspaceStore {
             }));
         }
         snapshot.stats.last_step_work = 0;
+        if snapshot.link.is_some() {
+            return self.pin_listed_step(snapshot, limit);
+        }
         if let Some(sorter) = &mut snapshot.sorter {
             let result = sorter.step(limit)?;
             snapshot.stats = sorter.stats.clone();
@@ -1213,6 +1418,7 @@ impl WorkDiscard {
                             && [
                                 "replay.manifest",
                                 "cleanup.manifest",
+                                "capture.manifest",
                                 "continuity.manifest",
                                 "room.manifest",
                                 "extras.manifest",
