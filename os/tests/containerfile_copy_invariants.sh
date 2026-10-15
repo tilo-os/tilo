@@ -195,7 +195,11 @@ containerfile="$repo/os/Containerfile"
 # The boot audit's image signature policy checker is now compiled: it arrives
 # from the image-policy-check component at the same path and mode instead of
 # from the context.
-expected_contract=5a9260a705345243bf00f2d8a4a929d2aaa1ea62d9d0921c18abe13ad9736193
+# The dual-boot enlist helper is now compiled. The base image carries it from
+# the boot-order component (one new row): it used to reach only the installer
+# image, from the installer's overlay of os/usr, and the installer now
+# inherits it.
+expected_contract=cccdeabdaf82840eae6854da69534783e495f8081e739c837698c14f185b6334
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
