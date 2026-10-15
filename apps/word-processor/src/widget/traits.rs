@@ -733,6 +733,47 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
             });
         Some((key, ui::PresencePayload::Caret { pos }))
     }
+
+    /// The selection for an agent, in the terms the editor's place-taking
+    /// actions read (`at`): the caret's block and character offsets in it.
+    /// A selection spanning blocks is shared as its part in the caret's
+    /// block, the same part peers see; the excerpt is exactly that text, so
+    /// what the agent reads is what it will act on.
+    fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
+        use ui::shared_selection::SharedSelection;
+        if !self.lifecycle.focused {
+            return None;
+        }
+        let caret_block = &self.inner.caret.block;
+        let block = self.blocks.iter().find(|b| &b.id == caret_block)?;
+        let kind = <tilo_document::RichText as tilo_resource::Resource>::KIND;
+        if self.inner.has_selection()
+            && let Some((_, start, end)) = self
+                .selection_blocks_cached()
+                .into_iter()
+                .find(|(b, _, _)| b == caret_block)
+            && start < end
+        {
+            let text: String = block.text.chars().skip(start).take(end - start).collect();
+            return Some(
+                SharedSelection::of_text(&text)
+                    .at(tilo_actions::SelectionPlace::range(
+                        caret_block.clone(),
+                        start,
+                        end,
+                    ))
+                    .in_kind(kind),
+            );
+        }
+        Some(
+            SharedSelection::default()
+                .at(tilo_actions::SelectionPlace::caret(
+                    caret_block.clone(),
+                    self.inner.caret.offset,
+                ))
+                .in_kind(kind),
+        )
+    }
 }
 
 impl ui::resources::PublishesResources for WordProcessorWidget {

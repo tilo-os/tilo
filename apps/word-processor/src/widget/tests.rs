@@ -8989,3 +8989,42 @@ fn confirm_asked(wp: &WordProcessorWidget, doc: &mut automerge::AutoCommit) {
     }
     *doc = document.doc().clone();
 }
+
+/// What an agent is asked about is the selected text of the caret's block,
+/// placed in characters there, which the editor's `at` parameters read; a
+/// bare caret is shared as a caret, and nothing while unfocused.
+#[test]
+fn the_shared_selection_is_the_place_its_actions_read() {
+    let (state, mut wp) = populated();
+    wp.set_focus(true);
+    let mut framed = mount(state, wp, 1100, 760);
+    let (wp, _) = Framed::split(&mut framed);
+    select_range(wp, 1, 4);
+    let (wp, _) = pipeline_draw(&mut framed, 1100, 760);
+    let block = wp.model().caret().block.clone();
+    let selection = ui::shared_selection::selection_of(wp).expect("a selection");
+    assert_eq!(
+        selection.anchor.place,
+        Some(tilo_actions::SelectionPlace::range(block.clone(), 1, 4))
+    );
+    assert_eq!(
+        selection
+            .anchor
+            .excerpt
+            .as_deref()
+            .map(|excerpt| excerpt.chars().count()),
+        Some(3),
+        "the excerpt is the three selected characters"
+    );
+    let place: tilo_resource::Place = selection.anchor.place.unwrap().try_into().unwrap();
+    assert_eq!(
+        place,
+        tilo_resource::Place::Range {
+            item: block,
+            start: 1,
+            end: 4
+        }
+    );
+    wp.set_focus(false);
+    assert!(ui::shared_selection::selection_of(wp).is_none());
+}
