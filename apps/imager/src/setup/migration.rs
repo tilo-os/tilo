@@ -203,27 +203,7 @@ impl PinnedDirectory {
     }
 }
 
-#[cfg_attr(
-    not(windows),
-    allow(
-        clippy::unnecessary_wraps,
-        reason = "Windows rejects reparse points and cloud placeholders; other platforms retain the same fallible validation interface."
-    )
-)]
-pub(super) fn reject_windows_placeholder(metadata: &Metadata) -> io::Result<()> {
-    #[cfg(windows)]
-    {
-        use cap_primitives::fs::MetadataExt;
-        // All reparse points (including cloud placeholders/junctions), offline,
-        // recall-on-open and recall-on-data-access require a separate safe path.
-        if metadata.file_attributes() & (0x400 | 0x1000 | 0x0004_0000 | 0x0040_0000) != 0 {
-            return Err(changed("reparse point or cloud placeholder is unsupported"));
-        }
-    }
-    #[cfg(not(windows))]
-    let _ = metadata;
-    Ok(())
-}
+pub(super) use super::nofollow::reject_windows_placeholder;
 
 pub(super) fn same_snapshot(before: &Metadata, after: &Metadata) -> bool {
     if !same_directory_identity(before, after)

@@ -23,3 +23,11 @@ installer-media-chosen = Chosen: installed once the new system is online
 installer-media-undo = Undo
 installer-media-next = Next
 installer-media-back = Back
+
+installer-storage-windows-preparation = Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. Tilo cannot make these Windows changes and will not resize NTFS.
+installer-storage-linux-ready = Keep Linux: Tilo uses unallocated space and leaves existing partitions unchanged.
+installer-storage-alongside-capacity = Tilo will have { $root } of encrypted storage, using { $total } of unallocated space including its boot partitions.
+installer-storage-linux-no-space = No safe alongside space was found. { $preparation } Nothing has been erased; you can go back without installing.
+installer-storage-linux-preparation = Back up your files. Free space inside ext4 or Btrfs is not unallocated space: use your distribution's supported offline partitioning tools from recovery media to leave 35 GiB contiguous unallocated, then refresh disks. This installer will not automatically shrink existing filesystems, LVM, or LUKS containers. This medium is not a full live desktop.
+installer-storage-boot-guidance = If your other system is missing from Tilo's boot menu, use the computer's firmware boot picker. Existing boot entries and the default are preserved.
+installer-storage-files-guidance = Existing Linux partitions are not automatically mounted in Tilo. Files selected for import are separate from this. Set up Nextcloud separately after installation; do not share a writable sync folder between systems.

@@ -164,7 +164,12 @@ fn load_filesystem_support() -> Result<[bool; FILESYSTEMS.len()], String> {
     filesystem_support_from_manifest(&manifest)
 }
 pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
-const WINDOWS_ALONGSIDE_PREPARATION: &str = "Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. Tilo cannot make these Windows changes and will not resize NTFS.";
+const WINDOWS_ALONGSIDE_PREPARATION: &str = "installer-storage-windows-preparation";
+
+const LINUX_ALONGSIDE_READY: &str = "installer-storage-linux-ready";
+const LINUX_ALONGSIDE_PREPARATION: &str = "installer-storage-linux-preparation";
+const ALONGSIDE_BOOT_GUIDANCE: &str = "installer-storage-boot-guidance";
+const ALONGSIDE_FILES_GUIDANCE: &str = "installer-storage-files-guidance";
 
 fn connect_power_message(percent: u8) -> String {
     format!(
@@ -199,6 +204,29 @@ fn alongside_confirmation_operation(guided: bool) -> &'static str {
 enum InstallMethod {
     Erase,
     Alongside,
+}
+
+/// Bind intent as strictly as a destructive target: a reused device path or a
+/// replaced partition table must not inherit a previous disk's erase choice.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct DiskMethodIdentity {
+    major_minor: String,
+    wwn: String,
+    serial: String,
+    size_bytes: u64,
+    partition_table_uuid: String,
+}
+
+impl DiskMethodIdentity {
+    fn of(disk: &Disk) -> Option<Self> {
+        disk.identity_ready().then(|| Self {
+            major_minor: disk.major_minor.clone(),
+            wwn: disk.wwn.clone(),
+            serial: disk.serial.clone(),
+            size_bytes: disk.size_bytes,
+            partition_table_uuid: disk.partition_table_uuid.clone(),
+        })
+    }
 }
 
 /// Which non-secret choices were independently validated from the medium.
@@ -902,6 +930,9 @@ pub struct InstallerApp {
     /// A sole candidate is selected implicitly; ambiguity never is.
     selected_guided_extent: Option<usize>,
     install_method: InstallMethod,
+    /// Manual method choices are session-local and bound to discovered hardware,
+    /// never a global preference that can carry Erase onto another disk.
+    disk_method_choices: HashMap<DiskMethodIdentity, InstallMethod>,
     /// UUIDs reviewed for the partitions the guided free-space path will add.
     /// Generated once per installer run; changing disks clears confirmation but
     /// retaining these stable IDs keeps Review and the backend handoff identical.
@@ -1138,6 +1169,7 @@ impl InstallerApp {
             selected_disk: None,
             selected_guided_extent: None,
             install_method: InstallMethod::Erase,
+            disk_method_choices: HashMap::new(),
             guided_efi_partuuid: uuid::Uuid::new_v4().to_string(),
             guided_boot_partuuid: uuid::Uuid::new_v4().to_string(),
             guided_root_partuuid: uuid::Uuid::new_v4().to_string(),
@@ -1442,6 +1474,23 @@ impl InstallerApp {
         self.recovery_key = Some(
             "aaaa1111-bbbb2222-cccc3333-dddd4444-eeee5555-ffff6666-gggg7777-hhhh8888".to_string(),
         );
+    }
+
+    /// Recompute the safe default, or restore this disk's explicit choice.
+    fn reset_disk_method(&mut self) {
+        self.install_method = if self.selected_disk_hosts_installer() {
+            InstallMethod::Alongside
+        } else if let Some(disk) = self.selected_disk_ref() {
+            DiskMethodIdentity::of(disk)
+                .and_then(|identity| self.disk_method_choices.get(&identity).copied())
+                .unwrap_or(if disk.partitions.is_empty() {
+                    InstallMethod::Erase
+                } else {
+                    InstallMethod::Alongside
+                })
+        } else {
+            InstallMethod::Alongside
+        };
     }
 
     /// The selected disk, if any.
@@ -1807,7 +1856,7 @@ impl InstallerApp {
             && self.install_method == InstallMethod::Alongside
             && !self.selected_disk_can_install_alongside()
         {
-            self.set_status("Alongside needs either one unallocated GPT extent of at least 35 GiB, or a prepared empty Linux root (32 GiB+) and a 1 GiB boot plus 2 GiB EFI partition");
+            self.set_status(&self.alongside_unavailable_message(&self.guided_alongside_plans()));
             return;
         }
         if self.step == Step::Disk
@@ -2433,6 +2482,18 @@ impl InstallerApp {
             }
         }
         children.extend(self.windows_alongside_preparation(theme));
+        if self.install_method == InstallMethod::Alongside
+            && self
+                .selected_disk_ref()
+                .is_some_and(Disk::has_linux_storage)
+            && !self.guided_alongside_plans().is_empty()
+        {
+            children.push(Box::new(
+                Text::new(&crate::i18n::t(LINUX_ALONGSIDE_READY))
+                    .with_role(TextRole::Caption)
+                    .with_color(theme.text_dim),
+            ));
+        }
         let read_only = self.selected_disk_ref().is_some_and(|disk| disk.read_only);
         let guided_plans = self.guided_alongside_plans();
         if self.install_method == InstallMethod::Alongside && guided_plans.len() > 1 {
@@ -2464,11 +2525,7 @@ impl InstallerApp {
             && let Some(plan) = self.guided_alongside_plan()
         {
             children.push(Box::new(
-                Text::new(&format!(
-                    "Ready to use {} GiB of unallocated space: a new 2 GiB Tilo EFI partition, a new 1 GiB Tilo boot partition, and a new {} GiB encrypted root. Existing partitions will not be changed.",
-                    plan.free_size_bytes / (1024 * 1024 * 1024),
-                    plan.root_size_bytes / (1024 * 1024 * 1024)
-                ))
+                Text::new(&Self::alongside_capacity_summary(&plan))
                     .with_role(TextRole::Caption)
                     .with_color(theme.status_success),
             ));
@@ -2544,11 +2601,53 @@ impl InstallerApp {
                 .is_some_and(Disk::has_windows_storage))
         .then(|| {
             Box::new(
-                Text::new(WINDOWS_ALONGSIDE_PREPARATION)
+                Text::new(&crate::i18n::t(WINDOWS_ALONGSIDE_PREPARATION))
                     .with_role(TextRole::Caption)
                     .with_color(theme.tokens.colors.semantic.warning),
             ) as Box<dyn Widget>
         })
+    }
+
+    fn alongside_capacity_summary(plan: &GuidedAlongsidePlan) -> String {
+        crate::i18n::t_args(
+            "installer-storage-alongside-capacity",
+            &[
+                ("root", ui::format::bytes(plan.root_size_bytes).into()),
+                ("total", ui::format::bytes(plan.free_size_bytes).into()),
+            ],
+        )
+    }
+
+    fn alongside_storage_guidance(&self) -> String {
+        let plans = self.guided_alongside_plans();
+        let mut message = if self.selected_disk_ref().is_none() {
+            "Select a disk to see its alongside options.".to_string()
+        } else if !self.selected_disk_can_install_alongside() {
+            self.alongside_unavailable_message(&plans)
+        } else if self.uses_guided_alongside() {
+            self.guided_alongside_plan()
+                .as_ref()
+                .map(Self::alongside_capacity_summary)
+                .unwrap_or_default()
+        } else {
+            "Format only the prepared Tilo boot and root partitions; preserve the existing EFI and other OS partitions.".to_string()
+        };
+        if self
+            .selected_disk_ref()
+            .is_some_and(Disk::has_linux_storage)
+            && !plans.is_empty()
+        {
+            message.push(' ');
+            message.push_str(&crate::i18n::t(LINUX_ALONGSIDE_READY));
+        }
+        if self
+            .selected_disk_ref()
+            .is_some_and(Disk::has_windows_storage)
+        {
+            message.push(' ');
+            message.push_str(&crate::i18n::t(WINDOWS_ALONGSIDE_PREPARATION));
+        }
+        message
     }
 
     fn alongside_unavailable_message(&self, guided_plans: &[GuidedAlongsidePlan]) -> String {
@@ -2564,7 +2663,19 @@ impl InstallerApp {
                 "{issue} The privileged install check will also verify FAT health and at least 1 GiB of free space before formatting anything."
             );
         }
-        "No safe alongside space was found. Shrink the existing OS from its own disk manager and leave at least 35 GiB unallocated, or prepare an empty Linux root and 1 GiB boot plus 2 GiB EFI partition, then refresh disks.".to_string()
+        if self
+            .selected_disk_ref()
+            .is_some_and(Disk::has_linux_storage)
+        {
+            return crate::i18n::t_args(
+                "installer-storage-linux-no-space",
+                &[(
+                    "preparation",
+                    crate::i18n::t(LINUX_ALONGSIDE_PREPARATION).into(),
+                )],
+            );
+        }
+        "No safe alongside space was found. Back up your files and use the existing OS's supported partitioning tools to leave at least 35 GiB contiguous unallocated, or prepare an empty Linux root and 1 GiB boot plus 2 GiB EFI partition, then refresh disks. Tilo will not resize existing partitions or switch to Erase automatically.".to_string()
     }
 
     fn compose_guided_extent_choices(
@@ -3071,12 +3182,8 @@ impl InstallerApp {
             if let Some(plan) = self.guided_alongside_plan() {
                 children.push(summary_row(
                     theme,
-                    "Partition plan",
-                    &format!(
-                        "Create 2 GiB Tilo EFI + {} GiB Tilo root in {} GiB unallocated space",
-                        plan.root_size_bytes / (1024 * 1024 * 1024),
-                        plan.free_size_bytes / (1024 * 1024 * 1024)
-                    ),
+                    "Tilo storage",
+                    &Self::alongside_capacity_summary(&plan),
                 ));
                 children.push(summary_row(
                     theme,
@@ -3133,6 +3240,18 @@ impl InstallerApp {
                     "Tilo adds safe menu shortcuts for unambiguous Windows/Linux loaders on this shared EFI partition",
                 ));
             }
+        }
+        if self.install_method == InstallMethod::Alongside {
+            children.push(summary_row(
+                theme,
+                "Boot choice",
+                &crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE),
+            ));
+            children.push(summary_row(
+                theme,
+                "Existing files",
+                &crate::i18n::t(ALONGSIDE_FILES_GUIDANCE),
+            ));
         }
         children.push(summary_row(theme, "Filesystem", self.filesystem()));
         children.push(summary_row(theme, "Encryption", &self.encryption_summary()));
@@ -3268,7 +3387,7 @@ impl InstallerApp {
                         Text::new(if self.uses_guided_alongside() {
                             "To choose Tilo or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
                         } else {
-                            "The Tilo boot menu includes each unambiguous Windows or Linux loader found on the shared EFI partition; firmware choices remain available too."
+                            "Tilo can add menu shortcuts for unambiguous loaders on the shared EFI partition. If Linux is not listed, use the computer's firmware boot picker; loaders on other EFI partitions are not guaranteed to appear here."
                         })
                         .with_role(TextRole::Caption)
                         .with_color(dim),
@@ -3663,8 +3782,16 @@ impl InstallerApp {
     }
 
     fn refresh_disks_with(&mut self, disks: Vec<Disk>) {
+        let previous = self.selected_disk_ref().and_then(DiskMethodIdentity::of);
         self.disks = disks;
-        self.selected_disk = None;
+        self.selected_disk = previous.and_then(|identity| {
+            self.disks.iter().position(|disk| {
+                DiskMethodIdentity::of(disk).as_ref() == Some(&identity)
+                    && !disk.blocks_install()
+                    && !disk.read_only
+            })
+        });
+        self.reset_disk_method();
         self.selected_guided_extent = None;
         self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
         self.guided_boot_partuuid = uuid::Uuid::new_v4().to_string();
@@ -3679,6 +3806,8 @@ impl InstallerApp {
         }
         self.status = if self.disks.is_empty() {
             "Disk list refreshed; no installable disks were found.".to_string()
+        } else if self.selected_disk.is_some() {
+            "Disk list refreshed. Review the destination before continuing.".to_string()
         } else {
             "Disk list refreshed. Select a destination again.".to_string()
         };
@@ -5138,6 +5267,77 @@ mod tests {
     }
 
     #[test]
+    fn linux_guidance_matches_visible_space_state() {
+        let mut disk = sample_disks().remove(1);
+        disk.partitions.clear();
+        // Keep a Linux partition and leave a large contiguous extent after it.
+        let mut linux = sample_disks().remove(0).partitions.remove(1);
+        linux.filesystem = "ext4".into();
+        linux.label = "Linux".into();
+        linux.part_type = LINUX_FILESYSTEM_GUID.into();
+        linux.size_bytes = 64 * 1024 * 1024 * 1024;
+        disk.partitions.push(linux);
+        let mut app = InstallerApp::with_disks(vec![disk]);
+        app.selected_disk = Some(0);
+        app.install_method = InstallMethod::Alongside;
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+        let plan = app
+            .guided_alongside_plan()
+            .expect("usable unallocated extent");
+        let capacity = InstallerApp::alongside_capacity_summary(&plan);
+        assert!(find_accessible(&app, &crate::i18n::t(LINUX_ALONGSIDE_READY)).is_some());
+        assert!(find_accessible(&app, &capacity).is_some());
+        assert!(find_accessible(&app, &crate::i18n::t(LINUX_ALONGSIDE_PREPARATION)).is_none());
+        assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE)).is_none());
+        let guidance = app.alongside_storage_guidance();
+        assert!(guidance.contains(&crate::i18n::t(LINUX_ALONGSIDE_READY)));
+        assert!(guidance.contains(&capacity));
+        let published = app.publish();
+        let storage = published[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == op::STORAGE)
+            .unwrap();
+        let published_guidance = storage
+            .children
+            .iter()
+            .filter(|resource| resource.kind == "installer.guidance")
+            .map(|resource| {
+                resource
+                    .presentation
+                    .as_ref()
+                    .unwrap()
+                    .preview
+                    .as_ref()
+                    .unwrap()
+                    .as_str()
+            })
+            .collect::<Vec<_>>()
+            .join(". ");
+        assert_eq!(published_guidance, guidance);
+        for hidden in ["35 GiB", "offline", "LUKS", "2 GiB", "1 GiB"] {
+            assert!(!guidance.contains(hidden), "unexpected advice: {guidance}");
+        }
+        app.step = Step::Review;
+        let _ = build(&mut app);
+        assert!(find_accessible(&app, &capacity).is_some());
+        assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE)).is_some());
+        assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_FILES_GUIDANCE)).is_some());
+
+        app.disks[0].partitions[0].size_bytes =
+            app.disks[0].size_bytes - app.disks[0].partitions[0].start_bytes - 1_048_576;
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+        let guidance = app.alongside_storage_guidance();
+        assert!(guidance.contains(&crate::i18n::t(LINUX_ALONGSIDE_PREPARATION)));
+        assert!(!guidance.contains(&crate::i18n::t(LINUX_ALONGSIDE_READY)));
+        assert!(find_accessible(&app, &guidance).is_some());
+        assert!(find_accessible(&app, &crate::i18n::t(LINUX_ALONGSIDE_READY)).is_none());
+        assert!(find_accessible(&app, &capacity).is_none());
+    }
+
+    #[test]
     fn alongside_copy_explains_what_changes_before_leaving_storage() {
         // Phase `alongside_review_describes_each_partition_it_changes`.
         {
@@ -5200,7 +5400,7 @@ mod tests {
             let _ = build(&mut app);
 
             assert!(
-                find_accessible(&app, WINDOWS_ALONGSIDE_PREPARATION).is_some(),
+                find_accessible(&app, &crate::i18n::t(WINDOWS_ALONGSIDE_PREPARATION)).is_some(),
                 "Windows preparation must be actionable before the user leaves storage selection"
             );
 
@@ -5208,9 +5408,15 @@ mod tests {
             app.disks[0].partitions[1].label = "Existing Linux".into();
             let _ = build(&mut app);
             assert!(
-                find_accessible(&app, WINDOWS_ALONGSIDE_PREPARATION).is_none(),
+                find_accessible(&app, &crate::i18n::t(WINDOWS_ALONGSIDE_PREPARATION)).is_none(),
                 "Linux-only alongside disks must not receive Windows-specific instructions"
             );
+            assert!(find_accessible(&app, &crate::i18n::t(LINUX_ALONGSIDE_READY)).is_none());
+            assert!(find_accessible(&app, &crate::i18n::t(LINUX_ALONGSIDE_PREPARATION)).is_none());
+            app.step = Step::Review;
+            let _ = build(&mut app);
+            assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE)).is_some());
+            assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_FILES_GUIDANCE)).is_some());
         }
         // Phase `alongside_explains_a_determinable_prepared_efi_failure`.
         {
@@ -5284,6 +5490,8 @@ mod tests {
             assert!(!app.selected_disk_can_install_alongside());
             app.go_next();
             assert_eq!(app.step, Step::Disk, "ambiguous free space must block Next");
+            assert_eq!(app.install_method, InstallMethod::Alongside);
+            assert!(app.destructive_confirmation_target().is_none());
 
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -5313,8 +5521,11 @@ mod tests {
             assert!(app.guided_alongside_plan().is_some());
 
             app.refresh_disks_with(vec![disk]);
-            assert_eq!(app.selected_disk, None);
+            // Rediscovery may retain the same hardware, never its reviewed
+            // extent or authorization to format anything.
+            assert_eq!(app.selected_disk, Some(0));
             assert_eq!(app.selected_guided_extent, None);
+            assert!(!app.selected_disk_can_install_alongside());
             assert!(local_text(&app.erase_confirmation).is_empty());
             assert_ne!(app.guided_efi_partuuid, old_efi_uuid);
             assert_ne!(app.guided_root_partuuid, old_root_uuid);
@@ -5326,6 +5537,8 @@ mod tests {
             );
             app.go_next();
             assert_eq!(app.step, Step::Disk, "a stale choice must remain blocked");
+            assert_eq!(app.install_method, InstallMethod::Alongside);
+            assert!(app.destructive_confirmation_target().is_none());
         }
         // Phase `restarted_ui_does_not_reinitialize_an_unauthenticated_partial_pair`.
         {

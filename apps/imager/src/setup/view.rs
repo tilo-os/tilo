@@ -3185,6 +3185,10 @@ fn scan_warning(scan: &FolderScan) -> Option<String> {
             SkipReason::SymbolicLink => "a symbolic link".to_string(),
             SkipReason::ReadError(error) => format!("couldn't be read ({error})"),
             SkipReason::UnsupportedFileType => "not a regular file".to_string(),
+            SkipReason::CloudUnavailable => super::strings::t("imager-folder-cloud-unavailable"),
+            SkipReason::UnsupportedReparsePoint => {
+                super::strings::t("imager-folder-reparse-unsupported")
+            }
         };
         let _ = write!(warning, "\n{}, {reason}", skipped.path.display());
     }
@@ -4211,6 +4215,57 @@ mod tests {
                 )
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn windows_folder_review_exposes_distinct_cloud_and_reparse_reasons_semantically() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        app.apply_command(SetupCommand::Next);
+        let mut reviewed = scan("Documents", 5);
+        reviewed.skipped_count = 2;
+        reviewed.skipped = vec![
+            SkippedEntry {
+                path: PathBuf::from("Documents/online-only"),
+                reason: SkipReason::CloudUnavailable,
+            },
+            SkippedEntry {
+                path: PathBuf::from("Documents/local-reparse"),
+                reason: SkipReason::UnsupportedReparsePoint,
+            },
+        ];
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
+            result: Ok(reviewed),
+        });
+        assert!(app.status.contains("incomplete estimate"));
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+        for fact in [
+            "online-only",
+            "offline or requiring recall",
+            "will not download",
+            "more disk space",
+            "local-reparse",
+            "even if its contents are local",
+        ] {
+            harness
+                .expect(&SemanticExpectation::named("setup.folder.0.warnings").name_contains(fact))
+                .unwrap();
+        }
+        harness
+            .perform_named("setup.next", &Action::Activate)
+            .unwrap();
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.review.folder.0")
+                    .value_contains("2 items skipped"),
+            )
+            .unwrap();
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.review.estimate").name_contains("incomplete"),
+            )
+            .unwrap();
     }
 
     /// Failed scans, warnings, distinct destinations and launch failures.

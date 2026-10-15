@@ -251,6 +251,17 @@ impl Disk {
         })
     }
 
+    /// A preparation hint, not proof of a bootable Linux installation. Never
+    /// infer unallocated device space from free bytes inside these filesystems.
+    pub fn has_linux_storage(&self) -> bool {
+        self.partitions.iter().any(|partition| {
+            matches!(
+                partition.filesystem.to_ascii_lowercase().as_str(),
+                "ext2" | "ext3" | "ext4" | "btrfs" | "xfs" | "crypto_luks" | "luks" | "lvm2_member"
+            )
+        })
+    }
+
     pub fn occupied_extents(&self) -> Option<Vec<PartitionExtent>> {
         let mut extents = self
             .partitions

@@ -17,8 +17,9 @@ use tilo_actions::{
 use zeroize::Zeroizing;
 
 use super::{
-    CODECS_DESCRIPTION, FILESYSTEMS, InstallMethod, InstallState, InstallerApp, STEP_LABELS, Step,
-    VerifiedBootState, clear_secret_buffer, local_text, prev_step, secret_copy, step_index,
+    ALONGSIDE_BOOT_GUIDANCE, ALONGSIDE_FILES_GUIDANCE, CODECS_DESCRIPTION, FILESYSTEMS,
+    InstallMethod, InstallState, InstallerApp, STEP_LABELS, Step, VerifiedBootState,
+    alongside_install_impact, clear_secret_buffer, local_text, prev_step, secret_copy, step_index,
     valid_full_name, valid_hostname, valid_locale, valid_timezone_name, valid_username,
     validate_passwords, validate_startup_secret_for,
 };
@@ -32,6 +33,24 @@ use crate::operation::{
 /// A reason an action cannot run now: a stable code and the sentence the
 /// wizard would show.
 type Blocked = Option<(&'static str, String)>;
+
+/// Keep guidance within publication limits without silently dropping it.
+fn with_guidance(mut resource: Resource, id: &str, guidance: &str) -> Resource {
+    for (index, sentence) in guidance.split(". ").enumerate() {
+        resource = resource.with_child(
+            Resource::new(
+                format!("{id}.guidance:{index}"),
+                "installer.guidance",
+                "Installation guidance",
+            )
+            .with_presentation(ResourcePresentation {
+                preview: Some(sentence.to_owned()),
+                ..ResourcePresentation::default()
+            }),
+        );
+    }
+    resource
+}
 
 fn encoded(operation: &Operation) -> EncodedAction {
     EncodedAction::encode_operation(OPERATION_TYPE, operation).unwrap_or_else(|_| EncodedAction {
@@ -379,14 +398,11 @@ impl InstallerApp {
         let on_step = self.off_step(Step::Disk);
         let mut storage = Resource::new(STORAGE, "installer.storage", "Installation target")
             .with_presentation(ResourcePresentation {
-                detail: Some(
-                    if self.install_method == InstallMethod::Alongside {
-                        "Install alongside existing systems"
-                    } else {
-                        "Erase the selected disk"
-                    }
-                    .to_owned(),
-                ),
+                detail: Some(if self.install_method == InstallMethod::Alongside {
+                    bounded(&self.alongside_storage_guidance(), 160)
+                } else {
+                    "Erase the selected disk".to_owned()
+                }),
                 ..ResourcePresentation::default()
             })
             .with_action(gate(
@@ -411,6 +427,9 @@ impl InstallerApp {
                 nullary("refresh", "Refresh disks", &Operation::RefreshDisks),
                 on_step.clone(),
             ));
+        if self.install_method == InstallMethod::Alongside {
+            storage = with_guidance(storage, STORAGE, &self.alongside_storage_guidance());
+        }
         for (index, disk) in self.disks.iter().enumerate() {
             let blocked = on_step.clone().or_else(|| {
                 if disk.blocks_install() {
@@ -716,7 +735,10 @@ impl InstallerApp {
                 "ERASES {device} and all data on it, then installs Tilo. Destructive: type the device name as the confirmation phrase."
             ),
             (Some(device), false) => format!(
-                "Installs Tilo alongside existing systems, formatting only {device}'s reviewed Tilo space. Destructive: type the confirmation phrase."
+                "{} {} {} Destructive: type the confirmation phrase.",
+                alongside_install_impact(self.uses_guided_alongside(), device),
+                crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE),
+                crate::i18n::t(ALONGSIDE_FILES_GUIDANCE)
             ),
             (None, _) => "Select a destination first".to_owned(),
         };
@@ -746,7 +768,29 @@ impl InstallerApp {
             confirmation: ConfirmationPolicy::Phrase { phrase },
             ..ActionContract::default()
         });
-        Resource::new(REVIEW, "installer.review", "Review and install")
+        let review = Resource::new(REVIEW, "installer.review", "Review and install");
+        let review = if erase {
+            review
+        } else {
+            with_guidance(
+                review,
+                REVIEW,
+                &format!(
+                    "{} {} {} {}",
+                    alongside_install_impact(
+                        self.uses_guided_alongside(),
+                        &self.selected_dev().unwrap_or_default()
+                    ),
+                    self.guided_alongside_plan()
+                        .as_ref()
+                        .map(Self::alongside_capacity_summary)
+                        .unwrap_or_default(),
+                    crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE),
+                    crate::i18n::t(ALONGSIDE_FILES_GUIDANCE)
+                ),
+            )
+        };
+        review
             .with_action(gate(
                 typed(
                     "set-recovery-promise",
@@ -1002,6 +1046,12 @@ impl InstallerApp {
                     self.storage_preflight_passed = false;
                 }
                 self.install_method = method;
+                if let Some(identity) = self
+                    .selected_disk_ref()
+                    .and_then(super::DiskMethodIdentity::of)
+                {
+                    self.disk_method_choices.insert(identity, method);
+                }
                 self.status.clear();
                 self.dirty_structure = true;
                 done()
@@ -1033,9 +1083,7 @@ impl InstallerApp {
                     self.storage_preflight_passed = false;
                 }
                 self.selected_disk = Some(index);
-                if self.selected_disk_hosts_installer() {
-                    self.install_method = InstallMethod::Alongside;
-                }
+                self.reset_disk_method();
                 self.status.clear();
                 self.dirty_structure = true;
                 done()
