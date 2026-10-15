@@ -32,6 +32,13 @@ int main(int argc, char **argv) {
         int fd = open(arg, O_WRONLY | O_CREAT | O_TRUNC, 0600);
         return fd >= 0 && write(fd, marker, sizeof marker) == sizeof marker ? 0 : 1;
     }
+    if (strcmp(op, "rename") == 0) {
+        /* Move arg aside to "<arg>.moved", as an app would before planting
+         * a substitute at arg. */
+        char aside[2048];
+        snprintf(aside, sizeof aside, "%s.moved", arg);
+        return rename(arg, aside) == 0 ? 0 : 1;
+    }
     if (strcmp(op, "picked") == 0) {
         /* Consume $TILO_PROBE_TOKEN, if any, then open arg for writing. */
         const char *token = getenv("TILO_PROBE_TOKEN");
