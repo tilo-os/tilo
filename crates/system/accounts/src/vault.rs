@@ -374,6 +374,7 @@ impl SecretVault {
             return Err("credential save pending; retry after browser storage completes".into());
         }
         pending.clear();
+        drop(pending);
         Ok(())
     }
 }
