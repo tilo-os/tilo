@@ -13,15 +13,6 @@
 //! None of this needs privilege. The host's root filesystem is never written,
 //! so a wrecked layer cannot affect the next boot.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod diff;
 pub mod idmap;
 pub mod session;

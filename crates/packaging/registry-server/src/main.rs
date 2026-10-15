@@ -9,15 +9,6 @@
 //! tilo-registry-server init --owner-pubkey <hex> --name <n> --description <d> --base-url <url>
 //! ```
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroUsize;

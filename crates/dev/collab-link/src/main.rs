@@ -33,15 +33,6 @@
 //! Throughput is a token bucket: at most `throughput_bps / 8` bytes per
 //! second per direction, with bursts up to the 64 KiB bucket size.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;

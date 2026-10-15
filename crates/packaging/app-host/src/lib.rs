@@ -27,15 +27,6 @@
 //! that side alone, so an app never compiles the privileged door it talks to
 //! and the shared app runtime does not carry it.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::path::PathBuf;
 
 pub mod client;

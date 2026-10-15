@@ -1,14 +1,5 @@
 //! Wire contract shared by the Tilo shell and projection broker.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 

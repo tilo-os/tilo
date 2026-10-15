@@ -39,15 +39,6 @@
 //! [`output()`] builds a terminal-aware writer that emits ANSI OSC 8
 //! hyperlinks on an interactive terminal, degrading to plain text on pipes.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};

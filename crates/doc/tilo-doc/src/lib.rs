@@ -16,15 +16,6 @@
 //! and the rest is the job of the `tilo-doc-codecs` crate, which projects files
 //! into and out of these resources.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod diff;
 pub mod document;
 pub mod export;

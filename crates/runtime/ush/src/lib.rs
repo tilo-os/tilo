@@ -59,15 +59,6 @@
 //! permissions panel and can revoke. There is no `ush`-local permission type.
 //! See [`policy`].
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod approved_checks;
 pub mod audit;
 pub mod broker;

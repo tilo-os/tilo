@@ -10,14 +10,6 @@
 //! settings. They can never supply a host path, environment variable name,
 //! executable path, Bubblewrap flag, or VM command.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 #![allow(
     clippy::missing_errors_doc,
     reason = "boundary errors are represented by and documented on typed error enums"
