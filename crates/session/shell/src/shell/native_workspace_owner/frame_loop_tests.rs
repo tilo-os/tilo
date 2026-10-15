@@ -17,7 +17,9 @@
 //! take only an owner already open. The session broker, built on the loop
 //! at session start and usually the owner's first user, only starts the
 //! open: its synchronous answers say the owner is opening, and its commits
-//! wait for it in their own futures.
+//! wait for it in their own futures. The rest of binding that broker (its
+//! invocation journal, MLS vault and channel state) runs on the
+//! session-start worker: the loop only starts it, polls it and installs it.
 
 use super::*;
 use crate::shell::{persist, state::WorkspaceTree};
@@ -593,4 +595,94 @@ fn building_the_session_brokers_owner_services_never_waits_for_the_open() {
     OwnerCommitService::health(&commit).expect("the broker answers from the owner once it opened");
     WorkspaceMemberships::health(&commit)
         .expect("membership answers from the owner once it opened");
+}
+
+/// What the loop does to bring the session broker up, at session start and
+/// on the tick first login completes: start binding it, poll the start each
+/// tick, install what it produced. Binding opens the broker's invocation
+/// journal (a directory sync on every open), its vault and its channel
+/// state, so on a thread that may not sync it fails. Here each loop-side
+/// call returns within a frame and makes no sync, and the broker still
+/// comes up with its journal open, because the binding ran on the
+/// session-start worker.
+#[test]
+#[cfg(target_os = "linux")]
+#[serial_test::serial(process_env)]
+fn the_loop_brings_the_session_broker_up_without_waiting_for_the_disk() {
+    use crate::compositor::session_bootstrap::{
+        finish_session_collab_broker, service_socket_is_live, start_session_collab_broker,
+    };
+    use std::sync::Arc;
+    let runtime = tempfile::tempdir().expect("a runtime directory for the broker's socket");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
+    let directory = tempfile::tempdir().expect("a directory for the state file");
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+    let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
+    let network = Arc::new(network);
+    let journal = {
+        let mut name = path.clone().into_os_string();
+        name.push(".invocations");
+        std::path::PathBuf::from(name)
+    };
+
+    let ((broker, unavailable, ticks, slowest), syncs) =
+        crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            on_a_slow_disk(|| {
+                let wake: crate::session_runtime::Wake = Arc::new(|| {});
+                let (start, started) =
+                    timed(|| start_session_collab_broker(Some(&network), tree.clone(), wake));
+                let mut slowest = started;
+                let mut ticks = 0_usize;
+                let deadline = Instant::now()
+                    .checked_add(Duration::from_secs(30))
+                    .expect("deadline");
+                let outcome = loop {
+                    let (polled, took) = timed(|| start.poll());
+                    ticks = ticks.saturating_add(1);
+                    slowest = slowest.max(took);
+                    if let Some(outcome) = polled {
+                        break outcome;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "the session broker never came up off the loop"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                };
+                let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+                    tree.clone(),
+                    crate::shell::hosted_inputs::HostedTileInputs::default(),
+                );
+                let (broker, installed) = timed(|| finish_session_collab_broker(&chrome, outcome));
+                let unavailable = chrome.borrow().collab_unavailable.clone();
+                (broker, unavailable, ticks, slowest.max(installed))
+            })
+        });
+
+    assert_eq!(
+        syncs, 0,
+        "bringing the session broker up synced on the frame loop's thread"
+    );
+    assert!(
+        slowest <= FRAME,
+        "a loop-side step of bringing the session broker up took {slowest:?} over {ticks} ticks, over one frame ({FRAME:?})"
+    );
+    let broker =
+        broker.unwrap_or_else(|| panic!("the session broker did not come up: {unavailable:?}"));
+    assert!(
+        unavailable.is_none(),
+        "a session whose broker came up reports collaboration unavailable: {unavailable:?}"
+    );
+    assert!(
+        service_socket_is_live(&launcher::services::collab_socket()),
+        "the broker that came up is not listening where the launcher dials"
+    );
+    assert!(
+        journal.is_dir(),
+        "the broker came up without opening its invocation journal at {}",
+        journal.display()
+    );
+    drop(broker);
 }

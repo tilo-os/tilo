@@ -408,8 +408,11 @@ use crate::compositor::control_invocation::{
     ControlInvocation, ControlInvocationPoll, InvocationProgress,
 };
 use crate::compositor::control_listing::{HeldListing, ListingStamp, ListingWait};
+#[cfg(test)]
+use crate::compositor::session_bootstrap::spawn_session_collab_broker;
 use crate::compositor::session_bootstrap::{
-    LoadedSession, load_session_tree, service_socket_is_live, spawn_session_collab_broker,
+    LoadedSession, finish_session_collab_broker, load_session_tree, service_socket_is_live,
+    start_session_collab_broker,
 };
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
@@ -7897,31 +7900,31 @@ fn install_wifi_secret_bridge(
     }));
 }
 
-/// Start peer sync before the compositor loop runs, while nothing can launch
-/// yet. A failure leaves the session without sync.
-fn spawn_session_peer_sync(
-    frame_builder: &mut FrameBuilder,
-    state: &mut State,
-    tree_handle: &crate::shell::state::WorkspaceTreeHandle,
-) -> Option<Arc<crate::shell::network::ShellNetwork>> {
-    match crate::shell::network::ShellNetwork::spawn_for_session(tree_handle.clone()) {
-        Ok(handle) => Some(install_session_peer_sync(
-            frame_builder,
-            state,
-            tree_handle,
-            handle,
+/// Ask `PipeWire` whether recordings can take desktop sound and the
+/// microphone, on the session runtime: the probe runs `pw-record` and
+/// `wpctl`, each allowed 5 s. `None` when there is no runtime to ask on;
+/// capture then offers no audio tracks.
+fn start_recording_audio_probe(
+    wake: crate::session_runtime::Wake,
+) -> Option<crate::session_runtime::PendingStart<(bool, bool)>> {
+    match crate::session_runtime::runtime() {
+        Ok(runtime) => Some(crate::session_runtime::start_blocking(
+            runtime.handle(),
+            wake,
+            || Ok(crate::compositor::capture::recording_audio_availability()),
         )),
         Err(error) => {
-            tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
+            tracing::warn!(%error, "recording audio cannot be probed; capture offers no audio");
             None
         }
     }
 }
 
-/// Start peer sync from inside the running compositor loop. Building its
-/// runtime, reading the device key and binding the endpoint block, so they
-/// run on the session runtime; the finished network is delivered back
-/// through `wake` and installed with [`install_session_peer_sync`].
+/// Start peer sync for the compositor loop, at boot or when first login
+/// completes. Building its runtime, reading the device key and binding the
+/// endpoint block, so they run on the session runtime; the finished network
+/// is delivered back through `wake` and installed with
+/// [`install_session_peer_sync`].
 fn start_session_peer_sync(
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
     wake: crate::session_runtime::Wake,
@@ -9291,7 +9294,6 @@ pub fn run() {
     // session's identity and device key once when it starts. Start it after
     // first-login setup too, or it keeps the pre-identity view all session.
     let mut deferred_local_broker = !peer_sync_requested && onboarding_identity_dir.is_some();
-    let mut local_broker_due = false;
     if deferred_peer_sync {
         tracing::info!("peer-sync: waiting for first-login identity setup to complete");
     }
@@ -9410,8 +9412,9 @@ pub fn run() {
     };
     let mut external_floating_ids: HashMap<u64, Vec<String>> = HashMap::new();
     let mut window_appearances = crate::compositor::floating_service::AppearanceDelivery::default();
-    let (system_audio, microphone) = crate::compositor::capture::recording_audio_availability();
-    frame_builder.set_capture_audio_available(system_audio, microphone);
+    // Whether recordings can take sound is asked of PipeWire below, off the
+    // loop (three processes, up to 5 s each); until it answers, capture
+    // offers no audio tracks.
     if let Some(notice) = &state_notice {
         crate::shell::notification::announce_state_notice(&frame_builder.chrome_handle(), notice);
     }
@@ -9453,17 +9456,16 @@ pub fn run() {
         state.selection_store(),
     );
 
-    // Peer sync is constructed here because this is the compositor that boots
-    // as the Tilo session.
-    let mut peer_sync = enable_peer_sync
-        .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, &tree_handle))
-        .flatten();
-    let mut device_fabric_worker = peer_sync
-        .as_ref()
-        .and_then(|network| start_device_fabric(network, &notif_bridge));
-    // Started once, with the first network: a thread that could not start
-    // is reported, not retried every turn.
-    let mut device_fabric_tried = peer_sync.is_some();
+    // Peer sync belongs to this compositor, the one that boots as the Tilo
+    // session. Building it blocks (a runtime, the device key, the endpoint
+    // bind, identity reads that may save), so it starts off the loop once
+    // the loop runs (`network_start` below), the way first login starts it;
+    // the loop installs it, then the broker over it.
+    let mut peer_sync: Option<Arc<crate::shell::network::ShellNetwork>> = None;
+    // Started once, with the first network the loop installs: a thread that
+    // could not start is reported, not retried every turn.
+    let mut device_fabric_worker = None;
+    let mut device_fabric_tried = false;
     let mut spatial_control: Option<SpatialControlSession> = None;
     let mut spatial_pointer_parked = false;
     // Loop iterations since the last quiet trim was asked for.
@@ -9471,57 +9473,38 @@ pub fn run() {
     // When the presenter's strip layers are drawn again, once the desktop
     // rests after a frame that changed it ([`LAYER_WARM_SETTLE`]).
     let mut layer_warm_at: Option<Instant> = None;
-    // The session's CRDT fan-out broker, bound before the wayland socket is
-    // published (before any app launches) — an app resolves its collab
-    // descriptor once at spawn, so a broker arriving later is one it never gets.
+    // The session's CRDT fan-out broker. Lives in this process, not a unit
+    // of its own: a listener + fanout table over `ShellNetwork`, since the
+    // shell already owns the network stack, identity and permissions. Held
+    // to the end of `run()` so the socket outlives every app and unlinks with
+    // the session.
     //
-    // Lives in this process, not a unit of its own: a listener + fanout
-    // table over `ShellNetwork` (the Iroh handle above), since the shell
-    // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
+    // Binding it opens its invocation journal, its MLS vault and every
+    // channel's sealed state, so it binds on the session-start worker
+    // (`broker_start` below) and the loop installs it when it is up. An app
+    // resolves its collab descriptor once at spawn, so launches are held
+    // until then, and restored hosted tabs wait for it (`Starting`).
     // Onboarding withholds every app, so defer its broker too. That lets the
     // freshly authenticated transport be its outbound route as soon as the
     // person completes setup, with no stale local-only broker to replace.
-    let mut collab_broker = (!deferred_peer_sync && !deferred_local_broker)
-        .then(|| spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref()))
-        .flatten();
-    if let Some(broker) = collab_broker.as_ref() {
-        attach_collab_broker_bridges(&mut frame_builder, broker);
-        #[cfg(feature = "agent-control")]
-        spawn_agent_mcp(broker, &tree_handle, backend_kind == BackendKind::Headless);
-        if let (Some(portal), Some(service)) =
-            (portal_backend.as_ref(), broker.native_media_service())
-        {
-            service.install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
-        }
-    }
-    let mut local_session_lifecycle = collab_broker
-        .as_ref()
-        .map(crate::shell::collab_broker::BrokerHandle::local_session_lifecycle);
-    let mut realtime_fabric_bridge = collab_broker
-        .as_ref()
-        .and_then(crate::shell::collab_broker::BrokerHandle::realtime_fabric_bridge);
-    let mut remote_capture_runtime = realtime_fabric_bridge
-        .as_ref()
-        .and_then(
-            crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::realtime_capture_broker,
-        )
-        .map(|capture| {
-            std::sync::Arc::new(std::sync::Mutex::new(
-                crate::shell::remote_capture::runtime::RemoteCaptureFabricRuntime::production(
-                    capture,
-                ),
-            ))
-        });
-    if let Some(remote_capture) = remote_capture_runtime.as_ref() {
-        crate::shell::remote_capture::runtime::install_active_runtime(remote_capture);
+    let mut collab_broker: Option<crate::shell::collab_broker::BrokerHandle> = None;
+    let mut local_session_lifecycle: Option<LocalSessionLifecycle> = None;
+    let mut realtime_fabric_bridge: Option<
+        crate::shell::collab_broker_capnp::RealtimeFabricAppBridge,
+    > = None;
+    let mut remote_capture_runtime: Option<
+        std::sync::Arc<
+            std::sync::Mutex<crate::shell::remote_capture::runtime::RemoteCaptureFabricRuntime>,
+        >,
+    > = None;
+    // A session that is not onboarding starts its services on the first
+    // tick: the network first when peer sync is on, else the local broker.
+    let boot_network = enable_peer_sync && !deferred_peer_sync;
+    let mut local_broker_due = !enable_peer_sync && !deferred_peer_sync && !deferred_local_broker;
+    if boot_network || local_broker_due {
+        crate::shell::launcher::hold_launches();
     }
     let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
-    // Onboarding defers the broker; its start below says so then.
-    if !deferred_peer_sync && !deferred_local_broker {
-        crate::shell::in_process::set_session_services(
-            crate::shell::in_process::SessionServices::Listening,
-        );
-    }
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
@@ -9537,14 +9520,6 @@ pub fn run() {
     // guards. Recover those PID-qualified private names before binding this
     // session; clean exits already remove them explicitly below.
     remove_stale_private_wayland_endpoints(&crate::shell::launcher::runtime_dir());
-
-    // Read the session's own broker for pointer presence and relay it to the
-    // room's other hosts; subscribing by room is what makes a cursor crossing
-    // apps read as one peer moving, since presence is room-scoped. Only stood
-    // up when both halves exist — without peer sync, the overlay paints nothing.
-    if let (Some(broker), Some(net)) = (collab_broker.as_ref(), peer_sync.as_ref()) {
-        attach_peer_presence(&mut frame_builder, broker, net);
-    }
 
     // Seed the fullscreen-configure size so an early `set_fullscreen` fills the output before the first resize.
     state.output_size = size_to_signed(initial_size);
@@ -9817,23 +9792,18 @@ pub fn run() {
     let _invocation_wake =
         crate::shell::search::invocation_wake::install(Arc::clone(&session_wake));
     notif_bridge.set_wake(Arc::clone(&session_wake));
-    if let Some(net) = peer_sync.as_ref() {
-        net.set_wake(Arc::clone(&session_wake));
-    }
     frame_builder
         .host_mut()
         .set_quick_settings_wake(Arc::clone(&session_wake));
+    // The network, once the loop installs it, takes the same wake and
+    // binds the hosted apps that use it.
     frame_builder.with_chrome(|chrome| {
         // From here on the loop never waits on the disk to open a tab's
         // record: the record store's thread opens it and wakes the loop.
         chrome.open_records_without_waiting(Arc::clone(&session_wake));
         if let Some(apps) = chrome.hosted_inputs.in_process() {
-            let mut apps = apps.borrow_mut();
-            apps.bind_messaging_record_wake(Arc::clone(&session_wake));
-            if let Some(network) = peer_sync.as_ref() {
-                apps.bind_private_messages_network(network);
-                apps.bind_feedback_network(Arc::clone(network));
-            }
+            apps.borrow_mut()
+                .bind_messaging_record_wake(Arc::clone(&session_wake));
         }
     });
     let chooser_attended = Arc::new(AtomicBool::new(false));
@@ -9847,7 +9817,19 @@ pub fn run() {
     let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<
         crate::session_runtime::PendingStart<crate::shell::network::ShellNetwork>,
-    > = None;
+    > = boot_network
+        .then(|| start_session_peer_sync(tree_handle.clone(), Arc::clone(&session_wake)));
+    let mut recording_audio_probe = start_recording_audio_probe(Arc::clone(&session_wake));
+    // Whether the launches held for the network fail when it does not come:
+    // first login asked for sync, while a boot whose network failed carries
+    // on local-only, as it always has.
+    let mut network_held_launches = false;
+    // The session broker binding on the session-start worker, with the
+    // network failure its held launches are reported with once it is up.
+    let mut broker_start: Option<(
+        crate::session_runtime::PendingStart<crate::compositor::session_bootstrap::BrokerStart>,
+        Option<String>,
+    )> = None;
     // A media player's answer to a transport key, as the OSD to raise.
     let (transport_osd, transport_osds) =
         crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
@@ -12786,6 +12768,7 @@ pub fn run() {
             // an app's first service descriptor sees the live broker.
             frame_builder.host_mut().set_peer_sync_enabled(true);
             crate::shell::launcher::hold_launches();
+            network_held_launches = true;
             network_start = Some(start_session_peer_sync(
                 tree_handle.clone(),
                 Arc::clone(&session_wake),
@@ -12870,11 +12853,41 @@ pub fn run() {
                 }
                 Some(Err(error)) => {
                     tracing::warn!(%error, "peer-sync: spawn failed; continuing without sync");
-                    Some(error)
+                    // Launches held for the network first login asked for
+                    // are reported; a boot carries on local-only.
+                    network_held_launches.then_some(error)
                 }
             };
-            collab_broker =
-                spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
+            // Binding the broker opens its journal, vault and channel state:
+            // on the session-start worker, installed below when it is up.
+            // Launches stay held until then.
+            crate::shell::launcher::hold_launches();
+            broker_start = Some((
+                start_session_collab_broker(
+                    peer_sync.as_ref(),
+                    tree_handle.clone(),
+                    Arc::clone(&session_wake),
+                ),
+                start_failure,
+            ));
+        }
+        if let Some(answer) = recording_audio_probe
+            .as_ref()
+            .and_then(crate::session_runtime::PendingStart::poll)
+        {
+            recording_audio_probe = None;
+            match answer {
+                Ok((system_audio, microphone)) => {
+                    frame_builder.set_capture_audio_available(system_audio, microphone);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "recording audio probe ended without an answer; capture offers no audio");
+                }
+            }
+        }
+        if let Some(outcome) = broker_start.as_ref().and_then(|(start, _)| start.poll()) {
+            let start_failure = broker_start.take().and_then(|(_, failure)| failure);
+            collab_broker = finish_session_collab_broker(&frame_builder.chrome_handle(), outcome);
             crate::shell::in_process::set_session_services(
                 crate::shell::in_process::SessionServices::Listening,
             );
