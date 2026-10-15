@@ -229,6 +229,9 @@ struct Running {
     /// The records its steps opened or acted on: what a re-plan is always
     /// offered, whatever the rest of the task calls them.
     touched: Vec<DocumentRoute>,
+    /// The records its steps opened new, oldest first: where an import
+    /// naming no record goes ([`Running::record_for`]).
+    made: Vec<DocumentRoute>,
     /// How many of its performed steps did something (not only opened a
     /// record).
     acted: usize,
@@ -715,6 +718,32 @@ impl Running {
         self.produced.extend(content);
     }
 
+    /// The record a step naming none acts on, among `open`, the records
+    /// the agent has open: the latest of its app the task opened new, else
+    /// (unless it imports) the latest of its app the task acted on, else
+    /// any open. `None` opens a new record. An import replaces what a
+    /// document holds, so one naming no record never lands in a record
+    /// another person or task is writing, only in one this task made.
+    fn record_for<'a>(
+        &self,
+        step: &Step,
+        open: impl IntoIterator<Item = &'a DocumentRoute>,
+    ) -> Option<DocumentRoute> {
+        let of_app = |route: &&DocumentRoute| route.app_id == step.app;
+        if let Some(made) = self.made.iter().rev().find(of_app) {
+            return Some(made.clone());
+        }
+        if imports(step) {
+            return None;
+        }
+        self.touched
+            .iter()
+            .rev()
+            .find(of_app)
+            .or_else(|| open.into_iter().find(of_app))
+            .cloned()
+    }
+
     /// The content a placeholder in a step of `app` stands for: the latest
     /// another app's step made (the picture an export made, to place in a
     /// document), else the latest of all. A document's own export placed in
@@ -885,6 +914,7 @@ impl Running {
             news_replans: 0,
             waits: Waits::default(),
             touched: Vec::new(),
+            made: Vec::new(),
             acted: 0,
             changed: false,
             follow_ups: FollowUps::default(),
@@ -1121,6 +1151,16 @@ fn step_brief(step: &Step) -> String {
         brief = brief.chars().take(157).collect::<String>() + "...";
     }
     brief.trim().to_owned()
+}
+
+/// Whether `step` imports a file into its record (`import-docx-content`,
+/// `import-pptx-content`, …): what the record held is replaced. A video
+/// project's `import-content` adds media to it instead, and is not one.
+fn imports(step: &Step) -> bool {
+    matches!(&step.action, StepAction::Invoke { address, .. }
+        if address.action.starts_with("import-")
+            && address.action.ends_with("-content")
+            && address.action != "import-content")
 }
 
 /// The content addresses among what `output` names.
@@ -2359,12 +2399,10 @@ impl AgentParticipant {
             }
             arguments
         });
-        let route = match &step.record {
-            Some(record) => self.open(&step.app, Some(record))?,
-            None => match self.apps.keys().find(|route| route.app_id == step.app) {
-                Some(route) => route.clone(),
-                None => self.open(&step.app, None)?,
-            },
+        let route = if let Some(record) = &step.record {
+            self.open(&step.app, Some(record))?
+        } else {
+            self.unnamed_record(step)?
         };
         if let Some(running) = self.running.as_mut()
             && !running.touched.contains(&route)
@@ -2380,6 +2418,30 @@ impl AgentParticipant {
             }
             _ => Ok(None),
         }
+    }
+
+    /// The record `step`, which names none, acts on
+    /// ([`Running::record_for`]): one open, or a new one the task made.
+    fn unnamed_record(&mut self, step: &Step) -> Result<DocumentRoute, String> {
+        let found = self.running.as_ref().map_or_else(
+            || {
+                self.apps
+                    .keys()
+                    .find(|route| route.app_id == step.app)
+                    .cloned()
+            },
+            |running| running.record_for(step, self.apps.keys()),
+        );
+        if let Some(route) = found.filter(|route| self.apps.contains_key(route)) {
+            return Ok(route);
+        }
+        let route = self.open(&step.app, None)?;
+        if let Some(running) = self.running.as_mut()
+            && !running.made.contains(&route)
+        {
+            running.made.push(route.clone());
+        }
+        Ok(route)
     }
 
     /// Commit whatever the open records changed since the last commit.
@@ -4246,6 +4308,45 @@ mod tests {
             panic!("{:?}", done.steps);
         };
         assert!(brief.contains("Your planned steps are done"), "{brief}");
+    }
+
+    /// An import naming no record never lands in a document another agent
+    /// is writing that this task only opened: it goes to a record the task
+    /// made, or a new one. Other steps naming no record act on the record
+    /// the task made or acted on, else any open; a video project's
+    /// `import-content` adds media and is not an import.
+    #[test]
+    fn an_import_naming_no_record_goes_to_a_record_the_task_made() {
+        let writer = "so.tilo.word-processor";
+        let theirs = message_route(writer, "eve-evidence");
+        let other = message_route(writer, "older");
+        let import = invoke(writer, "word-processor.document", "import-docx-content");
+        let append = invoke(writer, "word-processor.document", "append-paragraph");
+        let mut running = Running::new("t1".into(), "x".into(), Vec::new(), Vec::new());
+        running.touched.push(theirs.clone());
+        let open = [other.clone(), theirs.clone()];
+        assert_eq!(running.record_for(&import, &open), None, "a new record");
+        assert_eq!(running.record_for(&append, &open), Some(theirs));
+        let fresh = Running::new("t2".into(), "x".into(), Vec::new(), Vec::new());
+        assert_eq!(fresh.record_for(&append, &open), Some(other));
+
+        let mine = message_route(writer, "mine");
+        running.made.push(mine.clone());
+        assert_eq!(running.record_for(&import, &open), Some(mine.clone()));
+        assert_eq!(running.record_for(&append, &open), Some(mine));
+
+        assert!(imports(&import));
+        assert!(imports(&invoke(
+            "so.tilo.slides",
+            "slides.deck",
+            "import-pptx-content"
+        )));
+        assert!(!imports(&invoke(
+            "so.tilo.video-editor",
+            "video_editor.project",
+            "import-content"
+        )));
+        assert!(!imports(&append));
     }
 
     /// A planning model that keeps the briefing it was given and plans

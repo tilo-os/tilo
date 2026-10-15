@@ -708,7 +708,7 @@ fn a_presentation_kept_as_content_opens_as_the_deck() {
     ui::tilo_resource::content::register(&window.handle(), store.clone());
     let _entered = window.enter();
 
-    let mut participant = Participant::new();
+    let mut participant = Participant::over(&crate::model::starter_deck());
     let heads = participant.doc.get_heads();
     for (content, says) in [
         (format!("tilo.content:{text}"), "not a .pptx or .odp"),
@@ -741,4 +741,41 @@ fn a_presentation_kept_as_content_opens_as_the_deck() {
             .collect()
     };
     assert_eq!(words(&deck), words(&source));
+}
+
+/// An import replaces the whole deck, so a deck someone made slides in
+/// refuses it, saying to import into a new deck, and keeps what it held.
+#[test]
+fn a_presentation_is_not_imported_over_a_deck_that_holds_content() {
+    let mut source = seed_deck();
+    source.slides.truncate(2);
+    let store = tilo_content::ContentStore::memory();
+    let pptx = crate::pptx::write_pptx(&source, &store).unwrap();
+    let hash = store.put(&pptx).unwrap();
+    let window = ui::WakeScope::new();
+    ui::tilo_resource::content::register(&window.handle(), store.clone());
+    let _entered = window.enter();
+
+    let mut written = crate::model::starter_deck();
+    if let Some(title) = written
+        .slides
+        .first_mut()
+        .and_then(|slide| slide.elements.first_mut())
+    {
+        title.text = "Evidence for the hearing".into();
+    }
+    for deck in [seed_deck(), written] {
+        let mut participant = Participant::over(&deck);
+        let heads = participant.doc.get_heads();
+        let error = participant
+            .invoke(
+                actions::IMPORT_PPTX_CONTENT,
+                &json!({ "content": format!("tilo.content:{hash}") }),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("already holds content"), "{error}");
+        assert!(error.contains("new Slides deck"), "{error}");
+        assert_eq!(participant.doc.get_heads(), heads, "the deck is kept");
+    }
 }

@@ -143,8 +143,14 @@ impl Resource for Document {
             )
             .describe("Set the four page margins, in pixels."),
         );
-        decls.push(import_docx_content());
         decls
+    }
+
+    /// The import, bound to whether the document already holds content: an
+    /// import replaces everything, so it is refused there rather than
+    /// wiping what someone wrote.
+    fn bound_declarations(state: &Self::State) -> Vec<ActionDecl<Self>> {
+        vec![import_docx_content(holds_content(state))]
     }
 
     fn views(state: &Self::State) -> Vec<tilo_actions::ResourceViewSpec> {
@@ -173,10 +179,50 @@ impl Resource for Document {
     }
 }
 
+/// Whether the document holds anything written: more than the one empty
+/// paragraph a new document starts with, a heading, picture or table, a
+/// header or footer, a note or comment, or a file it was read from. A body
+/// paragraph's text is read only when shown, so one paragraph counts by
+/// what is known of it.
+fn holds_content(state: &RichTextState) -> bool {
+    let body = state.body();
+    let first_written = body.id_at(0).is_some_and(|id| {
+        !id.starts_with(GENESIS_PARAGRAPH)
+            || state
+                .block(id)
+                .is_some_and(|block| !block.text.trim().is_empty())
+    });
+    let region_written = |blocks: &[tilo_doc::snapshot::BlockView]| {
+        blocks
+            .iter()
+            .any(|block| !block.text.trim().is_empty() || !block.children.is_empty())
+    };
+    body.len() > 1
+        || first_written
+        || ["heading", "image", "cell"]
+            .iter()
+            .any(|kind| !state.featured(kind).is_empty())
+        || region_written(state.header())
+        || region_written(state.footer())
+        || !state.notes().is_empty()
+        || !state.comments().is_empty()
+        || !state.content().is_empty()
+        || state.file_digest().is_some()
+}
+
+/// The id prefix of the empty paragraph a new document starts with.
+const GENESIS_PARAGRAPH: &str = "genesis";
+
+/// What an import into a document that holds content is refused with.
+const IMPORT_INTO_WRITTEN: &str = "this document already holds content, which an import would \
+    replace: import the file into a new Word Processor document instead";
+
 /// The document's import of a `.docx` kept as content: an attachment, a
 /// shared file, an export. Its pictures are kept in the window's content
-/// store, as a file opened with them is.
-fn import_docx_content() -> ActionDecl<Document> {
+/// store, as a file opened with them is. `held` when the document already
+/// holds content: the import is refused, so another person's or task's
+/// writing is never replaced.
+fn import_docx_content(held: bool) -> ActionDecl<Document> {
     ActionDecl::new(
         "import-docx-content",
         "Open Word document from content",
@@ -186,7 +232,10 @@ fn import_docx_content() -> ActionDecl<Document> {
             "The document's content address, `tilo.content:<hash>` (an attachment, a shared \
              file, an export): a .docx",
         )],
-        |args, _| {
+        move |args, _| {
+            if held {
+                return Err(IMPORT_INTO_WRITTEN.to_owned());
+            }
             let address = args.text("content").map_or("", str::trim);
             let hash = tilo_actions::content_hash(address)
                 .unwrap_or(address)
@@ -206,8 +255,9 @@ fn import_docx_content() -> ActionDecl<Document> {
         },
     )
     .describe(
-        "Make this document the .docx kept as content: its text, headings, lists, tables and \
-         pictures, replacing what the document held. Then read-text reads it.",
+        "Make this new, empty document the .docx kept as content: its text, headings, lists, \
+         tables and pictures. Then read-text reads it. A document that already holds content \
+         refuses it: import into a new document.",
     )
 }
 
@@ -630,12 +680,6 @@ mod tests {
         let docx = writer.content().read(&hash).unwrap();
 
         let mut reader = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
-        reader
-            .call(
-                "append-paragraph",
-                serde_json::json!({"text": "Written before the import"}),
-            )
-            .unwrap();
         assert_eq!(reader.content().put(&docx).unwrap(), hash);
         reader
             .call(
@@ -651,26 +695,90 @@ mod tests {
             .to_string();
         assert!(read.contains("# Lamp inventory"), "{read}");
         assert!(read.contains("The hall lamp is lit."), "{read}");
-        assert!(
-            !read.contains("Written before the import"),
-            "the import replaces what the document held: {read}"
-        );
 
-        let text = reader.content().put(b"not a docx").unwrap();
-        let refused = reader
+        let mut empty = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+        let text = empty.content().put(b"not a docx").unwrap();
+        let refused = empty
             .call("import-docx-content", serde_json::json!({"content": text}))
             .unwrap_err();
         assert!(
             refused.to_string().contains("is not a Word document"),
             "{refused}"
         );
-        let missing = reader
+        let missing = empty
             .call(
                 "import-docx-content",
                 serde_json::json!({"content": format!("tilo.content:{}", "0".repeat(64))}),
             )
             .unwrap_err();
         assert!(missing.to_string().contains("not available"), "{missing}");
+    }
+
+    /// An import replaces the whole document, so a document someone wrote
+    /// in refuses it, saying to import into a new one, and keeps what it
+    /// held; a new, empty document takes it.
+    #[test]
+    fn an_import_into_a_document_that_holds_content_is_refused() {
+        let mut writer = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+        writer
+            .call(
+                "write-markdown",
+                serde_json::json!({"markdown": "# Lamp inventory\n\nThe hall lamp is lit."}),
+            )
+            .unwrap();
+        writer.settle();
+        let output = writer
+            .effect(&super::WordProcessorEffect::ExportContent {
+                format: "docx".into(),
+            })
+            .unwrap();
+        let address = output.resources[0].clone();
+        let hash = tilo_actions::content_hash(&address).unwrap().to_owned();
+        let docx = writer.content().read(&hash).unwrap();
+
+        for written in [
+            vec!["Evidence: the receipt dated 3 May"],
+            vec!["Evidence", "The receipt dated 3 May"],
+        ] {
+            let mut evidence = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+            for text in &written {
+                evidence
+                    .call("append-paragraph", serde_json::json!({"text": text}))
+                    .unwrap();
+            }
+            evidence.settle();
+            assert_eq!(evidence.content().put(&docx).unwrap(), hash);
+            let refused = evidence
+                .call(
+                    "import-docx-content",
+                    serde_json::json!({"content": address}),
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("already holds content"), "{refused}");
+            assert!(refused.contains("new Word Processor document"), "{refused}");
+            evidence.settle();
+            let read = evidence
+                .call("read-text", serde_json::json!({}))
+                .unwrap()
+                .expect("read-text answers")
+                .to_string();
+            assert!(
+                read.contains("The receipt dated 3 May")
+                    || read.contains("the receipt dated 3 May"),
+                "{read}"
+            );
+            assert!(!read.contains("Lamp inventory"), "{read}");
+        }
+
+        let mut fresh = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+        assert_eq!(fresh.content().put(&docx).unwrap(), hash);
+        fresh
+            .call(
+                "import-docx-content",
+                serde_json::json!({"content": address}),
+            )
+            .expect("a new document takes the import");
     }
 
     /// The running Writer with three paragraphs, a picture in its content

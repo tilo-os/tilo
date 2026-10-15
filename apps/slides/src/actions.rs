@@ -1682,6 +1682,37 @@ impl ui::tilo_resource::Resource for SlidesDeck {
         deck_bound_document_actions()
     }
 
+    /// The import, bound to whether the deck already holds content: an
+    /// import replaces the whole deck, so it is refused there rather than
+    /// wiping what someone made.
+    fn bound_declarations(state: &SlidesResourceCtx) -> Vec<ActionDecl<Self>> {
+        let held = deck_holds_content(state);
+        vec![
+            ActionDecl::new(
+                IMPORT_PPTX_CONTENT,
+                "Open presentation from content",
+                vec![ActionParam::required(
+                    "content",
+                    ParamType::Text,
+                    "The presentation's content address, `tilo.content:<hash>` (an attachment, a \
+                     shared file, an export): a .pptx or .odp",
+                )],
+                move |args, _| {
+                    if held {
+                        return Err(IMPORT_INTO_WRITTEN.to_owned());
+                    }
+                    build_import_content(args)
+                },
+            )
+            .describe(
+                "Make this new, empty deck the presentation kept as content: its slides, layout, \
+                 pictures and speaker notes. A deck that already holds content refuses it: \
+                 import into a new deck.",
+            )
+            .returns(outline_result()),
+        ]
+    }
+
     fn coalesces(previous: &SlidesAction, next: &SlidesAction) -> bool {
         matches!(
             (previous, next),
@@ -1722,22 +1753,6 @@ impl ui::tilo_resource::Resource for SlidesDeck {
         restyle_params.extend(style_params());
 
         vec![
-            ActionDecl::new(
-                IMPORT_PPTX_CONTENT,
-                "Open presentation from content",
-                vec![ActionParam::required(
-                    "content",
-                    ParamType::Text,
-                    "The presentation's content address, `tilo.content:<hash>` (an attachment, a \
-                     shared file, an export): a .pptx or .odp",
-                )],
-                |args, _| build_import_content(args),
-            )
-            .describe(
-                "Make this deck the presentation kept as content: its slides, layout, pictures \
-                 and speaker notes, replacing what the deck held.",
-            )
-            .returns(outline_result()),
             ActionDecl::new(ADD_ELEMENT, "Add element", add_params, |args, _| {
                 build_add_element(args)
             })
@@ -2095,6 +2110,26 @@ fn build_add_element(args: &ActionArgs) -> Result<SlidesAction, String> {
             style: style_patch(args)?,
         },
     })
+}
+
+/// What an import into a deck that holds content is refused with.
+const IMPORT_INTO_WRITTEN: &str = "this deck already holds content, which an import would \
+    replace: import the presentation into a new Slides deck instead";
+
+/// Whether the deck holds anything made: more than the one slide a new
+/// deck starts with, speaker notes, or an element that is not one of its
+/// empty text boxes.
+fn deck_holds_content(state: &SlidesResourceCtx) -> bool {
+    let deck = state.deck();
+    deck.slides.len() > 1
+        || deck.slides.iter().any(|slide| {
+            !slide.notes.trim().is_empty()
+                || slide.elements.iter().any(|element| {
+                    element.kind != crate::model::ElementKind::Text
+                        || !element.text.trim().is_empty()
+                        || !element.src.is_empty()
+                })
+        })
 }
 
 /// [`IMPORT_PPTX_CONTENT`]: the deck a `.pptx` or `.odp` kept as content
