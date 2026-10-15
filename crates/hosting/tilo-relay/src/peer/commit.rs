@@ -3,12 +3,6 @@
 
 use super::*;
 
-/// Handle an inbound `Commit`: admit it exactly like a `Delta` (the reply
-/// waits until the host persisted it), then tell the author its host order.
-/// A commit the host cannot admit is refused to the author without closing
-/// the session. A resent commit the host already admitted is answered with
-/// its original order from the workspace's commit ledger and neither
-/// persisted nor fanned out again.
 /// Spends `peer`'s budget for one change, unless the relay's own user sent
 /// it: the host device and the bots a host-held root delegated must never
 /// turn a burst into refusals.
@@ -25,6 +19,12 @@ pub(super) fn over_change_limit(
         .err()
 }
 
+/// Handle an inbound `Commit`: admit it exactly like a `Delta` (the reply
+/// waits until the host persisted it), then tell the author its host order.
+/// A commit the host cannot admit is refused to the author without closing
+/// the session. A resent commit the host already admitted is answered with
+/// its original order from the workspace's commit ledger and neither
+/// persisted nor fanned out again.
 pub(super) async fn handle_commit(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,

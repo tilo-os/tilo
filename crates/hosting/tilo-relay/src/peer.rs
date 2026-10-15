@@ -27,8 +27,8 @@ pub(crate) use actions::{ActionTarget, PrivateOutbound};
 #[cfg(test)]
 use actions::{PrivateDelivery, authorize_delivery};
 use actions::{
-    RemoteActionRoute, handle_remote_action, private_membership, private_phase, private_workspace,
-    route_private, route_private_signed, write_private_delivery,
+    RemoteActionRoute, enable_actions, enable_broker_client, handle_remote_action, register_broker,
+    route_private, route_signed_directed, write_private_delivery,
 };
 use commit::{handle_commit, over_change_limit};
 use compaction::handle_compaction;
@@ -1370,10 +1370,17 @@ async fn authorize_state_recipient(
     }
     Ok(())
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-)]
+/// One subscription's replay as [`finish_replay_write`] drives it: the room,
+/// its persistence owner, and the replay ticket's authority and catch-up.
+#[derive(Clone, Copy)]
+struct ReplayRun<'r> {
+    workspace_id: u64,
+    workspace: &'r SharedWorkspace,
+    owner: &'r crate::persistence::Persistence,
+    authority: &'r Arc<crate::persistence::ReplayAuthority>,
+    catchup: &'r Arc<ReplayCatchup>,
+}
+
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the workspace and authority handles are cloned into the boundary closures that outlive their last named use"
@@ -1388,7 +1395,7 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
 ) -> Result<(), PeerError> {
     let mut reply = batch.reply;
     let mut completed_replay = None;
-    if let Some((workspace_id, ticket, mut handle, catchup)) = batch.ticket {
+    if let Some((workspace_id, ticket, handle, catchup)) = batch.ticket {
         let ws = session
             .workspaces
             .lock()
@@ -1397,176 +1404,25 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             .cloned()
             .ok_or_else(|| PeerError::Protocol("replay workspace disappeared".into()))?;
         let owner = crate::persistence::handle(&ws).await;
-        let mut written = None;
-        let mut boundary_done = false;
-        let mut replayed_frames = 0u64;
-        loop {
-            let authority = ticket.authority.clone();
-            let source = StateSource::new(peer, session);
-            let preparing = async {
-                authorize_replay(&ws, &source, &authority).await?;
-                handle.advance(&authority, written.take()).await
-            };
-            match replay_direct_wait(preparing, peer, session, private_rx, write).await? {
-                ReplayAdvance::Preparing => {}
-                ReplayAdvance::Batch(mut frames) => {
-                    // A batch is authorised once, as presence authorises each
-                    // room's run: checked per frame, a crowd's replays queued
-                    // every writer in the room on its lock for every frame.
-                    let mut rooms: Vec<(u64, bool)> = Vec::new();
-                    for room in frames.frames().filter_map(state_frame_room) {
-                        if !rooms.contains(&room) {
-                            rooms.push(room);
-                        }
-                    }
-                    for (id, subscribed) in rooms {
-                        authorize_state_recipient(id, subscribed, peer, session).await?;
-                    }
-                    authorize_replay(&ws, &StateSource::new(peer, session), &ticket.authority)
-                        .await?;
-                    while let Some(frame) = frames.front() {
-                        for _ in 0..8 {
-                            let Ok(private) = private_rx.try_recv() else {
-                                break;
-                            };
-                            write_private(private, peer, session, write).await?;
-                        }
-                        write
-                            .write_all(&encode_charged(frame, session, false)?)
-                            .await?;
-                        trace_native_publication(
-                            "replay_written",
-                            frame,
-                            Some(&peer.device_public_key),
-                        );
-                        // The position follows after `Ready`; a reconnect
-                        // before it replays these frames once more.
-                        let _ = resume_record(session, workspace_id, [frame]);
-                        frames.pop_written();
-                    }
-                    written = Some(WrittenBatch(frames.number));
-                    // No frame or output permit escapes this one outstanding batch.
-                    drop(frames);
-                    continue;
-                }
-                ReplayAdvance::Exhausted(summary) => {
-                    replayed_frames = replayed_frames.saturating_add(summary.total_frames);
-                    let authority = ticket.authority.clone();
-                    let source = StateSource::new(peer, session);
-                    let workspace = ws.clone();
-                    let checking_workspace = ws.clone();
-                    let checking_source = source.clone();
-                    let cleanup_handle = handle.clone();
-                    if boundary_done {
-                        let cleanup = owner.submit_replay_resumable_wait(
-                            false,
-                            1,
-                            async move {
-                                authorize_replay(&workspace, &source, &authority).await?;
-                                Ok(authority)
-                            },
-                            move |state, authority| {
-                                let authority = authority.as_ref().invariant("replay cleanup")?;
-                                state.finish_replay(authority, &cleanup_handle, |store| {
-                                    authorize_replay_now(
-                                        store,
-                                        &checking_workspace,
-                                        &checking_source,
-                                        authority,
-                                    )
-                                })
-                            },
-                            |result| async { result },
-                        );
-                        let _ = Box::pin(replay_wait(cleanup, peer, session, private_rx, write))
-                            .await?;
-                    } else {
-                        // The first replay's cleanup and the cut of what
-                        // committed while it ran are one turn of the owner:
-                        // two, a newcomer waited behind every queued commit
-                        // twice before it was caught up.
-                        let checking = catchup.clone();
-                        let completing = catchup.clone();
-                        let boundary_workspace = ws.clone();
-                        let boundary_source = source.clone();
-                        let boundary_authority = authority.clone();
-                        let mut finished = false;
-                        let boundary = owner.submit_replay_resumable_wait(
-                            true,
-                            1,
-                            async move {
-                                authorize_replay(&workspace, &source, &authority).await?;
-                                Ok(authority)
-                            },
-                            move |state, authority| {
-                                let authority = authority.as_ref().invariant("replay boundary")?;
-                                if !finished {
-                                    let step = state.finish_replay(
-                                        authority,
-                                        &cleanup_handle,
-                                        |store| {
-                                            authorize_replay_now(
-                                                store,
-                                                &checking_workspace,
-                                                &checking_source,
-                                                authority,
-                                            )
-                                        },
-                                    )?;
-                                    if matches!(step, Step::More) {
-                                        return Ok(Step::More);
-                                    }
-                                    finished = true;
-                                }
-                                if !checking.dirty.load(std::sync::atomic::Ordering::SeqCst) {
-                                    return Ok(Step::Done(None));
-                                }
-                                let step =
-                                    state.capture_pending_replay(authority, &checking.held)?;
-                                match step {
-                                    Step::More => Ok(Step::More),
-                                    Step::Done(handle) => Ok(Step::Done(Some(handle))),
-                                }
-                            },
-                            move |result| async move {
-                                let result = result?;
-                                finish_replay_boundary(
-                                    &boundary_workspace,
-                                    &boundary_source,
-                                    &boundary_authority,
-                                    &completing,
-                                )
-                                .await?;
-                                Ok(result)
-                            },
-                        );
-                        let caught_up =
-                            Box::pin(replay_wait(boundary, peer, session, private_rx, write))
-                                .await?;
-                        if let Some(catchup_handle) = caught_up {
-                            handle = catchup_handle;
-                            written = None;
-                            boundary_done = true;
-                            continue;
-                        }
-                    }
-                    authorize_replay(&ws, &StateSource::new(peer, session), &ticket.authority)
-                        .await?;
-                    reply = Some(Envelope::Ready {
-                        workspace_id,
-                        pending_deltas: u32::try_from(replayed_frames).unwrap_or(u32::MAX),
-                    });
-                    completed_replay = Some((
-                        catchup.clone(),
-                        ws.clone(),
-                        StateSource::new(peer, session),
-                        ticket,
-                    ));
-                    break;
-                }
-            }
-            written = None;
-        }
+        let run = ReplayRun {
+            workspace_id,
+            workspace: &ws,
+            owner: &owner,
+            authority: &ticket.authority,
+            catchup: &catchup,
+        };
+        let replayed_frames = drive_replay(run, handle, peer, session, private_rx, write).await?;
+        authorize_replay(&ws, &StateSource::new(peer, session), &ticket.authority).await?;
+        reply = Some(Envelope::Ready {
+            workspace_id,
+            pending_deltas: u32::try_from(replayed_frames).unwrap_or(u32::MAX),
+        });
+        completed_replay = Some((
+            catchup.clone(),
+            ws.clone(),
+            StateSource::new(peer, session),
+            ticket,
+        ));
         // Dropping this ticket schedules specific bounded spool reclamation.
     }
     if let Some(reply) = reply {
@@ -1606,6 +1462,205 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
         pending.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
     Ok(())
+}
+
+/// Write `run`'s replay to the connection batch by batch, then cut what
+/// committed while it ran and replay that too, until the subscriber is
+/// caught up. Returns how many frames the replays held.
+async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
+    run: ReplayRun<'_>,
+    mut handle: ReplayHandle,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
+    write: &mut W,
+) -> Result<u64, PeerError> {
+    let mut written = None;
+    let mut boundary_done = false;
+    let mut replayed_frames = 0u64;
+    loop {
+        let authority = run.authority.clone();
+        let source = StateSource::new(peer, session);
+        let preparing = async {
+            authorize_replay(run.workspace, &source, &authority).await?;
+            handle.advance(&authority, written.take()).await
+        };
+        match replay_direct_wait(preparing, peer, session, private_rx, write).await? {
+            ReplayAdvance::Preparing => {}
+            ReplayAdvance::Batch(frames) => {
+                written =
+                    Some(write_replay_batch(run, frames, peer, session, private_rx, write).await?);
+                continue;
+            }
+            ReplayAdvance::Exhausted(summary) => {
+                replayed_frames = replayed_frames.saturating_add(summary.total_frames);
+                if boundary_done {
+                    finish_replay_cleanup(run, &handle, peer, session, private_rx, write).await?;
+                } else if let Some(catchup_handle) =
+                    cut_replay_boundary(run, &handle, peer, session, private_rx, write).await?
+                {
+                    handle = catchup_handle;
+                    written = None;
+                    boundary_done = true;
+                    continue;
+                }
+                return Ok(replayed_frames);
+            }
+        }
+        written = None;
+    }
+}
+
+/// Write one replay batch to the wire, letting queued private replies
+/// overtake it, and record each frame in the subscriber's resume log.
+async fn write_replay_batch<W: tokio::io::AsyncWrite + Unpin>(
+    run: ReplayRun<'_>,
+    mut frames: crate::store::replay::ReplayBatch,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
+    write: &mut W,
+) -> Result<WrittenBatch, PeerError> {
+    // A batch is authorised once, as presence authorises each
+    // room's run: checked per frame, a crowd's replays queued
+    // every writer in the room on its lock for every frame.
+    let mut rooms: Vec<(u64, bool)> = Vec::new();
+    for room in frames.frames().filter_map(state_frame_room) {
+        if !rooms.contains(&room) {
+            rooms.push(room);
+        }
+    }
+    for (id, subscribed) in rooms {
+        authorize_state_recipient(id, subscribed, peer, session).await?;
+    }
+    authorize_replay(
+        run.workspace,
+        &StateSource::new(peer, session),
+        run.authority,
+    )
+    .await?;
+    while let Some(frame) = frames.front() {
+        for _ in 0..8 {
+            let Ok(private) = private_rx.try_recv() else {
+                break;
+            };
+            write_private(private, peer, session, write).await?;
+        }
+        write
+            .write_all(&encode_charged(frame, session, false)?)
+            .await?;
+        trace_native_publication("replay_written", frame, Some(&peer.device_public_key));
+        // The position follows after `Ready`; a reconnect
+        // before it replays these frames once more.
+        let _ = resume_record(session, run.workspace_id, [frame]);
+        frames.pop_written();
+    }
+    let written = WrittenBatch(frames.number);
+    // No frame or output permit escapes this one outstanding batch.
+    drop(frames);
+    Ok(written)
+}
+
+/// Clean up a catch-up replay once it is written, in one turn of the owner.
+async fn finish_replay_cleanup<W: tokio::io::AsyncWrite + Unpin>(
+    run: ReplayRun<'_>,
+    handle: &ReplayHandle,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
+    write: &mut W,
+) -> Result<(), PeerError> {
+    let authority = run.authority.clone();
+    let source = StateSource::new(peer, session);
+    let workspace = run.workspace.clone();
+    let checking_workspace = run.workspace.clone();
+    let checking_source = source.clone();
+    let cleanup_handle = handle.clone();
+    let cleanup = run.owner.submit_replay_resumable_wait(
+        false,
+        1,
+        async move {
+            authorize_replay(&workspace, &source, &authority).await?;
+            Ok(authority)
+        },
+        move |state, authority| {
+            let authority = authority.as_ref().invariant("replay cleanup")?;
+            state.finish_replay(authority, &cleanup_handle, |store| {
+                authorize_replay_now(store, &checking_workspace, &checking_source, authority)
+            })
+        },
+        |result| async { result },
+    );
+    let _ = Box::pin(replay_wait(cleanup, peer, session, private_rx, write)).await?;
+    Ok(())
+}
+
+/// Clean up the first replay and cut what committed while it ran. Returns
+/// the handle of that catch-up replay, or `None` when nothing committed.
+async fn cut_replay_boundary<W: tokio::io::AsyncWrite + Unpin>(
+    run: ReplayRun<'_>,
+    handle: &ReplayHandle,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
+    write: &mut W,
+) -> Result<Option<ReplayHandle>, PeerError> {
+    let authority = run.authority.clone();
+    let source = StateSource::new(peer, session);
+    let workspace = run.workspace.clone();
+    let checking_workspace = run.workspace.clone();
+    let checking_source = source.clone();
+    let cleanup_handle = handle.clone();
+    // The first replay's cleanup and the cut of what
+    // committed while it ran are one turn of the owner:
+    // two, a newcomer waited behind every queued commit
+    // twice before it was caught up.
+    let checking = run.catchup.clone();
+    let completing = run.catchup.clone();
+    let boundary_workspace = run.workspace.clone();
+    let boundary_source = source.clone();
+    let boundary_authority = authority.clone();
+    let mut finished = false;
+    let boundary = run.owner.submit_replay_resumable_wait(
+        true,
+        1,
+        async move {
+            authorize_replay(&workspace, &source, &authority).await?;
+            Ok(authority)
+        },
+        move |state, authority| {
+            let authority = authority.as_ref().invariant("replay boundary")?;
+            if !finished {
+                let step = state.finish_replay(authority, &cleanup_handle, |store| {
+                    authorize_replay_now(store, &checking_workspace, &checking_source, authority)
+                })?;
+                if matches!(step, Step::More) {
+                    return Ok(Step::More);
+                }
+                finished = true;
+            }
+            if !checking.dirty.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(Step::Done(None));
+            }
+            let step = state.capture_pending_replay(authority, &checking.held)?;
+            match step {
+                Step::More => Ok(Step::More),
+                Step::Done(handle) => Ok(Step::Done(Some(handle))),
+            }
+        },
+        move |result| async move {
+            let result = result?;
+            finish_replay_boundary(
+                &boundary_workspace,
+                &boundary_source,
+                &boundary_authority,
+                &completing,
+            )
+            .await?;
+            Ok(result)
+        },
+    );
+    Box::pin(replay_wait(boundary, peer, session, private_rx, write)).await
 }
 
 async fn authorize_replay(

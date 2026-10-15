@@ -236,7 +236,7 @@ async fn private_workspace_binding(
     Ok(Some((id, workspace)))
 }
 
-pub(super) async fn private_workspace(
+async fn private_workspace(
     room: uuid::Uuid,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -246,7 +246,7 @@ pub(super) async fn private_workspace(
         .map(|(_, workspace)| workspace))
 }
 
-pub(super) async fn private_membership<'a>(
+async fn private_membership<'a>(
     workspace: &'a SharedWorkspace,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -261,7 +261,115 @@ pub(super) async fn private_membership<'a>(
     Ok(runtime)
 }
 
-pub(super) fn private_phase(action: &DirectedAction, phase: &'static str) {
+/// `EnableActions`: open this session's private lane in `room`, carrying
+/// transport only until it negotiates a broker.
+pub(super) async fn enable_actions(
+    room: uuid::Uuid,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Option<EnvelopeV2>, PeerError> {
+    if room.is_nil() || !current_action_peer(peer, session) {
+        return Err(PeerError::Protocol(
+            "private capability not authorised".into(),
+        ));
+    }
+    let Some(ws) = private_workspace(room, peer, session).await? else {
+        return Err(PeerError::Protocol("private room not subscribed".into()));
+    };
+    let mut wr = private_membership(&ws, peer, session, "private room not subscribed").await?;
+    wr.action_targets.insert(
+        peer.device_public_key,
+        ActionTarget {
+            broker_host: None,
+            broker_protocol: false,
+            room,
+            peer: peer.clone(),
+            state_tx: session.outbound.clone(),
+            tx: session.private_tx.clone(),
+        },
+    );
+    drop(wr);
+    Ok(Some(EnvelopeV2::ActionsReady {
+        room,
+        capability: ActionCapability::TransportOnly,
+    }))
+}
+
+/// `EnableBrokerClient`: this session's enabled lane in `room` speaks the
+/// broker protocol extensions.
+pub(super) async fn enable_broker_client(
+    room: uuid::Uuid,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Option<EnvelopeV2>, PeerError> {
+    if !current_action_peer(peer, session) {
+        return Err(PeerError::Protocol("broker protocol not authorised".into()));
+    }
+    let ws = private_workspace(room, peer, session)
+        .await?
+        .ok_or_else(|| PeerError::Protocol("room not subscribed".into()))?;
+    let mut wr = private_membership(&ws, peer, session, "broker protocol not authorised").await?;
+    let target = wr
+        .action_targets
+        .get_mut(&peer.device_public_key)
+        .filter(|t| t.room == room && t.state_tx.same_channel(session.outbound))
+        .ok_or_else(|| PeerError::Protocol("private lane not enabled".into()))?;
+    target.broker_protocol = true;
+    drop(wr);
+    Ok(None)
+}
+
+/// `RegisterBroker`: this session's enabled lane in `room` is the durable
+/// broker `host`; invocations bound to that host reach it.
+pub(super) async fn register_broker(
+    room: uuid::Uuid,
+    host: uuid::Uuid,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Option<EnvelopeV2>, PeerError> {
+    if host.is_nil() || !current_action_peer(peer, session) {
+        return Err(PeerError::Protocol("broker not authorised".into()));
+    }
+    let ws = private_workspace(room, peer, session)
+        .await?
+        .ok_or_else(|| PeerError::Protocol("room not subscribed".into()))?;
+    let mut wr = private_membership(&ws, peer, session, "broker not authorised").await?;
+    let target = wr
+        .action_targets
+        .get_mut(&peer.device_public_key)
+        .filter(|t| t.room == room && t.state_tx.same_channel(session.outbound))
+        .ok_or_else(|| PeerError::Protocol("private lane not enabled".into()))?;
+    target.broker_host = Some(host);
+    target.broker_protocol = true;
+    drop(wr);
+    Ok(Some(EnvelopeV2::ActionsReady {
+        room,
+        capability: ActionCapability::DurableBroker { host },
+    }))
+}
+
+/// `SignedDirected`: route a directed action with its source's signature.
+/// The relay forwards the source's signed bytes; it never signs. A
+/// signature that is not this session's device's is refused here, so
+/// it cannot reach (and close) the target's attachment.
+pub(super) async fn route_signed_directed(
+    signed: &SignedDirectedAction,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Option<EnvelopeV2>, PeerError> {
+    let action = signed.action();
+    if signed.verify(&peer.device_public_key).is_err() {
+        private_phase(action, "route_rejected_signature");
+        return Ok(Some(EnvelopeV2::unavailable(
+            action,
+            UnavailableReason::NotAuthorised,
+        )));
+    }
+    let reason = route_private_signed(action, Some(signed), peer, session).await?;
+    Ok(reason.map(|reason| EnvelopeV2::unavailable(action, reason)))
+}
+
+fn private_phase(action: &DirectedAction, phase: &'static str) {
     private_workspace_phase(action, None, phase);
 }
 
@@ -337,7 +445,7 @@ pub(super) async fn route_private(
 
 /// Route `action`, carrying the source's verified signature over it when
 /// there is one so a target that negotiated signed actions receives it.
-pub(super) async fn route_private_signed(
+async fn route_private_signed(
     action: &DirectedAction,
     signed: Option<&SignedDirectedAction>,
     peer: &AuthenticatedPeer,
