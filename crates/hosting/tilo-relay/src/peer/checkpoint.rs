@@ -8,7 +8,7 @@ use super::{
     ReplayCatchup, SelectedPublication, SerialCheckpointCommit, SharedWorkspace, StateCommit,
     StateSource, Step, WorkLimit, checkpoint_prefix_post_first_promotion_fault, inbound_bytes,
     mpsc, prepare_recipients, promote_checkpoint_input, publish_checkpoint_commit,
-    publish_checkpoint_commit_fenced, trace_native_publication,
+    publish_checkpoint_commit_fenced, test_point, trace_native_publication,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -342,10 +342,8 @@ impl ReplayPendingWork {
             }
             self.written = self.written.saturating_add(frame.bytes.len() as u64);
         }
-        #[cfg(test)]
-        if self.frame.is_some() {
-            crate::store::test_barrier::pause(state.store.root(), "replay-pending-frame-held");
-        }
+        test_point!(if self.frame.is_some()
+            => pause(state.store.root(), "replay-pending-frame-held"));
         Ok(Step::More)
     }
 }
