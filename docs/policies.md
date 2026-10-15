@@ -6,7 +6,7 @@ says why it exists and how it is held:
 - **Check**: a hook or CI step fails when the rule is broken. The path names
   the check; reading it is the precise definition of the rule.
 - **Review**: nothing automated holds it yet. Reviewers and authors carry it,
-  and a pull request that breaks it is reverted when noticed.
+  and a change that breaks it is fixed forward when noticed.
 
 Where a rule is described in more depth elsewhere (`AGENTS.md`, `DEVELOPMENT.md`,
 [`HIG.md`](../crates/sdk/ui-core/HIG.md), [`security.md`](architecture/security.md)),
@@ -18,25 +18,26 @@ locally (enable them with `python3 tools/dev/install-git-hooks.py`), and
 **CI / fast quality** (`.forgejo/workflows/lint.yml`), whose policy suite is
 [`tools/policy/run.sh`](../tools/policy/run.sh). Clippy, rustfmt over whole
 targets and the tests run in **CI / affected packages**
-(`.forgejo/workflows/check.yml`). Both are required for a pull request to land.
+(`.forgejo/workflows/check.yml`). The same checks are declared for [`t`](t.md) in `t.toml`.
 
 ## Exceptions
 
 An exception is a reviewed change to the rule's own exception list, made in
-the pull request that needs it, with the reason written next to the entry:
+the change that needs it, with the reason written next to the entry:
 
 | Kind | Where the exception lives |
 |---|---|
 | A Clippy lint | `#[allow(clippy::…, reason = "…")]` on the narrowest item. `too_many_arguments` has no exception. |
 | A non-text or non-LF file | `tools/policy/source_content_exceptions.json`, admitted only unchanged after it lands |
 | A ratcheted count (UI tokens, app portability, resource/action contract, widget writes, document engine) | the baseline beside the check; counts only fall |
+| A shell layer edge or shell dependency | `tools/policy/shell_layers_baseline.toml`, with its reason; the lists only shrink |
 | A size budget | one raise file per change under `tools/perf/*-size-budget/raises/` |
 | A licence, advisory or dependency source | `deny.toml`, with a comment saying why |
 | An interpreter script in the OS image | a reasoned line in `tools/policy/image_interpreter_baseline.txt`; the list only shrinks |
 | An old RustCrypto edge | `SANCTIONED` in `tools/policy/check_crypto_generation.py` |
-| A review-only rule | say so, and why, in the pull request description |
+| A review-only rule | say so, and why, in the commit message |
 
-Changing a rule itself is a pull request that edits this page and the check
+Changing a rule itself is a change that edits this page and the check
 together.
 
 ## Process
@@ -45,8 +46,8 @@ together.
 |---|---|---|
 | Commit subjects are Conventional Commits: `type(scope)!: description`, with the types listed in `DEVELOPMENT.md` ("Pre-commit hook"). Git's own merge, revert and autosquash messages pass. | The subject is the changelog and the first thing a bisect shows. | Check: `.githooks/commit-msg` → [`check_commit_message.py`](../tools/policy/check_commit_message.py); CI re-checks every new commit, including `--no-verify` ones, with [`check_commit_policy.py`](../tools/policy/check_commit_policy.py) |
 | The repository is public and self-contained: no internal tracker ids, private-document links or chat threads in tracked files, commit messages, pull request titles or branch names. Public pull requests (`#1234`) and commits are fine. | An outside reader can follow nothing behind a private link. State the reason itself. | Check: [`check_public_references.py`](../tools/policy/check_public_references.py) (pre-commit `--staged`, policy suite); `check_commit_policy.py` for messages and branch names; `check_commit_message.py --title` for pull request titles |
-| Changes land through a pull request; nobody pushes to `main`. A ready pull request lands by itself once **CI / affected packages** and **CI / fast quality** pass on its head; a draft, the `hold` label or a `WIP` title parks it. A merge that breaks `main` is reverted automatically. | `main` stays green without anyone gating merges by hand. | Check: forge branch protection and the lander, configured outside this repository (`DEVELOPMENT.md`, "Routine delivery workflow") |
-| Small, coherent, tested increments; no work-in-progress or fixup pushes. Keep one pull request updated rather than opening one per iteration. | Each commit on `main` should build, test and revert on its own. | Review |
+| Everyone, person or agent, pushes straight to `main` after running the checks their change affects with `t`. CI on `main` informs and never reverts; a stabilizer moves `stable` forward from mostly green `main` commits, with fixes going back to `main`, and releases come from `stable`. Only the stabilizer pushes to `stable`. | Landing stays fast for many contributors at once, and releasability is one role's job instead of a gate on every push. | Forge branch protection on `stable`; the rest is described in `DEVELOPMENT.md`, "Routine delivery workflow" |
+| Small, coherent, tested increments; no work-in-progress or fixup pushes. | Each commit on `main` should build, test and revert on its own. | Review |
 | The author owns a change until it is verified on `main`. Say which of implemented, merged, deployed and tested a change has reached; "merged" is not "works". | Unverified claims are how regressions reach users. | Review |
 | An issue is a self-contained fix brief: it quotes the code and call sites it is about, states the fix plan, blast radius and acceptance, so whoever fixes it does not have to rediscover them. | Most issues are fixed by someone other than their author, often an agent. | Review |
 | `Cargo.lock` is committed and never regenerated. Move one crate with `cargo update -p <crate> --precise <version>`; a lock-only change declares that command in `TILO_CARGO_UPDATE`. CI builds `--locked`. | A fresh resolve moves hundreds of versions and a break surfaces far from the change. | Check: pre-commit → [`tools/ci/check_lock_update.py`](../tools/ci/check_lock_update.py); `--locked` in CI |
@@ -57,7 +58,7 @@ together.
 ### Code review: Draft, decision needed
 
 Review is optional and informational today: requests, approvals and change
-requests never affect whether a pull request lands. A review policy (what
+requests never affect whether a change lands. A review policy (what
 needs a second reader, and who) is still to be decided; until then nothing on
 this page depends on review having happened.
 
@@ -67,7 +68,7 @@ this page depends on review having happened.
 |---|---|---|
 | Every tracked blob is UTF-8 text with LF line endings. Binaries (images, screenshots, fonts, archives) stay out of Git except the pinned assets listed as exceptions; produce them at build time or fetch them by digest. | Text diffs, reviews and merges; binaries bloat every clone forever. | Check: [`check_source_content.py`](../tools/policy/check_source_content.py) (pre-commit on the staged index, policy suite, and every blob of every new commit through `check_commit_policy.py`) |
 | No generated output in Git: nothing under `target/`, `node_modules/`, `__pycache__/` or `.pytest_cache/`, no files under retired source roots, no flat tooling outside `tools/<area>/`. | Generated files go stale and conflict. | Check: [`check_repository_layout.py`](../tools/policy/check_repository_layout.py) |
-| Reports, logs and scratch notes from a working session are not committed; findings go in the pull request or the issue. | They describe one moment and rot. | Review (binary reports are caught by `check_source_content.py`) |
+| Reports, logs and scratch notes from a working session are not committed; findings go in the commit message or the issue. | They describe one moment and rot. | Review (binary reports are caught by `check_source_content.py`) |
 | Nothing names one developer's machine: no real home directories, private wrappers or scratch paths. Use placeholders such as `/var/home/you`. | Docs and scripts must work for everyone. | Check: [`check_setup_neutral.py`](../tools/policy/check_setup_neutral.py) |
 | Every crate under `apps/`, `crates/` and `examples/` is a workspace member, exactly once, and on edition 2024. | A crate outside the workspace is never built or tested; an older edition compiles silently. | Check: [`check_workspace_members.py`](../tools/policy/check_workspace_members.py) through `scripts/check-workspace-complete.sh` (pre-commit, policy suite) |
 | Every file under a crate's `tests/` is compiled by a test target. | With `autotests = false`, an undeclared module is silently never built. | Check: [`check_integration_test_modules.py`](../tools/policy/check_integration_test_modules.py) |
@@ -104,6 +105,7 @@ can change without editing its callers.
 | Apps keep record content in the store their host lends them. | Check: [`check_app_content_store.py`](../tools/policy/check_app_content_store.py) |
 | Apps compose `ui` text widgets; shaping and glyph emission stay private to `ui`. | Check: [`check_app_text_contract.py`](../tools/policy/check_app_text_contract.py) |
 | The shared desktop crates reach no compositor, transport or host stack. | Check: [`check_desktop_model_dependencies.py`](../tools/policy/check_desktop_model_dependencies.py) |
+| Shell layers: the shell's service modules (workspace model, persistence, collaboration broker, network bridge, identity broker, runtime host) reach no compositor, chrome, launcher, overlay or renderer code; crates carved out of the shell depend on neither the shell nor the toolkit or a renderer; no new crate depends on the shell, and the shell gains no dependency unnoticed. Rendering and state stay decoupled, and each extraction from the shell has no new edge to undo first. | Check: [`check_shell_layers.py`](../tools/policy/check_shell_layers.py) (ratchet), reading `use` trees and `Cargo.toml` only. The [baseline](../tools/policy/shell_layers_baseline.toml) only shrinks: a removed edge or dependency fails until its line goes (`--write-baseline` drops it). A new shell dependency is a reasoned `[shell_dependencies.added]` entry; a new extracted crate is a line in `[extracted]` |
 | The shared app runtime carries no OS internals and no unused crates. | Check: [`check_runtime_dylib_surface.py`](../tools/policy/check_runtime_dylib_surface.py) |
 | Crates the browser builds for wasm32 name `workspace-hack` only for native targets. | Check: [`check_wasm_workspace_hack.py`](../tools/policy/check_wasm_workspace_hack.py) |
 | `os/components.toml` is the single list of binaries in the image; image builders copy exactly what they compile. | Check: [`check_component_manifest.py`](../tools/policy/check_component_manifest.py), [`check_image_builder_inputs.py`](../tools/policy/check_image_builder_inputs.py) |
@@ -116,7 +118,7 @@ can change without editing its callers.
 | Known security advisories fail the build; an acknowledged one carries its reasoning in `deny.toml`. | A vulnerable dependency is a vulnerable Tilo. | Check: `[advisories]` in `deny.toml` |
 | Crates come from crates.io or the few forks listed in `deny.toml`; no wildcard versions. | Every input is pinned and attributable. | Check: `[sources]` and `[bans]` in `deny.toml` |
 | A changed manifest declares no unused dependency. | Each one costs compile time and attack surface. | Check: `cargo machete` through `tools/ci/check-unused-dependencies.sh --changed` |
-| A new dependency is justified in its pull request: licence, provenance, maintenance, size and the platforms it builds for. | A dependency is code we ship and must keep patched. | Review (licence and source are checked above) |
+| A new dependency is justified in the commit that adds it: licence, provenance, maintenance, size and the platforms it builds for. | A dependency is code we ship and must keep patched. | Review (licence and source are checked above) |
 | Tilo's own crates use the RustCrypto generation iroh uses (`ed25519-dalek`/`x25519-dalek` 3, `rand`/`rand_core`/`rand_chacha` 0.10, `sha2` 0.11, `hmac` 0.13, `chacha20poly1305` 0.11); the previous one arrives only through third-party crates. OS randomness comes from `getrandom::SysRng`. | One generation to audit; the old one leaves the lock when its last upstream moves. | Check: [`check_crypto_generation.py`](../tools/policy/check_crypto_generation.py) (direct edges in `Cargo.lock`; `SysRng` is review) |
 | TLS is rustls. No OpenSSL or `native-tls` anywhere in the graph. | One certificate-verification path to review, and no C library to patch in every image. | Check: [`check_tls_stack.py`](../tools/policy/check_tls_stack.py) |
 | No telemetry, analytics or crash-upload client (Sentry, PostHog, OTLP exporters, minidump capture) anywhere in the graph. | `docs/architecture/security.md` says Tilo's own components report nothing home; panics stay local and feedback is a report the person approves. | Check: [`check_no_telemetry.py`](../tools/policy/check_no_telemetry.py) |

@@ -205,6 +205,9 @@ function unreachable(error) {
  */
 export function failureMessage(error, {workspace = null, loaded = true} = {}) {
   if (error?.name === 'AdmissionError') return error.message;
+  if (error?.name === 'CustodyError' && error.code === 'custody-busy') {
+    return `${workspace || 'The workspace'} is already open in another tab of this browser. Use that tab, or close it and try again.`;
+  }
   if (error?.name === 'HostAdmissionError' && error.code === 'invitation-only') return error.message;
   const name = workspace || (loaded ? 'the workspace' : 'Tilo');
   if (unreachable(error)) return `Can’t reach ${name} right now. Check your connection, then try again.`;

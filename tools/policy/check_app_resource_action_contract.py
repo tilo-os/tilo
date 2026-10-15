@@ -935,7 +935,10 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         facades = [
             specification for alias, specification in runtime_dependencies if alias == "ui"
         ]
-        if not facades or any(
+        # An app model crate (`apps/*-model`) is data shared with an app and
+        # may have no UI; any `ui` it does depend on is still the facade.
+        facade_required = not manifest_path.parent.name.endswith("-model")
+        if (facade_required and not facades) or any(
             not (isinstance(facade, dict) and facade.get("package") == "tilo-app")
             for facade in facades
         ):

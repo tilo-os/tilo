@@ -566,8 +566,11 @@ impl QuickFS {
         // Taken before the namespace is persisted: a full save moves the
         // incremental cursor past the batch.
         let batch = self.ns().end_incremental_batch();
-        if durable && let Some(hook) = self.durability_hook.get() {
-            hook();
+        if durable
+            && let Some(hook) = self.durability_hook.get()
+            && let Err(error) = hook()
+        {
+            eprintln!("the namespace placing the changeset stays pending: {error}");
         }
         drop(gate);
         let mut deltas = self
@@ -613,12 +616,6 @@ impl QuickFS {
         if any {
             self.wake_pinned_hydration();
         }
-    }
-
-    /// Sets what runs after each changeset (persisting the namespace that
-    /// places its records). Set once.
-    pub fn set_durability_hook(&self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
-        let _ = self.durability_hook.set(hook);
     }
 
     /// The current time as the record plane stamps it.

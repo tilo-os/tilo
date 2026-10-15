@@ -19,6 +19,7 @@ thiserror.workspace = true
 zeroize.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "rt", "sync", "time", "macros"] }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 

@@ -24,11 +24,7 @@ pub struct Basis {
     pub firmware: FirmwareFacts,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Extent {
-    pub first_lba: u64,
-    pub last_lba: u64,
-}
+pub use staging_handoff_model::{Extent, HostOs};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Shrink {
@@ -112,19 +108,13 @@ impl Basis {
         self.system_volume.is_none()
     }
 
-    /// `windows` or `linux`, as written into the handoff.
-    pub fn host_os(&self) -> &'static str {
+    /// The host, as written into the handoff.
+    pub fn host_os(&self) -> HostOs {
         if self.system_volume.is_some() {
-            "windows"
+            HostOs::Windows
         } else {
-            "linux"
+            HostOs::Linux
         }
-    }
-}
-
-impl Extent {
-    pub fn lbas(self) -> u64 {
-        self.last_lba - self.first_lba + 1
     }
 }
 
@@ -925,7 +915,7 @@ pub(crate) mod tests {
             );
             assert_eq!(plan.boot_entry.loader_path, "\\EFI\\BOOT\\BOOTX64.EFI");
             assert_eq!(plan.boot_entry.description, "Tilo installer");
-            assert_eq!(plan.basis.host_os(), "linux");
+            assert_eq!(plan.basis.host_os(), HostOs::Linux);
         }
     }
 
@@ -957,7 +947,7 @@ pub(crate) mod tests {
                 "Windows cannot set GUIDs"
             );
             assert!(plan.staging_root.partition_guid.is_none());
-            assert_eq!(plan.basis.host_os(), "windows");
+            assert_eq!(plan.basis.host_os(), HostOs::Windows);
         }
 
         // Phase `windows_uses_unallocated_space_after_c_before_shrinking`.
