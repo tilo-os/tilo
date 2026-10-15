@@ -572,8 +572,7 @@ fn serve_with_this_binary_as_portal_host() {
     let run = child_env(CHILD_RUN);
     let paths = tilo_user_identity::persist::IdentityPaths::under(&device);
     tilo_user_identity::persist::load_or_create_device_key(&paths).unwrap();
-    // SAFETY: geteuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::geteuid() };
+    let uid = rustix::process::geteuid().as_raw();
     let keys = DeviceIdentityKey::new(paths, run.join("salt"), &uid.to_string());
     let store = Arc::new(Store::new(run.join("vault.tseal"), Box::new(keys)));
     assert!(store.locked().is_none(), "the store did not open");
