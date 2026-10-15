@@ -20236,7 +20236,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 13] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 14] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20312,6 +20312,7 @@ impl ShellOverlayHost {
                     .then(|| now.checked_add(LAUNCHPAD_ACTION_POLL))
                     .flatten(),
             ),
+            ("shortcut-schedule", self.held_firings_wake_deadline(now)),
         ]
     }
 
