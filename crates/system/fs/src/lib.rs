@@ -17,6 +17,8 @@ pub mod availability;
 #[cfg(feature = "filesystem")]
 mod blob_access;
 #[cfg(feature = "filesystem")]
+pub mod cache_policy;
+#[cfg(feature = "filesystem")]
 mod canonical_frame;
 #[cfg(feature = "filesystem")]
 pub mod caps_file;
