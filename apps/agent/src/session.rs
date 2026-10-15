@@ -400,16 +400,17 @@ impl Session {
                     actor,
                     context,
                 }) => {
-                    let update = transforms.start(
+                    if let Some(update) = transforms.start(
                         crate::transform::Directed { id, invocation },
                         &resource,
                         &action,
                         argument.as_deref(),
                         &actor,
                         context.as_deref(),
-                    );
-                    self.link
-                        .send(&CollabRequest::UpdateInvocation { id, update })?;
+                    ) {
+                        self.link
+                            .send(&CollabRequest::UpdateInvocation { id, update })?;
+                    }
                 }
                 Some(CollabEvent::InvocationCancellation { id }) => {
                     if let Some(update) = transforms.cancel(id) {
