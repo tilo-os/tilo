@@ -1258,6 +1258,42 @@ impl ChatDoc {
         }
     }
 
+    /// Add `name` to the roster under `id` for a delivered message's
+    /// author, unless the roster already has that id. The row says it was
+    /// delivered, so it is never mistaken for a participant who joined.
+    pub fn ensure_delivered_author(doc: &mut AutoCommit, id: &str, name: &str) {
+        let users = get_or_map(doc, &ROOT, "users");
+        if map_at(doc, &users, id).is_some() {
+            return;
+        }
+        let (initials, color) = crate::identity::delivered_look(id, name);
+        let user = get_or_map(doc, &users, id);
+        let _ = doc.put(&user, "name", name);
+        let _ = doc.put(&user, "initials", initials.as_str());
+        let _ = doc.put(&user, "color_idx", color as i64);
+        let _ = doc.put(&user, "status", Presence::Offline.as_str());
+        let _ = doc.put(&user, "delivered", true);
+    }
+
+    /// Record on message `msg` who delivered it under another's name.
+    pub fn mark_delivered(doc: &mut AutoCommit, channel: &str, msg: &str, by: &str) {
+        if let Some(message) = Self::find_message_obj(doc, channel, msg) {
+            let _ = doc.put(&message, "delivered_by", by);
+        }
+    }
+
+    /// The name every author id is shown under: the roster's names, then
+    /// the names agents were given. An id with neither is left out.
+    pub fn author_names(doc: &AutoCommit) -> HashMap<String, String> {
+        let mut names: HashMap<String, String> = Self::list_users(doc)
+            .into_iter()
+            .filter(|user| !user.name.trim().is_empty())
+            .map(|user| (user.id, user.name))
+            .collect();
+        names.extend(Self::agent_authors(doc));
+        names
+    }
+
     /// Who wrote message `msg` of `channel`; `None` for no such message.
     pub fn message_author(doc: &AutoCommit, channel: &str, msg: &str) -> Option<String> {
         let message = Self::find_message_obj(doc, channel, msg)?;
@@ -1895,6 +1931,11 @@ impl ChatDoc {
         name: &str,
         kind: ChannelKind,
     ) {
+        // A caller may name the channel (a seed's `general`): naming one that
+        // exists leaves it, its messages and its place as they are.
+        if Self::channel_exists(doc, id) {
+            return;
+        }
         let order = Self::next_channel_order(doc, ws, category);
         Self::put_channel(doc, id, ws, category, name, "", kind, order);
     }

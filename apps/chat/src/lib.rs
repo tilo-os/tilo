@@ -55,6 +55,7 @@ pub mod continuity;
 pub mod doc;
 pub mod effects;
 pub mod events;
+pub mod export;
 mod external;
 pub mod feedback;
 pub mod geometry;
@@ -80,6 +81,8 @@ pub use app::ChatApp;
 #[cfg(test)]
 mod component_tests;
 
+#[cfg(test)]
+mod delivery_tests;
 mod local_view;
 pub use resource::{Chat, ChatShell};
 

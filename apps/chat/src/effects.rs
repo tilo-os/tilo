@@ -66,6 +66,19 @@ pub enum ChatEffect {
     /// whole text and the agent's record of its work.
     #[effect(view, row, returns)]
     ReadMessage { message: String },
+    /// Export conversation as content
+    ///
+    /// Keeps the conversation's transcript — every message with its
+    /// author's name and time, replies under what they answer — in the
+    /// content store, with no file to write: the caller reads the bytes by
+    /// the content address it answers.
+    #[effect(row, content, permission = "read")]
+    ExportContent {
+        #[param("Id of the conversation")]
+        channel: String,
+        #[param("The format to export", choices = ["md", "json"])]
+        format: String,
+    },
     /// Copy resource link
     #[effect(job, device_only, returns)]
     CopyResourceLink { message: String },
@@ -166,6 +179,9 @@ impl ChatApp {
             ChatEffect::OpenPerson { user } => self.open_person(&user)?,
             ChatEffect::ReadMessage { message } => {
                 return self.read_message(&message).map(Effected::value);
+            }
+            ChatEffect::ExportContent { channel, format } => {
+                return self.export_content(&channel, &format);
             }
             ChatEffect::AttachFile { channel, path } => {
                 if !self.external_services {
@@ -496,6 +512,34 @@ impl ChatApp {
 
     /// One message as a value: who wrote it, whether that is an agent, its
     /// whole text and the agent's record of its work.
+    /// Keep `channel`'s transcript as `format` in this window's content
+    /// store, and answer with its content address: the transcript stays in
+    /// the room, never a file on a device.
+    fn export_content(&self, channel: &str, format: &str) -> EffectAnswer {
+        let ch = self
+            .channels
+            .iter()
+            .find(|item| item.id == channel)
+            .ok_or("conversation no longer exists")?;
+        let messages: Vec<&crate::model::Message> = self
+            .search_messages
+            .iter()
+            .filter(|message| message.channel == channel)
+            .collect();
+        let bytes = crate::export::transcript(ch, &messages, format, |author| {
+            self.agent_authors
+                .get(author)
+                .cloned()
+                .unwrap_or_else(|| self.display_name(author))
+        })?;
+        let content = ui::tilo_resource::content::current()
+            .ok_or("this window keeps no content to export into")?;
+        let hash = content
+            .put(&bytes)
+            .map_err(|error| format!("the export could not be kept: {error}"))?;
+        Effected::content(&hash)
+    }
+
     fn read_message(&self, id: &str) -> Result<serde_json::Value, String> {
         let message = self
             .search_messages

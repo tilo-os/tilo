@@ -1925,6 +1925,7 @@ dependencies = [
 name = "chat"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "emoji",
  "fnv",
  "image",
@@ -9003,6 +9004,7 @@ dependencies = [
 name = "messages"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "runtime-dylib",
  "serde",
  "serde_json",

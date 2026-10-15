@@ -1,6 +1,18 @@
 //! Direct messaging: shared Contacts identities, explicit account/recipient
 //! choices and separate service histories. Transport state belongs to the
 //! privileged broker; it is never inferred from names or widget state.
+//!
+//! ## What the record holds
+//!
+//! A person's service histories never enter the workspace record: they stay
+//! the broker's account-owned data (`history`). The record holds only
+//! conversations put into it on purpose — messages delivered into it and
+//! messages queued in it ([`store`]) — and those it holds whole, text
+//! included, by design: the person approved giving agents access to message
+//! content, and an agent reaches a record only through its published
+//! operations, in a worker with no network or account, so what it is to read
+//! or answer must be in the record. Everyone the record is shared with reads
+//! those conversations; nothing is ever sent from a record operation.
 
 mod enrollment;
 mod history;
@@ -8,6 +20,7 @@ mod history;
 mod history_tests;
 mod sending;
 mod setup;
+pub mod store;
 #[cfg(test)]
 mod tests;
 mod view;
@@ -17,21 +30,7 @@ use ui::i18n::EmbeddedCatalog;
 use ui::prelude::*;
 use ui::widget::Element;
 
-/// The mounted resource carries no external message plaintext into a workspace
-/// CRDT. Private external histories remain the broker's account-owned data.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Messages {
-    pub schema_version: u64,
-}
-
-#[resource(kind = "tilo.messages", label = "Messages")]
-impl Messages {
-    /// Initialize the version marker without creating contacts or messages.
-    #[action(housekeeping)]
-    pub fn initialize_record(&mut self) {
-        self.schema_version = 1;
-    }
-}
+pub use store::{Conversation, Message, Messages, MessagesOperation};
 
 #[derive(Clone, Effect)]
 #[effect(operation = "tilo.messages.view", device_only)]
@@ -130,6 +129,29 @@ pub enum MessagesEffect {
         operation: String,
         #[param(secret)]
         text: String,
+    },
+    /// Search messages
+    ///
+    /// The messages the record holds whose sender, recipient, conversation
+    /// or text contain every word of the query (any case), newest first,
+    /// each with its conversation and message ids for `read`. Changes
+    /// nothing and reaches no service.
+    #[effect(view, returns, idempotent, permission = "read", device_only = false)]
+    SearchMessages {
+        #[param("Words every match contains")]
+        query: String,
+    },
+    /// Export conversations as content
+    ///
+    /// Keeps the record's conversations — all of them or one — in the
+    /// content store as a transcript, with no file to write: the caller
+    /// reads the bytes by the content address it answers.
+    #[effect(content, permission = "read", device_only = false)]
+    ExportContent {
+        #[param("The format to export", choices = ["md", "json"])]
+        format: String,
+        #[param("Only this conversation (its id or messages.conversation:<id>)")]
+        conversation: Option<String>,
     },
 }
 

@@ -75,10 +75,10 @@ try {
     assert.equal(read.state, 'completed');
     const original = read.output.value.content.messages.find(message => message.id === fixture.reference.id.replace('chat.message:', ''));
     assert.ok(original, 'the exact original message must be readable');
-    assert.equal(original.author, fixture.sourceAuthor, 'remote message retains the certified foreign writer identity');
-    assert.notEqual(original.author, fixture.root, 'the original author must differ from the viewing person');
-    assert.notEqual(fixture.sourcePeople.find(person => person.id === original.author)?.name, 'You', 'an unnamed writer must not persist the current-reader label as a shared name');
-    writeFileSync(join(evidence, 'identity-boundary.json'), JSON.stringify({writer:original.author, viewer:fixture.root, sourcePeople:fixture.sourcePeople, semantics:await tab.evaluate('mount.state().semantics')}, null, 2));
+    assert.equal(original.authorId, fixture.sourceAuthor, 'remote message retains the certified foreign writer identity');
+    assert.notEqual(original.authorId, fixture.root, 'the original author must differ from the viewing person');
+    assert.notEqual(fixture.sourcePeople.find(person => person.id === original.authorId)?.name, 'You', 'an unnamed writer must not persist the current-reader label as a shared name');
+    writeFileSync(join(evidence, 'identity-boundary.json'), JSON.stringify({writer:original.authorId, viewer:fixture.root, sourcePeople:fixture.sourcePeople, semantics:await tab.evaluate('mount.state().semantics')}, null, 2));
   }
   stage('compiled-native-chat-mounted-exact-range');
   const initialShot = await tab.screenshot();
