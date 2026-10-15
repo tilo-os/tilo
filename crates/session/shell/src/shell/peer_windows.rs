@@ -49,6 +49,11 @@ pub(crate) fn installing(tab: TabId) -> bool {
     INSTALLING.with(|installing| installing.borrow().contains_key(&tab))
 }
 
+/// The package `tab`'s install is fetching, and the app's name.
+pub(crate) fn installing_package(tab: TabId) -> Option<(String, String)> {
+    INSTALLING.with(|installing| installing.borrow().get(&tab).cloned())
+}
+
 /// A failed or timed-out install answers the card that asked for it rather
 /// than leaving it saying "Installing…" for good: it offers the install
 /// again and says what went wrong.
@@ -113,6 +118,18 @@ pub fn show_install_under_way_for_shots(
             .insert(tab, (app_id.to_owned(), label.to_owned()));
     });
     tab
+}
+
+/// Visual review: the install [`show_install_under_way_for_shots`] stands
+/// for has fetched `received` of `total` bytes.
+pub fn show_install_bytes_for_shots(app_id: &str, received: u64, total: u64) {
+    crate::shell::catalogue::set_install_progress(
+        app_id,
+        Some(crate::shell::catalogue::InstallProgress::Downloading {
+            received,
+            total: Some(total),
+        }),
+    );
 }
 
 /// Tabs whose card's install button was pressed, drained by [`examine`].
