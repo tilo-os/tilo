@@ -554,7 +554,8 @@ pub const CI_NESTED_ALLOWS: &[libc::c_long] = &[
 ];
 
 /// Netlink protocols a [`CiProfile::Nested`] job may not open a socket of:
-/// netfilter (nftables, the CVE-2024-1086 class) and XFRM (IPsec state).
+/// netfilter (nftables, the CVE-2024-1086 class) and XFRM (IP security
+/// associations).
 #[cfg(target_os = "linux")]
 pub const CI_NESTED_NETLINK_DENIES: &[u64] =
     &[libc::NETLINK_NETFILTER as u64, libc::NETLINK_XFRM as u64];
@@ -1172,9 +1173,15 @@ mod tests {
              13/14 = personality got the wrong answer, 15 = ptrace was refused"
         );
 
+        // Inside a sandbox that already refuses setns (a CI job), the call
+        // never reaches the kernel whatever this filter says.
+        // SAFETY: an invalid descriptor; the kernel answers EBADF.
+        let setns_reaches_kernel =
+            errno_of(unsafe { libc::syscall(libc::SYS_setns, -1_i64, 0_i64) }) == libc::EBADF;
         let privileged = under_ci(CiProfile::Privileged, || {
             // SAFETY: an invalid descriptor; the kernel answers EBADF.
-            if errno_of(unsafe { libc::syscall(libc::SYS_setns, -1_i64, 0_i64) }) != libc::EBADF {
+            let setns = errno_of(unsafe { libc::syscall(libc::SYS_setns, -1_i64, 0_i64) });
+            if setns != libc::EBADF && setns != libc::EPERM {
                 return 20;
             }
             // SAFETY: as above, the filter answers first.
@@ -1187,8 +1194,18 @@ mod tests {
         });
         assert_eq!(
             privileged, 0,
-            "20 = setns did not reach the kernel, 21 = bpf was allowed"
+            "20 = setns got neither EBADF nor EPERM, 21 = bpf was allowed"
         );
+        if setns_reaches_kernel {
+            let reaches = under_ci(CiProfile::Privileged, || {
+                // SAFETY: an invalid descriptor; the kernel answers EBADF.
+                i32::from(
+                    errno_of(unsafe { libc::syscall(libc::SYS_setns, -1_i64, 0_i64) })
+                        != libc::EBADF,
+                )
+            });
+            assert_eq!(reaches, 0, "setns did not reach the kernel");
+        }
 
         let nested = under_ci(CiProfile::Nested, || {
             // SAFETY: socket calls whose descriptors are closed at once.
