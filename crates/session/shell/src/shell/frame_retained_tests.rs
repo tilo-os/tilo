@@ -795,6 +795,7 @@ fn foreign_pixel_replacement_uses_bounded_damage_and_matches_dense_gpu_pixels() 
     foreign_replacement_pixel_oracle(false, ui::widget::WindowWidth::Narrow, true);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn imported_foreign_pixel_replacement_uses_bounded_damage_and_matches_dense_gpu_pixels() {
     foreign_replacement_pixel_oracle(true, ui::widget::WindowWidth::Narrow, true);
@@ -971,6 +972,13 @@ fn publish_foreign_fixture_frame(
     importing_bridge: Option<&VelloDrmBridge>,
 ) {
     let store = crate::shell::foreign::store();
+    // Importing a GPU frame goes through the Linux dmabuf capture path.
+    #[cfg(not(target_os = "linux"))]
+    assert!(
+        importing_bridge.is_none(),
+        "importing a GPU frame needs Linux"
+    );
+    #[cfg(target_os = "linux")]
     if let Some(bridge) = importing_bridge {
         let (device, queue) = bridge.gpu();
         let frame = crate::shell::gpu_frames::frame_for_test(
@@ -996,14 +1004,14 @@ fn publish_foreign_fixture_frame(
                 .is_empty(),
             "the real owned GPU frame must carry no CPU pixel blob"
         );
-    } else {
-        store.publish_rgba(
-            surface,
-            &texel.repeat(size.0 as usize * size.1 as usize),
-            size.0,
-            size.1,
-        );
+        return;
     }
+    store.publish_rgba(
+        surface,
+        &texel.repeat(size.0 as usize * size.1 as usize),
+        size.0,
+        size.1,
+    );
 }
 
 fn assert_foreign_metadata_is_strict(
@@ -1119,6 +1127,9 @@ fn foreign_filter_settings(frame: &FrameBuilder) -> ForeignFilterSettings {
     ForeignFilterSettings(previous)
 }
 
+// Exact client damage is published through the Linux capture seam
+// (`publish_damaged_rgba_for_test`).
+#[cfg(target_os = "linux")]
 #[test]
 fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels() {
     for (imported, density) in [(false, 1), (false, 2), (true, 1), (true, 2)] {
@@ -1233,6 +1244,7 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
 /// repaints only that line of the output: the frame's damage is the line's
 /// rows across the tile, the retained render takes the sparse path and writes
 /// no pixel outside them, and the result matches a dense render of the scene.
+#[cfg(target_os = "linux")]
 #[test]
 fn one_line_of_client_damage_repaints_only_that_line() {
     let _ambient = DenyAmbientStarts::new();
@@ -1493,6 +1505,7 @@ fn assert_notes_startup_saved_of(frame: &mut PopulatedShellFixture, surfaces: us
 
 /// The strips layers of two frames hold the same drawings: what no strip
 /// carries, and every strip in canvas coordinates.
+#[cfg(target_os = "linux")]
 fn strips_drawn_alike(a: &FrameCache, b: &FrameCache) -> bool {
     a.layers.workspace.encoding_eq(&b.layers.workspace)
         && a.layers.strips.len() == b.layers.strips.len()
@@ -1588,6 +1601,7 @@ fn a_cpu_presenter_rounds_strip_layout_and_retains_the_same_screen() {
     assert_eq!(frame.host().strip_scroll_offsets()[0].1, 120.5);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a_presenter_compositing_layers_gets_strips_in_canvas_coordinates_and_the_same_screen() {
     const SIZE: (u32, u32) = (1280, 720);

@@ -3010,6 +3010,7 @@ impl ForeignFrameStore {
 
     /// Activate a completed owned GPU copy through the ordinary capture-token path.
     #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn publish_gpu_for_test(
         &self,
         id: SurfaceId,
@@ -3019,6 +3020,7 @@ impl ForeignFrameStore {
     }
 
     #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn publish_damaged_gpu_for_test(
         &self,
         id: SurfaceId,

@@ -4322,6 +4322,9 @@ fn start_launch(
                     let mut tail = VecDeque::with_capacity(STDERR_TAIL_LINES);
                     relay_capped_lines(stderr, |line| {
                         eprintln!("[app {stderr_tag} stderr] {line}");
+                        // GPU health belongs to the Linux compositor; the
+                        // test-only launches elsewhere have none to report to.
+                        #[cfg(target_os = "linux")]
                         crate::compositor::gpu_health::observe_app_line(&stderr_tag, &line);
                         if tail.len() == STDERR_TAIL_LINES {
                             tail.pop_front();

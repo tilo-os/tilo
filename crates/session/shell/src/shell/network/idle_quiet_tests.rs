@@ -89,6 +89,7 @@ pub(super) const LONE_IDLE: Duration = Duration::from_secs(20);
 /// `memory.max` 2832 times) preempted the same two `tilo-net-rt` workers
 /// 1.35 times a second on top of the 0.95 times they blocked, and failed the
 /// gate at 2.30/s with nothing in the session changed.
+#[cfg(target_os = "linux")]
 pub(super) const LONE_WAKEUP_BUDGET: f64 = 0.25;
 /// Most CPU a lone idle desktop's threads may use, in percent of one core:
 /// 100 ms over [`LONE_IDLE`]. The wakeup count leaves out preemptions, so
@@ -96,10 +97,13 @@ pub(super) const LONE_WAKEUP_BUDGET: f64 = 0.25;
 /// 0.0 % (under one 10 ms tick in the window).
 pub(super) const LONE_CPU_BUDGET: f64 = 0.5;
 
-/// Set once the test runs inside a network namespace of its own.
+/// Set once the test runs inside a network namespace of its own. The
+/// private-network rerun serves only the Linux lone-desktop test below.
+#[cfg(target_os = "linux")]
 const PRIVATE_NETWORK: &str = "TILO_IDLE_PRIVATE_NETWORK";
 
 /// `program` run by `unshare` in a user and network namespace of its own.
+#[cfg(target_os = "linux")]
 fn unshare(program: &str, args: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new("unshare");
     command
@@ -123,6 +127,7 @@ fn unshare(program: &str, args: &[&str]) -> std::process::Command {
 /// Returns `true` when the child ran and passed (the caller is done) and
 /// `false` when the caller is the child, or when the machine does not allow
 /// user namespaces, in which case it measures the host network as it is.
+#[cfg(target_os = "linux")]
 fn in_private_network(test: &str) -> bool {
     if std::env::var_os(PRIVATE_NETWORK).is_some() {
         bring_loopback_up();
@@ -147,6 +152,7 @@ fn in_private_network(test: &str) -> bool {
 
 /// libtest's name of `test`, a function of this module: its path without
 /// the crate's name.
+#[cfg(target_os = "linux")]
 fn test_name(test: &str) -> String {
     let module = module_path!();
     let (_, in_crate) = module.split_once("::").unwrap_or(("", module));
@@ -155,6 +161,7 @@ fn test_name(test: &str) -> String {
 
 /// Bring the namespace's `lo` up (a new network namespace starts with it
 /// down), which the endpoint's loopback address needs.
+#[cfg(target_os = "linux")]
 fn bring_loopback_up() {
     // SAFETY: a plain datagram socket; its descriptor is closed below.
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
@@ -192,12 +199,14 @@ fn bring_loopback_up() {
 /// refreshes the lifetimes of an address it already has, which the kernel
 /// announces (`RTM_NEWADDR`) to every netlink subscriber. Replaces `fd00::1`
 /// on loopback with new lifetimes at each [`Self::refresh`]. Needs the
-/// private network namespace's root.
+/// private network namespace's root, and speaks Linux's rtnetlink.
+#[cfg(target_os = "linux")]
 struct AddressRefresher {
     socket: libc::c_int,
     sent: u32,
 }
 
+#[cfg(target_os = "linux")]
 impl AddressRefresher {
     fn new() -> Self {
         // SAFETY: a plain netlink socket, closed on drop.
@@ -255,6 +264,7 @@ impl AddressRefresher {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for AddressRefresher {
     fn drop(&mut self) {
         // SAFETY: the socket is ours and unused after this.
@@ -610,6 +620,10 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
 /// compositor parked, so not even a frame tick reaches the network. Its
 /// relays wait the way an installed desktop's do: nobody could
 /// dial it, so it neither probes them nor holds a home relay open.
+///
+/// Linux only: its router simulation speaks rtnetlink and names its thread
+/// by `gettid`.
+#[cfg(target_os = "linux")]
 #[test]
 #[serial_test::serial]
 fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
