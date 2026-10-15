@@ -16,7 +16,6 @@ PREPARED_CONSUMERS = {
     "check.yml": 7,
     "ci-legacy-apps.yml": 1,
     "ci-nightly.yml": 3,
-    "dev-visual-baselines.yml": 1,
     "ci-weekly-quality.yml": 1,
 }
 
@@ -29,7 +28,6 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
             ("check.yml", "rust-build", "cargo-cache-key", "cargo-cache-paths"),
             ("ci-nightly.yml", "rust-build", "cargo-cache-key", "cargo-cache-paths"),
             ("build-ci-builder.yml", "cargo-cache", "cache-key", "paths"),
-            ("dev-focused-test.yml", "downloads", "cache-key", "paths"),
         ):
             with self.subTest(workflow=name):
                 workflow = (ROOT / ".forgejo/workflows" / name).read_text()
