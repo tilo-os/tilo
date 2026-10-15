@@ -34,6 +34,7 @@ on:
       - "tools/ci/sccache.sh"
       - "tools/ci/resolve_promoted_builder.py"
       - "tools/ci/verify-native-mold.sh"
+      - "tools/ci/windows/wine-prefix.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/workflows/build-ci-builder.yml"
