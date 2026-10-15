@@ -303,6 +303,8 @@ struct ContentRoute {
     source: DeviceKey,
     connection: Connection,
     max_bytes: u64,
+    /// The job's requester and worker, whom the bytes move between.
+    pair: (DeviceKey, DeviceKey),
 }
 
 /// The relay's side of [`StreamOpen::ComputeContent`]: decide from the
@@ -363,14 +365,21 @@ pub(crate) async fn route_content(
         return refuse(send, "too_large").await;
     }
     write_message(send, &ContentReply::Found { len }).await?;
+    let started = std::time::Instant::now();
     let forwarded = forward(&mut source_receive, send, len).await?;
     if forwarded.as_bytes() == &digest {
+        let elapsed = started.elapsed();
         tracing::debug!(
             source = %hex::encode(route.source),
             job = %hex::encode(job_id),
             bytes = len,
+            elapsed_ms = elapsed.as_millis(),
             "compute content forwarded"
         );
+        // Inputs are what placement weighs, so only they sample the rate.
+        if route.source == route.pair.0 {
+            observe_transfer(context, workspace_id, route.pair, len, elapsed).await;
+        }
     } else {
         // The asker checks too; ending the stream abnormally tells it now.
         let _ = send.reset(1u32.into());
@@ -503,7 +512,7 @@ async fn choose_source(
     let Some(workspace) = context.workspace(workspace_id).await else {
         return Err("not_authorised");
     };
-    let (source, max_bytes, connection) = job_source(
+    let (source, max_bytes, connection, pair) = job_source(
         &*workspace.lock().await,
         &context.trust(),
         peer,
@@ -514,8 +523,34 @@ async fn choose_source(
         source,
         connection: connection.ok_or("source_offline")?,
         max_bytes,
+        pair,
     })
 }
+
+/// Record that `bytes` of job content moved between the job's requester and
+/// worker (`pair`) in `elapsed`: what placement weighs inputs by.
+async fn observe_transfer(
+    context: &RoutingContext,
+    workspace_id: u64,
+    pair: (DeviceKey, DeviceKey),
+    bytes: u64,
+    elapsed: Duration,
+) {
+    if bytes < crate::compute_transport::MIN_THROUGHPUT_SAMPLE_BYTES {
+        return;
+    }
+    if let Some(workspace) = context.workspace(workspace_id).await {
+        workspace
+            .lock()
+            .await
+            .compute
+            .observe_transfer(pair, bytes, elapsed);
+    }
+}
+
+/// The end holding the bytes, their bound, its live connection, and the
+/// job's (requester, worker) pair.
+type JobSource = (DeviceKey, u64, Option<Connection>, (DeviceKey, DeviceKey));
 
 /// [`choose_source`] under the workspace lock: the peer's admission, the
 /// job's record, and the live connection of the end holding the bytes.
@@ -525,7 +560,7 @@ fn job_source(
     peer: &AuthenticatedPeer,
     (job_id, digest): ([u8; 16], [u8; 32]),
     rule: JobRule,
-) -> Result<(DeviceKey, u64, Option<Connection>), &'static str> {
+) -> Result<JobSource, &'static str> {
     if !room_access::decide(workspace, trust, peer, RoomOperation::Compute).admitted() {
         return Err("not_authorised");
     }
@@ -544,6 +579,7 @@ fn job_source(
         source,
         max_bytes,
         workspace.compute.worker_connection(&source),
+        (record.spec.requester, record.spec.worker),
     ))
 }
 

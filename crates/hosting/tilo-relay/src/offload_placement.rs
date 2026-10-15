@@ -28,15 +28,38 @@ use crate::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
 pub const PLACEMENT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A boxed placement answer.
-pub type PlacementAnswer<'a> =
-    Pin<Box<dyn Future<Output = Result<Option<DeviceKey>, String>> + Send + 'a>>;
+pub type PlacementAnswer<'a> = Pin<Box<dyn Future<Output = Result<Placed, String>> + Send + 'a>>;
 
-/// Where a compute job of `app` in a workspace should run.
+/// What a requester asks placement about one job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlacementQuery<'a> {
+    /// The workspace the job runs in.
+    pub workspace_id: u64,
+    /// The installed app whose entrypoint it runs.
+    pub app: &'a str,
+    /// Whether it needs a GPU.
+    pub gpu: bool,
+    /// The bytes of its inputs.
+    pub input_bytes: u64,
+    /// How long the asking device last took for this job, scaled to inputs
+    /// this size; `None` before it has run it. Placement names a worker only
+    /// when moving the inputs there is faster.
+    pub local_wall_ms: Option<u64>,
+}
+
+/// Placement's answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placed {
+    /// The device that should run the job, or `None` to run it here.
+    pub worker: Option<DeviceKey>,
+    /// Why, as placement put it.
+    pub reason: String,
+}
+
+/// Where a compute job in a workspace should run.
 pub trait ComputePlacement: Send + Sync {
-    /// The device that should run a job of `app` (needing a GPU when `gpu`)
-    /// in `workspace_id` now, `Ok(None)` when none can, or why nobody could
-    /// be asked.
-    fn place<'a>(&'a self, workspace_id: u64, app: &'a str, gpu: bool) -> PlacementAnswer<'a>;
+    /// Where `query`'s job should run now, or why nobody could be asked.
+    fn place<'a>(&'a self, query: PlacementQuery<'a>) -> PlacementAnswer<'a>;
 }
 
 /// Placement asked of the workspace's relay over its relay-v1 session.
@@ -60,16 +83,22 @@ impl RelayPlacement {
         }
     }
 
-    async fn ask(
-        &self,
-        workspace_id: u64,
-        app: &str,
-        gpu: bool,
-    ) -> Result<Option<DeviceKey>, String> {
+    async fn ask(&self, query: PlacementQuery<'_>) -> Result<Placed, String> {
+        let PlacementQuery {
+            workspace_id,
+            app,
+            gpu,
+            input_bytes,
+            local_wall_ms,
+        } = query;
         let invocation = InvocationId::new();
         let mut arguments = Map::new();
         arguments.insert("app".into(), Value::String(app.into()));
         arguments.insert("gpu".into(), Value::Bool(gpu));
+        arguments.insert("input_bytes".into(), Value::from(input_bytes));
+        if let Some(local_wall_ms) = local_wall_ms {
+            arguments.insert("local_wall_ms".into(), Value::from(local_wall_ms));
+        }
         let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(InvokeRequest {
             invocation,
             target: RemoteActionTarget {
@@ -102,7 +131,7 @@ async fn exchange(
     workspace_id: u64,
     invocation: InvocationId,
     frame: Vec<u8>,
-) -> Result<Option<DeviceKey>, String> {
+) -> Result<Placed, String> {
     client
         .send(Envelope::RemoteAction {
             workspace_id,
@@ -142,7 +171,7 @@ async fn exchange(
                     _ => continue,
                 };
                 return match status {
-                    ReceiptStatus::Completed { output } => worker_of(output.value.as_ref()),
+                    ReceiptStatus::Completed { output } => placed(output.value.as_ref()),
                     other => Err(format!("placement did not complete: {other:?}")),
                 };
             }
@@ -151,24 +180,31 @@ async fn exchange(
     }
 }
 
-/// The worker a `compute.place` output names: hex, or `null` for none.
-fn worker_of(output: Option<&Value>) -> Result<Option<DeviceKey>, String> {
-    match output.and_then(|output| output.get("worker")) {
-        Some(Value::Null) => Ok(None),
+/// What a `compute.place` output says: the worker it names (hex, or `null`
+/// for none) and its reason.
+fn placed(output: Option<&Value>) -> Result<Placed, String> {
+    let reason = output
+        .and_then(|output| output.get("reason"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let worker = match output.and_then(|output| output.get("worker")) {
+        Some(Value::Null) => None,
         Some(Value::String(worker)) => {
             let mut key = [0; 32];
             hex::decode_to_slice(worker, &mut key)
                 .map_err(|_| "placement named a malformed worker".to_string())?;
-            Ok(Some(key))
+            Some(key)
         }
-        _ => Err("placement answered without a worker".into()),
-    }
+        _ => return Err("placement answered without a worker".into()),
+    };
+    Ok(Placed { worker, reason })
 }
 
 impl ComputePlacement for RelayPlacement {
-    fn place<'a>(&'a self, workspace_id: u64, app: &'a str, gpu: bool) -> PlacementAnswer<'a> {
+    fn place<'a>(&'a self, query: PlacementQuery<'a>) -> PlacementAnswer<'a> {
         Box::pin(async move {
-            tokio::time::timeout(PLACEMENT_TIMEOUT, self.ask(workspace_id, app, gpu))
+            tokio::time::timeout(PLACEMENT_TIMEOUT, self.ask(query))
                 .await
                 .unwrap_or_else(|_| Err("the relay did not answer placement".into()))
         })
@@ -183,16 +219,22 @@ mod tests {
     fn the_placement_output_names_a_worker_or_none() {
         let worker = [9_u8; 32];
         assert_eq!(
-            worker_of(Some(
+            placed(Some(
                 &serde_json::json!({"worker": hex::encode(worker), "reason": "x"})
             )),
-            Ok(Some(worker))
+            Ok(Placed {
+                worker: Some(worker),
+                reason: "x".into()
+            })
         );
         assert_eq!(
-            worker_of(Some(&serde_json::json!({"worker": null, "reason": "none"}))),
-            Ok(None)
+            placed(Some(&serde_json::json!({"worker": null, "reason": "none"}))),
+            Ok(Placed {
+                worker: None,
+                reason: "none".into()
+            })
         );
-        assert!(worker_of(Some(&serde_json::json!({"worker": "zz"}))).is_err());
-        assert!(worker_of(None).is_err());
+        assert!(placed(Some(&serde_json::json!({"worker": "zz"}))).is_err());
+        assert!(placed(None).is_err());
     }
 }

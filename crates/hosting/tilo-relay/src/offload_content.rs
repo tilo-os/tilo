@@ -87,10 +87,19 @@ impl WorkspaceContent {
     /// [`BindError`] when the content is unknown, not wholly local, or does
     /// not match its manifest.
     pub async fn bind_file(&self, manifest: [u8; 32]) -> Result<[u8; 32], BindError> {
+        Ok(self.bind_input(manifest).await?.0)
+    }
+
+    /// [`Self::bind_file`], also returning how many bytes the input is.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::bind_file`].
+    pub async fn bind_input(&self, manifest: [u8; 32]) -> Result<([u8; 32], u64), BindError> {
         let bytes = read_version(&self.store, manifest).await?;
         let digest = *blake3::hash(&bytes).as_bytes();
         self.bindings().insert(digest, manifest);
-        Ok(digest)
+        Ok((digest, u64::try_from(bytes.len()).unwrap_or(u64::MAX)))
     }
 
     /// The manifest hash of content this handle bound or stored under
