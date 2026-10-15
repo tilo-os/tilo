@@ -20,7 +20,7 @@ pub trait Session: Send + Sync {
     fn active(&self) -> bool;
 }
 
-#[cfg(any(unix, test))]
+#[cfg(any(all(unix, feature = "server"), test))]
 pub(crate) fn permitted(session: &dyn Session, request: &crate::Request) -> bool {
     if !session.active() {
         return false;
@@ -29,6 +29,7 @@ pub(crate) fn permitted(session: &dyn Session, request: &crate::Request) -> bool
         return chat_completion(request);
     }
     match request {
+        crate::Request::Complete { .. } => matches!(session.caller(), Caller::Agent),
         crate::Request::SecretStatus { .. }
         | crate::Request::CredentialStatus { .. }
         | crate::Request::MigrateApiKey { .. }
@@ -43,7 +44,7 @@ pub(crate) fn permitted(session: &dyn Session, request: &crate::Request) -> bool
 
 /// Chat can generate conversation text, not execute tools or replay tool history.
 /// Shared by launcher RPC and authenticated HTTP sessions.
-#[cfg(any(unix, test))]
+#[cfg(any(all(unix, feature = "server"), test))]
 pub(crate) fn chat_completion(request: &crate::Request) -> bool {
     use agent_provider_config::protocol::{Content, Role, ToolChoice};
     matches!(request, crate::Request::Complete { request, .. }
@@ -71,6 +72,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(unix, feature = "server"))]
     fn completion() -> serde_json::Value {
         serde_json::json!({
             "verb": "complete", "profile_id": "profile", "model_id": "model",
@@ -80,6 +82,7 @@ mod tests {
         })
     }
 
+    #[cfg(all(unix, feature = "server"))]
     #[tokio::test]
     async fn chat_cannot_acquire_agent_photos_or_settings_authority() {
         let chat = Authenticated(Caller::Chat, true, true);
@@ -146,6 +149,7 @@ mod tests {
                 "transform" => "only tilo-agent may run transforms",
                 "cluster_faces" => "only Photos may request fixed local face clustering",
                 "analyze_image" => "only Photos may request fixed local image analysis",
+                "complete" => "Provider permission denied",
                 _ => "not authorized",
             };
             assert!(response.error.unwrap().contains(expected), "{value}");
@@ -153,7 +157,14 @@ mod tests {
                 .execute(&chat, serde_json::from_value(value).unwrap(), &mut |_| true)
                 .await;
             assert!(!response.ok);
-            assert!(response.error.unwrap().contains("not authorized"));
+            assert_eq!(
+                response.model_error.unwrap().kind,
+                agent_provider_config::protocol::ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                response.error.as_deref(),
+                Some("Provider permission denied")
+            );
         }
     }
 

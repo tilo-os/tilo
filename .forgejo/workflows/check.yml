@@ -352,7 +352,7 @@ jobs:
         run: >-
           bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
-          bash tools/test-env.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
+          bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER) and not ($QUARANTINE_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
 
       # Each nextest phase writes the same ci-profile JUnit path. Preserve

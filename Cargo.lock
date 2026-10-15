@@ -12903,8 +12903,6 @@ dependencies = [
 [[package]]
 name = "rig-core"
 version = "0.44.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c60db6e3da7681abbdfa9637c1a76dbd5a713f935f0a6753d72c5d2770ed4c6"
 dependencies = [
  "async-stream",
  "base64",
@@ -14993,8 +14991,8 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d204abcbdf8e88729306a8d0ca01a79d8a49969fe1f84696909d6dbc4321c1a"
 dependencies = [
- "foldhash 0.2.0",
- "hashbrown 0.17.1",
+ "foldhash 0.1.5",
+ "hashbrown 0.15.5",
 ]
 
 [[package]]
@@ -15817,7 +15815,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -16179,7 +16177,6 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-model-gateway",
  "tilo-moq",
- "tilo-net",
  "tilo-peer-state",
  "tilo-reference",
  "tilo-relay",
@@ -22845,6 +22842,7 @@ dependencies = [
  "num-traits",
  "object",
  "once_cell",
+ "ordered-float",
  "p256 0.13.2",
  "p256 0.14.0",
  "p384 0.13.1",

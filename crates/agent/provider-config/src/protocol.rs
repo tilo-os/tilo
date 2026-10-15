@@ -396,6 +396,36 @@ pub struct ModelError {
 }
 
 impl ModelError {
+    /// Stable diagnostic for failures whose source may contain credentials or
+    /// provider-controlled text. Never echo that source into a frontend error.
+    pub fn new(kind: ErrorKind) -> Self {
+        let message = match kind {
+            ErrorKind::Unavailable => "Model service unavailable",
+            ErrorKind::Authentication => {
+                "Provider authentication failed; check the credential in Settings"
+            }
+            ErrorKind::PermissionDenied => "Provider permission denied",
+            ErrorKind::InvalidRequest => "Invalid model request",
+            ErrorKind::InvalidResponse => "Invalid model response",
+            ErrorKind::Unsupported => "Model operation unsupported; update the gateway",
+            ErrorKind::RateLimited => "Provider rate limit reached",
+            ErrorKind::CreditsExhausted => "Provider credits exhausted",
+            ErrorKind::ContextLimit => "Model context limit exceeded",
+            ErrorKind::Provider => "Provider request failed",
+            ErrorKind::TimedOut => "Model request timed out",
+            ErrorKind::Cancelled => "Model request cancelled",
+            ErrorKind::Truncated => {
+                "Model stream ended without a final response; partial output retained"
+            }
+            ErrorKind::Refused => "Model declined the request",
+            ErrorKind::Transport => "Model network transport failed",
+        };
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
     pub fn invalid(message: impl Into<String>) -> Self {
         Self {
             kind: ErrorKind::InvalidResponse,
@@ -506,6 +536,13 @@ impl StreamState {
                 self.error = Some(error.clone());
             }
             StreamEvent::Finished { response } => {
+                let validation = response.tool_calls();
+                if let Err(error) = &validation
+                    && !matches!(error.kind, ErrorKind::Truncated | ErrorKind::Refused)
+                {
+                    self.fail(error.clone());
+                    return;
+                }
                 // Finals are authoritative where present; absent fields must not
                 // erase partial output on a refusal or truncated response.
                 let mut text = String::new();
@@ -523,7 +560,7 @@ impl StreamState {
                 if !reasoning.is_empty() {
                     self.reasoning = reasoning;
                 }
-                match response.tool_calls() {
+                match validation {
                     Ok(_) => {
                         self.status = StreamStatus::Completed;
                         self.final_response = Some(response.clone());
@@ -739,8 +776,12 @@ mod tests {
         state.apply(&StreamEvent::TextDelta {
             text: "partial".into(),
         });
+        let mut malformed = response(&["a", "a"]);
+        malformed.message.content.push(Content::Text {
+            text: "invalid replacement".into(),
+        });
         state.apply(&StreamEvent::Finished {
-            response: response(&["a", "a"]),
+            response: malformed,
         });
         assert_eq!(state.status, StreamStatus::Failed);
         assert_eq!(state.error.unwrap().kind, ErrorKind::InvalidResponse);

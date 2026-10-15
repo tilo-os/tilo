@@ -34,7 +34,7 @@ fn through(
     stamp: Option<SourceStamp>,
     now: Instant,
     key: &str,
-) -> Result<ResolvedProfile, String> {
+) -> Result<ResolvedProfile, ModelError> {
     cache.resolve(("p", "m"), stamp, now, || {
         let mut profile = ProviderProfile::local_vllm();
         profile.id = "p".into();
@@ -143,9 +143,15 @@ fn a_kept_profile_is_reused_only_while_nothing_says_it_changed() {
         through(&cache, None, start, "unstamped").unwrap();
         assert_eq!(reads(&cache), 3);
         let failed = cache.resolve(("p", "m"), Some(stamp(1)), start, || {
-            Err("provider is not enabled".into())
+            Err(resolution_error(
+                ErrorKind::InvalidRequest,
+                "provider is not enabled",
+            ))
         });
-        assert_eq!(failed.unwrap_err(), "provider is not enabled");
+        assert_eq!(
+            failed.unwrap_err(),
+            resolution_error(ErrorKind::InvalidRequest, "provider is not enabled")
+        );
         assert_eq!(kept(&cache), 0);
     }
 }
@@ -169,6 +175,7 @@ fn save_profile(enabled: bool) {
 fn planned_key() -> Result<String, String> {
     plan_profile("test-provider", "test-model")
         .map(|(_, key)| key.map(|key| key.as_str().to_owned()).unwrap_or_default())
+        .map_err(|error| error.message)
 }
 
 fn holds(profile_id: &str) -> bool {
@@ -183,9 +190,48 @@ fn holds(profile_id: &str) -> bool {
 /// settings document nor the vault; a key set or removed through this
 /// gateway, a vault rewritten by another writer, and a settings change all
 /// reach the next turn; a removed key is not held.
+fn complete_error(profile_id: &str, model_id: &str) -> ModelError {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime
+        .block_on(rig_adapter::complete(
+            &provider_client().unwrap(),
+            &PlanCall {
+                profile_id,
+                model_id,
+                timeout: Duration::from_secs(1),
+                stream: false,
+                deltas: false,
+                trace: None,
+            },
+            agent_provider_config::protocol::Conversation::new("system", "hello")
+                .request(Vec::new(), 64),
+            &mut |_| true,
+        ))
+        .unwrap_err()
+}
+
 fn child_follows_settings_and_vault() {
     let reads = || PLAN_PROFILES.reads.load(Ordering::Relaxed);
     save_profile(true);
+    assert_eq!(
+        plan_profile("missing", "test-model").unwrap_err().kind,
+        ErrorKind::InvalidRequest
+    );
+    assert_eq!(
+        plan_profile("test-provider", "missing").unwrap_err().kind,
+        ErrorKind::InvalidRequest
+    );
+    assert_eq!(
+        complete_error("missing", "test-model").kind,
+        ErrorKind::InvalidRequest
+    );
+    assert_eq!(
+        complete_error("test-provider", "missing").kind,
+        ErrorKind::InvalidRequest
+    );
     // Establish local test custody explicitly, never use an ambient keyring.
     let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
     let profile = configured_profile("test-provider").unwrap();
@@ -216,7 +262,18 @@ fn child_follows_settings_and_vault() {
     remove_key("test-provider").unwrap();
     assert!(!holds("test-provider"));
     assert_eq!(planned_key().unwrap_err(), "API key is not configured");
+    assert_eq!(
+        plan_profile("test-provider", "test-model")
+            .unwrap_err()
+            .kind,
+        ErrorKind::Authentication
+    );
     assert!(!holds("test-provider"));
+
+    assert_eq!(
+        complete_error("test-provider", "test-model").kind,
+        ErrorKind::Authentication
+    );
 
     // Phase: a vault another writer rewrote is read again.
     set_key("test-provider", "third-key".into()).unwrap();
@@ -233,7 +290,23 @@ fn child_follows_settings_and_vault() {
     // (nothing stamped) or this (a stale reading) fails.
     save_profile(false);
     assert_eq!(planned_key().unwrap_err(), "provider is not enabled");
+    assert_eq!(
+        plan_profile("test-provider", "test-model")
+            .unwrap_err()
+            .kind,
+        ErrorKind::InvalidRequest
+    );
     assert!(!holds("test-provider"));
+    save_profile(true);
+    fs::write(
+        accounts::vault_dir_in(&root).join("vault.enc"),
+        b"invalid encrypted vault",
+    )
+    .unwrap();
+    assert_eq!(
+        complete_error("test-provider", "test-model").kind,
+        ErrorKind::Unavailable
+    );
 }
 
 #[test]

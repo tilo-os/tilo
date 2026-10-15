@@ -17,6 +17,7 @@ fn response(output: &str, event: Option<&str>) -> Response {
         output: Some(output.into()),
         configured: None,
         error: None,
+        model_error: None,
         event: event.map(str::to_owned),
     }
 }
@@ -130,13 +131,17 @@ async fn eof_is_terminal_and_never_yields_a_success() {
             .call(request(1000), &mut |_| true)
             .await
             .unwrap_err();
-        assert!(error.contains("ended without a final response"));
-        assert!(
+        assert_eq!(
+            error.kind,
+            agent_provider_config::protocol::ErrorKind::Truncated
+        );
+        assert_eq!(
             transport
                 .call(request(1000), &mut |_| true)
                 .await
                 .unwrap_err()
-                .contains("unavailable")
+                .kind,
+            agent_provider_config::protocol::ErrorKind::Unavailable
         );
     };
     tokio::join!(server, client);
@@ -165,12 +170,13 @@ async fn callback_stop_then_retry_reuses_the_authenticated_capability() {
             .unwrap();
     };
     let client = async {
-        assert!(
+        assert_eq!(
             transport
                 .call(request(1000), &mut |_| false)
                 .await
                 .unwrap_err()
-                .contains("cancelled")
+                .kind,
+            agent_provider_config::protocol::ErrorKind::Cancelled
         );
         assert_eq!(
             transport
@@ -237,12 +243,13 @@ async fn queued_deadline_does_not_cancel_the_active_call() {
         result = &mut active => panic!("request unexpectedly finished: {result:?}"),
         _ = received(&mut peer) => {}
     }
-    assert!(
+    assert_eq!(
         transport
             .call(request(10), &mut |_| true)
             .await
             .unwrap_err()
-            .contains("timed out")
+            .kind,
+        agent_provider_config::protocol::ErrorKind::TimedOut
     );
     crate::FRAMING
         .write_async(
@@ -282,19 +289,21 @@ async fn older_gateway_is_rejected_before_any_inference() {
         );
     };
     let client = async {
-        assert!(
+        assert_eq!(
             transport
                 .call(request(1000), &mut |_| true)
                 .await
                 .unwrap_err()
-                .contains("newer gateway")
+                .kind,
+            agent_provider_config::protocol::ErrorKind::Unsupported
         );
-        assert!(
+        assert_eq!(
             transport
                 .call(request(1000), &mut |_| true)
                 .await
                 .unwrap_err()
-                .contains("unavailable")
+                .kind,
+            agent_provider_config::protocol::ErrorKind::Unavailable
         );
     };
     tokio::join!(server, client);
@@ -311,19 +320,21 @@ async fn corrupt_response_invalidates_capability_instead_of_reusing_frames() {
             .unwrap();
     };
     let client = async {
-        assert!(
+        assert_eq!(
             transport
                 .call(request(1000), &mut |_| true)
                 .await
                 .unwrap_err()
-                .contains("malformed")
+                .kind,
+            agent_provider_config::protocol::ErrorKind::InvalidResponse
         );
-        assert!(
+        assert_eq!(
             transport
                 .call(request(1000), &mut |_| true)
                 .await
                 .unwrap_err()
-                .contains("unavailable")
+                .kind,
+            agent_provider_config::protocol::ErrorKind::Unavailable
         );
     };
     tokio::join!(server, client);
@@ -354,19 +365,21 @@ async fn wrong_cancellation_barrier_never_authorizes_reuse() {
         drop(peer);
     };
     let client = async {
-        assert!(
+        assert_eq!(
             transport
                 .call(request(1000), &mut |_| false)
                 .await
                 .unwrap_err()
-                .contains("cancelled")
+                .kind,
+            agent_provider_config::protocol::ErrorKind::Cancelled
         );
-        assert!(
+        assert_eq!(
             transport
                 .call(request(1000), &mut |_| true)
                 .await
                 .unwrap_err()
-                .contains("unavailable")
+                .kind,
+            agent_provider_config::protocol::ErrorKind::Unavailable
         );
     };
     tokio::join!(server, client);
@@ -435,12 +448,13 @@ async fn deadline_cancels_without_blocking_the_runtime() {
         acknowledge_cancel(&mut peer).await;
     };
     let client = async {
-        assert!(
+        assert_eq!(
             transport
                 .call(request(25), &mut |_| true)
                 .await
                 .unwrap_err()
-                .contains("timed out")
+                .kind,
+            agent_provider_config::protocol::ErrorKind::TimedOut
         );
     };
     tokio::join!(server, client);

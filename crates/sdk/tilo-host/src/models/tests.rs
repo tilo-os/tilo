@@ -36,6 +36,15 @@ fn error(models: &Models) -> ModelError {
     }
 }
 
+#[cfg(not(all(unix, feature = "native")))]
+#[test]
+fn launcher_is_explicitly_unavailable_without_platform_support() {
+    let Err(error) = Models::from_launcher() else {
+        panic!("unsupported hosts must not discover launcher model access");
+    };
+    assert_eq!(error.kind, ErrorKind::Unavailable);
+}
+
 #[test]
 fn unavailable_does_not_discover_another_hosts_session() {
     let unavailable = Models::default();

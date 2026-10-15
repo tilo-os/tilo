@@ -92,6 +92,7 @@ jobs:
           filter: blob:none
           sparse-checkout: |
             tools/ci/focused_test.py
+            tools/ci/package_features.py
             tools/ci/resolve_builder.py
             tools/ci/images.toml
           sparse-checkout-cone-mode: false

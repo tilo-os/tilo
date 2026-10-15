@@ -3,6 +3,12 @@
 //! The API key is accepted only by the per-user gateway and is never part of
 //! Settings' CRDT/settings payload or an agent process. Sandboxed callers use
 //! one launcher-passed connected Unix descriptor (`TILO_SVC_MODEL-GATEWAY_FD`).
+//!
+//! Default builds contain only the protocol and client transports, on native
+//! targets and the web. `server` enables the hosted-provider relay and its
+//! binaries without local inference. `local-models` additionally enables the
+//! installed on-device subject model. Trusted host CLIs explicitly select
+//! `host-backend` to access the shared provider and credential implementation.
 
 #[cfg(unix)]
 use std::io::Write;
@@ -17,16 +23,19 @@ use thiserror::Error;
 #[cfg(unix)]
 use zeroize::Zeroizing;
 
+#[cfg(test)]
+mod error_tests;
+
 pub mod caller;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "server"))]
 pub mod http_service;
 pub mod openai;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "server"))]
 pub mod service;
 /// Direct provider access for trusted host CLIs only, never sandbox RPC callers.
-#[cfg(unix)]
+#[cfg(all(unix, feature = "host-backend"))]
 pub use service::host_backend;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "server"))]
 pub mod session_directory;
 pub mod transport;
 
@@ -316,62 +325,124 @@ pub struct Response {
     pub configured: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Additive RPC3 diagnostic. Older peers ignore this field; absent on older gateways.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_error: Option<agent_provider_config::protocol::ModelError>,
     /// Set only on intermediate streaming frames (see [`EVENT_TOOL_CALL`]).
     /// A response without an event is the final frame of a request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
 }
 
-#[derive(Debug, Error)]
+impl Response {
+    /// Construct a redacted failure while retaining its machine-readable kind.
+    pub fn failure(mut error: agent_provider_config::protocol::ModelError) -> Self {
+        error.message = agent_provider_config::protocol::ModelError::new(error.kind).message;
+        Self {
+            ok: false,
+            output: None,
+            configured: None,
+            error: Some(error.message.clone()),
+            model_error: Some(error),
+            event: None,
+        }
+    }
+
+    /// Typed errors take precedence. English matching is only for old gateways.
+    pub fn failure_error(&self) -> ClientError {
+        match &self.model_error {
+            Some(error) => {
+                ClientError::Model(agent_provider_config::protocol::ModelError::new(error.kind))
+            }
+            None => ClientError::Rejected(self.error.clone().unwrap_or_default()),
+        }
+    }
+
+    /// # Errors
+    /// Returns the typed gateway failure when the request was unsuccessful.
+    pub fn into_result(self) -> Result<Self, ClientError> {
+        if self.ok {
+            Ok(self)
+        } else {
+            Err(self.failure_error())
+        }
+    }
+}
+
+#[derive(Error)]
 pub enum ClientError {
     #[error("Tilo model gateway is unavailable")]
     Unavailable,
-    #[error("model gateway protocol error: {0}")]
+    #[error("{0}")]
+    Model(agent_provider_config::protocol::ModelError),
+    #[error("model gateway protocol error")]
     Protocol(String),
-    #[error("model gateway refused request: {0}")]
+    #[error("model gateway refused request: {}", self.model_error())]
     Rejected(String),
+}
+
+impl std::fmt::Debug for ClientError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, formatter)
+    }
 }
 
 impl ClientError {
     /// A safe, actionable diagnostic for neutral streaming consumers.
     pub fn model_error(&self) -> agent_provider_config::protocol::ModelError {
         use agent_provider_config::protocol::{ErrorKind, ModelError};
-        let message = self.to_string();
         let kind = match self {
+            Self::Model(error) => return error.clone(),
             Self::Unavailable => ErrorKind::Unavailable,
             Self::Protocol(_) => ErrorKind::InvalidResponse,
             Self::Rejected(detail) => {
-                if detail.contains("credits") {
-                    ErrorKind::CreditsExhausted
-                } else if detail.contains("context limit") {
-                    ErrorKind::ContextLimit
-                } else if detail.contains("authentication") || detail.contains("API key") {
-                    ErrorKind::Authentication
-                } else if detail.contains("permission denied") {
-                    ErrorKind::PermissionDenied
-                } else if detail.contains("rate limit") {
-                    ErrorKind::RateLimited
-                } else if detail.contains("timed out") {
-                    ErrorKind::TimedOut
-                } else if detail.contains("cancelled") {
-                    ErrorKind::Cancelled
-                } else if detail.contains("truncated")
-                    || detail.contains("without a final response")
-                {
-                    ErrorKind::Truncated
-                } else if detail.contains("network")
-                    || detail.contains("transport failed")
-                    || detail.contains("stream interrupted")
-                {
-                    ErrorKind::Transport
-                } else if detail.contains("malformed") || detail.contains("unreadable") {
-                    ErrorKind::InvalidResponse
-                } else {
-                    ErrorKind::Provider
-                }
+                // RPC3 predates typed errors. Classify only at this compatibility
+                // boundary; never repeat the gateway's diagnostic to a frontend.
+                let detail = detail.to_ascii_lowercase();
+                let patterns: &[(ErrorKind, &[&str])] = &[
+                    (
+                        ErrorKind::CreditsExhausted,
+                        &["credits", "quota", "subscription_required"],
+                    ),
+                    (
+                        ErrorKind::ContextLimit,
+                        &["context limit", "context_length"],
+                    ),
+                    (ErrorKind::Authentication, &["authentication", "api key"]),
+                    (ErrorKind::PermissionDenied, &["permission denied"]),
+                    (ErrorKind::RateLimited, &["rate limit"]),
+                    (ErrorKind::TimedOut, &["timed out"]),
+                    (ErrorKind::Cancelled, &["cancelled"]),
+                    (
+                        ErrorKind::Truncated,
+                        &["truncated", "without a final response"],
+                    ),
+                    (
+                        ErrorKind::Transport,
+                        &["network", "transport failed", "stream interrupted"],
+                    ),
+                    (
+                        ErrorKind::Refused,
+                        &[
+                            "model declined",
+                            "model refused",
+                            "provider refusal",
+                            "content filter",
+                        ],
+                    ),
+                    (ErrorKind::InvalidRequest, &["unsupported image media type"]),
+                    (
+                        ErrorKind::InvalidResponse,
+                        &["malformed", "unreadable", "unsupported finish reason"],
+                    ),
+                ];
+                patterns
+                    .iter()
+                    .find(|(_, phrases)| phrases.iter().any(|phrase| detail.contains(phrase)))
+                    .map_or(ErrorKind::Provider, |(kind, _)| *kind)
             }
         };
-        ModelError { kind, message }
+        ModelError::new(kind)
     }
 }
 
@@ -412,15 +483,7 @@ pub fn request(request: Request) -> Result<Response, ClientError> {
         },
     )?;
     let response: Response = read_frame(&mut stream)?;
-    if response.ok {
-        Ok(response)
-    } else {
-        Err(ClientError::Rejected(
-            response
-                .error
-                .unwrap_or_else(|| "request rejected".to_string()),
-        ))
-    }
+    response.into_result()
 }
 
 /// Duplicate the launcher-issued service descriptor for one RPC.
@@ -478,39 +541,13 @@ pub fn plan(
         .ok_or_else(|| ClientError::Protocol("gateway returned no provider response".into()))
 }
 
-/// Complete a provider-neutral conversation through the launcher capability.
-///
-/// # Errors
-/// Returns an error if the gateway is unavailable, refuses the request, or
-/// cannot validate the provider response.
-pub fn complete(
-    profile_id: &str,
-    model_id: &str,
-    model_request: agent_provider_config::protocol::ModelRequest,
-    timeout: Duration,
-) -> Result<agent_provider_config::protocol::ModelResponse, ClientError> {
-    let response = request(Request::Complete {
-        profile_id: profile_id.into(),
-        model_id: model_id.into(),
-        request: model_request,
-        timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-        stream: false,
-    })?;
-    serde_json::from_str(
-        response
-            .output
-            .as_deref()
-            .ok_or_else(|| ClientError::Protocol("gateway returned no completion".into()))?,
-    )
-    .map_err(|_| ClientError::Protocol("invalid gateway completion".into()))
-}
-
 /// Complete a neutral turn, delivering presentation-only deltas followed by
 /// its authoritative response. Deltas never authorize tool execution.
 ///
 /// # Errors
-/// As [`complete`]. Malformed event payloads are rejected after draining the
-/// response so the shared capability channel remains synchronized.
+/// Rejects unavailable gateways, provider failures and malformed responses.
+/// Malformed event payloads are rejected after draining the response so the
+/// shared capability channel remains synchronized.
 pub fn complete_streaming(
     profile_id: &str,
     model_id: &str,
@@ -518,14 +555,6 @@ pub fn complete_streaming(
     timeout: Duration,
     on_event: &mut dyn FnMut(&agent_provider_config::protocol::StreamEvent),
 ) -> Result<agent_provider_config::protocol::ModelResponse, ClientError> {
-    use agent_provider_config::protocol as neutral;
-    #[derive(Deserialize)]
-    struct ToolDelta {
-        index: u32,
-        id: Option<String>,
-        name: Option<String>,
-        delta: String,
-    }
     let request = Request::Complete {
         profile_id: profile_id.into(),
         model_id: model_id.into(),
@@ -534,64 +563,28 @@ pub fn complete_streaming(
         stream: true,
     };
     let mut invalid = false;
-    let mut callback = |kind: &str, payload: &str| {
-        if kind == EVENT_TOOL_CALL {
+    let output = streaming_request(request, true, &mut |kind, payload| {
+        // Drain after a malformed event to preserve the shared legacy channel,
+        // but never deliver more deltas from a poisoned turn.
+        if invalid {
             return;
         }
-        let event = match kind {
-            EVENT_TOOL_CALL_DELTA => {
-                let Ok(delta) = serde_json::from_str::<ToolDelta>(payload) else {
-                    invalid = true;
-                    return;
-                };
-                neutral::StreamEvent::ToolCallDelta {
-                    index: delta.index,
-                    id: delta.id,
-                    name: delta.name,
-                    arguments: delta.delta,
-                }
-            }
-            "text_delta" | "reasoning_delta" => {
-                let Ok(text) = serde_json::from_str::<String>(payload) else {
-                    invalid = true;
-                    return;
-                };
-                if kind == "reasoning_delta" {
-                    neutral::StreamEvent::ReasoningDelta { text }
-                } else {
-                    neutral::StreamEvent::TextDelta { text }
-                }
-            }
-            _ => {
-                invalid = true;
-                return;
-            }
-        };
-        on_event(&event);
-    };
-    let output = streaming_request(request, true, &mut callback);
-    let result = output.and_then(|output| {
-        if invalid {
-            return Err(ClientError::Protocol("invalid gateway stream event".into()));
+        match transport::decode_event(kind, payload) {
+            Ok(Some(event)) => on_event(&event),
+            Ok(None) => {}
+            Err(_) => invalid = true,
         }
-        serde_json::from_str::<neutral::ModelResponse>(&output)
-            .map_err(|_| ClientError::Protocol("invalid gateway completion".into()))
     });
-    let response = match result {
-        Ok(response) => response,
-        Err(error) => {
-            // Already delivered deltas remain presentation state. Never emit a
-            // fabricated successful response or authorize their tool calls.
-            on_event(&neutral::StreamEvent::Failed {
-                error: error.model_error(),
-            });
-            return Err(error);
-        }
+    let result = if invalid {
+        Err(agent_provider_config::protocol::ModelError::invalid(
+            "invalid gateway stream event",
+        ))
+    } else {
+        output
+            .map_err(|error| error.model_error())
+            .and_then(|output| transport::decode_completion(&output))
     };
-    on_event(&neutral::StreamEvent::Finished {
-        response: response.clone(),
-    });
-    Ok(response)
+    transport::finish_stream(result, on_event).map_err(ClientError::Model)
 }
 
 #[cfg(not(unix))]
@@ -601,69 +594,6 @@ fn streaming_request(
     _on_event: &mut dyn FnMut(&str, &str),
 ) -> Result<String, ClientError> {
     Err(ClientError::Unavailable)
-}
-
-/// Streaming Plan: `on_event` sees each completed tool call as the provider
-/// streams it; the return value is the final assembled provider body, in the
-/// same shape [`plan`] returns. Every frame of the request is read before
-/// this returns, so the shared service channel stays in step.
-///
-/// # Errors
-///
-/// As [`plan`].
-pub fn plan_streaming(
-    profile_id: &str,
-    model_id: &str,
-    body: serde_json::Value,
-    timeout: Duration,
-    trace: Option<PlanTrace>,
-    on_event: &mut dyn FnMut(&str, &str),
-) -> Result<String, ClientError> {
-    stream_plan(profile_id, model_id, body, timeout, trace, false, on_event)
-}
-
-/// [`plan_streaming`] that also asks for [`EVENT_TOOL_CALL_DELTA`] frames:
-/// `on_event` sees both `tool_call_delta` and `tool_call` events. A gateway
-/// that predates deltas sends only `tool_call` events.
-///
-/// # Errors
-///
-/// As [`plan`].
-pub fn plan_streaming_deltas(
-    profile_id: &str,
-    model_id: &str,
-    body: serde_json::Value,
-    timeout: Duration,
-    trace: Option<PlanTrace>,
-    on_event: &mut dyn FnMut(&str, &str),
-) -> Result<String, ClientError> {
-    stream_plan(profile_id, model_id, body, timeout, trace, true, on_event)
-}
-
-#[cfg(unix)]
-fn stream_plan(
-    profile_id: &str,
-    model_id: &str,
-    body: serde_json::Value,
-    timeout: Duration,
-    trace: Option<PlanTrace>,
-    deltas: bool,
-    on_event: &mut dyn FnMut(&str, &str),
-) -> Result<String, ClientError> {
-    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
-    streaming_request(
-        Request::Plan {
-            profile_id: profile_id.into(),
-            model_id: model_id.into(),
-            body,
-            timeout_ms,
-            stream: true,
-            deltas,
-            trace,
-        },
-        deltas,
-        on_event,
-    )
 }
 
 #[cfg(unix)]
@@ -686,16 +616,14 @@ fn streaming_request(
     let mut delta_frames = 0_usize;
     loop {
         let response: Response = read_frame(&mut stream)?;
-        if !response.ok {
-            return Err(ClientError::Rejected(
-                response
-                    .error
-                    .unwrap_or_else(|| "request rejected".to_string()),
-            ));
-        }
+        let response = response.into_result()?;
         match response.event {
             Some(event) => {
-                let count = if deltas && (event == EVENT_TOOL_CALL_DELTA || event == "text_delta") {
+                let count = if deltas
+                    && (matches!(
+                        event.as_str(),
+                        EVENT_TOOL_CALL_DELTA | "text_delta" | "reasoning_delta"
+                    )) {
                     delta_frames = delta_frames.saturating_add(1);
                     delta_frames > MAX_DELTA_EVENTS
                 } else {
@@ -703,6 +631,8 @@ fn streaming_request(
                     calls > MAX_STREAM_EVENTS
                 };
                 if count {
+                    // Do not leave unread frames on the shared launcher channel.
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
                     return Err(ClientError::Protocol(
                         "gateway sent too many streaming events".into(),
                     ));
@@ -716,24 +646,6 @@ fn streaming_request(
             }
         }
     }
-}
-
-/// No launcher-issued gateway transport exists on this platform.
-///
-/// # Errors
-///
-/// Always [`ClientError::Unavailable`].
-#[cfg(not(unix))]
-fn stream_plan(
-    _profile_id: &str,
-    _model_id: &str,
-    _body: serde_json::Value,
-    _timeout: Duration,
-    _trace: Option<PlanTrace>,
-    _deltas: bool,
-    _on_event: &mut dyn FnMut(&str, &str),
-) -> Result<String, ClientError> {
-    Err(ClientError::Unavailable)
 }
 
 /// The most intermediate frames one streaming Plan may carry.
@@ -955,34 +867,48 @@ pub fn remove_api_key(profile_id: &str) -> Result<(), ClientError> {
 /// # Errors
 ///
 /// Returns [`ClientError::Protocol`] when serialization fails or the frame is
-/// too large, and [`ClientError::Unavailable`] when writing fails.
+/// too large, and a typed transport/timeout error when writing fails.
 #[cfg(unix)]
 pub fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), ClientError> {
     let body = Zeroizing::new(
         serde_json::to_vec(value).map_err(|error| ClientError::Protocol(error.to_string()))?,
     );
     FRAMING.write(stream, &body).map_err(|error| match error {
-        wire_frame::FrameError::Io(_) => ClientError::Unavailable,
+        wire_frame::FrameError::Io(error) => io_error(&error),
         _ => ClientError::Protocol("request exceeds gateway frame limit".into()),
     })?;
-    stream.flush().map_err(|_| ClientError::Unavailable)
+    stream.flush().map_err(|error| io_error(&error))
+}
+
+#[cfg(unix)]
+fn io_error(error: &std::io::Error) -> ClientError {
+    use agent_provider_config::protocol::{ErrorKind, ModelError};
+    ClientError::Model(ModelError::new(match error.kind() {
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => ErrorKind::TimedOut,
+        _ => ErrorKind::Transport,
+    }))
 }
 
 /// Read and decode one size-bounded JSON frame from a gateway stream.
 ///
 /// # Errors
 ///
-/// Returns [`ClientError::Unavailable`] when reading fails and
+/// Returns a typed transport/truncation error on stream loss and
 /// [`ClientError::Protocol`] for an invalid length or payload.
 #[cfg(unix)]
 pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result<T, ClientError> {
+    use agent_provider_config::protocol::{ErrorKind, ModelError};
     let mut body = Zeroizing::new(Vec::new());
     match FRAMING.read_into(stream, &mut body) {
         Ok(true) => {}
         Err(wire_frame::FrameError::TooLarge(_)) => {
             return Err(ClientError::Protocol("gateway frame exceeds limit".into()));
         }
-        Ok(false) | Err(_) => return Err(ClientError::Unavailable),
+        Ok(false) | Err(wire_frame::FrameError::Truncated | wire_frame::FrameError::Closed) => {
+            return Err(ClientError::Model(ModelError::new(ErrorKind::Truncated)));
+        }
+        Err(wire_frame::FrameError::Io(error)) => return Err(io_error(&error)),
+        Err(_) => return Err(ClientError::Protocol("invalid gateway frame".into())),
     }
     serde_json::from_slice(&body)
         .map_err(|_| ClientError::Protocol("invalid gateway response".into()))
@@ -1005,6 +931,7 @@ mod wire_tests {
                 output: Some("x".into()),
                 configured: None,
                 error: None,
+                model_error: None,
                 event: None,
             },
         )

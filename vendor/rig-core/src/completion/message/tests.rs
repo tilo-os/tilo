@@ -1,0 +1,268 @@
+use serde::{Deserialize, Serialize};
+
+use super::{Message, Text, ToolResultContent};
+
+mod vec_content_serde {
+    use super::super::{AssistantContent, Message, UserContent};
+
+    #[test]
+    fn message_content_still_serializes_as_a_plain_sequence() {
+        // The removed container serialized as a bare sequence, which is why
+        // this migration changes no persisted history and no recorded
+        // provider fixture. Pin the wire shape so that stays true.
+        let message = Message::User {
+            content: vec![UserContent::text("hi")],
+        };
+        let json = serde_json::to_value(&message).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}],
+            })
+        );
+    }
+
+    #[test]
+    fn message_content_round_trips_byte_identically() {
+        let message = Message::Assistant(crate::message::AssistantMessage::new(vec![
+            AssistantContent::text("hello"),
+        ]));
+        let encoded = serde_json::to_string(&message).expect("serialize");
+        let decoded: Message = serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(
+            serde_json::to_string(&decoded).expect("re-serialize"),
+            encoded
+        );
+    }
+
+    #[test]
+    fn an_empty_content_array_deserializes() {
+        // The request boundary rejects it when it is sent, not serde.
+        for message in [
+            serde_json::json!({"role": "user", "content": []}),
+            serde_json::json!({"role": "assistant", "content": []}),
+        ] {
+            let decoded = serde_json::from_value::<Message>(message.clone()).expect("parses");
+            assert_eq!(serde_json::to_value(&decoded).expect("serializes"), message);
+        }
+    }
+}
+
+#[test]
+fn system_message_constructor_and_serde_roundtrip() {
+    let message = Message::system("You are concise.");
+
+    match &message {
+        Message::System { content } => assert_eq!(content, "You are concise."),
+        _ => panic!("Expected system message"),
+    }
+
+    let json = serde_json::to_string(&message).expect("serialize");
+    let roundtrip: Message = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(roundtrip, message);
+}
+
+#[test]
+fn a_rig_issued_call_id_round_trips_as_local() {
+    // A call the provider sent without an id carries a rig-issued one, and
+    // the round trip never turns it into a provider id.
+    let call = super::ToolCall::from_wire(
+        "",
+        super::ToolFunction::new(
+            super::ToolName::new("add").expect("tool name"),
+            serde_json::json!({}),
+        ),
+    );
+    assert!(call.id.is_local());
+
+    let json = serde_json::to_value(&call).expect("serialize");
+    let roundtrip: super::ToolCall = serde_json::from_value(json).expect("deserialize");
+    assert!(roundtrip.id.provider().is_none());
+    assert_eq!(roundtrip, call);
+}
+
+#[test]
+fn legacy_call_id_key_cannot_recover_an_untagged_identity() {
+    let legacy = serde_json::json!({
+        "id": "fc_123",
+        "call_id": "call_abc",
+        "function": {"name": "add", "arguments": {"x": 1}},
+    });
+    assert!(serde_json::from_value::<super::ToolCall>(legacy).is_err());
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ExecutorLikeResponse {
+    output: serde_json::Value,
+    logs: Vec<String>,
+    execution_time_ms: u64,
+}
+
+#[test]
+fn tool_result_content_decodes_structured_and_legacy_json() {
+    let response = ExecutorLikeResponse {
+        output: serde_json::json!({"answer": 42}),
+        logs: vec!["computed".to_string()],
+        execution_time_ms: 7,
+    };
+    let value = serde_json::to_value(&response).expect("serialize response");
+
+    let structured = ToolResultContent::json(value.clone());
+    assert_eq!(structured.as_json(), Some(&value));
+    assert_eq!(structured.as_text(), None);
+    assert_eq!(
+        structured
+            .deserialize_json::<ExecutorLikeResponse>()
+            .expect("decode structured response"),
+        response
+    );
+
+    let legacy_json = value.to_string();
+    let legacy_text = ToolResultContent::Text(Text::new(legacy_json.clone()));
+    assert_eq!(legacy_text.as_text(), Some(legacy_json.as_str()));
+    assert_eq!(legacy_text.as_json(), None);
+    assert_eq!(
+        legacy_text
+            .deserialize_json::<ExecutorLikeResponse>()
+            .expect("decode legacy response"),
+        response
+    );
+
+    let image = ToolResultContent::image_url("https://example.com/result.png", None, None);
+    let image_error = image.deserialize_json::<ExecutorLikeResponse>();
+    assert!(image_error.is_err());
+    if let Err(error) = image_error {
+        assert_eq!(
+            error.to_string(),
+            "cannot decode image tool-result content as JSON"
+        );
+    }
+}
+
+/// The shapes persisted before calls had one id no longer parse.
+#[test]
+fn the_legacy_tool_call_id_shape_does_not_parse() {
+    let legacy = serde_json::json!({
+        "id": {"origin": "explicit", "id": "call_1"},
+        "function": {"name": "add", "arguments": {}},
+    });
+    assert!(serde_json::from_value::<super::ToolCall>(legacy).is_err());
+    assert!(serde_json::from_str::<super::CallId>(r#""call_1""#).is_err());
+}
+
+#[test]
+fn a_stored_call_with_any_arguments_shape_loads() {
+    let stored = serde_json::json!({"name": "search", "arguments": null});
+    let function: super::ToolFunction =
+        serde_json::from_value(stored).expect("a stored call loads");
+    assert_eq!(function.arguments_value(), serde_json::json!({}));
+    let stored = serde_json::json!({"name": "search", "arguments": "{\"q\":1}"});
+    let function: super::ToolFunction =
+        serde_json::from_value(stored).expect("a stored call loads");
+    assert_eq!(function.arguments_value(), serde_json::json!({"q": 1}));
+}
+
+#[test]
+fn an_unanswered_turn_fails_its_run_only_when_cut_or_failed() {
+    use super::{AssistantContent, StopReason, turn_failure};
+    use crate::completion::FinishReason;
+    let empty: Vec<AssistantContent> = vec![AssistantContent::reasoning("thinking")];
+    let answered = vec![AssistantContent::text("hi")];
+    let failed = StopReason::Error("refused".into());
+    assert_eq!(
+        turn_failure(
+            &empty,
+            Some(&StopReason::Length),
+            Some(&FinishReason::Length)
+        ),
+        Some(FinishReason::Length.no_answer_message())
+    );
+    assert!(turn_failure(&empty, Some(&failed), None).is_some_and(|m| m.contains("refused")));
+    assert_eq!(
+        turn_failure(&empty, Some(&StopReason::Stop), Some(&FinishReason::Stop)),
+        None
+    );
+    assert_eq!(
+        turn_failure(
+            &answered,
+            Some(&StopReason::Length),
+            Some(&FinishReason::Length)
+        ),
+        None
+    );
+}
+
+/// A turn the provider failed fails its run even when it holds an answer:
+/// replay leaves it out, so the caller must not take it as a success.
+#[test]
+fn a_failed_turn_with_an_answer_fails_its_run() {
+    use super::{AssistantContent, StopReason, turn_failure};
+    use crate::completion::FinishReason;
+    let answered = vec![AssistantContent::text("hi")];
+    let failed = StopReason::Error("Provider finish_reason: weird".into());
+    let message = turn_failure(
+        &answered,
+        Some(&failed),
+        Some(&FinishReason::Other("weird".into())),
+    )
+    .expect("the run fails");
+    assert_eq!(
+        message,
+        "the provider failed the turn: Provider finish_reason: weird"
+    );
+    let filtered = StopReason::Error("Provider finish_reason: content_filter".into());
+    assert!(
+        turn_failure(
+            &answered,
+            Some(&filtered),
+            Some(&FinishReason::ContentFilter)
+        )
+        .is_some_and(|message| message.contains("content_filter"))
+    );
+    let aborted = StopReason::Aborted("the caller stopped".into());
+    assert_eq!(turn_failure(&answered, Some(&aborted), None), None);
+}
+
+/// A turn that will not replay runs none of its tool calls, whatever else
+/// it holds; a call in a turn the token limit ended is finished and runs.
+#[test]
+fn a_failed_turn_with_calls_fails_its_run() {
+    use super::{AssistantContent, StopReason, ToolName, turn_failure};
+    use crate::completion::FinishReason;
+    let call = AssistantContent::tool_call(
+        "call_1",
+        ToolName::new("lookup").expect("a tool name"),
+        serde_json::json!({}),
+    );
+    let turn = vec![AssistantContent::text("checking"), call];
+    for stop in [
+        StopReason::Error("Provider finish_reason: pause".into()),
+        StopReason::Aborted("the stream ended".into()),
+    ] {
+        let message = turn_failure(&turn, Some(&stop), None).expect("the run fails");
+        assert!(message.contains("none of its tool calls ran"), "{message}");
+    }
+    for (stop, finish) in [
+        (StopReason::Length, FinishReason::Length),
+        (StopReason::ToolUse, FinishReason::ToolCalls),
+    ] {
+        assert_eq!(turn_failure(&turn, Some(&stop), Some(&finish)), None);
+    }
+}
+
+/// Redacted reasoning without a current provider item has nothing to send
+/// (round-5 F7); with one, it replays.
+#[test]
+fn redacted_reasoning_without_its_item_is_blank() {
+    use super::{AssistantContent, Reasoning};
+    let redacted = AssistantContent::Reasoning(Reasoning {
+        text: "kept".to_owned(),
+        redacted: true,
+        native: None,
+    });
+    assert!(redacted.is_blank());
+    let with_item =
+        redacted.with_native(serde_json::json!({"type": "redacted_thinking", "data": "x"}));
+    assert!(!with_item.is_blank());
+}

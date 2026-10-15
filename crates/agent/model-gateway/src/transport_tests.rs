@@ -8,6 +8,22 @@ use std::sync::{
 };
 use std::task::Poll;
 
+#[test]
+fn completion_uses_typed_kind_before_legacy_error_text() {
+    for kind in [
+        neutral::ErrorKind::InvalidRequest,
+        neutral::ErrorKind::InvalidResponse,
+        neutral::ErrorKind::CreditsExhausted,
+        neutral::ErrorKind::Transport,
+    ] {
+        let mut response = Response::failure(neutral::ModelError::new(kind));
+        response.error = Some("rate limit secret-never-echo".into());
+        let error = completion(&response).unwrap_err();
+        assert_eq!(error.kind, kind);
+        assert!(!error.message.contains("secret-never-echo"));
+    }
+}
+
 struct BurstStream {
     count: usize,
     fail: bool,
@@ -36,9 +52,10 @@ impl Transport for BurstStream {
                     output: Some(serde_json::to_string("x").unwrap()),
                     configured: None,
                     error: None,
+                    model_error: None,
                     event: Some("text_delta".into()),
                 }) {
-                    return Err("model request cancelled".into());
+                    return Err(neutral::ModelError::new(neutral::ErrorKind::Cancelled));
                 }
             }
             // A single poll delivers the whole burst, but not the completion.
@@ -54,7 +71,7 @@ impl Transport for BurstStream {
             })
             .await;
             if self.fail {
-                return Err("model stream ended without a final response".into());
+                return Err(neutral::ModelError::new(neutral::ErrorKind::Truncated));
             }
             Ok(Response {
                 ok: true,
@@ -71,6 +88,7 @@ impl Transport for BurstStream {
                 ),
                 configured: None,
                 error: None,
+                model_error: None,
                 event: None,
             })
         })
@@ -222,12 +240,13 @@ impl Transport for CutStream {
                     output: Some(serde_json::to_string(text).unwrap()),
                     configured: None,
                     error: None,
+                    model_error: None,
                     event: Some(kind.into()),
                 }) {
-                    return Err("model request cancelled".into());
+                    return Err(neutral::ModelError::new(neutral::ErrorKind::Cancelled));
                 }
             }
-            Err("model stream ended without a final response".into())
+            Err(neutral::ModelError::new(neutral::ErrorKind::Truncated))
         })
     }
 }

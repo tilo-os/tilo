@@ -124,7 +124,6 @@ pub fn enable_standalone_models() {
 }
 
 pub(crate) fn standalone_models() -> Option<ui::models::Models> {
-    #[cfg(unix)]
     if STANDALONE_MODELS.replace(false) {
         return Some(ui::models::Models::from_launcher().unwrap_or_default());
     }

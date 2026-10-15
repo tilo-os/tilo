@@ -58,6 +58,22 @@ class SelectorTests(unittest.TestCase):
             package("collab-types", "collab-types"),
         ]}
 
+    def test_gateway_feature_recipe_selects_server_tests_without_client_reverse_closure(self):
+        gateway = 'tilo-model-gateway'
+        self.metadata['packages'].extend([
+            {'name': gateway, 'manifest_path': str(self.root / gateway / 'Cargo.toml'),
+             'targets': [{'name': gateway}], 'dependencies': []},
+            {'name': 'client-ui', 'manifest_path': str(self.root / 'client-ui/Cargo.toml'),
+             'targets': [{'name': 'client-ui'}],
+             'dependencies': [{'name': gateway, 'path': str(self.root / gateway)}]},
+        ])
+        plan = ci_select.make_plan(self.metadata, self.root, ['tools/ci/package_features.py'], 2)
+        self.assertFalse(plan['full'])
+        self.assertIn(gateway, plan['tested'])
+        self.assertNotIn('client-ui', plan['selected'])
+        self.assertTrue(any('-p ' + gateway in row['test_packages']
+                            for row in plan['matrix']['include']))
+
     def test_browser_only_library_is_checked_for_native_and_wasm_without_an_empty_test_run(self):
         directory = self.root / "web"
         (directory / "src").mkdir(parents=True)

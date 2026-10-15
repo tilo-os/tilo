@@ -156,6 +156,7 @@ async fn anthropic_streams_deltas_completed_calls_and_usage_through_rig() {
         profile: profile.clone(),
         model: "checked-model".into(),
         streaming: true,
+        target: crate::openai::Target::Standard,
         authenticated: true,
         budget: Duration::from_secs(5),
         body: None,
@@ -178,9 +179,7 @@ async fn anthropic_streams_deltas_completed_calls_and_usage_through_rig() {
     };
     let response = execute(
         transport,
-        &profile,
         Some("fabricated-key"),
-        "checked-model".into(),
         neutral_request(request()).unwrap(),
         Some((&mut emit, &mut timing, true)),
     )
@@ -211,16 +210,16 @@ async fn anthropic_streams_deltas_completed_calls_and_usage_through_rig() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn legacy_unary_tool_envelopes_without_metadata_keep_their_exact_bytes() {
+async fn legacy_unary_tool_envelopes_keep_their_exact_bytes() {
     use std::io::{BufRead as _, Read as _, Write as _};
     for (protocol, reply) in [
         (
             ProviderProtocol::OpenAiCompatible,
-            r#"{"choices":[{"message":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"count\":2}"}}]}}]}"#,
+            r#"{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"count\":2}"}}]},"finish_reason":"tool_calls"}]}"#,
         ),
         (
             ProviderProtocol::Anthropic,
-            r#"{"content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{"count":2}}]}"#,
+            r#"{"type":"message","role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"lookup","input":{"count":2}}],"stop_reason":"tool_use"}"#,
         ),
     ] {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -247,7 +246,12 @@ async fn legacy_unary_tool_envelopes_without_metadata_keep_their_exact_bytes() {
             reader.read_exact(&mut body).unwrap();
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).unwrap();
         });
-        let body = json!({"model":"checked-model", "max_tokens":256, "messages":[{"role":"user","content":"question"}]});
+        let mut body = json!({"model":"checked-model", "max_tokens":256, "messages":[{"role":"user","content":"question"}]});
+        body["tools"] = if protocol == ProviderProtocol::OpenAiCompatible {
+            json!([{"type":"function", "function":{"name":"lookup", "parameters":{"type":"object"}}}])
+        } else {
+            json!([{"name":"lookup", "input_schema":{"type":"object"}}])
+        };
         let response = legacy(
             &provider_client().unwrap(),
             &profile,
@@ -311,6 +315,7 @@ async fn rig_wires_reach_custom_endpoints_without_changing_gateway_policy() {
             profile: profile.clone(),
             model: "checked-model".into(),
             streaming: false,
+            target: crate::openai::Target::Standard,
             authenticated: true,
             budget: Duration::from_secs(5),
             body: None,
@@ -322,9 +327,7 @@ async fn rig_wires_reach_custom_endpoints_without_changing_gateway_policy() {
         };
         let response = execute(
             transport,
-            &profile,
             Some("fabricated-key"),
-            "checked-model".into(),
             neutral_request(request()).unwrap(),
             None,
         )

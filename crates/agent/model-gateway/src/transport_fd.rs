@@ -1,5 +1,6 @@
 //! One launcher-authenticated stream, owned by one host instance.
 use super::{CallFuture, Request, Response, Transport};
+use agent_provider_config::protocol::{ErrorKind, ModelError};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{
@@ -62,32 +63,40 @@ impl Drop for ActiveConnection {
 async fn write_request(
     stream: &mut (impl tokio::io::AsyncWrite + Unpin),
     request: Request,
-) -> Result<(), String> {
+) -> Result<(), ModelError> {
     let body = zeroize::Zeroizing::new(
         serde_json::to_vec(&crate::Frame {
             version: crate::RPC_VERSION,
             value: request,
         })
-        .map_err(|_| "cannot encode model request")?,
+        .map_err(|_| ModelError::new(ErrorKind::InvalidRequest))?,
     );
     if body.len() > 2 * 1024 * 1024 {
-        return Err("model request too large".into());
+        return Err(ModelError::new(ErrorKind::InvalidRequest));
     }
     crate::FRAMING
         .write_async(stream, &body)
         .await
-        .map_err(|_| "model transport failed".into())
+        .map_err(|_| ModelError::new(ErrorKind::Transport))
 }
 
 async fn read_response(
     stream: &mut (impl tokio::io::AsyncRead + Unpin),
-) -> Result<Response, String> {
+) -> Result<Response, ModelError> {
     let body = crate::FRAMING
         .read_async(stream)
         .await
-        .map_err(|_| "malformed model response")?
-        .ok_or("model stream ended without a final response")?;
-    serde_json::from_slice(&body).map_err(|_| "malformed model response".into())
+        .map_err(|error| {
+            ModelError::new(match error {
+                wire_frame::FrameError::Io(_) => ErrorKind::Transport,
+                wire_frame::FrameError::Truncated | wire_frame::FrameError::Closed => {
+                    ErrorKind::Truncated
+                }
+                _ => ErrorKind::InvalidResponse,
+            })
+        })?
+        .ok_or_else(|| ModelError::new(ErrorKind::Truncated))?;
+    serde_json::from_slice(&body).map_err(|_| ModelError::new(ErrorKind::InvalidResponse))
 }
 
 async fn exchange(
@@ -95,21 +104,23 @@ async fn exchange(
     request: Request,
     id: u64,
     cancelled: &mut tokio::sync::oneshot::Receiver<()>,
-    replies: &tokio::sync::mpsc::Sender<Result<Response, String>>,
-) -> Result<(), String> {
+    replies: &tokio::sync::mpsc::Sender<Result<Response, ModelError>>,
+) -> Result<(), ModelError> {
     // An older peer must never start paid work that cannot be stopped. A
     // rejection is not success and is not silently downgraded to legacy RPC.
     let supported = tokio::time::timeout(Duration::from_secs(2), async {
         write_request(stream, Request::CancellationSupported).await?;
-        read_response(stream).await.map_err(|_| "model gateway unavailable: cancellation negotiation failed; update gateway and relaunch".to_string())
-    }).await.map_err(|_| "model gateway unavailable: cancellation negotiation timed out; update gateway and relaunch")??;
+        read_response(stream)
+            .await
+            .map_err(|_| ModelError::new(ErrorKind::Unsupported))
+    })
+    .await
+    .map_err(|_| ModelError::new(ErrorKind::Unsupported))??;
     if !supported.ok
         || supported.event.is_some()
         || supported.output.as_deref() != Some("cancel-v1")
     {
-        return Err(
-            "model gateway unavailable: reusable cancellation requires a newer gateway".into(),
-        );
+        return Err(ModelError::new(ErrorKind::Unsupported));
     }
     if cancelled.try_recv() != Err(tokio::sync::oneshot::error::TryRecvError::Empty) {
         return Ok(());
@@ -125,7 +136,7 @@ async fn exchange(
         ),
     )
     .await
-    .map_err(|_| "model request write timed out")??;
+    .map_err(|_| ModelError::new(ErrorKind::TimedOut))??;
     let (mut reader, mut writer) = stream.split();
     let mut events = 0usize;
     let mut stopping = false;
@@ -143,9 +154,9 @@ async fn exchange(
                     stopping = true;
                     deadline.as_mut().reset(cancellation_deadline()?);
                     tokio::time::timeout(Duration::from_secs(2), write_request(&mut writer, Request::Cancel { id }))
-                        .await.map_err(|_| "model cancellation write timed out")??;
+                        .await.map_err(|_| ModelError::new(ErrorKind::TimedOut))??;
                 }
-                () = &mut deadline => return Err("model cancellation synchronization timed out".into()),
+                () = &mut deadline => return Err(ModelError::new(ErrorKind::TimedOut)),
                 response = &mut reading => break response?,
             }
         };
@@ -169,19 +180,19 @@ async fn exchange(
                 write_request(&mut writer, Request::Cancel { id }),
             )
             .await
-            .map_err(|_| "model cancellation write timed out")??;
+            .map_err(|_| ModelError::new(ErrorKind::TimedOut))??;
         }
         events = events.saturating_add(1);
         if events > crate::MAX_STREAM_EVENTS + crate::MAX_DELTA_EVENTS + 1 {
-            return Err("too many model events".into());
+            return Err(ModelError::new(ErrorKind::InvalidResponse));
         }
     }
 }
 
-fn cancellation_deadline() -> Result<tokio::time::Instant, String> {
+fn cancellation_deadline() -> Result<tokio::time::Instant, ModelError> {
     tokio::time::Instant::now()
         .checked_add(Duration::from_secs(2))
-        .ok_or_else(|| "model cancellation deadline exceeds clock range".into())
+        .ok_or_else(|| ModelError::new(ErrorKind::TimedOut))
 }
 
 impl Transport for FdTransport {
@@ -191,7 +202,8 @@ impl Transport for FdTransport {
         event: &'a mut (dyn FnMut(Response) -> bool + Send),
     ) -> CallFuture<'a> {
         Box::pin(async move {
-            tokio::runtime::Handle::try_current().map_err(|_| "model runtime unavailable")?;
+            tokio::runtime::Handle::try_current()
+                .map_err(|_| ModelError::new(ErrorKind::Unavailable))?;
             let millis = match &request {
                 Request::Complete { timeout_ms, .. }
                 | Request::Plan { timeout_ms, .. }
@@ -201,7 +213,7 @@ impl Transport for FdTransport {
             let id = self
                 .next_id
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                .map_err(|_| "model operation identifiers exhausted")?;
+                .map_err(|_| ModelError::new(ErrorKind::Unavailable))?;
             let slot = self.stream.clone();
             let (cancel, mut cancelled) = tokio::sync::oneshot::channel();
             let (replies, mut received) = tokio::sync::mpsc::channel(8);
@@ -214,19 +226,24 @@ impl Transport for FdTransport {
                     slot = slot.lock() => slot,
                 };
                 let result = async {
-                    let stream = slot.take().ok_or("model gateway unavailable")?;
+                    let stream = slot
+                        .take()
+                        .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))?;
                     stream
                         .set_nonblocking(true)
-                        .map_err(|_| "model transport unavailable")?;
+                        .map_err(|_| ModelError::new(ErrorKind::Unavailable))?;
                     let mut active = ActiveConnection(Some(
                         tokio::net::UnixStream::from_std(stream)
-                            .map_err(|_| "model transport unavailable")?,
+                            .map_err(|_| ModelError::new(ErrorKind::Unavailable))?,
                     ));
                     // Bound negotiation and writes too, including unresponsive peers.
                     tokio::time::timeout(
                         Duration::from_secs(123),
                         exchange(
-                            active.0.as_mut().ok_or("model transport unavailable")?,
+                            active
+                                .0
+                                .as_mut()
+                                .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))?,
                             request,
                             id,
                             &mut cancelled,
@@ -234,16 +251,16 @@ impl Transport for FdTransport {
                         ),
                     )
                     .await
-                    .map_err(|_| "model transport timed out")??;
+                    .map_err(|_| ModelError::new(ErrorKind::TimedOut))??;
                     *slot = Some(
                         active
                             .0
                             .take()
-                            .ok_or("model transport unavailable")?
+                            .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))?
                             .into_std()
-                            .map_err(|_| "model transport unavailable")?,
+                            .map_err(|_| ModelError::new(ErrorKind::Unavailable))?,
                     );
-                    Ok::<(), String>(())
+                    Ok::<(), ModelError>(())
                 }
                 .await;
                 if let Err(error) = result {
@@ -257,14 +274,14 @@ impl Transport for FdTransport {
                         return Ok(response);
                     }
                     if !event(response) {
-                        return Err("model request cancelled".into());
+                        return Err(ModelError::new(ErrorKind::Cancelled));
                     }
                 }
-                Err("model gateway unavailable".into())
+                Err(ModelError::new(ErrorKind::Unavailable))
             };
             let result = tokio::time::timeout(Duration::from_millis(millis), operation)
                 .await
-                .map_err(|_| "model request timed out".to_string())?;
+                .map_err(|_| ModelError::new(ErrorKind::TimedOut))?;
             drop(cancel);
             result
         })

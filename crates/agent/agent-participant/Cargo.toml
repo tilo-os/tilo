@@ -81,8 +81,7 @@ blake3.workspace = true
 getrandom.workspace = true
 # An OpenAI-compatible model endpoint, called from the agent's own thread,
 # shaped for its target (a plain provider or Tilo Cloud's metered endpoint).
-tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
-tilo-model-gateway = { path = "../model-gateway" }
+tilo-model-gateway = { default-features = false, features = ["host-backend"], path = "../model-gateway" }
 # Agents' sessions do their I/O on the host's runtime, or one of their own.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true

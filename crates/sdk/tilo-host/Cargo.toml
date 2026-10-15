@@ -65,7 +65,7 @@ tilo-secrets.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # Native model RPC belongs to each host instance, never the process default.
-tilo-model-gateway = { version = "0.1.0", path = "../../agent/model-gateway", optional = true }
+tilo-model-gateway = { default-features = false, version = "0.1.0", path = "../../agent/model-gateway", optional = true }
 
 [target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
 # MPRIS needs a Unix session bus; p2p supports hermetic tests.

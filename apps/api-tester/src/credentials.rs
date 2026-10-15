@@ -15,26 +15,14 @@ pub const PENDING: &str = "Saving authentication securely; waiting for browser s
 /// # Errors
 /// Returns a sanitized failure, or [`PENDING`] while a browser write is staged.
 pub fn seal(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
-    let value = match auth {
-        Auth::None | Auth::SecretRef { .. } => return Ok(auth.clone()),
-        Auth::Bearer { token } => serde_json::json!({"Bearer": {"token": token}}),
-        Auth::Basic { username, password } => {
-            serde_json::json!({"Basic": {"username": username, "password": password}})
-        }
-        Auth::ApiKey { header, value } => {
-            serde_json::json!({"ApiKey": {"header": header, "value": value}})
-        }
+    let Some(value) = credential_bytes(auth) else {
+        return Ok(auth.clone());
     };
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    let id = if store.is_page_store() {
-        ui::secrets::web::seal_blocking(store.app_id(), value.to_string().as_bytes())
-            .map_err(|_| UNAVAILABLE)?
-            .ok_or(PENDING)?
-    } else {
-        put_credential(store, &value)?
-    };
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    let id = put_credential(store, &value)?;
+    let key = format!("request-auth/{}", uuid::Uuid::new_v4());
+    let id = store
+        .seal_blocking(&key, &value, PutOptions::default())
+        .map_err(|_| UNAVAILABLE)?
+        .ok_or(PENDING)?;
     Ok(Auth::SecretRef {
         id,
         scheme: auth.label().into(),
@@ -46,19 +34,12 @@ pub fn seal(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
 /// # Errors
 /// Returns a sanitized failure when protected storage refuses the write.
 pub async fn seal_async(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
-    let value = match auth {
-        Auth::None | Auth::SecretRef { .. } => return Ok(auth.clone()),
-        Auth::Bearer { token } => serde_json::json!({"Bearer": {"token": token}}),
-        Auth::Basic { username, password } => {
-            serde_json::json!({"Basic": {"username": username, "password": password}})
-        }
-        Auth::ApiKey { header, value } => {
-            serde_json::json!({"ApiKey": {"header": header, "value": value}})
-        }
+    let Some(value) = credential_bytes(auth) else {
+        return Ok(auth.clone());
     };
     let id = format!("request-auth/{}", uuid::Uuid::new_v4());
     store
-        .put(&id, value.to_string().as_bytes(), PutOptions::default())
+        .put(&id, &value, PutOptions::default())
         .await
         .map_err(|_| UNAVAILABLE)?;
     Ok(Auth::SecretRef {
@@ -67,24 +48,24 @@ pub async fn seal_async(auth: &Auth, store: &SecretStore) -> Result<Auth, &'stat
     })
 }
 
-fn put_credential(store: &SecretStore, value: &serde_json::Value) -> Result<String, &'static str> {
-    let id = format!("request-auth/{}", uuid::Uuid::new_v4());
-    store
-        .put_blocking(&id, value.to_string().as_bytes(), PutOptions::default())
-        .map_err(|_| UNAVAILABLE)?;
-    Ok(id)
+/// Keep the local envelope encoding identical for synchronous and async custody.
+fn credential_bytes(auth: &Auth) -> Option<Vec<u8>> {
+    let value = match auth {
+        Auth::None | Auth::SecretRef { .. } => return None,
+        Auth::Bearer { token } => serde_json::json!({"Bearer": {"token": token}}),
+        Auth::Basic { username, password } => {
+            serde_json::json!({"Basic": {"username": username, "password": password}})
+        }
+        Auth::ApiKey { header, value } => {
+            serde_json::json!({"ApiKey": {"header": header, "value": value}})
+        }
+    };
+    Some(value.to_string().into_bytes())
 }
 
-/// Whether browser storage has unacknowledged work.
+/// Whether storage has unacknowledged work.
 pub fn pending() -> bool {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    {
-        ui::secrets::web::pending()
-    }
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        false
-    }
+    SecretStore::pending()
 }
 
 /// Resolve only an API Tester authentication reference from this device's store.

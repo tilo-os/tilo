@@ -54,6 +54,26 @@ fn request(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
 }
 
 #[tokio::test]
+async fn unauthorized_completion_is_http_permission_denied() {
+    let (url, _, _, task) = start(Caller::Photos).await;
+    let client = crate::service::provider_client().unwrap();
+    let body = serde_json::json!({
+        "version": RPC_VERSION, "verb": "complete", "profile_id": "unconfigured",
+        "model_id": "unconfigured",
+        "request": agent_provider_config::protocol::Conversation::new("system", "hello").request(Vec::new(), 64),
+        "timeout_ms": 1000, "stream": false
+    });
+    let response = request(&client, &url)
+        .bearer_auth("host-session")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    task.abort();
+}
+
+#[tokio::test]
 async fn forged_identity_and_key_are_not_reflected() {
     let (url, _, _, task) = start(Caller::Agent).await;
     let client = crate::service::provider_client().unwrap();
@@ -133,6 +153,7 @@ fn oversized_response_frame_is_refused() {
         output: Some("x".repeat(MAX_EVENT_BYTES)),
         configured: None,
         error: None,
+        model_error: None,
         event: None,
     };
     assert!(encode(&response).is_none());
@@ -144,6 +165,7 @@ fn stream_response(index: usize) -> Response {
         output: Some(index.to_string()),
         configured: None,
         error: None,
+        model_error: None,
         event: Some(
             [
                 "text_delta",

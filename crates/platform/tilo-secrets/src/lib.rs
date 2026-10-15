@@ -217,6 +217,42 @@ impl SecretStore {
         }
     }
 
+    /// Start an immutable write, returning its key only after durable custody.
+    /// `None` means pending: retry the same namespace and bytes on a later turn.
+    /// Browser retries may propose a new final key segment; the first key wins.
+    /// A completed acknowledgement is consumed once, so retain it across retries
+    /// of a larger transaction. Injected backends keep their persistence contract.
+    ///
+    /// # Errors
+    /// The store refused the write or the key is malformed.
+    pub fn seal_blocking(
+        &self,
+        key: &str,
+        value: &[u8],
+        options: PutOptions,
+    ) -> Result<Option<String>, SecretError> {
+        check_key(key)?;
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        if matches!(self.backend, Backend::Web) {
+            return web::seal_at_blocking(&self.app, key, value);
+        }
+        self.put_blocking(key, value, options)?;
+        Ok(Some(key.to_owned()))
+    }
+
+    /// Whether page custody has asynchronous operations awaiting a retry.
+    /// Native and host-injected synchronous stores never stage operations here.
+    pub fn pending() -> bool {
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        {
+            web::pending()
+        }
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        {
+            false
+        }
+    }
+
     pub fn app_id(&self) -> &str {
         &self.app
     }
@@ -734,6 +770,27 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn the_memory_store_conforms() {
         conformance::check_store(&SecretStore::memory("so.tilo.secrets-test")).await;
+    }
+
+    #[test]
+    fn immutable_seals_acknowledge_injected_storage_and_validate_keys() {
+        let store = SecretStore::memory("so.tilo.secrets-test");
+        let key = "credentials/first";
+        assert_eq!(
+            store
+                .seal_blocking(key, b"private", PutOptions::default())
+                .unwrap(),
+            Some(key.into())
+        );
+        assert_eq!(
+            store.get_blocking(key).unwrap().unwrap().expose(),
+            b"private"
+        );
+        assert!(
+            store
+                .seal_blocking("", b"private", PutOptions::default())
+                .is_err()
+        );
     }
 
     #[test]

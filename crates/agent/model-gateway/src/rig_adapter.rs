@@ -12,8 +12,11 @@ use rig_core::providers::{anthropic, openai};
 use rig_core::streaming::{Item, PartKind, StreamEvent};
 
 #[cfg(test)]
+#[path = "provider_conformance_tests.rs"]
+mod provider_conformance_tests;
+#[cfg(test)]
 #[path = "rig_stream_tests.rs"]
-mod stream_tests;
+pub(super) mod stream_tests;
 #[cfg(test)]
 #[path = "rig_tests.rs"]
 mod tests;
@@ -112,6 +115,7 @@ struct GatewayHttp {
     profile: ProviderProfile,
     model: String,
     streaming: bool,
+    target: crate::openai::Target,
     retry_refusals: bool,
     stream_end: StreamEnd,
     authenticated: bool,
@@ -139,6 +143,7 @@ impl GatewayHttp {
             })?;
         let body = outbound_body(&self.profile, &self.model, body, self.streaming)
             .map_err(|_| http::Error::instance(std::io::Error::other("invalid request body")))?;
+        let body = self.target.shape(body);
         if !self.retry_refusals {
             return self
                 .dispatch_once(&head.headers, &body, self.budget)
@@ -169,6 +174,8 @@ impl GatewayHttp {
             .headers(headers.clone())
             .json(body);
         let response = outgoing.send().await.map_err(|error| ProviderFailure {
+            model_error: crate::openai::Failure::transport(error.is_timeout(), error.is_connect())
+                .model_error(),
             why: if error.is_timeout() {
                 "provider request timed out"
             } else {
@@ -190,26 +197,35 @@ impl GatewayHttp {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(status.as_u16());
         if !status.is_success() {
-            let again = again_after(
+            let retry_header = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let detail = error_body(response).await;
+            let classified = crate::openai::Failure::from_http(
                 status.as_u16(),
-                response
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|value| value.to_str().ok()),
+                &String::from_utf8_lossy(&detail),
+                retry_header.as_deref(),
             );
+            let again = if classified.retryable() {
+                Again::Soon(classified.retry_after)
+            } else {
+                Again::Never
+            };
             let retry_after = match again {
                 Again::Soon(Some(wait)) if !wait.is_zero() && wait <= Duration::from_secs(3600) => {
                     format!(" retry_after_s={}", wait.as_secs_f32().ceil())
                 }
                 _ => String::new(),
             };
-            let detail = error_body(response).await;
-            let unprocessed = refused_unprocessed(status.as_u16(), &detail);
+            let unprocessed = classified.refused_unprocessed(status.as_u16());
             return Err(ProviderFailure {
+                model_error: classified.model_error(),
                 why: format!(
                     "provider returned HTTP {}{}{retry_after}",
                     status.as_u16(),
-                    provider_error_advice(status.as_u16(), &detail)
+                    classified_error_advice(&classified)
                 ),
                 again,
                 outcome_unknown: !unprocessed,
@@ -262,14 +278,6 @@ impl HttpClientExt for GatewayHttp {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) =
                         Some(String::from_utf8_lossy(&body).into_owned());
-                }
-                // Historical unary endpoints omitted terminal metadata. Only
-                // the legacy RPC accepts that shorthand: neutral requests and
-                // streams still require an authoritative provider finish.
-                // Keep the original bytes above for the legacy caller.
-                if this.body.is_some() {
-                    body = legacy_unary_body(this.profile.protocol, body)
-                        .map_err(http::Error::instance)?;
                 }
                 Ok(U::from(Bytes::from(body)))
             });
@@ -329,6 +337,7 @@ async fn drain_stream(
     send: tokio::sync::mpsc::Sender<Bytes>,
 ) -> Result<(), String> {
     let mut tail = SseTail::default();
+    let mut utf8 = Vec::new();
     let mut read = 0usize;
     while let Some(chunk) = response
         .chunk()
@@ -339,73 +348,30 @@ async fn drain_stream(
         if read > MAX_STREAM_BYTES {
             return Err("provider response exceeds limit".into());
         }
+        // Rig's SSE layer replaces invalid UTF-8. Validate transport text
+        // before forwarding it, retaining at most three split codepoint bytes.
+        utf8.extend_from_slice(&chunk);
+        match std::str::from_utf8(&utf8) {
+            Ok(_) => utf8.clear(),
+            Err(error) if error.error_len().is_some() => {
+                return Err("provider stream was not UTF-8".into());
+            }
+            Err(error) => {
+                utf8.drain(..error.valid_up_to());
+            }
+        }
         tail.push(&chunk);
         // A finished Rig decoder drops its receiver; the bounded remainder
         // still has to pass framing checks. StreamDrain aborts on cancellation.
         let _ = send.send(chunk).await;
     }
-    if tail.incomplete()
+    if !utf8.is_empty()
+        || tail.incomplete()
         || (protocol == ProviderProtocol::Anthropic && tail.lifecycle != MessageLifecycle::Stopped)
     {
         return Err("provider stream was truncated or had invalid envelope ordering".into());
     }
     Ok(())
-}
-
-fn legacy_unary_body(protocol: ProviderProtocol, body: Vec<u8>) -> serde_json::Result<Vec<u8>> {
-    let Ok(serde_json::Value::Object(mut object)) = serde_json::from_slice(&body) else {
-        return Ok(body);
-    };
-    match protocol {
-        ProviderProtocol::OpenAiCompatible => {
-            if let Some(choices) = object
-                .get_mut("choices")
-                .and_then(serde_json::Value::as_array_mut)
-            {
-                for choice in choices {
-                    let Some(choice) = choice.as_object_mut() else {
-                        continue;
-                    };
-                    let Some(message) =
-                        choice.get("message").and_then(serde_json::Value::as_object)
-                    else {
-                        continue;
-                    };
-                    let reason = if message
-                        .get("tool_calls")
-                        .and_then(serde_json::Value::as_array)
-                        .is_some_and(|calls| !calls.is_empty())
-                    {
-                        "tool_calls"
-                    } else {
-                        "stop"
-                    };
-                    choice
-                        .entry("finish_reason")
-                        .or_insert_with(|| reason.into());
-                }
-            }
-        }
-        ProviderProtocol::Anthropic
-            if object
-                .get("content")
-                .is_some_and(serde_json::Value::is_array) =>
-        {
-            object.entry("type").or_insert_with(|| "message".into());
-            let reason = if object
-                .get("content")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "tool_use"))
-            {
-                "tool_use"
-            } else {
-                "end_turn"
-            };
-            object.entry("stop_reason").or_insert_with(|| reason.into());
-        }
-        ProviderProtocol::Anthropic => {}
-    }
-    serde_json::to_vec(&object)
 }
 
 /// One provider operation. No provider error's Display reaches a caller: Rig
@@ -425,6 +391,42 @@ pub(super) async fn legacy(
         .unwrap_or_default()
         .to_owned();
     let mut request = CompletionRequest::new("legacy gateway request");
+    if let Some(tools) = body.get("tools") {
+        for tool in tools
+            .as_array()
+            .ok_or_else(|| stream_failure("invalid tool declarations"))?
+        {
+            let tool = if profile.protocol == ProviderProtocol::OpenAiCompatible {
+                tool.get("function").filter(|_| tool["type"] == "function")
+            } else {
+                Some(tool)
+            }
+            .ok_or_else(|| stream_failure("invalid tool declaration"))?;
+            let name = tool
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|name| message::ToolName::new(name).ok())
+                .ok_or_else(|| stream_failure("invalid tool name"))?;
+            request
+                .tools
+                .push(rig_core::completion::ToolDefinition::new(
+                    name,
+                    tool.get("description")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default(),
+                    tool.get("parameters")
+                        .or_else(|| tool.get("input_schema"))
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({})),
+                ));
+        }
+    }
+    let choice = body.get("tool_choice");
+    if choice.is_some_and(|choice| {
+        choice == "none" || choice.get("type").is_some_and(|kind| kind == "none")
+    }) {
+        request.tool_choice = Some(message::ToolChoice::None);
+    }
     // Rig's encoder establishes protocol headers. The compatibility transport
     // supplies the already policy-checked legacy body verbatim.
     request.max_tokens = Some(
@@ -438,6 +440,7 @@ pub(super) async fn legacy(
         profile: profile.clone(),
         model: model.clone(),
         streaming: streaming.is_some(),
+        target: crate::openai::Target::Standard,
         retry_refusals,
         stream_end: Arc::default(),
         authenticated: secret.is_some(),
@@ -448,7 +451,7 @@ pub(super) async fn legacy(
         unary_body: Arc::default(),
     };
     let original = transport.unary_body.clone();
-    execute(transport, profile, secret, model, request, streaming)
+    execute(transport, secret, request, streaming)
         .await
         .map(|mut response| {
             if profile.protocol == ProviderProtocol::OpenAiCompatible
@@ -466,15 +469,14 @@ pub(super) async fn legacy(
 
 async fn execute(
     transport: GatewayHttp,
-    profile: &ProviderProfile,
     secret: Option<&str>,
-    model: String,
     request: CompletionRequest,
     streaming: Option<(Emit<'_>, &mut PlanTiming, bool)>,
 ) -> Result<CompletionResponse, ProviderFailure> {
     let budget = transport.budget;
     let result = async {
-        match profile.protocol {
+        let model = transport.model.clone();
+        match transport.profile.protocol {
             ProviderProtocol::OpenAiCompatible => {
                 let provider = openai::OpenAIConfig::new(secret.unwrap_or_default());
                 run(
@@ -506,61 +508,123 @@ async fn execute(
     };
     let result = tokio::time::timeout(budget, result).await;
     match result {
-        Ok(Ok(response)) if response.aborted.is_some() => Err(stream_failure(
-            "provider generation was cancelled; partial output was retained; no tools were authorized",
-        )),
-        Ok(Ok(response)) if response.error.is_some() => Err(stream_failure(
-            "provider generation failed; partial output was retained; no tools were authorized",
-        )),
-        Ok(Ok(response)) => Ok(response),
-        other => {
-            let failure = transport
-                .failure
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take();
-            if let Some(failure) = failure {
-                return Err(failure);
-            }
-            let mut failure = stream_failure(match &other {
-                Err(_) => {
-                    "provider request timed out; partial output was retained; try a shorter request"
-                }
-                Ok(Err(ProviderError::Truncated)) => {
-                    "provider stream was truncated; partial output was retained; no tools were authorized"
-                }
-                Ok(Err(ProviderError::Http(_))) => {
-                    "provider network connection failed; check connectivity; partial output was retained"
-                }
-                _ => {
-                    "provider response was malformed or unsupported; partial output was retained; no tools were authorized"
-                }
-            });
-            if matches!(other, Ok(Err(rig_core::error::ProviderError::Request(_)))) {
-                failure.outcome_unknown = false;
-                failure.why = "provider transport failed".into();
-            }
-            if let Ok(Err(error)) = &other
-                && let Some(body) = error.provider_response_body()
-            {
-                failure.why = format!(
-                    "provider stream failed{}",
-                    provider_error_advice(0, body.as_bytes())
-                );
-            }
-            failure.status = *transport
-                .status
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(Ok(response)) if response.aborted.is_some() => {
+            let mut failure = stream_failure(
+                "provider generation was cancelled; partial output was retained; no tools were authorized",
+            );
+            failure.model_error = ModelError::new(neutral::ErrorKind::Cancelled);
             Err(failure)
         }
+        Ok(Ok(response)) if response.error.is_some() => {
+            let mut failure = stream_failure(
+                "provider generation failed; partial output was retained; no tools were authorized",
+            );
+            failure.model_error = ModelError::new(neutral::ErrorKind::Provider);
+            Err(failure)
+        }
+        Ok(Ok(response)) => Ok(response),
+        other => Err(execution_failure(&other, &transport)),
     }
 }
 
-use agent_provider_config::protocol as neutral;
+fn execution_failure(
+    other: &Result<Result<CompletionResponse, ProviderError>, tokio::time::error::Elapsed>,
+    transport: &GatewayHttp,
+) -> ProviderFailure {
+    let failure = transport
+        .failure
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(failure) = failure {
+        return failure;
+    }
+    let mut failure = stream_failure(match other {
+        Err(_) => "provider request timed out; partial output was retained; try a shorter request",
+        Ok(Err(ProviderError::Truncated)) => {
+            "provider stream was truncated; partial output was retained; no tools were authorized"
+        }
+        Ok(Err(ProviderError::Http(_))) => {
+            "provider network connection failed; check connectivity; partial output was retained"
+        }
+        _ => {
+            "provider response was malformed or unsupported; partial output was retained; no tools were authorized"
+        }
+    });
+    failure.model_error = ModelError::new(match other {
+        Err(_) => neutral::ErrorKind::TimedOut,
+        Ok(Err(ProviderError::Truncated)) => neutral::ErrorKind::Truncated,
+        Ok(Err(ProviderError::Http(_))) => neutral::ErrorKind::Transport,
+        Ok(Err(ProviderError::Request(_))) => neutral::ErrorKind::InvalidRequest,
+        _ => neutral::ErrorKind::InvalidResponse,
+    });
+    if matches!(other, Ok(Err(rig_core::error::ProviderError::Request(_)))) {
+        failure.outcome_unknown = false;
+        failure.why = "provider transport failed".into();
+    }
+    if let Ok(Err(error)) = other
+        && let Some(body) = error.provider_response_body()
+    {
+        let classified = crate::openai::Failure::from_http(
+            error
+                .provider_response_status()
+                .map_or(0, |status| status.as_u16()),
+            body,
+            None,
+        );
+        failure.model_error = classified.model_error();
+        failure.why = format!(
+            "provider stream failed{}",
+            classified_error_advice(&classified)
+        );
+    }
+    failure.status = *transport
+        .status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    failure
+}
+
+use agent_provider_config::protocol::{self as neutral, ModelError};
 use rig_core::message;
 
-fn neutral_request(request: neutral::ModelRequest) -> Result<CompletionRequest, String> {
+/// Host custody uses the same neutral codec and provider execution as Complete.
+pub(super) async fn host_complete(
+    client: &reqwest::Client,
+    profile: &ProviderProfile,
+    secret: Option<&str>,
+    model: &str,
+    request: CompletionRequest,
+    budget: Duration,
+    target: crate::openai::Target,
+) -> Result<CompletionResponse, ProviderFailure> {
+    execute(
+        GatewayHttp {
+            client: client.clone(),
+            endpoint: provider_url(profile),
+            profile: profile.clone(),
+            model: model.into(),
+            streaming: false,
+            target,
+            retry_refusals: false,
+            stream_end: Arc::default(),
+            authenticated: secret.is_some(),
+            budget,
+            body: None,
+            failure: Arc::default(),
+            status: Arc::default(),
+            unary_body: Arc::default(),
+        },
+        secret,
+        request,
+        None,
+    )
+    .await
+}
+
+pub(super) fn neutral_request(
+    request: neutral::ModelRequest,
+) -> Result<CompletionRequest, ModelError> {
     let mut result = CompletionRequest::new("gateway request");
     result.chat_history.clear();
     result.max_tokens = Some(u64::from(request.max_output_tokens));
@@ -569,8 +633,10 @@ fn neutral_request(request: neutral::ModelRequest) -> Result<CompletionRequest, 
         neutral::ToolChoice::Required => message::ToolChoice::Required,
         neutral::ToolChoice::None => message::ToolChoice::None,
     });
-    let name =
-        |name: String| message::ToolName::new(name).map_err(|_| "empty tool name".to_string());
+    let name = |name: String| {
+        message::ToolName::new(name)
+            .map_err(|_| ModelError::new(neutral::ErrorKind::InvalidRequest))
+    };
     let mut calls = std::collections::BTreeMap::new();
     for item in request.messages {
         let mut user = Vec::new();
@@ -596,7 +662,7 @@ fn neutral_request(request: neutral::ModelRequest) -> Result<CompletionRequest, 
                         "image/jpeg" => message::ImageMediaType::JPEG,
                         "image/gif" => message::ImageMediaType::GIF,
                         "image/webp" => message::ImageMediaType::WEBP,
-                        _ => return Err("unsupported image media type".into()),
+                        _ => return Err(ModelError::new(neutral::ErrorKind::InvalidRequest)),
                     };
                     user.push(message::UserContent::Image(message::Image {
                         data: message::DocumentSourceKind::Base64(base64),
@@ -611,10 +677,10 @@ fn neutral_request(request: neutral::ModelRequest) -> Result<CompletionRequest, 
                 }
                 (neutral::Role::Assistant, neutral::Content::ToolCall(call)) => {
                     call.validate()
-                        .map_err(|_| "invalid tool call".to_string())?;
+                        .map_err(|_| ModelError::new(neutral::ErrorKind::InvalidRequest))?;
                     let tool_name = name(call.name)?;
                     if calls.insert(call.id.clone(), tool_name.clone()).is_some() {
-                        return Err("duplicate tool call id".into());
+                        return Err(ModelError::new(neutral::ErrorKind::InvalidRequest));
                     }
                     assistant.push(message::AssistantContent::tool_call(
                         call.id, tool_name, call.input,
@@ -623,7 +689,7 @@ fn neutral_request(request: neutral::ModelRequest) -> Result<CompletionRequest, 
                 (neutral::Role::Tool, neutral::Content::ToolResult(tool)) => {
                     let tool_name = calls
                         .remove(&tool.call_id)
-                        .ok_or_else(|| "tool result has no matching call".to_string())?;
+                        .ok_or_else(|| ModelError::new(neutral::ErrorKind::InvalidRequest))?;
                     user.push(message::UserContent::ToolResult(message::ToolResult {
                         call: message::CallId::from_wire(tool.call_id),
                         name: tool_name,
@@ -633,7 +699,7 @@ fn neutral_request(request: neutral::ModelRequest) -> Result<CompletionRequest, 
                         is_error: tool.is_error,
                     }));
                 }
-                _ => return Err("content is not valid for its message role".into()),
+                _ => return Err(ModelError::new(neutral::ErrorKind::InvalidRequest)),
             }
         }
         result.chat_history.push(match item.role {
@@ -653,7 +719,7 @@ fn neutral_request(request: neutral::ModelRequest) -> Result<CompletionRequest, 
     }
     result
         .validate_message_content()
-        .map_err(|_| "invalid model conversation".to_string())?;
+        .map_err(|_| ModelError::new(neutral::ErrorKind::InvalidRequest))?;
     Ok(result)
 }
 
@@ -673,21 +739,26 @@ fn refused(response: &CompletionResponse) -> bool {
             })
 }
 
-fn neutral_response(response: CompletionResponse) -> Result<neutral::ModelResponse, String> {
+pub(super) fn neutral_response(
+    response: CompletionResponse,
+) -> Result<neutral::ModelResponse, ModelError> {
     use rig_core::completion::FinishReason;
+    let stop_reason = match response.finish_reason() {
+        Some(FinishReason::Length) => neutral::StopReason::OutputLimit,
+        Some(FinishReason::ContentFilter) => neutral::StopReason::Refusal,
+        Some(FinishReason::ToolCalls) => neutral::StopReason::ToolCalls,
+        Some(FinishReason::Stop) => neutral::StopReason::EndTurn,
+        _ => {
+            return Err(ModelError::new(neutral::ErrorKind::InvalidResponse));
+        }
+    };
     let stop_reason = if refused(&response) {
         neutral::StopReason::Refusal
     } else {
-        match response.finish_reason() {
-            Some(FinishReason::Length) => neutral::StopReason::OutputLimit,
-            Some(FinishReason::ContentFilter) => neutral::StopReason::Refusal,
-            Some(FinishReason::ToolCalls) => neutral::StopReason::ToolCalls,
-            Some(FinishReason::Stop) => neutral::StopReason::EndTurn,
-            _ => return Err("provider returned an unsupported finish reason".into()),
-        }
+        stop_reason
     };
     if response.error.is_some() || response.aborted.is_some() {
-        return Err("provider did not finish the turn".into());
+        return Err(ModelError::new(neutral::ErrorKind::InvalidResponse));
     }
     let mut content = Vec::new();
     for block in response.choice {
@@ -697,7 +768,7 @@ fn neutral_response(response: CompletionResponse) -> Result<neutral::ModelRespon
             }
             message::AssistantContent::ToolCall(call) => {
                 if call.function.invalid_arguments.is_some() {
-                    return Err("provider returned malformed tool arguments".into());
+                    return Err(ModelError::new(neutral::ErrorKind::InvalidResponse));
                 }
                 content.push(neutral::Content::ToolCall(neutral::ToolCall {
                     id: call.id.to_string(),
@@ -712,11 +783,13 @@ fn neutral_response(response: CompletionResponse) -> Result<neutral::ModelRespon
                     });
                 }
             }
-            _ => return Err("provider returned unsupported assistant content".into()),
+            _ => {
+                return Err(ModelError::new(neutral::ErrorKind::InvalidResponse));
+            }
         }
     }
     if content.is_empty() && stop_reason == neutral::StopReason::EndTurn {
-        return Err("provider returned an empty assistant response".into());
+        return Err(ModelError::new(neutral::ErrorKind::InvalidResponse));
     }
     let response = neutral::ModelResponse {
         message: neutral::Message {
@@ -737,7 +810,7 @@ fn neutral_response(response: CompletionResponse) -> Result<neutral::ModelRespon
     ) {
         response
             .tool_calls()
-            .map_err(|_| "provider returned invalid tool calls".to_string())?;
+            .map_err(|_| ModelError::new(neutral::ErrorKind::InvalidResponse))?;
     }
     Ok(response)
 }
@@ -747,48 +820,23 @@ pub(super) async fn complete(
     call: &PlanCall<'_>,
     request: neutral::ModelRequest,
     emit: Emit<'_>,
-) -> Result<String, String> {
+) -> Result<String, ModelError> {
     let mut timing = PlanTiming::start();
     timing.stream = call.stream;
     let request = neutral_request(request)?;
     let (profile_id, model_id) = (call.profile_id.to_owned(), call.model_id.to_owned());
-    let (profile, mut secret) = blocking(move || plan_profile(&profile_id, &model_id)).await?;
-    let ceiling = profile
-        .models
-        .iter()
-        .find(|model| model.id == call.model_id)
-        .and_then(|model| model.request_limits.as_ref())
-        .and_then(|limits| limits.plan_timeout_ms)
-        .map_or(MAX_PROVIDER_TIMEOUT, |milliseconds| {
-            Duration::from_millis(u64::from(milliseconds))
-        });
-    let timeout = call.timeout.min(ceiling);
-    timing.timeout_ms = Some(timeout.as_millis());
-    if let Some(model) = profile
-        .models
-        .iter()
-        .find(|model| model.id == call.model_id)
-        && let Some(limits) = &model.request_limits
-    {
-        timing.output_allowance = Some(
-            request
-                .max_tokens
-                .unwrap_or_else(|| u64::from(limits.max_output_tokens))
-                .min(u64::from(limits.max_output_tokens)),
-        );
-        timing.runtime_context = limits.runtime_context_tokens;
-        timing.source_context = model.context_window;
-    }
-    let budget = timeout
-        .checked_sub(timing.started.elapsed())
-        .filter(|budget| !budget.is_zero())
-        .ok_or_else(|| "provider request timed out".to_string())?;
+    let (profile, mut secret) =
+        blocking_model(move || plan_profile(&profile_id, &model_id)).await?;
+    let budget = timing
+        .budget(call, &profile, request.max_tokens)
+        .map_err(|_| ModelError::new(neutral::ErrorKind::TimedOut))?;
     let transport = GatewayHttp {
         client: client.clone(),
         endpoint: provider_url(&profile),
         profile: profile.clone(),
         model: call.model_id.into(),
         streaming: call.stream,
+        target: crate::openai::Target::Standard,
         authenticated: secret.is_some(),
         budget,
         body: None,
@@ -800,31 +848,24 @@ pub(super) async fn complete(
     };
     let result = execute(
         transport,
-        &profile,
         secret.as_ref().map(|secret| secret.as_str()),
-        call.model_id.into(),
         request,
         call.stream.then_some((emit, &mut timing, true)),
     )
     .await
-    .map_err(|failure| {
-        if failure.outcome_unknown {
-            format!(
-                "provider outcome is unknown; request was not retried ({})",
-                failure.why
-            )
-        } else {
-            failure.why
-        }
-    })
+    .map_err(|failure| failure.model_error)
     .and_then(|response| {
         timing.status = Some(200);
         timing.observe_body(&response.raw.to_string());
         let response = neutral_response(response)?;
-        serde_json::to_string(&response).map_err(|_| "invalid model response".to_string())
+        serde_json::to_string(&response)
+            .map_err(|_| ModelError::new(neutral::ErrorKind::InvalidResponse))
     });
     secret.zeroize();
-    timing.log(call, result.as_ref().map(|_| ()));
+    timing.log(
+        call,
+        result.as_ref().map(|_| ()).map_err(|error| &error.message),
+    );
     result
 }
 
@@ -867,6 +908,7 @@ fn text_delta(
         output: Some(serde_json::Value::String(text).to_string()),
         configured: None,
         error: None,
+        model_error: None,
         event: Some(kind.into()),
     };
     if emit(&event) {
@@ -874,59 +916,6 @@ fn text_delta(
     } else {
         Err(DeltaFailure::ClientLeft)
     }
-}
-
-fn finalize_call(assembly: &mut StreamAssembly, index: usize, call: &message::ToolCall) {
-    if let Some(slot) = assembly.calls.get_mut(index) {
-        slot.id = call.id.to_string();
-        slot.name = call.function.name.to_string();
-        if slot.arguments.is_empty() {
-            slot.arguments = serde_json::to_string(&call.function.arguments).unwrap_or_default();
-        }
-    }
-}
-
-fn append_arguments(
-    assembly: &mut StreamAssembly,
-    parts: &std::collections::BTreeMap<usize, usize>,
-    part: usize,
-    json: &str,
-    coalescer: Option<&mut DeltaCoalescer>,
-    emit: Emit<'_>,
-) -> Result<(), ProviderFailure> {
-    if let Some(call) = parts
-        .get(&part)
-        .and_then(|index| assembly.calls.get_mut(*index))
-    {
-        call.arguments.push_str(json);
-    }
-    // Rig exposes a call's id at End. Small calls wait for it;
-    // long arguments still deliver partial deltas (with no id).
-    if let Some(coalescer) = coalescer {
-        for (index, call) in assembly.calls.iter().enumerate() {
-            if !call.id.is_empty() || call.arguments.len() >= DELTA_FLUSH_BYTES {
-                coalescer.flush(&assembly.calls, index, Instant::now(), false, emit)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn start_call(
-    assembly: &mut StreamAssembly,
-    parts: &mut std::collections::BTreeMap<usize, usize>,
-    part: usize,
-    name: String,
-) -> Result<(), &'static str> {
-    if assembly.calls.len() >= MAX_STREAM_EVENTS {
-        return Err("too many tool calls");
-    }
-    parts.insert(part, assembly.calls.len());
-    assembly.calls.push(StreamCall {
-        name,
-        ..Default::default()
-    });
-    Ok(())
 }
 
 #[derive(Default)]
@@ -939,6 +928,47 @@ struct StreamProgress {
 }
 
 impl StreamProgress {
+    fn end(
+        &mut self,
+        part: usize,
+        call: &message::ToolCall,
+        emit: Emit<'_>,
+    ) -> Result<(), Box<ProviderError>> {
+        let index = self
+            .parts
+            .get(&part)
+            .copied()
+            .ok_or_else(|| ProviderError::Response("tool end before start".into()))?;
+        let slot = self
+            .assembly
+            .calls
+            .get_mut(index)
+            .ok_or_else(|| ProviderError::Response("invalid tool index".into()))?;
+        // Rig assembles streamed name fragments into the final name.
+        // Never authorize a silently renamed operation.
+        if (!slot.name.is_empty() && slot.name != call.function.name.as_str())
+            || !self.completed.insert(index)
+        {
+            return Err(Box::new(ProviderError::Response(
+                "provider changed or repeated a tool".into(),
+            )));
+        }
+        slot.id = call.id.to_string();
+        slot.name = call.function.name.to_string();
+        if slot.arguments.is_empty() {
+            slot.arguments = serde_json::to_string(&call.function.arguments)
+                .map_err(|_| ProviderError::Response("invalid tool arguments".into()))?;
+        }
+        // A closed block is not a successful turn. Only presentation
+        // deltas escape before the authoritative provider finish.
+        if let Some(coalescer) = &mut self.coalescer {
+            coalescer
+                .flush(&self.assembly.calls, index, Instant::now(), true, emit)
+                .map_err(|_| ProviderError::Response("client left".into()))?;
+        }
+        Ok(())
+    }
+
     fn event(
         &mut self,
         event: StreamEvent,
@@ -946,6 +976,7 @@ impl StreamProgress {
         emit: Emit<'_>,
         neutral: bool,
     ) -> Result<(), Box<ProviderError>> {
+        let reasoning = matches!(&event, StreamEvent::Reasoning { .. });
         match event {
             StreamEvent::Start {
                 part,
@@ -955,71 +986,76 @@ impl StreamProgress {
                 timing
                     .first_token
                     .get_or_insert_with(|| timing.started.elapsed());
-                start_call(
-                    &mut self.assembly,
-                    &mut self.parts,
-                    part.index(),
-                    name.map(|name| name.to_string()).unwrap_or_default(),
-                )
-                .map_err(|error| ProviderError::Response(error.into()))?;
+                if self.assembly.calls.len() >= MAX_STREAM_EVENTS
+                    || self
+                        .parts
+                        .insert(part.index(), self.assembly.calls.len())
+                        .is_some()
+                {
+                    return Err(Box::new(ProviderError::Response(
+                        "invalid or excessive tool parts".into(),
+                    )));
+                }
+                self.assembly.calls.push(StreamCall {
+                    name: name.map(|name| name.to_string()).unwrap_or_default(),
+                    ..Default::default()
+                });
             }
             StreamEvent::Arguments { part, json } => {
                 timing
                     .first_token
                     .get_or_insert_with(|| timing.started.elapsed());
-                append_arguments(
-                    &mut self.assembly,
-                    &self.parts,
-                    part.index(),
-                    &json,
-                    self.coalescer.as_mut(),
-                    emit,
-                )
-                .map_err(|_| ProviderError::Response("client left".into()))?;
-            }
-            StreamEvent::End {
-                part,
-                content: rig_core::completion::AssistantContent::ToolCall(call),
-            } => {
-                if let Some(index) = self.parts.get(&part.index()).copied() {
-                    finalize_call(&mut self.assembly, index, &call);
-                    self.completed.insert(index);
-                    // A closed block is not a successful turn. Only deltas
-                    // may escape before the authoritative provider finish.
-                    if let Some(coalescer) = &mut self.coalescer {
-                        coalescer
-                            .flush(&self.assembly.calls, index, Instant::now(), true, emit)
-                            .map_err(|_| ProviderError::Response("client left".into()))?;
+                let index =
+                    self.parts.get(&part.index()).copied().ok_or_else(|| {
+                        ProviderError::Response("arguments before tool start".into())
+                    })?;
+                self.assembly
+                    .calls
+                    .get_mut(index)
+                    .ok_or_else(|| ProviderError::Response("invalid tool index".into()))?
+                    .arguments
+                    .push_str(&json);
+                // Rig exposes the id at End. Small calls wait for it; long
+                // arguments still deliver partial presentation deltas.
+                if let Some(coalescer) = &mut self.coalescer {
+                    for (index, call) in self.assembly.calls.iter().enumerate() {
+                        if !call.id.is_empty() || call.arguments.len() >= DELTA_FLUSH_BYTES {
+                            coalescer
+                                .flush(&self.assembly.calls, index, Instant::now(), false, emit)
+                                .map_err(|_| ProviderError::Response("client left".into()))?;
+                        }
                     }
                 }
             }
-            StreamEvent::Text { text, .. } => {
-                timing
-                    .first_token
-                    .get_or_insert_with(|| timing.started.elapsed());
-                if neutral {
-                    text_delta(
-                        "text_delta",
-                        text,
-                        &mut self.text_frames,
-                        self.coalescer.as_mut(),
-                        emit,
-                    )
-                    .map_err(ProviderError::from)?;
-                }
+            StreamEvent::End {
+                part,
+                content: message::AssistantContent::ToolCall(call),
+            } => {
+                self.end(part.index(), &call, emit)?;
             }
-            StreamEvent::Reasoning { text, .. } => {
-                self.assembly.reasoning_chunks = self.assembly.reasoning_chunks.saturating_add(1);
-                self.assembly.reasoning_bytes = self
-                    .assembly
-                    .reasoning_bytes
-                    .saturating_add(text.len() as u64);
-                timing
-                    .first_reasoning
-                    .get_or_insert_with(|| timing.started.elapsed());
+            StreamEvent::Text { text, .. } | StreamEvent::Reasoning { text, .. } => {
+                if reasoning {
+                    self.assembly.reasoning_chunks =
+                        self.assembly.reasoning_chunks.saturating_add(1);
+                    self.assembly.reasoning_bytes = self
+                        .assembly
+                        .reasoning_bytes
+                        .saturating_add(text.len() as u64);
+                    timing
+                        .first_reasoning
+                        .get_or_insert_with(|| timing.started.elapsed());
+                } else {
+                    timing
+                        .first_token
+                        .get_or_insert_with(|| timing.started.elapsed());
+                }
                 if neutral {
                     text_delta(
-                        "reasoning_delta",
+                        if reasoning {
+                            "reasoning_delta"
+                        } else {
+                            "text_delta"
+                        },
                         text,
                         &mut self.text_frames,
                         self.coalescer.as_mut(),
@@ -1052,8 +1088,22 @@ where
             Frame = rig_core::wire::WireFrame,
         >,
 {
+    let forbidden = matches!(request.tool_choice, Some(message::ToolChoice::None));
+    let tools = request
+        .tools
+        .iter()
+        .filter(|_| !forbidden)
+        .map(|tool| tool.name.to_string())
+        .collect::<std::collections::BTreeSet<_>>();
     let Some((emit, timing, deltas)) = streaming else {
-        return model.call(request).await;
+        let response = model.call(request).await?;
+        validate_history(&response, &tools)
+            .map_err(|error| ProviderError::Response(error.to_string()))?;
+        if neutral && response.error.is_none() && response.aborted.is_none() {
+            neutral_response(response.clone())
+                .map_err(|error| ProviderError::Response(error.to_string()))?;
+        }
+        return Ok(response);
     };
     let mut stream = model.stream(request)?;
     let mut progress = StreamProgress {
@@ -1061,7 +1111,15 @@ where
         ..Default::default()
     };
     while let Some(item) = stream.next().await {
-        let Item::Event(event) = item? else { continue };
+        let event = match item? {
+            Item::Event(event) => event,
+            Item::Unknown(payload) if payload.value().get("error").is_some() => {
+                return Err(ProviderError::from_provider_body(
+                    payload.value().to_string(),
+                ));
+            }
+            Item::Unknown(_) => continue,
+        };
         timing.status = Some(200);
         timing
             .first_byte
@@ -1078,6 +1136,8 @@ where
             .map_err(|_| ProviderError::Truncated)?
             .map_err(|_| ProviderError::Truncated)?;
     }
+    validate_history(&response, &tools)
+        .map_err(|error| ProviderError::Response(error.to_string()))?;
     authorize_completed_calls(
         &response,
         &progress.assembly,
@@ -1088,6 +1148,30 @@ where
     )
     .map_err(|error| *error)?;
     Ok(response)
+}
+
+/// Rig retains unknown fields in raw history. Validate replay-sensitive
+/// fields before any completed-call event can authorize execution.
+fn validate_history(
+    response: &CompletionResponse,
+    tools: &std::collections::BTreeSet<String>,
+) -> Result<(), ModelError> {
+    if response.choice.iter().any(|content| {
+        matches!(content,
+        message::AssistantContent::ToolCall(call) if !tools.contains(call.function.name.as_str()))
+    }) {
+        return Err(ModelError::invalid("provider returned an undeclared tool"));
+    }
+    if response
+        .raw
+        .pointer("/choices/0/message/reasoning_content")
+        .is_some_and(|value| !value.is_null() && !value.is_string())
+    {
+        return Err(ModelError::invalid(
+            "provider reasoning_content was not a string",
+        ));
+    }
+    Ok(())
 }
 
 fn authorize_completed_calls(
@@ -1111,24 +1195,9 @@ fn authorize_completed_calls(
             )
         )
     {
-        let mut ids = std::collections::BTreeSet::new();
-        for content in &response.choice {
-            if let message::AssistantContent::ToolCall(call) = content {
-                let checked = neutral::ToolCall {
-                    id: call.id.to_string(),
-                    name: call.function.name.to_string(),
-                    input: serde_json::Value::Object(call.function.arguments.clone()),
-                };
-                if call.function.invalid_arguments.is_some()
-                    || checked.validate().is_err()
-                    || !ids.insert(checked.id)
-                {
-                    return Err(Box::new(ProviderError::Response(
-                        "invalid or malformed tool calls".into(),
-                    )));
-                }
-            }
-        }
+        neutral_response(response.clone()).map_err(|_| {
+            ProviderError::Response("invalid or malformed provider response".into())
+        })?;
         if completed != assembly.calls.len() {
             return Err(Box::new(ProviderError::Truncated));
         }

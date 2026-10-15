@@ -13,10 +13,40 @@ path = "src/lib.rs"
 [[bin]]
 name = "tilo-model-gateway"
 path = "src/main.rs"
+required-features = ["server"]
 
 [[bin]]
 name = "tilo-model-http"
 path = "src/http_main.rs"
+required-features = ["server"]
+
+[[example]]
+name = "local-tool-acceptance"
+required-features = ["server"]
+
+[features]
+# App builds carry only the protocol and authenticated client transports.
+default = []
+# Hosted-provider relay and HTTP adapter, without in-process inference.
+server = [
+    "dep:tilo-clock",
+    "dep:accounts",
+    "dep:reqwest",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:tilo-rt",
+    "dep:clap",
+    "dep:base64",
+    "dep:rig-core",
+    "dep:bytes",
+    "dep:futures-util",
+    "dep:tilo-files",
+]
+# Trusted host CLIs share the server's provider transport and credential policy.
+host-backend = ["server"]
+# Desktop gateway only: load installed segmentation models in this process.
+local-models = ["server", "dep:tilo-segment", "dep:local-model-service", "dep:image"]
 
 [dependencies]
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
@@ -29,38 +59,38 @@ thiserror.workspace = true
 zeroize.workspace = true
 wire-frame = { path = "../../system/wire-frame" }
 libc.workspace = true
-tilo-files = { path = "../../platform/tilo-files" }
+tilo-files = { optional = true, path = "../../platform/tilo-files" }
 # Loopback admission of device-local models is shared with apps discovering them.
 url.workspace = true
 # The provider protocol names travel in the client's requests too.
 agent-provider-config = { path = "../provider-config" }
 
-# The gateway itself. Off the desktop the library is only the client, which
-# reports the gateway unavailable (there is no launcher descriptor to use).
+# Native descriptor transport is available to clients; server dependencies
+# below are activated only by explicit feature selection.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tilo-clock = { path = "../../platform/tilo-clock" }
-accounts = { path = "../../system/accounts" }
-reqwest = { workspace = true, features = ["json"] }
-hyper = { version = "1", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-http-body-util = "0.1"
-tilo-rt.workspace = true
+tilo-clock = { optional = true, path = "../../platform/tilo-clock" }
+accounts = { optional = true, path = "../../system/accounts" }
+reqwest = { optional = true, workspace = true, features = ["json"] }
+hyper = { optional = true, version = "1", features = ["server", "http1"] }
+hyper-util = { optional = true, version = "0.1", features = ["tokio"] }
+http-body-util = { version = "0.1", optional = true }
+tilo-rt = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
-clap.workspace = true
-base64.workspace = true
+clap = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 # Provider wire encoding, response normalization and SSE decoding. Transport
 # remains the gateway's explicitly configured, non-retrying HTTP client.
-rig-core = { version = "=0.44.0", default-features = false }
-bytes.workspace = true
-futures-util.workspace = true
+rig-core = { optional = true, version = "=0.44.0", default-features = false }
+bytes = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 
 workspace-hack = { version = "0.1" }
 # The subject of a picture is found here, with the segmentation model the
 # person installed, so no app holds the model or its runtime.
-tilo-segment = { path = "../../media/segment", features = ["infer"] }
-local-model-service = { path = "../local-model-service" }
-image = { workspace = true, features = ["png", "jpeg", "webp"] }
+tilo-segment = { optional = true, path = "../../media/segment", features = ["infer"] }
+local-model-service = { optional = true, path = "../local-model-service" }
+image = { optional = true, workspace = true, features = ["png", "jpeg", "webp"] }
 
 [dev-dependencies]
 tempfile.workspace = true

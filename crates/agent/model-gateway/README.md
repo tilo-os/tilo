@@ -12,6 +12,28 @@ when using cookies. Settings identity alone is insufficient for credential
 status/set/remove: the session must explicitly grant credential management.
 There is no credential-read operation.
 
+## Build features
+
+Defaults are empty: native and browser UI consumers get only the protocol and
+client transports, without provider credentials, inference or C++ model runtimes.
+Do not enable server features on standalone UI builds.
+
+| Feature | Deployment |
+| --- | --- |
+| `server` | Hosted providers and the light HTTP/Unix service, without local inference. |
+| `local-models` | Full native gateway with installed segmentation models; includes `server`. |
+| `host-backend` | Trusted-host model backend; includes `server`, not local inference. |
+
+Both service binaries require `server`. Desktop packaging selects `local-models`;
+HTTP relays need only `server`. `host-backend` is for trusted hosts, never apps.
+
+```sh
+# Desktop gateway (normally socket-activated by the user service).
+cargo run -p tilo-model-gateway --features local-models --bin tilo-model-gateway -- --help
+# Trusted-host adapter and hosted provider service, without local inference.
+cargo check -p tilo-model-gateway --features host-backend --all-targets
+```
+
 ## Standalone service
 
 `tilo-model-http` binds loopback and uses `SessionDirectory`, an adapter for
@@ -36,7 +58,7 @@ cannot start requests. Non-private directories/files and symlinks are refused.
 Session issuance belongs to the authenticated host, not this service.
 
 ```sh
-cargo run -p tilo-model-gateway --bin tilo-model-http -- \
+cargo run -p tilo-model-gateway --features server --bin tilo-model-http -- \
   --session-directory "$XDG_RUNTIME_DIR/model-sessions"
 ```
 
@@ -72,6 +94,24 @@ the portable stream and publishes negotiated, authenticated task presentation,
 so Chat readers need no provider connection. The explicit Chat assistant controls
 use a separate prose-only capability; Agent's action-capable loop uses the
 permission-checked resource/action broker, not a tool dispatcher in Chat.
+
+## Verification
+
+A default-feature test run exercises clients only, not the production server.
+Run the feature configurations explicitly:
+
+```sh
+cargo test --locked -p tilo-model-gateway --no-default-features
+cargo test --locked -p tilo-model-gateway --features server
+cargo test --locked -p tilo-model-gateway --all-features
+cargo check --locked -p tilo-model-gateway --all-features --tests
+```
+
+Native CI selects `local-models,host-backend` for the gateway package itself,
+including server and segmentation tests; it does not enable those features for
+client-dependent apps. Focused native test requests retain exact-test listing
+and execution guards: a missing or ignored test fails rather than counting as
+server coverage. These tests use local fixtures, not live provider credentials.
 
 ## Streaming and credentials
 

@@ -46,6 +46,18 @@ impl Models {
         Self::from_launcher_selection(profile.id.clone(), model.clone())
     }
 
+    /// Launcher descriptors are unavailable on this platform.
+    ///
+    /// # Errors
+    /// Always returns unavailable; hosts can inject a backend with [`Self::new`].
+    #[cfg(not(all(unix, feature = "native")))]
+    pub fn from_launcher() -> Result<Self, ModelError> {
+        Err(ModelError {
+            kind: ErrorKind::Unavailable,
+            message: "launcher model access is unavailable on this platform".into(),
+        })
+    }
+
     /// Bind an explicit public selection to this host's launcher capability.
     /// The gateway, not these caller-supplied identifiers, authorizes access.
     ///
