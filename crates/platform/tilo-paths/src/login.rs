@@ -16,6 +16,11 @@ pub const SESSION_DIR: &str = "tilo-session";
 pub const AGENT_SOCKET_FILE: &str = "agent.sock";
 /// The device admin's control socket's file name in [`SESSION_DIR`].
 pub const ADMIN_CONTROL_SOCKET_FILE: &str = "admin-control.sock";
+/// File in [`SESSION_DIR`] naming the room of the workspace in front: the
+/// room a command started now (an app run from a terminal, or by
+/// `tilo-app dev`) joins, as an app the shell starts joins the room it names
+/// with the launcher's `--workspace-id`.
+pub const WORKSPACE_ID_FILE: &str = "workspace-id";
 
 /// The sockets a Tilo compositor serves in [`SESSION_DIR`] for the life of
 /// its session. Either one's presence is the session's own marker.
