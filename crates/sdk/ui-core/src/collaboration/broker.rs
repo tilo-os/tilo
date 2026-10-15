@@ -36,6 +36,8 @@ mod audio_output;
 pub(super) mod committed_document;
 #[path = "directory_client.rs"]
 mod directory_client;
+// The managed sender itself is Unix-only (host_worker), and so is its transport.
+#[cfg(unix)]
 #[path = "managed_sender_transport.rs"]
 mod managed_sender_transport;
 #[path = "native_initial.rs"]
