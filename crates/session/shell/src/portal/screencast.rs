@@ -352,25 +352,28 @@ impl ScreenCastBackend {
             let supported_cursors = producer_available
                 .then(|| self.ctx.screencast_provisioner.available_cursor_modes())
                 .unwrap_or(0);
-            let requested_types = opt_u32(&options, "types").unwrap_or_else(|| {
-                // Absent options mean "choose a supported default", never
-                // silently substitute a monitor for an explicitly unsupported
-                // window/virtual request.
-                first_supported_bit(supported_types).unwrap_or(source_type::MONITOR)
-            });
+            let requested_types =
+                crate::portal::option::<u32>(&options, "types").unwrap_or_else(|| {
+                    // Absent options mean "choose a supported default", never
+                    // silently substitute a monitor for an explicitly unsupported
+                    // window/virtual request.
+                    first_supported_bit(supported_types).unwrap_or(source_type::MONITOR)
+                });
             let mut types = requested_types & supported_types;
             if types == 0 {
                 return Err(Ended::Failed);
             }
-            let requested_cursors = opt_u32(&options, "cursor_mode").unwrap_or_else(|| {
-                first_supported_bit(supported_cursors).unwrap_or(cursor_mode::HIDDEN)
-            });
+            let requested_cursors = crate::portal::option::<u32>(&options, "cursor_mode")
+                .unwrap_or_else(|| {
+                    first_supported_bit(supported_cursors).unwrap_or(cursor_mode::HIDDEN)
+                });
             let mut curs = requested_cursors & supported_cursors;
             if curs == 0 {
                 return Err(Ended::Failed);
             }
-            let mut multiple = opt_bool(&options, "multiple").unwrap_or(false);
-            let mut persist_mode = opt_u32(&options, "persist_mode").unwrap_or(0);
+            let mut multiple = crate::portal::option::<bool>(&options, "multiple").unwrap_or(false);
+            let mut persist_mode =
+                crate::portal::option::<u32>(&options, "persist_mode").unwrap_or(0);
 
             // `restore_data` is a standard `(suv)` tuple. Its payload is opaque
             // to xdg-desktop-portal; Tilo uses a random private-store key so an
@@ -622,18 +625,6 @@ fn selected_source_types(mask: u32, multiple: bool) -> Vec<u32> {
 #[cfg(target_os = "linux")]
 fn first_supported_bit(mask: u32) -> Option<u32> {
     (mask != 0).then_some(mask & mask.wrapping_neg())
-}
-
-#[cfg(target_os = "linux")]
-fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
-    let v = options.get(key)?.try_clone().ok()?;
-    u32::try_from(v).ok()
-}
-
-#[cfg(target_os = "linux")]
-fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
-    let v = options.get(key)?.try_clone().ok()?;
-    bool::try_from(v).ok()
 }
 
 /// Build `Start`'s results from the provisioned streams and optional restore data. The `streams` field is `a(ua{sv})`.

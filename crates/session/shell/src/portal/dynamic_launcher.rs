@@ -49,15 +49,6 @@ impl DynamicLauncherBackend {
     }
 }
 #[cfg(target_os = "linux")]
-fn str_opt(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
-    options
-        .get(key)?
-        .try_clone()
-        .ok()
-        .and_then(|v| String::try_from(v).ok())
-        .filter(|v| v.len() <= 4096 && !v.chars().any(char::is_control))
-}
-#[cfg(target_os = "linux")]
 fn launcher_type(options: &HashMap<String, OwnedValue>) -> u32 {
     crate::portal::option::<u32>(options, "launcher_type").unwrap_or(1)
 }
@@ -146,7 +137,7 @@ impl DynamicLauncherBackend {
             if kind != 1 && kind != 2 {
                 return Err(Ended::Failed);
             }
-            let target = str_opt(&options, "target");
+            let target = crate::portal::text_option(&options, "target", 4096);
             if kind == 2 && !target.as_deref().is_some_and(safe_web_target) {
                 return Err(Ended::Failed);
             }
