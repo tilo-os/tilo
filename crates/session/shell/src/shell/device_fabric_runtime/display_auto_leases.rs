@@ -68,7 +68,17 @@ pub(super) fn record_decline(
             Ok(())
         };
     }
-    let result = network.save_display_input_declines(&state.devices);
+    // Written on the state writer, never on the loop. A write that fails
+    // turns automatic input off, as unreadable storage does.
+    let user = state.user;
+    let result = network.save_display_input_declines_in_background(&state.devices, move |error| {
+        tracing::warn!(%error, "automatic display input is disabled: declines could not be saved");
+        if let Ok(mut state) = declines().lock()
+            && state.user == user
+        {
+            state.ready = false;
+        }
+    });
     if result.is_err() {
         state.ready = false;
     }

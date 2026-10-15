@@ -141,6 +141,8 @@ fn automatic_display_input_preserves_manual_grants_and_persisted_declines() {
     );
     revoke_input_control(&fixture.network, &fixture.controller).unwrap();
     assert!(fixture.actions().iter().any(|action| matches!(action, PersonalFabricAction::InputLeaseRevoked { nonce } if nonce == &manual.nonce)));
+    // Declines are written on the state writer.
+    crate::shell::durable_writer::global().flush();
     assert_eq!(
         fixture.network.load_display_input_declines().unwrap(),
         BTreeSet::from([fixture.controller.clone()])
@@ -153,6 +155,47 @@ fn automatic_display_input_preserves_manual_grants_and_persisted_declines() {
     );
     let explicit = grant_input_control(&fixture.network, &fixture.controller).unwrap();
     assert_eq!(fixture.grants(), vec![explicit]);
+    crate::shell::durable_writer::global().flush();
+    assert!(
+        fixture
+            .network
+            .load_display_input_declines()
+            .unwrap()
+            .is_empty()
+    );
+    drop(fixture);
+}
+
+/// Granting and revoking input control run on the compositor's loop. The
+/// decline they record is durable, but its write must not wait for the disk
+/// there: under I/O pressure that fsync froze the desktop.
+#[cfg(target_os = "linux")]
+#[test]
+fn recording_a_manual_decline_never_waits_for_the_disk() {
+    let mut fixture = Fixture::new();
+    Fixture::policy(false);
+    let manual = grant_input_control(&fixture.network, &fixture.controller).unwrap();
+    assert_eq!(fixture.grants(), vec![manual]);
+    crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+        revoke_input_control(&fixture.network, &fixture.controller)
+    })
+    .expect("revoking and recording the decline need no disk sync");
+    crate::shell::durable_writer::global().flush();
+    assert_eq!(
+        fixture.network.load_display_input_declines().unwrap(),
+        BTreeSet::from([fixture.controller.clone()])
+    );
+    let explicit = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+        grant_input_control(&fixture.network, &fixture.controller)
+    })
+    .expect("granting clears the decline without a disk sync");
+    assert!(
+        fixture
+            .grants()
+            .iter()
+            .any(|lease| lease.nonce == explicit.nonce)
+    );
+    crate::shell::durable_writer::global().flush();
     assert!(
         fixture
             .network
