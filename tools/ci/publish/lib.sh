@@ -26,6 +26,21 @@ require_commit() {
   [[ ${T_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || die "T_COMMIT is not a commit: ${T_COMMIT:-unset}"
 }
 
+# An identity token from t for audience $1 (`id_token = ["$1"]` in the check), on stdout: a JWT
+# naming this repository, reference and commit, valid for minutes. Parsed with sed because the
+# skopeo image has curl but no jq.
+id_token() {
+  [[ -n ${ACTIONS_ID_TOKEN_REQUEST_URL:-} && -n ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-} ]] \
+    || die "no identity token for $1: the check needs id_token = [\"$1\"] and a trusted run"
+  local token
+  token=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+    "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$1" \
+    | sed -n 's/.*"value"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9._-]*\)".*/\1/p') \
+    || die "t gave no identity token for $1"
+  [[ -n $token ]] || die "t gave no identity token for $1"
+  printf '%s' "$token"
+}
+
 # The pinned Cosign (os/external-assets/github-assets.tsv), checksum-verified, on PATH.
 use_cosign() {
   command -v cosign >/dev/null && return
