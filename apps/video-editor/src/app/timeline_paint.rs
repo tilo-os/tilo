@@ -35,7 +35,7 @@ impl VideoEditorApp {
         }
         // The readout line and the meter under it, centred as one block a
         // step apart (`chrome_layout::master_strip`).
-        let m = chrome_layout::master_strip(strip);
+        let m = chrome_layout::master_strip(strip, self.chrome_scale());
         let label = caption(theme);
         // Nothing to mix, nothing to meter. A dead meter on a picture-only
         // timeline would read as an output that is broken.
@@ -759,7 +759,27 @@ impl VideoEditorApp {
         // content: filmstrip or waveform
         let inner = Rect::new(cr.x0 + 2.0, strip.y1, cr.x1 - 2.0, cr.y1 - 2.0);
         if inner.height() > 4.0 && inner.width() > 4.0 {
-            if kind == TrackKind::Video {
+            if let Some(source) = self.project.media(clip.media).and_then(|m| m.text.as_ref()) {
+                // Generated titles are words, not a row of invented frames.
+                let style = theme.text(TextRole::Label).strong();
+                let words = elide_at(
+                    &source.content.replace('\n', " · "),
+                    (inner.width() - S4 * self.chrome_scale()).max(0.0) as f32,
+                    &style,
+                    ctx.text,
+                );
+                let at = text_centre(inner, &words, &style, ctx.text);
+                text(
+                    ctx.scene,
+                    ctx.text,
+                    ctx.transform,
+                    &words,
+                    &style,
+                    head_col,
+                    at.x,
+                    at.y,
+                );
+            } else if kind == TrackKind::Video {
                 // A filmstrip: one frame **per cell**, walking the clip's
                 // trimmed source window, so the strip shows the shot changing.
                 // The frames themselves are requested in `request_filmstrips`

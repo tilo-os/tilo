@@ -196,19 +196,21 @@ impl VideoEditorApp {
             preview.x1,
             preview.y1,
         );
+        let inset = S2 * self.chrome_scale();
         let canvas_area = Rect::new(
-            preview.x0 + 10.0,
-            preview.y0 + 10.0,
-            preview.x1 - 10.0,
-            transport.y0 - 8.0,
+            preview.x0 + inset,
+            preview.y0 + inset,
+            preview.x1 - inset,
+            transport.y0 - inset,
         );
         let canvas = fit_aspect(
             canvas_area,
             f64::from(self.project.width.max(16)),
             f64::from(self.project.height.max(9)),
         );
+        let gutter_w = self.gutter_width().min(timeline.width());
         let ruler = Rect::new(
-            timeline.x0 + GUTTER_W,
+            timeline.x0 + gutter_w,
             timeline.y0,
             timeline.x1,
             timeline.y0 + self.ruler_height(),
@@ -216,11 +218,11 @@ impl VideoEditorApp {
         let gutter = Rect::new(
             timeline.x0,
             timeline.y0 + self.ruler_height(),
-            timeline.x0 + GUTTER_W,
+            timeline.x0 + gutter_w,
             timeline.y1,
         );
         let lanes = Rect::new(
-            timeline.x0 + GUTTER_W,
+            timeline.x0 + gutter_w,
             timeline.y0 + self.ruler_height(),
             timeline.x1,
             timeline.y1,

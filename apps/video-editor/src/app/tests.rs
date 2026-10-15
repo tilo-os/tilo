@@ -7770,8 +7770,8 @@ fn history_buttons_follow_the_host() {
         let scrub = app.scrubber_rect(&r);
         for (_, h) in &rects {
             assert!(
-                h.x1 <= scrub.x0,
-                "the scrubber starts clear of them: {h:?} {scrub:?}"
+                h.y1 <= scrub.y0,
+                "the scrubber's lower row clears the history buttons: {h:?} {scrub:?}"
             );
         }
     }
@@ -8582,6 +8582,12 @@ fn curve_box_points_are_placed_grabbed_dragged_and_reset() {
             .inspector_layout(&r)
             .curve_reset
             .expect("a reset button");
+        reveal_inspector_rect_for_test(&mut app, &r, reset);
+        let r = app.regions();
+        let reset = app
+            .inspector_layout(&r)
+            .curve_reset
+            .expect("reset stays reachable after scrolling");
         app.press_inspector(&r, reset.center());
         let c = app.project.clip(cid).unwrap();
         assert!(c.curves.master.is_identity(), "the shown channel was reset");

@@ -11,11 +11,8 @@
 //! the kind line sat a pixel or two off the level meter on a 46 px audio
 //! lane — so its bands are modelled here and a test asserts they clear.
 //!
-//! Compile-time, like every other chrome constant in `app.rs`: the editor's
-//! `regions()` runs in the event path with no `Theme` in hand, so these do
-//! not follow a custom theme's `spacing_px` or `ui_scale` the way the shared
-//! widgets' insets do. Threading the theme's scaled `Spacing` through the
-//! region model is the measured-controls work, not this pass's.
+//! These are reference dimensions. The editor caches the effective theme
+//! during layout and scales these bands for both painting and hit-testing.
 
 use ui::tokens::metrics::Metrics;
 use ui::tokens::spacing::Spacing;
@@ -108,14 +105,14 @@ pub(crate) struct MasterStrip {
     pub meter: Rect,
 }
 
-pub(crate) fn master_strip(strip: Rect) -> MasterStrip {
-    let x0 = strip.x0 + S3;
-    let x1 = strip.x1 - S2;
-    let block = S4 + S1 + METER_H;
+pub(crate) fn master_strip(strip: Rect, scale: f64) -> MasterStrip {
+    let x0 = strip.x0 + S3 * scale;
+    let x1 = strip.x1 - S2 * scale;
+    let block = (S4 + S1 + METER_H) * scale;
     let top = strip.y0 + ((strip.height() - block) / 2.0).max(0.0);
     MasterStrip {
-        readout: Rect::new(x0, top, x1, top + S4),
-        meter: Rect::new(x0, top + S4 + S1, x1, top + S4 + S1 + METER_H),
+        readout: Rect::new(x0, top, x1, top + S4 * scale),
+        meter: Rect::new(x0, top + (S4 + S1) * scale, x1, top + block),
     }
 }
 
@@ -213,7 +210,7 @@ mod tests {
         // Case `the_master_strip_centres_its_two_bands_a_step_apart`.
         {
             let strip = Rect::new(0.0, 0.0, 128.0, 30.0);
-            let m = master_strip(strip);
+            let m = master_strip(strip, 1.0);
             assert!(
                 ((m.meter.y0 - m.readout.y1) - (S1)).abs() < 1e-9,
                 "readout ↔ meter"

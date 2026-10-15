@@ -80,6 +80,9 @@ pub struct MediaFrameSource {
     /// The instant each source was last asked for, so a forward step can be
     /// told from a jump.
     served: HashMap<MediaId, u64>,
+    /// Only accepted seeks may suppress a retry: a pipeline still opening
+    /// can refuse the first request before it has prerolled.
+    accepted_seeks: HashMap<MediaId, u64>,
     /// Did the composite currently being resolved put a decoded picture on at
     /// least one layer? Reset by `begin_frame`, so it describes this frame and
     /// not a frame from a minute ago.
@@ -90,6 +93,9 @@ pub struct MediaFrameSource {
     /// Cleared the moment it produces a picture, so a damaged region does
     /// not accumulate against a file that otherwise plays.
     failures: HashMap<MediaId, u32>,
+    /// Responsive polling is not a failed seek: allow a whole decode window
+    /// before counting a miss, regardless of the display's repaint rate.
+    failure_started: HashMap<MediaId, ui::time::Instant>,
     /// Sources written off as undecodable: asked for, repeatedly, and never
     /// answered. Nothing is requested for these again.
     undecodable: HashSet<MediaId>,
@@ -124,9 +130,11 @@ impl MediaFrameSource {
             slot: 0,
             last: HashMap::new(),
             served: HashMap::new(),
+            accepted_seeks: HashMap::new(),
             served_real: false,
             rolling: HashSet::new(),
             failures: HashMap::new(),
+            failure_started: HashMap::new(),
             undecodable: HashSet::new(),
             attempts: 0,
             fetch,
@@ -145,6 +153,11 @@ impl MediaFrameSource {
     /// stall on a fixed cadence forever.
     pub fn is_undecodable(&self, media: MediaId) -> bool {
         self.undecodable.contains(&media)
+    }
+
+    /// A non-blocking seek still needs polling, even while playback is paused.
+    pub fn has_pending_frames(&self) -> bool {
+        self.failure_started.keys().any(|id| self.may_serve(*id))
     }
 
     /// Whether `media` may still be served a decoded picture: it has bytes
@@ -197,9 +210,13 @@ impl MediaFrameSource {
         self.sources = Self::index(project);
         self.last.retain(|id, _| self.sources.contains_key(id));
         self.served.retain(|id, _| self.sources.contains_key(id));
+        self.accepted_seeks
+            .retain(|id, _| self.sources.contains_key(id));
         self.rolling.retain(|id| self.sources.contains_key(id));
         self.demoted.retain(|id| self.sources.contains_key(id));
         self.failures.retain(|id, _| self.sources.contains_key(id));
+        self.failure_started
+            .retain(|id, _| self.sources.contains_key(id));
         // A write-off is forgotten when the item leaves the bin, so
         // re-importing the file asks the decoder again rather than
         // inheriting a verdict about a project the user has since changed.
@@ -314,6 +331,7 @@ impl MediaFrameSource {
             // fall back for this one.
             FramePayload::Dmabuf(image) => {
                 if self.demoted.insert(media) {
+                    self.accepted_seeks.remove(&media);
                     tracing::info!(
                         "video: {media} cannot be imported ({}), decoding it in software instead",
                         image.describe(),
@@ -409,11 +427,28 @@ impl FrameSource for MediaFrameSource {
                     if let Some(f) = s.cached_frame_at(target_ms) {
                         Some(f)
                     } else {
-                        // Ask the pipeline to move, pump it once, and take
-                        // whatever has landed. Never blocks.
-                        s.engine().seek_ms(target_ms);
+                        // Issue one seek per target. Reissuing it on every
+                        // repaint flushes an in-flight decode before its
+                        // preroll can land, leaving a paused preview blank.
+                        // Poll every repaint; the interactive path never waits.
+                        if self.accepted_seeks.get(&media) != Some(&target_ms)
+                            && s.engine().seek_with(target_ms, media::SeekMode::Accurate)
+                        {
+                            self.accepted_seeks.insert(media, target_ms);
+                        }
                         s.poll_into_cache();
-                        s.cached_frame_at(target_ms)
+                        s.cached_frame_at(target_ms).or_else(|| {
+                            // An accurate seek returns the picture covering
+                            // the target, not necessarily one whose own PTS
+                            // falls in the request's rounded cache bucket.
+                            // The blocking session path aliases this picture
+                            // to the request too; use the accepted generation
+                            // here rather than waiting forever for an exact PTS.
+                            (self.accepted_seeks.get(&media) == Some(&target_ms)
+                                && s.engine().frame_is_current())
+                            .then(|| s.engine().latest().cloned().map(Arc::new))
+                            .flatten()
+                        })
                     }
                 }
             }
@@ -422,6 +457,7 @@ impl FrameSource for MediaFrameSource {
         if let Some(f) = frame {
             // It answered, so whatever it missed before was transient.
             self.failures.remove(&media);
+            self.failure_started.remove(&media);
             // Already painted this exact picture for this source? Reuse
             // the texture rather than uploading it again.
             if let Some(last) = self.last.get(&media)
@@ -433,6 +469,11 @@ impl FrameSource for MediaFrameSource {
                 return Some(texture);
             }
             let painted = self.paint(device, queue, media, &f);
+            if painted.is_none() {
+                self.failure_started
+                    .entry(media)
+                    .or_insert_with(ui::time::now);
+            }
             self.served_real |= painted.is_some();
             painted
         } else {
@@ -444,11 +485,16 @@ impl FrameSource for MediaFrameSource {
             // seek landing near a damaged GOP; a file that answers
             // nowhere is not media this editor can play, and retrying it
             // costs a full frame timeout every frame forever.
-            let n = self.failures.entry(media).or_insert(0);
-            *n += 1;
-            if *n >= crate::thumbnail::FAILURES_BEFORE_GIVING_UP {
-                self.undecodable.insert(media);
-                self.rolling.remove(&media);
+            let now = ui::time::now();
+            let since = self.failure_started.entry(media).or_insert(now);
+            if fetch == Fetch::Exact || now.duration_since(*since) >= timeout {
+                *since = now;
+                let n = self.failures.entry(media).or_insert(0);
+                *n += 1;
+                if *n >= crate::thumbnail::FAILURES_BEFORE_GIVING_UP {
+                    self.undecodable.insert(media);
+                    self.rolling.remove(&media);
+                }
             }
             let texture = self.last.get(&media).map(|l| l.texture.clone());
             if texture.is_some() {

@@ -115,6 +115,71 @@ fn project_over(path: &std::path::Path, len: f64, name: &str) -> Project {
     p
 }
 
+#[test]
+#[cfg(feature = "decode")]
+#[serial_test::serial(video_editor_gst)]
+fn paused_responsive_preview_prerolls_without_flushing_each_repaint() {
+    assert!(generated_clip::media_stack(), "a real decoder is required");
+    let source = demo_clip();
+    let project = project_over(&source, 1.0, "paused-preview");
+    let id = project.media[0].id;
+    let mut compositor = video_editor::gpu::HeadlessCompositor::new().expect("preview GPU");
+    let mut frames =
+        video_editor::gpu::MediaFrameSource::new(&project, video_editor::gpu::Fetch::Responsive);
+    let deadline = tilo_test_env::hang_deadline();
+    let mut polls = 0;
+    while ui::time::now() < deadline {
+        let _ = compositor.frame(&project, 0.0, 160, 90, &mut frames);
+        polls += 1;
+        assert!(
+            !frames.is_undecodable(id),
+            "repaints must not write off a valid MP4 during preroll"
+        );
+        if frames.served_real_picture() {
+            break;
+        }
+    }
+    assert!(
+        frames.served_real_picture(),
+        "a paused MP4 must reach the canvas after {polls} repaints"
+    );
+}
+
+#[test]
+#[cfg(feature = "decode")]
+#[serial_test::serial(video_editor_gst)]
+fn paused_editor_schedules_preroll_without_pointer_input() {
+    use ui::widget::Widget;
+    assert!(generated_clip::media_stack(), "a real decoder is required");
+    let project = project_over(&demo_clip(), 1.0, "paused-editor");
+    let mut app = ui::prelude::TestApp::<video_editor::VideoEditor>::new().expect("editor host");
+    app.invoke(
+        ui::tilo_resource::Invoke::edit(&video_editor::resource::load_project(&project)).unwrap(),
+    )
+    .unwrap();
+    app.harness().key("Home");
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let (real, pending) = app
+            .with_widget::<video_editor::VideoEditorApp, _>(|editor| {
+                (editor.has_preview_frame(), editor.needs_animation_frame())
+            })
+            .expect("editor surface");
+        if real {
+            break;
+        }
+        assert!(
+            pending,
+            "a paused seek must keep requesting frames until its picture arrives"
+        );
+        assert!(
+            ui::time::now() < deadline,
+            "paused editor never presented decoded footage"
+        );
+        app.harness().poll_frame().expect("scheduled preview frame");
+    }
+}
+
 /// Decode `path` and return its frame at `at_secs`, scaled to a fixed
 /// `GRID_W × GRID_H` RGB grid so two files of different resolutions are
 /// directly comparable.
@@ -263,6 +328,222 @@ fn tidy(path: &std::path::Path) {
     if std::env::var_os("TILO_VE_EXPORT_DIR").is_none() {
         std::fs::remove_file(path).ok();
     }
+}
+
+/// Decode every video sample, not just a frame near the requested time.
+/// Keeping timestamps and count catches duplicated frames and padded tails
+/// that a single-frame comparison or a container probe cannot observe.
+fn decode_video_samples(path: &std::path::Path) -> Vec<(u64, Vec<[u8; 3]>)> {
+    struct Stop(gst::Pipeline);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            let _ = self.0.set_state(gst::State::Null);
+        }
+    }
+
+    let uri = gst::glib::filename_to_uri(path, None).expect("absolute video URI");
+    let pipeline = gst::parse::launch(&format!(
+        "uridecodebin uri=\"{uri}\" ! videoconvert ! videoscale ! \
+         video/x-raw,format=RGBA,width={GRID_W},height={GRID_H},pixel-aspect-ratio=1/1 ! \
+         appsink name=frames sync=false max-buffers=2"
+    ))
+    .expect("video decode graph")
+    .downcast::<gst::Pipeline>()
+    .expect("decode pipeline");
+    let _stop = Stop(pipeline.clone());
+    let sink = pipeline
+        .by_name("frames")
+        .unwrap()
+        .downcast::<gst_app::AppSink>()
+        .unwrap();
+    let bus = pipeline.bus().unwrap();
+    pipeline
+        .set_state(gst::State::Playing)
+        .expect("decode video");
+    let deadline = tilo_test_env::hang_deadline();
+    let mut frames = Vec::new();
+    loop {
+        assert!(
+            ui::time::now() < deadline,
+            "video decode stalled: {}",
+            path.display()
+        );
+        if let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(200)) {
+            let buffer = sample.buffer().expect("decoded video buffer");
+            let pts = buffer.pts().expect("decoded presentation time").nseconds();
+            let map = buffer.map_readable().expect("read decoded video");
+            assert_eq!(map.len(), GRID_W * GRID_H * 4);
+            frames.push((
+                pts,
+                map.chunks_exact(4).map(|p| [p[0], p[1], p[2]]).collect(),
+            ));
+        } else if sink.is_eos() {
+            break;
+        }
+        while let Some(message) = bus.pop() {
+            if let gst::MessageView::Error(error) = message.view() {
+                panic!(
+                    "video decode failed: {} ({:?})",
+                    error.error(),
+                    error.debug()
+                );
+            }
+        }
+    }
+    assert!(
+        !frames.is_empty(),
+        "no video decoded from {}",
+        path.display()
+    );
+    frames
+}
+
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn real_mp4_cuts_concatenate_without_padding_and_marks_rebase_the_file() {
+    assert!(
+        generated_clip::media_stack(),
+        "MP4 regression requires the media stack"
+    );
+    let source = demo_clip();
+    let source_frames = decode_video_samples(&source);
+    assert_eq!(
+        source_frames.len(),
+        120,
+        "fixture must be four seconds at 30 fps"
+    );
+    let mut project = project_over(&source, 4.0, "joined cuts");
+    project.media[0].has_audio = true;
+    let head = project.clips[0].id;
+    let first = project.split_clip(head, 0.5).expect("first cut");
+    let middle = project.split_clip(first, 0.8).expect("first out-point");
+    let second = project.split_clip(middle, 2.0).expect("second cut");
+    let tail = project.split_clip(second, 2.4).expect("second out-point");
+    for id in [head, middle, tail] {
+        project.delete_clip(id);
+    }
+    // Reorder the two windows: a backward source jump at the join must not
+    // accidentally continue decoding from the end of the preceding window.
+    project.move_clip(second, 0.0);
+    let join = project.clip(second).unwrap().duration();
+    project.move_clip(first, join);
+    assert!((project.export_duration() - 0.7).abs() < 1e-12);
+
+    let dir = tempfile::tempdir().expect("export artifacts");
+    // Whitespace, quotes and launch-graph punctuation are filename
+    // characters, not permission to change the encoding graph.
+    let output = dir.path().join("joined \"cuts\" ! output.mp4");
+    let settings = ExportSettings {
+        resolution: Resolution::P720,
+        container: Container::Mp4,
+        frame_rate: FrameRate::F30,
+    };
+    let status = video_editor::export::start_export(&project, &settings, output.clone()).join();
+    assert!(matches!(status, ExportStatus::Done { .. }), "{status:?}");
+    let joined = decode_video_samples(&output);
+    assert_eq!(
+        joined.len(),
+        21,
+        "0.7 seconds is 21 frames, not a one-second ruler"
+    );
+    for (i, (pts, pixels)) in joined.iter().enumerate() {
+        let expected_ns = (i as f64 * 1_000_000_000.0 / 30.0).round() as u64;
+        assert!(
+            pts.abs_diff(expected_ns) <= 1_000_000,
+            "incorrect PTS at frame {i}: {pts}"
+        );
+        let source_index = if i < 12 { 60 + i } else { 15 + i - 12 };
+        let diff = mean_abs_diff(pixels, &source_frames[source_index].1);
+        assert!(
+            diff < 8.0,
+            "frame {i} must show source frame {source_index}, MAE {diff:.2}"
+        );
+    }
+    let sound = decode_audio_full(&output);
+    assert_eq!(sound.native, Some((48_000, 2)));
+    assert!(
+        (sound.secs() - 0.7).abs() < 0.05,
+        "cut audio duration: {}",
+        sound.secs()
+    );
+    assert!(
+        sound.pcm.iter().any(|sample| sample.abs() > 0.1),
+        "cut audio must be audible"
+    );
+
+    // Export a range crossing the join. File time starts at zero, while
+    // source lookup and mixing still use the absolute timeline position.
+    project.set_mark_in(0.3);
+    project.set_mark_out(0.6);
+    let marked_path = dir.path().join("marked.mp4");
+    let status =
+        video_editor::export::start_export(&project, &settings, marked_path.clone()).join();
+    assert!(matches!(status, ExportStatus::Done { .. }), "{status:?}");
+    let marked = decode_video_samples(&marked_path);
+    assert_eq!(marked.len(), 9, "marks export only their nine-frame span");
+    assert_eq!(marked[0].0, 0, "marked file timestamps are zero-based");
+    for (i, (_, pixels)) in marked.iter().enumerate() {
+        let source_index = if i < 3 { 69 + i } else { 15 + i - 3 };
+        let diff = mean_abs_diff(pixels, &source_frames[source_index].1);
+        assert!(
+            diff < 8.0,
+            "marked frame {i}: source {source_index}, MAE {diff:.2}"
+        );
+    }
+}
+
+#[test]
+#[serial_test::serial(video_editor_gst)]
+fn a_good_first_clip_cannot_hide_a_broken_later_clip_in_an_mp4_export() {
+    assert!(
+        generated_clip::media_stack(),
+        "MP4 regression requires the media stack"
+    );
+    let dir = tempfile::tempdir().expect("export artifacts");
+    let broken = dir.path().join("broken.mp4");
+    std::fs::write(&broken, b"not an MP4 bitstream").unwrap();
+    let mut project = project_over(&demo_clip(), 0.4, "partly broken");
+    let media = uuid::Uuid::new_v4();
+    project.media.push(MediaItem {
+        id: media,
+        name: "broken second clip".into(),
+        kind: MediaKind::Video,
+        path: broken.to_string_lossy().into_owned(),
+        duration: 0.2,
+        width: generated_clip::WIDTH,
+        height: generated_clip::HEIGHT,
+        ..Default::default()
+    });
+    project.add_clip(project.tracks[0].id, media, 0.4).unwrap();
+    let settings = ExportSettings {
+        resolution: Resolution::P720,
+        ..Default::default()
+    };
+    let output = dir.path().join("incomplete.mp4");
+    let status = video_editor::export::start_export(&project, &settings, output.clone()).join();
+    match status {
+        ExportStatus::Failed { reason } => {
+            assert!(reason.contains("broken second clip"), "{reason}");
+            assert!(reason.contains("stand-in"), "{reason}");
+        }
+        other => panic!("export must refuse a partly synthetic file, got {other:?}"),
+    }
+    assert!(
+        !output.exists(),
+        "failed MP4 export must remove its partial file"
+    );
+
+    // A source outside the marked range is not needed by this export,
+    // even when its bytes are completely unavailable.
+    project.media[1].path = dir
+        .path()
+        .join("missing.mp4")
+        .to_string_lossy()
+        .into_owned();
+    project.set_mark_out(0.3);
+    let status = video_editor::export::start_export(&project, &settings, output.clone()).join();
+    assert!(matches!(status, ExportStatus::Done { .. }), "{status:?}");
+    assert_eq!(decode_video_samples(&output).len(), 9);
 }
 
 #[test]
