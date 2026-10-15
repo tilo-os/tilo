@@ -622,7 +622,7 @@ fn the_loop_brings_the_session_broker_up_without_waiting_for_the_disk() {
     let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
     let network = Arc::new(network);
     let journal = {
-        let mut name = path.clone().into_os_string();
+        let mut name = path.into_os_string();
         name.push(".invocations");
         std::path::PathBuf::from(name)
     };
