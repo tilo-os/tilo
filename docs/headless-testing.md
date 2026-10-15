@@ -883,10 +883,13 @@ thread. Both regressions used to be detected indirectly by elapsed time here.
 Actual idle CPU and wakeup measurements remain in `Perf / scheduled`
 (`tools/perf/run.py`, `idle.shell_cpu_pct` and `idle.*` budgets).
 
-The smoke finishes by explicitly requesting two ordered main-loop wakes and
-asserting that their acknowledgement count advances. It does not require a
-background monitor sample to have arrived by then. Socket deadlines and the
-liveness monitor below remain hang diagnostics, not performance assertions.
+The smoke finishes by explicitly requesting two ordered main-loop wakes with
+`{"op":"acknowledge"}` on the liveness socket and asserting that their
+acknowledgement count advances. This is a condition-variable rendezvous: unlike
+`heartbeat`, it has no latency budget and cannot return `Stalled` for completed
+work. It does not require a background monitor sample to have arrived by then.
+The existing socket watchdog diagnoses an unfinished rendezvous with thread
+stacks; no CPU or elapsed-time measurement decides whether an ack succeeds.
 
 ```bash
 cargo nextest run --locked -p shell --test it -E 'test(desktop_smoke::)' --no-capture

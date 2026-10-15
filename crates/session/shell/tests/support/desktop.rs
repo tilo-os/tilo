@@ -659,17 +659,18 @@ impl Desktop {
         let mut reader = BufReader::new(stream);
         let mut previous = None;
         for _ in 0..2 {
-            let request = json!({
-                "op": "heartbeat",
-                "budget_ms": HEARTBEAT_BUDGET.as_millis(),
-            });
+            let request = json!({"op": "acknowledge"});
             writeln!(writer, "{request}").unwrap();
             let mut line = String::new();
-            reader
-                .read_line(&mut line)
-                .expect("read loop acknowledgement");
+            reader.read_line(&mut line).unwrap_or_else(|error| {
+                panic!(
+                    "loop acknowledgement remains unfinished: {error}\n{}\n{}",
+                    self.thread_dump(),
+                    self.recent_log(40)
+                )
+            });
             let answer: Answer = serde_json::from_str(&line).expect("liveness reply");
-            let Answer::Alive { ticks, .. } = answer else {
+            let Answer::Acknowledged { ticks } = answer else {
                 panic!(
                     "main loop did not acknowledge the forced wake: {}",
                     render(&answer)

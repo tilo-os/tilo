@@ -15,6 +15,10 @@
 //!   answer is `{"stalled":{...}}`: the budget, the ticks so far, and every
 //!   thread's state, kernel wait channel and backtrace, which is where a
 //!   deadlock shows who waits on what. The same report goes to stderr.
+//! * `{"op":"acknowledge"}` waits for an actual main-loop wake without a
+//!   latency budget, then answers `{"acknowledged":{"ticks":N}}`. A harness
+//!   watchdog must diagnose an unfinished rendezvous; elapsed time never
+//!   rejects an ack.
 //! * `{"op":"threads"}` answers `{"threads":[...]}` whatever the loop is doing.
 //!
 //! A heartbeat costs the loop one wake when somebody asks. Nothing runs, and
@@ -79,6 +83,7 @@ enum Request {
         #[serde(default)]
         budget_ms: Option<u64>,
     },
+    Acknowledge,
     Threads,
 }
 
@@ -101,6 +106,10 @@ pub struct ThreadReport {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Answer {
+    Acknowledged {
+        /// Wakes acknowledged, including this request's wake.
+        ticks: u64,
+    },
     Alive {
         /// Wakes the main loop has acknowledged since it started.
         ticks: u64,
@@ -190,6 +199,24 @@ impl Beat {
         Some(started.elapsed())
     }
 
+    /// Rendezvous with the loop, not a measurement of how fast it turns.
+    fn rendezvous(&self, ping: &calloop::ping::Ping) -> u64 {
+        let want = self
+            .requested
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
+        ping.ping();
+        self.wait_for_ack(want)
+    }
+
+    fn wait_for_ack(&self, want: u64) -> u64 {
+        let mut acked = self.acked.lock();
+        while *acked < want {
+            self.wake.wait(&mut acked);
+        }
+        *acked
+    }
+
     fn ticks(&self) -> u64 {
         *self.acked.lock()
     }
@@ -263,6 +290,9 @@ fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
                     .min(MAX_BUDGET);
                 heartbeat_answer(beat, ping, budget)
             }
+            Ok(Request::Acknowledge) => Answer::Acknowledged {
+                ticks: beat.rendezvous(ping),
+            },
             Ok(Request::Threads) => Answer::Threads(dump_threads()),
             Err(error) => Answer::Err(format!("bad liveness request: {error}")),
         };
@@ -326,6 +356,9 @@ pub fn render(answer: &Answer) -> String {
             threads,
         ),
         Answer::Threads(threads) => ("threads".to_string(), threads),
+        Answer::Acknowledged { ticks } => {
+            return format!("main loop acknowledged wake: {ticks} ticks");
+        }
         Answer::Alive { ticks, latency_ms } => {
             return format!("main loop alive: {ticks} ticks, last wake took {latency_ms:.1} ms");
         }
@@ -526,6 +559,42 @@ fn frames_of(backtrace: &Backtrace) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rendezvous_accepts_an_ack_after_the_heartbeat_budget_expires() {
+        let beat = Arc::new(Beat {
+            requested: AtomicU64::new(0),
+            acked: Mutex::new(0),
+            wake: Condvar::new(),
+        });
+        let (ping, source) = calloop::ping::make_ping().unwrap();
+        // Expire a heartbeat deterministically, without sleeping or relying
+        // on scheduler speed. Its outstanding wake still needs an ack.
+        assert!(beat.heartbeat(&ping, Duration::ZERO).is_none());
+        let waiting = Arc::clone(&beat);
+        let waiter = std::thread::spawn(move || waiting.wait_for_ack(1));
+        beat.acknowledge();
+        assert_eq!(waiter.join().unwrap(), 1);
+
+        let mut event_loop = calloop::EventLoop::<()>::try_new().unwrap();
+        let on_loop = Arc::clone(&beat);
+        event_loop
+            .handle()
+            .insert_source(source, move |(), (), ()| on_loop.acknowledge())
+            .unwrap();
+        // Drain the expired heartbeat's pending ping before testing two
+        // fresh rendezvous through the real event source.
+        event_loop.dispatch(Duration::ZERO, &mut ()).unwrap();
+        for expected in [2, 3] {
+            let waiting = Arc::clone(&beat);
+            let ping = ping.clone();
+            let waiter = std::thread::spawn(move || waiting.rendezvous(&ping));
+            while beat.ticks() < expected {
+                event_loop.dispatch(None, &mut ()).unwrap();
+            }
+            assert_eq!(waiter.join().unwrap(), expected);
+        }
+    }
 
     fn stalled(cpu: u64, starved: u64) -> Answer {
         Answer::Stalled {
