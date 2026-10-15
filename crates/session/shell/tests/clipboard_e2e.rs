@@ -1607,6 +1607,7 @@ impl TestClient {
     }
 
     fn pump_roundtrip(&mut self) {
+        self.step("pump roundtrip begin");
         self.queue
             .roundtrip(&mut self.state)
             .unwrap_or_else(|error| {
@@ -1616,6 +1617,7 @@ impl TestClient {
                     self.conn.protocol_error()
                 )
             });
+        self.step("pump roundtrip end");
     }
 
     /// Cooperate with an `xdg_toplevel.close` by destroying in reverse
@@ -1901,11 +1903,17 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         let compositor = Compositor::start();
         let mut app = TestClient::new(compositor.connect(), "org.tilo.test.app-clipboard");
         app.assert_is_tilo_compositor();
-        let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+        // Exercise the native application's complete backend, including all
+        // reader workers, rather than only the publication fixture.
+        // SAFETY: app owns the display and outlives clipboard.
+        let clipboard = unsafe {
+            ui::clipboard::WaylandClipboard::new(app.conn.backend().display_ptr().cast())
+        };
         // Seat callbacks bind the publication worker's keyboard and device.
         // Fence those real bindings before mapping acquires focus and copy.
         assert!(clipboard.wait_ready_for_wayland_test(deadline()));
         app.map_window(&compositor);
+        app.step("publication backend ready; window mapped");
 
         // This is the app-side backend, not HostClipboard: its publication worker
         // owns a second wl_data_device on the app connection and must observe the
@@ -1915,18 +1923,23 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
             "text publication: {:?}",
             clipboard.publication_progress(),
         );
+        app.step("text publication acknowledged; locating pointer target");
         app.pointer_target(&compositor);
+        app.step("pointer target located; moving to chrome");
         compositor.pointer_move(0.0, 0.0);
+        app.step("pointer motion processed; waiting for leave");
         app.wait_until(
             |state| !state.pointer_entered,
             "pointer never left the app for desktop chrome",
         );
+        app.step("pointer left; publishing image");
         assert!(app.state.keyboard_focused);
         assert!(
             clipboard.set_image(2, 1, &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]),
             "image publication after pointer leave: {:?}",
             clipboard.publication_progress(),
         );
+        app.step("image publication acknowledged");
         assert_eq!(clipboard.publication_progress()["acknowledged"], 2);
         assert_eq!(clipboard.publication_progress()["unfocused"], 0);
         // Publication is queued to the app clipboard worker. Keep its seat
@@ -1952,6 +1965,69 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
             [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
         );
         assert_eq!(sink.read_clipboard(None), "app caption");
+    }
+}
+
+/// Roundtrip completion runs at the backend level, before EventQueue dispatch.
+/// A clipboard worker must not dispatch it on behalf of the application: that
+/// can complete the sync between the application's completion check and poll,
+/// leaving the application asleep on an already-consumed reply.
+#[test]
+fn publication_worker_does_not_dispatch_application_roundtrip_callbacks() {
+    use wayland_client::backend::{Backend, ObjectData, ObjectId, protocol::Message};
+
+    struct Completion(mpsc::Sender<std::thread::ThreadId>);
+    impl ObjectData for Completion {
+        fn event(
+            self: Arc<Self>,
+            _: &Backend,
+            _: Message<ObjectId, OwnedFd>,
+        ) -> Option<Arc<dyn ObjectData>> {
+            self.0.send(std::thread::current().id()).unwrap();
+            None
+        }
+
+        fn destroyed(&self, _: ObjectId) {}
+    }
+
+    for native in [true, false] {
+        eprintln!("[clipboard-e2e] roundtrip callback isolation: native={native}");
+        let compositor = Compositor::start();
+        let app = TestClient::new(compositor.connect(), "org.tilo.test.roundtrip-owner");
+        let clipboard = if native {
+            // SAFETY: app owns the display and outlives clipboard.
+            unsafe { ui::clipboard::WaylandClipboard::new(app.conn.backend().display_ptr().cast()) }
+        } else {
+            ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone())
+        };
+        assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+
+        let (completed, received) = mpsc::channel();
+        app.conn
+            .send_request(
+                &app.conn.display(),
+                wayland_client::protocol::wl_display::Request::Sync {},
+                Some(Arc::new(Completion(completed))),
+            )
+            .expect("application sync request");
+        app.conn.flush().expect("flush application sync");
+        // These real worker sync replies follow the application's sync on the
+        // same display. Their acknowledgement proves that its reply was read,
+        // without asking the application backend to dispatch anything itself.
+        assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+        assert_eq!(
+            received.try_recv(),
+            Err(mpsc::TryRecvError::Empty),
+            "the clipboard worker dispatched the application's sync callback"
+        );
+        app.conn
+            .backend()
+            .dispatch_inner_queue()
+            .expect("application dispatch");
+        assert_eq!(
+            received.recv_timeout(deadline()).unwrap(),
+            std::thread::current().id()
+        );
     }
 }
 
