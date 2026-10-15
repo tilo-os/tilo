@@ -36,6 +36,26 @@ pub enum FilesEffect {
     /// Clear selection.
     #[effect(view, returns)]
     ClearSelection,
+    /// Selected entries.
+    ///
+    /// Answers which entries are selected in the folder shown, with their
+    /// absolute paths, changing nothing: what "these files" means when a
+    /// request is about the selection.
+    #[effect(view, kind = "read", returns, idempotent)]
+    SelectedEntries,
+    /// Read a file's text.
+    ///
+    /// Answers with what a file says: each page's text for a PDF, the text
+    /// itself for Markdown and any other text file (a Word, `OpenDocument`
+    /// or RTF document is Writer's `read-file`). A long file answers in
+    /// parts: read on from the `next` an answer gives.
+    #[effect(kind = "read", returns, idempotent)]
+    ReadText {
+        #[param("The file: an absolute path, a name in the folder shown, or its entry row id")]
+        file: String,
+        #[param("The character to read from; the start when none")]
+        from: Option<usize>,
+    },
     /// Copy selection.
     #[effect(kind = "read", job)]
     CopySelection,

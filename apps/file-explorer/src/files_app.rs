@@ -46,6 +46,7 @@ use vello::peniko::ImageData as PenikoImage;
 mod clipboard_client;
 pub use clipboard_client::Receipt as ClipboardReceipt;
 pub(crate) use clipboard_client::UndoRequest;
+mod read_text;
 mod selection_actions;
 mod shown_selection;
 
@@ -1154,14 +1155,34 @@ impl FileExplorerWidget {
             .and(file_explorer::Trash::paths().folder, folder.clone())
             .declaration("trash-here", "Move entries here to Trash");
         let moving = FileExplorer::MOVE_ENTRIES
-            .bind(file_explorer::MoveEntries::paths().device, device)
-            .and(file_explorer::MoveEntries::paths().from, folder)
+            .bind(file_explorer::MoveEntries::paths().device, device.clone())
+            .and(file_explorer::MoveEntries::paths().from, folder.clone())
             .declaration("move-here", "Move entries from here to a folder");
-        [new_folder, rename, trash, moving]
-            .into_iter()
-            .flatten()
-            .map(shown)
-            .collect()
+        let copying = FileExplorer::COPY_INTO
+            .bind(file_explorer::CopyInto::paths().device, device.clone())
+            .and(file_explorer::CopyInto::paths().from, folder.clone())
+            .declaration("copy-here", "Copy entries from here to a folder");
+        let writing = FileExplorer::WRITE_FILE
+            .bind(file_explorer::WriteFile::paths().device, device.clone())
+            .and(file_explorer::WriteFile::paths().folder, folder.clone())
+            .declaration("write-file-here", "Write a file here");
+        let compressing = FileExplorer::COMPRESS
+            .bind(file_explorer::Compress::paths().device, device)
+            .and(file_explorer::Compress::paths().from, folder)
+            .declaration("compress-here", "Compress entries here to a zip archive");
+        [
+            new_folder,
+            rename,
+            trash,
+            moving,
+            copying,
+            writing,
+            compressing,
+        ]
+        .into_iter()
+        .flatten()
+        .map(shown)
+        .collect()
     }
 
     /// Show the bookmarked `places`, resolved on this device.
@@ -1795,6 +1816,8 @@ impl FileExplorerWidget {
                 self.last_click = None;
                 Some(self.selection_answer())
             }
+            FilesEffect::SelectedEntries => Some(self.selected_entries_answer()),
+            FilesEffect::ReadText { file, from } => Some(self.read_text_answer(&file, from)?),
             FilesEffect::ClearSelection => {
                 self.selection.clear();
                 self.retain_shown_selection();
