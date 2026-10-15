@@ -1488,6 +1488,7 @@ impl ShellDriver {
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
             "ws-settings-agents" => self.scene_ws_settings_agents(),
+            "ws-settings-agent-access" => self.scene_ws_settings_agent_access(),
             "collaborators" => self.scene_collaborators(),
             "launchpad" => self.scene_launchpad(),
             "launchpad-notes-card" => self.scene_launchpad_notes_card(),
@@ -1871,6 +1872,46 @@ impl ShellDriver {
             st.ws_settings_tab = WsTab::Agents;
         });
         self.fb.host_mut().force_ws_settings_settled();
+    }
+
+    /// One agent's Allow / Ask first / Deny answers: Mail open with a
+    /// changed answer, Files narrowed, and sending mail always allowed.
+    fn scene_ws_settings_agent_access(&mut self) {
+        use tilo_action_policy::agent_answers::AnswerScope;
+        use tilo_action_policy::{ActionKind, Answer};
+        self.seed_agent_member_for_shots();
+        let mail = AnswerScope::app("so.tilo.mail");
+        self.with_chrome(|st| {
+            let actor = st.local_user_id.clone();
+            {
+                let mut tree = st.tree_mut();
+                if let Some(ws) = tree.desktop.active_workspace_mut() {
+                    tilo_desktop::workspace_settings::agent_access::set_agent_answers(
+                        ws,
+                        &actor,
+                        "scribe",
+                        &[
+                            (mail.clone(), ActionKind::Undoable, Some(Answer::Ask)),
+                            (
+                                AnswerScope::app("so.tilo.file-explorer"),
+                                ActionKind::Outside,
+                                Some(Answer::Deny),
+                            ),
+                            (
+                                AnswerScope::action("so.tilo.mail", "mail.mailbox", "send_message"),
+                                ActionKind::Outside,
+                                Some(Answer::Allow),
+                            ),
+                        ],
+                    );
+                }
+            }
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::Agents;
+        });
+        let host = self.fb.host_mut();
+        host.open_agent_review_for_shots("scribe", Some(mail));
+        host.force_ws_settings_settled();
     }
 
     /// The People roster (`collaborators_overlay.rs`): two members present,
@@ -2763,6 +2804,7 @@ impl ShellDriver {
         "ws-settings-permissions",
         "ws-settings-apps",
         "ws-settings-agents",
+        "ws-settings-agent-access",
         "collaborators",
         "launchpad",
         "launchpad-notes-card",

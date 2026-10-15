@@ -222,7 +222,11 @@ impl TaskReviewProvider {
                 ..
             } => ("cancel", *run_epoch, *after_revision),
             TaskReviewCommand::Retry { run_epoch, .. } => ("retry", *run_epoch, 0),
-            TaskReviewCommand::Inspect { .. } => return self.status(snapshot.room.clone()),
+            // A paused action is answered on its card, where its draft is
+            // shown; search offers no answer to a draft it cannot show.
+            TaskReviewCommand::Inspect { .. }
+            | TaskReviewCommand::AnswerConfirmation { .. }
+            | TaskReviewCommand::AlwaysAllow { .. } => return self.status(snapshot.room.clone()),
         };
         let room = snapshot.room.clone();
         let actor = snapshot.actor.clone();

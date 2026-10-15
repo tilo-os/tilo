@@ -259,6 +259,9 @@ pub(super) fn command(
             after_revision: input.after_revision,
         }));
     }
+    if envelope.action == "answer-confirmation" {
+        return answer_confirmation_command(envelope).map(Some);
+    }
     if let Some(id) = envelope.resource.strip_prefix(TASK_PREFIX)
         && envelope.action == "set-execution-budget"
     {
@@ -313,6 +316,42 @@ pub(super) fn command(
     } else {
         Ok(None)
     }
+}
+
+fn answer_confirmation_command(
+    envelope: &InvocationEnvelope,
+) -> Result<WorkspaceTaskCommand, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input {
+        run_epoch: u64,
+        confirmation_id: String,
+        answer: String,
+        #[serde(default)]
+        edits: Vec<tilo_actions::DraftEdit>,
+        #[serde(default)]
+        reason: Option<String>,
+    }
+    let task_id = canonical_task_id(envelope).ok_or("confirmation target is invalid")?;
+    let input: Input =
+        serde_json::from_str(argument(envelope)?).map_err(|error| error.to_string())?;
+    let answer = match input.answer.as_str() {
+        "confirm" => {
+            tilo_desktop_model::WorkspaceTaskConfirmationAnswer::Confirm { edits: input.edits }
+        }
+        "decline" if input.edits.is_empty() => {
+            tilo_desktop_model::WorkspaceTaskConfirmationAnswer::Decline {
+                reason: input.reason,
+            }
+        }
+        _ => return Err("answer is confirm (with any edits) or decline".into()),
+    };
+    Ok(WorkspaceTaskCommand::AnswerConfirmation {
+        task_id,
+        run_epoch: input.run_epoch,
+        confirmation_id: input.confirmation_id,
+        answer,
+    })
 }
 
 fn execution_budget_command(
@@ -451,6 +490,14 @@ pub(super) fn actions(
                 result.push(direct_action(&target, &task.title));
             }
             result.push(stop_action(&target, &task.title));
+            if snapshot
+                .controls
+                .get(&task.id)
+                .and_then(|control| control.confirmation.as_ref())
+                .is_some_and(tilo_desktop_model::WorkspaceTaskConfirmation::is_waiting)
+            {
+                result.push(answer_confirmation_action(&target, &task.title));
+            }
         }
         if task.status == tilo_desktop_model::WorkspaceTaskStatus::Queued
             && !manual(task)
@@ -683,6 +730,39 @@ fn task_grant_actions(target: &str, title: &str) -> [PublishedAction; 2] {
     );
     revoke.description = Some("Take one grant out of this task's grant set.".into());
     [grant, revoke]
+}
+
+/// The person's answer to the action a run paused at: what Task Center's
+/// confirmation card does, for anyone driving the desktop without it.
+fn answer_confirmation_action(target: &str, title: &str) -> PublishedAction {
+    use tilo_actions::{ActionParam, ParamType};
+    let mut answer = action(
+        target,
+        "answer-confirmation",
+        title,
+        "Answer the paused action",
+        vec![
+            ActionParam::required("run_epoch", ParamType::Integer, "Exact current run epoch"),
+            ActionParam::required(
+                "confirmation_id",
+                ParamType::Text,
+                "The paused action's confirmation id, as read-task shows it",
+            ),
+            ActionParam::required("answer", ParamType::Text, "confirm or decline")
+                .with_choices(["confirm", "decline"]),
+            ActionParam::optional(
+                "edits",
+                ParamType::Array,
+                "Changes to the draft's fields before confirming: {path, text} each",
+            ),
+            ActionParam::optional("reason", ParamType::Text, "Why it is declined"),
+        ],
+        false,
+    );
+    answer.description = Some(
+        "Confirm the action this task's run paused at, optionally with changed fields, or decline it with a reason. Only the person the run acts for answers.".into(),
+    );
+    answer
 }
 
 fn approve_action(target: &str, title: &str) -> PublishedAction {
@@ -990,6 +1070,15 @@ fn task_frontier(snapshot: &WorkspaceTaskSnapshot, task: &WorkspaceTask) -> serd
             .map_or(0, |direction| direction.revision),
         "applied_revision": active.map(|run| run.applied_direction_revision),
         "execution": execution,
+        // The action the run paused at, by its label: the draft itself stays
+        // with the task's owner.
+        "confirmation": control
+            .and_then(|control| control.confirmation.as_ref())
+            .map(|held| serde_json::json!({
+                "confirmation_id": held.id,
+                "action": held.draft.action_label,
+                "waiting": held.is_waiting(),
+            })),
     })
 }
 
@@ -1038,6 +1127,23 @@ pub(super) fn result(
         | WorkspaceTaskMutationResult::ResourceAttached { task_id }
         | WorkspaceTaskMutationResult::RunStarted { task_id, .. } => (task_id, false),
         WorkspaceTaskMutationResult::ExecutionBudgetSet { task_id } => (task_id, true),
+        WorkspaceTaskMutationResult::ConfirmationRecorded { task_id }
+            if envelope.action == "answer-confirmation"
+                && task_target(envelope) == task_id.strip_prefix("task:") =>
+        {
+            let task = snapshot
+                .tasks
+                .iter()
+                .find(|task| &task.id == task_id)
+                .ok_or("owner confirmation receipt has no canonical task")?;
+            return Ok(serde_json::json!({
+                "generation": generation,
+                "result": result.result,
+                "resource": format!("desktop:{task_id}"),
+                "task": task,
+                "answered": true,
+            }));
+        }
         WorkspaceTaskMutationResult::DirectionAdded { task_id, revision }
             if envelope.action == "direct"
                 && task_target(envelope) == task_id.strip_prefix("task:") =>
@@ -1130,6 +1236,57 @@ mod tests {
             actor: "supplied-actor-is-not-authority".into(),
             context: None,
         }
+    }
+
+    #[test]
+    fn the_paused_action_is_answered_through_a_published_action() {
+        let mut request = envelope(&serde_json::json!({
+            "run_epoch": 3,
+            "confirmation_id": "c1",
+            "answer": "confirm",
+            "edits": [{"path": ["message", "to"], "text": "carol@example.org"}],
+        }));
+        request.resource = "desktop:task:abc".into();
+        request.action = "answer-confirmation".into();
+        let Some(WorkspaceTaskCommand::AnswerConfirmation {
+            task_id,
+            run_epoch,
+            confirmation_id,
+            answer: tilo_desktop_model::WorkspaceTaskConfirmationAnswer::Confirm { edits },
+        }) = command(&request).unwrap()
+        else {
+            panic!("an answer command");
+        };
+        assert_eq!(
+            (task_id.as_str(), run_epoch, confirmation_id.as_str()),
+            ("task:abc", 3, "c1")
+        );
+        assert_eq!(edits[0].text, "carol@example.org");
+
+        let mut decline = envelope(&serde_json::json!({
+            "run_epoch": 3, "confirmation_id": "c1", "answer": "decline", "reason": "Not now",
+        }));
+        decline.resource = "desktop:task:abc".into();
+        decline.action = "answer-confirmation".into();
+        assert!(matches!(
+            command(&decline).unwrap(),
+            Some(WorkspaceTaskCommand::AnswerConfirmation {
+                answer: tilo_desktop_model::WorkspaceTaskConfirmationAnswer::Decline {
+                    reason: Some(_)
+                },
+                ..
+            })
+        ));
+        let mut edited_decline = envelope(&serde_json::json!({
+            "run_epoch": 3, "confirmation_id": "c1", "answer": "decline",
+            "edits": [{"path": ["x"], "text": "y"}],
+        }));
+        edited_decline.resource = "desktop:task:abc".into();
+        edited_decline.action = "answer-confirmation".into();
+        assert!(
+            command(&edited_decline).is_err(),
+            "a decline changes nothing"
+        );
     }
 
     #[test]

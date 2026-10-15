@@ -210,7 +210,7 @@ impl RoomActivityPane {
         }
         true
     }
-    fn submit_review(&mut self, command: TaskReviewCommand) {
+    pub(super) fn submit_review(&mut self, command: TaskReviewCommand) {
         let observed_actor = if matches!(&command, TaskReviewCommand::Steer { .. }) {
             self.direction.as_ref().map(|draft| draft.actor.clone())
         } else {
@@ -402,9 +402,10 @@ impl RoomActivityPane {
         let style = paint.theme.text(TextRole::Body);
         let width = text_width(bounds.width() - 2.0 * gap);
         let mut y = bounds.y0 + gap;
-        let Some(Ok(snapshot)) = &self.task_review else {
+        let Some(Ok(snapshot)) = self.task_review.clone() else {
             return;
         };
+        let snapshot = &*snapshot;
         let source = review_source(snapshot, self.now());
         draw_review_line(paint, &source, &style, width, bounds.x0 + gap, &mut y);
         if let Some(notice) = &self.review_notice {
@@ -432,7 +433,7 @@ impl RoomActivityPane {
         self.review_task_offset = selected
             .unwrap_or(self.review_task_offset)
             .min(self.tasks.len().saturating_sub(1));
-        let Some(task) = self.tasks.get(self.review_task_offset) else {
+        let Some(task) = self.tasks.get(self.review_task_offset).cloned() else {
             draw_review_line(
                 paint,
                 &t("activity-tasks-empty"),
@@ -460,12 +461,8 @@ impl RoomActivityPane {
             ],
         );
         draw_review_line(paint, &summary, &style, width, bounds.x0 + gap, &mut y);
-        if let Some(control) = snapshot.controls.get(&task.id) {
-            draw_control_evidence(paint, control, width, bounds.x0 + gap, &mut y, self.now());
-        }
-        self.task_rects
-            .push((task.id.clone(), Rect::new(bounds.x0, top, bounds.x1, y)));
-        let mut actions = self.task_actions_for(task);
+        y = self.draw_task_evidence(paint, (snapshot, &task), bounds, (top, y));
+        let mut actions = self.task_actions_for(&task);
         if self.review_task_offset > 0 {
             actions.insert(0, TaskAction::PreviousTasks);
         }
@@ -494,6 +491,36 @@ impl RoomActivityPane {
         }
     }
 }
+impl RoomActivityPane {
+    /// What the owner records of `task`'s run: the action it paused at, as
+    /// a card the person answers, or its run evidence.
+    fn draw_task_evidence(
+        &mut self,
+        paint: &mut PaintCtx<'_>,
+        (snapshot, task): (&TaskReviewSnapshot, &tilo_desktop_model::WorkspaceTask),
+        bounds: Rect,
+        (top, mut y): (f64, f64),
+    ) -> f64 {
+        let gap = f64::from(paint.theme.tokens.spacing.s3);
+        let width = text_width(bounds.width() - 2.0 * gap);
+        let confirmation = self
+            .reviewed_confirmation(&task.id)
+            .map(|(_, confirmation)| confirmation);
+        if confirmation.is_none()
+            && let Some(control) = snapshot.controls.get(&task.id)
+        {
+            draw_control_evidence(paint, control, width, bounds.x0 + gap, &mut y, self.now());
+        }
+        self.task_rects
+            .push((task.id.clone(), Rect::new(bounds.x0, top, bounds.x1, y)));
+        if let Some(confirmation) = &confirmation {
+            let inner = Rect::new(bounds.x0 + gap, bounds.y0, bounds.x1 - gap, bounds.y1);
+            y = self.draw_confirmation_card(paint, inner, y + gap, confirmation);
+        }
+        y
+    }
+}
+
 fn draw_review_line(
     paint: &mut PaintCtx<'_>,
     text: &str,

@@ -36,6 +36,7 @@ use ui::TextRole;
 use ui::text_render::TextStyle;
 use ui::widget::ButtonRole;
 
+pub mod agent_access;
 pub mod overlay;
 
 /// The host's application catalogue, as workspace settings name apps and
@@ -2448,8 +2449,12 @@ pub fn agent_authority_preset(ws: &Workspace, agent: &str) -> AgentPreset {
     let subject = tilo_action_policy::Subject::agent(agent);
     let room = ws.node();
     let broad_grant = ws.policy.grants.iter().any(|grant| {
+        // An answer that asks first or denies never widens the agent.
+        let narrowing = tilo_action_policy::agent_answers::is_answer(grant)
+            && grant.answer != tilo_action_policy::Answer::Allow;
         grant.subject == subject
             && !grant.id.as_str().starts_with(&prefix)
+            && !narrowing
             && grant.answer != tilo_action_policy::Answer::Deny
             && (grant.node.covers(&room) || grant.kinds.contains(ActionKind::Outside))
     });
