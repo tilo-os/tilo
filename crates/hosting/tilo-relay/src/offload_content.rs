@@ -1,0 +1,248 @@
+//! The requester's workspace content, as an offloaded job reads and writes
+//! it.
+//!
+//! Two content addresses meet here. The workspace filesystem names a file
+//! version by its *manifest* hash: blake3 of the chunk list that describes
+//! the bytes ([`fs::content::Manifest::id`]). A compute job names its inputs
+//! and outputs by blake3 of the *bytes* themselves
+//! ([`ComputeJobSpec::inputs`](crate::ComputeJobSpec::inputs)). Neither can
+//! be derived from the other without the bytes, so the bridge never guesses:
+//!
+//! - **Inputs.** The invoker binds each input by the manifest hash its own
+//!   view of the workspace resolved ([`WorkspaceContent::bind_file`]). The
+//!   bytes are read from this device's content store, checked against that
+//!   manifest, and hashed; only then is their digest servable. A digest
+//!   nobody bound is unknown here, whatever it names elsewhere in the store,
+//!   so a worker reads exactly what the invoking device chose to hand it and
+//!   nothing it could not read itself.
+//! - **Outputs.** A digest arriving with bytes is checked against them and
+//!   written as a new file version ([`ComputeContentStore::put`]); its
+//!   manifest hash is then known ([`WorkspaceContent::manifest_of`]), so
+//!   the result lands in the workspace like any other file content.
+//!
+//! Every read is re-checked: a bound file whose bytes no longer hash to the
+//! bound digest is refused, never substituted.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use fs::store::ContentStore;
+use thiserror::Error;
+
+use crate::compute::ComputeContentStore;
+
+/// Why a workspace file could not be bound as a job input.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum BindError {
+    /// This device holds no manifest under that hash.
+    #[error("no workspace content under that manifest")]
+    UnknownManifest,
+    /// The manifest is known but not every byte is on this device yet.
+    #[error("the file's content is not on this device yet")]
+    NotLocal,
+    /// The local bytes do not match the manifest.
+    #[error("the file's local content does not match its manifest")]
+    Integrity,
+}
+
+/// One device's workspace content, addressed by both hashes for the jobs it
+/// offloads. Cheap to clone; clones share their bindings.
+#[derive(Clone)]
+pub struct WorkspaceContent {
+    store: Arc<ContentStore>,
+    runtime: tokio::runtime::Handle,
+    /// Byte digest → manifest hash, for every input bound and every output
+    /// stored through this handle.
+    bound: Arc<Mutex<HashMap<[u8; 32], [u8; 32]>>>,
+}
+
+impl WorkspaceContent {
+    /// The content of `store`. The synchronous [`ComputeContentStore`] side
+    /// runs its reads on `runtime` and must be called off it (from
+    /// `spawn_blocking`), as the compute paths do.
+    #[must_use]
+    pub fn new(store: Arc<ContentStore>, runtime: tokio::runtime::Handle) -> Self {
+        Self {
+            store,
+            runtime,
+            bound: Arc::default(),
+        }
+    }
+
+    fn bindings(&self) -> std::sync::MutexGuard<'_, HashMap<[u8; 32], [u8; 32]>> {
+        self.bound.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Bind the file version `manifest` as a job input and return the
+    /// digest a job names it by.
+    ///
+    /// # Errors
+    ///
+    /// [`BindError`] when the content is unknown, not wholly local, or does
+    /// not match its manifest.
+    pub async fn bind_file(&self, manifest: [u8; 32]) -> Result<[u8; 32], BindError> {
+        let bytes = read_version(&self.store, manifest).await?;
+        let digest = *blake3::hash(&bytes).as_bytes();
+        self.bindings().insert(digest, manifest);
+        Ok(digest)
+    }
+
+    /// The manifest hash of content this handle bound or stored under
+    /// `digest`.
+    #[must_use]
+    pub fn manifest_of(&self, digest: [u8; 32]) -> Option<[u8; 32]> {
+        self.bindings().get(&digest).copied()
+    }
+
+    /// The bytes of bound `digest`, re-read and re-checked.
+    ///
+    /// # Errors
+    ///
+    /// A diagnostic when the bound file can no longer be read as those bytes.
+    pub async fn read(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        let Some(manifest) = self.manifest_of(digest) else {
+            return Ok(None);
+        };
+        let bytes = read_version(&self.store, manifest)
+            .await
+            .map_err(|error| error.to_string())?;
+        if blake3::hash(&bytes).as_bytes() == &digest {
+            Ok(Some(bytes))
+        } else {
+            Err("bound workspace content changed under its digest".into())
+        }
+    }
+
+    /// Store `bytes`, which hash to `digest`, as a file version, and return
+    /// its manifest hash.
+    ///
+    /// # Errors
+    ///
+    /// A diagnostic when the bytes do not match `digest`, are empty (an
+    /// empty file has no version to name), or cannot be stored.
+    pub async fn store(&self, digest: [u8; 32], bytes: &[u8]) -> Result<[u8; 32], String> {
+        if blake3::hash(bytes).as_bytes() != &digest {
+            return Err("content does not match its digest".into());
+        }
+        let manifest = self
+            .store
+            .write_content(bytes)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "empty content has no file version".to_string())?;
+        let manifest = *manifest.as_bytes();
+        self.bindings().insert(digest, manifest);
+        Ok(manifest)
+    }
+
+    /// Run `future` on the runtime from a blocking thread.
+    fn block<T: Send + 'static>(
+        &self,
+        future: impl std::future::Future<Output = T> + Send + 'static,
+    ) -> Result<T, String> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        self.runtime.spawn(async move {
+            let _ = sender.send(future.await);
+        });
+        receiver
+            .recv()
+            .map_err(|_| "workspace content runtime stopped".to_string())
+    }
+}
+
+/// The whole of file version `manifest`, from `store`, checked against it.
+async fn read_version(store: &ContentStore, manifest: [u8; 32]) -> Result<Vec<u8>, BindError> {
+    let decoded = store
+        .manifest(manifest.into())
+        .await
+        .ok_or(BindError::UnknownManifest)?;
+    let bytes = store
+        .read_local(manifest.into(), &decoded, 0..decoded.total_len())
+        .await
+        .ok_or(BindError::NotLocal)?;
+    if decoded.verify(&bytes) {
+        Ok(bytes)
+    } else {
+        Err(BindError::Integrity)
+    }
+}
+
+impl ComputeContentStore for WorkspaceContent {
+    fn get(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+        let this = self.clone();
+        self.block(async move { this.read(digest).await })?
+    }
+
+    fn put(&self, digest: [u8; 32], bytes: &[u8]) -> Result<(), String> {
+        let this = self.clone();
+        let bytes = bytes.to_vec();
+        self.block(async move { this.store(digest, &bytes).await.map(|_| ()) })?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_bound_files_are_served_and_outputs_become_file_versions() {
+        let store = Arc::new(ContentStore::memory());
+        let content = WorkspaceContent::new(Arc::clone(&store), tokio::runtime::Handle::current());
+        // Large enough to be file-backed, and a small one kept as loose blobs.
+        for len in [3 * 1024 * 1024, 10_000] {
+            let bytes: Vec<u8> = (0..len)
+                .map(|index| u8::try_from(index % 251).unwrap())
+                .collect();
+            let manifest = *store
+                .write_content(&bytes)
+                .await
+                .unwrap()
+                .unwrap()
+                .as_bytes();
+            let digest = *blake3::hash(&bytes).as_bytes();
+            assert_ne!(manifest, digest, "the two addresses differ");
+
+            // Present in the store, but nobody bound it: unknown.
+            let unbound = content.clone();
+            assert_eq!(
+                tokio::task::spawn_blocking(move || unbound.get(digest))
+                    .await
+                    .unwrap(),
+                Ok(None)
+            );
+            assert_eq!(content.bind_file(manifest).await, Ok(digest));
+            let bound = content.clone();
+            assert_eq!(
+                tokio::task::spawn_blocking(move || bound.get(digest))
+                    .await
+                    .unwrap(),
+                Ok(Some(bytes))
+            );
+            assert_eq!(content.manifest_of(digest), Some(manifest));
+        }
+        assert_eq!(
+            content.bind_file([7; 32]).await,
+            Err(BindError::UnknownManifest)
+        );
+
+        // An output: checked against its digest, then a file version.
+        let output = b"a thumbnail".to_vec();
+        let digest = *blake3::hash(&output).as_bytes();
+        let writer = content.clone();
+        let wrong = output.clone();
+        assert!(
+            tokio::task::spawn_blocking(move || writer.put([1; 32], &wrong))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        let writer = content.clone();
+        let stored = output.clone();
+        tokio::task::spawn_blocking(move || writer.put(digest, &stored))
+            .await
+            .unwrap()
+            .unwrap();
+        let manifest = content.manifest_of(digest).unwrap();
+        assert_eq!(read_version(&store, manifest).await.unwrap(), output);
+    }
+}

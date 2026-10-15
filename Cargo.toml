@@ -168,6 +168,7 @@ members = [
     "crates/collab/tilo-joined-room",
     "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
+    "crates/collab/workspace-join",
 
     # Dev
     "crates/dev/collab-link",
@@ -208,6 +209,7 @@ members = [
     "crates/hosting/tilo-relay-protocol",
     "crates/hosting/tilo-relay-session",
     "crates/hosting/tilo-relay-shell",
+    "crates/hosting/tilo-relay-store",
 
     # Media
     "crates/media/ocr",
@@ -315,6 +317,7 @@ members = [
     "crates/session/greeter",
     "crates/session/install-profile-model",
     "crates/session/installer",
+    "crates/session/network-secret-agent",
     "crates/session/polkit-agent",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
@@ -326,6 +329,8 @@ members = [
     "crates/system/advisory-lock",
     "crates/system/app-state",
     "crates/system/block-devices",
+    "crates/system/board-successor",
+    "crates/system/boot-order",
     "crates/system/bounded-command",
     "crates/system/cloud-source",
     "crates/system/cloud-source-dav",
@@ -340,12 +345,14 @@ members = [
     "crates/system/endpoint-reachability",
     "crates/system/esp-write",
     "crates/system/extension-helper",
+    "crates/system/firstboot-files",
     "crates/system/fs",
     "crates/system/fs-content",
     "crates/system/fs-protocol",
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",
+    "crates/system/image-policy-check",
     "crates/system/libvirt-domain",
     "crates/system/messaging-protocol",
     "crates/system/os-actions",
@@ -356,6 +363,7 @@ members = [
     "crates/system/secret-vault",
     "crates/system/settings-store",
     "crates/system/ssh-agent-client",
+    "crates/system/staging-reclaim",
     "crates/system/swipe",
     "crates/system/system-extension",
     "crates/system/tilo-bluez",
@@ -674,6 +682,9 @@ walkdir = "2.5.0"
 lru = { version = "0.18.3", default-features = false }
 moka = { version = "0.12.15", features = ["sync"] }
 regex = "1"
+# For patterns in code every browser visitor loads first (action schemas,
+# feedback redaction): about a tenth of `regex`'s size, ASCII classes only.
+regex-lite = "0.1"
 semver = "1"
 parking_lot = "0.12.5"
 fluent = "0.17.0"

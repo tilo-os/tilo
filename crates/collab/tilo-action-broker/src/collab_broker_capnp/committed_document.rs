@@ -726,10 +726,6 @@ fn captured_unchanged(
 /// answer [`Reply::Stale`]. `check` answers `Some(announced)` while the read
 /// is unchanged: with `announced` false some input can change unannounced,
 /// and it re-runs every [`UNANNOUNCED_RECHECK`] as well.
-#[allow(
-    clippy::future_not_send,
-    reason = "checks a channel handle's Rc state; driven only on the broker LocalSet"
-)]
 async fn hold_until_stale(
     wake: &tokio::sync::Notify,
     mut arm: impl FnMut(),

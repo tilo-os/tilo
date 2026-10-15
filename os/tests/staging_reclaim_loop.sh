@@ -12,7 +12,13 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 handoff_helper="$repo/os/usr/libexec/tilo-staging-handoff"
-reclaim="$repo/os/usr/libexec/tilo-staging-reclaim"
+# The reclaim logic is compiled (crates/system/staging-reclaim); its fixture
+# example takes the record, root mount and loop allowance from the environment,
+# which the shipped binary never does.
+cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-staging-reclaim \
+  --example staging-reclaim-fixture \
+  || { echo 'FAIL  cannot build the staging reclaim fixture' >&2; exit 1; }
+reclaim="${CARGO_TARGET_DIR:-$repo/target}/debug/examples/staging-reclaim-fixture"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo 'FAIL  staging reclaim loopback proof must run as root (it cannot observe a real GPT otherwise)' >&2
@@ -194,7 +200,7 @@ chmod 0755 "$tmp/bin/loginctl"
 run_reclaim() {
   PATH="$tmp/bin:$PATH" TILO_STAGING_RECLAIM_RECORD="$record" TILO_STAGING_RECLAIM_ROOT_MOUNT="$mnt" \
     TILO_STAGING_RECLAIM_ALLOW_LOOP=1 \
-    python3 "$reclaim"
+    "$reclaim"
 }
 
 # A single changed identity must leave the whole map untouched.

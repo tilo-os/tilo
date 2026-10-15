@@ -1,15 +1,6 @@
 //! Tilo format-router daemon: provider registry, sandboxed provider runner,
 //! Cap'n Proto service, and registry hot reload.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 /// Generated Cap'n Proto bindings for `format-router.capnp`. Lives at the
 /// crate root because the capnpc output references `crate::format_router_capnp::*`.
 #[allow(

@@ -1989,10 +1989,6 @@ impl ImportApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the shared command dispatcher keeps UI and semantic actions on one production path"
-    )]
     fn apply_authorized_command(&mut self, command: ImportCommand) {
         if self.review_request.is_some() {
             self.status = "Wait for the folder review to finish.".into();

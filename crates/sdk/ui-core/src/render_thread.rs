@@ -63,10 +63,6 @@ const _: fn() = || {
     assert_send::<RenderContext>();
 };
 
-#[allow(
-    clippy::large_enum_variant,
-    reason = "keeping Scene inline removes a heap allocation on every frame; the bounded channel reserves only one slot"
-)]
 /// Runs on the render thread once a frame is presented.
 pub type PresentHook = Box<dyn FnOnce(crate::time::SystemTime) + Send>;
 

@@ -135,7 +135,8 @@ impl WebHandle {
     /// Open browser sessions per person (user root) now, for a public
     /// host's presence count and idle-guest pruning. One person on two
     /// devices is one entry; a shared spectator person is one entry whose
-    /// count is its sessions.
+    /// count is its sessions, seated or still waiting for a seat (how many
+    /// watch is [`crate::rooms::Rooms::seated_spectators`]).
     #[must_use]
     pub fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
         self.sessions.online_users()
@@ -290,10 +291,6 @@ impl Relay {
     ///
     /// Returns [`RelayError::Iroh`] (the transport error kind) when the
     /// certificate cannot be loaded or an address cannot be bound.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the guard only lives for the lookup; the value kept is a clone"
-    )]
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         let live_origin = checked_origins(&config).map_err(failed)?;
@@ -937,10 +934,6 @@ async fn body(
 
 /// Whether `user` is admitted to any workspace this relay serves: whose
 /// envelope it keeps.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "each workspace is locked only for its own lookup"
-)]
 async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
     let workspaces: Vec<_> = web
         .sessions
@@ -1144,6 +1137,31 @@ async fn route(
                 tokio::spawn(web.here.clone().summarize(job));
             }
             Ok(encoded(&reply))
+        }
+        protocol::CHANNEL_KEYS_PATH => {
+            let session = authed()?;
+            let request: protocol::ChannelKeysRequest = decode(&bytes)?;
+            let relay = &sessions.context().relay;
+            let keys = web
+                .rooms
+                .as_ref()
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?
+                .spectator_keys(&request, |runtime| {
+                    crate::room_access::decide(
+                        runtime,
+                        &relay.trust(),
+                        &session.peer,
+                        crate::room_access::RoomOperation::ChannelReadKeys,
+                    )
+                })
+                .await
+                .map_err(|why| status(StatusCode::FORBIDDEN, &why))?;
+            let keys = keys
+                .to_bytes()
+                .map_err(|why| status(StatusCode::INTERNAL_SERVER_ERROR, &why.to_string()))?;
+            Ok(encoded(&protocol::ChannelKeys {
+                keys: keys.to_vec(),
+            }))
         }
         "/rooms" => {
             let session = authed()?;

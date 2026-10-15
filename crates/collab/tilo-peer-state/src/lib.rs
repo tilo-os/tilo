@@ -3,7 +3,8 @@ pub mod colorimetry;
 pub mod contribution_attestation;
 pub mod governance;
 pub mod hdr_metadata;
-pub mod join;
+/// The workspace invitation and join contract (`tilo-workspace-join`).
+pub use tilo_workspace_join as join;
 pub mod protocol;
 pub use protocol::{NeighbourMsg, PresenceSlot};
 #[cfg(test)]
@@ -15,8 +16,6 @@ tilo_automerge_isolate::test_worker!();
 mod cached_document;
 pub mod document;
 pub mod installation;
-#[cfg(test)]
-mod join_contract_tests;
 mod postcard_sink;
 pub mod room;
 mod state;
@@ -56,8 +55,6 @@ pub mod workspace_membership;
 pub mod workspace_task;
 
 pub mod retained_proof;
-
-pub mod desktop_delivery;
 
 mod admission;
 pub mod resources;

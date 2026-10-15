@@ -1112,5 +1112,8 @@ mod topology_namespace;
 #[path = "governed_rooms/governance_actions.rs"]
 mod governance_actions;
 
+#[path = "governed_rooms/spectators.rs"]
+mod spectators;
+
 #[path = "governed_rooms/app_authorship.rs"]
 mod app_authorship;

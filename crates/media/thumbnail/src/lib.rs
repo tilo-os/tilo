@@ -32,6 +32,7 @@
     )
 )]
 
+pub mod batch;
 pub mod cache;
 pub mod category;
 pub mod epub;

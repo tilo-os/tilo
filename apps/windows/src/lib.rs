@@ -9,11 +9,6 @@
 //! compositor-authenticated compatibility service descriptor.
 #![allow(
     clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::unnecessary_literal_bound,
     reason = "app-local rendering geometry and Widget trait signatures"
 )]
 

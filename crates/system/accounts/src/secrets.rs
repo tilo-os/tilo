@@ -9,7 +9,6 @@
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::missing_errors_doc,
-    clippy::set_contains_or_insert,
     clippy::struct_excessive_bools,
     reason = "cryptographic sampling and expiry arithmetic are bounded; public errors are represented by BrokerError"
 )]

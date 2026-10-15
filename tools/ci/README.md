@@ -67,12 +67,12 @@ the smaller `os/Containerfile.ci-fast`.
 | `app-sdk.yml` linux | `cargo build -p tilo-app-cli --bin tilo-app`, then `target/debug/tilo-app build --target linux apps/calculator` and `target/debug/tilo-app package --target linux apps/calculator --output calculator.tapp` |
 | `app-sdk.yml` web | `target/debug/tilo-app build --target web --bundle desktop apps/calculator`; `node --test crates/platform/*/web/*.test.mjs` |
 | `app-sdk.yml` web-size | `target/debug/tilo-app build --target web --bundle desktop --release apps/calculator`, then `python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle`; uploads/downloads the exact release worker, verifies hashes and qualifies it in disposable staging. Runs alongside the dev mount. |
-| `dev-runtime-macos.yml` check | `cargo check -p tilo-runtime --all-targets --locked`, on macOS |
-| `dev-apps-macos.yml` sdk | the `app-sdk.yml` linux lane's commands with `--target macos`, on macOS |
-| `dev-apps-macos.yml` apps | `cargo build --locked $(python3 tools/ci/macos_apps.py)`, then `cargo test` with the same packages, on macOS |
-| `ci-filesystem.yml` real-fuse | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
-| `ci-filesystem.yml` native-tier1 | `tools/native-tier1.sh` on a host that meets `runner-native-storage` |
-| `ci-render-counters.yml` counters | `cargo build --release -p ui-examples --example ui-perf`, then `python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf` (pixel parity, then allocation and raster-pixel budgets at 4K; see [docs/ui-performance-benchmark.md](../../docs/ui-performance-benchmark.md#where-this-runs)) |
+| t `runtime-macos` | `cargo check -p tilo-runtime --all-targets --locked`, on macOS |
+| t `sdk-macos` | the `app-sdk.yml` linux lane's commands with `--target macos`, on macOS |
+| t `apps-macos` | `cargo build --locked $(python3 tools/ci/macos_apps.py)`, then `cargo nextest run` and the doctests with the same packages, on macOS |
+| `t test real-fuse` | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
+| `t test native-tier1` | `tools/native-tier1.sh` on a host with pre-content fanotify, Btrfs and loop devices |
+| `t test render-counters` | `cargo build --release -p ui-examples --example ui-perf`, then `python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf` (pixel parity, then allocation and raster-pixel budgets at 4K; see [docs/ui-performance-benchmark.md](../../docs/ui-performance-benchmark.md#where-this-runs)) |
 | `perf-scheduled.yml` (nightly, not per PR) | `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../docs/measurements/performance.md) |
 
 `scripts/ci-run.sh` and `tools/ci/measure.sh`, which wrap most job commands,
@@ -92,10 +92,10 @@ They need:
 - **Images.** `images.toml` pins the CI images by digest. They are public, so
   a fork can pull them as they are. To build its own, publish
   `os/Containerfile.ci-fast`, `os/Containerfile.ci-control` and
-  `os/Containerfile.builder` (`build-ci-fast-images.yml`,
-  `build-ci-builder.yml`), change the pins, and set `TILO_CI_REGISTRY`,
-  `TILO_CI_BUILDER_REPOSITORY` and `TILO_CI_REGISTRY_TOKEN_REALM` for the
-  builder lookup.
+  `os/Containerfile.builder` (t's `image-ci-fast` and `image-ci-control`
+  checks in `t.toml`, and `build-ci-builder.yml`), change the pins, and set
+  `TILO_CI_REGISTRY`, `TILO_CI_BUILDER_REPOSITORY` and
+  `TILO_CI_REGISTRY_TOKEN_REALM` for the builder lookup.
 - **Artifact actions.** The `actions/upload-artifact` and
   `actions/download-artifact` v4 pins are Forgejo's builds (tag `forgejo/v4`),
   since upstream's v4 accepts only GitHub-hosted servers. A copy on GitHub
@@ -115,8 +115,7 @@ Jobs that need more than an unprivileged container:
 
 | Job | Needs |
 |---|---|
-| `ci-filesystem.yml` real-fuse | `/dev/fuse` and `CAP_SYS_ADMIN` in the job container |
-| `ci-filesystem.yml` native-tier1 | a privileged container on Linux 6.14+ with pre-content fanotify, Btrfs and loop devices |
+| `ci-filesystem.yml` cloud-servers | service containers (WebDAV, Nextcloud, PostgreSQL) |
 | `ci-staging-loop.yml`, `build-env-tools.yml` | a privileged container |
 | `ci-development-signing.yml` | Docker that can start privileged containers |
 | `dev-disk.yml`, `build-legacy-guest.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |

@@ -164,7 +164,7 @@ async fn run_server_session(
     mut receive: RecvStream,
 ) -> Result<(), ComputeSessionError> {
     let peer = authenticate_server(&protocol, &mut send, &mut receive).await?;
-    let controls = crate::host_authority::HostOperation::ComputeControl
+    let host_person = crate::host_authority::HostOperation::ComputeControl
         .permits(&protocol.identity.user_public_key, &peer.user_public_key);
     let streams = tokio::spawn(accept_streams(
         protocol.routing(),
@@ -190,6 +190,11 @@ async fn run_server_session(
                 }
                 incoming = read_compute(&mut receive) => {
                     let incoming = incoming?;
+                    // The host's person drives its compute, never an agent
+                    // of theirs: asked per message, so an agent registered
+                    // after its device connected is refused from then on.
+                    let controls =
+                        host_person && !protocol.trust().is_agent(&peer.device_public_key);
                     if !controls {
                         // Another user's device reaches environments on its
                         // own streams; the control stream is the host's
@@ -572,7 +577,11 @@ pub struct ComputeClient {
     relay_peer: AuthenticatedPeer,
     own_device: [u8; 32],
     send: SendStream,
-    receive: RecvStream,
+    /// What the control stream delivered, read by a task of the client's own: a frame
+    /// is never half-read by a [`Self::receive`] that was cancelled.
+    deliveries: mpsc::Receiver<Result<ComputeEnvelope, ComputeSessionError>>,
+    /// Reads the control stream while the client lives.
+    _reader: AbortOnDrop,
     connection: Connection,
     endpoint: Endpoint,
     /// Jobs this client submitted that have not ended, by id: what their
@@ -699,11 +708,22 @@ impl ComputeClient {
         }
         let final_ack = auth::build_hello_ack2(&own_signing_key, &acknowledgement.server_nonce);
         write_frame(&mut send, &postcard::to_allocvec(&final_ack)?).await?;
+        let (delivered, deliveries) = mpsc::channel(COMPUTE_OUTBOUND_CAPACITY);
+        let reader = AbortOnDrop(tokio::spawn(async move {
+            loop {
+                let read = read_compute(&mut receive).await;
+                let ended = read.is_err();
+                if delivered.send(read).await.is_err() || ended {
+                    break;
+                }
+            }
+        }));
         Ok(Self {
             relay_peer,
             own_device,
             send,
-            receive,
+            deliveries,
+            _reader: reader,
             connection,
             endpoint,
             submitted: Arc::default(),
@@ -781,6 +801,12 @@ impl ComputeClient {
         Ok(received)
     }
 
+    /// The certified device this client authenticated as.
+    #[must_use]
+    pub const fn own_device(&self) -> [u8; 32] {
+        self.own_device
+    }
+
     #[must_use]
     /// Authenticated view of the relay certificate.
     pub fn relay_peer(&self) -> &AuthenticatedPeer {
@@ -805,11 +831,17 @@ impl ComputeClient {
 
     /// Receive the next typed compute envelope.
     ///
+    /// Cancel-safe: the control stream is read by a task of the client's
+    /// own, so a `receive` dropped in a `select!` or a timeout loses nothing.
+    ///
     /// # Errors
     ///
-    /// Returns an error on EOF, an oversize frame, or invalid encoding.
+    /// Returns an error on EOF, an oversize frame, or invalid encoding, and
+    /// once the stream has ended.
     pub async fn receive(&mut self) -> Result<ComputeDelivery, ComputeSessionError> {
-        let envelope = read_compute(&mut self.receive).await?;
+        let envelope = self.deliveries.recv().await.ok_or_else(|| {
+            ComputeSessionError::Connection("the compute control stream has ended".into())
+        })??;
         if let ComputeEnvelope::Delivery {
             workspace_id,
             sequence,

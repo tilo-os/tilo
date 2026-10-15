@@ -1387,10 +1387,6 @@ fn count_to_f32(n: usize) -> f32 {
     f32::from(u16::try_from(n).unwrap_or(u16::MAX))
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "bounded logical layout dimensions"
-)]
 impl crate::widget::controls::ActionControls for Toolbar {
     fn install_control_custody(
         &mut self,

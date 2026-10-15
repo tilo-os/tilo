@@ -22,15 +22,6 @@
 //! - The sidecar's `launcher` override exists only for out-of-tree
 //!   testing; production installs leave it unset.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::env;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};

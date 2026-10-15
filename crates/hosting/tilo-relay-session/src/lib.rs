@@ -15,15 +15,6 @@
 
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod antientropy;
 pub mod client;
 pub mod coedit;

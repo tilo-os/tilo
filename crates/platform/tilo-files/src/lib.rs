@@ -60,14 +60,6 @@
 //! - Native operations run on the polling thread rather than `tilo_rt::io`.
 
 #![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-#![cfg_attr(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     allow(
         clippy::unused_async,

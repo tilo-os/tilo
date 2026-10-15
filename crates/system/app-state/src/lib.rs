@@ -19,15 +19,6 @@
 //! reporting what is actually durable. [`DocStore`] adds the load/save
 //! conveniences and schema policy apps drive by hand, on the same owner.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 #[cfg(windows)]

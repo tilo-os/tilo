@@ -70,6 +70,10 @@ pub struct PersistentConfig {
     pub seed_apps: Vec<String>,
     /// Seconds between resets of the seeded non-chat content; 0 never.
     pub reset_secs: u64,
+    /// Minutes a guest may be away (no session) before the relay removes
+    /// them from the room (`TILO_ROOMS_PRUNE_AFTER_MINS`); a guest who
+    /// comes back later joins through the door again as the same person.
+    pub prune_after_mins: u64,
     /// The room's owner root, mounted from the operator's encrypted secrets.
     pub root_file: PathBuf,
     /// The Discord bot token, when the bridge runs.
@@ -442,6 +446,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
                 .collect()
         },
         reset_secs: parsed(var, "TILO_ROOMS_RESET_SECS", 21_600_u64)?,
+        prune_after_mins: prune_after_mins(var)?,
         root_file: var("TILO_ROOMS_ROOT_FILE")
             .map_or_else(|| PathBuf::from("/run/secrets/room-root"), PathBuf::from),
         discord_token_file: var("TILO_ROOMS_DISCORD_TOKEN_FILE")
@@ -463,6 +468,20 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         )?,
         live,
     }))
+}
+
+/// The longest `TILO_ROOMS_PRUNE_AFTER_MINS` takes: a year.
+const MAX_PRUNE_AFTER_MINS: u64 = 365 * 24 * 60;
+
+/// `TILO_ROOMS_PRUNE_AFTER_MINS`: minutes without a session after which
+/// the relay removes a guest, 60 unless set.
+fn prune_after_mins(var: &impl Fn(&str) -> Option<String>) -> Result<u64> {
+    let minutes = parsed(var, "TILO_ROOMS_PRUNE_AFTER_MINS", 60_u64)?;
+    ensure!(
+        (1..=MAX_PRUNE_AFTER_MINS).contains(&minutes),
+        "TILO_ROOMS_PRUNE_AFTER_MINS must be 1-{MAX_PRUNE_AFTER_MINS}"
+    );
+    Ok(minutes)
 }
 
 /// The per-address join limits: guests' and spectators'.
@@ -760,6 +779,33 @@ mod tests {
         }
         let off = config(&[base[0], base[1], ("TILO_ROOMS_RESET_SECS", "0")]).unwrap();
         assert_eq!(off.persistent.unwrap().reset_secs, 0);
+    }
+
+    #[test]
+    fn guests_are_pruned_after_an_hour_away_unless_the_operator_says_otherwise() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+        ];
+        assert_eq!(
+            config(&base).unwrap().persistent.unwrap().prune_after_mins,
+            60
+        );
+        let soon = config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", "1")]).unwrap();
+        assert_eq!(soon.persistent.unwrap().prune_after_mins, 1);
+        let year = MAX_PRUNE_AFTER_MINS.to_string();
+        let late = config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", &year)]).unwrap();
+        assert_eq!(
+            late.persistent.unwrap().prune_after_mins,
+            MAX_PRUNE_AFTER_MINS
+        );
+        let past = (MAX_PRUNE_AFTER_MINS + 1).to_string();
+        for bad in ["0", "-1", "soon", past.as_str()] {
+            assert!(
+                config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", bad)]).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

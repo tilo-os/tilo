@@ -1986,10 +1986,6 @@ impl PdfApp {
     /// local renderer is available. A peer without source bytes still keeps
     /// the shared intent in its record; a renderer with the original source
     /// can immediately materialise duplicates, deletes and order changes.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pass per renderer keeps the plan adoption auditable"
-    )]
     fn reconcile_shared_page_plan(&mut self, state: &AutoCommit) {
         let plan = PdfMarkup::of(state).page_plan();
         if plan.is_empty() {

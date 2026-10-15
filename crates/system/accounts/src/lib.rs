@@ -19,15 +19,6 @@
 //! - [`SecretVault`] — the encrypted-at-rest credential store keyed by [`AccountId`] (see
 //!   [`vault`]). Credentials go here, never into [`AccountStore`].
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::string_slice,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

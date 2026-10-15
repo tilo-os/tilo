@@ -958,19 +958,11 @@ pub struct TreeView<T, M = TreeNode<T>> {
 /// Matches `theme.tokens.spacing.s4` (16.0); also the per-depth indent unit.
 const DISCLOSURE_WIDTH: f64 = 16.0;
 /// Indent per depth before a theme is seen: the `s4` step, unscaled.
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const; f32 -> f64 is exact"
-)]
 const DEFAULT_INDENT: f64 = crate::tokens::Spacing::BASE.s4 as f64;
 /// A dense row before a theme is seen: one `Body` line and its `s1` pads,
 /// rounded to whole pixels.
 const ROW_HEIGHT: f64 = 28.0;
 /// Label-to-trailing-content gap before a theme is seen: the `s2` step.
-#[allow(
-    clippy::cast_lossless,
-    reason = "const context: f64::from is not const; f32 -> f64 is exact"
-)]
 const DEFAULT_ROW_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 const MAX_TRANSITION_ROWS: usize = 512;
 /// The role every row label is set in; the rename field matches it.

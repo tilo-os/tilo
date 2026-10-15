@@ -81,7 +81,8 @@ IMAGE_FLAVOUR_FILE="${TILO_IMAGE_FLAVOUR_FILE:-/usr/lib/tilo/image-flavour}"
 
 # --- the ESP -----------------------------------------------------------------
 # Two layouts, both real. On the sealed composefs layout /boot IS the ESP and the
-# UKIs live beside the loader entries; on the ostree layout the ESP hangs off
+# UKIs live beside the loader entries; on an installed system (a separate ext4
+# /boot, tilo-esp-generator) and on the ostree layout the ESP hangs off
 # /boot/efi. Detect rather than assume — acting on the wrong directory silently
 # does nothing.
 esp_path() {

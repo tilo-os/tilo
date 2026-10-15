@@ -461,12 +461,6 @@ impl PresenceCtx {
 
     /// Lay out the generic app-level fallback without overlap. At most three
     /// rows are shown; excess activity is summarized on the last row.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_precision_loss,
-        reason = "the result is bounded to three cards and viewport/text dimensions are UI-sized"
-    )]
     pub fn interaction_card_layout(
         &self,
         viewport: Rect,

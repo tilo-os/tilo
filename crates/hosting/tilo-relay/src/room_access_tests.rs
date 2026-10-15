@@ -19,7 +19,7 @@ const MODES: [AdmissionMode; 3] = [
     AdmissionMode::SameOwner,
     AdmissionMode::Governed,
 ];
-const OPS: [RoomOperation; 10] = [
+const OPS: [RoomOperation; 13] = [
     RoomOperation::Subscribe,
     RoomOperation::State,
     RoomOperation::Replay,
@@ -30,9 +30,12 @@ const OPS: [RoomOperation; 10] = [
     RoomOperation::RemoteAction,
     RoomOperation::StewardedChannelKeys,
     RoomOperation::DelegateMembership,
+    RoomOperation::Publish,
+    RoomOperation::Watch,
+    RoomOperation::ChannelReadKeys,
 ];
 
-/// One decision as a letter, so a row reads as the ten planes in order.
+/// One decision as a letter, so a row reads as the planes in order.
 fn letter(decision: Decision) -> char {
     match decision {
         Decision::Admit => 'A',
@@ -47,6 +50,10 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::AgentOutOfScope) => 'o',
         Decision::Deny(DenyReason::NotTheSteward) => 's',
         Decision::Deny(DenyReason::NotADelegatedAgent) => 'd',
+        Decision::Deny(DenyReason::WatchOnly) => 'W',
+        Decision::Deny(DenyReason::SpectatorsFull) => 'S',
+        Decision::Deny(DenyReason::SealedFromSpectators) => 'P',
+        Decision::Deny(DenyReason::OverTheChannel) => 'O',
     }
 }
 
@@ -54,6 +61,8 @@ struct Relay {
     owner_root: SigningKey,
     owner: [u8; 32],
     bob: [u8; 32],
+    /// The root of a public room's spectator person, a member of it.
+    spectator: [u8; 32],
     revocations: RwLock<RevocationList>,
     policy: RwLock<TrustPolicy>,
     agents: AgentRegistry,
@@ -64,15 +73,18 @@ impl Relay {
         let owner_root = SigningKey::from_bytes(&[1; 32]);
         let owner = owner_root.verifying_key().to_bytes();
         let bob = SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes();
-        // The live handshake policy: the owner and Bob, whose root a governed
-        // room on this relay admits. Carol is trusted by nothing.
+        let spectator = SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes();
+        // The live handshake policy: the owner, and Bob and the spectator
+        // person, whose roots a governed room on this relay admits. Carol is
+        // trusted by nothing.
         let policy = TrustPolicy::AllowList {
-            users: vec![hex::encode(owner), hex::encode(bob)],
+            users: vec![hex::encode(owner), hex::encode(bob), hex::encode(spectator)],
         };
         Self {
             owner_root,
             owner,
             bob,
+            spectator,
             revocations: RwLock::new(RevocationList::new()),
             policy: RwLock::new(policy),
             agents: Arc::default(),
@@ -176,25 +188,41 @@ struct Case {
 )]
 fn decide_matrix() {
     let relay = Relay::new();
-    let (owner, bob, carol) = (relay.owner, relay.bob, [3; 32]);
+    let (owner, bob, carol, spectator) = (relay.owner, relay.bob, [3; 32], relay.spectator);
     let listed = |device: [u8; 32]| -> Setup {
         Box::new(move |runtime, _| runtime.membership.devices.push(device))
     };
     let none = || -> Setup { Box::new(|_, _| {}) };
+    let watched = move |runtime: &mut WorkspaceRuntime| {
+        runtime.governed_user_roots.insert(spectator);
+        runtime.spectators = Some(Spectators {
+            root: spectator,
+            seats: 2,
+            public: false,
+        });
+    };
+    let public = move |runtime: &mut WorkspaceRuntime| {
+        runtime.governed_user_roots.insert(spectator);
+        runtime.spectators = Some(Spectators {
+            root: spectator,
+            seats: 2,
+            public: true,
+        });
+    };
     // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
-    // StewardedChannelKeys, DelegateMembership
+    // StewardedChannelKeys, DelegateMembership, Publish, Watch, ChannelReadKeys
     let cases = vec![
         Case {
             name: "owner's member device",
             peer: peer(owner, [10; 32], false, None),
             setup: listed([10; 32]),
-            expected: ["AAAAAAAAsd", "AAAAAAAAsd", "AAAAAAAAsd"],
+            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
         },
         Case {
             name: "owner's unlisted device",
             peer: peer(owner, [11; 32], false, None),
             setup: none(),
-            expected: ["NNNNNNNNsd", "ENNAAEANsd", "NNNNNNNNsd"],
+            expected: ["NNNNNNNNsdNNO", "ENNAAEANsdNAO", "NNNNNNNNsdNNO"],
         },
         Case {
             name: "owner's device a pending replacement removed",
@@ -203,7 +231,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([12; 32]);
                 runtime.membership_ceiling = Some(HashSet::new());
             }),
-            expected: ["NNNNNNNNsd", "NNNNNNNNsd", "NNNNNNNNsd"],
+            expected: ["NNNNNNNNsdNNO", "NNNNNNNNsdNNO", "NNNNNNNNsdNNO"],
         },
         Case {
             name: "cross-user device under an admitted root",
@@ -211,7 +239,7 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 runtime.admitted_users.insert(bob);
             }),
-            expected: ["AAAAANAAsd", "AAAAANAAsd", "AAAAANAAsd"],
+            expected: ["AAAAANAAsdAAO", "AAAAANAAsdAAO", "AAAAANAAsdAAO"],
         },
         Case {
             // Failure scenario 1: trusted relay-wide because another room's
@@ -221,13 +249,13 @@ fn decide_matrix() {
             setup: Box::new(move |runtime, _| {
                 runtime.governed_user_roots.insert(bob);
             }),
-            expected: ["NNNNNNNNsd", "NNNNNNNNsd", "NNNNNNNNsd"],
+            expected: ["NNNNNNNNsdNNO", "NNNNNNNNsdNNO", "NNNNNNNNsdNNO"],
         },
         Case {
             name: "cross-user exact member device",
             peer: peer(bob, [22; 32], false, None),
             setup: listed([22; 32]),
-            expected: ["AAAAAAAAsd", "AAAAAAAAsd", "AAAAAAAAsd"],
+            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
         },
         Case {
             name: "same-user peer relay this room federates with",
@@ -235,13 +263,13 @@ fn decide_matrix() {
             setup: Box::new(|runtime, _| {
                 runtime.known_peer_relays.insert([30; 32]);
             }),
-            expected: ["AAANNNNNsd", "AAAAAEANsd", "AAANNNNNsd"],
+            expected: ["AAANNNNNsdANO", "AAAAAEANsdAAO", "AAANNNNNsdANO"],
         },
         Case {
             name: "same-user peer relay this room does not know",
             peer: peer(owner, [31; 32], true, None),
             setup: none(),
-            expected: ["NNNNNNNNsd", "ENNAAEANsd", "NNNNNNNNsd"],
+            expected: ["NNNNNNNNsdNNO", "ENNAAEANsdNAO", "NNNNNNNNsdNNO"],
         },
         Case {
             name: "cross-user host certificate, even listed and known",
@@ -250,7 +278,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([32; 32]);
                 runtime.known_peer_relays.insert([32; 32]);
             }),
-            expected: ["FFFFFFFFFF", "FFFFFFFFFF", "FFFFFFFFFF"],
+            expected: ["FFFFFFFFFFFFF", "FFFFFFFFFFFFF", "FFFFFFFFFFFFF"],
         },
         Case {
             name: "agent delegated this room",
@@ -259,7 +287,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([40; 32]);
                 relay.delegate([40; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["AAAAAAAAsd", "AAAAAAAAsd", "AAAAAAAAsd"],
+            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
         },
         Case {
             name: "agent whose delegation expired",
@@ -268,7 +296,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([41; 32]);
                 relay.delegate([41; 32], Some((NOW, ROOM)));
             }),
-            expected: ["eeeeeeeeee", "eeeeeeeeee", "eeeeeeeeee"],
+            expected: ["eeeeeeeeeeeee", "eeeeeeeeeeeee", "eeeeeeeeeeeee"],
         },
         Case {
             name: "withdrawn agent",
@@ -277,7 +305,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([42; 32]);
                 relay.delegate([42; 32], None);
             }),
-            expected: ["wwwwwwwwww", "wwwwwwwwww", "wwwwwwwwww"],
+            expected: ["wwwwwwwwwwwww", "wwwwwwwwwwwww", "wwwwwwwwwwwww"],
         },
         Case {
             name: "agent delegated another room",
@@ -286,7 +314,7 @@ fn decide_matrix() {
                 runtime.membership.devices.push([43; 32]);
                 relay.delegate([43; 32], Some((NOW + 1, OTHER_ROOM)));
             }),
-            expected: ["oooooooooo", "oooooooooo", "oooooooooo"],
+            expected: ["ooooooooooooo", "ooooooooooooo", "ooooooooooooo"],
         },
         Case {
             name: "the device governing this room on this relay",
@@ -295,7 +323,7 @@ fn decide_matrix() {
                 runtime.room_authority =
                     Some(crate::rooms::RoomAuthority::governed_by(ROOM, [70; 32]));
             }),
-            expected: ["NNNNNNNNsd", "ENNAAEANsd", "NNNNNNNNAd"],
+            expected: ["NNNNNNNNsdNNO", "ENNAAEANsdNAO", "NNNNNNNNAdNNO"],
         },
         Case {
             name: "another listed device of the owner, while this relay governs",
@@ -305,7 +333,7 @@ fn decide_matrix() {
                 runtime.room_authority =
                     Some(crate::rooms::RoomAuthority::governed_by(ROOM, [70; 32]));
             }),
-            expected: ["AAAAAAAAsd", "AAAAAAAAsd", "AAAAAAAAsd"],
+            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
         },
         Case {
             name: "agent delegated this room, in a room this relay governs",
@@ -315,7 +343,7 @@ fn decide_matrix() {
                     Some(crate::rooms::RoomAuthority::governed_by(ROOM, [70; 32]));
                 relay.delegate([44; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["NNNNNNNNsd", "ENNAAEANsd", "NNNNNNNNsA"],
+            expected: ["NNNNNNNNsdNNO", "ENNAAEANsdNAO", "NNNNNNNNsANNO"],
         },
         Case {
             name: "another user's agent, in a room this relay governs",
@@ -325,13 +353,92 @@ fn decide_matrix() {
                     Some(crate::rooms::RoomAuthority::governed_by(ROOM, [70; 32]));
                 relay.delegate([45; 32], Some((NOW + 1, ROOM)));
             }),
-            expected: ["NNNNNNNNsd", "NNNNNNNNsd", "NNNNNNNNsd"],
+            expected: ["NNNNNNNNsdNNO", "NNNNNNNNsdNNO", "NNNNNNNNsdNNO"],
+        },
+        Case {
+            name: "spectator device",
+            peer: peer(spectator, [80; 32], false, Some(NOW + 1)),
+            setup: Box::new(move |runtime, _| watched(runtime)),
+            expected: ["AAAWWWWWsdWAP", "AAAWWWWWsdWAP", "AAAWWWWWsdWAP"],
+        },
+        Case {
+            // The one device the spectator person joined the room with.
+            name: "spectator device the room lists",
+            peer: peer(spectator, [81; 32], false, Some(NOW + 1)),
+            setup: Box::new(move |runtime, _| {
+                watched(runtime);
+                runtime.membership.devices.push([81; 32]);
+            }),
+            expected: ["AAAWWWWWsdWAP", "AAAWWWWWsdWAP", "AAAWWWWWsdWAP"],
+        },
+        Case {
+            name: "spectator device whose certificate expired",
+            peer: peer(spectator, [82; 32], false, Some(NOW)),
+            setup: Box::new(move |runtime, _| watched(runtime)),
+            expected: ["xxxxxxxxxxxxx", "xxxxxxxxxxxxx", "xxxxxxxxxxxxx"],
+        },
+        Case {
+            name: "spectator device of a public room, before it holds a seat",
+            peer: peer(spectator, [85; 32], false, Some(NOW + 1)),
+            setup: Box::new(move |runtime, _| public(runtime)),
+            expected: ["AAAWWWWWsdWAP", "AAAWWWWWsdWAP", "AAAWWWWWsdWAP"],
+        },
+        Case {
+            name: "seated spectator device of a public room",
+            peer: peer(spectator, [86; 32], false, Some(NOW + 1)),
+            setup: Box::new(move |runtime, _| {
+                public(runtime);
+                runtime.state_sessions.insert(
+                    [86; 32],
+                    crate::peer::StateSession::for_test(peer(
+                        spectator,
+                        [86; 32],
+                        false,
+                        Some(NOW + 1),
+                    )),
+                );
+            }),
+            expected: ["AAAWWWWWsdWAA", "AAAWWWWWsdWAA", "AAAWWWWWsdWAA"],
+        },
+        Case {
+            name: "seated spectator device of a room that is not public",
+            peer: peer(spectator, [87; 32], false, Some(NOW + 1)),
+            setup: Box::new(move |runtime, _| {
+                watched(runtime);
+                runtime.state_sessions.insert(
+                    [87; 32],
+                    crate::peer::StateSession::for_test(peer(
+                        spectator,
+                        [87; 32],
+                        false,
+                        Some(NOW + 1),
+                    )),
+                );
+            }),
+            expected: ["AAAWWWWWsdWAP", "AAAWWWWWsdWAP", "AAAWWWWWsdWAP"],
+        },
+        Case {
+            name: "spectator device of a room that lets nobody watch",
+            peer: peer(spectator, [83; 32], false, Some(NOW + 1)),
+            setup: Box::new(move |runtime, _| {
+                runtime.governed_user_roots.insert(spectator);
+            }),
+            expected: ["NNNNNNNNsdNNO", "NNNNNNNNsdNNO", "NNNNNNNNsdNNO"],
+        },
+        Case {
+            name: "member device of a room others watch",
+            peer: peer(bob, [84; 32], false, None),
+            setup: Box::new(move |runtime, _| {
+                watched(runtime);
+                runtime.membership.devices.push([84; 32]);
+            }),
+            expected: ["AAAAAAAAsdAAO", "AAAAAAAAsdAAO", "AAAAAAAAsdAAO"],
         },
         Case {
             name: "member device whose certificate expired",
             peer: peer(owner, [50; 32], false, Some(NOW)),
             setup: listed([50; 32]),
-            expected: ["xxxxxxxxxx", "xxxxxxxxxx", "xxxxxxxxxx"],
+            expected: ["xxxxxxxxxxxxx", "xxxxxxxxxxxxx", "xxxxxxxxxxxxx"],
         },
         Case {
             name: "revoked member device",
@@ -340,13 +447,13 @@ fn decide_matrix() {
                 runtime.membership.devices.push([51; 32]);
                 relay.revoke([51; 32]);
             }),
-            expected: ["rrrrrrrrrr", "rrrrrrrrrr", "rrrrrrrrrr"],
+            expected: ["rrrrrrrrrrrrr", "rrrrrrrrrrrrr", "rrrrrrrrrrrrr"],
         },
         Case {
             name: "member device of a user the policy no longer trusts",
             peer: peer(carol, [52; 32], false, None),
             setup: listed([52; 32]),
-            expected: ["tttttttttt", "tttttttttt", "tttttttttt"],
+            expected: ["ttttttttttttt", "ttttttttttttt", "ttttttttttttt"],
         },
     ];
     let tmp = tempfile::tempdir().unwrap();
@@ -360,6 +467,8 @@ fn decide_matrix() {
             runtime.governed_user_roots.clear();
             runtime.known_peer_relays.clear();
             runtime.room_authority = None;
+            runtime.spectators = None;
+            runtime.state_sessions.clear();
             runtime.admission = *mode;
             (case.setup)(&mut runtime, &relay);
             let actual: String = OPS
@@ -383,6 +492,90 @@ fn decide_matrix() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn a_spectator_subscribes_only_while_a_seat_is_free_and_keeps_its_own() {
+    let relay = Relay::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut runtime = room(tmp.path());
+    runtime.spectators = Some(Spectators {
+        root: relay.spectator,
+        seats: 2,
+        public: true,
+    });
+    let watching = |device: u8| peer(relay.spectator, [device; 32], false, Some(NOW + 1));
+    let decide = |runtime: &WorkspaceRuntime, device: u8, op: RoomOperation| {
+        decide_in(
+            Room::current(runtime),
+            &relay.trust(),
+            &watching(device),
+            op,
+            NOW,
+        )
+    };
+    let watch = |runtime: &mut WorkspaceRuntime, device: u8| {
+        runtime.state_sessions.insert(
+            [device; 32],
+            crate::peer::StateSession::for_test(watching(device)),
+        );
+    };
+    // A member's session takes no spectator seat.
+    let member = peer(relay.owner, [10; 32], false, None);
+    runtime.membership.devices.push([10; 32]);
+    runtime
+        .state_sessions
+        .insert([10; 32], crate::peer::StateSession::for_test(member));
+    assert_eq!(
+        decide(&runtime, 90, RoomOperation::Subscribe),
+        Decision::Admit
+    );
+    watch(&mut runtime, 90);
+    watch(&mut runtime, 91);
+    // Both seats taken: a third spectator may not subscribe, yet the two
+    // seated keep theirs when their subscription is audited.
+    assert_eq!(
+        decide(&runtime, 92, RoomOperation::Subscribe),
+        Decision::Deny(DenyReason::SpectatorsFull)
+    );
+    assert!(!seated(&runtime, &watching(92)));
+    // Watching counts the seated two, not the member or the refused page.
+    assert_eq!(seated_spectators(&runtime), 2);
+    for seated_device in [90, 91] {
+        assert_eq!(
+            decide(&runtime, seated_device, RoomOperation::Subscribe),
+            Decision::Admit
+        );
+        assert!(seated(&runtime, &watching(seated_device)));
+    }
+    // A member is never held back by the spectators' seats.
+    assert!(seated(&runtime, &peer(relay.owner, [11; 32], false, None)));
+    // A seat freed is the next spectator's.
+    runtime.state_sessions.remove(&[90; 32]);
+    assert_eq!(
+        decide(&runtime, 92, RoomOperation::Subscribe),
+        Decision::Admit
+    );
+}
+
+#[test]
+fn a_spectator_is_a_recipient_of_host_authored_state_and_never_of_anything_else() {
+    let relay = Relay::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut runtime = room(tmp.path());
+    runtime.spectators = Some(Spectators {
+        root: relay.spectator,
+        seats: 1,
+        public: true,
+    });
+    let spectator = peer(relay.spectator, [93; 32], false, Some(NOW + 1));
+    for op in OPS {
+        assert_eq!(
+            listed(Room::current(&runtime), &spectator, op),
+            op.reads(),
+            "{op:?}"
+        );
+    }
 }
 
 #[test]

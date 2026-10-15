@@ -678,6 +678,7 @@ impl Room {
                 cert: member.endpoint.host_cert.clone(),
                 host_cert: member.endpoint.host_cert.clone(),
                 revocations: RevocationList::new(),
+                watching: false,
             },
             Arc::new(member.key.clone()),
             Arc::new(MemoryPeerStore::default()),

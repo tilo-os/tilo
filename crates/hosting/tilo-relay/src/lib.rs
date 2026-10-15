@@ -117,6 +117,12 @@ pub mod metrics;
 #[cfg(feature = "agents")]
 pub mod moderation;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod offload;
+#[cfg(not(target_arch = "wasm32"))]
+mod offload_content;
+#[cfg(not(target_arch = "wasm32"))]
+mod offload_placement;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
@@ -212,6 +218,8 @@ pub use mesh::{
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
+#[cfg(not(target_arch = "wasm32"))]
+pub use room_access::Spectators;
 pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};
 

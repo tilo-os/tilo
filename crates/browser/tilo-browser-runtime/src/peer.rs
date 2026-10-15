@@ -285,6 +285,10 @@ struct ConnectConfig {
     /// The person's chosen name, for history and presence; empty for none.
     #[serde(default)]
     display_name: String,
+    /// The page only watches the rooms it joins, as a public room's
+    /// spectator ([`PeerConfig::watching`]).
+    #[serde(default)]
+    watching: bool,
 }
 
 /// The certified user as the toolkit's local identity.
@@ -1438,7 +1442,8 @@ pub struct WasmPeer {
 #[wasm_bindgen]
 impl WasmPeer {
     /// Start a session. `configJson` is `{cert, hostCert}` from
-    /// [`certify_device`], optionally with `displayName`. With `namespace`
+    /// [`certify_device`], optionally with `displayName`, and `watching:
+    /// true` for a page that only watches public rooms. With `namespace`
     /// (`{profile, device}` JSON, whose storage the page has opened) the
     /// peer record lives in that profile's durable store; otherwise `record`
     /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
@@ -1503,6 +1508,7 @@ impl WasmPeer {
                 cert: config.cert,
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
+                watching: config.watching,
             },
             Arc::new(signer),
             store,

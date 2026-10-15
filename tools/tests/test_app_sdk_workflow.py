@@ -85,7 +85,7 @@ class AppSdkWorkflow(unittest.TestCase):
 
     def test_macos_lane_lives_on_the_development_mac(self) -> None:
         self.assertNotIn("macos", JOBS)
-        self.assertIn("dev-apps-macos.yml", SOURCE)
+        self.assertIn("sdk-macos", SOURCE)
 
     def test_linux_uses_portable_native_prs_and_keeps_main_x86_qualification(self) -> None:
         body = job("linux")
