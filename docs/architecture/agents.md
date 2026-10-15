@@ -120,10 +120,19 @@ through the usual discovery sequence. The agent has no tool code for them.
 
 The service runs on the device. It needs no account, no API key and no hosted
 service. `crates/platform/tilo-web-search` asks keyless search engines
-directly. Its scrapers and merge logic are ported from metasearch2 (CC0, see
-the crate's `PROVENANCE.md`). If one engine fails, the others still answer, and
-the result reports each engine's status. `fetch` only reads public `https`
-pages:
+directly. By default it asks Google, Brave and Bing:
+
+- Its scrapers and merge logic are ported from metasearch2 (CC0).
+- Google is asked through the search element that sites embed, a technique
+  taken from SearXNG (AGPL-3.0-or-later). Google ends that for whole-web
+  search on 2027-01-01.
+- The crate's `PROVENANCE.md` records both sources.
+- If one engine fails, the others still answer, and the result reports each
+  engine's status.
+- An engine that says it is getting too many requests is left alone for a
+  while: 5 minutes at first, doubling up to an hour.
+
+`fetch` only reads public `https` pages:
 
 - It refuses local and private addresses, both before connecting and after
   DNS resolution.

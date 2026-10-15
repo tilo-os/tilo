@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use tilo_web_search::{Engine, FetchError, FetchLimits, SearchError, SearchLimits};
+use tilo_web_search::{Engine, FetchError, FetchLimits, SearchError, SearchLimits, SearchState};
 use ui::collaboration::{CollabRequest, ExportedAction, ExportedInput};
 use ui::tilo_actions::contract::{
     ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, PROGRAMMATIC_TAG, ResultSpec,
@@ -112,8 +112,9 @@ fn search_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "engines",
             ParamType::Array,
-            "Which engines to ask. Default brave and bing, the ones that answer reliably; \
-             google, duckduckgo and marginalia often refuse automated clients.",
+            "Which engines to ask. Default google, brave and bing, the ones that answer \
+             reliably; duckduckgo and marginalia often refuse automated clients. An engine \
+             that is rate-limiting is left alone for a while and reported as rate_limited.",
         )
         .with_schema(json!({
             "type": "array",
@@ -168,14 +169,18 @@ fn search_result_schema() -> Value {
                 }
             },
             "engines": {
-                "description": "How each engine asked fared: ok, blocked, failed or skipped.",
+                "description": "How each engine fared: ok, blocked, rate_limited (left alone \
+                    for a while), failed or skipped.",
                 "type": "array",
                 "items": {
                     "type": "object",
                     "required": ["engine", "status", "results"],
                     "properties": {
                         "engine": {"type": "string"},
-                        "status": {"type": "string"},
+                        "status": {
+                            "type": "string",
+                            "enum": ["ok", "blocked", "rate_limited", "failed", "skipped"]
+                        },
                         "results": {"type": "integer"},
                         "detail": {"type": "string"}
                     }
@@ -393,18 +398,23 @@ pub fn bind(resource: &str, action: &str, argument: Option<&str>) -> Result<Call
     }
 }
 
-/// Run a bound call.
+/// Run a bound call. `state` is shared by every search, so an engine that is
+/// rate-limiting is left alone across calls.
 ///
 /// # Errors
 ///
 /// The [`Failure`] saying why there is no result.
-pub async fn run(client: &tilo_net::Client, call: Call) -> Result<ActionOutput, Failure> {
+pub async fn run(
+    client: &tilo_net::Client,
+    state: &SearchState,
+    call: Call,
+) -> Result<ActionOutput, Failure> {
     let value = match call {
         Call::Search {
             query,
             count,
             engines,
-        } => search(client, &query, count, &engines).await?,
+        } => search(client, state, &query, count, &engines).await?,
         Call::Fetch {
             url,
             offset,
@@ -419,6 +429,7 @@ pub async fn run(client: &tilo_net::Client, call: Call) -> Result<ActionOutput, 
 
 async fn search(
     client: &tilo_net::Client,
+    state: &SearchState,
     query: &str,
     count: usize,
     engines: &[Engine],
@@ -426,7 +437,7 @@ async fn search(
     let limits = SearchLimits::default();
     let searched = tokio::time::timeout(
         SEARCH_TIMEOUT,
-        tilo_web_search::search(client, query, engines, &limits),
+        tilo_web_search::search(client, state, query, engines, &limits),
     )
     .await
     .map_err(|_| failure(code::TIMED_OUT, "the search engines took too long", true))?;

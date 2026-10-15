@@ -1,20 +1,27 @@
 //! The search engines: how each is asked, and how its answer page is read.
 //!
-//! Every engine here works without an account or key, by reading the same
-//! result page a browser gets. The Google, Bing, Brave and Marginalia
-//! scrapers are ported from metasearch2's `src/engines/search/` and its
-//! `src/parse.rs` (CC0-1.0, see `PROVENANCE.md`); `DuckDuckGo` is Tilo's own.
+//! Every engine here works without an account or key. Bing, Brave,
+//! `DuckDuckGo` and Marginalia are read from the same result page a browser
+//! gets. The Bing, Brave and Marginalia scrapers are ported from metasearch2's
+//! `src/engines/search/` and its `src/parse.rs` (CC0-1.0); `DuckDuckGo` is
+//! Tilo's own. Google is asked through the search element sites embed, a
+//! technique taken from `SearXNG` (AGPL-3.0-or-later). `PROVENANCE.md` records
+//! both.
 //!
-//! A page is never trusted to have the expected shape. An engine that shows
-//! a challenge instead of results is [`EngineError::Blocked`]; a page with no
-//! result list where one belongs is [`EngineError::Layout`], which is how a
-//! change to the engine's markup surfaces instead of as silently empty
-//! results.
+//! An answer is never trusted to have the expected shape:
+//!
+//! - An engine that shows a challenge it shows every client like this one is
+//!   [`EngineError::Blocked`].
+//! - One that says it is getting too many requests is
+//!   [`EngineError::RateLimited`], and the search leaves it alone for a while.
+//! - An answer with no result list where one belongs is
+//!   [`EngineError::Layout`]. That is how a change to an engine's markup
+//!   surfaces, instead of as silently empty results.
 
 mod bing;
 mod brave;
 mod duckduckgo;
-mod google;
+pub(crate) mod google;
 mod marginalia;
 
 use std::fmt;
@@ -38,20 +45,20 @@ pub enum Engine {
 impl Engine {
     /// Every engine, in the order results are reported.
     pub const ALL: [Self; 5] = [
-        Self::Brave,
         Self::Google,
+        Self::Brave,
         Self::Bing,
         Self::DuckDuckGo,
         Self::Marginalia,
     ];
 
     /// The engines asked when the caller names none: the ones that answer a
-    /// plain HTTP client today. The others are asked only when named: Google
-    /// answers such a client with a page that needs JavaScript, `DuckDuckGo`
-    /// with a challenge whenever the client's TLS handshake is not a
-    /// browser's, and Marginalia's public endpoint asks clients it does not
-    /// recognise to wait.
-    pub const DEFAULT: [Self; 2] = [Self::Brave, Self::Bing];
+    /// plain HTTP client today, Google first because its ranking is the best.
+    /// The others are asked only when named. `DuckDuckGo` answers with a
+    /// challenge whenever the client's TLS handshake is not a browser's, and
+    /// Marginalia's public endpoint asks clients it does not recognise to
+    /// wait.
+    pub const DEFAULT: [Self; 3] = [Self::Google, Self::Brave, Self::Bing];
 
     /// The engine's stable name, as callers name it.
     pub const fn id(self) -> &'static str {
@@ -70,12 +77,13 @@ impl Engine {
     }
 
     /// How much a result's rank on this engine counts when results from
-    /// several engines are merged. metasearch2's weights; `DuckDuckGo`, which
-    /// largely relays Bing, counts as Bing does.
+    /// several engines are merged. metasearch2's weights, except that Google
+    /// leads, so its ranking and its titles win. `DuckDuckGo`, which largely
+    /// relays Bing, counts as Bing does.
     pub const fn weight(self) -> f64 {
         match self {
+            Self::Google => 1.5,
             Self::Brave => 1.25,
-            Self::Google => 1.05,
             Self::Bing | Self::DuckDuckGo => 1.0,
             Self::Marginalia => 0.15,
         }
@@ -93,13 +101,19 @@ impl Engine {
         }
     }
 
-    /// Read this engine's answer page.
+    /// Read this engine's answer.
     ///
     /// # Errors
     ///
-    /// [`EngineError::Blocked`] when the page is a challenge rather than
-    /// results, [`EngineError::Layout`] when it has no result list.
+    /// [`EngineError::Blocked`] or [`EngineError::RateLimited`] when the
+    /// answer is a challenge rather than results, [`EngineError::Refused`]
+    /// when the engine refused the request, and [`EngineError::Layout`] when
+    /// it has no result list.
     pub fn parse(self, body: &str) -> Result<Vec<EngineResult>, EngineError> {
+        // Google answers with JSON, not a page.
+        if self == Self::Google {
+            return google::parse(body);
+        }
         let doc = Document::parse(body);
         if let Some(reason) = blocked_reason(self, &doc, body) {
             return Err(EngineError::Blocked(reason));
@@ -108,7 +122,7 @@ impl Engine {
             Self::Bing => bing::parse(&doc),
             Self::Brave => brave::parse(&doc),
             Self::DuckDuckGo => duckduckgo::parse(&doc),
-            Self::Google => google::parse(&doc),
+            Self::Google => Err(EngineError::Layout("Google answers with JSON".into())),
             Self::Marginalia => marginalia::parse(&doc),
         }
     }
@@ -163,9 +177,14 @@ pub struct EngineResult {
 /// Why an engine's page gave no results.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EngineError {
-    /// The engine answered with a challenge (a CAPTCHA, a JavaScript check,
-    /// a rate-limit page) instead of results.
+    /// The engine answered with a challenge (a CAPTCHA, a JavaScript check)
+    /// instead of results.
     Blocked(String),
+    /// The engine says it is getting too many requests. Asking again soon
+    /// only makes that worse.
+    RateLimited(String),
+    /// The engine refused the request itself, for example an expired token.
+    Refused(String),
     /// The page had no result list where one belongs.
     Layout(String),
 }
@@ -174,6 +193,8 @@ impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Blocked(reason) => write!(f, "blocked: {reason}"),
+            Self::RateLimited(reason) => write!(f, "rate-limited: {reason}"),
+            Self::Refused(reason) => write!(f, "refused: {reason}"),
             Self::Layout(reason) => write!(f, "unexpected page: {reason}"),
         }
     }
@@ -186,11 +207,8 @@ fn blocked_reason(engine: Engine, doc: &Document, body: &str) -> Option<String> 
         return Some(format!("{engine} asked for a CAPTCHA"));
     }
     let markers: &[(&str, &str)] = match engine {
-        Engine::Google => &[
-            ("/httpservice/retry/enablejs", "Google requires JavaScript"),
-            ("id=\"captcha-form\"", "Google asked for a CAPTCHA"),
-            ("/sorry/index", "Google reports unusual traffic"),
-        ],
+        // Read by its own parser, which knows its challenges.
+        Engine::Google => &[],
         Engine::Bing => &[
             ("id=\"b_captcha", "Bing asked for a CAPTCHA"),
             ("/turing/captcha", "Bing asked for a CAPTCHA"),
@@ -362,15 +380,13 @@ mod tests {
         let captcha = "<html><head><title>Captcha</title></head><body>prove it</body></html>";
         for engine in Engine::ALL {
             assert!(
-                matches!(engine.parse(captcha), Err(EngineError::Blocked(_))),
+                matches!(
+                    engine.parse(captcha),
+                    Err(EngineError::Blocked(_) | EngineError::RateLimited(_))
+                ),
                 "{engine}"
             );
         }
-        let google = r#"<noscript><meta content="0;url=/httpservice/retry/enablejs?sei=x" http-equiv="refresh"></noscript>"#;
-        assert!(matches!(
-            Engine::Google.parse(google),
-            Err(EngineError::Blocked(reason)) if reason.contains("JavaScript")
-        ));
     }
 
     #[test]

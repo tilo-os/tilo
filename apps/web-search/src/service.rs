@@ -7,10 +7,12 @@
 //! service costs nothing.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use tilo_web_search::SearchState;
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 use ui::tilo_actions::outcome::{InvocationId, InvocationUpdate};
 
@@ -68,6 +70,7 @@ pub fn run(workspace: uuid::Uuid) -> Result<()> {
         manager,
         runtime,
         client,
+        state: Arc::default(),
         tx,
         running: HashMap::new(),
     };
@@ -84,6 +87,9 @@ struct Service {
     manager: CollaborationManager,
     runtime: tokio::runtime::Runtime,
     client: tilo_net::Client,
+    /// Which engines are backing off and Google's token, shared by every
+    /// search this service runs.
+    state: Arc<SearchState>,
     tx: Sender<Wake>,
     running: HashMap<u64, Running>,
 }
@@ -197,9 +203,10 @@ impl Service {
         // not what was looked up.
         tracing::info!(invocation = id, action, actor, "running");
         let client = self.client.clone();
+        let state = Arc::clone(&self.state);
         let tx = self.tx.clone();
         let task = self.runtime.spawn(async move {
-            let update = match actions::run(&client, call).await {
+            let update = match actions::run(&client, &state, call).await {
                 Ok(output) => InvocationUpdate::Succeeded { invocation, output },
                 Err(error) => InvocationUpdate::Failed {
                     invocation,

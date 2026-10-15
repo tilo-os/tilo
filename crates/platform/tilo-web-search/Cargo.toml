@@ -20,6 +20,8 @@ tilo-net = { version = "0.1.0", path = "../tilo-net", features = ["http"] }
 tokio = { workspace = true, features = ["time", "net"] }
 futures-util.workspace = true
 serde.workspace = true
+# Google's search element answers with JSON.
+serde_json.workspace = true
 url.workspace = true
 # Bing wraps result links in base64url.
 base64.workspace = true
@@ -28,7 +30,6 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }
-serde_json.workspace = true
 
 [lints]
 workspace = true
