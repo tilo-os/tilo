@@ -578,13 +578,21 @@ pub fn definitions(most_steps: usize) -> Value {
     ])
 }
 
+/// The mark of an operation the person is asked about before it runs: its
+/// contract confirms (it sends, publishes, deletes for good), or the
+/// person's answers for this agent ask first. `None` for one that runs at
+/// once.
+pub(crate) fn confirmation_note(offer: &Offer) -> Option<&'static str> {
+    (offer.descriptor.contract.advertised_confirmation() != tilo_actions::ConfirmationPolicy::None)
+        .then_some("needs confirmation")
+}
+
 /// The description shared by `plan` steps and `invoke` of an argument object.
 const ARGUMENTS_DESCRIPTION: &str = "The complete JSON argument object described by \
     `describe_operation`, keyed by the application's parameter names. Use {} for a nullary \
     operation. Values retain their declared JSON types; never stringify numbers, booleans, \
-    arrays, objects or null. When the descriptor's confirmation policy is Confirm, also \
-    include `confirm: true`; for Phrase include `confirmation_phrase` with the exact phrase. \
-    Those two names are invocation metadata, not app parameters.";
+    arrays, objects or null. Never add `confirm` or `confirmation_phrase`: an operation marked \
+    needs confirmation asks the person when you invoke it, and only they answer.";
 
 /// The [`INVOKE`] tool definition.
 fn invoke_definition() -> Value {
@@ -971,6 +979,9 @@ pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: u
             {
                 let _ = write!(s, " (currently unavailable: {reason})");
             }
+            if let Some(note) = confirmation_note(offer) {
+                let _ = write!(s, " ({note})");
+            }
             let signature = parameter_signature(offer);
             if !signature.is_empty() {
                 let _ = write!(s, " {signature}");
@@ -1328,6 +1339,9 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
         {
             let _ = write!(s, "; currently unavailable: {reason}");
         }
+        if let Some(note) = confirmation_note(o) {
+            let _ = write!(s, "; {note}");
+        }
         if o.wants_content() {
             s.push_str("; takes what an earlier step produced, not words");
         } else if !o.descriptor.params.is_empty() {
@@ -1394,6 +1408,9 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
          reversible={}; execution={:?}; result={:?}",
         c.kind, c.risk, c.confirmation, c.retry, c.reversible, c.execution, c.result
     );
+    if let Some(note) = confirmation_note(offer) {
+        let _ = writeln!(s, "  {note}: your step waits until the person answers it");
+    }
     if !d.params.is_empty() {
         s.push_str("  structured arguments:\n");
         for p in &d.params {
@@ -1930,6 +1947,43 @@ mod tests {
             summary.contains("word-processor is already open"),
             "{summary}"
         );
+    }
+
+    /// An operation the person is asked about first is listed, marked as
+    /// such everywhere the model meets it, and the model is told it waits.
+    #[test]
+    fn an_operation_needing_confirmation_is_listed_and_marked() {
+        let mut catalogue = room();
+        let mut send = offer(
+            "mail",
+            "mail.inbox",
+            "mail.mailbox",
+            "send_message",
+            "Send message",
+            InputSpec::None,
+        );
+        send.descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+        catalogue.offers.push(send.clone());
+        let mut revealed = Revealed::new();
+        let summary = catalogue_summary(&catalogue, &mut revealed, MOST_SUMMARISED);
+        let line = summary
+            .lines()
+            .find(|line| line.contains("Send message"))
+            .unwrap_or_default();
+        assert!(line.contains("needs confirmation"), "{summary}");
+        let insert = summary
+            .lines()
+            .find(|line| line.contains("Insert table"))
+            .unwrap_or_default();
+        assert!(!insert.contains("needs confirmation"), "{summary}");
+        let listed = operations(&json!({"application": "mail"}), &catalogue, &mut revealed);
+        assert!(listed.contains("needs confirmation"), "{listed}");
+        let described = describe(&json!({"operation": send.id()}), &catalogue, &mut revealed);
+        assert!(
+            described.contains("needs confirmation: your step waits"),
+            "{described}"
+        );
+        assert!(!ARGUMENTS_DESCRIPTION.contains("include `confirm: true`"));
     }
 
     /// A refused argument says what the operation takes and how to pass it.

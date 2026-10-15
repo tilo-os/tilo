@@ -54,6 +54,31 @@ Presets are conveniences, not a second policy store. The UI derives the preset
 name when the live capability set exactly matches a bundle and shows `Custom`
 otherwise. Pause must be an enforced restriction, never a display-only state.
 
+### Allow, Ask first, Deny
+
+Within its admission a person tells each agent, per application, kind of
+resource or single action, whether an action of each kind (reading, undoable
+changes, outside effects) is allowed, asks first or is not allowed
+(`tilo_action_policy::agent_answers`). These are ordinary grants on the room;
+the most specific one decides. Before anyone chooses, reading and undoable
+changes are allowed and outside effects ask first. An action whose contract
+confirms (it sends, publishes, deletes for good) asks first whatever a broader
+answer says; only "Always allow this", an answer for that one action, lifts
+it.
+
+Ask first pauses the agent's task run instead of refusing. The broker renders
+the invocation as a draft (`tilo_actions::draft`: one field per parameter,
+resource references and attachments by label, secrets withheld, a message
+previewed as a message) and records it in the task's control sidecar, so the
+pause outlives restarts. The person sees it in Task Center and in a
+notification, and confirms (optionally editing the draft's fields), declines
+with a reason, or always allows it; the published `answer-confirmation` task
+action does the same without the card. The agent's step waits and asks again
+with the same arguments; the broker runs exactly those arguments with the
+person's edits, carried to dispatch by a one-use token bound to them. Other
+arguments are a new question. The draft keeps no raw arguments, so secrets
+never enter the room.
+
 ## Provider and model architecture
 
 Tilo owns identity, credentials, grants, confirmation, audit and runtime

@@ -18,6 +18,7 @@ use crate::surface;
 use crate::wire::Link;
 
 mod agent_loop;
+mod confirmation;
 mod native_task;
 mod outstanding;
 mod selection_prompt;
@@ -167,12 +168,6 @@ fn task_action_from_offer(
         (None, Some(_)) => 0,
         (None, None) => return Err("Tasks cannot invoke a local-only action".into()),
     };
-    if !matches!(
-        offer.descriptor.contract.confirmation,
-        tilo_actions::ConfirmationPolicy::None
-    ) {
-        return Err("Tasks cannot invoke an action requiring human confirmation".into());
-    }
     if !offer.wants_content() {
         tilo_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
             .map_err(|error| format!("The planned action arguments are invalid: {error}"))?;
@@ -744,7 +739,17 @@ impl Session {
         })?;
         let update = match self.wait_for_task_action_result(request_id)? {
             Ok((_, update)) => update,
-            Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
+            Err(error) if confirmation::is_awaiting(&error) => {
+                match self.await_confirmation(run, (action, arguments), invocation)? {
+                    Ok(update) => update,
+                    Err(stop) => return Ok(Err(stop)),
+                }
+            }
+            Err(error) => {
+                return Ok(Err(TaskActionStop::Failed(confirmation::step_failure(
+                    error,
+                ))));
+            }
         };
         if self.native_task.is_none() {
             self.publish_task_interaction(run, action, &update, 0);
