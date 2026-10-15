@@ -385,4 +385,57 @@ mod tests {
         );
         assert_eq!(requests.choose_agent("room", &[]), None);
     }
+
+    /// The chord asks a Tilo app for its selection over the app's shell-ui
+    /// connection, and an app holds one only when its manifest asks for the
+    /// service. An app that shares its selection without it is never asked:
+    /// its selection reaches the agent as bare text, without the place its
+    /// actions take.
+    #[test]
+    fn every_app_sharing_its_selection_asks_for_the_shell_ui_service() {
+        fn shares_selection(dir: &std::path::Path) -> bool {
+            std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        return shares_selection(&path);
+                    }
+                    path.extension().is_some_and(|extension| extension == "rs")
+                        && std::fs::read_to_string(&path)
+                            .is_ok_and(|source| source.contains("fn shared_selection("))
+                })
+        }
+        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+        let mut sharing = Vec::new();
+        let mut missing = Vec::new();
+        for app in std::fs::read_dir(&apps)
+            .expect("the repository's apps")
+            .flatten()
+        {
+            let manifest = app.path().join("tilo-app.toml");
+            if !manifest.is_file() || !shares_selection(&app.path().join("src")) {
+                continue;
+            }
+            let manifest: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+            let name = app.file_name().to_string_lossy().into_owned();
+            if manifest
+                .get("sandbox")
+                .and_then(|sandbox| sandbox.get("services"))
+                .and_then(|services| services.get("shell-ui"))
+                .is_none()
+            {
+                missing.push(name.clone());
+            }
+            sharing.push(name);
+        }
+        assert!(sharing.iter().any(|app| app == "notes"), "{sharing:?}");
+        assert!(
+            missing.is_empty(),
+            "share a selection without shell-ui: {missing:?}"
+        );
+    }
 }
