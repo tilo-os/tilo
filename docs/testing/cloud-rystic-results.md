@@ -1,5 +1,68 @@
 # Dropbox and Google Drive import/sync test results
 
+## Google Drive 0.0.5: Changes, resumable upload and real filesystem roundtrip
+
+Latest Drive-only re-run on 2026-10-14 first executed
+`rystic update -no-self google-drive-twin`, upgrading **0.0.3 → 0.0.5**
+(commit `28864b4`, published `2026-10-14T18:05:59Z`). CLI remained **0.0.28**
+(`3e381c4`). The running version handshake reported model
+`sha256:2521a3325edc5162aa9da197dc7df19cec9f62049014fbbc784bcba6b830423a`.
+
+```bash
+python3 scripts/test-cloud-rystic.py gdrive --contracts --volume
+```
+
+| Target / contract | Passed | Failed | Ignored |
+| --- | ---: | ---: | ---: |
+| Production adapter: import/read/metadata | 1 | 0 | 0 |
+| Production adapter: complete initial snapshot and stable cursor | 1 | 0 | 0 |
+| Production adapter: post-cursor rename/move/delete, paginated delta, restart/resume | 1 | 0 | 0 |
+| Production adapter: resumable upload, exact provider bytes | 1 | 0 | 0 |
+| Production adapter: genuine native DOCX package | 0 | 1 | 0 |
+| Production CloudVolume: two-way bytes/rename/delete, read-only native Docs, cursor/cache restart | 1 | 0 | 0 |
+| Production CloudService + tilo-cloud-files independent binary import engine | 1 | 0 | 0 |
+| **Total** | **6** | **1** | **0** |
+
+The separate `python3 scripts/test-cloud-rystic.py gdrive --changes-only`
+run passed **2 tests, 0 failed, 0 ignored, 3 filtered out**, exit **0**,
+independently of the DOCX contract. Its owned instance was also stopped and
+removed. These are re-runs of two rows above, not additional distinct tests.
+
+The full-contract runner exits **1** honestly for the DOCX failure:
+`DOCX export is not a ZIP Office Open XML package (stand-in bytes)`.
+Changes and real resumable uploads now work; the older 404/501 observations
+below apply to 0.0.3, **not** the updated twin. No fake HTTP fallback or seed
+mutation was used to make these contracts pass. The new Changes test mutates
+1,001 IDs after capturing a cursor and requires at least two delta pages,
+exact expected metadata/tombstones, no duplicate IDs, no reset and stable idle
+terminal cursor after a fresh adapter resumes. The filesystem test calls the
+production inode APIs directly, without a privileged FUSE mount. A restart
+reads durable cached bytes with invalid provider credentials before resuming
+sync with the saved terminal cursor.
+
+The independent-import test configures only temporary accounts/state, uses
+production CloudService requests and its Files socket, then runs
+`tilo-cloud-files::execute_at` with an exact-payload host-issued permit. The
+published local copy has exact binary bytes; a local edit leaves the provider
+unchanged, with no sync mount created. This is actual service/import-engine
+coverage, **not** the Files app's complete action/UI admission journey and
+**not** genuine native Office conversion.
+
+All selected binaries were compiled with normal Cargo routing before the
+uniquely owned metered instance started. Test execution took **4.05 seconds**
+(adapter target) and **0.62 seconds** (filesystem target); these are test-body
+measurements, not billed instance lifetime. The instance was stopped and
+removed in `finally`, including on failed contracts. An earlier old-prefix
+dummy-token run failed authentication, and an intermediate import test used
+a symlinked temporary-root alias rejected by the engine's no-follow policy;
+these were corrected in fixture setup, without changing production behavior.
+
+Credential-free provider tests: **106 passed, 0 skipped**. Strict DOCX validator
+self-tests: **4 passed**. Both opt-in targets pass Clippy with `-D warnings`.
+See [current Drive feedback](rystic-gdrive-feedback.md) for scope and bounds.
+Dropbox was not rerun or updated in this Drive-only verification; its earlier
+results below remain historical.
+
 ## Reverification with a strict native Office export contract
 
 Re-run on 2026-10-14 using installed Rystic CLI **0.0.28** (`3e381c4`,
@@ -111,10 +174,12 @@ ranged reads, revision preconditions, moves, deletion, native-document
 classification and quota parsing. Drive file bytes are seeded because its twin
 cannot accept the adapter's resumable upload protocol.
 
-This does **not** prove end-to-end FUSE import or live-account OAuth. It does not
-prove Dropbox incremental sync, Drive initial/incremental sync, Drive upload
-resume, shared drives, or real Google-native export conversion against Rystic.
-Existing credential-free provider tests still cover those production paths.
+That original run did **not** prove end-to-end FUSE import or live-account OAuth,
+Dropbox incremental sync, Drive initial/incremental sync, interrupted Drive upload
+resumption, shared drives, or genuine Google-native export conversion against
+Rystic. The newer 0.0.5 verification above adds real Drive initial/incremental
+sync, uploads and independent binary import. It does not establish the other
+listed capabilities. Credential-free fixtures cover additional production paths.
 No production sync fallback or simulator-specific upload workaround was added.
 
 ## Running the suites
@@ -125,8 +190,14 @@ From the repository root, with an installed/authenticated Rystic CLI:
 # Supported scenarios; successful on the measured twin releases.
 python3 scripts/test-cloud-rystic.py all
 
-# Strict vendor contracts too; currently exits nonzero with five failures.
+# Strict vendor contracts too; unsupported behavior remains a failure.
 python3 scripts/test-cloud-rystic.py all --contracts
+
+# Updated Drive: production two-way volume sync and independent import too.
+python3 scripts/test-cloud-rystic.py gdrive --contracts --volume
+
+# Isolate the updated Changes contracts from the remaining DOCX failure.
+python3 scripts/test-cloud-rystic.py gdrive --changes-only
 ```
 
 Use `dropbox` or `gdrive` instead of `all` to scope a run. The runner compiles
