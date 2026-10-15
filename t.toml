@@ -1581,8 +1581,6 @@ name = "perf-footprint-image"
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh footprint-image"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c"
-# The previous build an update starts from is found through main's history.
-git = true
 inputs = ["tools/perf/**", "tools/ci/perf-scheduled.sh"]
 cost = "minutes"
 outputs = ["/target/perf/footprint-image/**"]
@@ -1667,9 +1665,10 @@ default = false
 name = "perf-browser"
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh browser"
-# The release bundle names its commit through Git and installs the MoQ
-# library's npm dependencies in scripts/moq-browser.
-git = true
+# The release bundle names its commit through Git, which the script sets up
+# from T_COMMIT, and installs the MoQ library's npm dependencies in
+# scripts/moq-browser. A working tree's numbers would name no commit, so it
+# runs scheduled or dispatched only.
 writable_sources = true
 env = { npm_config_cache = "/tmp/npm-cache" }
 inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
@@ -1683,7 +1682,6 @@ default = false
 name = "perf-stream"
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh stream"
-git = true
 writable_sources = true
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", npm_config_cache = "/tmp/npm-cache" }
 inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
