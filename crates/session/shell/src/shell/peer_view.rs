@@ -1,7 +1,7 @@
 //! Peer-side foreign-surface view — the receive-side counterpart to the
 //! owner's encode loop in [`crate::network::streaming`]. Owns one
-//! [`crate::network::VideoDecoder`] for the stream's codec and paints the
-//! most recently decoded frame as a vello image draw.
+//! [`tilo_callstream::surface_decoder::VideoDecoder`] for the stream's codec
+//! and paints the most recently decoded frame as a vello image draw.
 //!
 //! [`PeerView::push_encoded`] decodes a [`crate::network::NeighbourMsg::SurfaceFrame`]
 //! synchronously and stashes the latest frame for the next `draw`; older
@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use taffy::{NodeId, TaffyTree};
+use tilo_callstream::surface_decoder::{DecodedFrame, DecodedPixels, VideoDecoder};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -28,7 +29,6 @@ use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 use crate::collab::colorimetry::Colorimetry;
 use crate::diagnostics::PeerSurfaceMetrics;
-use crate::network::decoder::{DecodedFrame, DecodedPixels, VideoDecoder};
 use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
 use crate::shell::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};

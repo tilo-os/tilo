@@ -9,8 +9,9 @@
  * preview): a workspace whose host has an admission door is first watched
  * read-only as its spectator, so scrolling past mints no member, and the
  * visitor joins as themselves on their first click, tap or key press. A
- * visitor who already joined that host comes back at once. The embedding page
- * hears `{type: 'tilo-embed', state}`: `watching`, `joined`, or `full` /
+ * visitor who already joined that host comes back at once. The embedding page,
+ * if it is the web host's embedder (`entry.json` `embedder`), hears
+ * `{type: 'tilo-embed', state}`: `watching`, `joined`, or `full` /
  * `unavailable` when it should show its static fallback. A visitor the host
  * has no seat for watches live instead and is let in once a seat frees up.
  */
@@ -34,8 +35,6 @@ import {
   spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
-/** Where an embed's state goes: the site that embeds the workspace. */
-const EMBEDDER = 'https://tilo.so';
 /** Set for the one reload that turns an embed's spectator into a member. */
 const JOIN_NOW = 'tilo-embed-join';
 
@@ -391,7 +390,9 @@ export async function startEntryPage({mode}) {
   };
   // The arrival screen's line and bar follow those steps (arrival.mjs).
   startArrival({mode});
-  const tell =state => { if (embed && parent !== window) parent.postMessage({type: 'tilo-embed', state}, EMBEDDER); };
+  /** Where an embed's state goes: the site the web host names as its embedder, once the entry is read. */
+  let embedder = null;
+  const tell = state => { if (embed && embedder && parent !== window) parent.postMessage({type: 'tilo-embed', state}, embedder); };
   let joinNow = false;
   try { joinNow = sessionStorage.getItem(JOIN_NOW) === '1'; sessionStorage.removeItem(JOIN_NOW); } catch { /* No storage: watch first. */ }
   /** How this page entered through a host's door: `joined`, `watching` (until a gesture) or `seatless`. */
@@ -467,6 +468,7 @@ export async function startEntryPage({mode}) {
     chosenWorkspace: () => (embed ? null : remembering(() => chosenWorkspace())),
     onScope: next => {
       admitting = next;
+      embedder = next.entry?.embedder ?? null;
       const known = remembering(() => rememberedRoom(next.scope));
       if (known?.name && !workspaceName) workspaceName = known.name;
     },
