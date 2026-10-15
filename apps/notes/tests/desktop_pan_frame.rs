@@ -105,10 +105,23 @@ fn calls(rows: &[Sample], phase: &str) -> usize {
 
 #[test]
 fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
+    // This is one continuous gesture. A slow host must not turn a frame
+    // into the desktop's swipe-end deadline, which legitimately changes
+    // focus and syncs the windows. Exercise that deadline separately below.
+    ui::time::testing::with_monotonic_time(ui::time::now(), assert_quiet_pan_frames);
+}
+
+fn assert_quiet_pan_frames() {
     ui::i18n::I18nManager::init("en-US");
     let f = NotebookFixture::rich();
     let checkout = component_support::notebook(&f);
     let (mut harness, handle) = six_notes(&f, &checkout);
+    warm_windows(&mut harness, &handle);
+
+    assert_pan_frames(&mut harness, &handle);
+}
+
+fn warm_windows(harness: &mut FrameHarness, handle: &DesktopHandle) {
     let max = handle.snapshot("g", vec![]).desktop_pan.unwrap().max;
     assert!(max > 0.0, "six windows overflow the strip");
     // One pan across the strip and back first, as the browser's
@@ -116,27 +129,29 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
     // first frame on screen does once.
     for (dx, end) in [(-120.0, max), (120.0, 0.0)] {
         for _ in 0..200 {
-            if (pan_offset(&handle) - end).abs() < 0.5 {
+            if (pan_offset(handle) - end).abs() < 0.5 {
                 break;
             }
-            wheel(&mut harness, dx);
+            wheel(harness, dx);
             harness.poll_frame().unwrap();
         }
         assert!(
-            (pan_offset(&handle) - end).abs() < 0.5,
+            (pan_offset(handle) - end).abs() < 0.5,
             "the first pan reaches {end}"
         );
     }
+}
 
+fn assert_pan_frames(harness: &mut FrameHarness, handle: &DesktopHandle) {
     let frames: usize = 60;
-    let start = pan_offset(&handle);
+    let start = pan_offset(handle);
     let quiet = harness.quiet_frames();
     let settled = harness.settled_history_frames();
     let ((), rows) = observe(|| {
         for index in 0..frames {
             let dx = if (index / 10) % 2 == 0 { -6.0 } else { 6.0 };
-            wheel(&mut harness, dx);
-            wheel(&mut harness, dx);
+            wheel(harness, dx);
+            wheel(harness, dx);
             assert!(harness.poll_frame().unwrap(), "each wheel pair is a frame");
             let stats = harness.last_relayout();
             assert!(
@@ -147,7 +162,7 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
         }
     });
     assert!(
-        (pan_offset(&handle) - start).abs() < 0.01,
+        (pan_offset(handle) - start).abs() < 0.01,
         "every wheel panned the strip"
     );
     // A pan changes no document, focus or declaration, and a view-only
@@ -209,6 +224,80 @@ fn a_pan_frame_over_six_notes_windows_leaves_undo_bookkeeping_to_actions() {
         calls(&rows, "ui.history_root_validation") >= WINDOWS,
         "a click's frame asks every window's History again: {rows:?}"
     );
+}
+
+#[test]
+fn ending_a_pan_gesture_still_syncs_the_notes_windows() {
+    ui::i18n::I18nManager::init("en-US");
+    // Either the parked host wakes at the deadline, or the next wheel
+    // arrives after it. Neither is a view-only continuation of the pan.
+    for next_wheel in [false, true] {
+        ui::time::testing::with_monotonic_time(ui::time::now(), || {
+            let f = NotebookFixture::rich();
+            let checkout = component_support::notebook(&f);
+            let (mut harness, handle) = six_notes(&f, &checkout);
+            warm_windows(&mut harness, &handle);
+            let active = handle.snapshot("g", vec![]).active;
+            wheel(&mut harness, -1200.0);
+            assert!(harness.poll_frame().unwrap());
+            let offset = pan_offset(&handle);
+            assert!(offset > 0.0, "the gesture panned the strip");
+            let deadline = harness
+                .frame_schedule()
+                .next_wake_deadline
+                .expect("a pan schedules its end even without further input");
+            assert!(deadline > ui::time::now(), "the gesture has not ended");
+            ui::time::testing::with_monotonic_time(
+                deadline - ui::time::Duration::from_nanos(1),
+                || {
+                    let quiet = harness.quiet_frames();
+                    let (_, rows) = observe(|| harness.poll_frame().unwrap());
+                    assert_eq!(
+                        harness.quiet_frames(),
+                        quiet + 1,
+                        "not due before the deadline"
+                    );
+                    assert_eq!(calls(&rows, "ui.frame_sync"), 0, "{rows:?}");
+                },
+            );
+            let quiet = harness.quiet_frames();
+            let ((), rows) = ui::time::testing::with_monotonic_time(deadline, || {
+                observe(|| {
+                    if next_wheel {
+                        wheel(&mut harness, -6.0);
+                        wheel(&mut harness, -6.0);
+                    }
+                    assert!(
+                        harness.poll_frame().unwrap(),
+                        "the gesture's end gets a frame"
+                    );
+                })
+            });
+            assert_eq!(harness.quiet_frames(), quiet, "ending a pan is not quiet");
+            assert_ne!(
+                handle.snapshot("g", vec![]).active,
+                active,
+                "focus follows the pan"
+            );
+            for phase in ["ui.frame_sync", "ui.publish_undo_status"] {
+                assert!(calls(&rows, phase) > 0, "{phase} must run: {rows:?}");
+            }
+            if !next_wheel {
+                assert_eq!(
+                    pan_offset(&handle),
+                    offset,
+                    "focus does not reframe the strip"
+                );
+                assert!(
+                    harness
+                        .frame_schedule()
+                        .next_wake_deadline
+                        .is_none_or(|next| next > deadline),
+                    "the deadline was consumed"
+                );
+            }
+        });
+    }
 }
 
 /// How many widgets lie inside a hosted component.
