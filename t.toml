@@ -1360,17 +1360,6 @@ python3 scripts/vm-acceptance/run.py --disk "${TILO_VM_ACCEPTANCE_DISK:?a publis
 cost = "heavy"
 default = false
 
-# A legacy guest VM from a fresh guest disk to an app on the Tilo desktop
-# (.forgejo/workflows/build-legacy-guest.yml). Needs KVM, vhost-vsock and the
-# guest disk and binaries that workflow builds, in e2e/.
-[[check]]
-name = "legacy-guest-e2e"
-requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-devices = ["/dev/kvm", "/dev/vhost-vsock"]
-run = "bash os/dev/legacy-vm-e2e.sh"
-cost = "heavy"
-default = false
-
 # The imager's staging helper and reclaim proofs over loop devices
 # (.forgejo/workflows/ci-staging-loop.yml). Needs a privileged node with loop
 # devices.
@@ -2152,4 +2141,236 @@ cost = "heavy"
 timeout_secs = 14400
 cpus = 16
 memory = "32G"
+default = false
+
+# The development signing tools proven natively on both architectures (os/tests/
+# development_signing_native.sh): a fixture image with private keys and a local registry,
+# whose tests nest Podman, so it runs on a privileged node. Run when asked for until privileged
+# checks have nodes again; T_INPUT_PROOF=prediction|retention|prediction-retention selects one
+# proof once it can also be dispatched.
+[[check]]
+name = "development-signing-context-x86_64"
+run = "bash os/tests/development_signing_native.sh context /target/development-signing/x86_64"
+inputs = ["os/tests/development_signing_native.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/tests/test_tls_registry_fixture.py", "Cargo.lock", "Cargo.toml", "crates/workspace-hack/**", "os/dev/verify-development-source.py", "os/dev/development_boot.py", "os/dev/development_prediction.py", "os/tests/test_development_prediction.py", "os/tests/development_prediction_native.py", "os/dev/import-development-rootfs.py", "os/dev/initramfs-trust.py", "os/dev/complete-initramfs-rebind.py", "os/dev/installed_material_audit.py", "os/dev/rebind-development-rootfs.py", "os/usr/lib/dracut/modules.d/91tilo-rollback/**", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_initramfs_trust.py", "os/tests/initramfs_trust_native.py", "os/tests/test_complete_initramfs_rebind.py", "os/dev/rebind-development-trust.py", "os/tests/test_import_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_development_trust.py", "os/dev/retain-development-rootfs.py", "os/tests/test_retain_development_rootfs.py", "os/tests/development_retention_native.py", "os/tests/tls_registry_fixture.py", "os/dev/audit-rootfs-layers.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/development_layer_audit_native.py", "os/tests/development_rebind_native.py", "os/tests/test_development_boot.py", "os/tests/test_development_source.py", "os/dev/development-trust.py", "os/dev/install-public-trust.py", "os/dev/hardware_profile.py", "os/dev/development-signer.py", "os/dev/setup-development-signer.py", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/tests/development_source_registry.py", "os/tests/development_signer.py", "os/tests/test_development_signer.py", "os/tests/test_development_loader.py", "os/tests/development_stage_reuse.py", "os/dev/sign-development-rootfs.py", "os/dev/private_disk_image.py", "os/tests/test_private_disk_image.py", "os/Containerfile.development-loader", "os/tests/test_sign_development_rootfs.py", "os/tests/development_rootfs.py", "os/tests/Containerfile.development-source", "crates/system/tilo-crypto/**"]
+outputs = ["/target/development-signing/x86_64/**"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "development-signing-x86_64"
+run = "bash os/tests/development_signing_native.sh run /target/development-signing/x86_64 \"${T_INPUT_PROOF:-full}\""
+inputs = ["os/tests/development_signing_native.sh"]
+needs = ["development-signing-context-x86_64"]
+requires = ["arch=x86_64", "disk-100g"]
+privileged = true
+timeout_secs = 2700
+default = false
+
+[[check]]
+name = "development-signing-context-aarch64"
+run = "bash os/tests/development_signing_native.sh context /target/development-signing/aarch64"
+inputs = ["os/tests/development_signing_native.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/tests/test_tls_registry_fixture.py", "Cargo.lock", "Cargo.toml", "crates/workspace-hack/**", "os/dev/verify-development-source.py", "os/dev/development_boot.py", "os/dev/development_prediction.py", "os/tests/test_development_prediction.py", "os/tests/development_prediction_native.py", "os/dev/import-development-rootfs.py", "os/dev/initramfs-trust.py", "os/dev/complete-initramfs-rebind.py", "os/dev/installed_material_audit.py", "os/dev/rebind-development-rootfs.py", "os/usr/lib/dracut/modules.d/91tilo-rollback/**", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_initramfs_trust.py", "os/tests/initramfs_trust_native.py", "os/tests/test_complete_initramfs_rebind.py", "os/dev/rebind-development-trust.py", "os/tests/test_import_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_development_trust.py", "os/dev/retain-development-rootfs.py", "os/tests/test_retain_development_rootfs.py", "os/tests/development_retention_native.py", "os/tests/tls_registry_fixture.py", "os/dev/audit-rootfs-layers.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/development_layer_audit_native.py", "os/tests/development_rebind_native.py", "os/tests/test_development_boot.py", "os/tests/test_development_source.py", "os/dev/development-trust.py", "os/dev/install-public-trust.py", "os/dev/hardware_profile.py", "os/dev/development-signer.py", "os/dev/setup-development-signer.py", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/tests/development_source_registry.py", "os/tests/development_signer.py", "os/tests/test_development_signer.py", "os/tests/test_development_loader.py", "os/tests/development_stage_reuse.py", "os/dev/sign-development-rootfs.py", "os/dev/private_disk_image.py", "os/tests/test_private_disk_image.py", "os/Containerfile.development-loader", "os/tests/test_sign_development_rootfs.py", "os/tests/development_rootfs.py", "os/tests/Containerfile.development-source", "crates/system/tilo-crypto/**"]
+outputs = ["/target/development-signing/aarch64/**"]
+requires = ["arch=aarch64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "development-signing-aarch64"
+run = "bash os/tests/development_signing_native.sh run /target/development-signing/aarch64 \"${T_INPUT_PROOF:-full}\""
+inputs = ["os/tests/development_signing_native.sh"]
+needs = ["development-signing-context-aarch64"]
+requires = ["arch=aarch64", "disk-100g"]
+privileged = true
+timeout_secs = 2700
+default = false
+
+# The Linux legacy VM guest (os/Containerfile.legacy-guest, tools/ci/publish/legacy-guest.sh):
+# the guest agent built here, the guest image built with it on a privileged x86_64 node,
+# installed to a disk and booted once until the agent serves, then the whole path end to end
+# (legacy-guest-e2e: the disk through `tilo-legacy` against a headless shell, a window, typed
+# text, a shared directory, suspend and resume). Stable signs (with a transparency log entry,
+# since `tilo-legacy` verifies requiring one) and publishes the disk and sets the
+# `legacy-guest` pointer; `legacy-guest.sh pin` commits it to os/legacy-guest-snapshot.env from
+# a check that pushes, once build-legacy-guest.yml no longer proposes the pin.
+[[check]]
+name = "legacy-guest-agent"
+run = "bash tools/ci/publish/legacy-guest.sh agent /target/publish/legacy-guest/agent"
+inputs = ["tools/ci/publish/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/publish/legacy-guest/agent/tilo-legacy-agent"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "image-legacy-guest"
+run = "bash tools/ci/publish/legacy-guest.sh build /target/publish/legacy-guest/agent /target/publish/legacy-guest/image"
+inputs = ["tools/ci/publish/**", "os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "os/dev/legacy-guest-smoke.sh", "os/dev/disk-image.sh", "os/dev/ci-native-podman-store.sh", "os/dev/probe-kvm.py", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv"]
+needs = ["legacy-guest-agent"]
+outputs = ["/target/publish/legacy-guest/image/image.oci.tar", "/target/publish/legacy-guest/image/digest"]
+requires = ["arch=x86_64", "disk-100g"]
+privileged = true
+writable_sources = true
+timeout_secs = 9000
+default = false
+
+[[check]]
+name = "legacy-guest-e2e-binaries"
+run = "bash tools/ci/publish/legacy-guest.sh binaries /target/publish/legacy-guest/e2e-bin"
+inputs = ["tools/ci/publish/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "apps/**", "dist/**"]
+outputs = ["/target/publish/legacy-guest/e2e-bin/*"]
+requires = ["arch=x86_64"]
+cpus = 16
+memory = "32G"
+default = false
+
+[[check]]
+name = "legacy-guest-e2e"
+run = "bash tools/ci/publish/legacy-guest.sh e2e /target/publish/legacy-guest/image /target/publish/legacy-guest/e2e-bin registry.tilo.so/tilo/tilo-builder@sha256:7706dd82cbb5598be302186d1d4748a44bbd2e67f6608e7bc150236046ef120e"
+inputs = ["tools/ci/publish/**", "os/dev/legacy-vm-e2e.sh", "scripts/legacy-vm-e2e.py"]
+needs = ["image-legacy-guest", "legacy-guest-e2e-binaries"]
+requires = ["arch=x86_64", "disk-100g"]
+privileged = true
+timeout_secs = 5400
+default = false
+
+[[check]]
+name = "sign-legacy-guest"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/legacy-guest /target/publish/legacy-guest/image"
+inputs = ["tools/ci/publish/**", "os/dev/configure-cosign-kms.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-legacy-guest", "legacy-guest-e2e"]
+outputs = ["/target/publish/legacy-guest/image/payload.json", "/target/publish/legacy-guest/image/signature", "/target/publish/legacy-guest/image/bundle.json"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+on = ["stable"]
+
+[[check]]
+name = "release-legacy-guest"
+image = "quay.io/skopeo/stable@sha256:edad588fe8391ce37d5ec5e06d280dd1a666a77da302ceaf3cafa019676c8a3f"
+run = "bash tools/ci/publish/legacy-guest.sh release /target/publish/legacy-guest/image"
+inputs = ["tools/ci/publish/**", "os/Containerfile.legacy-guest", "os/legacy-guest/**", "os/base-snapshot.env", "crates/runtime/legacy-agent/**", "crates/runtime/legacy-agent-protocol/**", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-legacy-guest", "sign-legacy-guest"]
+outputs = ["/target/publish/legacy-guest/image/receipt.json", "/target/publish/legacy-guest/image/pins.env"]
+pointers = { legacy-guest = "/target/publish/legacy-guest/image/pins.env" }
+id_token = ["registry.tilo.so"]
+on = ["stable"]
+
+# The env tool catalog's build half (tools/ci/publish/env-tools.sh): every tool of
+# os/env-tools-catalog.txt built natively against the published env-runtime, sealed with a
+# throwaway key, in the CI builder run privileged on a privileged node. It proves the catalog
+# builds; build-env-tools.yml still publishes it, sealed with the publisher identity.
+[[check]]
+name = "env-tools-binaries-x86_64"
+run = "bash tools/ci/publish/env-tools.sh binaries /target/publish/env-tools/x86_64/bin"
+inputs = ["tools/ci/publish/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/publish/env-tools/x86_64/bin/*"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "env-tools-x86_64"
+run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/x86_64/bin /target/publish/env-tools/x86_64/catalog registry.tilo.so/tilo/tilo-builder@sha256:7706dd82cbb5598be302186d1d4748a44bbd2e67f6608e7bc150236046ef120e"
+inputs = ["tools/ci/publish/**", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "os/dev/build-env-tools.sh", "os/dev/preview-env-runtime.sh", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["env-tools-binaries-x86_64"]
+requires = ["arch=x86_64", "disk-100g"]
+privileged = true
+timeout_secs = 9000
+default = false
+
+[[check]]
+name = "env-tools-binaries-aarch64"
+run = "bash tools/ci/publish/env-tools.sh binaries /target/publish/env-tools/aarch64/bin"
+inputs = ["tools/ci/publish/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+outputs = ["/target/publish/env-tools/aarch64/bin/*"]
+requires = ["arch=aarch64"]
+cost = "heavy"
+default = false
+
+[[check]]
+name = "env-tools-aarch64"
+run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/aarch64/bin /target/publish/env-tools/aarch64/catalog registry.tilo.so/tilo/tilo-builder@sha256:7706dd82cbb5598be302186d1d4748a44bbd2e67f6608e7bc150236046ef120e"
+inputs = ["tools/ci/publish/**", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "os/dev/build-env-tools.sh", "os/dev/preview-env-runtime.sh", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["env-tools-binaries-aarch64"]
+requires = ["arch=aarch64", "disk-100g"]
+privileged = true
+timeout_secs = 9000
+default = false
+
+# The frozen RPM snapshot's build half (tools/ci/publish/rpms-build.sh): every package the OS
+# Containerfiles name, resolved, signature-checked and laid out as a repository image, natively
+# per architecture. build-rpms.yml still signs and publishes the snapshot.
+[[check]]
+name = "image-rpms-x86_64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/rpms-build.sh x86_64 /target/publish/rpms/x86_64"
+inputs = ["tools/ci/publish/**", "os/Containerfile.rpms", "os/base-snapshot.env", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/derive-rpm-package-set.py", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
+outputs = ["/target/publish/rpms/x86_64/image.oci.tar", "/target/publish/rpms/x86_64/digest"]
+requires = ["arch=x86_64", "disk-100g"]
+cpus = 8
+memory = "16G"
+timeout_secs = 10800
+default = false
+
+[[check]]
+name = "image-rpms-aarch64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/rpms-build.sh aarch64 /target/publish/rpms/aarch64"
+inputs = ["tools/ci/publish/**", "os/Containerfile.rpms", "os/base-snapshot.env", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/derive-rpm-package-set.py", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
+outputs = ["/target/publish/rpms/aarch64/image.oci.tar", "/target/publish/rpms/aarch64/digest"]
+requires = ["arch=aarch64", "disk-100g"]
+cpus = 8
+memory = "16G"
+timeout_secs = 10800
+default = false
+
+# The kernel's build half (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config
+# fragment, built natively FROM the pinned signed buildroot, then booted under KVM with its
+# module signatures checked and the firmware's Secure Boot enforcement probed, on a privileged
+# node. No compiler cache reaches checks yet, so every build compiles the whole kernel.
+# build-kernel.yml still signs, publishes and pins it.
+[[check]]
+name = "image-kernel-x86_64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/kernel.sh build x86_64 /target/publish/kernel/x86_64"
+inputs = ["tools/ci/publish/**", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
+outputs = ["/target/publish/kernel/x86_64/image.oci.tar", "/target/publish/kernel/x86_64/digest", "/target/publish/kernel/x86_64/secureboot/**"]
+requires = ["arch=x86_64", "disk-100g"]
+cpus = 16
+memory = "24G"
+timeout_secs = 14400
+default = false
+
+[[check]]
+name = "kernel-acceptance-x86_64"
+run = "bash tools/ci/publish/kernel.sh accept x86_64 /target/publish/kernel/x86_64"
+inputs = ["tools/ci/publish/**", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
+needs = ["image-kernel-x86_64"]
+requires = ["arch=x86_64", "disk-100g"]
+privileged = true
+timeout_secs = 3600
+default = false
+
+[[check]]
+name = "image-kernel-aarch64"
+image = "quay.io/buildah/stable@sha256:084dc36d939cf44c9250d94e3164230153bf5dff9f0391f46b7957f16bcd8c9f"
+run = "bash tools/ci/publish/kernel.sh build aarch64 /target/publish/kernel/aarch64"
+inputs = ["tools/ci/publish/**", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
+outputs = ["/target/publish/kernel/aarch64/image.oci.tar", "/target/publish/kernel/aarch64/digest", "/target/publish/kernel/aarch64/secureboot/**"]
+requires = ["arch=aarch64", "disk-100g"]
+cpus = 16
+memory = "24G"
+timeout_secs = 14400
+default = false
+
+[[check]]
+name = "kernel-acceptance-aarch64"
+run = "bash tools/ci/publish/kernel.sh accept aarch64 /target/publish/kernel/aarch64"
+inputs = ["tools/ci/publish/**", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
+needs = ["image-kernel-aarch64"]
+requires = ["arch=aarch64", "disk-100g"]
+privileged = true
+timeout_secs = 3600
 default = false
