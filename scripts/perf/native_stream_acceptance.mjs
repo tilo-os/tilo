@@ -71,7 +71,7 @@ const CTRL = 2;
 /** What the paste case puts on the clipboard: two lines, beyond ASCII. */
 export const PASTED = 'Pasted into a native window ✓\nzweite Zeile, 日本語';
 /** The second window, on the first page: small, 10 fps, resized part of the way in. */
-export const SECOND = Object.freeze({surface: 8, width: 640, height: 360, fps: 10, seconds: 20, resizeAt: 12,
+export const SECOND = Object.freeze({surface: 8, width: 640, height: 360, fps: 10, seconds: 45, resizeAt: 30,
   resizeTo: Object.freeze({width: 800, height: 448})});
 /** The third window, for the page on the HTTPS stream and the viewer's. */
 export const THIRD = Object.freeze({surface: 9, width: 640, height: 360, fps: 15, seconds: 10});
@@ -456,6 +456,14 @@ export async function runAcceptance(ctx) {
   await w3.source.line(isEvent('ended'), 10_000, 'the third window closing');
   await Promise.all([other, watcher].map(page => ctx.browser.send('Target.closeTarget', {targetId: page.targetId})));
   await main.send('Page.setWebLifecycleState', {state: 'active'});
+  // Thawed, the page first works through what arrived while it was frozen:
+  // the second window starts once it answers promptly again.
+  const prompt = await eventually(async () => {
+    const asked = Date.now();
+    await main.evaluate('1', 30_000);
+    return Date.now() - asked < 300;
+  }, 300_000, 1000);
+  if (!prompt) throw new Invalid('the first page did not come back to answering promptly within 5 min of being thawed');
 
 
   // The second window, on the first page alone (every desktop that shows a
