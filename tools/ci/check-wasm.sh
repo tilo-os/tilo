@@ -6,7 +6,7 @@
 # alone never compiles the page runtime with every web app linked into it.
 #
 #   tools/ci/check-wasm.sh [-p <browser crate>]...
-#   CARGO=rcargo tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)
+#   CARGO=<any cargo drop-in> tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)
 #
 # check.yml's `wasm` job runs it with the selected browser crates. A lint, not
 # a build: the link and the web runtime's post-processing need wasm-bindgen

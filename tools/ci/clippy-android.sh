@@ -3,7 +3,7 @@
 # targets, with the `android` feature their host example builds with.
 #
 #   tools/ci/clippy-android.sh [-p <app>]...   # default: every Android app
-#   CARGO=rcargo tools/ci/clippy-android.sh
+#   CARGO=<any cargo drop-in> tools/ci/clippy-android.sh
 #
 # check.yml's `android` job runs it with the selected apps; the targets'
 # linkers come from the NDK (tools/ci/install-android-ndk.sh).
