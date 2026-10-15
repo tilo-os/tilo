@@ -14,6 +14,34 @@ use serde::{Deserialize, Serialize};
 
 use crate::InteractionAnchor;
 
+/// What a resource id starts with when a window publishes it under the
+/// toolkit's transport alias: `<prefix><host>:<publication>:<hex of the
+/// app's own id>`. The window's actions are addressed by the alias; the app
+/// names the resource by its own id (a selection's subject does), so a
+/// reader matching the two decodes the alias ([`logical_resource_id`]).
+pub const BOUND_RESOURCE_PREFIX: &str = "tilo-ui-bound:v1:";
+
+/// The app's own id for the published resource `id`: the id inside a
+/// [`BOUND_RESOURCE_PREFIX`] alias, or `id` itself when it is no alias (or a
+/// malformed one).
+#[must_use]
+pub fn logical_resource_id(id: &str) -> std::borrow::Cow<'_, str> {
+    let decoded = id.strip_prefix(BOUND_RESOURCE_PREFIX).and_then(|rest| {
+        let hex = rest.rsplit(':').next()?;
+        if hex.is_empty() || hex.len() % 2 != 0 {
+            return None;
+        }
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(hex.get(at..at.checked_add(2)?)?, 16).ok())
+            .collect::<Option<Vec<u8>>>()?;
+        String::from_utf8(bytes)
+            .ok()
+            .filter(|key| !key.is_empty() && !key.chars().any(char::is_control))
+    });
+    decoded.map_or(std::borrow::Cow::Borrowed(id), std::borrow::Cow::Owned)
+}
+
 /// The most characters an excerpt keeps. A selection is context for a
 /// request, not its payload: a longer one is cut and ends in `…`.
 pub const MAX_EXCERPT_CHARS: usize = 1000;
@@ -365,6 +393,14 @@ impl SelectionSubject {
         }
         self.anchor.validate()
     }
+
+    /// Whether the published resource `id` is the one this selection is in:
+    /// the same id, or a window's transport alias of it
+    /// ([`logical_resource_id`]).
+    #[must_use]
+    pub fn is_in(&self, id: &str) -> bool {
+        id == self.resource.id || logical_resource_id(id) == self.resource.id
+    }
 }
 
 /// `text` as a selection excerpt: trimmed, at most [`MAX_EXCERPT_CHARS`]
@@ -404,6 +440,35 @@ mod tests {
             }),
             excerpt: Some("quick".into()),
         }
+    }
+
+    #[test]
+    fn a_selection_is_in_its_resource_under_a_window_alias_too() {
+        let body = "notes.notebook/pages/p1/body";
+        let alias = format!(
+            "{BOUND_RESOURCE_PREFIX}2a4120d7-2f63-4578-aed8-11cb91ed3628:\
+             c0fe4ad7-b7d0-46c3-ab7e-78d12d5d86f4:6e6f7465732e6e6f7465626f6f6b2f70616765732f70312f626f6479"
+        );
+        assert_eq!(logical_resource_id(&alias), body);
+        assert_eq!(logical_resource_id(body), body);
+        assert_eq!(
+            logical_resource_id(&format!("{BOUND_RESOURCE_PREFIX}a:b:zz")),
+            format!("{BOUND_RESOURCE_PREFIX}a:b:zz"),
+            "a malformed alias is its own id"
+        );
+        let subject = SelectionSubject {
+            app_id: "so.tilo.notes".into(),
+            app_label: "Notes".into(),
+            resource: crate::ActionResource {
+                id: body.into(),
+                kind: "tilo.rich-text".into(),
+                label: "Links".into(),
+            },
+            anchor: anchor(),
+        };
+        assert!(subject.is_in(body));
+        assert!(subject.is_in(&alias));
+        assert!(!subject.is_in("notes.notebook/pages/p2/body"));
     }
 
     #[test]

@@ -811,13 +811,14 @@ impl Session {
         // so the next task reads system, tools and catalogue back from the
         // cache rather than prefilling them; an OpenAI-compatible provider
         // caches the same repeated prefix by itself.
+        let request = super::selection_prompt::task_request(run, &catalogue);
+        // The request as the model reads it, the selection it is about and
+        // the operations named for it included, so a run that acted at the
+        // wrong place can be told apart from one that was never told where.
+        tracing::info!(task_id = %run.task_id, %request, "task request");
         let first = FirstTurn {
             operations: format!("Operations published right now:\n\n{summary}\n"),
-            task: format!(
-                "{}The request:\n\n{}",
-                self.memory.render(),
-                super::selection_prompt::task_request(run, &catalogue)
-            ),
+            task: format!("{}The request:\n\n{request}", self.memory.render()),
         };
         let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &first);
         for turn in 0..MAX_LOOP_TURNS {

@@ -896,6 +896,24 @@ fn queue_operation(
     if let Some(subject) = about.and_then(SelectionSeed::subject_json) {
         arguments.insert("subject_json".into(), subject.into());
     }
+    if let Some(about) = about {
+        // Whether the selection travels as a place the agent can act at, or
+        // only as text in the instruction.
+        tracing::info!(
+            app_id = %about.app_id,
+            resource = ?about
+                .selection
+                .as_ref()
+                .and_then(|selection| selection.resource.as_ref())
+                .map(|resource| resource.id.as_str()),
+            place = about
+                .selection
+                .as_ref()
+                .is_some_and(|selection| selection.anchor.place.is_some()),
+            subject = arguments.contains_key("subject_json"),
+            "queueing a task about a selection"
+        );
+    }
     Operation {
         resource: TASKS.into(),
         action: "queue".into(),
