@@ -18,6 +18,7 @@ mod commit;
 mod compaction;
 mod delivery;
 mod dispatch;
+mod fanout;
 mod federation;
 mod live;
 mod replay;
@@ -36,8 +37,8 @@ use checkpoint::{
     checkpoint_mode_for, new_checkpoint_batch, step_checkpoint_batch, track_checkpoint_batch_modes,
 };
 use checkpoint::{
-    CheckpointBatch, CheckpointBatchMode, RETENTION_PREFIX_BYTE_CAP, RETENTION_PREFIX_FRAME_CAP,
-    ReplayPendingTarget, ReplayPendingWork, buffered_retention_prefix,
+    CheckpointBatch, CheckpointBatchInput, CheckpointBatchMode, RETENTION_PREFIX_BYTE_CAP,
+    RETENTION_PREFIX_FRAME_CAP, ReplayPendingTarget, ReplayPendingWork, buffered_retention_prefix,
     checkpoint_prefix_recovery_allowed, commit_and_materialize, eligible_checkpoint_prefix,
     enqueue_checkpoint_prefix, retention_publication_kind, state_commit_for, step_commit_replay,
     union_sessions,
@@ -52,6 +53,9 @@ use delivery::write_state_delivery;
 use delivery::{
     STATE_RUN, SessionCoding, delivery_room, encode_charged, write_presence, write_state_deliveries,
 };
+#[cfg(test)]
+use fanout::LiveBudget;
+use fanout::{LiveFanout, LiveFrame, PublicationFrames, PublicationScope, live_budget};
 use replay::{
     ReplayCatchup, ReplayWrite, ResumeLog, authorize_state_frame, authorize_state_recipient,
     finish_replay_write, resume_record, send_private_reply, write_private,
