@@ -52,6 +52,23 @@ above and Settings says so, while a key already in the Secret Service fails to
 load: it is neither re-keyed nor moved to a file, and the store file is never
 replaced, so the key loads again once the device identity is back.
 
+Known limit: the store names each caller by reading `/proc/<pid>/exe`, and it
+refuses a caller it cannot examine. Loading the device key makes a process
+non-dumpable (`tilo_user_identity::persist`), and a non-dumpable process's
+executable cannot be read by another process of the same user. The compositor
+loads the device key at startup, so the store refuses every call the
+compositor makes. On an installed image, an identity the compositor
+provisions therefore falls back to the file store, and Settings shows
+**Private session file**. A development VM showed this: with
+`tilo-secret-service` open, `shell --provision-identity` wrote
+`broker-file-v1`. A client that made itself non-dumpable got `the caller's
+process cannot be examined`, while the same client, still dumpable, stored and
+read its item. The same check, read in the source, also turns off MLS endpoint
+state (which has no file fallback) and refuses the compositor's portal Secret
+backend as a store manager. Nothing claims protection it does not have. The
+fix has to let the store identify the compositor without making it dumpable
+again.
+
 Metadata replacement uses an exclusive no-follow temporary file, fsync,
 rename, and directory fsync. Record and secret reads open once with
 `O_NOFOLLOW|O_CLOEXEC` and validate the open handle's type, owner, permissions,
