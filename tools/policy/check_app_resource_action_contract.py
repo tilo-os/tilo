@@ -839,6 +839,24 @@ def audit_search_provider_limits(
     return found
 
 
+PUBLISH_ACTIONS = re.compile(r"\bCollabRequest\s*::\s*PublishActions\b")
+
+
+def headless_action_service(app_dir: Path, code: str) -> bool:
+    """Whether the app is a headless service (`kind = "service"` with a `cli`
+    entrypoint in its `tilo-app.toml`) that publishes its actions to the
+    broker itself, so it has no widget resources to audit."""
+    manifest = app_dir / "tilo-app.toml"
+    if not manifest.is_file() or PUBLISH_ACTIONS.search(code) is None:
+        return False
+    with manifest.open("rb") as handle:
+        data = tomllib.load(handle)
+    return (
+        data.get("package", {}).get("kind") == "service"
+        and data.get("entrypoint", {}).get("type") == "cli"
+    )
+
+
 def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     violations: list[Violation] = []
     # This is a Tilo framework invariant, not a requirement on the isolated
@@ -951,7 +969,14 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         # crate is a record shape apps embed (the portability rules let apps
         # depend on it), not an app: the apps embedding it publish its actions.
         # A compute package runs for the action of the app that requested it.
-        if app_name != "agent" and not app_name.endswith("-model") and not compute_package:
+        # A headless service has no widget tree to publish from; it publishes
+        # its action descriptors to the broker directly.
+        if (
+            app_name != "agent"
+            and not app_name.endswith("-model")
+            and not compute_package
+            and not headless_action_service(manifest_path.parent, combined)
+        ):
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
                 and FRAMEWORK_RESOURCE.search(combined) is not None
