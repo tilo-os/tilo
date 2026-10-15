@@ -174,6 +174,26 @@ pub enum VideoEditorEffect {
     /// Cancel export.
     #[effect(destructive)]
     CancelExport,
+    /// Read timeline
+    ///
+    /// Answer the timeline as JSON: `tracks` top to bottom, each with its
+    /// `clips` in time order (id, source `media` id and `name`, `start`,
+    /// `end`, `duration`, source `in`/`out` in seconds, a title's text, and
+    /// opacity, volume, fades, transition, effects, grade and speed where not
+    /// at their defaults), then the `project` (frame size, rate, length), the
+    /// bin's `media` (kind, duration, size, content address) and `markers`.
+    #[effect(view, returns, permission = "read")]
+    ReadTimeline,
+    /// Export timeline as content
+    ///
+    /// Keep the timeline read-timeline answers as a JSON file in the content
+    /// store, with no file to write, and answer its content address. It
+    /// describes the cut; it is not a rendered video.
+    #[effect(content, permission = "read")]
+    ExportTimelineContent {
+        #[param("The format: json, the only one")]
+        format: Option<String>,
+    },
 }
 
 impl VideoEditorEffect {

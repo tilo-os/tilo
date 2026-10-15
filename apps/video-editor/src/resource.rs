@@ -76,6 +76,19 @@ impl Resource for VideoProject {
         ]
     }
 
+    /// Building a cut by name, bound to what the project holds: room
+    /// content into the bin, a source onto a track, a clip moved (see
+    /// [`crate::placement`]).
+    fn bound_declarations(project: &Project) -> Vec<ActionDecl<Self>> {
+        crate::placement::declarations(project)
+    }
+
+    /// What an import, a placement or a move did: the source or clips it
+    /// wrote and the timeline it left.
+    fn answer(doc: &Doc, action: &str, changes: &[automerge::Patch]) -> Option<serde_json::Value> {
+        crate::placement::answer(doc, action, changes)
+    }
+
     /// Tracks, clips, media and markers, each with the actions its data
     /// implies.
     fn children(project: &Project) -> Vec<tilo_actions::Resource> {

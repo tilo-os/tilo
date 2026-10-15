@@ -5285,6 +5285,8 @@ impl VideoEditorApp {
                 };
                 job.cancel();
             }
+            // Reads of the project, answered at once by `answer_effect`.
+            VideoEditorEffect::ReadTimeline | VideoEditorEffect::ExportTimelineContent { .. } => {}
         }
         Ok(())
     }
@@ -6319,7 +6321,12 @@ impl Widget for VideoEditorApp {
         // replicates; the content is fetched lazily, so a project opened on a
         // second peer legitimately holds media this device has never seen. The
         // editor must say that in words rather than drawing a stand-in picture
-        // and leaving the user to guess.
+        // and leaving the user to guess. A source the room holds is copied
+        // out of its content store for the decoder.
+        #[cfg(any(feature = "decode", feature = "gst"))]
+        if let Some(store) = ui::tilo_resource::content::current() {
+            crate::media::hydrate_content(&store, &self.project.media);
+        }
         self.projected_media = self
             .project
             .media
@@ -7575,6 +7582,15 @@ impl VideoEditorApp {
     ) -> ui::framework::EffectAnswer {
         use crate::actions::VideoEditorEffect;
         match &effect {
+            VideoEditorEffect::ReadTimeline => {
+                let project = cx.live().get();
+                return Ok(ui::framework::Effected::value(
+                    crate::timeline::timeline_json(&project),
+                ));
+            }
+            VideoEditorEffect::ExportTimelineContent { format } => {
+                return Self::export_timeline_content(&cx.live().get(), format.as_deref());
+            }
             VideoEditorEffect::RevealTrack { .. }
             | VideoEditorEffect::RevealClip { .. }
             | VideoEditorEffect::RevealEffect { .. }
@@ -7597,6 +7613,29 @@ impl VideoEditorApp {
         self.resource_operation = Some(effect);
         self.resource_reply = Some(cx.reply());
         Ok(ui::framework::Effected::Pending)
+    }
+}
+
+impl VideoEditorApp {
+    /// Keep the timeline as JSON in the window's content store rather than a
+    /// file, and answer its content address: an export a caller with no
+    /// files of its own (an agent) reads back by address.
+    fn export_timeline_content(
+        project: &Project,
+        format: Option<&str>,
+    ) -> ui::framework::EffectAnswer {
+        let format = format.map_or("json", str::trim);
+        if !format.eq_ignore_ascii_case("json") {
+            return Err(format!("the timeline exports as json, not {format}"));
+        }
+        let json = serde_json::to_vec_pretty(&crate::timeline::timeline_json(project))
+            .map_err(|error| format!("the timeline could not be written: {error}"))?;
+        let content = ui::tilo_resource::content::current()
+            .ok_or("this window keeps no content to export into")?;
+        let hash = content
+            .put(&json)
+            .map_err(|error| format!("the timeline could not be kept: {error}"))?;
+        ui::framework::Effected::content(&hash)
     }
 }
 
