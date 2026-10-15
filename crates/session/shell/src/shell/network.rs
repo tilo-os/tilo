@@ -1190,7 +1190,7 @@ impl ContinuityDurability {
         if let Ok(mut ledger) = self.0.lock() {
             let sequence = ledger.submitted;
             if ledger.pending.len() >= MAX_CONTINUITY_OBLIGATIONS {
-                ledger.pending.remove(0);
+                drop(ledger.pending.remove(0));
             }
             ledger.pending.push((sequence, Box::new(obligation)));
         }

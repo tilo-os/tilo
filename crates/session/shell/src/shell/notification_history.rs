@@ -175,6 +175,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn saving_from_the_loop_never_waits_for_the_disk() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let store = NotificationHistoryStore::at(dir.path().join("state/tilo/history.json"));
         let now = Instant::now();
@@ -190,7 +191,6 @@ mod tests {
         let restored = store.load_at(wall, now);
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].title, "queued");
-        use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(store.path())
             .unwrap()
             .permissions()
